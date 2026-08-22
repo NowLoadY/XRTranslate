@@ -412,23 +412,15 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
     if let Some((category, provider)) = provider_change {
         app.service_config
             .select_onboarding_provider(category, &provider);
-        let state = app.service_config.onboarding_provider_state(category);
-        if state
-            .as_ref()
-            .is_some_and(|state| !state.remote || !state.api_key.trim().is_empty())
-        {
-            if let Err(error) = app.service_config.save_onboarding_configuration() {
-                app.last_error = Some(error);
-            }
-        }
+        let result = app.service_config.save_onboarding_configuration();
+        handle_onboarding_save(app, result);
     }
     if let Some((category, fields)) = remote_fields {
         app.service_config
             .set_onboarding_remote_fields(category, fields.model, fields.api_key);
         if fields.commit {
-            if let Err(error) = app.service_config.save_onboarding_configuration() {
-                app.last_error = Some(error);
-            }
+            let result = app.service_config.save_onboarding_configuration();
+            handle_onboarding_save(app, result);
         }
     }
     if let Some(message) = app.service_config.onboarding_message() {
@@ -941,24 +933,38 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     if let Some((provider, asset, enabled)) = model_change {
         app.service_config
             .set_onboarding_model_enabled("tts", &provider, &asset, enabled);
-        if let Err(error) = app.service_config.save_onboarding_configuration() {
-            app.last_error = Some(error);
-        }
+        let result = app.service_config.save_onboarding_configuration();
+        handle_onboarding_save(app, result);
     }
     if let Some((provider, voice_language, preset)) = voice_change {
         app.service_config
             .set_onboarding_voice_preset(&provider, &voice_language, &preset);
-        if let Err(error) = app.service_config.save_onboarding_configuration() {
-            app.last_error = Some(error);
-        }
+        let result = app.service_config.save_onboarding_configuration();
+        handle_onboarding_save(app, result);
     }
 
     if let Some(selected) = selected_provider {
         app.service_config
             .select_onboarding_provider("tts", &selected);
-        if let Err(error) = app.service_config.save_onboarding_configuration() {
-            app.last_error = Some(error);
+        let result = app.service_config.save_onboarding_configuration();
+        handle_onboarding_save(app, result);
+    }
+}
+
+fn handle_onboarding_save(
+    app: &mut crate::XRTranslateApp,
+    result: Result<crate::service_config::OnboardingSaveOutcome, String>,
+) {
+    use crate::service_config::OnboardingSaveOutcome;
+
+    match result {
+        Ok(OnboardingSaveOutcome::Saved { resolved_error }) => {
+            if resolved_error.as_ref() == app.last_error.as_ref() {
+                app.last_error = None;
+            }
         }
+        Ok(OnboardingSaveOutcome::IncompleteRemoteProvider) => {}
+        Err(error) => app.last_error = Some(error),
     }
 }
 

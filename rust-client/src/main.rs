@@ -1483,11 +1483,25 @@ impl XRTranslateApp {
     }
 
     pub fn finish_onboarding(&mut self) {
-        if self.service_config.has_unsaved_changes()
-            && self.service_config.save_onboarding_configuration().is_err()
-        {
-            self.onboarding_page = 1;
-            return;
+        if self.service_config.has_unsaved_changes() {
+            use service_config::OnboardingSaveOutcome;
+
+            match self.service_config.save_onboarding_configuration() {
+                Ok(OnboardingSaveOutcome::Saved { resolved_error }) => {
+                    if resolved_error.as_ref() == self.last_error.as_ref() {
+                        self.last_error = None;
+                    }
+                }
+                Ok(OnboardingSaveOutcome::IncompleteRemoteProvider) => {
+                    self.onboarding_page = 1;
+                    return;
+                }
+                Err(error) => {
+                    self.last_error = Some(error);
+                    self.onboarding_page = 1;
+                    return;
+                }
+            }
         }
         if onboarding::has_unmet_prerequisites(
             &self.project_root(),

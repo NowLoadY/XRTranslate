@@ -53,6 +53,12 @@ pub(crate) struct OnboardingProviderChoice {
     pub voices: std::collections::BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OnboardingSaveOutcome {
+    Saved { resolved_error: Option<String> },
+    IncompleteRemoteProvider,
+}
+
 /// Editable view of the ASR, translation, and TTS provider portions of `config.json`.
 /// The original JSON document is retained so unrelated project settings are preserved.
 pub struct ServiceConfigEditor {
@@ -61,6 +67,7 @@ pub struct ServiceConfigEditor {
     categories: Vec<ServiceCategory>,
     dirty: bool,
     message: Option<String>,
+    onboarding_save_error: Option<String>,
 }
 
 impl ServiceConfigEditor {
@@ -72,6 +79,7 @@ impl ServiceConfigEditor {
             categories: Vec::new(),
             dirty: false,
             message: None,
+            onboarding_save_error: None,
         };
         if let Err(error) = editor.reload() {
             editor.message = Some(error);
@@ -92,6 +100,7 @@ impl ServiceConfigEditor {
         .collect();
         self.dirty = false;
         self.message = None;
+        self.onboarding_save_error = None;
         Ok(())
     }
 
@@ -297,20 +306,53 @@ impl ServiceConfigEditor {
         self.message = None;
     }
 
-    pub(crate) fn save_onboarding_configuration(&mut self) -> Result<(), String> {
-        let result = self.save();
-        self.message = result.as_ref().err().and_then(|error| {
-            if error.contains(".api_key is required for remote API providers") {
-                None
-            } else {
-                Some(error.clone())
+    pub(crate) fn save_onboarding_configuration(
+        &mut self,
+    ) -> Result<OnboardingSaveOutcome, String> {
+        if self.has_incomplete_remote_provider() {
+            self.message = None;
+            return Ok(OnboardingSaveOutcome::IncompleteRemoteProvider);
+        }
+
+        match self.save() {
+            Ok(()) => {
+                self.message = None;
+                Ok(OnboardingSaveOutcome::Saved {
+                    resolved_error: self.onboarding_save_error.take(),
+                })
             }
-        });
-        result
+            Err(error) => {
+                self.message = Some(error.clone());
+                self.onboarding_save_error = Some(error.clone());
+                Err(error)
+            }
+        }
     }
 
     pub(crate) fn onboarding_message(&self) -> Option<&str> {
         self.message.as_deref()
+    }
+
+    fn has_incomplete_remote_provider(&self) -> bool {
+        self.categories
+            .iter()
+            .filter(|category| matches!(category.key, "asr" | "translation"))
+            .filter_map(|category| {
+                category
+                    .providers
+                    .iter()
+                    .find(|provider| provider.name == category.selected_provider)
+            })
+            .any(|provider| {
+                provider_is_remote(provider)
+                    && ["model", "api_key"].iter().any(|required| {
+                        provider
+                            .fields
+                            .iter()
+                            .find(|field| field.name == *required)
+                            .is_none_or(|field| field.value.trim().is_empty())
+                    })
+            })
     }
 
     fn make_category(document: &Value, key: &'static str, title: &'static str) -> ServiceCategory {
@@ -1844,7 +1886,7 @@ fn parse_value(value: &str, kind: JsonFieldKind) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ConfigField, JsonFieldKind, ProviderCard, ServiceConfigEditor,
+        ConfigField, JsonFieldKind, OnboardingSaveOutcome, ProviderCard, ServiceConfigEditor,
         prompt_target_for_translation_provider, provider_field_is_visible,
         provider_supported_languages, provider_voice_presets, update_provider_model_selection,
         validate_native_provider_asset, validate_tts_provider_asset,
@@ -1977,6 +2019,7 @@ mod tests {
             categories: Vec::new(),
             dirty: false,
             message: None,
+            onboarding_save_error: None,
         };
         assert_eq!(editor.tts_sample_rate(), 22_050);
     }
@@ -2060,10 +2103,14 @@ mod tests {
             categories,
             dirty: false,
             message: None,
+            onboarding_save_error: None,
         };
 
         editor.select_onboarding_provider("asr", "openai");
-        assert!(editor.save_onboarding_configuration().is_err());
+        assert_eq!(
+            editor.save_onboarding_configuration().unwrap(),
+            OnboardingSaveOutcome::IncompleteRemoteProvider
+        );
         assert_eq!(editor.onboarding_message(), None);
         editor.set_onboarding_remote_fields("asr", "gpt-4o-transcribe".into(), "asr-key".into());
         assert_eq!(editor.onboarding_message(), None);
@@ -2079,5 +2126,76 @@ mod tests {
             xrtranslate_config::RuntimeRequirements::default()
         );
         assert!(editor.has_unsaved_changes());
+    }
+
+    #[test]
+    fn inactive_remote_provider_does_not_block_local_onboarding_selection() {
+        let document: Value = serde_json::from_str(include_str!("../../config.json")).unwrap();
+        let categories = vec![
+            ServiceConfigEditor::make_category(&document, "asr", "ASR / Speech Recognition"),
+            ServiceConfigEditor::make_category(&document, "translation", "Translation"),
+            ServiceConfigEditor::make_category(&document, "tts", "Text to Speech"),
+        ];
+        let mut editor = ServiceConfigEditor {
+            path: "config.json".into(),
+            document,
+            categories,
+            dirty: false,
+            message: None,
+            onboarding_save_error: None,
+        };
+
+        editor.select_onboarding_provider("asr", "qwen-audio-streaming");
+        assert!(editor.has_incomplete_remote_provider());
+
+        editor.select_onboarding_provider("asr", "qwen3-gguf");
+        assert!(!editor.has_incomplete_remote_provider());
+        assert_eq!(
+            editor.onboarding_provider_state("asr").unwrap().selected,
+            "qwen3-gguf"
+        );
+    }
+
+    #[test]
+    fn onboarding_preserves_errors_from_the_selected_local_provider() {
+        let document: Value = serde_json::from_str(include_str!("../../config.json")).unwrap();
+        let categories = vec![
+            ServiceConfigEditor::make_category(&document, "asr", "ASR / Speech Recognition"),
+            ServiceConfigEditor::make_category(&document, "translation", "Translation"),
+            ServiceConfigEditor::make_category(&document, "tts", "Text to Speech"),
+        ];
+        let mut editor = ServiceConfigEditor {
+            path: "config.json".into(),
+            document,
+            categories,
+            dirty: false,
+            message: None,
+            onboarding_save_error: None,
+        };
+        let asr = editor
+            .categories
+            .iter_mut()
+            .find(|category| category.key == "asr")
+            .unwrap();
+        let local = asr
+            .providers
+            .iter_mut()
+            .find(|provider| provider.name == asr.selected_provider)
+            .unwrap();
+        local
+            .fields
+            .iter_mut()
+            .find(|field| field.name == "url")
+            .unwrap()
+            .value
+            .clear();
+
+        let error = editor.save_onboarding_configuration().unwrap_err();
+        assert!(error.contains("asr.providers.qwen3-gguf.url"));
+        assert_eq!(editor.onboarding_message(), Some(error.as_str()));
+        assert_eq!(
+            editor.onboarding_save_error.as_deref(),
+            Some(error.as_str())
+        );
     }
 }
