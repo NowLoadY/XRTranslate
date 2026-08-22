@@ -7300,6 +7300,7 @@ dependencies = [
  "serde",
  "sha2",
  "xrtranslate-download",
+ "zip",
 ]
 
 [[package]]
@@ -7372,6 +7373,7 @@ dependencies = [
  "ndarray",
  "ort",
  "reqwest",
+ "rustfft",
  "serde",
  "serde_json",
  "tokenizers",

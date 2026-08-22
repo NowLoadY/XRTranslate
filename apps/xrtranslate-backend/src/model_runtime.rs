@@ -4,7 +4,9 @@
 //! session pipeline consume this plan without branching on model names.
 
 mod asr;
+mod onnx;
 mod translation;
+mod tts;
 
 use std::{
     ffi::OsString,
@@ -25,7 +27,10 @@ use xrtranslate_supervisor::{LlamaServerEndpoint, LlamaServerSpec};
 
 use asr::AsrProfile;
 pub(crate) use asr::{NativeAsrAdapter, NativeAsrOptions};
+pub(crate) use onnx::{OnnxRuntimeDiagnostic, initialize_managed_onnx_runtime, runtime_diagnostic};
 use translation::TranslationProfile;
+pub(crate) use tts::NativeTtsAdapter;
+use tts::TtsProfile;
 
 #[derive(Clone, Debug)]
 pub(crate) struct NativeProviderPlan {
@@ -33,6 +38,7 @@ pub(crate) struct NativeProviderPlan {
     assets: ResolvedModelAssets,
     asr_profile: AsrProfile,
     translation_profile: TranslationProfile,
+    tts_profile: Option<TtsProfile>,
     translation_supports_reference_context: bool,
     native_runtime: Option<ResolvedNativeRuntimeSelection>,
 }
@@ -57,6 +63,7 @@ impl NativeProviderPlan {
                 route.translation.provider
             )
         })?;
+        let tts_profile = TtsProfile::selected(config)?;
         let asr_asset_id = route
             .asr
             .uses_local_runtime()
@@ -79,10 +86,16 @@ impl NativeProviderPlan {
                 )
             })
             .transpose()?;
+        let tts_asset_id = tts_profile
+            .map(|profile| profile.configured_asset(config))
+            .transpose()?;
         let assets = resolve_model_assets(
             config,
             project_root,
-            asr_asset_id.into_iter().chain(translation_asset_id),
+            asr_asset_id
+                .into_iter()
+                .chain(translation_asset_id)
+                .chain(tts_asset_id),
         );
         let translation_supports_reference_context = route.translation.supports_prompt_context;
 
@@ -91,6 +104,7 @@ impl NativeProviderPlan {
             assets,
             asr_profile,
             translation_profile,
+            tts_profile,
             translation_supports_reference_context,
             native_runtime,
         })
@@ -107,7 +121,7 @@ impl NativeProviderPlan {
     }
 
     pub(crate) fn uses_local_runtime(&self) -> bool {
-        self.route.uses_local_runtime()
+        self.route.uses_local_runtime() || self.tts_profile.is_some()
     }
 
     pub(crate) fn asr_uses_local_runtime(&self) -> bool {
@@ -136,10 +150,6 @@ impl NativeProviderPlan {
 
     pub(crate) fn llama_server_path(&self) -> &Path {
         &self.route.llama_server_path
-    }
-
-    pub(crate) fn audio8_tts_model_directory(&self) -> &Path {
-        &self.assets.audio8_tts.directory()
     }
 
     pub(crate) fn asr_runtime(&self) -> LocalModelRuntimeConfig {
@@ -209,6 +219,20 @@ impl NativeProviderPlan {
             self.translation_model_alias(),
             self.route.translation.api_key.as_deref(),
         )
+    }
+
+    pub(crate) fn tts_adapter(
+        &self,
+        config: &AppConfig,
+    ) -> Result<Option<NativeTtsAdapter>, String> {
+        self.tts_profile
+            .map(|profile| {
+                profile.adapter(
+                    config,
+                    &self.assets.active_asset(ModelCapability::Tts).directory(),
+                )
+            })
+            .transpose()
     }
 
     pub(crate) fn managed_server_specs(
@@ -558,7 +582,7 @@ mod tests {
 
     #[test]
     fn every_catalog_provider_has_a_backend_runtime_profile() {
-        for manifest in xrtranslate_assets::DEFAULT_GGUF_MANIFEST {
+        for manifest in xrtranslate_assets::MODEL_ASSET_CATALOG {
             let registered = match manifest.capability {
                 ModelCapability::Asr => {
                     AsrProfile::registered(manifest.provider, "local").is_some()
@@ -566,7 +590,7 @@ mod tests {
                 ModelCapability::Translation => {
                     TranslationProfile::registered(manifest.provider, "local").is_some()
                 }
-                ModelCapability::Tts => manifest.provider == "audio8",
+                ModelCapability::Tts => TtsProfile::registered(manifest.provider, "onnx").is_some(),
             };
             assert!(
                 registered,

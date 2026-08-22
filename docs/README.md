@@ -19,12 +19,14 @@ notes live under `providers/`.
 
 - [Provider integration](providers/README.md): where shared infrastructure ends
   and a concrete model/provider adapter begins.
+- [OpenVoice TTS](providers/openvoice-tts.md): current English ONNX model path,
+  voice-cloning contract, sources, limits, and verification boundary.
 - [Online API providers](online-api-providers.md): common remote-provider
   configuration and user override behavior.
 - [Runtime resource matrix](runtime-resource-matrix.md): model/runtime packages
   and GPU selection.
-- [TTS CUDA runtime design](tts-cuda-runtime-design.md): ONNX Runtime and CUDA
-  composition for local TTS.
+- [Local ONNX TTS runtime design](tts-cuda-runtime-design.md): shared ONNX
+  Runtime, CUDA, cuDNN, fallback, and provider-composition policy.
 
 ## Features and operations
 

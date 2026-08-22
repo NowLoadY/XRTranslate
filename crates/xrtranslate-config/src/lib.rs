@@ -89,6 +89,7 @@ impl RuntimeLayout {
     pub const DEFAULT_RUNTIME_DIRECTORY: &'static str = "runtime";
     pub const LLAMA_CPP_DIRECTORY: &'static str = "runtime/llama.cpp";
     pub const CUDA_RUNTIME_DIRECTORY: &'static str = "runtime/cuda";
+    pub const CUDNN_RUNTIME_DIRECTORY: &'static str = "runtime/cudnn";
     pub const ONNX_RUNTIME_DIRECTORY: &'static str = "runtime/onnxruntime";
     pub const ONNX_CPU_RUNTIME_DIRECTORY: &'static str = "runtime/onnxruntime/cpu";
     pub const ONNX_CORE_LIBRARY: &'static str = "onnxruntime.dll";
@@ -145,6 +146,11 @@ impl RuntimeLayout {
     #[must_use]
     pub fn cuda_runtime_directory(&self, cuda_version: &str) -> PathBuf {
         self.runtime_root.join("cuda").join(cuda_version)
+    }
+
+    #[must_use]
+    pub fn cudnn_runtime_directory(&self, cuda_major: &str) -> PathBuf {
+        self.runtime_root.join("cudnn").join(cuda_major)
     }
 
     #[must_use]
@@ -1093,15 +1099,20 @@ pub struct LlamaCppRuntimeConfig {
 pub struct OnnxRuntimeConfig {
     #[serde(default)]
     pub release: String,
+    /// ONNX Runtime core and execution-provider archives.
     #[serde(default)]
-    pub downloads: Vec<OnnxRuntimeDownload>,
+    pub downloads: Vec<ManagedRuntimeArchive>,
+    /// cuDNN archives matched by CUDA major version. Keeping this dependency
+    /// declarative lets every ONNX provider share the same GPU runtime closure.
+    #[serde(default)]
+    pub cudnn_downloads: Vec<ManagedRuntimeArchive>,
 }
 
-/// One CUDA execution-provider archive. Only the declared files are retained
-/// after extraction, so SDK headers, import libraries, PDBs and TensorRT
-/// providers never enter the managed runtime directory.
+/// One verified native-runtime archive. Only the declared files are retained
+/// after extraction, so SDK headers, import libraries and debug artifacts do
+/// not enter a managed runtime directory.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OnnxRuntimeDownload {
+pub struct ManagedRuntimeArchive {
     pub name: String,
     pub url: String,
     #[serde(default)]
@@ -1120,6 +1131,10 @@ pub struct OnnxRuntimeDownload {
     #[serde(default)]
     pub required_files: Vec<String>,
 }
+
+/// Source-compatible name retained for downstream code written against the
+/// original ONNX-provider-only archive schema.
+pub type OnnxRuntimeDownload = ManagedRuntimeArchive;
 
 /// One llama.cpp archive available from the configured release.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1656,6 +1671,10 @@ mod tests {
             PathBuf::from("/tmp/xrtranslate-release/custom_runtime/cuda/13.3")
         );
         assert_eq!(
+            layout.cudnn_runtime_directory("13"),
+            PathBuf::from("/tmp/xrtranslate-release/custom_runtime/cudnn/13")
+        );
+        assert_eq!(
             layout.onnx_runtime_directory("13"),
             PathBuf::from("/tmp/xrtranslate-release/custom_runtime/onnxruntime/cuda-13")
         );
@@ -1710,6 +1729,7 @@ mod tests {
         assert_eq!(config.model_manager.llama_cpp.downloads.len(), 8);
         assert_eq!(config.model_manager.onnxruntime.release, "1.28.0");
         assert_eq!(config.model_manager.onnxruntime.downloads.len(), 2);
+        assert_eq!(config.model_manager.onnxruntime.cudnn_downloads.len(), 2);
         assert_eq!(
             config.model_manager.llama_cpp.downloads[0].name,
             "llama-b10333-bin-win-cpu-x64.zip"

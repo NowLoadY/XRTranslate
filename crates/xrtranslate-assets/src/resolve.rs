@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DEFAULT_GGUF_MANIFEST, ModelAssetId, ModelAssetManifest, ModelCapability, ModelFileRole,
+    MODEL_ASSET_CATALOG, ModelAssetId, ModelAssetManifest, ModelCapability, ModelFileRole,
     manifest_for,
 };
 
@@ -107,7 +107,7 @@ impl ModelAssetsConfig {
             .selected_asset(ModelCapability::Tts)
             .unwrap_or(ModelAssetId::Audio8TtsOnnxFp16);
 
-        let catalog = DEFAULT_GGUF_MANIFEST
+        let catalog = MODEL_ASSET_CATALOG
             .iter()
             .map(|manifest| {
                 // These two fields predate the catalog. Keep their path

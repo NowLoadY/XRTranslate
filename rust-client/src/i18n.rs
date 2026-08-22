@@ -2928,11 +2928,11 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "TTS отключен. Переведенные субтитры будут отображаться на экране без озвучивания.",
     ),
     (
-        "Audio8 ONNX model provides local voice cloning and real-time speech playback.",
-        "Audio8 ONNX 模型支持本地声音克隆与实时语音播报。",
-        "Audio8 ONNXモデルは、ローカル音声クローンとリアルタイム音声再生を提供します。",
-        "Audio8 ONNX 모델은 로컬 음성 복제 및 실시간 음성 재생을 제공합니다.",
-        "Модель Audio8 ONNX обеспечивает локальное клонирование голоса и воспроизведение речи в реальном времени.",
+        "Supported synthesis languages:",
+        "支持的合成语言：",
+        "対応する音声合成言語:",
+        "지원되는 음성 합성 언어:",
+        "Поддерживаемые языки синтеза:",
     ),
     (
         "Voice Cloning & TTS Model",

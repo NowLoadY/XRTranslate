@@ -6,11 +6,11 @@ use std::{
 };
 
 use crate::{
-    AUDIO8_TTS_ONNX_FP16, AtomicInstallError, DEFAULT_GGUF_MANIFEST, HUNYUAN_MT_GGUF,
+    AUDIO8_TTS_ONNX_FP16, AtomicInstallError, HUNYUAN_MT_GGUF, MODEL_ASSET_CATALOG,
     ModelAssetDiagnostic, ModelAssetId, ModelAssetManifest, ModelAssetProblem, ModelAssetsConfig,
-    ModelCapability, ModelFileRole, ModelLevel, ModelSource, QWEN3_ASR_GGUF, RequiredModelFile,
-    ResolvedModelAsset, ResolvedModelAssets, install::install_verified_directory, manifest_for,
-    preflight::sha256_file,
+    ModelCapability, ModelFileRole, ModelLevel, ModelSource, OPENVOICE_V3_ONNX_FP16,
+    QWEN3_ASR_GGUF, RequiredModelFile, ResolvedModelAsset, ResolvedModelAssets,
+    install::install_verified_directory, manifest_for, preflight::sha256_file,
 };
 
 static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
@@ -29,8 +29,8 @@ fn temporary_project_root() -> PathBuf {
 }
 
 #[test]
-fn static_manifest_declares_the_default_gguf_route() {
-    assert_eq!(DEFAULT_GGUF_MANIFEST.len(), 4);
+fn static_catalog_declares_every_native_model_package() {
+    assert_eq!(MODEL_ASSET_CATALOG.len(), 5);
     assert_eq!(QWEN3_ASR_GGUF.required_files.len(), 2);
     assert_eq!(HUNYUAN_MT_GGUF.required_files.len(), 1);
     assert_eq!(
@@ -59,20 +59,24 @@ fn static_manifest_declares_the_default_gguf_route() {
             .hugging_face_resolve_url("runtime_manifest.json"),
         "https://huggingface.co/Audio8/Audio8-TTS-Preview-0.6B-ONNX-INT4/resolve/818569c6b832118ad68d61bbd873abe250fcd68a/runtime_manifest.json"
     );
-    for manifest in DEFAULT_GGUF_MANIFEST {
+    let archive = OPENVOICE_V3_ONNX_FP16.source.archive.unwrap();
+    assert_eq!(archive.bytes, 204_513_198);
+    assert_eq!(OPENVOICE_V3_ONNX_FP16.download_bytes(), 207_772_473);
+    for manifest in MODEL_ASSET_CATALOG {
         assert!(
             manifest.required_files.iter().any(|file| matches!(
                 file.role,
-                ModelFileRole::Weights | ModelFileRole::SlowArGraph
+                ModelFileRole::Weights | ModelFileRole::SlowArGraph | ModelFileRole::BaseTtsGraph
             )),
             "{} must declare model weights",
             manifest.id
         );
         for (index, file) in manifest.required_files.iter().enumerate() {
             assert!(
-                !manifest.required_files[..index]
-                    .iter()
-                    .any(|previous| previous.role == file.role),
+                file.role == ModelFileRole::License
+                    || !manifest.required_files[..index]
+                        .iter()
+                        .any(|previous| previous.role == file.role),
                 "{} declares duplicate file role {:?}",
                 manifest.id,
                 file.role
@@ -105,7 +109,7 @@ fn defaults_are_resolved_from_the_project_root() {
             .join("HY-MT2")
             .join("Hy-MT2-1.8B-Q4_K_M.gguf")
     );
-    assert_eq!(assets.catalog_assets().count(), DEFAULT_GGUF_MANIFEST.len());
+    assert_eq!(assets.catalog_assets().count(), MODEL_ASSET_CATALOG.len());
 }
 
 #[test]
@@ -284,6 +288,7 @@ fn explicit_integrity_verification_accepts_matching_files_and_reports_hash_tampe
         capability: ModelCapability::Asr,
         level: ModelLevel::Normal,
         provider: "fixture",
+        audio_output: None,
         relative_directory: "fixture",
         required_files: files,
         source: ModelSource {
@@ -291,6 +296,7 @@ fn explicit_integrity_verification_accepts_matching_files_and_reports_hash_tampe
             revision: "0000000000000000000000000000000000000000",
             include_patterns: &["fixture.gguf"],
             file_overrides: &[],
+            archive: None,
         },
     }));
     let asset = ResolvedModelAsset::new(manifest, directory);
@@ -330,6 +336,7 @@ fn verified_staging_directory_is_promoted_without_overwriting_an_install() {
         capability: ModelCapability::Translation,
         level: ModelLevel::Normal,
         provider: "fixture",
+        audio_output: None,
         relative_directory: "fixture",
         required_files: files,
         source: ModelSource {
@@ -337,6 +344,7 @@ fn verified_staging_directory_is_promoted_without_overwriting_an_install() {
             revision: "0000000000000000000000000000000000000000",
             include_patterns: &["fixture.gguf"],
             file_overrides: &[],
+            archive: None,
         },
     }));
     let target = ResolvedModelAsset::new(manifest, root.join("models").join("fixture"));

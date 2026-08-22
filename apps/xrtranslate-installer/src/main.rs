@@ -11,8 +11,7 @@ use clap::{
     builder::{PossibleValue, PossibleValuesParser},
 };
 use xrtranslate_assets::{
-    DEFAULT_GGUF_MANIFEST, ModelAssetId, ModelAssetsConfig, NativeModelInstaller,
-    ResolvedModelAssets,
+    MODEL_ASSET_CATALOG, ModelAssetId, ModelAssetsConfig, NativeModelInstaller, ResolvedModelAssets,
 };
 use xrtranslate_config::AppConfig;
 
@@ -46,7 +45,7 @@ enum Command {
 
 fn package_value_parser() -> PossibleValuesParser {
     PossibleValuesParser::new(
-        DEFAULT_GGUF_MANIFEST
+        MODEL_ASSET_CATALOG
             .iter()
             .map(|manifest| PossibleValue::new(manifest.id.as_str())),
     )

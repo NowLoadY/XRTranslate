@@ -543,7 +543,7 @@ fn package_from_manifest(manifest: &xrtranslate_assets::ModelAssetManifest) -> N
         provider: manifest.provider,
         capability: manifest.capability,
         level: manifest.level,
-        download_bytes: manifest.required_files.iter().map(|file| file.bytes).sum(),
+        download_bytes: manifest.download_bytes(),
     }
 }
 

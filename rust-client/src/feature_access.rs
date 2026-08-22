@@ -83,7 +83,7 @@ mod tests {
     }
 
     #[test]
-    fn native_tts_is_available_with_the_audio8_provider() {
+    fn native_tts_is_available_with_a_configured_provider() {
         assert!(is_available(Feature::TtsPlayback));
     }
 }

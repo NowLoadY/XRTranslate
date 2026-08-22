@@ -1,12 +1,15 @@
 //! Provider-neutral TTS result types and concrete provider adapters.
 
+mod audio;
+mod onnx_runtime;
 mod providers;
 
 use crate::InferenceError;
 
+pub use onnx_runtime::{OnnxExecutionDevice, initialize_onnx_runtime, preload_onnx_cuda_libraries};
 pub use providers::{
-    Audio8ExecutionDevice, Audio8OnnxAdapter, Audio8SynthesisOptions, initialize_onnx_runtime,
-    preload_onnx_cuda_libraries,
+    Audio8ExecutionDevice, Audio8OnnxAdapter, Audio8SynthesisOptions, OpenVoiceOnnxAdapter,
+    OpenVoiceSynthesisOptions,
 };
 
 /// Decoded mono PCM returned by a TTS provider.

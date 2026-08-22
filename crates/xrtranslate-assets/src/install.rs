@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     error::Error,
     fmt, fs, io,
     path::{Path, PathBuf},
@@ -144,6 +145,7 @@ pub enum ModelDownloadError {
     Locked(PathBuf),
     Lock { path: PathBuf, source: io::Error },
     AtomicInstall(AtomicInstallError),
+    Archive { path: PathBuf, message: String },
 }
 
 impl ModelDownloadError {
@@ -184,6 +186,13 @@ impl fmt::Display for ModelDownloadError {
                 )
             }
             Self::AtomicInstall(error) => error.fmt(formatter),
+            Self::Archive { path, message } => {
+                write!(
+                    formatter,
+                    "cannot extract model archive {}: {message}",
+                    path.display()
+                )
+            }
         }
     }
 }
@@ -196,7 +205,7 @@ impl Error for ModelDownloadError {
             | Self::Removal { source, .. }
             | Self::Lock { source, .. } => Some(source),
             Self::AtomicInstall(error) => Some(error),
-            Self::Locked(_) => None,
+            Self::Locked(_) | Self::Archive { .. } => None,
         }
     }
 }
@@ -281,14 +290,23 @@ impl NativeModelInstaller {
             source,
         })?;
 
-        let total_bytes = target
-            .manifest()
-            .required_files
-            .iter()
-            .map(|file| file.bytes)
-            .sum();
+        let archive = target.manifest().source.archive;
+        let total_bytes = target.manifest().download_bytes();
         let mut completed_bytes = 0_u64;
+        if let Some(archive) = archive {
+            self.download_and_extract_archive(id, archive, &staging, total_bytes, &mut on_progress)
+                .await?;
+            completed_bytes = archive.bytes;
+        }
         for file in target.manifest().required_files {
+            if archive.is_some_and(|archive| {
+                archive
+                    .entries
+                    .iter()
+                    .any(|entry| entry.relative_path == file.relative_path)
+            }) {
+                continue;
+            }
             self.download_file(
                 *file,
                 AssetDownloadContext {
@@ -303,6 +321,9 @@ impl NativeModelInstaller {
             .await?;
             completed_bytes = completed_bytes.saturating_add(file.bytes);
         }
+        if let Some(archive) = archive {
+            remove_downloaded_archive(&staging, archive.filename)?;
+        }
         self.assets
             .install_from_staging(id, staging)
             .map_err(ModelDownloadError::AtomicInstall)
@@ -310,6 +331,53 @@ impl NativeModelInstaller {
 
     fn asset(&self, id: ModelAssetId) -> &ResolvedModelAsset {
         self.assets.asset(id)
+    }
+
+    async fn download_and_extract_archive(
+        &self,
+        id: ModelAssetId,
+        archive: crate::ModelArchiveSource,
+        staging: &Path,
+        total_bytes: u64,
+        on_progress: &mut impl FnMut(DownloadProgress),
+    ) -> Result<(), ModelDownloadError> {
+        validate_archive_layout(
+            archive.filename,
+            archive.entries,
+            self.asset(id).manifest().required_files,
+        )
+        .map_err(|message| ModelDownloadError::Archive {
+            path: staging.to_path_buf(),
+            message,
+        })?;
+        let downloads = staging.join(".downloads");
+        fs::create_dir_all(&downloads).map_err(|source| ModelDownloadError::StagingDirectory {
+            path: downloads.clone(),
+            source,
+        })?;
+        let path = downloads.join(archive.filename);
+        self.client
+            .download_to(
+                DownloadSpec::verified(
+                    "model package archive",
+                    archive.url,
+                    archive.bytes,
+                    archive.sha256,
+                ),
+                &path,
+                |progress| {
+                    on_progress(DownloadProgress {
+                        asset_id: id,
+                        relative_path: archive.filename,
+                        downloaded_bytes: progress.downloaded_bytes,
+                        total_bytes,
+                    });
+                },
+            )
+            .await
+            .map_err(ModelDownloadError::Download)?;
+        extract_archive_entries(&path, staging, archive.entries)?;
+        Ok(())
     }
 
     async fn download_file(
@@ -338,6 +406,136 @@ impl NativeModelInstaller {
             .await
             .map_err(ModelDownloadError::Download)
     }
+}
+
+fn remove_downloaded_archive(staging: &Path, filename: &str) -> Result<(), ModelDownloadError> {
+    let downloads = staging.join(".downloads");
+    let path = safe_relative_file(&downloads, filename).map_err(|message| {
+        ModelDownloadError::Archive {
+            path: downloads.clone(),
+            message,
+        }
+    })?;
+    fs::remove_file(&path).map_err(|source| ModelDownloadError::Removal {
+        path: path.clone(),
+        source,
+    })?;
+    fs::remove_dir(&downloads).map_err(|source| ModelDownloadError::Removal {
+        path: downloads,
+        source,
+    })
+}
+
+fn extract_archive_entries(
+    archive_path: &Path,
+    staging: &Path,
+    entries: &[crate::ModelArchiveEntry],
+) -> Result<(), ModelDownloadError> {
+    let file = fs::File::open(archive_path).map_err(|error| ModelDownloadError::Archive {
+        path: archive_path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|error| ModelDownloadError::Archive {
+        path: archive_path.to_path_buf(),
+        message: error.to_string(),
+    })?;
+    for entry in entries {
+        let mut source =
+            archive
+                .by_name(entry.archive_path)
+                .map_err(|error| ModelDownloadError::Archive {
+                    path: archive_path.to_path_buf(),
+                    message: format!("missing {}: {error}", entry.archive_path),
+                })?;
+        if !source.is_file() {
+            return Err(ModelDownloadError::Archive {
+                path: archive_path.to_path_buf(),
+                message: format!("{} is not a regular file", entry.archive_path),
+            });
+        }
+        let destination = safe_relative_file(staging, entry.relative_path).map_err(|message| {
+            ModelDownloadError::Archive {
+                path: archive_path.to_path_buf(),
+                message,
+            }
+        })?;
+        let parent = destination
+            .parent()
+            .expect("archive destination has a staging parent");
+        fs::create_dir_all(parent).map_err(|error| ModelDownloadError::Archive {
+            path: archive_path.to_path_buf(),
+            message: format!("cannot create {}: {error}", parent.display()),
+        })?;
+        let mut output =
+            fs::File::create(&destination).map_err(|error| ModelDownloadError::Archive {
+                path: archive_path.to_path_buf(),
+                message: format!("cannot create {}: {error}", destination.display()),
+            })?;
+        io::copy(&mut source, &mut output).map_err(|error| ModelDownloadError::Archive {
+            path: archive_path.to_path_buf(),
+            message: format!("cannot write {}: {error}", destination.display()),
+        })?;
+    }
+    Ok(())
+}
+
+fn validate_archive_layout(
+    filename: &str,
+    entries: &[crate::ModelArchiveEntry],
+    required_files: &[RequiredModelFile],
+) -> Result<(), String> {
+    if Path::new(filename).components().count() != 1 {
+        return Err(format!(
+            "archive filename {filename:?} is not a plain file name"
+        ));
+    }
+    safe_relative_file(Path::new("."), filename)?;
+    if entries.is_empty() {
+        return Err("archive declares no model files".into());
+    }
+    let required = required_files
+        .iter()
+        .map(|file| file.relative_path)
+        .collect::<HashSet<_>>();
+    let mut destinations = HashSet::new();
+    let mut sources = HashSet::new();
+    for entry in entries {
+        safe_relative_file(Path::new("."), entry.relative_path)?;
+        safe_relative_file(Path::new("."), entry.archive_path)?;
+        if !required.contains(entry.relative_path) {
+            return Err(format!(
+                "archive destination {:?} is not a required model file",
+                entry.relative_path
+            ));
+        }
+        if !destinations.insert(entry.relative_path) {
+            return Err(format!(
+                "archive destination {:?} is declared more than once",
+                entry.relative_path
+            ));
+        }
+        if !sources.insert(entry.archive_path) {
+            return Err(format!(
+                "archive source {:?} is declared more than once",
+                entry.archive_path
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn safe_relative_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    use std::path::Component;
+    let relative = Path::new(relative);
+    if relative.as_os_str().is_empty()
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(format!("unsafe model archive path: {}", relative.display()));
+    }
+    Ok(root.join(relative))
 }
 
 /// Removes only the resumable staging owned by one immutable model package.
@@ -570,6 +768,61 @@ mod tests {
                 "qwen3-asr-gguf-{}",
                 target.manifest().source.revision
             ))
+        );
+    }
+
+    #[test]
+    fn archive_layout_rejects_escaping_and_undeclared_destinations() {
+        let required = [RequiredModelFile {
+            role: crate::ModelFileRole::Weights,
+            relative_path: "models/model.onnx",
+            purpose: "fixture",
+            bytes: 1,
+            sha256: "0",
+        }];
+        assert!(
+            validate_archive_layout(
+                "fixture.zip",
+                &[crate::ModelArchiveEntry {
+                    relative_path: "../escape.onnx",
+                    archive_path: "payload/model.onnx",
+                }],
+                &required,
+            )
+            .unwrap_err()
+            .contains("unsafe")
+        );
+        assert!(
+            validate_archive_layout(
+                "fixture.zip",
+                &[crate::ModelArchiveEntry {
+                    relative_path: "models/extra.onnx",
+                    archive_path: "payload/model.onnx",
+                }],
+                &required,
+            )
+            .unwrap_err()
+            .contains("not a required model file")
+        );
+    }
+
+    #[test]
+    fn archive_layout_requires_unique_source_and_destination_paths() {
+        let required = [RequiredModelFile {
+            role: crate::ModelFileRole::Weights,
+            relative_path: "models/model.onnx",
+            purpose: "fixture",
+            bytes: 1,
+            sha256: "0",
+        }];
+        let duplicate = crate::ModelArchiveEntry {
+            relative_path: "models/model.onnx",
+            archive_path: "payload/model.onnx",
+        };
+        assert!(
+            validate_archive_layout("fixture.zip", &[duplicate, duplicate], &required)
+                .unwrap_err()
+                .contains("declared more than once")
         );
     }
 }

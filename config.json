@@ -223,6 +223,46 @@
           "target": "windows-x86_64",
           "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-win-x64-gpu_cuda13-1.28.0.zip"
         }
+      ],
+      "cudnn_downloads": [
+        {
+          "archive_directory": "cudnn-windows-x86_64-9.20.0.48_cuda12-archive/bin/x64",
+          "bytes": 634960681,
+          "cuda_version": "12",
+          "name": "cudnn-windows-x86_64-9.20.0.48_cuda12-archive.zip",
+          "required_files": [
+            "cudnn64_9.dll",
+            "cudnn_graph64_9.dll",
+            "cudnn_ops64_9.dll",
+            "cudnn_heuristic64_9.dll",
+            "cudnn_engines_precompiled64_9.dll",
+            "cudnn_engines_runtime_compiled64_9.dll",
+            "cudnn_adv64_9.dll",
+            "cudnn_cnn64_9.dll"
+          ],
+          "sha256": "003a5d022899268f7deef0c3530f1587a3195a93905a16fd0e3c9da0c46b88ab",
+          "target": "windows-x86_64",
+          "url": "https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.20.0.48_cuda12-archive.zip"
+        },
+        {
+          "archive_directory": "cudnn-windows-x86_64-9.20.0.48_cuda13-archive/bin/x64",
+          "bytes": 349802474,
+          "cuda_version": "13",
+          "name": "cudnn-windows-x86_64-9.20.0.48_cuda13-archive.zip",
+          "required_files": [
+            "cudnn64_9.dll",
+            "cudnn_graph64_9.dll",
+            "cudnn_ops64_9.dll",
+            "cudnn_heuristic64_9.dll",
+            "cudnn_engines_precompiled64_9.dll",
+            "cudnn_engines_runtime_compiled64_9.dll",
+            "cudnn_adv64_9.dll",
+            "cudnn_cnn64_9.dll"
+          ],
+          "sha256": "d3ccce59130f10f68fe09365feea65b622bcecace79a0682fe43ee07b88a6a29",
+          "target": "windows-x86_64",
+          "url": "https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.20.0.48_cuda13-archive.zip"
+        }
       ]
     },
     "llama_server_path": "runtime/llama.cpp/llama-server.exe"
@@ -295,6 +335,19 @@
     "provider": "none",
     "providers": {
       "none": {},
+      "openvoice": {
+        "transport": "onnx",
+        "model_asset": "openvoice-v3-onnx-fp16",
+        "device": "auto",
+        "sample_rate": 22050,
+        "clone_min_seconds": 1.0,
+        "clone_max_seconds": 30.0,
+        "max_input_chars": 250,
+        "speed": 1.0,
+        "supported_languages": [
+          "en"
+        ]
+      },
       "audio8": {
         "transport": "onnx",
         "model_asset": "audio8-tts-onnx-fp16",

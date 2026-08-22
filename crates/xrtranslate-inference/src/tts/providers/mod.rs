@@ -1,6 +1,5 @@
-mod audio8_onnx;
+mod audio8;
+mod openvoice;
 
-pub use audio8_onnx::{
-    Audio8ExecutionDevice, Audio8OnnxAdapter, Audio8SynthesisOptions, initialize_onnx_runtime,
-    preload_onnx_cuda_libraries,
-};
+pub use audio8::{Audio8ExecutionDevice, Audio8OnnxAdapter, Audio8SynthesisOptions};
+pub use openvoice::{OpenVoiceOnnxAdapter, OpenVoiceSynthesisOptions};

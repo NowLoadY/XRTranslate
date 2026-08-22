@@ -10,3 +10,4 @@ description = "Static local model manifests and preflight checks for XRTranslate
 serde = { version = "1.0.229", features = ["derive"] }
 sha2 = "0.10.9"
 xrtranslate-download = { path = "../xrtranslate-download" }
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }

@@ -729,6 +729,24 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     .size(12.5)
                     .color(theme::text_weak()),
                 );
+                if let Some(languages) = provider
+                    .choices
+                    .iter()
+                    .find(|choice| choice.name == provider.selected)
+                    .map(|choice| choice.supported_languages.as_slice())
+                    .filter(|languages| !languages.is_empty())
+                {
+                    ui.add_space(5.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "{} {}",
+                            i18n::tr(language, "Supported synthesis languages:"),
+                            languages.join(", ")
+                        ))
+                        .size(12.5)
+                        .color(theme::text_weak()),
+                    );
+                }
             }
         });
 

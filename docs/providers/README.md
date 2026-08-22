@@ -10,7 +10,7 @@ provider code so a new provider has one predictable composition path.
 config.json + xrtranslate-config
         │ normalized capabilities and provider settings
         ▼
-backend/model_runtime/{asr,translation}.rs
+backend/model_runtime/{asr.rs,translation.rs,tts/}
         │ selects a profile and constructs a provider-erased adapter
         ▼
 xrtranslate-inference/<capability>/providers/
@@ -32,6 +32,8 @@ Shared infrastructure owns:
 - configuration merging, validation, capability declarations, and secret
   persistence;
 - model/runtime asset resolution and managed-process lifecycle;
+- provider-neutral TTS clone capture, bounded synthesis work, PCM playback
+  delivery, and shared ONNX execution-provider policy;
 - VAD, language routing and recovery retries, scheduling, cancellation, and
   protocol events;
 - Prompt Studio graph storage, validation, rendering, and execution traces;
@@ -42,7 +44,9 @@ A provider implementation owns:
 - authentication and endpoint validation;
 - HTTP/WebSocket request and response wire formats;
 - conversion from neutral options into provider fields;
-- provider-specific limits, error mapping, and response normalization.
+- provider-specific limits, error mapping, and response normalization;
+- provider-specific text or audio preprocessing, model tensor contracts,
+  synthesis options, output sample rate, and language support.
 
 Do not move retry behavior into a prompt template. A retry may render the same
 semantic graph for a different language or with optional context removed, but
@@ -96,14 +100,78 @@ vocabulary payload; see [Qwen Audio streaming ASR](qwen-audio-streaming-asr.md).
    capability/delivery tests, configuration validation tests, and run the full
    workspace suite required by the refactoring contract.
 
+## TTS shared and provider boundaries
+
+Local TTS has two independent resource domains:
+
+1. `xrtranslate-assets` owns immutable model files, archive extraction,
+   staging, verification, and atomic activation.
+2. `xrtranslate-config` plus the desktop runtime installer own the reusable
+   ONNX Runtime, CUDA, and cuDNN closure selected for the host.
+
+The inference crate then separates reusable mechanics from model semantics:
+
+| Owner | Shared responsibility | Must not contain |
+| --- | --- | --- |
+| `tts/audio.rs` | PCM conversion and resampling | provider IDs or tensor names |
+| `tts/onnx_runtime.rs` | process-wide ORT bootstrap and atomic CUDA/CPU session grouping | model filenames or text frontend rules |
+| `tts/providers/<provider>/` | frontend, tensor layout, model stages, provider limits, fixed output contract | downloads, host probing, UI state |
+| `backend/model_runtime/tts/` | registered profile, erased adapter, asset ownership, config parsing, adapter construction | session queue/order policy |
+| `backend/tts_session.rs` | clone capture and bounded synthesis worker | provider names or model paths |
+| desktop onboarding/settings | generic provider and manifest presentation | provider-specific install branches |
+
+Reference transcripts are also a provider capability, not a universal voice
+clone requirement. Audio8 consumes a transcript during registration;
+OpenVoice accepts the same neutral registration request but derives its target
+embedding from audio and ignores the transcript. Likewise, supported output
+languages and fixed sample rates remain distinct provider contracts. Shared
+code may route on a typed capability, but must not infer behavior from a
+provider name.
+
+TTS text is synthesis input, not an ASR prompt. Prompt Studio instructions,
+lexical context, and weighted vocabulary never flow into a TTS provider unless
+a future, separately specified TTS semantic capability requires them.
+
+## Adding a local ONNX TTS provider
+
+1. Add provider defaults under `tts.providers` in `config.json`. Use shared
+   field names only for shared meanings. Do not advertise a language, sample
+   rate, reference transcript, or cloning behavior that the adapter does not
+   implement.
+2. Add one immutable `ModelAssetManifest` under
+   `crates/xrtranslate-assets/src/catalog/tts/`. Declare every installed file,
+   source revision, byte size, SHA-256, archive mapping, and required license.
+   Re-export it through the TTS catalogue and aggregate registry.
+3. Reuse `xrtranslate-download` through the assets installer. Do not add HTTP,
+   mirror, resume, proxy, retry, checksum, or staging logic to the provider or
+   UI.
+4. Implement the model under
+   `crates/xrtranslate-inference/src/tts/providers/<provider>/`. Reuse
+   `tts/audio.rs` and `tts/onnx_runtime.rs`; keep tokenizer, phoneme, tensor,
+   speaker-embedding, and graph-order rules inside the provider directory.
+5. Register the provider and its default asset only in
+   `apps/xrtranslate-backend/src/model_runtime/tts/`. The TTS session worker,
+   `main.rs`, and pipeline continue to consume the neutral adapter.
+6. Let onboarding and settings enumerate config and manifests. Add a generic
+   capability to a shared schema only when multiple providers need the same
+   semantics; do not add a provider-name branch for a label or download button.
+7. Add catalogue integrity tests, provider/profile coverage tests, config asset
+   ownership tests, frontend/tensor tests, CPU execution coverage, and an
+   ignored real-model smoke test. Validate actual output sample rate and real
+   voice-cloning quality, not only non-empty bytes.
+8. Update the runtime resource matrix, TTS runtime design, and a provider note
+   documenting sources, licenses, limits, and verification evidence. Run the
+   complete formatting, compile, and test gates in the refactoring contract.
+
 ## Other capabilities
 
 Translation follows the same composition boundary in
 `model_runtime/translation.rs` and the existing
-`xrtranslate-inference/src/translation/` domain. TTS still has its own native
-runtime and resource lifecycle; consult
-[TTS CUDA runtime design](../tts-cuda-runtime-design.md) before extending it.
+`xrtranslate-inference/src/translation/` domain. For the shared local TTS
+runtime and resource lifecycle, consult
+[local ONNX TTS runtime design](../tts-cuda-runtime-design.md).
 
 ## Provider-specific notes
 
 - [Qwen Audio streaming ASR](qwen-audio-streaming-asr.md)
+- [OpenVoice TTS](openvoice-tts.md)

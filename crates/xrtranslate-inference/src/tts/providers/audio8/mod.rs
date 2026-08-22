@@ -11,9 +11,8 @@ use std::{
 use half::f16;
 use ndarray::{Array1, Array2, Array3};
 use ort::{
-    ep::{ArenaExtendStrategy, CUDA},
     memory::{AllocationDevice, Allocator, AllocatorType, MemoryInfo, MemoryType},
-    session::{Session, builder::GraphOptimizationLevel},
+    session::Session,
     value::{
         DynValue, PrimitiveTensorElementType, Tensor, TensorElementType, TensorRef, Value,
         ValueType,
@@ -21,22 +20,25 @@ use ort::{
 };
 use serde::Deserialize;
 use tokenizers::Tokenizer;
-use unicode_categories::UnicodeCategories;
+mod sampling;
+mod text;
 
-use crate::{InferenceError, SynthesizedPcm};
+use sampling::{NumpyPcg64, sample, sample_semantic};
+use text::{clean_text, format_reference_text, normalize_reference_transcript};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Audio8ExecutionDevice {
-    Auto,
-    Cuda,
-    Cpu,
-}
+use crate::{
+    InferenceError, SynthesizedPcm,
+    tts::audio::resample_pcm16,
+    tts::onnx_runtime::{
+        ActiveOnnxDevice, OnnxExecutionDevice, build_session as build_onnx_session,
+        build_session_group,
+    },
+};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ActiveAudio8Device {
-    Cuda,
-    Cpu,
-}
+/// Compatibility name retained for existing callers. Device selection is
+/// shared by every native ONNX TTS provider.
+pub type Audio8ExecutionDevice = OnnxExecutionDevice;
+type ActiveAudio8Device = ActiveOnnxDevice;
 
 /// Sampling controls used by Audio8's interactive ONNX service. Keeping these
 /// explicit prevents the UI route from silently drifting from the provider
@@ -78,80 +80,6 @@ impl Audio8SynthesisOptions {
         }
         Ok(self)
     }
-}
-
-impl Audio8ExecutionDevice {
-    #[must_use]
-    pub fn from_config(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "cuda" => Self::Cuda,
-            // DirectML produced numerically unstable output for Audio8's
-            // cache-heavy autoregressive graphs. Keep accepting the legacy
-            // spelling, but migrate it to the CUDA -> CPU policy.
-            "directml" | "dml" => Self::Auto,
-            "cpu" => Self::Cpu,
-            _ => Self::Auto,
-        }
-    }
-}
-
-/// Preloads an ordered, already-verified CUDA runtime closure before the first
-/// ONNX Runtime API call. The runtime catalogue owns filenames and CUDA 12/13
-/// selection; inference deliberately consumes only exact paths so it cannot
-/// drift from the installed archive or mutate the process `PATH`.
-///
-/// Libraries remain loaded for the process lifetime, which is required by
-/// ONNX Runtime's execution-provider loader. Call this once during backend
-/// startup, before constructing any inference adapter.
-pub fn preload_onnx_cuda_libraries(libraries: &[PathBuf]) -> Result<(), InferenceError> {
-    for library in libraries {
-        if !library.is_file() {
-            return Err(native_error(format!(
-                "CUDA runtime library is missing: {}",
-                library.display()
-            )));
-        }
-    }
-    for library in libraries {
-        ort::util::preload_dylib(library).map_err(|error| {
-            native_error(format!(
-                "cannot preload CUDA runtime library {}: {error}",
-                library.display()
-            ))
-        })?;
-    }
-    Ok(())
-}
-
-/// Selects the process-wide ONNX Runtime core before any model session is
-/// opened. Packaged builds enable `managed-ort`, allowing the host to choose a
-/// CPU core or a CUDA-version-matched core at runtime. Development/test builds
-/// keep the crate's statically linked runtime and only validate no dynamic
-/// initialization is required.
-pub fn initialize_onnx_runtime(core_library: &Path) -> Result<(), InferenceError> {
-    #[cfg(feature = "managed-ort")]
-    {
-        if !core_library.is_file() {
-            return Err(native_error(format!(
-                "ONNX Runtime core is missing: {}",
-                core_library.display()
-            )));
-        }
-        let builder = ort::init_from(core_library).map_err(|error| {
-            native_error(format!(
-                "cannot load ONNX Runtime core {}: {error}",
-                core_library.display()
-            ))
-        })?;
-        if !builder.commit() {
-            return Err(native_error(
-                "ONNX Runtime was initialized before the managed runtime was selected",
-            ));
-        }
-    }
-    #[cfg(not(feature = "managed-ort"))]
-    let _ = core_library;
-    Ok(())
 }
 
 #[derive(Clone)]
@@ -1115,101 +1043,21 @@ fn extract_cache_deltas(
         .collect()
 }
 
-impl ActiveAudio8Device {
-    const fn execution_device(self) -> Audio8ExecutionDevice {
-        match self {
-            Self::Cuda => Audio8ExecutionDevice::Cuda,
-            Self::Cpu => Audio8ExecutionDevice::Cpu,
-        }
-    }
-}
-
-fn device_attempts(requested: Audio8ExecutionDevice) -> &'static [ActiveAudio8Device] {
-    match requested {
-        Audio8ExecutionDevice::Cpu => &[ActiveAudio8Device::Cpu],
-        // An explicit CUDA preference still has a reliable CPU fallback. This
-        // prevents a runtime archive/driver mismatch from disabling TTS.
-        Audio8ExecutionDevice::Auto | Audio8ExecutionDevice::Cuda => {
-            &[ActiveAudio8Device::Cuda, ActiveAudio8Device::Cpu]
-        }
-    }
-}
-
 fn build_generator_sessions(
     slow_path: &Path,
     fast_path: &Path,
     requested: Audio8ExecutionDevice,
     threads: usize,
 ) -> Result<(Session, Session, ActiveAudio8Device), InferenceError> {
-    let mut last_error = None;
-    for &active in device_attempts(requested) {
-        let slow = match build_session_exact(slow_path, active, threads) {
-            Ok(session) => session,
-            Err(error) => {
-                tracing::debug!(
-                    model = %slow_path.display(),
-                    device = ?active,
-                    %error,
-                    "Audio8 slow AR execution provider unavailable"
-                );
-                last_error = Some(error);
-                continue;
-            }
-        };
-        let fast = match build_session_exact(fast_path, active, threads) {
-            Ok(session) => session,
-            Err(error) => {
-                // Drop the first session before retrying. Slow and Fast must
-                // always share one provider so hidden/cache transfers never
-                // cross an accidental CUDA/CPU boundary.
-                drop(slow);
-                tracing::debug!(
-                    model = %fast_path.display(),
-                    device = ?active,
-                    %error,
-                    "Audio8 fast AR execution provider unavailable"
-                );
-                last_error = Some(error);
-                continue;
-            }
-        };
-        tracing::info!(
-            device = ?active,
-            "Audio8 Slow/Fast AR provider plan initialized"
-        );
-        if active == ActiveAudio8Device::Cpu && requested != Audio8ExecutionDevice::Cpu {
-            tracing::info!(
-                cuda_error = %last_error.as_ref().expect("CPU is attempted only after CUDA failed"),
-                "Audio8 CUDA unavailable; using CPU fallback"
-            );
-        }
-        return Ok((slow, fast, active));
-    }
-    Err(ort_error(
-        last_error.expect("at least one Audio8 device is attempted"),
-    ))
-}
-
-fn build_session_exact(
-    path: &Path,
-    device: ActiveAudio8Device,
-    threads: usize,
-) -> Result<Session, ort::Error> {
-    let builder = Session::builder()?
-        .with_optimization_level(GraphOptimizationLevel::Level3)?
-        .with_intra_threads(threads)?
-        .with_inter_threads((threads / 2).max(1))?;
-    let mut builder = match device {
-        ActiveAudio8Device::Cuda => builder.with_execution_providers([CUDA::default()
-            // Audio8 was quality-validated in FP16. Do not silently
-            // change FP32 fallback MatMuls to TF32.
-            .with_tf32(false)
-            .with_arena_extend_strategy(ArenaExtendStrategy::NextPowerOfTwo)
-            .build()
-            .error_on_failure()])?,
-        ActiveAudio8Device::Cpu => builder,
-    };
-    builder.commit_from_file(path)
+    let (mut sessions, active) = build_session_group(
+        &[slow_path, fast_path],
+        requested,
+        threads,
+        "audio8-generator",
+    )?;
+    let fast = sessions.pop().expect("two Audio8 sessions were requested");
+    let slow = sessions.pop().expect("two Audio8 sessions were requested");
+    Ok((slow, fast, active))
 }
 
 fn build_session(
@@ -1217,31 +1065,7 @@ fn build_session(
     requested: Audio8ExecutionDevice,
     threads: usize,
 ) -> Result<Session, InferenceError> {
-    let mut last_error = None;
-    for &active in device_attempts(requested) {
-        match build_session_exact(path, active, threads) {
-            Ok(session) => {
-                tracing::info!(
-                    model = %path.display(),
-                    device = ?active,
-                    "Audio8 ONNX session initialized"
-                );
-                return Ok(session);
-            }
-            Err(error) => {
-                tracing::debug!(
-                    model = %path.display(),
-                    device = ?active,
-                    %error,
-                    "Audio8 execution provider unavailable"
-                );
-                last_error = Some(error);
-            }
-        }
-    }
-    Err(ort_error(
-        last_error.expect("at least one Audio8 device is attempted"),
-    ))
+    build_onnx_session(path, requested, threads, "audio8").map(|(session, _active)| session)
 }
 
 fn ensure_finite_logits(stage: &str, logits: &[f32]) -> Result<(), InferenceError> {
@@ -1276,320 +1100,10 @@ fn resample_pcm16_to_f16(
     source_rate: u32,
     target_rate: u32,
 ) -> Result<Vec<f16>, InferenceError> {
-    if bytes.len() % 2 != 0 || source_rate == 0 {
-        return Err(InferenceError::InvalidAudio {
-            message: "invalid PCM16 reference data".into(),
-        });
-    }
-    let source = bytes
-        .chunks_exact(2)
-        .map(|bytes| f32::from(i16::from_le_bytes([bytes[0], bytes[1]])) / 32768.0)
-        .collect::<Vec<_>>();
-    if source.is_empty() {
-        return Err(InferenceError::InvalidAudio {
-            message: "empty reference recording".into(),
-        });
-    }
-    if source_rate == target_rate {
-        return Ok(source.into_iter().map(f16::from_f32).collect());
-    }
-    let output = scipy_resample_poly(&source, target_rate as usize, source_rate as usize);
-    Ok(output.into_iter().map(f16::from_f32).collect())
-}
-
-/// Pure-Rust equivalent of SciPy 1.17's default
-/// `signal.resample_poly(x, up, down, window=("kaiser", 5.0))` path used by
-/// Audio8 voice registration. Coefficients stay in f32 because the provider
-/// runtime casts the FIR to the float32 input dtype before filtering.
-fn scipy_resample_poly(source: &[f32], mut up: usize, mut down: usize) -> Vec<f32> {
-    let factor = gcd(up, down);
-    up /= factor;
-    down /= factor;
-    if up == down {
-        return source.to_vec();
-    }
-
-    let output_len = (source.len() * up).div_ceil(down);
-    let max_rate = up.max(down);
-    let half_len = 10 * max_rate;
-    let taps = 2 * half_len + 1;
-    let cutoff = 1.0_f64 / max_rate as f64;
-    let alpha = half_len as f64;
-    let denominator = bessel_i0(5.0);
-    let mut filter = (0..taps)
-        .map(|index| {
-            let offset = index as f64 - alpha;
-            let sinc = if offset == 0.0 {
-                cutoff
-            } else {
-                (std::f64::consts::PI * cutoff * offset).sin() / (std::f64::consts::PI * offset)
-            };
-            let ratio = offset / alpha;
-            let window = bessel_i0(5.0 * (1.0 - ratio * ratio).max(0.0).sqrt()) / denominator;
-            sinc * window
-        })
-        .collect::<Vec<_>>();
-    let scale = filter.iter().sum::<f64>();
-    for coefficient in &mut filter {
-        *coefficient = (*coefficient / scale * up as f64) as f32 as f64;
-    }
-
-    let pre_pad = down - half_len % down;
-    let pre_remove = (half_len + pre_pad) / down;
-    let mut output = Vec::with_capacity(output_len);
-    for kept_index in 0..output_len {
-        let filtered_index = (kept_index + pre_remove) * down;
-        let mut value = 0.0_f32;
-        let first_source = filtered_index
-            .saturating_sub(pre_pad + taps - 1)
-            .div_ceil(up);
-        let last_source =
-            (filtered_index.saturating_sub(pre_pad) / up).min(source.len().saturating_sub(1));
-        if first_source <= last_source && !source.is_empty() {
-            for source_index in first_source..=last_source {
-                let upsampled_index = source_index * up;
-                let Some(filter_index) = filtered_index
-                    .checked_sub(pre_pad + upsampled_index)
-                    .filter(|index| *index < taps)
-                else {
-                    continue;
-                };
-                value += source[source_index] * filter[filter_index] as f32;
-            }
-        }
-        output.push(value);
-    }
-    output
-}
-
-fn gcd(mut left: usize, mut right: usize) -> usize {
-    while right != 0 {
-        (left, right) = (right, left % right);
-    }
-    left.max(1)
-}
-
-fn bessel_i0(value: f64) -> f64 {
-    let quarter_square = value * value / 4.0;
-    let mut sum = 1.0;
-    let mut term = 1.0;
-    for order in 1..=32 {
-        term *= quarter_square / (order * order) as f64;
-        sum += term;
-        if term <= sum * f64::EPSILON {
-            break;
-        }
-    }
-    sum
-}
-
-fn format_reference_text(text: &str) -> String {
-    let text = clean_text(text);
-    if has_speaker_tag(&text) {
-        text
-    } else {
-        format!("<|speaker:0|>{text}")
-    }
-}
-
-fn clean_text(text: &str) -> String {
-    let filtered = text
-        .chars()
-        .filter(|character| character.is_whitespace() || !character.is_other())
-        .collect::<String>();
-    let characters = filtered.chars().collect::<Vec<_>>();
-    let mut output = String::new();
-    let mut index = 0;
-    while index < characters.len() {
-        if !characters[index].is_whitespace() {
-            output.push(characters[index]);
-            index += 1;
-            continue;
-        }
-        let begin = index;
-        while index < characters.len() && characters[index].is_whitespace() {
-            index += 1;
-        }
-        let contains_line_break = characters[begin..index]
-            .iter()
-            .any(|character| is_line_break(*character));
-        let left = output.chars().next_back();
-        let right = characters.get(index).copied();
-        if !(contains_line_break && left.is_some_and(is_cjk) && right.is_some_and(is_cjk))
-            && !output.is_empty()
-            && index < characters.len()
-        {
-            output.push(' ');
-        }
-    }
-    output
-}
-
-fn normalize_reference_transcript(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn has_speaker_tag(text: &str) -> bool {
-    let mut remainder = text;
-    while let Some(begin) = remainder.find("<|speaker:") {
-        let value = &remainder[begin + "<|speaker:".len()..];
-        let digits = value.bytes().take_while(u8::is_ascii_digit).count();
-        if digits > 0 && value[digits..].starts_with("|>") {
-            return true;
-        }
-        remainder = &value[digits.min(value.len())..];
-    }
-    false
-}
-
-fn is_line_break(character: char) -> bool {
-    matches!(
-        character,
-        '\r' | '\n' | '\u{000b}' | '\u{000c}' | '\u{001c}'
-            ..='\u{001e}' | '\u{0085}' | '\u{2028}' | '\u{2029}'
-    )
-}
-
-fn is_cjk(character: char) -> bool {
-    matches!(
-        character as u32,
-        0x1100..=0x11ff
-            | 0x2e80..=0x2fdf
-            | 0x3000..=0x303f
-            | 0x3040..=0x30ff
-            | 0x3100..=0x31ff
-            | 0x3400..=0x4dbf
-            | 0x4e00..=0x9fff
-            | 0xa960..=0xa97f
-            | 0xac00..=0xd7a3
-            | 0xd7b0..=0xd7ff
-            | 0xf900..=0xfaff
-            | 0xfe30..=0xfe4f
-            | 0xff01..=0xff9f
-            | 0x20000..=0x2fa1f
-    )
-}
-
-fn sample_semantic(
-    logits: &[f32],
-    previous: &[i64],
-    manifest: &RuntimeManifest,
-    options: Audio8SynthesisOptions,
-    rng: &mut NumpyPcg64,
-) -> Result<i64, InferenceError> {
-    let expected = manifest.semantic_end_id - manifest.semantic_begin_id + 2;
-    if logits.len() != expected as usize {
-        return Err(native_error("unexpected Audio8 semantic logits size"));
-    }
-    let normal_index = sample(
-        logits,
-        options.temperature,
-        options.top_p,
-        options.top_k,
-        rng,
-    );
-    let high_index = sample(logits, 1.0, 0.9, options.top_k, rng);
-    let map = |index: usize| {
-        if index + 1 == logits.len() {
-            manifest.im_end_id
-        } else {
-            manifest.semantic_begin_id + index as i64
-        }
-    };
-    let normal = map(normal_index);
-    if normal != manifest.im_end_id && previous.contains(&normal) {
-        Ok(map(high_index))
-    } else {
-        Ok(normal)
-    }
-}
-
-fn sample(
-    logits: &[f32],
-    temperature: f64,
-    top_p: f64,
-    top_k: usize,
-    rng: &mut NumpyPcg64,
-) -> usize {
-    let mut order = (0..logits.len()).collect::<Vec<_>>();
-    order.sort_unstable_by(|left, right| logits[*right].total_cmp(&logits[*left]));
-    let max = f64::from(logits[order[0]]);
-    let mut probabilities = order
-        .iter()
-        .map(|index| (f64::from(logits[*index]) - max).exp())
-        .collect::<Vec<_>>();
-    let sum = probabilities.iter().sum::<f64>();
-    for value in &mut probabilities {
-        *value /= sum;
-    }
-    let mut cumulative = 0.0;
-    let mut kept = Vec::new();
-    for (rank, (index, probability)) in order.into_iter().zip(probabilities).enumerate() {
-        cumulative += probability;
-        // Match the reference top-p mask: the first token is always retained,
-        // while the token that crosses the probability boundary is excluded.
-        if rank > 0 && (rank >= top_k || cumulative > top_p) {
-            break;
-        }
-        kept.push(index);
-    }
-    let mut retained = vec![false; logits.len()];
-    for index in kept {
-        retained[index] = true;
-    }
-    let maximum = retained
-        .iter()
-        .enumerate()
-        .filter(|(_, retained)| **retained)
-        .map(|(index, _)| f64::from(logits[index]) / temperature.max(1e-5))
-        .fold(f64::NEG_INFINITY, f64::max);
-    // NumPy draws one noise value for every original logit, including masked
-    // entries. Consuming only the retained top-k values changes every later
-    // autoregressive decision even though the masked scores are zero.
-    retained
+    Ok(resample_pcm16(bytes, source_rate, target_rate)?
         .into_iter()
-        .enumerate()
-        .map(|(index, retained)| {
-            let noise = -rng.next_f64().max(1e-12).ln();
-            let score = if retained {
-                (f64::from(logits[index]) / temperature.max(1e-5) - maximum).exp() / noise
-            } else {
-                0.0
-            };
-            (index, score)
-        })
-        .max_by(|left, right| left.1.total_cmp(&right.1))
-        .map(|(index, _)| index)
-        .unwrap_or(0)
-}
-
-/// NumPy's PCG64 stream for `default_rng(42)`, the seed fixed by Audio8's
-/// reference runtime. Keeping this stream identical makes autoregressive
-/// synthesis reproducible without linking Python or NumPy.
-struct NumpyPcg64 {
-    state: u128,
-    increment: u128,
-}
-
-impl NumpyPcg64 {
-    const MULTIPLIER: u128 = 0x2360_ED05_1FC6_5DA4_4385_DF64_9FCC_F645;
-
-    fn seed_42() -> Self {
-        Self {
-            state: 274_674_114_334_540_486_603_088_602_300_644_985_544,
-            increment: 332_724_090_758_049_132_448_979_897_138_935_081_983,
-        }
-    }
-
-    fn next_f64(&mut self) -> f64 {
-        self.state = self
-            .state
-            .wrapping_mul(Self::MULTIPLIER)
-            .wrapping_add(self.increment);
-        let folded = ((self.state >> 64) as u64) ^ self.state as u64;
-        let raw = folded.rotate_right((self.state >> 122) as u32);
-        (raw >> 11) as f64 * (1.0 / ((1_u64 << 53) as f64))
-    }
+        .map(f16::from_f32)
+        .collect())
 }
 
 fn ort_error(error: ort::Error) -> InferenceError {
@@ -1606,6 +1120,7 @@ fn native_error(message: impl Into<String>) -> InferenceError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{initialize_onnx_runtime, preload_onnx_cuda_libraries, tts::audio::resample};
 
     #[test]
     fn resampling_is_bounded_and_produces_the_expected_duration() {
@@ -1650,44 +1165,6 @@ mod tests {
         assert_eq!(
             codec_execution_device(None, Audio8ExecutionDevice::Cuda),
             Audio8ExecutionDevice::Cuda
-        );
-    }
-
-    #[test]
-    fn cuda_preferences_have_a_cpu_fallback_but_cpu_does_not_probe_cuda() {
-        assert_eq!(
-            device_attempts(Audio8ExecutionDevice::Auto),
-            &[ActiveAudio8Device::Cuda, ActiveAudio8Device::Cpu]
-        );
-        assert_eq!(
-            device_attempts(Audio8ExecutionDevice::Cuda),
-            &[ActiveAudio8Device::Cuda, ActiveAudio8Device::Cpu]
-        );
-        assert_eq!(
-            device_attempts(Audio8ExecutionDevice::Cpu),
-            &[ActiveAudio8Device::Cpu]
-        );
-    }
-
-    #[test]
-    fn legacy_directml_config_migrates_to_cuda_then_cpu() {
-        assert_eq!(
-            Audio8ExecutionDevice::from_config("directml"),
-            Audio8ExecutionDevice::Auto
-        );
-    }
-
-    #[test]
-    fn cuda_preload_rejects_an_incomplete_runtime_before_loading_any_library() {
-        let missing = std::env::temp_dir().join(format!(
-            "xrtranslate-missing-cuda-runtime-{}",
-            std::process::id()
-        ));
-        let error = preload_onnx_cuda_libraries(&[missing]).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("CUDA runtime library is missing")
         );
     }
 
@@ -1771,7 +1248,7 @@ mod tests {
         let model = std::env::var_os("XRTRANSLATE_ORT_CPU_SMOKE_MODEL")
             .map(PathBuf::from)
             .expect("set XRTRANSLATE_ORT_CPU_SMOKE_MODEL");
-        build_session_exact(&model, ActiveAudio8Device::Cpu, 1).unwrap();
+        build_onnx_session(&model, Audio8ExecutionDevice::Cpu, 1, "cpu-smoke").unwrap();
     }
 
     #[tokio::test]
@@ -1919,7 +1396,8 @@ mod tests {
                 .chunks_exact(2)
                 .map(|sample| f32::from(i16::from_le_bytes([sample[0], sample[1]])) / 32768.0)
                 .collect::<Vec<_>>();
-            let pcm = scipy_resample_poly(&source, 16_000, audio.sample_rate as usize)
+            let pcm = resample(&source, audio.sample_rate, 16_000)
+                .unwrap()
                 .into_iter()
                 .flat_map(|sample| ((sample.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes())
                 .collect::<Vec<_>>();

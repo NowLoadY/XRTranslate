@@ -32,15 +32,9 @@ use tokio::{
     sync::{mpsc, watch},
 };
 use tracing::{info, warn};
-use xrtranslate_config::{AppConfig, NativeRuntimeBackend, NativeRuntimeSelection, RuntimeLayout};
-use xrtranslate_engine::{
-    RouteEpoch, TtsEpoch, translation_segment_pairs_for_final_text_with_lang,
-};
-use xrtranslate_inference::{
-    AsyncHttpClient, Audio8ExecutionDevice, Audio8OnnxAdapter, Audio8SynthesisOptions, HttpRequest,
-    ReqwestClient, SynthesizedPcm, initialize_onnx_runtime, pcm16_mono_16khz_to_wav,
-    preload_onnx_cuda_libraries,
-};
+use xrtranslate_config::AppConfig;
+use xrtranslate_engine::{RouteEpoch, translation_segment_pairs_for_final_text_with_lang};
+use xrtranslate_inference::{AsyncHttpClient, HttpRequest, ReqwestClient, pcm16_mono_16khz_to_wav};
 use xrtranslate_prompt::{AsrPromptContext, PromptNodeGraph};
 use xrtranslate_protocol::{
     ActionControl, ClientControl, DrainReason, ErrorEvent, EventControl, Feature,
@@ -73,8 +67,16 @@ mod prompt_context;
 mod scheduler;
 mod session;
 mod terminology;
-use model_runtime::NativeProviderPlan;
+mod tts_session;
+use model_runtime::{
+    NativeProviderPlan, NativeTtsAdapter, OnnxRuntimeDiagnostic, initialize_managed_onnx_runtime,
+    runtime_diagnostic,
+};
 use scheduler::InferenceScheduler;
+use tts_session::{
+    TtsSynthesisJob, VoiceCloneCapture, clone_voice_name, max_input_chars as tts_max_input_chars,
+    run_tts_worker, split_text as split_tts_text,
+};
 use xr_corpus_client::CorpusClient;
 use xr_corpus_protocol::{
     ContextBudgets, PrepareAsrRequest, PrepareTranslationRequest,
@@ -98,282 +100,6 @@ const TRANSLATION_CONCURRENCY_PER_SESSION: usize = 2;
 /// small queue preserves speech order while applying backpressure instead of
 /// allowing long translated sessions to accumulate unbounded audio work.
 const TTS_QUEUE_CAPACITY: usize = 4;
-
-struct VoiceCloneCapture {
-    armed: bool,
-    ready: bool,
-    samples: Vec<i16>,
-    transcript: Vec<String>,
-    minimum_samples: usize,
-    maximum_samples: usize,
-}
-
-impl VoiceCloneCapture {
-    fn from_config(config: &AppConfig) -> Self {
-        let provider = config
-            .tts
-            .provider_config(&config.tts.provider)
-            .and_then(serde_json::Value::as_object);
-        let seconds = |key: &str, fallback: f64| {
-            provider
-                .and_then(|value| value.get(key))
-                .and_then(serde_json::Value::as_f64)
-                .unwrap_or(fallback)
-        };
-        Self {
-            armed: false,
-            ready: false,
-            samples: Vec::new(),
-            transcript: Vec::new(),
-            minimum_samples: (seconds("clone_min_seconds", 0.5) * f64::from(SAMPLE_RATE_HZ))
-                as usize,
-            maximum_samples: (seconds("clone_max_seconds", 30.0) * f64::from(SAMPLE_RATE_HZ))
-                as usize,
-        }
-    }
-
-    fn arm(&mut self) {
-        self.armed = true;
-        self.samples.clear();
-        self.transcript.clear();
-    }
-
-    fn clear_capture(&mut self) {
-        self.armed = false;
-        self.samples.clear();
-        self.transcript.clear();
-    }
-
-    fn collected_seconds(&self) -> f32 {
-        self.samples.len() as f32 / SAMPLE_RATE_HZ as f32
-    }
-}
-
-#[derive(Clone)]
-enum NativeTtsAdapter {
-    Audio8(Audio8OnnxAdapter),
-}
-
-struct TtsSynthesisJob {
-    generation: PipelineGeneration,
-    tts_epoch: TtsEpoch,
-    text_chunks: Vec<String>,
-    voice_name: String,
-}
-
-struct TtsSynthesisResult {
-    generation: PipelineGeneration,
-    tts_epoch: TtsEpoch,
-    output: Result<Vec<SynthesizedPcm>, xrtranslate_inference::InferenceError>,
-}
-
-async fn run_tts_worker(
-    adapter: NativeTtsAdapter,
-    mut jobs: mpsc::Receiver<TtsSynthesisJob>,
-    results: mpsc::Sender<TtsSynthesisResult>,
-) {
-    while let Some(job) = jobs.recv().await {
-        let started_at = Instant::now();
-        let chunk_count = job.text_chunks.len();
-        let input_chars = job
-            .text_chunks
-            .iter()
-            .map(|chunk| chunk.chars().count())
-            .sum::<usize>();
-        info!(
-            generation = ?job.generation,
-            voice = %job.voice_name,
-            chunk_count,
-            input_chars,
-            "TTS synthesis started"
-        );
-        let mut audio = Vec::with_capacity(job.text_chunks.len());
-        let mut failure = None;
-        for chunk in job.text_chunks {
-            match adapter.synthesize(&chunk, &job.voice_name).await {
-                Ok(chunk) => audio.push(chunk),
-                Err(error) => {
-                    failure = Some(error);
-                    break;
-                }
-            }
-        }
-        let output = failure.map_or_else(|| Ok(audio), Err);
-        match &output {
-            Ok(chunks) => {
-                let output_bytes = chunks.iter().map(|chunk| chunk.bytes.len()).sum::<usize>();
-                let sample_rate = chunks.first().map_or(0, |chunk| chunk.sample_rate);
-                info!(
-                    generation = ?job.generation,
-                    voice = %job.voice_name,
-                    chunk_count = chunks.len(),
-                    output_bytes,
-                    sample_rate,
-                    elapsed_ms = millis(started_at.elapsed()),
-                    "TTS synthesis completed"
-                );
-            }
-            Err(error) => warn!(
-                generation = ?job.generation,
-                voice = %job.voice_name,
-                elapsed_ms = millis(started_at.elapsed()),
-                %error,
-                "TTS synthesis failed"
-            ),
-        }
-        if results
-            .send(TtsSynthesisResult {
-                generation: job.generation,
-                tts_epoch: job.tts_epoch,
-                output,
-            })
-            .await
-            .is_err()
-        {
-            break;
-        }
-    }
-}
-
-impl NativeTtsAdapter {
-    async fn prepare(
-        &self,
-    ) -> Result<Audio8ExecutionDevice, xrtranslate_inference::InferenceError> {
-        match self {
-            Self::Audio8(adapter) => adapter.prepare().await,
-        }
-    }
-
-    async fn has_voice(&self, name: &str) -> bool {
-        match self {
-            Self::Audio8(adapter) => adapter.has_voice(name).await,
-        }
-    }
-
-    async fn register_voice(
-        &self,
-        name: &str,
-        reference_wav: Vec<u8>,
-        transcript: &str,
-    ) -> Result<(), xrtranslate_inference::InferenceError> {
-        match self {
-            Self::Audio8(adapter) => {
-                adapter
-                    .register_voice(name, reference_wav, transcript)
-                    .await
-            }
-        }
-    }
-
-    async fn synthesize(
-        &self,
-        text: &str,
-        voice: &str,
-    ) -> Result<SynthesizedPcm, xrtranslate_inference::InferenceError> {
-        match self {
-            Self::Audio8(adapter) => adapter.synthesize(text, voice).await,
-        }
-    }
-}
-
-fn audio8_adapter(
-    config: &AppConfig,
-    model_plan: &NativeProviderPlan,
-) -> Result<Option<NativeTtsAdapter>, String> {
-    if config.tts.provider != "audio8" {
-        return Ok(None);
-    }
-    let provider = config
-        .tts
-        .provider_config("audio8")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| "tts.providers.audio8 must be an object".to_owned())?;
-    let string = |key: &str, fallback: &str| {
-        provider
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(fallback)
-            .to_owned()
-    };
-    let device = string("device", "auto");
-    let threads = provider
-        .get("threads")
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|value| usize::try_from(value).ok())
-        .unwrap_or(5);
-    let defaults = Audio8SynthesisOptions::default();
-    let integer = |key: &str, fallback: usize| {
-        provider
-            .get(key)
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|value| usize::try_from(value).ok())
-            .unwrap_or(fallback)
-    };
-    let decimal = |key: &str, fallback: f64| {
-        provider
-            .get(key)
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(fallback)
-    };
-    Audio8OnnxAdapter::with_synthesis_options(
-        model_plan.audio8_tts_model_directory(),
-        Audio8ExecutionDevice::from_config(&device),
-        threads,
-        Audio8SynthesisOptions {
-            max_new_tokens: integer("max_new_tokens", defaults.max_new_tokens),
-            temperature: decimal("temperature", defaults.temperature),
-            top_p: decimal("top_p", defaults.top_p),
-            top_k: integer("top_k", defaults.top_k),
-        },
-    )
-    .map(NativeTtsAdapter::Audio8)
-    .map(Some)
-    .map_err(|error| error.to_string())
-}
-
-fn clone_voice_name(source: xrtranslate_protocol::AudioSource) -> &'static str {
-    match source {
-        xrtranslate_protocol::AudioSource::Microphone => "xrtranslate_microphone",
-        xrtranslate_protocol::AudioSource::SystemAudio => "xrtranslate_system_audio",
-    }
-}
-
-fn tts_max_input_chars(config: &AppConfig) -> usize {
-    config
-        .tts
-        .provider_config(&config.tts.provider)
-        .and_then(|provider| provider.get("max_input_chars"))
-        .and_then(serde_json::Value::as_u64)
-        .and_then(|value| usize::try_from(value).ok())
-        .unwrap_or(150)
-        .max(1)
-}
-
-fn split_tts_text(text: &str, max_chars: usize) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    for character in text.trim().chars() {
-        current.push(character);
-        let boundary = character.is_whitespace()
-            || matches!(
-                character,
-                '.' | ',' | '!' | '?' | ';' | ':' | '。' | '，' | '！' | '？' | '；' | '：'
-            );
-        if current.chars().count() >= max_chars
-            || (boundary && current.chars().count() >= max_chars / 2)
-        {
-            let chunk = current.trim();
-            if !chunk.is_empty() {
-                chunks.push(chunk.to_owned());
-            }
-            current.clear();
-        }
-    }
-    if !current.trim().is_empty() {
-        chunks.push(current.trim().to_owned());
-    }
-    chunks
-}
 
 #[derive(Clone, Copy)]
 struct StreamWindowContext {
@@ -456,6 +182,7 @@ enum InferenceEvent {
     },
     Translation {
         generation: PipelineGeneration,
+        target_language: String,
         queue_elapsed: Duration,
         asr_elapsed: Duration,
         total_elapsed: Duration,
@@ -560,13 +287,7 @@ struct BackendState {
     next_session_id: Arc<AtomicU64>,
     inference_scheduler: InferenceScheduler,
     tts: Option<NativeTtsAdapter>,
-    tts_runtime: TtsRuntimeDiagnostic,
-}
-
-#[derive(Clone, Debug, Default)]
-struct TtsRuntimeDiagnostic {
-    backend: Option<String>,
-    cuda_version: Option<String>,
+    tts_runtime: OnnxRuntimeDiagnostic,
 }
 
 #[derive(Serialize)]
@@ -627,13 +348,13 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
         usize::from(model_plan.asr_runtime().parallel_slots),
         usize::from(model_plan.translation_runtime().parallel_slots),
     );
-    let tts = audio8_adapter(&config, &model_plan)?;
+    let tts = model_plan.tts_adapter(&config)?;
     let tts_runtime = match &tts {
         Some(adapter) => {
             let device = adapter.prepare().await.map_err(|error| error.to_string())?;
-            tts_runtime_diagnostic(&project_root, &config, device)
+            runtime_diagnostic(&project_root, &config, device)
         }
-        None => TtsRuntimeDiagnostic::default(),
+        None => OnnxRuntimeDiagnostic::default(),
     };
     info!(
         provider = %config.tts.provider,
@@ -667,118 +388,6 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
     .with_graceful_shutdown(shutdown_signal())
     .await?;
     Ok(())
-}
-
-/// Discovers and validates the managed ONNX Runtime installation, then
-/// initializes ONNX once for the process. This preloads the selected
-/// version-matched CUDA libraries and directs ONNX to the active managed
-/// core without changing the machine-wide PATH.
-fn initialize_managed_onnx_runtime(
-    project_root: &std::path::Path,
-    config: &AppConfig,
-) -> Result<(), String> {
-    let layout = config.runtime_layout(project_root);
-    let marker_path = layout.native_runtime_selection_file();
-    let marker = marker_path
-        .is_file()
-        .then(|| {
-            serde_json::from_slice::<NativeRuntimeSelection>(
-                &std::fs::read(&marker_path)
-                    .map_err(|error| format!("cannot read {}: {error}", marker_path.display()))?,
-            )
-            .map_err(|error| format!("invalid {}: {error}", marker_path.display()))
-        })
-        .transpose()?;
-    if marker
-        .as_ref()
-        .is_some_and(|marker| marker.schema_version != 1)
-    {
-        return Err(format!(
-            "unsupported native runtime marker schema {}",
-            marker.as_ref().map_or(0, |marker| marker.schema_version)
-        ));
-    }
-
-    let tts_requests_cuda = config.tts.provider != "none"
-        && !config
-            .tts
-            .provider_config(&config.tts.provider)
-            .and_then(serde_json::Value::as_object)
-            .and_then(|provider| provider.get("device"))
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|device| device.eq_ignore_ascii_case("cpu"));
-
-    if tts_requests_cuda {
-        if let Some(resolved) = marker
-            .as_ref()
-            .filter(|marker| marker.onnx_backend == Some(NativeRuntimeBackend::Cuda))
-            .map(|marker| layout.resolve_native_runtime_selection(marker))
-        {
-            let core = resolved.onnx_core_library.clone().or_else(|| {
-                resolved
-                    .provider_dir
-                    .as_ref()
-                    .map(|directory| directory.join(RuntimeLayout::ONNX_CORE_LIBRARY))
-            });
-            let cuda_result = (|| {
-                let core = core
-                    .as_ref()
-                    .ok_or("CUDA runtime marker contains no ONNX core library")?;
-                preload_onnx_cuda_libraries(&resolved.preload_libraries)
-                    .map_err(|error| error.to_string())?;
-                initialize_onnx_runtime(core).map_err(|error| error.to_string())?;
-                Ok::<_, String>(())
-            })();
-            if cuda_result.is_ok() {
-                info!(
-                    cuda = resolved.cuda_version.as_deref().unwrap_or("unknown"),
-                    libraries = resolved.preload_libraries.len(),
-                    "managed ONNX CUDA runtime initialized"
-                );
-                return Ok(());
-            }
-            warn!(
-                error = %cuda_result.unwrap_err(),
-                "managed ONNX CUDA runtime is incomplete; using CPU runtime"
-            );
-        }
-    }
-
-    let cpu_core = marker
-        .as_ref()
-        .map(|marker| layout.resolve_native_runtime_selection(marker))
-        .and_then(|runtime| runtime.onnx_core_library)
-        .filter(|path| path.is_file())
-        .unwrap_or_else(|| layout.onnx_cpu_core_library());
-    initialize_onnx_runtime(&cpu_core).map_err(|error| error.to_string())?;
-    info!(core = %cpu_core.display(), "managed ONNX CPU runtime initialized");
-    Ok(())
-}
-
-fn tts_runtime_diagnostic(
-    project_root: &std::path::Path,
-    config: &AppConfig,
-    device: Audio8ExecutionDevice,
-) -> TtsRuntimeDiagnostic {
-    let backend = match device {
-        Audio8ExecutionDevice::Cuda => "cuda",
-        Audio8ExecutionDevice::Cpu => "cpu",
-        Audio8ExecutionDevice::Auto => "auto",
-    };
-    let cuda_version = (device == Audio8ExecutionDevice::Cuda)
-        .then(|| {
-            let path = config
-                .runtime_layout(project_root)
-                .native_runtime_selection_file();
-            serde_json::from_slice::<NativeRuntimeSelection>(&std::fs::read(path).ok()?)
-                .ok()?
-                .cuda_version
-        })
-        .flatten();
-    TtsRuntimeDiagnostic {
-        backend: Some(backend.into()),
-        cuda_version,
-    }
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -963,6 +572,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                     &mut session,
                     generation,
                     result,
+                    tts.as_ref(),
                     tts_job_sender.as_ref(),
                     clone_voice_name(audio_source),
                     clone_capture.ready,
@@ -2112,6 +1722,7 @@ async fn run_inference_worker(
                         }
                         batch.push(InferenceEvent::Translation {
                             generation: event_generation,
+                            target_language: target_language.clone(),
                             queue_elapsed,
                             asr_elapsed,
                             total_elapsed: turn_started_at.elapsed(),
@@ -2621,6 +2232,7 @@ async fn run_inference_worker(
                 }
                 batch.push(InferenceEvent::Translation {
                     generation: event_generation,
+                    target_language: target_language.clone(),
                     queue_elapsed,
                     asr_elapsed,
                     total_elapsed: turn_started_at.elapsed(),
@@ -2665,6 +2277,7 @@ async fn handle_inference_event(
     session: &mut SessionAdapter,
     current_generation: PipelineGeneration,
     event: InferenceEvent,
+    tts: Option<&NativeTtsAdapter>,
     tts_jobs: Option<&mpsc::Sender<TtsSynthesisJob>>,
     voice_name: &str,
     voice_ready: bool,
@@ -2725,6 +2338,7 @@ async fn handle_inference_event(
         }
         InferenceEvent::Translation {
             generation,
+            target_language,
             queue_elapsed,
             asr_elapsed,
             total_elapsed,
@@ -2769,6 +2383,7 @@ async fn handle_inference_event(
                 if session.tts_enabled()
                     && voice_ready
                     && !tts_revisable
+                    && tts.is_some_and(|adapter| adapter.supports_language(&target_language))
                     && let Some(tts_jobs) = tts_jobs
                 {
                     let text_chunks = split_tts_text(&tts_text, max_input_chars);
@@ -2786,6 +2401,7 @@ async fn handle_inference_event(
                                 tts_epoch: session.tts_epoch(),
                                 text_chunks,
                                 voice_name: voice_name.to_owned(),
+                                target_language,
                             })
                             .await
                             .map_err(axum::Error::new)?;

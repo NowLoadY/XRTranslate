@@ -48,6 +48,7 @@ pub(crate) struct OnboardingProviderChoice {
     pub name: String,
     pub remote: bool,
     pub model_asset: Option<String>,
+    pub supported_languages: Vec<String>,
 }
 
 /// Editable view of the ASR, translation, and TTS provider portions of `config.json`.
@@ -124,19 +125,27 @@ impl ServiceConfigEditor {
     }
 
     pub(crate) fn tts_sample_rate(&self) -> u32 {
-        self.document
+        let provider = self
+            .document
             .get("tts")
             .and_then(Value::as_object)
             .and_then(|section| {
                 let selected = section.get("provider")?.as_str()?;
-                section
-                    .get("providers")?
-                    .get(selected)?
-                    .get("sample_rate")?
-                    .as_u64()
-            })
-            .and_then(|rate| u32::try_from(rate).ok())
-            .unwrap_or(44_100)
+                section.get("providers")?.get(selected)
+            });
+        let native_rate = provider
+            .and_then(|provider| provider.get("model_asset"))
+            .and_then(Value::as_str)
+            .and_then(xrtranslate_assets::ModelAssetId::from_config_key)
+            .and_then(|id| xrtranslate_assets::manifest_for(id).audio_output)
+            .map(|audio| audio.sample_rate_hz);
+        native_rate.unwrap_or_else(|| {
+            provider
+                .and_then(|provider| provider.get("sample_rate"))
+                .and_then(Value::as_u64)
+                .and_then(|rate| u32::try_from(rate).ok())
+                .unwrap_or(44_100)
+        })
     }
 
     pub(crate) fn tts_is_configured(&self) -> bool {
@@ -182,6 +191,7 @@ impl ServiceConfigEditor {
                     name: provider.name.clone(),
                     remote: provider_is_remote(provider),
                     model_asset: provider_model_asset(provider),
+                    supported_languages: provider_supported_languages(provider),
                 })
                 .collect(),
             model: field("model"),
@@ -409,6 +419,9 @@ impl ServiceConfigEditor {
                             provider_model_asset(&self.categories[cat_idx].providers[provider_idx]);
                         let remote =
                             provider_is_remote(&self.categories[cat_idx].providers[provider_idx]);
+                        let supported_languages = provider_supported_languages(
+                            &self.categories[cat_idx].providers[provider_idx],
+                        );
 
                         ui.push_id(&provider_name, |ui| {
                             egui::Frame::new()
@@ -464,6 +477,13 @@ impl ServiceConfigEditor {
                                     });
 
                                     ui.add_space(8.0);
+
+                                    render_provider_capabilities(
+                                        ui,
+                                        language,
+                                        category_key,
+                                        &supported_languages,
+                                    );
 
                                     let fields_len = self.categories[cat_idx].providers
                                         [provider_idx]
@@ -548,6 +568,8 @@ impl ServiceConfigEditor {
                         let model_asset =
                             provider_model_asset(&self.categories[cat_idx].providers[idx]);
                         let remote = provider_is_remote(&self.categories[cat_idx].providers[idx]);
+                        let supported_languages =
+                            provider_supported_languages(&self.categories[cat_idx].providers[idx]);
 
                         ui.horizontal_wrapped(|ui| {
                             ui.label(
@@ -574,6 +596,12 @@ impl ServiceConfigEditor {
                             }
                         });
                         ui.add_space(10.0);
+                        render_provider_capabilities(
+                            ui,
+                            language,
+                            category_key,
+                            &supported_languages,
+                        );
 
                         let fields_len = self.categories[cat_idx].providers[idx]
                             .fields
@@ -738,6 +766,7 @@ impl ServiceConfigEditor {
             &route.translation,
             xrtranslate_assets::ModelCapability::Translation,
         )?;
+        validate_tts_provider_asset(&parsed.tts)?;
         xrtranslate_config::save_user_config_document(&self.path, &project_root(), &self.document)?;
         self.dirty = false;
         Ok(())
@@ -876,6 +905,34 @@ fn validate_native_provider_asset(
     Ok(())
 }
 
+fn validate_tts_provider_asset(tts: &xrtranslate_config::TtsConfig) -> Result<(), String> {
+    let provider = tts.provider.trim();
+    if provider.is_empty() || provider.eq_ignore_ascii_case("none") {
+        return Ok(());
+    }
+    let values = tts
+        .provider_config(provider)
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| format!("tts.providers.{provider} must be an object"))?;
+    let Some(key) = values
+        .get("model_asset")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Ok(());
+    };
+    let id = xrtranslate_assets::ModelAssetId::from_config_key(key)
+        .ok_or_else(|| format!("Unknown model asset {key}"))?;
+    let manifest = xrtranslate_assets::manifest_for(id);
+    if manifest.provider != provider
+        || manifest.capability != xrtranslate_assets::ModelCapability::Tts
+    {
+        return Err(format!(
+            "Model asset {key} does not belong to provider {provider} for TTS"
+        ));
+    }
+    Ok(())
+}
+
 fn provider_model_asset(provider: &ProviderCard) -> Option<String> {
     provider
         .fields
@@ -896,6 +953,36 @@ fn provider_is_remote(provider: &ProviderCard) -> bool {
                 "openai" | "websocket"
             )
         })
+}
+
+fn provider_supported_languages(provider: &ProviderCard) -> Vec<String> {
+    provider
+        .fields
+        .iter()
+        .find(|field| field.name == "supported_languages")
+        .and_then(|field| serde_json::from_str::<Vec<String>>(&field.value).ok())
+        .unwrap_or_default()
+}
+
+fn render_provider_capabilities(
+    ui: &mut eframe::egui::Ui,
+    language: crate::i18n::UiLanguage,
+    category_key: &str,
+    supported_languages: &[String],
+) {
+    if category_key != "tts" || supported_languages.is_empty() {
+        return;
+    }
+    ui.label(
+        eframe::egui::RichText::new(format!(
+            "{} {}",
+            crate::i18n::tr(language, "Supported synthesis languages:"),
+            supported_languages.join(", ")
+        ))
+        .color(crate::ui::theme::text_weak())
+        .size(12.0),
+    );
+    ui.add_space(8.0);
 }
 
 /// Renders the same model lifecycle control inside every provider card that
@@ -1185,11 +1272,7 @@ fn provider_field_is_visible(
         && native_model
         && matches!(
             field.name.as_str(),
-            "device"
-                | "sample_rate"
-                | "max_input_chars"
-                | "clone_min_seconds"
-                | "clone_max_seconds"
+            "device" | "max_input_chars" | "clone_min_seconds" | "clone_max_seconds"
         )
     {
         return true;
@@ -1295,8 +1378,9 @@ fn parse_value(value: &str, kind: JsonFieldKind) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ConfigField, JsonFieldKind, ServiceConfigEditor, prompt_target_for_translation_provider,
-        provider_field_is_visible, validate_native_provider_asset,
+        ConfigField, JsonFieldKind, ProviderCard, ServiceConfigEditor,
+        prompt_target_for_translation_provider, provider_field_is_visible,
+        provider_supported_languages, validate_native_provider_asset, validate_tts_provider_asset,
     };
     use serde_json::Value;
     use xrtranslate_assets::ModelCapability;
@@ -1340,6 +1424,54 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("does not belong to provider future-provider"));
+    }
+
+    #[test]
+    fn service_save_validates_tts_asset_ownership() {
+        let mut document: Value = serde_json::from_str(include_str!("../../config.json")).unwrap();
+        document["tts"]["provider"] = Value::from("openvoice");
+        let config = xrtranslate_config::AppConfig::from_value(document.clone()).unwrap();
+        assert!(validate_tts_provider_asset(&config.tts).is_ok());
+
+        document["tts"]["providers"]["openvoice"]["model_asset"] =
+            Value::from("audio8-tts-onnx-fp16");
+        let config = xrtranslate_config::AppConfig::from_value(document).unwrap();
+        assert!(
+            validate_tts_provider_asset(&config.tts)
+                .unwrap_err()
+                .contains("does not belong")
+        );
+    }
+
+    #[test]
+    fn native_tts_playback_uses_the_model_audio_contract() {
+        let mut document: Value = serde_json::from_str(include_str!("../../config.json")).unwrap();
+        document["tts"]["provider"] = Value::from("openvoice");
+        document["tts"]["providers"]["openvoice"]["sample_rate"] = Value::from(8_000);
+        let editor = ServiceConfigEditor {
+            path: "config.json".into(),
+            document,
+            categories: Vec::new(),
+            dirty: false,
+            message: None,
+        };
+        assert_eq!(editor.tts_sample_rate(), 22_050);
+    }
+
+    #[test]
+    fn tts_language_capability_remains_structured_for_generic_ui() {
+        let provider = ProviderCard {
+            name: "future".into(),
+            fields: vec![ConfigField {
+                name: "supported_languages".into(),
+                value: r#"["en","fr-CA"]"#.into(),
+                kind: JsonFieldKind::Json,
+            }],
+        };
+        assert_eq!(
+            provider_supported_languages(&provider),
+            vec!["en".to_owned(), "fr-CA".to_owned()]
+        );
     }
 
     #[test]
