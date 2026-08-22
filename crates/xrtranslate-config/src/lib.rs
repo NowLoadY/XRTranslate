@@ -437,12 +437,6 @@ impl AppConfig {
                 continue;
             };
             match provider.get("transport").and_then(Value::as_str) {
-                Some("openai") => {
-                    requirements.missing_api_key |= provider
-                        .get("api_key")
-                        .and_then(Value::as_str)
-                        .is_none_or(|key| key.trim().is_empty());
-                }
                 Some("local") | None => requirements.llama_cpp = true,
                 Some("onnx") => {
                     requirements.onnx_tts = true;
@@ -451,7 +445,12 @@ impl AppConfig {
                         .and_then(Value::as_str)
                         .is_none_or(|device| device != "cpu");
                 }
-                Some(_) => {}
+                Some(_) => {
+                    requirements.missing_api_key |= provider
+                        .get("api_key")
+                        .and_then(Value::as_str)
+                        .is_none_or(|key| key.trim().is_empty());
+                }
             }
         }
         requirements
@@ -699,12 +698,18 @@ fn required_provider_url(
         return None;
     };
     let Some(url) = provider_config.get("url").and_then(Value::as_str) else {
-        issues.push(format!("{path} must be a non-empty HTTP URL"));
+        issues.push(format!("{path} must be a non-empty transport URL"));
         return None;
     };
     let url = url.trim();
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        issues.push(format!("{path} must start with http:// or https://"));
+    if !(url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("ws://")
+        || url.starts_with("wss://"))
+    {
+        issues.push(format!(
+            "{path} must start with http://, https://, ws://, or wss://"
+        ));
         return None;
     }
     Some(url.to_owned())
@@ -1208,8 +1213,19 @@ impl NativeModelRouteConfig {
     /// executable or package files.
     #[must_use]
     pub fn uses_local_runtime(&self) -> bool {
-        self.asr.transport != "openai" || self.translation.transport != "openai"
+        self.asr.uses_local_runtime() || self.translation.uses_local_runtime()
     }
+}
+
+/// How an ASR provider interprets text delivered before recognition.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AsrPromptMode {
+    #[default]
+    None,
+    /// A semantic instruction prompt (for example, output and language rules).
+    Instruction,
+    /// Lexical/context bias text. It must not be treated as an instruction.
+    ContextBias,
 }
 
 /// Common settings shared by every native model provider.
@@ -1231,6 +1247,12 @@ pub struct NativeProviderConfig {
     pub model_asset: Option<String>,
     pub runtime: LocalModelRuntimeConfig,
     pub supports_prompt_context: bool,
+    pub asr_prompt_mode: AsrPromptMode,
+    /// Provider limit for the complete lexical ASR text field. `None` means
+    /// that the provider profile declares no character bound.
+    pub asr_context_max_chars: Option<usize>,
+    pub supports_vocabulary_bias: bool,
+    pub vocabulary_weight: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1399,8 +1421,27 @@ fn active_native_provider(
         .filter(|value| !value.is_empty())
         .unwrap_or("local")
         .to_owned();
-    if !matches!(transport.as_str(), "local" | "openai") {
-        issues.push(format!("{path}.transport must be \"local\" or \"openai\""));
+    if !matches!(transport.as_str(), "local" | "openai" | "websocket") {
+        issues.push(format!(
+            "{path}.transport must be \"local\", \"openai\", or \"websocket\""
+        ));
+    }
+    if let Some(url) = url.as_deref() {
+        let uses_websocket_url = url.starts_with("ws://") || url.starts_with("wss://");
+        if transport == "websocket" && !uses_websocket_url {
+            issues.push(format!(
+                "{path}.url must use ws:// or wss:// for websocket transport"
+            ));
+        } else if transport != "websocket" && uses_websocket_url {
+            issues.push(format!(
+                "{path}.url must use http:// or https:// for {transport} transport"
+            ));
+        }
+        if provider == "qwen-audio-streaming" && !url.starts_with("wss://") {
+            issues.push(format!(
+                "{path}.url must use wss:// for the Qwen Audio streaming service"
+            ));
+        }
     }
     let model = object
         .and_then(|provider| provider.get("model"))
@@ -1408,7 +1449,7 @@ fn active_native_provider(
         .map(str::trim)
         .unwrap_or_default()
         .to_owned();
-    if transport == "openai" && model.is_empty() {
+    if transport != "local" && model.is_empty() {
         issues.push(format!(
             "{path}.model must be a non-empty string for remote providers"
         ));
@@ -1419,7 +1460,7 @@ fn active_native_provider(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    if transport == "openai" && api_key.is_none() {
+    if transport != "local" && api_key.is_none() {
         issues.push(format!(
             "{path}.api_key is required for remote API providers"
         ));
@@ -1442,6 +1483,54 @@ fn active_native_provider(
         .and_then(|provider| provider.get("supports_prompt_context"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let legacy_supports_prompt = object
+        .and_then(|provider| provider.get("supports_prompt"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let asr_prompt_mode = match object
+        .and_then(|provider| provider.get("asr_prompt_mode"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+    {
+        Some("instruction") => AsrPromptMode::Instruction,
+        Some("context_bias") => AsrPromptMode::ContextBias,
+        Some("none") => AsrPromptMode::None,
+        None if !(supports_prompt_context || legacy_supports_prompt) => AsrPromptMode::None,
+        None => AsrPromptMode::Instruction,
+        Some(value) => {
+            issues.push(format!(
+                "{path}.asr_prompt_mode must be \"none\", \"instruction\", or \"context_bias\" (found {value:?})"
+            ));
+            AsrPromptMode::None
+        }
+    };
+    let supports_vocabulary_bias = object
+        .and_then(|provider| provider.get("supports_vocabulary_bias"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let asr_context_max_chars = object
+        .and_then(|provider| provider.get("asr_context_max_chars"))
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok());
+    if object
+        .and_then(|provider| provider.get("asr_context_max_chars"))
+        .is_some()
+        && asr_context_max_chars.is_none_or(|limit| limit == 0)
+    {
+        issues.push(format!(
+            "{path}.asr_context_max_chars must be a positive integer"
+        ));
+    }
+    let vocabulary_weight = object
+        .and_then(|provider| provider.get("vocabulary_weight"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u8::try_from(value).ok())
+        .unwrap_or(4);
+    if supports_vocabulary_bias && !matches!(vocabulary_weight, 1..=5 | 50) {
+        issues.push(format!(
+            "{path}.vocabulary_weight must be in 1..=5 or equal to 50"
+        ));
+    }
     if !issues
         .iter()
         .any(|issue| issue.starts_with(&format!("{path}.")))
@@ -1456,6 +1545,10 @@ fn active_native_provider(
                 model_asset,
                 runtime,
                 supports_prompt_context,
+                asr_prompt_mode,
+                asr_context_max_chars,
+                supports_vocabulary_bias,
+                vocabulary_weight,
             }),
             None => None,
         }
@@ -1467,7 +1560,7 @@ fn active_native_provider(
 impl NativeProviderConfig {
     #[must_use]
     pub fn uses_local_runtime(&self) -> bool {
-        self.transport != "openai"
+        self.transport == "local"
     }
 }
 const fn default_speaker_switch_margin() -> f64 {
@@ -1740,6 +1833,79 @@ mod tests {
         assert_eq!(route.asr.model, "gpt-4o-transcribe");
         assert_eq!(route.translation.model, "gpt-4o-mini");
         assert_eq!(route.asr.api_key.as_deref(), Some("test-key"));
+    }
+
+    #[test]
+    fn qwen_audio_streaming_keeps_text_and_weighted_bias_capabilities_distinct() {
+        let mut document: Value =
+            serde_json::from_str(include_str!("../../../config.json")).unwrap();
+        document["asr"]["provider"] = Value::from("qwen-audio-streaming");
+        document["asr"]["providers"]["qwen-audio-streaming"]["api_key"] =
+            Value::from("dashscope-key");
+
+        let config = AppConfig::from_value(document).unwrap();
+        let route = config.native_model_route().unwrap();
+
+        assert!(!route.asr.uses_local_runtime());
+        assert_eq!(route.asr.transport, "websocket");
+        assert_eq!(route.asr.asr_prompt_mode, AsrPromptMode::ContextBias);
+        assert_eq!(route.asr.asr_context_max_chars, Some(400));
+        assert!(route.asr.supports_vocabulary_bias);
+        assert_eq!(route.asr.vocabulary_weight, 4);
+        assert_eq!(route.asr.model, "qwen-audio-3.0-asr-flash-streaming");
+    }
+
+    #[test]
+    fn weighted_vocabulary_rejects_unsupported_weights() {
+        let mut document: Value =
+            serde_json::from_str(include_str!("../../../config.json")).unwrap();
+        document["asr"]["provider"] = Value::from("qwen-audio-streaming");
+        document["asr"]["providers"]["qwen-audio-streaming"]["api_key"] =
+            Value::from("dashscope-key");
+        document["asr"]["providers"]["qwen-audio-streaming"]["vocabulary_weight"] = Value::from(6);
+
+        let error = AppConfig::from_value(document)
+            .unwrap()
+            .native_model_route()
+            .unwrap_err();
+
+        assert!(error.to_string().contains("vocabulary_weight"));
+    }
+
+    #[test]
+    fn qwen_audio_streaming_rejects_insecure_remote_endpoint() {
+        let mut document: Value =
+            serde_json::from_str(include_str!("../../../config.json")).unwrap();
+        document["asr"]["provider"] = Value::from("qwen-audio-streaming");
+        document["asr"]["providers"]["qwen-audio-streaming"]["api_key"] =
+            Value::from("dashscope-key");
+        document["asr"]["providers"]["qwen-audio-streaming"]["url"] =
+            Value::from("ws://example.com/api-ws/v1/inference");
+
+        let error = AppConfig::from_value(document)
+            .unwrap()
+            .native_model_route()
+            .unwrap_err();
+
+        assert!(error.to_string().contains("must use wss://"));
+    }
+
+    #[test]
+    fn qwen_audio_streaming_rejects_an_empty_context_character_budget() {
+        let mut document: Value =
+            serde_json::from_str(include_str!("../../../config.json")).unwrap();
+        document["asr"]["provider"] = Value::from("qwen-audio-streaming");
+        document["asr"]["providers"]["qwen-audio-streaming"]["api_key"] =
+            Value::from("dashscope-key");
+        document["asr"]["providers"]["qwen-audio-streaming"]["asr_context_max_chars"] =
+            Value::from(0);
+
+        let error = AppConfig::from_value(document)
+            .unwrap()
+            .native_model_route()
+            .unwrap_err();
+
+        assert!(error.to_string().contains("asr_context_max_chars"));
     }
 
     #[test]

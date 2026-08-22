@@ -28,6 +28,8 @@ impl PromptNodeGraph {
         let mut builder = GraphBuilder::default();
         builder.build_openai_flow();
         builder.build_hunyuan_flow();
+        builder.build_asr_instruction_flow();
+        builder.build_asr_context_bias_flow();
         let mut graph = builder.finish();
         graph.auto_layout();
         graph
@@ -342,6 +344,84 @@ impl GraphBuilder {
         );
     }
 
+    fn build_asr_instruction_flow(&mut self) {
+        let page = PromptNodePage::AsrInstruction;
+        self.variable(
+            "asr-instruction-source-language",
+            page,
+            PromptVariable::SourceLanguage,
+        );
+        self.variable(
+            "asr-instruction-expected-languages",
+            page,
+            PromptVariable::TargetLanguage,
+        );
+        self.variable(
+            "asr-instruction-recognition-context",
+            page,
+            PromptVariable::RecognitionContext,
+        );
+        self.compose(
+            "asr-instruction-explicit",
+            page,
+            "EXPLICIT ASR INSTRUCTION",
+            "Transcribe the current audio accurately in {0}. Return only the transcript without translation, explanation, or commentary.",
+            &["asr-instruction-source-language"],
+        );
+        self.compose(
+            "asr-instruction-auto",
+            page,
+            "AUTO ASR INSTRUCTION",
+            "Transcribe the current audio accurately. Expected spoken languages are {0}. Detect the spoken language, but do not translate it. Return only the transcript without explanation or commentary.",
+            &["asr-instruction-expected-languages"],
+        );
+        self.switch(
+            "asr-instruction-source-mode",
+            page,
+            "SELECT ASR SOURCE MODE",
+            PromptCondition::SourceIsAuto,
+            "asr-instruction-explicit",
+            "asr-instruction-auto",
+        );
+        self.compose(
+            "asr-instruction-with-context",
+            page,
+            "ASR PROMPT WITH RECOGNITION CONTEXT",
+            "{0}\n\nUse the following recognition context only to improve spelling and term accuracy; never repeat it unless it is spoken:\n{1}",
+            &[
+                "asr-instruction-source-mode",
+                "asr-instruction-recognition-context",
+            ],
+        );
+        self.switch(
+            "asr-instruction-prompt",
+            page,
+            "SELECT ASR CONTEXT MODE",
+            PromptCondition::HasRecognitionContext,
+            "asr-instruction-source-mode",
+            "asr-instruction-with-context",
+        );
+        self.output(
+            "asr-instruction-request",
+            PromptProviderTarget::AsrInstruction,
+            &[(PromptMessageRole::System, "asr-instruction-prompt")],
+        );
+    }
+
+    fn build_asr_context_bias_flow(&mut self) {
+        let page = PromptNodePage::AsrContextBias;
+        self.variable(
+            "asr-context-bias-terms",
+            page,
+            PromptVariable::RecognitionContext,
+        );
+        self.output(
+            "asr-context-bias-request",
+            PromptProviderTarget::AsrContextBias,
+            &[(PromptMessageRole::User, "asr-context-bias-terms")],
+        );
+    }
+
     fn node(&mut self, id: &str, page: PromptNodePage, kind: PromptNodeKind) {
         let label = crate::schema::default_node_label(&kind);
         self.labeled_node(id, page, &label, kind);
@@ -439,7 +519,9 @@ impl GraphBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PromptMessage, PromptTurn, SurroundingSource, TranslationPromptContext};
+    use crate::{
+        AsrPromptContext, PromptMessage, PromptTurn, SurroundingSource, TranslationPromptContext,
+    };
 
     fn context() -> TranslationPromptContext {
         TranslationPromptContext {
@@ -730,9 +812,66 @@ After current input: speaker-01 en / After it."
     }
 
     #[test]
+    fn asr_instruction_is_semantic_and_keeps_vocabulary_optional() {
+        let graph = PromptNodeGraph::builtin_default();
+        let without_context = graph
+            .render_asr_with_trace(
+                PromptProviderTarget::AsrInstruction,
+                "English",
+                "English, Chinese",
+                &AsrPromptContext::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            without_context.render.messages,
+            vec![PromptMessage {
+                role: PromptMessageRole::System,
+                content: "Transcribe the current audio accurately in English. Return only the transcript without translation, explanation, or commentary.".into(),
+            }]
+        );
+
+        let with_context = graph
+            .render_asr_with_trace(
+                PromptProviderTarget::AsrInstruction,
+                "auto",
+                "English, Chinese",
+                &AsrPromptContext {
+                    vocabulary: vec!["XRTranslate".into(), "VRChat".into()],
+                },
+            )
+            .unwrap();
+        let content = &with_context.render.messages[0].content;
+        assert!(content.contains("Expected spoken languages are English, Chinese"));
+        assert!(content.contains("never repeat it unless it is spoken"));
+        assert!(content.ends_with("XRTranslate, VRChat"));
+    }
+
+    #[test]
+    fn asr_context_bias_contains_terms_without_instruction_text() {
+        let rendered = PromptNodeGraph::builtin_default()
+            .render_asr_with_trace(
+                PromptProviderTarget::AsrContextBias,
+                "auto",
+                "English, Chinese",
+                &AsrPromptContext {
+                    vocabulary: vec!["XRTranslate".into(), "VRChat".into()],
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            rendered.render.messages,
+            vec![PromptMessage {
+                role: PromptMessageRole::User,
+                content: "XRTranslate, VRChat".into(),
+            }]
+        );
+        assert!(!rendered.render.messages[0].content.contains("Transcribe"));
+    }
+
+    #[test]
     fn builtin_graph_uses_compose_nodes_instead_of_fragmented_text_nodes() {
         let graph = PromptNodeGraph::builtin_default();
-        assert!(graph.nodes.len() <= 50, "{} nodes", graph.nodes.len());
+        assert!(graph.nodes.len() <= 55, "{} nodes", graph.nodes.len());
         assert!(
             graph
                 .nodes
@@ -753,7 +892,7 @@ After current input: speaker-01 en / After it."
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 4);
         let openai = requests
             .iter()
             .find(|(_, target, _)| **target == PromptProviderTarget::OpenAiCompatible)
@@ -772,6 +911,20 @@ After current input: speaker-01 en / After it."
         assert_eq!(hunyuan.0.id, "hunyuan-request");
         assert_eq!(hunyuan.0.page, PromptNodePage::Hunyuan);
         assert_eq!(hunyuan.2.as_slice(), [PromptMessageRole::User]);
+
+        let asr_instruction = requests
+            .iter()
+            .find(|(_, target, _)| **target == PromptProviderTarget::AsrInstruction)
+            .unwrap();
+        assert_eq!(asr_instruction.0.page, PromptNodePage::AsrInstruction);
+        assert_eq!(asr_instruction.2.as_slice(), [PromptMessageRole::System]);
+
+        let asr_context = requests
+            .iter()
+            .find(|(_, target, _)| **target == PromptProviderTarget::AsrContextBias)
+            .unwrap();
+        assert_eq!(asr_context.0.page, PromptNodePage::AsrContextBias);
+        assert_eq!(asr_context.2.as_slice(), [PromptMessageRole::User]);
     }
 
     #[test]
@@ -781,6 +934,8 @@ After current input: speaker-01 en / After it."
         for target in [
             PromptProviderTarget::OpenAiCompatible,
             PromptProviderTarget::Hunyuan,
+            PromptProviderTarget::AsrInstruction,
+            PromptProviderTarget::AsrContextBias,
         ] {
             let visible = graph
                 .nodes

@@ -1934,7 +1934,7 @@ mod tests {
                     &pcm,
                     crate::Qwen3AsrOptions {
                         language: Some("Chinese".into()),
-                        prompt_context: None,
+                        instruction_prompt: None,
                         max_tokens: 128,
                     },
                 )

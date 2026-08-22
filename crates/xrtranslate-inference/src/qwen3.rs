@@ -13,7 +13,7 @@ pub struct Qwen3AsrOptions {
     /// Language name understood by Qwen3-ASR (for example `English` or
     /// `Chinese`). An empty value asks the model to infer the language.
     pub language: Option<String>,
-    pub prompt_context: Option<String>,
+    pub instruction_prompt: Option<String>,
     /// Maximum generated transcript tokens.
     pub max_tokens: u32,
 }
@@ -22,7 +22,7 @@ impl Default for Qwen3AsrOptions {
     fn default() -> Self {
         Self {
             language: None,
-            prompt_context: None,
+            instruction_prompt: None,
             max_tokens: 128,
         }
     }
@@ -104,7 +104,7 @@ impl<C: AsyncHttpClient> Qwen3AsrAdapter<C> {
         let encoded_wav = STANDARD.encode(wav);
 
         let mut messages = Vec::new();
-        if let Some(context) = normalized_optional(&options.prompt_context) {
+        if let Some(context) = normalized_optional(&options.instruction_prompt) {
             messages.push(json!({"role": "system", "content": context}));
         }
 
@@ -149,7 +149,7 @@ pub fn is_probable_asr_hallucination(
     text: &str,
     sample_count: usize,
     sample_rate: u32,
-    prompt_context: Option<&str>,
+    instruction_prompt: Option<&str>,
     echo_candidates: &[String],
 ) -> bool {
     let text = text.trim();
@@ -158,17 +158,18 @@ pub fn is_probable_asr_hallucination(
     }
 
     let lowercase = text.to_lowercase();
-    let had_prompt_context = prompt_context.is_some_and(|context| !context.trim().is_empty());
+    let had_instruction_prompt =
+        instruction_prompt.is_some_and(|instruction| !instruction.trim().is_empty());
     if lowercase.contains("# asr lexicon")
         || lowercase.contains("asr_lexicon")
         || lowercase.contains("<asr_context")
-        || (had_prompt_context && lowercase.starts_with("vocabulary:"))
-        || (had_prompt_context
+        || (had_instruction_prompt && lowercase.starts_with("vocabulary:"))
+        || (had_instruction_prompt
             && (lowercase.contains("# asr context")
                 || lowercase.contains("## language order")
                 || lowercase.contains("## terminology")
                 || lowercase.contains("## recent bilingual history")))
-        || (had_prompt_context
+        || (had_instruction_prompt
             && text.starts_with('{')
             && (lowercase.contains("\"kind\"") || lowercase.contains("\"terms\"")))
     {
@@ -300,7 +301,7 @@ mod tests {
                 &[1, 0, 2, 0],
                 Qwen3AsrOptions {
                     language: Some("English".into()),
-                    prompt_context: Some("Names: Codex".into()),
+                    instruction_prompt: Some("Names: Codex".into()),
                     ..Default::default()
                 },
             )

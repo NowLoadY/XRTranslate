@@ -173,6 +173,10 @@ impl PromptStudioController {
         self.runtime_trace = trace;
     }
 
+    pub fn active_provider(&self) -> PromptProviderTarget {
+        self.active_provider
+    }
+
     pub fn push_history(&mut self, before: PromptTemplateProfile) {
         self.history.push(before);
         self.dirty = true;
@@ -583,6 +587,7 @@ fn variable_name(variable: PromptVariable) -> &'static str {
         PromptVariable::SourceLanguage => "SOURCE LANGUAGE",
         PromptVariable::TargetLanguage => "TARGET LANGUAGE",
         PromptVariable::CurrentInput => "CURRENT INPUT",
+        PromptVariable::RecognitionContext => "RECOGNITION CONTEXT",
     }
 }
 
@@ -590,6 +595,7 @@ fn condition_name(condition: PromptCondition) -> &'static str {
     match condition {
         PromptCondition::SourceIsAuto => "SOURCE IS AUTO",
         PromptCondition::HasReferenceContext => "HAS REFERENCE CONTEXT",
+        PromptCondition::HasRecognitionContext => "HAS RECOGNITION CONTEXT",
     }
 }
 
@@ -606,6 +612,12 @@ fn input_socket_label(node: &PromptNode, input: u8) -> String {
         } if input == 0 => "NO CONTEXT".into(),
         PromptNodeKind::Switch {
             condition: PromptCondition::HasReferenceContext,
+        } => "WITH CONTEXT".into(),
+        PromptNodeKind::Switch {
+            condition: PromptCondition::HasRecognitionContext,
+        } if input == 0 => "NO CONTEXT".into(),
+        PromptNodeKind::Switch {
+            condition: PromptCondition::HasRecognitionContext,
         } => "WITH CONTEXT".into(),
         PromptNodeKind::Compose { .. } => format!("{{{input}}}"),
         PromptNodeKind::Request { roles, .. } => roles
@@ -701,6 +713,8 @@ mod tests {
         for target in [
             PromptProviderTarget::OpenAiCompatible,
             PromptProviderTarget::Hunyuan,
+            PromptProviderTarget::AsrInstruction,
+            PromptProviderTarget::AsrContextBias,
         ] {
             assert!(profile.graph.nodes.iter().any(|node| {
                 matches!(

@@ -41,7 +41,7 @@ use xrtranslate_inference::{
     ReqwestClient, SynthesizedPcm, initialize_onnx_runtime, pcm16_mono_16khz_to_wav,
     preload_onnx_cuda_libraries,
 };
-use xrtranslate_prompt::PromptNodeGraph;
+use xrtranslate_prompt::{AsrPromptContext, PromptNodeGraph};
 use xrtranslate_protocol::{
     ActionControl, ClientControl, DrainReason, ErrorEvent, EventControl, Feature,
     InferenceWorkload, LatencyMetrics, PcmFormat, PcmFrame, PipelineDrained,
@@ -1836,7 +1836,7 @@ async fn run_inference_worker(
     inference: NativeInference,
     mut jobs: mpsc::Receiver<InferenceJob>,
     events: mpsc::Sender<InferenceEvent>,
-    generation: watch::Receiver<PipelineGeneration>,
+    mut generation: watch::Receiver<PipelineGeneration>,
     corpus_client: CorpusClient,
     scheduler: InferenceScheduler,
     speaker_recognition_enabled: Arc<AtomicBool>,
@@ -1951,6 +1951,7 @@ async fn run_inference_worker(
                     target_language: routed_target,
                     asr_elapsed: Duration::ZERO,
                     route_switched: None,
+                    prompt_trace: None,
                 };
                 let translation_context = match corpus_session
                     .prepare_translation(&PrepareTranslationRequest {
@@ -2262,8 +2263,20 @@ async fn run_inference_worker(
                 continue;
             }
         };
+        let current_generation = *generation.borrow_and_update();
+        if current_generation != job.generation {
+            continue;
+        }
         let asr_slot_started = Instant::now();
-        let asr_permit = scheduler.acquire_asr(job.workload).await;
+        let asr_permit = tokio::select! {
+            permit = scheduler.acquire_asr(job.workload) => permit,
+            changed = generation.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                continue;
+            }
+        };
         let asr_slot_wait = asr_slot_started.elapsed();
         if asr_slot_wait >= Duration::from_millis(25) {
             info!(
@@ -2272,16 +2285,32 @@ async fn run_inference_worker(
                 "ASR waited for a scheduled model slot"
             );
         }
-        let recognized_result = inference
-            .transcribe(
+        let asr_prompt_graph = prompt_graph.read().await.clone();
+        let current_generation = *generation.borrow_and_update();
+        if current_generation != job.generation {
+            drop(asr_permit);
+            continue;
+        }
+        let recognized_result = tokio::select! {
+            result = inference.transcribe(
                 &job.utterance.samples,
                 &job.source_language,
                 &job.target_language,
                 &mut adaptive_route,
-                asr_context.prompt,
+                &asr_prompt_graph,
+                AsrPromptContext {
+                    vocabulary: asr_context.vocabulary.clone(),
+                },
                 &asr_context.echo_guard,
-            )
-            .await;
+            ) => result,
+            changed = generation.changed() => {
+                drop(asr_permit);
+                if changed.is_err() {
+                    break;
+                }
+                continue;
+            }
+        };
         drop(asr_permit);
         let mut recognized = match recognized_result {
             Ok(Some(recognized)) => recognized,
@@ -2668,6 +2697,7 @@ async fn handle_inference_event(
                 .first()
                 .map(|context| context.turn_id.clone())
                 .unwrap_or_else(|| session.turn_id());
+            let asr_prompt_trace = recognized.prompt_trace.clone();
             if !session
                 .submit_recognized_for_route_and_turn(
                     generation.route_epoch,
@@ -2684,7 +2714,11 @@ async fn handle_inference_event(
                 send_event(
                     writer,
                     Some(generation),
-                    session.source_segment_ready_for_turn(segment.source_text, context),
+                    session.source_segment_ready_for_turn(
+                        segment.source_text,
+                        context,
+                        asr_prompt_trace.clone(),
+                    ),
                 )
                 .await?;
             }

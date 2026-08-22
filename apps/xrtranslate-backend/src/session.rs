@@ -311,6 +311,7 @@ impl SessionAdapter {
                 activation_matches: Vec::new(),
                 context_matches: Vec::new(),
             },
+            None,
         )
     }
 
@@ -319,9 +320,11 @@ impl SessionAdapter {
         &self,
         source_text: String,
         context: SegmentContext,
+        prompt_trace: Option<PromptExecutionTrace>,
     ) -> ServerEvent {
         ServerEvent::SourceSegmentReady(SourceSegmentReady {
             source_text,
+            prompt_trace,
             activation_matches: context.activation_matches,
             context_matches: context.context_matches,
             turn_id: context.turn_id,

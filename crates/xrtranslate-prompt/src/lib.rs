@@ -11,7 +11,8 @@ mod schema;
 mod template;
 
 pub use context::{
-    PromptTurn, SurroundingSource, TranslationPromptBlock, TranslationPromptContext,
+    AsrPromptContext, PromptTurn, SurroundingSource, TranslationPromptBlock,
+    TranslationPromptContext,
 };
 pub use execution::{
     PromptExecution, PromptExecutionTrace, PromptMessage, PromptNodeTrace, PromptRender,

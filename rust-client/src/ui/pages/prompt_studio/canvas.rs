@@ -66,6 +66,7 @@ fn condition_expression(condition: PromptCondition) -> &'static str {
     match condition {
         PromptCondition::SourceIsAuto => "Is source language set to auto?",
         PromptCondition::HasReferenceContext => "Is reference context available?",
+        PromptCondition::HasRecognitionContext => "Is recognition context available?",
     }
 }
 
@@ -626,6 +627,8 @@ fn render_provider_tabs(controller: &mut PromptStudioController, ui: &mut egui::
     for (target, label) in [
         (PromptProviderTarget::OpenAiCompatible, "OPENAI"),
         (PromptProviderTarget::Hunyuan, "HUNYUAN"),
+        (PromptProviderTarget::AsrInstruction, "ASR PROMPT"),
+        (PromptProviderTarget::AsrContextBias, "ASR CONTEXT"),
     ] {
         if style::provider_tab(ui, label, controller.active_provider == target).clicked() {
             controller.select_provider(target);
@@ -662,6 +665,7 @@ fn render_node_menu(
             ("Source language", PromptVariable::SourceLanguage),
             ("Target language", PromptVariable::TargetLanguage),
             ("Current input", PromptVariable::CurrentInput),
+            ("Recognition context", PromptVariable::RecognitionContext),
         ] {
             if ui.button(crate::i18n::tr(language, label)).clicked() {
                 let position = node_add_position(controller, &draft.graph, preferred_center);
@@ -693,6 +697,10 @@ fn render_node_menu(
             (
                 "Has reference context",
                 PromptCondition::HasReferenceContext,
+            ),
+            (
+                "Has recognition context",
+                PromptCondition::HasRecognitionContext,
             ),
         ] {
             if ui.button(crate::i18n::tr(language, label)).clicked() {
@@ -734,6 +742,12 @@ fn render_node_menu(
             ),
             PromptProviderTarget::Hunyuan => {
                 ("Hunyuan request", vec![PromptMessageRole::User])
+            }
+            PromptProviderTarget::AsrInstruction => {
+                ("ASR prompt request", vec![PromptMessageRole::System])
+            }
+            PromptProviderTarget::AsrContextBias => {
+                ("ASR context request", vec![PromptMessageRole::User])
             }
         };
         if ui

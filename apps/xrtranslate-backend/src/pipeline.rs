@@ -21,17 +21,20 @@ use std::{
 };
 use tracing::warn;
 
-use xrtranslate_config::AppConfig;
+use xrtranslate_config::{AppConfig, AsrPromptMode};
 use xrtranslate_denoise::GtcrnDenoiser;
 use xrtranslate_engine::{
     TranslationSegmentPair, remove_asr_stutters, remove_transcript_overlap,
     strip_filler_edges_for_lang, translation_segment_pairs_for_final_text_with_lang,
 };
 use xrtranslate_inference::{
-    AsrTranscript, InferenceError, ReqwestClient, TranslationAdapter, TranslationOptions,
-    is_probable_asr_hallucination,
+    AsrTranscript, AsrVocabularyBias, InferenceError, ReqwestClient, TranslationAdapter,
+    TranslationOptions, is_probable_asr_hallucination,
 };
-use xrtranslate_prompt::{PromptExecutionTrace, PromptNodeGraph, TranslationPromptContext};
+use xrtranslate_prompt::{
+    AsrPromptContext, PromptExecutionTrace, PromptNodeGraph, PromptProviderTarget,
+    TranslationPromptContext,
+};
 use xrtranslate_protocol::AudioSource;
 use xrtranslate_speaker::{
     OnlineSpeakerDiarizer, StreamingDiarizerConfig, StreamingSpeakerEvent,
@@ -87,6 +90,7 @@ pub(crate) struct RecognizedOutput {
     pub(crate) target_language: String,
     pub(crate) asr_elapsed: Duration,
     pub(crate) route_switched: Option<String>,
+    pub(crate) prompt_trace: Option<PromptExecutionTrace>,
 }
 
 /// VAD output paired with its absolute position inside the current audio epoch.
@@ -427,6 +431,10 @@ enum FixedWindowEvent {
 #[derive(Clone)]
 pub(crate) struct NativeInference {
     asr: NativeAsrAdapter,
+    asr_prompt_mode: AsrPromptMode,
+    asr_context_max_chars: Option<usize>,
+    asr_supports_vocabulary_bias: bool,
+    asr_vocabulary_weight: u8,
     translation: TranslationAdapter<ReqwestClient>,
     translation_supports_reference_context: bool,
     asr_max_output_tokens: u32,
@@ -434,6 +442,28 @@ pub(crate) struct NativeInference {
     asr_context_window_tokens: u32,
     translation_context_window_tokens: u32,
     speaker: Option<SpeakerInferenceConfig>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct AsrPromptDelivery {
+    instruction_prompt: Option<String>,
+    context_bias: Option<String>,
+    vocabulary_bias: Vec<AsrVocabularyBias>,
+    prompt_trace: Option<PromptExecutionTrace>,
+}
+
+impl AsrPromptDelivery {
+    fn quality_context(&self) -> Option<String> {
+        self.instruction_prompt
+            .as_ref()
+            .or(self.context_bias.as_ref())
+            .cloned()
+    }
+}
+
+struct AsrAttemptResult {
+    transcript: AsrTranscript,
+    prompt_trace: Option<PromptExecutionTrace>,
 }
 
 #[derive(Clone)]
@@ -577,6 +607,10 @@ impl NativePipeline {
             vad_transitions: Vec::new(),
             inference: NativeInference {
                 asr,
+                asr_prompt_mode: model_plan.asr_prompt_mode(),
+                asr_context_max_chars: model_plan.asr_context_max_chars(),
+                asr_supports_vocabulary_bias: model_plan.asr_supports_vocabulary_bias(),
+                asr_vocabulary_weight: model_plan.asr_vocabulary_weight(),
                 translation,
                 translation_supports_reference_context: model_plan
                     .translation_supports_reference_context(),
@@ -952,7 +986,8 @@ impl NativeInference {
         source_language: &str,
         target_language: &str,
         adaptive_route: &mut AdaptiveLanguageRoute,
-        prompt_context: Option<String>,
+        prompt_graph: &PromptNodeGraph,
+        prompt_context: AsrPromptContext,
         echo_candidates: &[String],
     ) -> Result<Option<RecognizedOutput>, InferenceFailure> {
         let pcm = samples
@@ -967,13 +1002,26 @@ impl NativeInference {
                 "Automatic input requires two different supported languages in the pair",
             ));
         }
-        let prompt_context = append_prompt_hint(prompt_context, adaptive_route.prompt_hint());
-        let Some(auto_transcript) = self
+        let active_targets = adaptive_route.active_targets(target_language);
+        let delivery = self.asr_prompt_delivery(
+            prompt_graph,
+            source_language,
+            &active_targets,
+            &prompt_context,
+        )?;
+        let context_free_delivery = self.asr_prompt_delivery(
+            prompt_graph,
+            source_language,
+            &active_targets,
+            &AsrPromptContext::default(),
+        )?;
+        let Some(auto_result) = self
             .transcribe_attempt(
                 &pcm,
                 samples.len(),
                 asr_language(source_language),
-                prompt_context.clone(),
+                delivery.clone(),
+                context_free_delivery.clone(),
                 echo_candidates,
                 max_tokens,
             )
@@ -982,32 +1030,49 @@ impl NativeInference {
             return Ok(None);
         };
         let explicit_route = explicit_language_route(source_language, target_language);
-        let (transcript, route, route_switched) = if let Some(route) = explicit_route {
-            (auto_transcript, route, None)
+        let (result, route, route_switched) = if let Some(route) = explicit_route {
+            (auto_result, route, None)
         } else {
-            match adaptive_route
-                .classify(auto_transcript.language.as_deref(), &auto_transcript.text)
-            {
-                AutoDecision::Accept(route) => (auto_transcript, route, None),
+            match adaptive_route.classify(
+                auto_result.transcript.language.as_deref(),
+                &auto_result.transcript.text,
+            ) {
+                AutoDecision::Accept(route) => (auto_result, route, None),
                 AutoDecision::Switched { route, active } => {
-                    (auto_transcript, route, Some(active.target_lang()))
+                    (auto_result, route, Some(active.target_lang()))
                 }
                 AutoDecision::Retry {
                     language,
                     candidate: _,
                 } => {
                     warn!(
-                        detected_language =
-                            auto_transcript.language.as_deref().unwrap_or("unknown"),
+                        detected_language = auto_result
+                            .transcript
+                            .language
+                            .as_deref()
+                            .unwrap_or("unknown"),
                         retry_language = language.model_name(),
                         "ASR result needs constrained recovery"
                     );
+                    let forced_delivery = self.asr_prompt_delivery(
+                        prompt_graph,
+                        language.code(),
+                        &active_targets,
+                        &prompt_context,
+                    )?;
+                    let forced_context_free_delivery = self.asr_prompt_delivery(
+                        prompt_graph,
+                        language.code(),
+                        &active_targets,
+                        &AsrPromptContext::default(),
+                    )?;
                     let Some(mut forced) = self
                         .transcribe_attempt(
                             &pcm,
                             samples.len(),
                             Some(language.model_name().to_owned()),
-                            prompt_context.clone(),
+                            forced_delivery,
+                            forced_context_free_delivery,
                             echo_candidates,
                             max_tokens,
                         )
@@ -1016,14 +1081,27 @@ impl NativeInference {
                         return Ok(None);
                     };
                     let mut forced_language = language;
-                    if !adaptive_route.evidence(forced_language, &forced.text) {
+                    if !adaptive_route.evidence(forced_language, &forced.transcript.text) {
                         forced_language = adaptive_route.alternate(forced_language);
+                        let alternate_delivery = self.asr_prompt_delivery(
+                            prompt_graph,
+                            forced_language.code(),
+                            &active_targets,
+                            &prompt_context,
+                        )?;
+                        let alternate_context_free_delivery = self.asr_prompt_delivery(
+                            prompt_graph,
+                            forced_language.code(),
+                            &active_targets,
+                            &AsrPromptContext::default(),
+                        )?;
                         let Some(alternate) = self
                             .transcribe_attempt(
                                 &pcm,
                                 samples.len(),
                                 Some(forced_language.model_name().to_owned()),
-                                prompt_context.clone(),
+                                alternate_delivery,
+                                alternate_context_free_delivery,
                                 echo_candidates,
                                 max_tokens,
                             )
@@ -1038,6 +1116,10 @@ impl NativeInference {
                 }
             }
         };
+        let AsrAttemptResult {
+            transcript,
+            prompt_trace,
+        } = result;
         let asr_elapsed = asr_started.elapsed();
         let mut source_text = remove_asr_stutters(&transcript.text);
         if source_text.is_empty() {
@@ -1056,6 +1138,7 @@ impl NativeInference {
             target_language: route.target.code().to_owned(),
             asr_elapsed,
             route_switched,
+            prompt_trace,
         }))
     }
 
@@ -1064,17 +1147,22 @@ impl NativeInference {
         pcm: &[u8],
         sample_count: usize,
         language: Option<String>,
-        prompt_context: Option<String>,
+        delivery: AsrPromptDelivery,
+        context_free_delivery: AsrPromptDelivery,
         echo_candidates: &[String],
         max_tokens: u32,
-    ) -> Result<Option<AsrTranscript>, InferenceFailure> {
+    ) -> Result<Option<AsrAttemptResult>, InferenceFailure> {
+        let quality_context = delivery.quality_context();
+        let prompt_trace = delivery.prompt_trace.clone();
         let mut transcript = self
             .asr
             .transcribe_pcm16(
                 pcm,
                 NativeAsrOptions {
                     language: language.clone(),
-                    prompt_context: prompt_context.clone(),
+                    instruction_prompt: delivery.instruction_prompt,
+                    context_bias: delivery.context_bias,
+                    vocabulary_bias: delivery.vocabulary_bias,
                     max_tokens,
                 },
             )
@@ -1085,20 +1173,26 @@ impl NativeInference {
             &transcript.text,
             sample_count,
             SAMPLE_RATE_HZ,
-            prompt_context.as_deref(),
+            quality_context.as_deref(),
             echo_candidates,
         ) {
-            return Ok(Some(transcript));
+            return Ok(Some(AsrAttemptResult {
+                transcript,
+                prompt_trace,
+            }));
         }
 
         warn!("ASR output failed quality checks; retrying without optional context");
+        let prompt_trace = context_free_delivery.prompt_trace.clone();
         transcript = self
             .asr
             .transcribe_pcm16(
                 pcm,
                 NativeAsrOptions {
                     language,
-                    prompt_context: None,
+                    instruction_prompt: context_free_delivery.instruction_prompt,
+                    context_bias: context_free_delivery.context_bias,
+                    vocabulary_bias: context_free_delivery.vocabulary_bias,
                     max_tokens,
                 },
             )
@@ -1109,8 +1203,106 @@ impl NativeInference {
             warn!("suppressing ASR output after context-free retry failed quality checks");
             Ok(None)
         } else {
-            Ok(Some(transcript))
+            Ok(Some(AsrAttemptResult {
+                transcript,
+                prompt_trace,
+            }))
         }
+    }
+
+    fn asr_prompt_delivery(
+        &self,
+        graph: &PromptNodeGraph,
+        source_language: &str,
+        expected_languages: &str,
+        context: &AsrPromptContext,
+    ) -> Result<AsrPromptDelivery, InferenceFailure> {
+        let mut delivery = AsrPromptDelivery::default();
+        if self.asr_supports_vocabulary_bias {
+            delivery.vocabulary_bias = context
+                .vocabulary
+                .iter()
+                .map(|term| term.trim())
+                .filter(|term| !term.is_empty())
+                .map(|term| AsrVocabularyBias {
+                    text: term.to_owned(),
+                    weight: self.asr_vocabulary_weight,
+                })
+                .collect();
+        }
+
+        let target = match self.asr_prompt_mode {
+            AsrPromptMode::None => return Ok(delivery),
+            AsrPromptMode::Instruction => PromptProviderTarget::AsrInstruction,
+            AsrPromptMode::ContextBias if !context.has_recognition_context() => {
+                return Ok(delivery);
+            }
+            AsrPromptMode::ContextBias => PromptProviderTarget::AsrContextBias,
+        };
+        let bounded_context = self
+            .asr_context_max_chars
+            .map(|limit| context.bounded_recognition_context(limit));
+        let render_context = bounded_context.as_ref().unwrap_or(context);
+        if target == PromptProviderTarget::AsrContextBias
+            && !render_context.has_recognition_context()
+        {
+            return Ok(delivery);
+        }
+        if !graph.nodes.iter().any(|node| {
+            matches!(node.kind, xrtranslate_prompt::PromptNodeKind::Request { target: request_target, .. } if request_target == target)
+        }) {
+            return Ok(delivery);
+        }
+        let source_language = if source_language.eq_ignore_ascii_case("auto") {
+            "auto".to_owned()
+        } else {
+            language_name(&normalized_code(source_language)).to_owned()
+        };
+        let expected_languages = expected_languages
+            .split(',')
+            .map(normalized_code)
+            .map(|code| language_name(&code).to_owned())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let rendered = graph
+            .render_asr_with_trace(
+                target,
+                &source_language,
+                &expected_languages,
+                render_context,
+            )
+            .map_err(|error| {
+                InferenceFailure::runtime(format!("cannot render {target:?} ASR prompt: {error}"))
+            })?;
+        delivery.prompt_trace = Some(rendered.trace.clone());
+        let text = rendered
+            .render
+            .messages
+            .into_iter()
+            .map(|message| message.content.trim().to_owned())
+            .filter(|content| !content.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if text.is_empty() {
+            return Err(InferenceFailure::runtime(format!(
+                "{target:?} ASR prompt rendered no text"
+            )));
+        }
+        if target == PromptProviderTarget::AsrContextBias
+            && self
+                .asr_context_max_chars
+                .is_some_and(|limit| text.chars().count() > limit)
+        {
+            return Err(InferenceFailure::runtime(format!(
+                "{target:?} ASR context exceeds the provider character limit"
+            )));
+        }
+        match target {
+            PromptProviderTarget::AsrInstruction => delivery.instruction_prompt = Some(text),
+            PromptProviderTarget::AsrContextBias => delivery.context_bias = Some(text),
+            _ => unreachable!("target was selected from ASR-only prompt modes"),
+        }
+        Ok(delivery)
     }
 
     /// Translates one already-normalized, user-visible source segment.
@@ -1261,15 +1453,6 @@ fn explicit_language_route(source: &str, target: &str) -> Option<LanguageRoute> 
     let source = SupportedLanguage::from_code(source)?;
     let target = target.split(',').find_map(SupportedLanguage::from_code)?;
     Some(LanguageRoute { source, target })
-}
-
-fn append_prompt_hint(base: Option<String>, hint: Option<String>) -> Option<String> {
-    match (base, hint) {
-        (Some(base), Some(hint)) => Some(format!("{hint}\n\n{base}")),
-        (Some(base), None) => Some(base),
-        (None, Some(hint)) => Some(hint),
-        (None, None) => None,
-    }
 }
 
 fn translation_route(source_language: &str, target_language: &str) -> TranslationRoute {

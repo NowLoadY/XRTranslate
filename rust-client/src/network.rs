@@ -72,6 +72,7 @@ pub enum SessionEvent {
         continuous: bool,
         publish_to_host_outputs: bool,
         text: String,
+        prompt_trace: Option<PromptExecutionTrace>,
         activation_matches: Vec<CorpusTermMatch>,
         context_matches: Vec<CorpusTermMatch>,
         turn_id: String,
@@ -905,6 +906,7 @@ fn forward_server_event(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .into(),
+                prompt_trace: event_metadata(data, "prompt_trace"),
                 activation_matches: data
                     .and_then(|d| d.get("activation_matches"))
                     .cloned()
@@ -1342,6 +1344,35 @@ mod tests {
         };
         assert_eq!(activation_matches[0].text, "论文");
         assert_eq!(activation_matches[0].sources[0].subdomain, "research");
+    }
+
+    #[test]
+    fn source_segment_event_retains_the_asr_prompt_execution_trace() {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        forward_server_event(
+            &sender,
+            r#"{"action":"source_segment_ready","data":{"source_text":"hello","segment_index":1,"segment_count":1,"revisable":false,"overlap_ratio":0.0,"prompt_trace":{"target":"asr_instruction","nodes":[{"node_id":"asr-instruction-request","output":"Transcribe accurately."}]}}}"#,
+            42,
+            false,
+            true,
+            CaptureSource::Microphone,
+        );
+
+        let SessionEvent::SourceSegment {
+            prompt_trace: Some(trace),
+            ..
+        } = receiver.try_recv().unwrap()
+        else {
+            panic!("expected ASR prompt trace");
+        };
+        assert_eq!(
+            trace.target,
+            xrtranslate_prompt::PromptProviderTarget::AsrInstruction
+        );
+        assert_eq!(
+            trace.node("asr-instruction-request").unwrap().output,
+            "Transcribe accurately."
+        );
     }
 
     #[test]

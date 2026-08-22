@@ -253,16 +253,6 @@ impl AdaptiveLanguageRoute {
         )
     }
 
-    pub(crate) fn prompt_hint(&self) -> Option<String> {
-        self.active.map(|pair| {
-            format!(
-                "Expected spoken languages are {} or {}. Prefer these, but identify any clearly different language accurately. Transcribe without translating.",
-                pair.0[0].model_name(),
-                pair.0[1].model_name()
-            )
-        })
-    }
-
     pub(crate) fn is_configured(&self) -> bool {
         self.active.is_some()
     }

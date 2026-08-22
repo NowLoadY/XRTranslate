@@ -50,6 +50,8 @@ pub enum PromptNodePage {
     Shared,
     OpenAiCompatible,
     Hunyuan,
+    AsrInstruction,
+    AsrContextBias,
 }
 
 impl PromptNodePage {
@@ -57,6 +59,8 @@ impl PromptNodePage {
         match target {
             PromptProviderTarget::OpenAiCompatible => Self::OpenAiCompatible,
             PromptProviderTarget::Hunyuan => Self::Hunyuan,
+            PromptProviderTarget::AsrInstruction => Self::AsrInstruction,
+            PromptProviderTarget::AsrContextBias => Self::AsrContextBias,
         }
     }
 
@@ -71,6 +75,7 @@ pub enum PromptVariable {
     SourceLanguage,
     TargetLanguage,
     CurrentInput,
+    RecognitionContext,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -78,6 +83,7 @@ pub enum PromptVariable {
 pub enum PromptCondition {
     SourceIsAuto,
     HasReferenceContext,
+    HasRecognitionContext,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -86,6 +92,8 @@ pub enum PromptProviderTarget {
     Hunyuan,
     #[default]
     OpenAiCompatible,
+    AsrInstruction,
+    AsrContextBias,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -472,11 +480,42 @@ impl PromptNodeGraph {
                 )));
             }
         }
+        for target in [
+            PromptProviderTarget::AsrInstruction,
+            PromptProviderTarget::AsrContextBias,
+        ] {
+            let outputs = self
+                .nodes
+                .iter()
+                .filter(|node| {
+                    matches!(node.kind, PromptNodeKind::Request { target: value, .. } if value == target)
+                })
+                .collect::<Vec<_>>();
+            if outputs.len() > 1 {
+                return Err(PromptGraphError::new(format!(
+                    "prompt graph must have at most one {target:?} provider request"
+                )));
+            }
+            if target == PromptProviderTarget::AsrContextBias
+                && outputs.iter().any(|output| {
+                    !self.has_variable_ancestor(&output.id, PromptVariable::RecognitionContext)
+                })
+            {
+                return Err(PromptGraphError::new(format!(
+                    "the {target:?} prompt must include Recognition Context"
+                )));
+            }
+        }
         Ok(())
     }
 
     pub fn auto_layout(&mut self) {
-        for page in [PromptNodePage::OpenAiCompatible, PromptNodePage::Hunyuan] {
+        for page in [
+            PromptNodePage::OpenAiCompatible,
+            PromptNodePage::Hunyuan,
+            PromptNodePage::AsrInstruction,
+            PromptNodePage::AsrContextBias,
+        ] {
             self.auto_layout_page(page);
         }
         self.layout_version = Self::CURRENT_LAYOUT_VERSION;
@@ -655,16 +694,20 @@ pub(crate) fn default_node_label(kind: &PromptNodeKind) -> String {
             PromptVariable::SourceLanguage => "SOURCE LANGUAGE".into(),
             PromptVariable::TargetLanguage => "TARGET LANGUAGE".into(),
             PromptVariable::CurrentInput => "CURRENT INPUT".into(),
+            PromptVariable::RecognitionContext => "RECOGNITION CONTEXT".into(),
         },
         PromptNodeKind::Compose { .. } => "COMPOSE TEXT".into(),
         PromptNodeKind::Switch { condition } => match condition {
             PromptCondition::SourceIsAuto => "SELECT SOURCE MODE".into(),
             PromptCondition::HasReferenceContext => "SELECT CONTEXT MODE".into(),
+            PromptCondition::HasRecognitionContext => "SELECT ASR CONTEXT MODE".into(),
         },
         PromptNodeKind::Request { target, .. } => {
             let provider = match target {
                 PromptProviderTarget::Hunyuan => "HUNYUAN",
                 PromptProviderTarget::OpenAiCompatible => "OPENAI",
+                PromptProviderTarget::AsrInstruction => "ASR PROMPT",
+                PromptProviderTarget::AsrContextBias => "ASR CONTEXT",
             };
             format!("{provider} REQUEST")
         }
@@ -677,6 +720,7 @@ fn node_semantic_rank(node: &PromptNode) -> (usize, String) {
             PromptVariable::SourceLanguage => 0,
             PromptVariable::TargetLanguage => 1,
             PromptVariable::CurrentInput => 2,
+            PromptVariable::RecognitionContext => 3,
         },
         PromptNodeKind::Input { block } => match block {
             TranslationPromptBlock::LanguageOrder => 3,

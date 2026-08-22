@@ -14,12 +14,13 @@ use xrtranslate_assets::{
     ResolvedModelAssets,
 };
 use xrtranslate_config::{
-    AppConfig, LocalModelRuntimeConfig, NativeModelRouteConfig, NativeRuntimeSelection,
-    ResolvedNativeRuntimeSelection, RuntimeLayout,
+    AppConfig, AsrPromptMode, LocalModelRuntimeConfig, NativeModelRouteConfig,
+    NativeRuntimeSelection, ResolvedNativeRuntimeSelection, RuntimeLayout,
 };
 use xrtranslate_inference::{
-    AsrTranscript, InferenceError, OpenAiAsrAdapter, OpenAiAsrOptions, Qwen3AsrAdapter,
-    Qwen3AsrOptions, ReqwestClient, TranslationAdapter, TranslationProvider,
+    AsrTranscript, AsrVocabularyBias, InferenceError, OpenAiAsrAdapter, OpenAiAsrOptions,
+    Qwen3AsrAdapter, Qwen3AsrOptions, QwenAudioStreamingAdapter, QwenAudioStreamingOptions,
+    ReqwestClient, TranslationAdapter, TranslationProvider,
 };
 use xrtranslate_supervisor::{LlamaServerEndpoint, LlamaServerSpec};
 
@@ -27,6 +28,7 @@ use xrtranslate_supervisor::{LlamaServerEndpoint, LlamaServerSpec};
 enum AsrProfile {
     Qwen3Local,
     OpenAiAudio,
+    QwenAudioStreaming,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,7 +40,9 @@ enum TranslationProfile {
 #[derive(Clone, Debug)]
 pub(crate) struct NativeAsrOptions {
     pub(crate) language: Option<String>,
-    pub(crate) prompt_context: Option<String>,
+    pub(crate) instruction_prompt: Option<String>,
+    pub(crate) context_bias: Option<String>,
+    pub(crate) vocabulary_bias: Vec<AsrVocabularyBias>,
     pub(crate) max_tokens: u32,
 }
 
@@ -49,6 +53,7 @@ pub(crate) struct NativeAsrOptions {
 pub(crate) enum NativeAsrAdapter {
     Qwen3(Qwen3AsrAdapter<ReqwestClient>),
     OpenAi(OpenAiAsrAdapter<ReqwestClient>),
+    QwenAudioStreaming(QwenAudioStreamingAdapter),
 }
 
 impl NativeAsrAdapter {
@@ -64,7 +69,7 @@ impl NativeAsrAdapter {
                         pcm,
                         Qwen3AsrOptions {
                             language: options.language,
-                            prompt_context: options.prompt_context,
+                            instruction_prompt: options.instruction_prompt,
                             max_tokens: options.max_tokens,
                         },
                     )
@@ -76,8 +81,20 @@ impl NativeAsrAdapter {
                         pcm,
                         OpenAiAsrOptions {
                             language: options.language,
-                            prompt_context: options.prompt_context,
+                            instruction_prompt: options.instruction_prompt,
                             max_tokens: options.max_tokens,
+                        },
+                    )
+                    .await
+            }
+            Self::QwenAudioStreaming(adapter) => {
+                adapter
+                    .transcribe_pcm16(
+                        pcm,
+                        QwenAudioStreamingOptions {
+                            language: options.language,
+                            context_bias: options.context_bias,
+                            vocabulary_bias: options.vocabulary_bias,
                         },
                     )
                     .await
@@ -220,8 +237,24 @@ impl NativeProviderPlan {
     pub(crate) fn asr_model_alias(&self) -> &str {
         match self.asr_profile {
             AsrProfile::Qwen3Local => "qwen3-asr",
-            AsrProfile::OpenAiAudio => &self.route.asr.model,
+            AsrProfile::OpenAiAudio | AsrProfile::QwenAudioStreaming => &self.route.asr.model,
         }
+    }
+
+    pub(crate) fn asr_prompt_mode(&self) -> AsrPromptMode {
+        self.route.asr.asr_prompt_mode
+    }
+
+    pub(crate) fn asr_supports_vocabulary_bias(&self) -> bool {
+        self.route.asr.supports_vocabulary_bias
+    }
+
+    pub(crate) fn asr_context_max_chars(&self) -> Option<usize> {
+        self.route.asr.asr_context_max_chars
+    }
+
+    pub(crate) fn asr_vocabulary_weight(&self) -> u8 {
+        self.route.asr.vocabulary_weight
     }
 
     pub(crate) fn translation_model_alias(&self) -> &str {
@@ -251,6 +284,12 @@ impl NativeProviderPlan {
                 self.route.asr.api_key.as_deref().unwrap_or_default(),
             )
             .map(NativeAsrAdapter::OpenAi),
+            AsrProfile::QwenAudioStreaming => QwenAudioStreamingAdapter::new(
+                self.asr_url(),
+                self.asr_model_alias(),
+                self.route.asr.api_key.as_deref().unwrap_or_default(),
+            )
+            .map(NativeAsrAdapter::QwenAudioStreaming),
         }
     }
 
@@ -379,6 +418,9 @@ fn model_file(
 
 impl AsrProfile {
     fn registered(provider: &str, transport: &str) -> Option<Self> {
+        if provider == "qwen-audio-streaming" && transport == "websocket" {
+            return Some(Self::QwenAudioStreaming);
+        }
         if transport == "openai" {
             return Some(Self::OpenAiAudio);
         }
@@ -391,7 +433,7 @@ impl AsrProfile {
     const fn default_asset(self) -> ModelAssetId {
         match self {
             Self::Qwen3Local => ModelAssetId::Qwen3AsrGguf,
-            Self::OpenAiAudio => ModelAssetId::Qwen3AsrGguf,
+            Self::OpenAiAudio | Self::QwenAudioStreaming => ModelAssetId::Qwen3AsrGguf,
         }
     }
 }
@@ -643,6 +685,30 @@ mod tests {
         assert_eq!(plan.translation_model_alias(), "gpt-4o-mini");
         assert!(plan.managed_server_specs(8101, 8102).unwrap().0.is_none());
         assert!(plan.managed_server_specs(8101, 8102).unwrap().1.is_none());
+    }
+
+    #[test]
+    fn qwen_audio_streaming_registers_as_a_remote_context_bias_profile() {
+        let mut document: serde_json::Value =
+            serde_json::from_str(include_str!("../../../config.json")).unwrap();
+        document["asr"]["provider"] = serde_json::Value::from("qwen-audio-streaming");
+        document["asr"]["providers"]["qwen-audio-streaming"]["api_key"] =
+            serde_json::Value::from("dashscope-key");
+        let config = AppConfig::from_value(document).unwrap();
+
+        let plan = NativeProviderPlan::resolve(&config, Path::new("release-root")).unwrap();
+
+        assert!(!plan.asr_uses_local_runtime());
+        assert_eq!(plan.asr_model_alias(), "qwen-audio-3.0-asr-flash-streaming");
+        assert_eq!(plan.asr_prompt_mode(), AsrPromptMode::ContextBias);
+        assert_eq!(plan.asr_context_max_chars(), Some(400));
+        assert!(plan.asr_supports_vocabulary_bias());
+        assert_eq!(plan.asr_vocabulary_weight(), 4);
+        assert!(plan.managed_server_specs(8101, 8102).unwrap().0.is_none());
+        assert!(matches!(
+            plan.asr_adapter(plan.asr_http_client().unwrap()).unwrap(),
+            NativeAsrAdapter::QwenAudioStreaming(_)
+        ));
     }
 
     #[test]

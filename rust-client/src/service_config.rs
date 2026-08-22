@@ -803,6 +803,7 @@ impl ServiceConfigEditor {
                 "context_window_tokens": 8192,
                 "max_tokens": if category_key == "asr" { 256 } else { 512 },
                 "parallel_slots": 2,
+                "asr_prompt_mode": if category_key == "asr" { "instruction" } else { "none" },
                 "supports_prompt_context": true
             }),
         );
@@ -889,7 +890,12 @@ fn provider_is_remote(provider: &ProviderCard) -> bool {
         .fields
         .iter()
         .find(|field| field.name == "transport")
-        .is_some_and(|field| field.value.trim().eq_ignore_ascii_case("openai"))
+        .is_some_and(|field| {
+            matches!(
+                field.value.trim().to_ascii_lowercase().as_str(),
+                "openai" | "websocket"
+            )
+        })
 }
 
 /// Renders the same model lifecycle control inside every provider card that
@@ -1294,7 +1300,7 @@ mod tests {
     };
     use serde_json::Value;
     use xrtranslate_assets::ModelCapability;
-    use xrtranslate_config::{LocalModelRuntimeConfig, NativeProviderConfig};
+    use xrtranslate_config::{AsrPromptMode, LocalModelRuntimeConfig, NativeProviderConfig};
     use xrtranslate_prompt::PromptProviderTarget;
 
     fn provider(name: &str, model_asset: Option<&str>) -> NativeProviderConfig {
@@ -1311,6 +1317,10 @@ mod tests {
                 parallel_slots: 1,
             },
             supports_prompt_context: false,
+            asr_prompt_mode: AsrPromptMode::None,
+            asr_context_max_chars: None,
+            supports_vocabulary_bias: false,
+            vocabulary_weight: 4,
         }
     }
 

@@ -358,6 +358,10 @@ pub enum SegmentBoundary {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceSegmentReady {
     pub source_text: String,
+    /// Prompt Studio execution that produced the ASR instruction or lexical
+    /// context for this recognition window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_trace: Option<PromptExecutionTrace>,
     #[serde(default)]
     pub activation_matches: Vec<CorpusTermMatch>,
     #[serde(default)]
@@ -787,6 +791,7 @@ mod tests {
     fn segment_timing_and_boundary_have_stable_wire_values() {
         let event = ServerEvent::SourceSegmentReady(SourceSegmentReady {
             source_text: "hello".into(),
+            prompt_trace: None,
             activation_matches: Vec::new(),
             context_matches: Vec::new(),
             turn_id: "turn-1".into(),
@@ -805,6 +810,40 @@ mod tests {
         assert!(json.contains(r#""timing":"estimated_text_partition""#));
         assert!(json.contains(r#""boundary":"speaker_change""#));
         assert_eq!(serde_json::from_str::<ServerEvent>(&json).unwrap(), event);
+    }
+
+    #[test]
+    fn source_segment_prompt_trace_round_trips_with_asr_target() {
+        let trace = PromptNodeGraph::builtin_default()
+            .render_asr_with_trace(
+                xrtranslate_prompt::PromptProviderTarget::AsrInstruction,
+                "English",
+                "Chinese",
+                &xrtranslate_prompt::AsrPromptContext::default(),
+            )
+            .unwrap()
+            .trace;
+        let event = ServerEvent::SourceSegmentReady(SourceSegmentReady {
+            source_text: "hello".into(),
+            prompt_trace: Some(trace),
+            activation_matches: Vec::new(),
+            context_matches: Vec::new(),
+            turn_id: "turn-1".into(),
+            segment_index: 1,
+            segment_count: 1,
+            speaker_id: String::new(),
+            source_start_ms: 0.0,
+            source_end_ms: 1.0,
+            timing: SegmentTiming::Unknown,
+            boundary: SegmentBoundary::Unknown,
+            revisable: false,
+            overlap_ratio: 0.0,
+        });
+
+        let json = serde_json::to_string(&event).unwrap();
+        let decoded: ServerEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, event);
+        assert!(json.contains(r#""target":"asr_instruction""#));
     }
 
     #[test]

@@ -43,9 +43,9 @@ const PROVIDER_FIELDS: &[ProviderFieldDescriptor] = &[
         name: "transport",
         label: "Transport",
         help: Some(
-            "local uses the managed llama.cpp model; openai uses an OpenAI-compatible HTTP API.",
+            "local uses the managed llama.cpp model; openai uses an OpenAI-compatible HTTP API; websocket uses a provider-native WebSocket API.",
         ),
-        editor: ProviderFieldEditor::Options(&["local", "openai"]),
+        editor: ProviderFieldEditor::Options(&["local", "openai", "websocket"]),
         visibility: ProviderFieldVisibility::Default,
     },
     ProviderFieldDescriptor {
@@ -127,6 +127,38 @@ const PROVIDER_FIELDS: &[ProviderFieldDescriptor] = &[
         help: None,
         editor: ProviderFieldEditor::Default,
         visibility: ProviderFieldVisibility::Hidden,
+    },
+    ProviderFieldDescriptor {
+        name: "asr_prompt_mode",
+        label: "ASR text mode",
+        help: Some(
+            "instruction is a semantic recognition prompt; context_bias is lexical context and must not be treated as an instruction.",
+        ),
+        editor: ProviderFieldEditor::Options(&["none", "instruction", "context_bias"]),
+        visibility: ProviderFieldVisibility::Hidden,
+    },
+    ProviderFieldDescriptor {
+        name: "asr_context_max_chars",
+        label: "ASR context character limit",
+        help: None,
+        editor: ProviderFieldEditor::Default,
+        visibility: ProviderFieldVisibility::Hidden,
+    },
+    ProviderFieldDescriptor {
+        name: "supports_vocabulary_bias",
+        label: "Weighted vocabulary",
+        help: None,
+        editor: ProviderFieldEditor::Default,
+        visibility: ProviderFieldVisibility::Hidden,
+    },
+    ProviderFieldDescriptor {
+        name: "vocabulary_weight",
+        label: "Hotword weight",
+        help: Some(
+            "Default weight for dynamic XR Corpus vocabulary. Use 1-5, or 50 for a super hotword.",
+        ),
+        editor: ProviderFieldEditor::Options(&["1", "2", "3", "4", "5", "50"]),
+        visibility: ProviderFieldVisibility::Default,
     },
     ProviderFieldDescriptor {
         name: "supports_language",

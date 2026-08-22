@@ -1,8 +1,18 @@
 # Prompt architecture
 
-Prompt Studio owns the complete translation prompt sent to a model. There is
-no hidden translation instruction, reference-context wrapper, current-input
-label, or message-role split in a provider profile.
+Prompt Studio owns the complete translation prompt and semantic ASR instruction
+sent to a model. It also owns rendering provider text fields that are explicitly
+declared as lexical ASR context. There is no hidden instruction,
+reference-context wrapper, current-input label, or message-role split in a
+provider profile.
+
+ASR instruction prompts, lexical context bias, and weighted vocabulary bias are
+three separate capabilities. An instruction tells a capable recognition model
+how to transcribe. Lexical context supplies likely terms but has no instruction
+semantics. Weighted vocabulary is structured provider data (`term -> weight`)
+and never passes through a Prompt Studio text graph. A provider profile declares
+which delivery modes its transport supports; it must not reinterpret one mode
+as another.
 
 ## Ownership
 
@@ -46,18 +56,19 @@ policy. If that output is also rejected, the segment fails and no translation
 is published. As with a context-window retry, a successful regenerated result
 carries the execution trace of the final request.
 
-XR Corpus and the backend provide structured facts. They do not concatenate
-prompt strings. The desktop client owns template selection and persistence but
-does not execute provider policy.
+XR Corpus and the backend provide structured facts. XR Corpus retains its legacy
+pre-rendered ASR field for older consumers, but the native backend consumes its
+structured recognition vocabulary. The desktop client owns template selection
+and persistence but does not execute provider policy.
 
 ## Graph pages and requests
 
-A profile is one complete graph. Prompt Studio presents that graph through two
-fixed provider pages, `OPENAI` and `HUNYUAN`; these pages are views, not separate
-profiles or independently creatable graphs. Shared nodes appear on both pages,
-while provider-specific composition and Request nodes appear only on their
-matching page. `NEW GRAPH` creates the complete graph with both pages and the
-shared data flow.
+A profile is one complete graph. Prompt Studio presents that graph through four
+fixed delivery pages, `OPENAI`, `HUNYUAN`, `ASR PROMPT`, and `ASR CONTEXT`;
+these pages are views, not separate profiles or independently creatable graphs.
+Shared nodes appear on compatible pages, while delivery-specific composition
+and Request nodes appear only on their matching page. `NEW GRAPH` creates the
+complete graph with all four pages and the shared data flow.
 
 Prompt Studio initially opens the page matching the active translation
 provider. A local Hunyuan provider selects `HUNYUAN`; providers delivered over
@@ -65,10 +76,13 @@ the OpenAI transport select `OPENAI`. Applying a provider configuration updates
 that initial page selection, while users may still switch pages manually to
 inspect or edit the other provider path.
 
-A graph renders `PromptMessage` values. Each provider page terminates in exactly
-one Request node, which declares:
+A graph renders `PromptMessage` values. Each translation provider page
+terminates in exactly one Request node. ASR pages have at most one Request each
+so old translation-only graphs remain wire-compatible; saved profiles are
+normalized by adding any missing canonical ASR paths. A Request declares:
 
-- a provider target (`hunyuan` or `openai_compatible`);
+- a delivery target (`hunyuan`, `openai_compatible`, `asr_instruction`, or
+  `asr_context_bias`);
 - an ordered list of message roles (`system` or `user`);
 - one connected content input for each role.
 
@@ -82,8 +96,8 @@ boundaries. They interpolate connected inputs through `{0}` to `{9}`; literal
 braces use `{{` and `}}`. A Compose text made only of input slots separated by
 one consistent whitespace separator joins its non-empty inputs with that
 separator. This makes `{0}\n\n{1}\n\n{2}` the general form of an optional block
-join without a separate Concat node. Variable nodes expose source language, target
-language, and current input. Context input nodes render the terminology,
+join without a separate Concat node. Variable nodes expose source language,
+target language, current input, and recognition context. Context input nodes render the terminology,
 history, previous revision, and surrounding-source sections. Condition nodes
 select the explicit/automatic language branch and the with/without-reference
 branch. Provider adapters must not add separators around these values.
@@ -120,13 +134,15 @@ records the final ordered role-bearing messages. Nodes outside the executed
 condition path have no trace entry.
 
 Inference attaches the trace to the matching provider result. The backend and
-wire protocol transport it with `TranslationReady`, and the desktop stores only
-the latest host-session trace. If translation retries without optional context,
-the returned trace belongs to that final request rather than the failed first
-attempt. Prompt Studio displays live data only for the active graph and matching
-provider page. A deterministic graph fingerprint also rejects late traces from
-requests that began before the active graph changed, preventing a trace from
-being presented as another design's execution.
+wire protocol transport ASR traces with `SourceSegmentReady` and translation
+traces with `TranslationReady`; the desktop stores the latest host-session
+trace for each delivery family so a later translation does not erase the ASR
+page's runtime data. If ASR retries without lexical context, or translation retries without
+optional reference facts, the returned trace belongs to that final request
+rather than the failed first attempt. Prompt Studio displays live data only for
+the active graph and matching provider page. A deterministic graph fingerprint
+also rejects late traces from requests that began before the active graph
+changed, preventing a trace from being presented as another design's execution.
 
 Every node reserves a right-side runtime pane. The pane displays the node output
 or its not-executed state and owns vertical scrolling when its content exceeds
@@ -147,7 +163,9 @@ Golden tests cover the complete canonical messages for:
 - OpenAI-compatible without reference context;
 - Hunyuan explicit source with reference context;
 - Hunyuan automatic source with reference context;
-- Hunyuan without reference context.
+- Hunyuan without reference context;
+- semantic ASR instruction with and without recognition vocabulary;
+- lexical ASR context containing only the recognition vocabulary.
 
 These tests compare message roles and complete string contents, including every
 space, newline, heading, boundary, and current-input label.
@@ -160,8 +178,12 @@ replaced with the canonical graph.
 
 The WebSocket protocol carries `PromptNodeGraph` as a typed JSON object. A
 backend validates a graph before activating it and reports malformed graphs as
-client errors. Activation requires exactly one Request for each provider target,
-every Request input to be connected, and a reachable Current Input variable.
+client errors. Activation requires exactly one Request for each translation
+provider target, at most one Request for each ASR delivery target, every Request
+input to be connected, and the target's required variable to be reachable:
+Current Input for translation and Recognition Context for lexical ASR context.
+An ASR instruction may use source/expected languages without depending on
+recognition vocabulary; the canonical instruction optionally incorporates it.
 Requests must be on their matching provider page. Shared nodes may feed either
 provider page; provider-specific nodes cannot cross into another provider page
 or feed back into Shared. Malformed Compose placeholders, links to unused
@@ -198,8 +220,15 @@ Toolbar additions use the viewport center, while context-menu additions use the
 pointer location. Neither operation rearranges existing nodes.
 
 `supports_prompt_context` remains a serialized provider configuration field for
-compatibility. Internally it means that optional reference facts may be
-supplied. It never disables graph execution or the main translation instruction.
+compatibility. Translation providers use it for optional reference facts.
+ASR providers use the explicit `asr_prompt_mode` capability (`none`,
+`instruction`, or `context_bias`); legacy ASR entries that only declared prompt
+support migrate to `instruction`. `supports_vocabulary_bias` and
+`vocabulary_weight` independently control structured vocabulary delivery. A
+lexical provider may also declare `asr_context_max_chars`; runtime facts are
+bounded before graph execution so the Request trace remains identical to the
+text sent on the wire. A custom graph whose static composition still exceeds
+that limit fails visibly instead of being silently truncated by an adapter.
 
 On a context-window overflow or probable context leak, the backend re-executes
 the same graph with empty optional reference facts. It must retain the provider

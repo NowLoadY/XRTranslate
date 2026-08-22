@@ -30,10 +30,11 @@ pub struct PromptGraphProjectFile {
 fn default_schema_guide() -> String {
     "X-Translator Prompt Studio Graph Project Guide for AI / Humans:\n\
     1. NODES (nodes: Array):\n\
-       - Variable Node: {'type': 'variable', 'variable': 'current_input' | 'source_language' | 'target_language'}\n\
+       - Variable Node: {'type': 'variable', 'variable': 'current_input' | 'source_language' | 'target_language' | 'recognition_context'}\n\
          * 'current_input': Real-time speech transcript sentence to be translated.\n\
          * 'source_language': Source language name (e.g. 'English', 'Japanese').\n\
          * 'target_language': Target language name (e.g. 'Chinese').\n\
+         * 'recognition_context': Structured ASR terms rendered as text; it is not the current transcript.\n\
        - Input / Data Block (IMPORTANT: built-in blocks ALREADY include descriptive markdown headers):\n\
          * 'terminology': Renders '## Terminology\\n\\n<matched glossary rows>'\n\
          * 'recent_turns': Renders '## Recent Bilingual History\\n\\n<source/target dialogue turns>'\n\
@@ -44,14 +45,14 @@ fn default_schema_guide() -> String {
          * NOTE FOR AI DESIGNERS: Because each data block outputs its own '## Header', DO NOT add extra duplicate headers in Compose templates (e.g. write '{0}', not 'Terminology:\\n{0}').\n\
        - Compose Node: {'type': 'compose', 'text': 'Prompt template text with {0}, {1}, etc.'}\n\
          * Placeholders {0}, {1}, {2}... interpolate outputs from incoming links with input: 0, input: 1, etc.\n\
-       - Switch Node: {'type': 'switch', 'condition': 'has_reference_context' | 'source_is_auto'}\n\
+       - Switch Node: {'type': 'switch', 'condition': 'has_reference_context' | 'has_recognition_context' | 'source_is_auto'}\n\
          * Evaluates condition at runtime: routes input: 0 (False branch) or input: 1 (True branch).\n\
-       - Request Node: {'type': 'request', 'target': 'open_ai_compatible' | 'hunyuan', 'roles': ['system', 'user']}\n\
-         * Final output sink sent to translation LLM. For OpenAI: input 0 = System, input 1 = User. For Hunyuan: input 0 = User.\n\
+       - Request Node: {'type': 'request', 'target': 'open_ai_compatible' | 'hunyuan' | 'asr_instruction' | 'asr_context_bias', 'roles': ['system', 'user']}\n\
+         * Final output sink. Translation targets carry LLM messages. 'asr_instruction' carries semantic recognition instructions; 'asr_context_bias' carries lexical context only. Weighted vocabulary is structured provider data and is never rendered by this graph.\n\
     2. LINKS (links: Array):\n\
        - {'from': '<source_node_id>', 'to': '<target_node_id>', 'input': <target_slot_index_integer>}\n\
     3. PROVIDER PAGES:\n\
-       - Each node belongs to 'page': 'open_ai_compatible' or 'page': 'hunyuan'. Both provider graphs are 100% independent DAG pipelines."
+       - Each node belongs to 'page': 'open_ai_compatible', 'hunyuan', 'asr_instruction', or 'asr_context_bias'. Each delivery graph is an independent DAG pipeline."
         .into()
 }
 
@@ -97,6 +98,7 @@ impl PromptTemplateProfile {
 
         graph.schema_version = PromptNodeGraph::CURRENT_SCHEMA_VERSION;
         migrate_shared_nodes(&mut graph);
+        ensure_asr_pages(&mut graph);
         graph.auto_layout();
 
         if let Err(err) = graph.validate_for_activation() {
@@ -168,6 +170,7 @@ impl PromptTemplateLibrary {
                 profile.graph = PromptNodeGraph::builtin_default();
             } else {
                 migrate_shared_nodes(&mut profile.graph);
+                ensure_asr_pages(&mut profile.graph);
             }
             profile.read_only = false;
         }
@@ -312,6 +315,77 @@ fn migrate_shared_nodes(graph: &mut PromptNodeGraph) {
     graph.auto_layout();
 }
 
+/// Adds the canonical ASR prompt/context pages to translation graphs saved by
+/// older releases without changing their OpenAI or Hunyuan paths.
+fn ensure_asr_pages(graph: &mut PromptNodeGraph) {
+    use crate::{PromptNodeKind, PromptNodePage, PromptProviderTarget};
+    use std::collections::{HashMap, HashSet};
+
+    let canonical = PromptNodeGraph::builtin_default();
+    for (page, target) in [
+        (
+            PromptNodePage::AsrInstruction,
+            PromptProviderTarget::AsrInstruction,
+        ),
+        (
+            PromptNodePage::AsrContextBias,
+            PromptProviderTarget::AsrContextBias,
+        ),
+    ] {
+        let exists = graph.nodes.iter().any(|node| {
+            matches!(node.kind, PromptNodeKind::Request { target: value, .. } if value == target)
+        });
+        if exists {
+            continue;
+        }
+        let source_nodes = canonical
+            .nodes
+            .iter()
+            .filter(|node| node.page == page)
+            .cloned()
+            .collect::<Vec<_>>();
+        let source_ids = source_nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<HashSet<_>>();
+        let mut used_ids = graph
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<HashSet<_>>();
+        let mut id_map = HashMap::new();
+        for mut node in source_nodes {
+            let source_id = node.id.clone();
+            if used_ids.contains(&node.id) {
+                let mut suffix = 1_u32;
+                loop {
+                    let candidate = format!("{source_id}-migrated-{suffix}");
+                    if !used_ids.contains(&candidate) {
+                        node.id = candidate;
+                        break;
+                    }
+                    suffix += 1;
+                }
+            }
+            used_ids.insert(node.id.clone());
+            id_map.insert(source_id, node.id.clone());
+            graph.nodes.push(node);
+        }
+        graph
+            .links
+            .extend(canonical.links.iter().filter_map(|link| {
+                if !(source_ids.contains(&link.from) && source_ids.contains(&link.to)) {
+                    return None;
+                }
+                Some(crate::PromptLink {
+                    from: id_map.get(&link.from)?.clone(),
+                    to: id_map.get(&link.to)?.clone(),
+                    input: link.input,
+                })
+            }));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,6 +397,52 @@ mod tests {
         library.profiles[0].read_only = false;
         library.normalize();
         assert_eq!(library.profiles[0], builtin_default_profile());
+    }
+
+    #[test]
+    fn asr_page_migration_renames_canonical_ids_that_collide_with_custom_nodes() {
+        let canonical = PromptNodeGraph::builtin_default();
+        let mut graph = canonical.clone();
+        graph.nodes.retain(|node| {
+            !matches!(
+                node.page,
+                crate::PromptNodePage::AsrInstruction | crate::PromptNodePage::AsrContextBias
+            )
+        });
+        let retained = graph
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        graph
+            .links
+            .retain(|link| retained.contains(&link.from) && retained.contains(&link.to));
+        let old_id = graph.nodes[0].id.clone();
+        graph.nodes[0].id = "asr-instruction-source-language".into();
+        for link in &mut graph.links {
+            if link.from == old_id {
+                link.from = graph.nodes[0].id.clone();
+            }
+            if link.to == old_id {
+                link.to = graph.nodes[0].id.clone();
+            }
+        }
+
+        ensure_asr_pages(&mut graph);
+
+        let unique = graph
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(unique.len(), graph.nodes.len());
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|node| node.id == "asr-instruction-source-language-migrated-1")
+        );
+        graph.validate_for_activation().unwrap();
     }
 
     #[test]

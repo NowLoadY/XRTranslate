@@ -8,7 +8,7 @@ use crate::{
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct OpenAiAsrOptions {
     pub language: Option<String>,
-    pub prompt_context: Option<String>,
+    pub instruction_prompt: Option<String>,
     pub max_tokens: u32,
 }
 
@@ -47,26 +47,18 @@ impl<C: AsyncHttpClient> OpenAiAsrAdapter<C> {
     ) -> Result<AsrTranscript, InferenceError> {
         let audio = STANDARD.encode(pcm16_mono_16khz_to_wav(pcm)?);
         let language = normalized(&options.language);
-        let context = normalized(&options.prompt_context);
-        let mut instruction = String::from(
-            "Transcribe the audio accurately. Return only the transcript without commentary.",
-        );
-        if let Some(language) = language {
-            instruction.push_str(&format!(" The spoken language is {language}."));
+        let instruction = normalized(&options.instruction_prompt);
+        let mut messages = Vec::new();
+        if let Some(instruction) = instruction {
+            messages.push(json!({"role": "system", "content": instruction}));
         }
-        if let Some(context) = context {
-            instruction.push_str(" Use this context only to improve transcription accuracy:\n");
-            instruction.push_str(context);
-        }
+        messages.push(json!({"role": "user", "content": [{
+            "type": "input_audio",
+            "input_audio": {"data": audio, "format": "wav"}
+        }]}));
         let payload = json!({
             "model": self.model,
-            "messages": [
-                {"role": "system", "content": instruction},
-                {"role": "user", "content": [{
-                    "type": "input_audio",
-                    "input_audio": {"data": audio, "format": "wav"}
-                }]}
-            ],
+            "messages": messages,
             "temperature": 0,
             "max_tokens": options.max_tokens.max(1),
             "stream": false
@@ -122,7 +114,7 @@ mod tests {
                 &[0, 0],
                 OpenAiAsrOptions {
                     language: Some("English".into()),
-                    prompt_context: Some("XRTranslate".into()),
+                    instruction_prompt: Some("Transcribe names accurately: XRTranslate.".into()),
                     max_tokens: 256,
                 },
             )
@@ -138,9 +130,14 @@ mod tests {
             .remove(0);
         assert_eq!(request.body["messages"].as_array().unwrap().len(), 2);
         assert_eq!(
+            request.body["messages"][0]["content"],
+            "Transcribe names accurately: XRTranslate."
+        );
+        assert_eq!(
             request.body["messages"][1]["content"][0]["type"],
             "input_audio"
         );
         assert!(!request.body.to_string().contains("<asr_text>"));
+        assert!(!request.body.to_string().contains("Use this context"));
     }
 }

@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::render_block;
 use crate::{
-    PromptCondition, PromptGraphError, PromptMessageRole, PromptNodeGraph, PromptNodeKind,
-    PromptProviderTarget, PromptVariable, TranslationPromptContext,
+    AsrPromptContext, PromptCondition, PromptGraphError, PromptMessageRole, PromptNodeGraph,
+    PromptNodeKind, PromptProviderTarget, PromptVariable, TranslationPromptContext,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +51,8 @@ struct ExecutionContext<'a> {
     source_text: &'a str,
     source_language: &'a str,
     target_language: &'a str,
+    recognition_context: &'a str,
+    has_recognition_context: bool,
     reference: &'a TranslationPromptContext,
 }
 
@@ -81,8 +83,63 @@ impl PromptNodeGraph {
         target_language: &str,
         reference: &TranslationPromptContext,
     ) -> Result<PromptExecution, PromptGraphError> {
+        self.render_with_trace_internal(
+            target,
+            source_text,
+            source_language,
+            target_language,
+            "",
+            false,
+            reference,
+            true,
+        )
+    }
+
+    /// Renders one ASR prompt delivery path. Recognition vocabulary is kept
+    /// distinct from post-ASR translation input and may be empty while the
+    /// graph's fixed recognition instruction remains useful.
+    pub fn render_asr_with_trace(
+        &self,
+        target: PromptProviderTarget,
+        source_language: &str,
+        expected_languages: &str,
+        context: &AsrPromptContext,
+    ) -> Result<PromptExecution, PromptGraphError> {
+        if !matches!(
+            target,
+            PromptProviderTarget::AsrInstruction | PromptProviderTarget::AsrContextBias
+        ) {
+            return Err(PromptGraphError::new(
+                "ASR rendering requires an ASR provider target",
+            ));
+        }
+        let recognition_context = context.recognition_context_text();
+        self.render_with_trace_internal(
+            target,
+            "",
+            source_language,
+            expected_languages,
+            &recognition_context,
+            context.has_recognition_context(),
+            &TranslationPromptContext::default(),
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_with_trace_internal(
+        &self,
+        target: PromptProviderTarget,
+        source_text: &str,
+        source_language: &str,
+        target_language: &str,
+        recognition_context: &str,
+        has_recognition_context: bool,
+        reference: &TranslationPromptContext,
+        require_source_text: bool,
+    ) -> Result<PromptExecution, PromptGraphError> {
         self.validate_for_activation()?;
-        if source_text.trim().is_empty() {
+        if require_source_text && source_text.trim().is_empty() {
             return Err(PromptGraphError::new("source text cannot be empty"));
         }
         if source_language.trim().is_empty() {
@@ -96,6 +153,8 @@ impl PromptNodeGraph {
             source_text: source_text.trim(),
             source_language: source_language.trim(),
             target_language: target_language.trim(),
+            recognition_context: recognition_context.trim(),
+            has_recognition_context,
             reference,
         };
         let request = self
@@ -235,6 +294,7 @@ impl PromptNodeGraph {
                 PromptVariable::SourceLanguage => context.source_language.to_owned(),
                 PromptVariable::TargetLanguage => context.target_language.to_owned(),
                 PromptVariable::CurrentInput => context.source_text.to_owned(),
+                PromptVariable::RecognitionContext => context.recognition_context.to_owned(),
             }),
             PromptNodeKind::Compose { text } => {
                 crate::template::render_compose_text(text, |input| {
@@ -256,6 +316,7 @@ impl PromptNodeGraph {
                     PromptCondition::HasReferenceContext => {
                         context.reference.has_reference_context()
                     }
+                    PromptCondition::HasRecognitionContext => context.has_recognition_context,
                 });
                 selected_input = Some(input);
                 self.links

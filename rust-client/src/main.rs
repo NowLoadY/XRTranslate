@@ -56,7 +56,7 @@ use session_coordinator::{
     SessionEventSubscriber, TranslationSessionOwner, TranslationSessionPlugin,
 };
 use ui::{NavigationState, Page};
-use xrtranslate_prompt::{PromptExecutionTrace, PromptTemplateLibrary};
+use xrtranslate_prompt::{PromptExecutionTrace, PromptProviderTarget, PromptTemplateLibrary};
 
 pub const LANGUAGE_OPTIONS: &[(&str, &str)] = &[
     ("zh", "Chinese"),
@@ -233,7 +233,8 @@ struct SharedSessionState {
     last_error: Option<String>,
     is_translating: bool,
     pending_route_change: Option<(String, String)>,
-    latest_prompt_trace: Option<PromptExecutionTrace>,
+    latest_asr_prompt_trace: Option<PromptExecutionTrace>,
+    latest_translation_prompt_trace: Option<PromptExecutionTrace>,
     provider_configuration_required: bool,
     microphone_clone_state: Option<xrtranslate_protocol::VoiceCloneState>,
     loopback_clone_state: Option<xrtranslate_protocol::VoiceCloneState>,
@@ -440,6 +441,7 @@ impl Default for XRTranslateApp {
                             continuous,
                             publish_to_host_outputs,
                             text,
+                            prompt_trace,
                             activation_matches,
                             context_matches,
                             turn_id,
@@ -459,6 +461,7 @@ impl Default for XRTranslateApp {
                             if !publish_to_host_outputs {
                                 continue;
                             }
+                            state.latest_asr_prompt_trace = prompt_trace;
                             if segment_index == 1 {
                                 let pending_index = state
                                     .pending_final_asr
@@ -552,7 +555,7 @@ impl Default for XRTranslateApp {
                             if !publish_to_host_outputs {
                                 continue;
                             }
-                            state.latest_prompt_trace = prompt_trace;
+                            state.latest_translation_prompt_trace = prompt_trace;
                             let fragment = TranslationHistoryEntry {
                                 turn_id: turn_id.clone(),
                                 segment_index,
@@ -967,7 +970,8 @@ impl XRTranslateApp {
         self.prompt_library.active_id = id;
         self.prompt_studio.set_runtime_trace(None);
         if let Ok(mut state) = self.shared_session_state.lock() {
-            state.latest_prompt_trace = None;
+            state.latest_asr_prompt_trace = None;
+            state.latest_translation_prompt_trace = None;
         }
         for session in &self.sessions {
             session.update_prompt_template(graph.clone());
@@ -2578,8 +2582,15 @@ impl XRTranslateApp {
             self.loopback_clone_state = state.loopback_clone_state.clone();
             self.tts_runtime_backend = state.tts_runtime_backend.clone();
             self.tts_runtime_cuda_version = state.tts_runtime_cuda_version.clone();
-            self.prompt_studio
-                .set_runtime_trace(state.latest_prompt_trace.clone());
+            let prompt_trace = match self.prompt_studio.active_provider() {
+                PromptProviderTarget::AsrInstruction | PromptProviderTarget::AsrContextBias => {
+                    state.latest_asr_prompt_trace.clone()
+                }
+                PromptProviderTarget::Hunyuan | PromptProviderTarget::OpenAiCompatible => {
+                    state.latest_translation_prompt_trace.clone()
+                }
+            };
+            self.prompt_studio.set_runtime_trace(prompt_trace);
             let was_translating = self.is_translating;
             self.is_translating = state.is_translating;
             if was_translating

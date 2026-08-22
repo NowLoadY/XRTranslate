@@ -1,5 +1,51 @@
 use serde::{Deserialize, Serialize};
 
+/// Provider-neutral facts available before speech recognition. The prompt
+/// graph may render these terms into a free-form instruction prompt or a
+/// lexical context field, while weighted vocabulary delivery stays separate.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AsrPromptContext {
+    pub vocabulary: Vec<String>,
+}
+
+impl AsrPromptContext {
+    pub fn has_recognition_context(&self) -> bool {
+        self.vocabulary.iter().any(|term| !term.trim().is_empty())
+    }
+
+    pub fn recognition_context_text(&self) -> String {
+        self.vocabulary
+            .iter()
+            .map(|term| term.trim())
+            .filter(|term| !term.is_empty())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Selects complete recognition terms whose rendered comma-separated text
+    /// fits a provider-declared character limit. Weighted vocabulary delivery
+    /// continues to use the original, unbounded structured terms.
+    pub fn bounded_recognition_context(&self, max_chars: usize) -> Self {
+        let mut vocabulary = Vec::new();
+        let mut used_chars = 0usize;
+        for term in self
+            .vocabulary
+            .iter()
+            .map(|term| term.trim())
+            .filter(|term| !term.is_empty())
+        {
+            let separator_chars = usize::from(!vocabulary.is_empty()) * 2;
+            let term_chars = term.chars().count();
+            if used_chars + separator_chars + term_chars > max_chars {
+                continue;
+            }
+            used_chars += separator_chars + term_chars;
+            vocabulary.push(term.to_owned());
+        }
+        Self { vocabulary }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TranslationPromptContext {
     pub language_order: Vec<String>,
@@ -181,4 +227,22 @@ fn append_source_line(
         "{label}: {speaker}{} / {text}",
         source.source_language.trim()
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AsrPromptContext;
+
+    #[test]
+    fn recognition_context_bounds_complete_terms_and_exact_separator_cost() {
+        let context = AsrPromptContext {
+            vocabulary: vec!["Alpha".into(), "Beta".into(), "TooLongForGap".into()],
+        };
+
+        let bounded = context.bounded_recognition_context(11);
+
+        assert_eq!(bounded.vocabulary, vec!["Alpha", "Beta"]);
+        assert_eq!(bounded.recognition_context_text(), "Alpha, Beta");
+        assert_eq!(context.vocabulary.len(), 3);
+    }
 }
