@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import json
+import math
 import os
 import shutil
 import sys
+import tempfile
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -45,6 +48,30 @@ CMUDICT_LICENSE_BYTES = 1_754
 CMUDICT_LICENSE_SHA256 = "bd4ce8e44170a5f9f481310ca85c51de3c4f851a65e679b40e603b143bd3542a"
 OPSET = 16
 MELO_GRAPH_TOKEN_WIDTH = 512
+DEFAULT_PHONE_DURATION_FRAMES = 5.0
+MAX_PHONE_DURATION_FRAMES = 64.0
+CUDA_PROVIDER = "CUDAExecutionProvider"
+GPU_COMPUTE_OPS = frozenset(
+    {
+        "Conv",
+        "FusedConv",
+        "ConvTranspose",
+        "MatMul",
+        "FusedMatMul",
+        "Gemm",
+        "ReduceMean",
+        "Sqrt",
+        "Exp",
+        "Softmax",
+        "LeakyRelu",
+        "Relu",
+        "Tanh",
+    }
+)
+CPU_METADATA_OPS = frozenset({"Shape", "Size"})
+CONTROL_DTYPES = frozenset(
+    {"bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64"}
+)
 
 
 class HParams:
@@ -171,6 +198,35 @@ def load_melo_source(repo_root: Path):
     return SynthesizerTrn, onnx_sequence_mask, onnx_generate_path
 
 
+def stable_phone_durations(
+    log_duration: torch.Tensor,
+    text_mask: torch.Tensor,
+    length_scale: torch.Tensor,
+) -> torch.Tensor:
+    """Preserve strictly positive durations for every valid phone on CUDA."""
+    log_duration = log_duration.float()
+    default_log_duration = torch.full_like(
+        log_duration, math.log(DEFAULT_PHONE_DURATION_FRAMES)
+    )
+    log_duration = torch.where(
+        torch.isfinite(log_duration), log_duration, default_log_duration
+    )
+    log_duration = torch.clamp(
+        log_duration, max=math.log(MAX_PHONE_DURATION_FRAMES)
+    )
+    duration = (
+        torch.exp(log_duration)
+        * text_mask.float()
+        * length_scale.float()
+    )
+    duration = torch.ceil(duration)
+    return torch.where(
+        text_mask > 0,
+        torch.clamp(duration, min=1.0, max=MAX_PHONE_DURATION_FRAMES),
+        torch.zeros_like(duration),
+    ).to(text_mask.dtype)
+
+
 class MeloOnnxWrapper(torch.nn.Module):
     """Stable graph boundary shared by every MeloTTS language package."""
 
@@ -192,7 +248,7 @@ class MeloOnnxWrapper(torch.nn.Module):
     ) -> torch.Tensor:
         bert = torch.zeros(
             (x_tst.shape[0], 1024, x_tst.shape[1]),
-            dtype=ja_bert.dtype,
+            dtype=torch.float32,
             device=ja_bert.device,
         )
         speakers = speakers.long()
@@ -203,16 +259,22 @@ class MeloOnnxWrapper(torch.nn.Module):
             tones.long(),
             lang_ids.long(),
             bert,
-            ja_bert,
-            g=g,
+            ja_bert.float(),
+            g=g.float(),
         )
         # MeloTTS officially supports sdp_ratio=0. Use its deterministic
         # duration predictor and the latent distribution mean. Embedding an
         # unseeded ONNX RNG made identical text vary by process and could yield
         # a degenerate duration on CUDA before the application could recover.
-        log_duration = self.model.dp(encoded, text_mask, g=g)
-        duration = torch.exp(log_duration) * text_mask * length_scale
-        duration = torch.ceil(duration)
+        # The Chinese checkpoint can overflow its duration predictor for some
+        # valid 27-phone inputs in FP16. Keep this small predictor in FP32 on
+        # CUDA; the acoustic flow and decoder remain FP16.
+        log_duration = self.model.dp(
+            encoded.float(), text_mask.float(), g=g.float()
+        )
+        # Preserve finite, bounded, positive durations for every valid phone
+        # before constructing the dynamic attention path. Padding remains zero.
+        duration = stable_phone_durations(log_duration, text_mask, length_scale)
         output_lengths = torch.clamp_min(torch.sum(duration, [1, 2]), 1).long()
         output_mask = torch.unsqueeze(self.sequence_mask(output_lengths, None), 1).to(
             text_mask.dtype
@@ -220,8 +282,9 @@ class MeloOnnxWrapper(torch.nn.Module):
         attention_mask = torch.unsqueeze(text_mask, 2) * torch.unsqueeze(output_mask, -1)
         attention = self.generate_path(duration, attention_mask)
         means = torch.matmul(attention.squeeze(1), means.transpose(1, 2)).transpose(1, 2)
-        latent = self.model.flow(means, output_mask, g=g, reverse=True)
-        audio = self.model.dec(latent * output_mask, g=g)
+        flow_mask = output_mask.half()
+        latent = self.model.flow(means.half(), flow_mask, g=g, reverse=True)
+        audio = self.model.dec(latent * flow_mask, g=g)
         return audio.reshape(1, 1, -1)
 
 
@@ -264,9 +327,10 @@ def export_melo(
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     model.load_state_dict(checkpoint["model"], strict=True)
     device = torch.device("cuda:0")
-    wrapper = MeloOnnxWrapper(
-        model.eval().half().to(device), sequence_mask, generate_path
-    ).eval()
+    model = model.eval().half().to(device)
+    model.enc_p.float()
+    model.dp.float()
+    wrapper = MeloOnnxWrapper(model, sequence_mask, generate_path).eval()
 
     tokens = MELO_GRAPH_TOKEN_WIDTH
     x_tst = torch.zeros((1, tokens), dtype=torch.int32, device=device)
@@ -321,28 +385,132 @@ def export_melo(
     verify_melo_graph(output, MELO_GRAPH_TOKEN_WIDTH)
 
 
-def smoke_melo(path: Path, speaker_id: int, language_id: int) -> dict[str, Any]:
-    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-    session = ort.InferenceSession(str(path), providers=providers)
-    tokens = MELO_GRAPH_TOKEN_WIDTH
-    outputs = session.run(
-        ["output"],
+def validate_melo_cuda_profile(events: list[dict[str, Any]]) -> dict[str, Any]:
+    assignments = Counter(
+        (
+            event.get("args", {}).get("provider"),
+            event.get("args", {}).get("op_name"),
+        )
+        for event in events
+        if event.get("cat") == "Node"
+    )
+    cpu_events = [
+        event
+        for event in events
+        if event.get("cat") == "Node"
+        and event.get("args", {}).get("provider") == "CPUExecutionProvider"
+    ]
+
+    def is_control_signature(signature: Any) -> bool:
+        return (
+            isinstance(signature, dict)
+            and bool(signature)
+            and set(signature) <= CONTROL_DTYPES
+        )
+
+    def is_scalar_float_signature(signature: Any) -> bool:
+        return (
+            isinstance(signature, dict)
+            and len(signature) == 1
+            and next(iter(signature)) in {"float", "float16", "double"}
+            and next(iter(signature.values())) == []
+        )
+
+    def is_cpu_control(event: dict[str, Any]) -> bool:
+        args = event.get("args", {})
+        if args.get("op_name") in CPU_METADATA_OPS:
+            return True
+        inputs = args.get("input_type_shape")
+        outputs = args.get("output_type_shape")
+        if not isinstance(inputs, list) or not isinstance(outputs, list):
+            return False
+        if all(is_control_signature(item) for item in inputs + outputs):
+            return True
+        return (
+            args.get("op_name") == "Cast"
+            and all(is_control_signature(item) for item in inputs)
+            and all(is_scalar_float_signature(item) for item in outputs)
+        )
+
+    cpu_compute = sorted(
         {
-            "x_tst": np.zeros((1, tokens), dtype=np.int32),
-            "x_tst_lenghts": np.array([12], dtype=np.int32),
-            "speakers": np.array([speaker_id], dtype=np.int32),
-            "tones": np.zeros((1, tokens), dtype=np.int32),
-            "lang_ids": np.full((1, tokens), language_id, dtype=np.int32),
-            "ja_bert": np.zeros((1, 768, tokens), dtype=np.float16),
-            "length_scale": np.array(1.0, dtype=np.float16),
-        },
-    )[0]
+            f"{event.get('args', {}).get('op_name')} ({event.get('name')})"
+            for event in cpu_events
+            if not is_cpu_control(event)
+        }
+    )
+    if cpu_compute:
+        raise RuntimeError(
+            "MeloTTS GPU validation detected CPU compute fallback for: "
+            + ", ".join(cpu_compute)
+        )
+    cuda_compute = sum(
+        count
+        for (provider, op_name), count in assignments.items()
+        if provider == CUDA_PROVIDER and op_name in GPU_COMPUTE_OPS
+    )
+    cuda_convolutions = sum(
+        count
+        for (provider, op_name), count in assignments.items()
+        if provider == CUDA_PROVIDER and op_name in {"Conv", "FusedConv", "ConvTranspose"}
+    )
+    if cuda_compute == 0 or cuda_convolutions == 0:
+        raise RuntimeError("MeloTTS smoke did not execute its acoustic graph on CUDA")
+    return {
+        "cuda_compute_nodes": cuda_compute,
+        "cuda_convolution_nodes": cuda_convolutions,
+        "cpu_compute_fallback_nodes": 0,
+        "cpu_control_nodes": len(cpu_events),
+        "cpu_control_ops": sorted(
+            {event.get("args", {}).get("op_name") for event in cpu_events}
+        ),
+    }
+
+
+def smoke_melo(path: Path, speaker_id: int, language_id: int) -> dict[str, Any]:
+    available = ort.get_available_providers()
+    if CUDA_PROVIDER not in available:
+        raise RuntimeError(
+            "CUDAExecutionProvider is required to validate a MeloTTS release; "
+            f"available providers: {available}"
+        )
+    with tempfile.TemporaryDirectory() as profile_directory:
+        session_options = ort.SessionOptions()
+        session_options.enable_profiling = True
+        session_options.profile_file_prefix = str(Path(profile_directory) / "melo-cuda")
+        session = ort.InferenceSession(
+            str(path), sess_options=session_options, providers=[CUDA_PROVIDER]
+        )
+        active_providers = session.get_providers()
+        if not active_providers or active_providers[0] != CUDA_PROVIDER:
+            raise RuntimeError(
+                "MeloTTS validation requires CUDA as the active execution provider; "
+                f"active providers: {active_providers}"
+            )
+        tokens = MELO_GRAPH_TOKEN_WIDTH
+        outputs = session.run(
+            ["output"],
+            {
+                "x_tst": np.zeros((1, tokens), dtype=np.int32),
+                "x_tst_lenghts": np.array([12], dtype=np.int32),
+                "speakers": np.array([speaker_id], dtype=np.int32),
+                "tones": np.zeros((1, tokens), dtype=np.int32),
+                "lang_ids": np.full((1, tokens), language_id, dtype=np.int32),
+                "ja_bert": np.zeros((1, 768, tokens), dtype=np.float16),
+                "length_scale": np.array(1.0, dtype=np.float16),
+            },
+        )[0]
+        profile_path = Path(session.end_profiling())
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        profile_summary = validate_melo_cuda_profile(profile)
     if outputs.ndim != 3 or outputs.shape[0:2] != (1, 1):
         raise RuntimeError(f"Unexpected MeloTTS output shape: {outputs.shape}")
     if not np.isfinite(outputs).all() or float(np.max(np.abs(outputs))) < 1.0e-5:
         raise RuntimeError("MeloTTS ONNX smoke output is silent or non-finite")
     return {
-        "providers": session.get_providers(),
+        "execution_provider": CUDA_PROVIDER,
+        "registered_providers": active_providers,
+        **profile_summary,
         "output_shape": list(outputs.shape),
         "peak": float(np.max(np.abs(outputs))),
     }
@@ -568,7 +736,7 @@ def build(repo_root: Path, spec: LanguageSpec, output_root: Path) -> Path:
             "onnx": onnx.__version__,
             "onnxruntime": ort.__version__,
             "opset": OPSET,
-            "precision": "fp16",
+            "precision": "mixed_fp32_text_fp16_acoustic",
         },
         "graph_contract": {
             "inputs": [

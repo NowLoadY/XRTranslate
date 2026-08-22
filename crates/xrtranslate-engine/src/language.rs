@@ -183,7 +183,35 @@ pub fn auto_route_language_pair(
 ) -> Option<(&'static str, &'static str)> {
     let detected = detect_text_language(text)?;
     let src = current_source.trim().to_ascii_lowercase();
-    let tgt = current_target.trim().to_ascii_lowercase();
+    let target_parts = current_target
+        .split(',')
+        .map(str::trim)
+        .filter(|code| !code.is_empty())
+        .collect::<Vec<_>>();
+    // Automatic bidirectional mode stores both languages in the target field
+    // (for example `zh,en`).  Route against the individual pair members;
+    // passing the comma-separated value through as a language code makes the
+    // text path unable to select the opposite direction.
+    let (tgt, pair_target) = match target_parts.as_slice() {
+        [first, second, ..] => (
+            first.to_ascii_lowercase(),
+            Some(second.to_ascii_lowercase()),
+        ),
+        [first] => (first.to_ascii_lowercase(), None),
+        [] => (String::new(), None),
+    };
+
+    if src == "auto" {
+        if let Some(second) = pair_target.as_deref() {
+            if is_language_code_match(detected, &tgt) {
+                return Some((static_code(&tgt), static_code(second)));
+            }
+            if is_language_code_match(detected, second) {
+                return Some((static_code(second), static_code(&tgt)));
+            }
+            return Some((detected, static_code(&tgt)));
+        }
+    }
 
     // If already matching source, no swap needed.
     if is_language_code_match(detected, &src) {
@@ -278,6 +306,18 @@ mod tests {
         assert_eq!(
             auto_route_language_pair("How are you today?", "zh", "en"),
             Some(("en", "zh"))
+        );
+
+        // Automatic bidirectional routes carry both languages in the target
+        // field, but the selected route must contain only the opposite
+        // language as its target.
+        assert_eq!(
+            auto_route_language_pair("How are you today?", "auto", "zh,en"),
+            Some(("en", "zh"))
+        );
+        assert_eq!(
+            auto_route_language_pair("今天过得怎么样？", "auto", "zh,en"),
+            Some(("zh", "en"))
         );
 
         // When typing Chinese on an en -> zh pair, it should flip to zh -> en

@@ -129,8 +129,14 @@ def stage(build_root: Path, release_root: Path, languages: list[str]) -> None:
     for manifest, package in zip(package_manifests, packages, strict=True):
         installed_mib = package["installed_bytes"] / 1024 / 1024
         language = manifest["language"]
+        precision = manifest["conversion"]["precision"]
+        precision_label = (
+            "FP32 text / FP16 acoustic"
+            if precision == "mixed_fp32_text_fp16_acoustic"
+            else precision
+        )
         rows.append(
-            f"| `{manifest['package_id']}` | {language['label']} | FP16 | "
+            f"| `{manifest['package_id']}` | {language['label']} | {precision_label} | "
             f"{installed_mib:.1f} MiB | {manifest['graph_contract']['sample_rate_hz']:,} Hz |"
         )
     package_rows = "\n".join(rows)

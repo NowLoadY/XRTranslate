@@ -435,21 +435,37 @@ mod tests {
             .collect::<Vec<_>>();
         let wav = crate::pcm16_mono_16khz_to_wav(&samples).unwrap();
         adapter.register_voice("smoke", wav, "").await.unwrap();
-        let text = std::env::var("XRTRANSLATE_OPENVOICE_SMOKE_TEXT")
-            .unwrap_or_else(|_| "你好，OpenVoice语音翻译已经准备好了。".into());
-        let audio = adapter.synthesize(&text, "smoke", "zh-CN").await.unwrap();
-        eprintln!(
-            "openvoice_chinese_device={prepared:?} samples={} seconds={:.3}",
-            audio.bytes.len() / 2,
-            audio.bytes.len() as f64 / 2.0 / f64::from(audio.sample_rate)
+        let override_text = std::env::var("XRTRANSLATE_OPENVOICE_SMOKE_TEXT").ok();
+        let texts = override_text.as_deref().map_or_else(
+            || {
+                vec![
+                    "好。",
+                    "谢谢。",
+                    "请再说一遍。",
+                    "这是一个测试。",
+                    "很高兴认识你。",
+                    "我听不懂中文。",
+                    "今天天气怎么样？",
+                    "今天是2026年8月23日。",
+                    "OpenVoice支持中文TTS。",
+                ]
+            },
+            |text| vec![text],
         );
-        assert_eq!(audio.sample_rate, model::OUTPUT_SAMPLE_RATE);
-        assert!(audio.bytes.len() > audio.sample_rate as usize);
-        assert!(
-            audio
-                .bytes
-                .chunks_exact(2)
-                .any(|sample| i16::from_le_bytes([sample[0], sample[1]]).unsigned_abs() > 128)
-        );
+        for text in texts {
+            let audio = adapter.synthesize(text, "smoke", "zh-CN").await.unwrap();
+            eprintln!(
+                "openvoice_chinese_device={prepared:?} text={text:?} samples={} seconds={:.3}",
+                audio.bytes.len() / 2,
+                audio.bytes.len() as f64 / 2.0 / f64::from(audio.sample_rate)
+            );
+            assert_eq!(audio.sample_rate, model::OUTPUT_SAMPLE_RATE);
+            assert!(audio.bytes.len() > audio.sample_rate as usize);
+            assert!(
+                audio.bytes.chunks_exact(2).any(|sample| {
+                    i16::from_le_bytes([sample[0], sample[1]]).unsigned_abs() > 128
+                })
+            );
+        }
     }
 }

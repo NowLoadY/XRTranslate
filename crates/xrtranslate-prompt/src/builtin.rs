@@ -372,7 +372,7 @@ impl GraphBuilder {
             "asr-instruction-auto",
             page,
             "AUTO ASR INSTRUCTION",
-            "Transcribe the current audio accurately. Expected spoken languages are {0}. Detect the spoken language, but do not translate it. Return only the transcript without explanation or commentary.",
+            "Transcribe the current audio accurately. Expected spoken languages are {0}. Detect which language is actually spoken; both listed languages are equally valid, so do not prefer the first language in the list. Do not translate the speech. Return only the transcript without explanation or commentary.",
             &["asr-instruction-expected-languages"],
         );
         self.switch(

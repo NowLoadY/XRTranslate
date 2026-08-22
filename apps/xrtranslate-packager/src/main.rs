@@ -515,6 +515,9 @@ fn rewrite_config(config_path: &Path) -> Result<String, PackageError> {
         "corpora_directory".into(),
         Value::String(CORPORA_CONFIG_ROOT.into()),
     );
+    if let Some(tts) = root_object.get_mut("tts").and_then(Value::as_object_mut) {
+        tts.insert("provider".into(), Value::String("none".into()));
+    }
     Ok(format!("{}\n", serde_json::to_string_pretty(&root)?))
 }
 
@@ -1027,7 +1030,7 @@ mod tests {
     fn rewrite_config_clears_runtime_path_and_makes_models_release_relative() {
         let root = temp_directory("config");
         let config = root.join("config.json");
-        write(&config, br#"{"model_manager":{"llama_server_path":"C:/old/llama-server.exe","models_directory":"C:/old/models","qwen3_asr_gguf_directory":"C:/old/qwen"}}"#);
+        write(&config, br#"{"model_manager":{"llama_server_path":"C:/old/llama-server.exe","models_directory":"C:/old/models","qwen3_asr_gguf_directory":"C:/old/qwen"},"tts":{"provider":"openvoice"}}"#);
 
         let rewritten: Value = serde_json::from_str(&rewrite_config(&config).unwrap()).unwrap();
         assert_eq!(rewritten["model_manager"]["llama_server_path"], "");
@@ -1044,6 +1047,7 @@ mod tests {
                 .get("qwen3_asr_gguf_directory")
                 .is_none()
         );
+        assert_eq!(rewritten["tts"]["provider"], "none");
         fs::remove_dir_all(root).unwrap();
     }
 

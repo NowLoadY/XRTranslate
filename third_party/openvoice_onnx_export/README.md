@@ -54,9 +54,9 @@ conda run -n torch211cu128 python third_party/openvoice_onnx_export/build.py `
 
 The script refuses to run unless the environment still has the recorded
 PyTorch build (`2.11.0+cu128`). It downloads immutable upstream revisions via
-the Hugging Face cache, exports the FP16 MeloTTS graph, copies the matching
-OpenVoice source embedding, and writes a machine-readable build manifest with
-every source and output SHA-256.
+the Hugging Face cache, exports the mixed FP32-text/FP16-acoustic MeloTTS graph,
+copies the matching OpenVoice source embedding, and writes a machine-readable
+build manifest with every source and output SHA-256.
 
 The export wrapper preserves control operators such as `Range` in FP32 while
 keeping the acoustic graph and its public tensor ABI in FP16. This avoids an
@@ -64,14 +64,27 @@ invalid FP16 `Range` emitted by PyTorch 2.11's legacy ONNX exporter without
 changing model weights or the PyTorch installation.
 
 The packaged graph uses MeloTTS's supported deterministic duration predictor
-(`sdp_ratio=0`) and the acoustic latent distribution mean. The production ABI
-uses a fixed 512-phone execution tensor plus the real unpadded length; the Rust
-provider performs its CUDA-validated segmentation before inference.
+(`sdp_ratio=0`) and the acoustic latent distribution mean. The text encoder,
+duration predictor, and exponentiation run in FP32 on CUDA because the Chinese
+checkpoint can produce non-finite latent means and duration logits in FP16 at
+specific phone counts. Non-finite duration predictions receive a finite default,
+and every valid phone is bounded to 1-64 frames before the dynamic attention path
+is built. This prevents both zero-sized flow tensors and unbounded allocations.
+The latent means are converted to FP16 only at the acoustic flow boundary; the
+flow and decoder remain FP16 CUDA. The production ABI uses a fixed 512-phone
+execution tensor plus the real unpadded length; the Rust provider performs its
+CUDA-validated segmentation before inference.
 
 Each exported MeloTTS and BERT graph is checked before its smoke test. The
 check rejects unexpected input/output names, tensor dtypes, fixed or dynamic
-dimensions, ONNX opsets, and BERT feature widths other than 768. The contract
-tests do not require a GPU or load PyTorch:
+dimensions, ONNX opsets, and BERT feature widths other than 768. MeloTTS release
+validation requires CUDAExecutionProvider and inspects an ONNX Runtime profile;
+all convolution, matrix, activation and normalization work must execute on CUDA,
+while only profiled metadata operations, integer/boolean shape arithmetic, and
+scalar control casts may remain host-side. Any unclassified CPU node or floating
+tensor computation fails release validation. CPU compute fallback is never
+accepted. The
+static contract tests do not require a GPU or load PyTorch:
 
 ```powershell
 conda run -n torch211cu128 python -m unittest discover `

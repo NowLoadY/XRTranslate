@@ -410,8 +410,8 @@ const OPENVOICE_V2_ZH_REQUIRED_FILES: &[RequiredModelFile] = &[
         role: ModelFileRole::RuntimeManifest,
         relative_path: "package-manifest.json",
         purpose: "Reproducible conversion provenance and graph contract",
-        bytes: 7_136,
-        sha256: "03f097382e49a2b410203adeedf08f785f1276a276223e4579513a79b28e9aeb",
+        bytes: 7_646,
+        sha256: "72bc0596b9cfa9f337181865d5516903059620fc8f73e497b92c4c810c5df1e8",
     },
     RequiredModelFile {
         role: ModelFileRole::ModelConfig,
@@ -423,9 +423,9 @@ const OPENVOICE_V2_ZH_REQUIRED_FILES: &[RequiredModelFile] = &[
     RequiredModelFile {
         role: ModelFileRole::BaseTtsGraph,
         relative_path: "models/melo.onnx",
-        purpose: "MeloTTS Chinese mixed-English FP16 base voice graph",
-        bytes: 85_675_331,
-        sha256: "1925a7c6f7416c24ae227465889abd533e285c819761c262faff665d8000b123",
+        purpose: "MeloTTS Chinese mixed-English FP32-text/FP16-acoustic base voice graph",
+        bytes: 100_934_380,
+        sha256: "b5ad831b584c5a4c289e4a39c3821cefde0df794614dbc28ee56c9770154e8e6",
     },
     RequiredModelFile {
         role: ModelFileRole::BertGraph,
@@ -547,7 +547,7 @@ pub const OPENVOICE_V2_ZH_ONNX_FP16: ModelAssetManifest = ModelAssetManifest {
     required_files: OPENVOICE_V2_ZH_REQUIRED_FILES,
     source: ModelSource {
         repository: "NowLoadY/XRTranslate-OpenVoice-ONNX",
-        revision: "961ef7e65b63b7793dda61c7fe159a6e5a4b2f04",
+        revision: "8a5782785c7f728692057eab37e9a3645b5747f8",
         remote_directory: "packages/zh/v1",
         include_patterns: &["packages/zh/v1/**"],
         file_overrides: &[],

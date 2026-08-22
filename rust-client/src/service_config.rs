@@ -947,13 +947,28 @@ impl ServiceConfigEditor {
     }
 }
 
-fn provider_sort_rank(category: &str, provider_name: &str) -> i32 {
-    match (category, provider_name) {
-        ("tts", "openvoice") => 0,
-        ("tts", "none") => 1,
-        ("tts", "audio8") => 2,
-        _ => 0,
+fn category_capability(category: &str) -> Option<xrtranslate_assets::ModelCapability> {
+    match category {
+        "asr" => Some(xrtranslate_assets::ModelCapability::Asr),
+        "translation" => Some(xrtranslate_assets::ModelCapability::Translation),
+        "tts" => Some(xrtranslate_assets::ModelCapability::Tts),
+        _ => None,
     }
+}
+
+fn provider_sort_rank(category: &str, provider_name: &str) -> usize {
+    if provider_name == "none" {
+        return 0;
+    }
+    let Some(capability) = category_capability(category) else {
+        return 100;
+    };
+    if let Some(pos) = xrtranslate_assets::manifests_for_capability(capability)
+        .position(|manifest| manifest.provider == provider_name)
+    {
+        return 1 + pos;
+    }
+    100
 }
 
 fn sort_providers(category: &str, providers: &mut [ProviderCard]) {

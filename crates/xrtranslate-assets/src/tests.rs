@@ -67,15 +67,15 @@ fn static_catalog_declares_every_native_model_package() {
     let archive = OPENVOICE_V3_ONNX_FP16.source.archive.unwrap();
     assert_eq!(archive.bytes, 204_513_198);
     assert_eq!(OPENVOICE_V3_ONNX_FP16.download_bytes(), 207_772_473);
-    assert_eq!(OPENVOICE_V2_ZH_ONNX_FP16.download_bytes(), 468_011_765);
-    assert_eq!(OPENVOICE_V2_ZH_ONNX_FP16.installed_bytes(), 468_011_765);
+    assert_eq!(OPENVOICE_V2_ZH_ONNX_FP16.download_bytes(), 483_271_324);
+    assert_eq!(OPENVOICE_V2_ZH_ONNX_FP16.installed_bytes(), 483_271_324);
     assert_eq!(OPENVOICE_V2_ZH_ONNX_FP16.languages, &["zh"]);
     assert_eq!(OPENVOICE_V2_ZH_ONNX_FP16.voice_presets[0].key, "zh-default");
     assert_eq!(
         OPENVOICE_V2_ZH_ONNX_FP16
             .source
             .hugging_face_resolve_url("models/melo.onnx"),
-        "https://huggingface.co/NowLoadY/XRTranslate-OpenVoice-ONNX/resolve/961ef7e65b63b7793dda61c7fe159a6e5a4b2f04/packages/zh/v1/models/melo.onnx"
+        "https://huggingface.co/NowLoadY/XRTranslate-OpenVoice-ONNX/resolve/8a5782785c7f728692057eab37e9a3645b5747f8/packages/zh/v1/models/melo.onnx"
     );
     for manifest in MODEL_ASSET_CATALOG {
         assert!(
@@ -440,7 +440,7 @@ fn verified_staging_directory_is_promoted_without_overwriting_an_install() {
 }
 
 #[test]
-#[ignore = "downloads the optional 446 MiB public OpenVoice Chinese package"]
+#[ignore = "downloads the optional 461 MiB public OpenVoice Chinese package"]
 fn public_openvoice_chinese_package_installs_anonymously() {
     let root = temporary_project_root();
     let mut config = ModelAssetsConfig::default();
