@@ -5,21 +5,22 @@ use std::path::Path;
 use xrtranslate_config::AppConfig;
 use xrtranslate_inference::{Audio8OnnxAdapter, Audio8SynthesisOptions, OnnxExecutionDevice};
 
-use super::{provider_object, supported_languages, threads};
+use super::{provider_object, threads};
 use crate::model_runtime::tts::NativeTtsAdapter;
 
 pub(in crate::model_runtime::tts) fn build(
     config: &AppConfig,
     model_directory: &Path,
+    supported_languages: Vec<String>,
 ) -> Result<NativeTtsAdapter, String> {
     let provider = provider_object(config, "audio8")?;
-    let string = |key: &str, fallback: &str| {
-        provider
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(fallback)
-            .to_owned()
-    };
+    let configured_device = provider
+        .get("device")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("auto");
+    if !matches!(configured_device, "auto" | "cuda") {
+        return Err("Audio8 managed models require CUDA; CPU is not supported.".to_owned());
+    }
     let defaults = Audio8SynthesisOptions::default();
     let integer = |key: &str, fallback: usize| {
         provider
@@ -36,7 +37,7 @@ pub(in crate::model_runtime::tts) fn build(
     };
     let adapter = Audio8OnnxAdapter::with_synthesis_options(
         model_directory,
-        OnnxExecutionDevice::from_config(&string("device", "auto")),
+        OnnxExecutionDevice::Cuda,
         threads(provider),
         Audio8SynthesisOptions {
             max_new_tokens: integer("max_new_tokens", defaults.max_new_tokens),
@@ -46,8 +47,5 @@ pub(in crate::model_runtime::tts) fn build(
         },
     )
     .map_err(|error| error.to_string())?;
-    Ok(NativeTtsAdapter::audio8(
-        adapter,
-        supported_languages(provider, "audio8")?,
-    ))
+    Ok(NativeTtsAdapter::audio8(adapter, supported_languages))
 }

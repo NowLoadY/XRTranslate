@@ -7,9 +7,7 @@
 mod adapter;
 mod providers;
 
-use std::path::Path;
-
-use xrtranslate_assets::{ModelAssetId, ModelCapability};
+use xrtranslate_assets::{ModelAssetId, ModelCapability, ResolvedModelAsset};
 use xrtranslate_config::AppConfig;
 
 pub(crate) use adapter::NativeTtsAdapter;
@@ -66,44 +64,80 @@ impl TtsProfile {
         self.default_asset
     }
 
-    pub(super) fn configured_asset(self, config: &AppConfig) -> Result<ModelAssetId, String> {
+    pub(super) fn configured_assets(self, config: &AppConfig) -> Result<Vec<ModelAssetId>, String> {
         let provider = config
             .tts
             .provider_config(self.provider)
             .and_then(serde_json::Value::as_object)
             .expect("selected TTS profile has a provider object");
-        let Some(key) = provider
-            .get("model_asset")
-            .and_then(serde_json::Value::as_str)
-        else {
-            return Ok(self.default_asset());
-        };
-        let id = ModelAssetId::from_config_key(key).ok_or_else(|| {
-            format!(
-                "unknown model asset {key:?} for TTS provider {:?}",
-                self.provider
-            )
-        })?;
-        let manifest = xrtranslate_assets::manifest_for(id);
-        if manifest.provider != self.provider || manifest.capability != ModelCapability::Tts {
-            return Err(format!(
-                "model asset {key:?} does not belong to TTS provider {:?}",
-                self.provider
-            ));
+        let keys = provider
+            .get("model_assets")
+            .and_then(serde_json::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|values| !values.is_empty())
+            .unwrap_or_else(|| {
+                provider
+                    .get("model_asset")
+                    .and_then(serde_json::Value::as_str)
+                    .into_iter()
+                    .collect()
+            });
+        if keys.is_empty() {
+            return Ok(vec![self.default_asset()]);
         }
-        Ok(id)
+        keys.into_iter()
+            .map(|key| {
+                let id = ModelAssetId::from_config_key(key).ok_or_else(|| {
+                    format!(
+                        "unknown model asset {key:?} for TTS provider {:?}",
+                        self.provider
+                    )
+                })?;
+                let manifest = xrtranslate_assets::manifest_for(id);
+                if manifest.provider != self.provider || manifest.capability != ModelCapability::Tts
+                {
+                    return Err(format!(
+                        "model asset {key:?} does not belong to TTS provider {:?}",
+                        self.provider
+                    ));
+                }
+                Ok(id)
+            })
+            .collect()
     }
 
     pub(super) fn adapter(
         self,
         config: &AppConfig,
-        model_directory: &Path,
+        assets: &[&ResolvedModelAsset],
     ) -> Result<NativeTtsAdapter, String> {
-        match self.provider {
-            "openvoice" => providers::openvoice::build(config, model_directory),
-            "audio8" => providers::audio8::build(config, model_directory),
-            _ => unreachable!("only registered profiles reach the TTS factory"),
-        }
+        let adapters = assets
+            .iter()
+            .map(|asset| {
+                let languages = asset
+                    .manifest()
+                    .languages
+                    .iter()
+                    .map(|language| (*language).to_owned())
+                    .collect();
+                match self.provider {
+                    "openvoice" => providers::openvoice::build(
+                        config,
+                        asset.manifest().id,
+                        asset.directory(),
+                        languages,
+                    ),
+                    "audio8" => providers::audio8::build(config, asset.directory(), languages),
+                    _ => unreachable!("only registered profiles reach the TTS factory"),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        NativeTtsAdapter::combine(adapters)
     }
 }
 
@@ -140,6 +174,21 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(profile.default_asset(), ModelAssetId::OpenVoiceV3OnnxFp16);
+    }
+
+    #[test]
+    fn tts_profile_accepts_plural_model_selection() {
+        let mut document: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../../config.json")).unwrap();
+        document["tts"]["provider"] = serde_json::Value::from("openvoice");
+        document["tts"]["providers"]["openvoice"]["model_assets"] =
+            serde_json::json!(["openvoice-v3-onnx-fp16"]);
+        let config = AppConfig::from_value(document).unwrap();
+        let profile = TtsProfile::selected(&config).unwrap().unwrap();
+        assert_eq!(
+            profile.configured_assets(&config).unwrap(),
+            vec![ModelAssetId::OpenVoiceV3OnnxFp16]
+        );
     }
 
     #[test]

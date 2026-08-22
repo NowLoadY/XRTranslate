@@ -10,7 +10,13 @@ start inference, or choose storage locations.
   integrity verification, and atomic activation. Model packages are identical
   across operating systems. Provider configuration selects packages through
   `model_asset`; host/onboarding UI enumerates those manifests and must not
-  branch on concrete provider or model names.
+  branch on concrete provider or model names. `model_asset` remains the
+  compatibility key for singular selections; `model_assets` is the ordered,
+  provider-scoped form for capabilities such as TTS whose language packs can
+  be activated together. TTS packages from the same provider that claim the
+  same language are replacement model variants, not a composable set.
+  `voice_presets` declares stable user-facing speaker/accent choices contained
+  by one package; choosing a preset never creates another download.
 - `xrtranslate-download` owns download-source routing as well as transfer
   mechanics. Feature installers pass a neutral `DownloadSource`; the shared
   router maps supported official GitHub and Hugging Face URLs to the selected
@@ -23,6 +29,13 @@ start inference, or choose storage locations.
   Official and mirror routes carry the same immutable artifact contract, so a
   verified installed resource is reused regardless of the currently selected
   route and is replaced only after explicit resource deletion.
+- The desktop model task manager is the host-level serial scheduler above the
+  single-package asset transaction. It de-duplicates rapid requests, preserves
+  queue order, and exposes active package/file, per-package progress, aggregate
+  batch progress, completion, and failure state. The download page displays
+  both transferred and installed bytes from manifests. Model and runtime
+  installers do not run concurrently; they continue to reuse the same neutral
+  transfer implementation without moving archive extraction into it.
 - `xrtranslate-supervisor` owns the neutral `LlamaServerSpec` and process
   lifecycle. It receives an executable path and never selects a platform or
   model asset.
@@ -41,6 +54,11 @@ start inference, or choose storage locations.
   marker contains resolved provider, CUDA, and cuDNN directories plus an exact
   dependency preload order; backend processes consume that contract without
   modifying the system `PATH` or guessing DLL names.
+- Runtime readiness requires both the complete immutable file closure and an
+  exact marker matching the selected CUDA/ONNX/cuDNN plan. If verified files
+  remain but the marker is absent or stale, the runtime planner automatically
+  performs a zero-download validation and atomically reconstructs the marker.
+  Backend startup remains blocked until that internal repair completes.
 - The native-runtime marker records `llama_cpp_backend` and `onnx_backend`
   independently. Its project-relative `onnx_core_library`, `provider_dir`,
   `cuda_bin_dir`, `cudnn_bin_dir`, and `preload_libraries` are resolved through
@@ -50,12 +68,19 @@ start inference, or choose storage locations.
   the core then loads its colocated `onnxruntime_providers_shared` and
   `onnxruntime_providers_cuda`. Provider DLLs must never be preloaded directly
   or combined with a core from another archive.
-- CPU-only hosts use the compact ONNX core included in the native application
-  package and download no ONNX execution-provider, CUDA, or cuDNN runtime. A
-  compatible NVIDIA host selects the newest declared CUDA package supported by its driver;
-  CUDA 12 and CUDA 13 providers remain separate immutable assets. If no complete
-  compatible GPU bundle exists, planning succeeds with the CPU backend and an
-  actionable fallback reason instead of mixing incompatible runtime files.
+- Downloadable managed model packages require an NVIDIA GPU with at least
+  8 GiB of reported VRAM and a compatible complete CUDA runtime. The host
+  disables their selectors before installation, the runtime planner refuses an
+  ineligible plan, and the backend refuses CPU markers before constructing a
+  model process or TTS adapter. There is no managed-model CPU fallback.
+- Small ONNX components shipped as application resources (currently VAD,
+  denoise and speaker helpers) are a separate execution class. They may use the
+  compact packaged CPU ONNX core and do not cause CUDA, cuDNN, or model-package
+  downloads. A package is never exempt merely because its files use ONNX.
+- An eligible NVIDIA host selects the newest declared CUDA package supported by
+  its driver; CUDA 12 and CUDA 13 providers remain separate immutable assets.
+  If no complete compatible GPU bundle exists, planning fails with an
+  actionable reason instead of mixing runtime files or silently using CPU.
 - Blackwell / RTX 50-series selection keeps CUDA 12.8 as the minimum toolkit
   capability. The declared llama.cpp catalogue provides CUDA 13.1 for drivers
   reporting CUDA 13.1/13.2 and prefers CUDA 13.3 when the driver supports it.
@@ -86,7 +111,8 @@ start inference, or choose storage locations.
 1. Add runtime archive metadata to `config.json` (or the release manifest) with
    the target identifier `<os>-<arch>` and the executable path inside the
    archive.
-2. Keep the model manifests and backend provider plan unchanged.
+2. Keep the backend provider plan unchanged; add target-specific runtime
+   archives only. Model manifests remain platform-neutral.
 3. Add host integration only where the capability genuinely differs, behind the
    existing host module boundary.
 4. Add selection and lifecycle tests using declared metadata, never filename

@@ -408,11 +408,10 @@ pub struct AppConfig {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RuntimeRequirements {
     pub llama_cpp: bool,
-    /// The selected TTS provider uses the in-process ONNX runtime. CUDA is an
-    /// optional host acceleration for this requirement; CPU remains valid.
+    /// The selected TTS provider uses the in-process ONNX runtime.
     pub onnx_tts: bool,
-    /// The selected ONNX TTS device allows CUDA. `device = "cpu"` keeps this
-    /// false so the host does not probe or download NVIDIA runtime assets.
+    /// Managed ONNX model packages require the shared CUDA/cuDNN closure.
+    /// Bundled small ONNX components do not participate in this requirement.
     pub onnx_cuda: bool,
     pub missing_api_key: bool,
 }
@@ -446,10 +445,7 @@ impl AppConfig {
                 Some("local") | None => requirements.llama_cpp = true,
                 Some("onnx") => {
                     requirements.onnx_tts = true;
-                    requirements.onnx_cuda |= provider
-                        .get("device")
-                        .and_then(Value::as_str)
-                        .is_none_or(|device| device != "cpu");
+                    requirements.onnx_cuda = true;
                 }
                 Some(_) => {
                     requirements.missing_api_key |= provider
@@ -648,9 +644,9 @@ impl AppConfig {
     }
 
     /// Returns the ordered native model-asset keys used by the currently
-    /// selected ASR and translation provider objects.  The UI and installer
-    /// use these keys to build their model catalogue; they never hard-code a
-    /// model name or provider pair.
+    /// selected ASR, translation, and TTS provider objects. Plural
+    /// `model_assets` takes precedence over the singular compatibility key.
+    /// The UI and installer never hard-code a model name or provider pair.
     #[must_use]
     pub fn active_native_model_assets(&self) -> Vec<String> {
         let mut keys = Vec::new();
@@ -659,18 +655,34 @@ impl AppConfig {
             (&self.translation.provider, &self.translation.providers),
             (&self.tts.provider, &self.tts.providers),
         ] {
-            let Some(model_asset) = providers
-                .get(provider.trim())
-                .and_then(Value::as_object)
-                .and_then(|model| model.get("model_asset"))
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|key| !key.is_empty())
-            else {
+            let Some(model) = providers.get(provider.trim()).and_then(Value::as_object) else {
                 continue;
             };
-            if !keys.iter().any(|existing| existing == model_asset) {
-                keys.push(model_asset.to_owned());
+            let configured = model
+                .get("model_assets")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .filter(|key| !key.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .filter(|values| !values.is_empty())
+                .unwrap_or_else(|| {
+                    model
+                        .get("model_asset")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|key| !key.is_empty())
+                        .into_iter()
+                        .collect()
+                });
+            for model_asset in configured {
+                if !keys.iter().any(|existing| existing == model_asset) {
+                    keys.push(model_asset.to_owned());
+                }
             }
         }
         keys
@@ -1059,9 +1071,8 @@ pub struct ModelManagerConfig {
     /// change instead of a client-code change.
     #[serde(default)]
     pub llama_cpp: LlamaCppRuntimeConfig,
-    /// Optional CUDA execution-provider archives for in-process ONNX models.
-    /// CPU inference uses the compact core supplied by the native release and
-    /// requires no end-user download.
+    /// CUDA execution-provider archives for managed in-process ONNX models.
+    /// The compact CPU core is reserved for small bundled application models.
     #[serde(default)]
     pub onnxruntime: OnnxRuntimeConfig,
     /// Optional runtime root, resolved relative to `config.json` by the native
@@ -1985,7 +1996,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_cpu_tts_does_not_request_cuda_assets() {
+    fn legacy_cpu_tts_setting_cannot_disable_managed_cuda_requirements() {
         let mut document: Value =
             serde_json::from_str(include_str!("../../../config.json")).unwrap();
         document["tts"]["provider"] = Value::from("audio8");
@@ -1994,7 +2005,25 @@ mod tests {
             .unwrap()
             .runtime_requirements();
         assert!(requirements.onnx_tts);
-        assert!(!requirements.onnx_cuda);
+        assert!(requirements.onnx_cuda);
+    }
+
+    #[test]
+    fn plural_model_assets_override_the_singular_compatibility_key() {
+        let mut document: Value =
+            serde_json::from_str(include_str!("../../../config.json")).unwrap();
+        document["asr"]["provider"] = Value::from("openai");
+        document["translation"]["provider"] = Value::from("openai");
+        document["tts"]["provider"] = Value::from("openvoice");
+        document["tts"]["providers"]["openvoice"]["model_asset"] =
+            Value::from("audio8-tts-onnx-fp16");
+        document["tts"]["providers"]["openvoice"]["model_assets"] =
+            serde_json::json!(["openvoice-v3-onnx-fp16"]);
+
+        let assets = AppConfig::from_value(document)
+            .unwrap()
+            .active_native_model_assets();
+        assert_eq!(assets, vec!["openvoice-v3-onnx-fp16"]);
     }
 
     #[test]

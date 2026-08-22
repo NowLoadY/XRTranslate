@@ -6,11 +6,12 @@ use std::{
 };
 
 use crate::{
-    AUDIO8_TTS_ONNX_FP16, AtomicInstallError, HUNYUAN_MT_GGUF, MODEL_ASSET_CATALOG,
-    ModelAssetDiagnostic, ModelAssetId, ModelAssetManifest, ModelAssetProblem, ModelAssetsConfig,
-    ModelCapability, ModelFileRole, ModelLevel, ModelSource, OPENVOICE_V3_ONNX_FP16,
-    QWEN3_ASR_GGUF, RequiredModelFile, ResolvedModelAsset, ResolvedModelAssets,
-    install::install_verified_directory, manifest_for, preflight::sha256_file,
+    AUDIO8_TTS_ONNX_FP16, AtomicInstallError, HUNYUAN_MT_GGUF, MANAGED_LOCAL_MODEL_HARDWARE,
+    MODEL_ASSET_CATALOG, ModelAssetDiagnostic, ModelAssetId, ModelAssetManifest, ModelAssetProblem,
+    ModelAssetsConfig, ModelCapability, ModelFileRole, ModelLevel, ModelSource,
+    OPENVOICE_V2_ONNX_FP16, OPENVOICE_V3_ONNX_FP16, QWEN3_ASR_GGUF, RequiredModelFile,
+    ResolvedModelAsset, ResolvedModelAssets, install::install_verified_directory, manifest_for,
+    preflight::sha256_file,
 };
 
 static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
@@ -30,9 +31,13 @@ fn temporary_project_root() -> PathBuf {
 
 #[test]
 fn static_catalog_declares_every_native_model_package() {
-    assert_eq!(MODEL_ASSET_CATALOG.len(), 5);
+    assert_eq!(MODEL_ASSET_CATALOG.len(), 6);
     assert_eq!(QWEN3_ASR_GGUF.required_files.len(), 2);
     assert_eq!(HUNYUAN_MT_GGUF.required_files.len(), 1);
+    assert_eq!(
+        OPENVOICE_V2_ONNX_FP16.source.archive.unwrap().sha256,
+        "266dc4662965858e07a1c8cb086f17e1c30f0fdc3202e8934103dc7927314811"
+    );
     assert_eq!(
         manifest_for(ModelAssetId::Qwen3AsrGguf).provider,
         "qwen3-gguf"
@@ -73,10 +78,12 @@ fn static_catalog_declares_every_native_model_package() {
         );
         for (index, file) in manifest.required_files.iter().enumerate() {
             assert!(
-                file.role == ModelFileRole::License
-                    || !manifest.required_files[..index]
-                        .iter()
-                        .any(|previous| previous.role == file.role),
+                matches!(
+                    file.role,
+                    ModelFileRole::License | ModelFileRole::SpeakerEmbedding
+                ) || !manifest.required_files[..index]
+                    .iter()
+                    .any(|previous| previous.role == file.role),
                 "{} declares duplicate file role {:?}",
                 manifest.id,
                 file.role
@@ -167,6 +174,41 @@ fn selecting_an_asset_replaces_only_the_same_capability() {
         config.selected_asset_ids().collect::<Vec<_>>(),
         vec![ModelAssetId::Qwen3AsrGguf, ModelAssetId::HunyuanMt7bGguf]
     );
+}
+
+#[test]
+fn tts_language_packages_compose_and_can_be_deselected() {
+    let mut config = ModelAssetsConfig::default();
+    config.select_asset(ModelAssetId::Audio8TtsOnnxFp16);
+    config.select_asset(ModelAssetId::OpenVoiceV3OnnxFp16);
+    assert_eq!(
+        config.selected_asset_ids().collect::<Vec<_>>(),
+        vec![
+            ModelAssetId::Audio8TtsOnnxFp16,
+            ModelAssetId::OpenVoiceV3OnnxFp16
+        ]
+    );
+    config.deselect_asset(ModelAssetId::Audio8TtsOnnxFp16);
+    assert_eq!(
+        config.selected_asset_ids().collect::<Vec<_>>(),
+        vec![ModelAssetId::OpenVoiceV3OnnxFp16]
+    );
+}
+
+#[test]
+fn tts_model_variants_for_the_same_language_replace_each_other() {
+    let mut config = ModelAssetsConfig::default();
+    config.select_asset(ModelAssetId::OpenVoiceV3OnnxFp16);
+    config.select_asset(ModelAssetId::OpenVoiceV2OnnxFp16);
+
+    assert_eq!(
+        config.selected_asset_ids().collect::<Vec<_>>(),
+        vec![ModelAssetId::OpenVoiceV2OnnxFp16]
+    );
+    let manifest = manifest_for(ModelAssetId::OpenVoiceV2OnnxFp16);
+    assert_eq!(manifest.voice_presets.len(), 5);
+    assert_eq!(manifest.voice_presets[0].key, "en-us");
+    assert_eq!(manifest.installed_bytes(), 255_966_606);
 }
 
 #[test]
@@ -288,6 +330,9 @@ fn explicit_integrity_verification_accepts_matching_files_and_reports_hash_tampe
         capability: ModelCapability::Asr,
         level: ModelLevel::Normal,
         provider: "fixture",
+        languages: &[],
+        voice_presets: &[],
+        hardware: MANAGED_LOCAL_MODEL_HARDWARE,
         audio_output: None,
         relative_directory: "fixture",
         required_files: files,
@@ -336,6 +381,9 @@ fn verified_staging_directory_is_promoted_without_overwriting_an_install() {
         capability: ModelCapability::Translation,
         level: ModelLevel::Normal,
         provider: "fixture",
+        languages: &[],
+        voice_presets: &[],
+        hardware: MANAGED_LOCAL_MODEL_HARDWARE,
         audio_output: None,
         relative_directory: "fixture",
         required_files: files,

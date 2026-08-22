@@ -32,7 +32,7 @@ pub use translation::{
 };
 pub use tts::{
     Audio8ExecutionDevice, Audio8OnnxAdapter, Audio8SynthesisOptions, OnnxExecutionDevice,
-    OpenVoiceOnnxAdapter, OpenVoiceSynthesisOptions, SynthesizedPcm, initialize_onnx_runtime,
-    preload_onnx_cuda_libraries,
+    OpenVoiceBaseVoice, OpenVoiceOnnxAdapter, OpenVoiceSynthesisOptions, SynthesizedPcm,
+    initialize_onnx_runtime, preload_onnx_cuda_libraries,
 };
 pub use wav::{PCM16_MONO_16KHZ_FORMAT, pcm16_mono_16khz_to_wav};

@@ -2,9 +2,9 @@
 
 ## Goal
 
-Local ONNX TTS providers use CUDA whenever a complete compatible NVIDIA
-runtime is available and otherwise use CPU. Vulkan and DirectML are not
-selectable execution providers. The application supplies a matched local ONNX
+Downloadable local ONNX TTS providers require a complete compatible NVIDIA
+runtime and at least 8 GiB VRAM. They never execute on CPU; Vulkan and DirectML
+are not selectable execution providers. The application supplies a matched local ONNX
 Runtime, CUDA, and cuDNN closure, so users do not install a CUDA Toolkit or
 modify the machine-wide `PATH`.
 
@@ -31,7 +31,7 @@ application release.
   does not download files, inspect the operating system, or guess library
   names.
 - `xrtranslate-inference::tts::onnx_runtime` owns process-wide ORT bootstrap
-  and the shared atomic CUDA-to-CPU session-group policy.
+  and shared CUDA session construction.
 - Concrete provider modules own model sessions and tensor behavior. The
   provider registry in `backend/model_runtime/tts/` is the only backend
   factory that names them.
@@ -54,18 +54,18 @@ RuntimeRequirements
 └─ onnx_cuda: bool
 
 DetectedAccelerator
-└─ Nvidia { compute_capability, driver_cuda }
+└─ Nvidia { compute_capability, driver_cuda, memory_bytes }
 
 ResolvedRuntimePlan
-├─ llama backend: Cuda { abi } | Cpu
-├─ ONNX backend: Cuda { major } | Cpu
+├─ llama backend: Cuda { abi }
+├─ ONNX backend: Cuda { major }
 ├─ declared assets: ONNX core/provider + CUDA + cuDNN
 └─ diagnostic: Ready | DownloadRequired | RepairRequired | Unsupported
 ```
 
 `onnx_tts` means that a configured local TTS provider uses the ONNX transport;
-it does not mean Audio8 or OpenVoice specifically. `onnx_cuda` is false for an
-explicit CPU selection. Provider or model changes use last-write-wins
+it does not mean Audio8 or OpenVoice specifically. `onnx_cuda` is mandatory
+for managed ONNX model packages. Provider or model changes use last-write-wins
 planning: an already-started immutable download may finish, after which the
 host recomputes the plan and reuses every matching verified asset.
 
@@ -73,16 +73,16 @@ Selection uses the highest declared CUDA ABI supported by the driver and GPU
 compute capability for which ONNX Runtime, a shared CUDA redistributable, and
 cuDNN form a complete plan. When llama.cpp is also required, its server bundle
 uses the compatible shared CUDA choice. CUDA 13 is selected only when the
-whole closure is present; otherwise a compatible CUDA 12 plan or CPU is
-selected. Blackwell/RTX 50-series hardware never selects the declared CUDA
+whole closure is present; otherwise planning fails. Blackwell/RTX 50-series hardware never selects the declared CUDA
 12.4 llama.cpp package. Drivers reporting CUDA 13.1/13.2 select the CUDA 13.1
 llama.cpp bundle; CUDA 13.3-capable drivers prefer 13.3. The UI retains the
 NVIDIA App upgrade notice when it uses 13.1 for a driver that cannot load 13.3.
 
-A host without an NVIDIA GPU selects CPU without downloading GPU assets. A
-detected device without a complete compatible closure also produces a valid
-CPU plan with an actionable fallback reason. Requested `Auto`/`CUDA` and the
-backend that actually prepared are different facts and are reported separately.
+A host without an NVIDIA GPU, with less than 8 GiB VRAM, or without a complete
+compatible closure receives an actionable unsupported plan. Model choices are
+disabled, no model starts, and no CPU fallback is created. Small bundled ONNX
+components such as VAD, denoise, and speaker helpers remain CPU-capable because
+they are outside the managed model catalogue.
 
 ## Runtime package layout
 
@@ -104,8 +104,8 @@ runtime/
    └─ 13/
 ```
 
-The CPU ONNX core is included with the native application. A CPU-only plan
-downloads no ONNX provider, CUDA, or cuDNN archive. CUDA plans install the
+The compact CPU ONNX core included with the application is reserved for small
+bundled components. Managed-model CUDA plans install the
 official ONNX core and its `onnxruntime_providers_shared` and
 `onnxruntime_providers_cuda` libraries as one indivisible archive. The core
 must not be mixed with provider libraries from another archive.
@@ -125,6 +125,12 @@ backend resolves those paths, preloads the declared CUDA/cuDNN dependencies,
 and dynamically initializes the selected ONNX core without changing global
 `PATH`.
 
+The presence of runtime DLLs alone is not a ready state. The planner also
+matches the marker against the selected CUDA version, provider/core directory,
+cuDNN directory, and exact preload list. When all immutable files validate but
+the marker is missing or stale, the planner automatically runs a zero-download
+repair through the same installer boundary and atomically reconstructs it.
+
 ## Shared inference policy
 
 `Auto` is the production default:
@@ -133,12 +139,11 @@ and dynamically initializes the selected ONNX core without changing global
 2. preload its exact dependency list before any ORT session is opened;
 3. initialize the selected ORT core once for the process;
 4. ask the provider to construct its atomic model group on CUDA;
-5. if any session in that group cannot be constructed, drop the CUDA attempt
-   and reconstruct the same group on CPU;
+5. fail atomically if any session cannot be constructed;
 6. warm and reuse the resulting provider runtime and report the active device.
 
 The shared session builder owns graph optimization, thread policy, CUDA
-provider registration, and atomic fallback. It does not know model paths,
+provider registration, and atomic failure. It does not know model paths,
 tensor names, frontend behavior, or provider IDs. A provider supplies its
 ordered model paths and owns all graph-specific validation.
 
@@ -161,10 +166,12 @@ the registration transcript and sampling controls. Its fixed PCM contract is
 
 ### OpenVoice
 
-OpenVoice uses four grouped sessions: QINT8 BERT, FP16 MeloTTS English v3,
-FP16 OpenVoice V2 converter, and the FP32 reference encoder. Its frontend and
-current package synthesize English only. Reference registration derives a
-speaker embedding from audio and does not use the transcript. MeloTTS base
+OpenVoice uses four grouped sessions: QINT8 BERT, FP16 MeloTTS English v2/v3,
+FP16 OpenVoice V2 converter, and the FP32 reference encoder. Its current
+verified packages synthesize English only. The v2 model chooses a speaker ID
+and matching source embedding for five accents; v3 contains only EN-Newest.
+Reference registration derives a speaker embedding from audio and does not use
+the transcript. MeloTTS base
 audio is converted to 22,050 Hz before tone-color conversion; the final PCM
 contract is 22,050 Hz. See [OpenVoice TTS](providers/openvoice-tts.md) for the
 model path, provenance, and test boundary.
@@ -178,20 +185,21 @@ The application uses a four-step onboarding flow:
 
 - **Step 1: Welcome**: core feature introduction;
 - **Step 2: Install models**: ASR and translation provider/model selection;
-- **Step 3: Optional TTS**: choose any configured TTS provider or Skip;
+- **Step 3: Optional TTS**: choose a provider and one or more declared
+  synthesis-language model packs, or Skip;
 - **Step 4: Inference Runtime**: install or select the shared llama.cpp/ONNX
   runtime plan.
 
 Onboarding and settings enumerate provider configuration and asset manifests.
 They do not name a model archive, construct a path, or own deletion. Provider
-labels may communicate model capabilities such as OpenVoice's English scope,
-but custom provider control flow is not required for ordinary model download.
+model checkboxes use manifest language and hardware capabilities; custom
+provider control flow is not required for ordinary model download.
 
-The Settings TTS runtime card exposes only `Auto`, `CUDA`, and `CPU` and shows
+The Settings TTS runtime card exposes only `Auto` and `CUDA` and shows
 planned versus active facts:
 
-- `Planned · CUDA 13/12` or `Planned · CPU` before a backend session;
-- `Active · CUDA 13/12` or `Active · CPU` after provider preparation;
+- `Planned · CUDA 13/12` before a backend session;
+- `Active · CUDA 13/12` after provider preparation;
 - download/repair actions for an incomplete managed closure;
 - an actionable incompatibility or driver-upgrade reason when relevant.
 
@@ -202,11 +210,12 @@ backend as the current one.
 
 Required automated coverage includes:
 
-- no NVIDIA device and explicit CPU select CPU with no GPU downloads;
+- no NVIDIA device and NVIDIA devices below 8 GiB disable and reject managed
+  model plans without GPU downloads;
 - CUDA 12/13 and Blackwell selection require a complete ORT, CUDA, and cuDNN
   closure and never mix majors;
-- missing cuDNN, CUDA, or provider files produce a CPU fallback or repair
-  diagnostic rather than a partially active GPU plan;
+- missing cuDNN, CUDA, or provider files produce an unsupported/repair
+  diagnostic rather than a partially active plan or CPU fallback;
 - llama.cpp and ONNX reuse the same declared CUDA archive when compatible;
 - marker paths remain project-relative and movable;
 - legacy runtime migration does not delete the packaged CPU core or external
@@ -214,13 +223,13 @@ Required automated coverage includes:
 - every TTS catalogue provider has a backend runtime profile;
 - a provider's complete session group uses one active execution device;
 - provider UI never offers Vulkan or DirectML;
-- backend diagnostics report the active backend and ABI after fallback;
+- backend diagnostics report the active CUDA backend and ABI;
 - raw PCM rate and provider language limits are honored end to end.
 
 The Audio8 Slow/Fast FP16 group has been exercised with the managed CUDA 13
 closure on an RTX 5070 Ti with driver CUDA 13.3. On the same GPU, OpenVoice's
 forced-CUDA smoke test registered a synthetic reference and generated 56,064
 samples (2.543 seconds) without CPU fallback. Real-reference intelligibility,
-voice similarity, CPU/CUDA quality parity, cold start, warm first audio, and
+voice similarity, repeatable CUDA quality, cold start, warm first audio, and
 steady-state real-time factor remain required release evidence rather than
 assumptions.

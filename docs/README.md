@@ -26,7 +26,7 @@ notes live under `providers/`.
 - [Runtime resource matrix](runtime-resource-matrix.md): model/runtime packages
   and GPU selection.
 - [Local ONNX TTS runtime design](tts-cuda-runtime-design.md): shared ONNX
-  Runtime, CUDA, cuDNN, fallback, and provider-composition policy.
+  Runtime, CUDA, cuDNN, eligibility, and provider-composition policy.
 
 ## Features and operations
 

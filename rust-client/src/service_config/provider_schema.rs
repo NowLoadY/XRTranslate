@@ -36,7 +36,7 @@ impl ProviderFieldDescriptor {
     }
 }
 
-const DEVICE_OPTIONS: &[&str] = &["auto", "cuda", "cpu"];
+const DEVICE_OPTIONS: &[&str] = &["auto", "cuda"];
 
 const PROVIDER_FIELDS: &[ProviderFieldDescriptor] = &[
     ProviderFieldDescriptor {
@@ -199,7 +199,7 @@ const PROVIDER_FIELDS: &[ProviderFieldDescriptor] = &[
         name: "device",
         label: "Device",
         help: Some(
-            "Auto uses the matching CUDA runtime when available and falls back to CPU otherwise.",
+            "Auto selects the newest compatible managed CUDA and cuDNN runtime. Managed local models never fall back to CPU.",
         ),
         editor: ProviderFieldEditor::Options(DEVICE_OPTIONS),
         visibility: ProviderFieldVisibility::Default,
@@ -261,12 +261,12 @@ mod tests {
     fn device_editor_exposes_only_supported_tts_backends() {
         assert_eq!(
             provider_field_descriptor("device").unwrap().editor,
-            ProviderFieldEditor::Options(&["auto", "cuda", "cpu"])
+            ProviderFieldEditor::Options(&["auto", "cuda"])
         );
         assert_eq!(
             provider_field_descriptor("device").unwrap().help,
             Some(
-                "Auto uses the matching CUDA runtime when available and falls back to CPU otherwise."
+                "Auto selects the newest compatible managed CUDA and cuDNN runtime. Managed local models never fall back to CPU."
             )
         );
     }

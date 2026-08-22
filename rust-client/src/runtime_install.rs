@@ -2,8 +2,9 @@
 //!
 //! The configured `model_manager.llama_cpp.downloads` list is the contract:
 //! we select CUDA when the installed NVIDIA driver reports a compatible
-//! runtime and adequate compute capability, and otherwise select the portable
-//! CPU build.
+//! runtime, adequate compute capability, and at least 8 GiB of VRAM. Managed
+//! model packages never fall back to CPU; bundled small ONNX components are a
+//! separate application resource class and do not use this installer.
 
 use crossbeam_channel::{Receiver, TryRecvError, unbounded};
 use std::{
@@ -21,6 +22,7 @@ use xrtranslate_config::{
 use xrtranslate_download::{DownloadCancellation, DownloadClient, DownloadSource, DownloadSpec};
 
 const MIN_CUDA_COMPUTE_CAPABILITY: (u16, u16) = (6, 0);
+const MIN_LOCAL_MODEL_VRAM_BYTES: u64 = xrtranslate_assets::MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES;
 const TURING_COMPUTE_CAPABILITY: (u16, u16) = (7, 5);
 const BLACKWELL_MINIMUM_CUDA: (u16, u16) = (12, 8);
 pub(crate) const NVIDIA_APP_URL: &str = "https://www.nvidia.com/en-us/software/nvidia-app/";
@@ -54,7 +56,10 @@ struct RuntimePlan {
     llama_cpp: Option<RuntimeSelection>,
     onnx: Option<OnnxRuntimeSelection>,
     download_bytes: u64,
+    marker_ready: bool,
     requirements: RuntimeRequirements,
+    local_models: LocalModelAvailability,
+    blocking_error: Option<String>,
 }
 
 impl RuntimePlan {
@@ -68,6 +73,14 @@ impl RuntimePlan {
             .map(|selection| selection.backend)
             .or_else(|| self.llama_cpp.as_ref().map(|selection| selection.backend))
             .unwrap_or(RuntimeBackend::Cpu)
+    }
+
+    fn is_ready(&self) -> bool {
+        self.blocking_error.is_none() && self.download_bytes == 0 && self.marker_ready
+    }
+
+    fn requires_marker_repair(&self) -> bool {
+        self.blocking_error.is_none() && self.download_bytes == 0 && !self.marker_ready
     }
 }
 
@@ -85,6 +98,14 @@ struct NvidiaCuda {
     gpu: String,
     compute_capability: (u16, u16),
     driver_cuda: String,
+    memory_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LocalModelAvailability {
+    Detecting,
+    Available { gpu: String, memory_bytes: u64 },
+    Unavailable(String),
 }
 
 #[derive(Clone, Debug)]
@@ -200,9 +221,7 @@ impl RuntimeInstaller {
 
     #[must_use]
     pub fn plan_is_ready(&self) -> bool {
-        self.selection
-            .as_ref()
-            .is_some_and(|selection| selection.download_bytes == 0)
+        self.selection.as_ref().is_some_and(RuntimePlan::is_ready)
     }
 
     #[must_use]
@@ -216,7 +235,24 @@ impl RuntimeInstaller {
     pub fn backend_label(&self) -> Option<&'static str> {
         self.selection
             .as_ref()
+            .filter(|selection| selection.blocking_error.is_none())
             .map(|selection| selection.backend().label())
+    }
+
+    #[must_use]
+    pub fn local_model_availability(&self) -> LocalModelAvailability {
+        if self.is_busy() {
+            return LocalModelAvailability::Detecting;
+        }
+        if let RuntimeInstallState::Failed(error) = &self.state
+            && self.selection.is_none()
+        {
+            return LocalModelAvailability::Unavailable(error.clone());
+        }
+        self.selection
+            .as_ref()
+            .map(|plan| plan.local_models.clone())
+            .unwrap_or(LocalModelAvailability::Detecting)
     }
 
     #[must_use]
@@ -261,16 +297,18 @@ impl RuntimeInstaller {
             return Err("A native runtime installation is already running.".into());
         }
         let (sender, receiver) = unbounded();
+        let worker_root = project_root.clone();
         thread::Builder::new()
             .name("native-runtime-planner".into())
             .spawn(move || {
-                let result = configured_runtime_plan(&project_root, requirements);
+                let result = configured_runtime_plan(&worker_root, requirements);
                 let _ = sender.send(Event::Prepared(result));
             })
             .map_err(|error| format!("Cannot start native runtime planner: {error}"))?;
         self.selection = None;
         self.state = RuntimeInstallState::Detecting;
         self.events = Some(receiver);
+        self.active_project_root = Some(project_root);
         Ok(())
     }
 
@@ -282,6 +320,9 @@ impl RuntimeInstaller {
             "The llama.cpp download plan is not ready. Wait for hardware detection to finish."
                 .to_owned()
         })?;
+        if let Some(error) = selection.blocking_error.as_deref() {
+            return Err(error.to_owned());
+        }
         let (sender, receiver) = unbounded();
         let proxy_url = self.proxy_url.clone();
         let source = DownloadSource::from_mirror_enabled(self.use_mirror);
@@ -432,13 +473,20 @@ impl RuntimeInstaller {
         };
         let mut finished = false;
         let mut cancelled = false;
+        let mut repair_prepared_marker = false;
         let mut installed_executable = None;
         loop {
             match events.try_recv() {
                 Ok(Event::Prepared(result)) => {
                     match result {
                         Ok(selection) => {
-                            self.state = RuntimeInstallState::Ready;
+                            repair_prepared_marker = selection.requires_marker_repair();
+                            self.state = selection
+                                .blocking_error
+                                .as_ref()
+                                .map_or(RuntimeInstallState::Ready, |error| {
+                                    RuntimeInstallState::Failed(error.clone())
+                                });
                             self.selection = Some(selection);
                         }
                         Err(error) => self.state = RuntimeInstallState::Failed(error),
@@ -469,6 +517,7 @@ impl RuntimeInstaller {
                         && let Some(selection) = self.selection.as_mut()
                     {
                         selection.download_bytes = 0;
+                        selection.marker_ready = true;
                     }
                     self.state = match result {
                         Ok(path) => {
@@ -494,7 +543,13 @@ impl RuntimeInstaller {
             self.events = None;
             self.cancellation = None;
             let project_root = self.active_project_root.take();
-            if cancelled && self.restart_after_source_switch {
+            if repair_prepared_marker {
+                if let Some(project_root) = project_root
+                    && let Err(error) = self.install_recommended(project_root)
+                {
+                    self.state = RuntimeInstallState::Failed(error);
+                }
+            } else if cancelled && self.restart_after_source_switch {
                 self.restart_after_source_switch = false;
                 if let Some(project_root) = project_root
                     && let Err(error) = self.install_recommended(project_root)
@@ -1512,7 +1567,7 @@ pub fn configured_runtime_is_ready(
     project_root: &Path,
     requirements: RuntimeRequirements,
 ) -> Result<bool, String> {
-    configured_runtime_plan(project_root, requirements).map(|plan| plan.download_bytes == 0)
+    configured_runtime_plan(project_root, requirements).map(|plan| plan.is_ready())
 }
 
 fn configured_runtime_plan(
@@ -1520,24 +1575,38 @@ fn configured_runtime_plan(
     requirements: RuntimeRequirements,
 ) -> Result<RuntimePlan, String> {
     let config = load_app_config(project_root)?;
-    let nvidia =
-        if cfg!(target_os = "windows") && (requirements.llama_cpp || requirements.onnx_cuda) {
-            supported_nvidia_cuda()?
-        } else {
-            None
-        };
+    let nvidia = if cfg!(target_os = "windows") {
+        supported_nvidia_cuda()?
+    } else {
+        None
+    };
+    let local_models = local_model_availability(nvidia.as_ref());
+    let requires_managed_model = requirements.llama_cpp || requirements.onnx_tts;
+    let blocking_error = if requires_managed_model {
+        match &local_models {
+            LocalModelAvailability::Available { .. } => None,
+            LocalModelAvailability::Unavailable(reason) => Some(reason.clone()),
+            LocalModelAvailability::Detecting => {
+                Some("NVIDIA GPU detection did not complete.".to_owned())
+            }
+        }
+    } else {
+        None
+    };
+    let eligible_nvidia = blocking_error
+        .is_none()
+        .then_some(nvidia.as_ref())
+        .flatten();
     // ONNX CUDA deliberately reuses the declared llama.cpp CUDA redistributable
-    // catalogue. An explicitly CPU-only TTS plan must not depend on llama.cpp
-    // assets or validate/download any of them.
+    // catalogue. Small bundled ONNX components do not participate in this plan.
     let llama_assets = (requirements.llama_cpp || requirements.onnx_cuda)
         .then(|| release_assets_from_config(&config.model_manager.llama_cpp))
         .transpose()?
         .unwrap_or_default();
-    let llama_cpp = requirements
-        .llama_cpp
-        .then(|| select_assets_for_hardware(&llama_assets, nvidia.as_ref()))
+    let llama_cpp = (requirements.llama_cpp && blocking_error.is_none())
+        .then(|| select_assets_for_hardware(&llama_assets, eligible_nvidia))
         .transpose()?;
-    let onnx = if requirements.onnx_tts && requirements.onnx_cuda {
+    let onnx = if requirements.onnx_tts && requirements.onnx_cuda && blocking_error.is_none() {
         let providers = onnx_assets_from_config(&config.model_manager.onnxruntime)?;
         let cudnn_runtimes = cudnn_assets_from_config(&config.model_manager.onnxruntime)?;
         let cuda_runtimes = llama_assets
@@ -1549,27 +1618,146 @@ fn configured_runtime_plan(
             &providers,
             &cuda_runtimes,
             &cudnn_runtimes,
-            nvidia.as_ref(),
+            eligible_nvidia,
         )?)
     } else if requirements.onnx_tts {
-        Some(OnnxRuntimeSelection {
-            backend: RuntimeBackend::Cpu,
-            provider: None,
-            cuda_runtime: None,
-            cudnn: None,
-            cuda_version: None,
-            fallback_reason: None,
-        })
+        None
     } else {
         None
     };
     let download_bytes = missing_runtime_bytes(project_root, llama_cpp.as_ref(), onnx.as_ref());
+    let marker_ready = runtime_marker_matches_plan(project_root, llama_cpp.as_ref(), onnx.as_ref());
     Ok(RuntimePlan {
         llama_cpp,
         onnx,
         download_bytes,
+        marker_ready,
         requirements,
+        local_models,
+        blocking_error,
     })
+}
+
+/// Verifies that the immutable files selected by a runtime plan are also
+/// represented by the exact marker the backend will consume. File presence
+/// alone is insufficient: without this binding the backend cannot safely know
+/// which CUDA/ONNX/cuDNN closure it is allowed to load.
+fn runtime_marker_matches_plan(
+    project_root: &Path,
+    llama: Option<&RuntimeSelection>,
+    onnx: Option<&OnnxRuntimeSelection>,
+) -> bool {
+    if llama.is_none() && onnx.is_none() {
+        return true;
+    }
+    let layout = load_runtime_layout(project_root);
+    let Ok(Some(marker)) = load_native_runtime_selection(&layout) else {
+        return false;
+    };
+    let resolved = layout.resolve_native_runtime_selection(&marker);
+
+    if let Some(selection) = llama {
+        let expected_backend = match selection.backend {
+            RuntimeBackend::Cpu => NativeRuntimeBackend::Cpu,
+            RuntimeBackend::Cuda => NativeRuntimeBackend::Cuda,
+        };
+        if marker.llama_cpp_backend != Some(expected_backend) {
+            return false;
+        }
+        if let Some(cuda_asset) = selection
+            .assets
+            .iter()
+            .find(|asset| asset.kind == LlamaCppAssetKind::CudaRuntime)
+        {
+            let Some(version) = cuda_asset.cuda_version.as_deref() else {
+                return false;
+            };
+            if marker.cuda_version.as_deref() != Some(version)
+                || resolved.cuda_bin_dir.as_deref()
+                    != Some(layout.cuda_runtime_directory(version).as_path())
+            {
+                return false;
+            }
+        }
+    }
+
+    if let Some(selection) = onnx {
+        let expected_backend = match selection.backend {
+            RuntimeBackend::Cpu => NativeRuntimeBackend::Cpu,
+            RuntimeBackend::Cuda => NativeRuntimeBackend::Cuda,
+        };
+        if marker.backend != expected_backend || marker.onnx_backend != Some(expected_backend) {
+            return false;
+        }
+        if selection.backend == RuntimeBackend::Cuda {
+            let (Some(version), Some(provider), Some(cuda), Some(cudnn)) = (
+                selection.cuda_version.as_deref(),
+                selection.provider.as_ref(),
+                selection.cuda_runtime.as_ref(),
+                selection.cudnn.as_ref(),
+            ) else {
+                return false;
+            };
+            let provider_directory = layout.onnx_runtime_directory(&provider.cuda_version);
+            let cuda_directory = layout.cuda_runtime_directory(version);
+            let cudnn_directory = layout.cudnn_runtime_directory(&cudnn.cuda_version);
+            if marker.cuda_version.as_deref() != Some(version)
+                || resolved.provider_dir.as_deref() != Some(provider_directory.as_path())
+                || resolved.onnx_core_library.as_deref()
+                    != Some(
+                        provider_directory
+                            .join(RuntimeLayout::ONNX_CORE_LIBRARY)
+                            .as_path(),
+                    )
+                || resolved.cuda_bin_dir.as_deref() != Some(cuda_directory.as_path())
+                || resolved.cudnn_bin_dir.as_deref() != Some(cudnn_directory.as_path())
+            {
+                return false;
+            }
+            let Ok(mut expected_preloads) =
+                resolve_required_prefixes(&cuda_directory, &cuda.required_file_prefixes)
+            else {
+                return false;
+            };
+            let Ok(cudnn_preloads) =
+                resolve_required_files(&cudnn_directory, &cudnn.required_files)
+            else {
+                return false;
+            };
+            expected_preloads.extend(cudnn_preloads);
+            if resolved.preload_libraries != expected_preloads {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn local_model_availability(nvidia: Option<&NvidiaCuda>) -> LocalModelAvailability {
+    let Some(nvidia) = nvidia else {
+        return LocalModelAvailability::Unavailable(
+            "Managed local models require an NVIDIA GPU with at least 8 GiB of VRAM. Small bundled ONNX components remain available.".to_owned(),
+        );
+    };
+    if nvidia.compute_capability < MIN_CUDA_COMPUTE_CAPABILITY {
+        return LocalModelAvailability::Unavailable(format!(
+            "NVIDIA GPU {} has compute capability {}, below the required {}.",
+            nvidia.gpu,
+            format_version(nvidia.compute_capability),
+            format_version(MIN_CUDA_COMPUTE_CAPABILITY),
+        ));
+    }
+    if nvidia.memory_bytes < MIN_LOCAL_MODEL_VRAM_BYTES {
+        return LocalModelAvailability::Unavailable(format!(
+            "NVIDIA GPU {} has {:.1} GiB of VRAM; managed local models require at least 8 GiB.",
+            nvidia.gpu,
+            nvidia.memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+        ));
+    }
+    LocalModelAvailability::Available {
+        gpu: nvidia.gpu.clone(),
+        memory_bytes: nvidia.memory_bytes,
+    }
 }
 
 fn missing_runtime_bytes(
@@ -1877,14 +2065,10 @@ fn select_onnx_assets_for_hardware(
     nvidia: Option<&NvidiaCuda>,
 ) -> Result<OnnxRuntimeSelection, String> {
     let Some(nvidia) = nvidia else {
-        return Ok(OnnxRuntimeSelection {
-            backend: RuntimeBackend::Cpu,
-            provider: None,
-            cuda_runtime: None,
-            cudnn: None,
-            cuda_version: None,
-            fallback_reason: None,
-        });
+        return Err(
+            "Managed ONNX models require an eligible NVIDIA GPU; CPU fallback is disabled."
+                .to_owned(),
+        );
     };
     let driver = parse_version(&nvidia.driver_cuda).ok_or_else(|| {
         format!(
@@ -1922,17 +2106,10 @@ fn select_onnx_assets_for_hardware(
         })
         .max_by_key(|(version, _, _, _)| *version);
     let Some((cuda_version, cuda_runtime, provider, cudnn)) = selected else {
-        return Ok(OnnxRuntimeSelection {
-            backend: RuntimeBackend::Cpu,
-            provider: None,
-            cuda_runtime: None,
-            cudnn: None,
-            cuda_version: None,
-            fallback_reason: Some(format!(
-                "NVIDIA GPU {} supports CUDA {}, but no complete ONNX Runtime, CUDA and cuDNN bundle is configured for {target}; using CPU inference.",
-                nvidia.gpu, nvidia.driver_cuda
-            )),
-        });
+        return Err(format!(
+            "NVIDIA GPU {} supports CUDA {}, but no complete ONNX Runtime, CUDA and cuDNN bundle is configured for {target}.",
+            nvidia.gpu, nvidia.driver_cuda
+        ));
     };
     Ok(OnnxRuntimeSelection {
         backend: RuntimeBackend::Cuda,
@@ -2030,22 +2207,6 @@ fn select_assets_for_hardware(
             "no llama.cpp runtime assets are configured for {target}"
         ));
     }
-    let cpu_selection = |fallback_reason: Option<String>| {
-        let runtime = assets
-            .iter()
-            .find(|asset| asset.kind == LlamaCppAssetKind::ServerCpu)
-            .cloned()
-            .ok_or_else(|| {
-                format!("the configured llama.cpp download list has no CPU package for {target}")
-            })?;
-        let executable = runtime.executable.clone();
-        Ok(RuntimeSelection {
-            assets: vec![runtime],
-            backend: RuntimeBackend::Cpu,
-            executable,
-            fallback_reason,
-        })
-    };
     if let Some(nvidia) = nvidia {
         let supported = parse_version(&nvidia.driver_cuda).ok_or_else(|| {
             format!(
@@ -2088,7 +2249,7 @@ fn select_assets_for_hardware(
                     target
                 )
             };
-            return cpu_selection(Some(reason));
+            return Err(reason.replace("; using the CPU runtime", ""));
         };
         let cuda_version = runtime
             .cuda_version
@@ -2102,9 +2263,9 @@ fn select_assets_for_hardware(
             })
             .cloned()
         else {
-            return cpu_selection(Some(format!(
-                "The configured llama.cpp download list is missing the CUDA runtime package for version {cuda_version}; using the CPU runtime."
-            )));
+            return Err(format!(
+                "The configured llama.cpp download list is missing the CUDA runtime package for version {cuda_version}."
+            ));
         };
         let executable = runtime.executable.clone();
         let selected_version = parse_version(cuda_version)
@@ -2132,7 +2293,10 @@ fn select_assets_for_hardware(
             fallback_reason,
         });
     }
-    cpu_selection(None)
+    Err(
+        "Managed llama.cpp models require an eligible NVIDIA GPU; CPU fallback is disabled."
+            .to_owned(),
+    )
 }
 
 /// Converts persisted runtime metadata into the installer representation.
@@ -2272,7 +2436,7 @@ fn minimum_cuda_for_compute_capability(capability: (u16, u16)) -> (u16, u16) {
 
 fn supported_nvidia_cuda() -> Result<Option<NvidiaCuda>, String> {
     let Some((program, query)) = run_nvidia_smi(&[
-        "--query-gpu=name,compute_cap",
+        "--query-gpu=name,compute_cap,memory.total",
         "--format=csv,noheader,nounits",
     ])?
     else {
@@ -2281,9 +2445,10 @@ fn supported_nvidia_cuda() -> Result<Option<NvidiaCuda>, String> {
     if !query.status.success() {
         return Err(command_failure("Cannot query NVIDIA GPUs", &query));
     }
-    let mut gpus = parse_nvidia_gpu_rows(&String::from_utf8_lossy(&query.stdout))?;
-    gpus.retain(|gpu| gpu.compute_capability >= MIN_CUDA_COMPUTE_CAPABILITY);
-    let Some(mut selected) = gpus.into_iter().max_by_key(|gpu| gpu.compute_capability) else {
+    let gpus = parse_nvidia_gpu_rows(&String::from_utf8_lossy(&query.stdout))?;
+    // ORT and llama.cpp currently use CUDA's default device. Gate the same
+    // primary device instead of approving the plan from a different adapter.
+    let Some(mut selected) = gpus.into_iter().next() else {
         return Ok(None);
     };
 
@@ -2307,18 +2472,24 @@ fn parse_nvidia_gpu_rows(output: &str) -> Result<Vec<NvidiaCuda>, String> {
     let mut gpus = Vec::new();
     let mut invalid = Vec::new();
     for line in output.lines().filter(|line| !line.trim().is_empty()) {
-        let Some((gpu, capability)) = line.rsplit_once(',') else {
+        let columns = line.split(',').map(str::trim).collect::<Vec<_>>();
+        let [gpu, capability, memory_mib] = columns.as_slice() else {
             invalid.push(line.to_owned());
             continue;
         };
-        let Some(compute_capability) = parse_version(capability.trim()) else {
+        let Some(compute_capability) = parse_version(capability) else {
+            invalid.push(line.to_owned());
+            continue;
+        };
+        let Ok(memory_mib) = memory_mib.parse::<u64>() else {
             invalid.push(line.to_owned());
             continue;
         };
         gpus.push(NvidiaCuda {
-            gpu: gpu.trim().to_owned(),
+            gpu: (*gpu).to_owned(),
             compute_capability,
             driver_cuda: String::new(),
+            memory_bytes: memory_mib.saturating_mul(1024 * 1024),
         });
     }
     if gpus.is_empty() {
@@ -2706,6 +2877,7 @@ mod tests {
                     gpu: "NVIDIA GeForce RTX 4090".into(),
                     compute_capability: (8, 9),
                     driver_cuda: driver.into(),
+                    memory_bytes: 24 * 1024 * 1024 * 1024,
                 }),
             )
             .unwrap();
@@ -2715,12 +2887,16 @@ mod tests {
                 selection.provider.as_ref().unwrap().cuda_version,
                 expected.split('.').next().unwrap()
             );
+            assert_eq!(
+                selection.cudnn.as_ref().unwrap().cuda_version,
+                expected.split('.').next().unwrap()
+            );
         }
     }
 
     #[test]
-    fn onnx_uses_cpu_when_no_compatible_cuda_bundle_exists() {
-        let selection = select_onnx_assets_for_hardware(
+    fn onnx_rejects_missing_compatible_cuda_bundle() {
+        let error = select_onnx_assets_for_hardware(
             &[onnx_asset("13")],
             &[asset("cudart-llama-bin-win-cuda-13.3-x64.zip")],
             &[cudnn_asset("13")],
@@ -2728,11 +2904,11 @@ mod tests {
                 gpu: "NVIDIA GeForce RTX 5080".into(),
                 compute_capability: (12, 0),
                 driver_cuda: "13.2".into(),
+                memory_bytes: 16 * 1024 * 1024 * 1024,
             }),
         )
-        .unwrap();
-        assert_eq!(selection.backend, RuntimeBackend::Cpu);
-        assert!(selection.fallback_reason.unwrap().contains("using CPU"));
+        .unwrap_err();
+        assert!(error.contains("no complete ONNX Runtime"));
     }
 
     #[test]
@@ -2758,6 +2934,89 @@ mod tests {
             fallback_reason: None,
         };
         assert_eq!(missing_runtime_bytes(&root, Some(&llama), Some(&onnx)), 4);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn complete_onnx_files_without_a_marker_are_repaired_automatically() {
+        let root = std::env::temp_dir().join(format!(
+            "xrtranslate-runtime-marker-repair-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("config.json"), include_str!("../../config.json")).unwrap();
+        let layout = RuntimeLayout::for_project_root(&root);
+        let cuda = asset("cudart-llama-bin-win-cuda-13.1-x64.zip");
+        let mut provider = onnx_asset("13");
+        provider.required_files.push("onnxruntime.dll".into());
+        let cudnn = cudnn_asset("13");
+        let selection = OnnxRuntimeSelection {
+            backend: RuntimeBackend::Cuda,
+            provider: Some(provider.clone()),
+            cuda_runtime: Some(cuda.clone()),
+            cudnn: Some(cudnn.clone()),
+            cuda_version: Some("13.1".into()),
+            fallback_reason: None,
+        };
+        let cuda_directory = layout.cuda_runtime_directory("13.1");
+        let provider_directory = layout.onnx_runtime_directory("13");
+        let cudnn_directory = layout.cudnn_runtime_directory("13");
+        for (directory, files) in [
+            (&cuda_directory, &cuda.required_file_prefixes),
+            (&provider_directory, &provider.required_files),
+            (&cudnn_directory, &cudnn.required_files),
+        ] {
+            fs::create_dir_all(directory).unwrap();
+            for file in files {
+                let filename = if file.ends_with('_') {
+                    format!("{file}13.dll")
+                } else {
+                    file.clone()
+                };
+                fs::write(directory.join(filename), b"runtime").unwrap();
+            }
+        }
+
+        assert_eq!(missing_runtime_bytes(&root, None, Some(&selection)), 0);
+        assert!(!runtime_marker_matches_plan(&root, None, Some(&selection)));
+
+        let plan = RuntimePlan {
+            llama_cpp: None,
+            onnx: Some(selection.clone()),
+            download_bytes: 0,
+            marker_ready: false,
+            requirements: RuntimeRequirements {
+                onnx_tts: true,
+                onnx_cuda: true,
+                ..RuntimeRequirements::default()
+            },
+            local_models: LocalModelAvailability::Available {
+                gpu: "test GPU".into(),
+                memory_bytes: 16 * 1024 * 1024 * 1024,
+            },
+            blocking_error: None,
+        };
+        assert!(plan.requires_marker_repair());
+        let (sender, receiver) = unbounded();
+        sender.send(Event::Prepared(Ok(plan))).unwrap();
+        let mut installer = RuntimeInstaller {
+            state: RuntimeInstallState::Detecting,
+            events: Some(receiver),
+            active_project_root: Some(root.clone()),
+            ..RuntimeInstaller::default()
+        };
+        installer.poll();
+        for _ in 0..100 {
+            installer.poll();
+            if layout.native_runtime_selection_file().is_file() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        assert!(layout.native_runtime_selection_file().is_file());
+        assert!(runtime_marker_matches_plan(&root, None, Some(&selection)));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2930,6 +3189,7 @@ mod tests {
             gpu: "NVIDIA GeForce RTX 5080".into(),
             compute_capability: (12, 0),
             driver_cuda: "13.3".into(),
+            memory_bytes: 16 * 1024 * 1024 * 1024,
         };
         let selected = select_assets_for_hardware(&assets, Some(&nvidia)).unwrap();
         assert_eq!(selected.backend, RuntimeBackend::Cuda);
@@ -2964,6 +3224,7 @@ mod tests {
                     gpu: gpu.into(),
                     compute_capability,
                     driver_cuda: "13.3".into(),
+                    memory_bytes: 16 * 1024 * 1024 * 1024,
                 }),
             )
             .unwrap();
@@ -2996,6 +3257,7 @@ mod tests {
             gpu: "NVIDIA GeForce RTX 5080".into(),
             compute_capability: (12, 0),
             driver_cuda: "13.2".into(),
+            memory_bytes: 16 * 1024 * 1024 * 1024,
         };
         let selected = select_assets_for_hardware(&assets, Some(&nvidia)).unwrap();
         assert_eq!(selected.backend, RuntimeBackend::Cuda);
@@ -3016,24 +3278,23 @@ mod tests {
             asset("llama-b1-bin-win-cuda-13.3-x64.zip"),
             asset("cudart-llama-bin-win-cuda-13.3-x64.zip"),
         ];
-        let selected = select_assets_for_hardware(
+        let error = select_assets_for_hardware(
             &assets,
             Some(&NvidiaCuda {
                 gpu: "NVIDIA GeForce RTX 5080".into(),
                 compute_capability: (12, 0),
                 driver_cuda: "13.0".into(),
+                memory_bytes: 16 * 1024 * 1024 * 1024,
             }),
         )
-        .unwrap();
-        assert_eq!(selected.backend, RuntimeBackend::Cpu);
-        let notice = selected.fallback_reason.unwrap();
-        assert!(notice.contains("CUDA 13.1-capable"));
-        assert!(!notice.contains("needs a CUDA 13.3-capable"));
-        assert!(notice.contains(NVIDIA_APP_URL));
+        .unwrap_err();
+        assert!(error.contains("CUDA 13.1-capable"));
+        assert!(!error.contains("needs a CUDA 13.3-capable"));
+        assert!(error.contains(NVIDIA_APP_URL));
     }
 
     #[test]
-    fn missing_cudart_falls_back_to_the_complete_cpu_runtime() {
+    fn missing_cudart_is_rejected_without_cpu_fallback() {
         let assets = vec![
             asset("llama-b1-bin-win-cpu-x64.zip"),
             asset("llama-b1-bin-win-cuda-13.3-x64.zip"),
@@ -3042,26 +3303,40 @@ mod tests {
             gpu: "NVIDIA GeForce RTX 5080".into(),
             compute_capability: (12, 0),
             driver_cuda: "13.3".into(),
+            memory_bytes: 16 * 1024 * 1024 * 1024,
         };
-        let selected = select_assets_for_hardware(&assets, Some(&nvidia)).unwrap();
-        assert_eq!(selected.backend, RuntimeBackend::Cpu);
-        assert!(
-            selected
-                .fallback_reason
-                .unwrap()
-                .contains("missing the CUDA runtime package")
-        );
+        let error = select_assets_for_hardware(&assets, Some(&nvidia)).unwrap_err();
+        assert!(error.contains("missing the CUDA runtime package"));
     }
 
     #[test]
     fn parses_all_nvidia_gpus_instead_of_only_the_first() {
         let gpus = parse_nvidia_gpu_rows(
-            "Unavailable virtual adapter, N/A\nNVIDIA GeForce GTX 580, 2.0\nNVIDIA GeForce RTX 5080, 12.0\n",
+            "Unavailable virtual adapter, N/A, N/A\nNVIDIA GeForce GTX 580, 2.0, 1536\nNVIDIA GeForce RTX 5080, 12.0, 16384\n",
         )
         .unwrap();
         assert_eq!(gpus.len(), 2);
         assert_eq!(gpus[1].gpu, "NVIDIA GeForce RTX 5080");
         assert_eq!(gpus[1].compute_capability, (12, 0));
+        assert_eq!(gpus[1].memory_bytes, 16 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn managed_local_models_require_eight_gib_of_vram() {
+        let low_memory = NvidiaCuda {
+            gpu: "NVIDIA GeForce RTX test".into(),
+            compute_capability: (8, 9),
+            driver_cuda: "13.0".into(),
+            memory_bytes: 7 * 1024 * 1024 * 1024,
+        };
+        assert!(matches!(
+            local_model_availability(Some(&low_memory)),
+            LocalModelAvailability::Unavailable(reason) if reason.contains("at least 8 GiB")
+        ));
+        assert!(matches!(
+            local_model_availability(None),
+            LocalModelAvailability::Unavailable(reason) if reason.contains("require an NVIDIA GPU")
+        ));
     }
 
     #[test]

@@ -8,8 +8,8 @@ use crate::InferenceError;
 
 pub use onnx_runtime::{OnnxExecutionDevice, initialize_onnx_runtime, preload_onnx_cuda_libraries};
 pub use providers::{
-    Audio8ExecutionDevice, Audio8OnnxAdapter, Audio8SynthesisOptions, OpenVoiceOnnxAdapter,
-    OpenVoiceSynthesisOptions,
+    Audio8ExecutionDevice, Audio8OnnxAdapter, Audio8SynthesisOptions, OpenVoiceBaseVoice,
+    OpenVoiceOnnxAdapter, OpenVoiceSynthesisOptions,
 };
 
 /// Decoded mono PCM returned by a TTS provider.

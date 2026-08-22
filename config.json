@@ -343,8 +343,11 @@
         "clone_min_seconds": 1.0,
         "clone_max_seconds": 30.0,
         "max_input_chars": 250,
-        "speed": 1.0,
-        "supported_languages": [
+          "speed": 1.0,
+          "voices": {
+            "en": "en-newest"
+          },
+          "supported_languages": [
           "en"
         ]
       },

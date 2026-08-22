@@ -1,8 +1,8 @@
 //! Translation model packages.
 
 use super::{
-    ModelAssetId, ModelAssetManifest, ModelCapability, ModelFileRole, ModelLevel, ModelSource,
-    RequiredModelFile,
+    MANAGED_LOCAL_MODEL_HARDWARE, ModelAssetId, ModelAssetManifest, ModelCapability, ModelFileRole,
+    ModelLevel, ModelSource, RequiredModelFile,
 };
 
 const HUNYUAN_MT_REQUIRED_FILES: &[RequiredModelFile] = &[RequiredModelFile {
@@ -27,6 +27,9 @@ pub const HUNYUAN_MT_GGUF: ModelAssetManifest = ModelAssetManifest {
     capability: ModelCapability::Translation,
     level: ModelLevel::Normal,
     provider: "hunyuan",
+    languages: &[],
+    voice_presets: &[],
+    hardware: MANAGED_LOCAL_MODEL_HARDWARE,
     audio_output: None,
     relative_directory: "HY-MT2",
     required_files: HUNYUAN_MT_REQUIRED_FILES,
@@ -45,6 +48,9 @@ pub const HUNYUAN_MT_7B_GGUF: ModelAssetManifest = ModelAssetManifest {
     capability: ModelCapability::Translation,
     level: ModelLevel::Big,
     provider: "hunyuan",
+    languages: &[],
+    voice_presets: &[],
+    hardware: MANAGED_LOCAL_MODEL_HARDWARE,
     audio_output: None,
     relative_directory: "Hy-MT2-7B-GGUF",
     required_files: HUNYUAN_MT_7B_REQUIRED_FILES,

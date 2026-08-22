@@ -83,6 +83,16 @@ shared domain/runtime/UI capability
 - Query selectable models by provider and capability, including level only
   when the operation requires it. A new size for an existing model family must
   not require another fixed field or branch in every consumer.
+- Model selection cardinality, synthesis languages, and hardware requirements
+  are manifest/domain metadata. ASR and translation variants are singular;
+  complementary TTS language packs may be plural. UI, installer, backend, and
+  task routing must consume the same metadata instead of maintaining parallel
+  provider-specific language or hardware lists. Preserve `model_asset` as a
+  serialized compatibility alias while accepting `model_assets` where plural
+  selection is meaningful.
+- Downloadable managed models must not silently change execution class. They
+  require an eligible NVIDIA CUDA host with at least 8 GiB VRAM; only explicitly
+  classified small bundled ONNX components may execute on CPU.
 
 ## When to extract or split
 

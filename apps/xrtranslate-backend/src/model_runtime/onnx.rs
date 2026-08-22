@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use tracing::{info, warn};
+use tracing::info;
 use xrtranslate_config::{AppConfig, NativeRuntimeBackend, NativeRuntimeSelection, RuntimeLayout};
 use xrtranslate_inference::{
     OnnxExecutionDevice, initialize_onnx_runtime, preload_onnx_cuda_libraries,
@@ -45,40 +45,32 @@ pub(crate) fn initialize_managed_onnx_runtime(
     }
 
     let requirements = config.runtime_requirements();
-    if requirements.onnx_tts && requirements.onnx_cuda {
-        if let Some(resolved) = marker
+    if requirements.onnx_tts {
+        let resolved = marker
             .as_ref()
             .filter(|marker| marker.onnx_backend == Some(NativeRuntimeBackend::Cuda))
             .map(|marker| layout.resolve_native_runtime_selection(marker))
-        {
-            let core = resolved.onnx_core_library.clone().or_else(|| {
-                resolved
-                    .provider_dir
-                    .as_ref()
-                    .map(|directory| directory.join(RuntimeLayout::ONNX_CORE_LIBRARY))
-            });
-            let cuda_result = (|| {
-                let core = core
-                    .as_ref()
-                    .ok_or("CUDA runtime marker contains no ONNX core library")?;
-                preload_onnx_cuda_libraries(&resolved.preload_libraries)
-                    .map_err(|error| error.to_string())?;
-                initialize_onnx_runtime(core).map_err(|error| error.to_string())?;
-                Ok::<_, String>(())
-            })();
-            if cuda_result.is_ok() {
-                info!(
-                    cuda = resolved.cuda_version.as_deref().unwrap_or("unknown"),
-                    libraries = resolved.preload_libraries.len(),
-                    "managed ONNX CUDA runtime initialized"
-                );
-                return Ok(());
-            }
-            warn!(
-                error = %cuda_result.unwrap_err(),
-                "managed ONNX CUDA runtime is incomplete; using CPU runtime"
-            );
-        }
+            .ok_or(
+                "Managed ONNX models require a verified CUDA runtime marker; CPU fallback is disabled.",
+            )?;
+        let core = resolved.onnx_core_library.clone().or_else(|| {
+            resolved
+                .provider_dir
+                .as_ref()
+                .map(|directory| directory.join(RuntimeLayout::ONNX_CORE_LIBRARY))
+        });
+        let core = core
+            .as_ref()
+            .ok_or("CUDA runtime marker contains no ONNX core library")?;
+        preload_onnx_cuda_libraries(&resolved.preload_libraries)
+            .map_err(|error| error.to_string())?;
+        initialize_onnx_runtime(core).map_err(|error| error.to_string())?;
+        info!(
+            cuda = resolved.cuda_version.as_deref().unwrap_or("unknown"),
+            libraries = resolved.preload_libraries.len(),
+            "managed ONNX CUDA runtime initialized"
+        );
+        return Ok(());
     }
 
     let cpu_core = marker

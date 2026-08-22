@@ -1,7 +1,7 @@
 //! Pure-Rust OpenVoice inference using ONNX Runtime.
 //!
-//! The provider uses NVIDIA's OpenVoice v3 package: MeloTTS English v3 as the
-//! base voice and the OpenVoice V2 tone-color converter. No Python process or
+//! The provider uses NVIDIA's OpenVoice v2/v3 packages: a selectable MeloTTS
+//! English base speaker and the OpenVoice V2 tone-color converter. No Python process or
 //! local model service participates at runtime.
 
 mod frontend;
@@ -22,14 +22,51 @@ use crate::{
 
 use model::OpenVoiceRuntime;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OpenVoiceBaseVoice {
+    EnglishNewest,
+    EnglishAmerican,
+    EnglishBritish,
+    EnglishIndian,
+    EnglishAustralian,
+    EnglishDefault,
+}
+
+impl OpenVoiceBaseVoice {
+    const fn speaker_id(self) -> i32 {
+        match self {
+            Self::EnglishNewest | Self::EnglishAmerican => 0,
+            Self::EnglishBritish => 1,
+            Self::EnglishIndian => 2,
+            Self::EnglishAustralian => 3,
+            Self::EnglishDefault => 4,
+        }
+    }
+
+    const fn source_embedding(self) -> &'static str {
+        match self {
+            Self::EnglishNewest => "voices/en_newest.bin",
+            Self::EnglishAmerican => "voices/en_us.bin",
+            Self::EnglishBritish => "voices/en_british.bin",
+            Self::EnglishIndian => "voices/en_india.bin",
+            Self::EnglishAustralian => "voices/en_au.bin",
+            Self::EnglishDefault => "voices/en_default.bin",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct OpenVoiceSynthesisOptions {
     pub speed: f32,
+    pub base_voice: OpenVoiceBaseVoice,
 }
 
 impl Default for OpenVoiceSynthesisOptions {
     fn default() -> Self {
-        Self { speed: 1.0 }
+        Self {
+            speed: 1.0,
+            base_voice: OpenVoiceBaseVoice::EnglishNewest,
+        }
     }
 }
 
@@ -85,7 +122,7 @@ impl OpenVoiceOnnxAdapter {
             "models/reference_encoder.onnx",
             "frontend/cmudict.json",
             "frontend/bert_vocab.txt",
-            "voices/en_newest.bin",
+            synthesis.base_voice.source_embedding(),
         ] {
             if !model_dir.join(relative).is_file() {
                 return Err(openvoice_error(format!(
@@ -156,7 +193,7 @@ impl OpenVoiceOnnxAdapter {
     ) -> Result<SynthesizedPcm, InferenceError> {
         if !is_english(target_language) {
             return Err(openvoice_error(format!(
-                "NVIDIA OpenVoice v3 supports English synthesis, not {target_language:?}"
+                "The selected OpenVoice base model supports English synthesis, not {target_language:?}"
             )));
         }
         let state = Arc::clone(&self.state);
@@ -180,6 +217,7 @@ impl OpenVoiceState {
                 &self.model_dir,
                 self.device,
                 self.threads,
+                self.synthesis.base_voice,
             )?);
         }
         Ok(self

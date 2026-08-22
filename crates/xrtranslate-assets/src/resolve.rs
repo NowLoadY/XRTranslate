@@ -18,8 +18,8 @@ pub struct ModelAssetsConfig {
     /// Override the default `<project-root>/models` directory.
     #[serde(alias = "models_root", alias = "model_root")]
     pub models_directory: Option<PathBuf>,
-    /// Provider-neutral active package selection. At most one package per
-    /// capability is retained by [`Self::select_asset`].
+    /// Provider-neutral active package selection. Selection cardinality is a
+    /// capability rule: ASR and translation replace; TTS language packs compose.
     active_assets: Vec<ModelAssetId>,
     /// Legacy Qwen3 ASR package-directory override retained for config
     /// compatibility. It does not apply to other providers or asset IDs.
@@ -53,6 +53,22 @@ impl ModelAssetsConfig {
     /// family in the caller.
     pub fn select_asset(&mut self, id: ModelAssetId) {
         let capability = manifest_for(id).capability;
+        if capability.allows_multiple_assets() {
+            let next = manifest_for(id);
+            self.active_assets.retain(|selected| {
+                let existing = manifest_for(*selected);
+                existing.provider != next.provider
+                    || existing.languages.is_empty()
+                    || next.languages.is_empty()
+                    || existing.languages.iter().all(|language| {
+                        !next.languages.iter().any(|candidate| candidate == language)
+                    })
+            });
+            if !self.active_assets.contains(&id) {
+                self.active_assets.push(id);
+            }
+            return;
+        }
         if let Some(selected) = self
             .active_assets
             .iter_mut()
@@ -62,6 +78,10 @@ impl ModelAssetsConfig {
         } else {
             self.active_assets.push(id);
         }
+    }
+
+    pub fn deselect_asset(&mut self, id: ModelAssetId) {
+        self.active_assets.retain(|selected| *selected != id);
     }
 
     /// Iterates the normalized explicit selections in insertion order.
@@ -232,6 +252,17 @@ impl ResolvedModelAssets {
             ModelCapability::Translation => &self.hunyuan_mt,
             ModelCapability::Tts => &self.audio8_tts,
         }
+    }
+
+    /// Iterates every active package for a capability in configuration order.
+    pub fn active_assets_for(
+        &self,
+        capability: ModelCapability,
+    ) -> impl Iterator<Item = &ResolvedModelAsset> {
+        self.active_asset_ids
+            .iter()
+            .map(|id| self.asset(*id))
+            .filter(move |asset| asset.manifest.capability == capability)
     }
 
     /// Iterates active runtime packages in ASR, translation order.

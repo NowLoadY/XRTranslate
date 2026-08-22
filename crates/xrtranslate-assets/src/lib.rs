@@ -12,10 +12,12 @@ mod resolve;
 
 pub use catalog::{
     AUDIO8_TTS_ONNX_FP16, DEFAULT_GGUF_MANIFEST, HUNYUAN_MT_7B_GGUF, HUNYUAN_MT_GGUF,
-    MODEL_ASSET_CATALOG, ModelArchiveEntry, ModelArchiveSource, ModelAssetId, ModelAssetManifest,
+    MANAGED_LOCAL_MODEL_HARDWARE, MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES, MODEL_ASSET_CATALOG,
+    ModelAccelerator, ModelArchiveEntry, ModelArchiveSource, ModelAssetId, ModelAssetManifest,
     ModelAudioOutput, ModelAudioSampleFormat, ModelCapability, ModelFileRole, ModelFileSource,
-    ModelLevel, ModelSource, OPENVOICE_V3_ONNX_FP16, QWEN3_ASR_GGUF, RequiredModelFile,
-    manifest_for, manifests_for_capability,
+    ModelHardwareRequirements, ModelLevel, ModelSource, ModelVoicePreset, OPENVOICE_V2_ONNX_FP16,
+    OPENVOICE_V3_ONNX_FP16, QWEN3_ASR_GGUF, RequiredModelFile, manifest_for,
+    manifests_for_capability,
 };
 pub use install::{
     AtomicInstallError, DownloadProgress, ModelDownloadError, NativeModelInstaller,

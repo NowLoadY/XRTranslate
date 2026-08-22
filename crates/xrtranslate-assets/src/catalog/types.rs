@@ -19,6 +19,8 @@ pub enum ModelAssetId {
     Audio8TtsOnnxFp16,
     /// NVIDIA OpenVoice v3 ONNX package with MeloTTS English v3.
     OpenVoiceV3OnnxFp16,
+    /// NVIDIA OpenVoice v2 ONNX package with five English accents.
+    OpenVoiceV2OnnxFp16,
 }
 
 impl ModelAssetId {
@@ -31,6 +33,7 @@ impl ModelAssetId {
             Self::HunyuanMt7bGguf => "hy-mt2-big",
             Self::Audio8TtsOnnxFp16 => "audio8-tts-onnx-fp16",
             Self::OpenVoiceV3OnnxFp16 => "openvoice-v3-onnx-fp16",
+            Self::OpenVoiceV2OnnxFp16 => "openvoice-v2-onnx-fp16",
         }
     }
 
@@ -58,6 +61,36 @@ pub enum ModelCapability {
     Translation,
     Tts,
 }
+
+impl ModelCapability {
+    /// Whether a provider may activate one package or several complementary
+    /// packages for this capability. TTS language packs compose; recognition
+    /// and translation model variants replace one another.
+    #[must_use]
+    pub const fn allows_multiple_assets(self) -> bool {
+        matches!(self, Self::Tts)
+    }
+}
+
+/// Hardware contract for a downloadable native model package. Small ONNX
+/// components bundled with the application (VAD, denoise and speaker helpers)
+/// are intentionally outside this catalogue and therefore outside this gate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ModelHardwareRequirements {
+    pub accelerator: ModelAccelerator,
+    pub minimum_memory_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModelAccelerator {
+    NvidiaCuda,
+}
+
+pub const MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+pub const MANAGED_LOCAL_MODEL_HARDWARE: ModelHardwareRequirements = ModelHardwareRequirements {
+    accelerator: ModelAccelerator::NvidiaCuda,
+    minimum_memory_bytes: MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES,
+};
 
 /// Wire-level audio produced by a native model package. The desktop uses this
 /// immutable capability instead of trusting an editable provider setting.
@@ -197,6 +230,17 @@ pub struct ModelArchiveEntry {
     pub archive_path: &'static str,
 }
 
+/// A stable, user-selectable base voice contained in one model package.
+/// Language routing remains a package capability; this metadata only chooses
+/// a speaker/accent within the selected package and never creates a download.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ModelVoicePreset {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub language: &'static str,
+    pub is_default: bool,
+}
+
 /// Static description of one locally-installed model package.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ModelAssetManifest {
@@ -205,6 +249,11 @@ pub struct ModelAssetManifest {
     pub capability: ModelCapability,
     pub level: ModelLevel,
     pub provider: &'static str,
+    /// BCP-47-style language tags covered by this package. An empty list means
+    /// the model is not partitioned into selectable language packs.
+    pub languages: &'static [&'static str],
+    pub voice_presets: &'static [ModelVoicePreset],
+    pub hardware: ModelHardwareRequirements,
     pub audio_output: Option<ModelAudioOutput>,
     /// Directory relative to the models root.
     pub relative_directory: &'static str,
@@ -232,5 +281,12 @@ impl ModelAssetManifest {
                 })
                 .map(|file| file.bytes)
                 .sum::<u64>()
+    }
+
+    /// Final bytes occupied by the verified files declared by this package.
+    /// This deliberately excludes staging and filesystem allocation overhead.
+    #[must_use]
+    pub fn installed_bytes(&self) -> u64 {
+        self.required_files.iter().map(|file| file.bytes).sum()
     }
 }

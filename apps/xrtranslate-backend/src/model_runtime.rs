@@ -20,7 +20,7 @@ use xrtranslate_assets::{
 };
 use xrtranslate_config::{
     AppConfig, AsrPromptMode, LocalModelRuntimeConfig, NativeModelRouteConfig,
-    NativeRuntimeSelection, ResolvedNativeRuntimeSelection, RuntimeLayout,
+    NativeRuntimeBackend, NativeRuntimeSelection, ResolvedNativeRuntimeSelection, RuntimeLayout,
 };
 use xrtranslate_inference::{InferenceError, ReqwestClient, TranslationAdapter};
 use xrtranslate_supervisor::{LlamaServerEndpoint, LlamaServerSpec};
@@ -86,16 +86,17 @@ impl NativeProviderPlan {
                 )
             })
             .transpose()?;
-        let tts_asset_id = tts_profile
-            .map(|profile| profile.configured_asset(config))
-            .transpose()?;
+        let tts_asset_ids = tts_profile
+            .map(|profile| profile.configured_assets(config))
+            .transpose()?
+            .unwrap_or_default();
         let assets = resolve_model_assets(
             config,
             project_root,
             asr_asset_id
                 .into_iter()
                 .chain(translation_asset_id)
-                .chain(tts_asset_id),
+                .chain(tts_asset_ids),
         );
         let translation_supports_reference_context = route.translation.supports_prompt_context;
 
@@ -225,12 +226,24 @@ impl NativeProviderPlan {
         &self,
         config: &AppConfig,
     ) -> Result<Option<NativeTtsAdapter>, String> {
+        if self.tts_profile.is_some()
+            && !self
+                .native_runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.onnx_backend == Some(NativeRuntimeBackend::Cuda))
+        {
+            return Err(
+                "Managed TTS models require a verified CUDA/cuDNN runtime marker; CPU fallback is disabled."
+                    .to_owned(),
+            );
+        }
         self.tts_profile
             .map(|profile| {
-                profile.adapter(
-                    config,
-                    &self.assets.active_asset(ModelCapability::Tts).directory(),
-                )
+                let assets = self
+                    .assets
+                    .active_assets_for(ModelCapability::Tts)
+                    .collect::<Vec<_>>();
+                profile.adapter(config, &assets)
             })
             .transpose()
     }
@@ -240,6 +253,16 @@ impl NativeProviderPlan {
         asr_port: u16,
         translation_port: u16,
     ) -> Result<(Option<LlamaServerSpec>, Option<LlamaServerSpec>), String> {
+        if self.route.uses_local_runtime()
+            && !self.native_runtime.as_ref().is_some_and(|runtime| {
+                runtime.llama_cpp_backend == Some(NativeRuntimeBackend::Cuda)
+            })
+        {
+            return Err(
+                "Managed ASR and translation models require a verified CUDA runtime marker; CPU fallback is disabled."
+                    .to_owned(),
+            );
+        }
         let bind = |port| LlamaServerEndpoint::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
         let asr = if self.asr_uses_local_runtime() {
             let asset = self.assets.active_asset(ModelCapability::Asr);
@@ -383,6 +406,21 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    fn attach_test_cuda_runtime(plan: &mut NativeProviderPlan) {
+        plan.native_runtime = Some(ResolvedNativeRuntimeSelection {
+            backend: NativeRuntimeBackend::Cuda,
+            llama_cpp_backend: Some(NativeRuntimeBackend::Cuda),
+            onnx_backend: Some(NativeRuntimeBackend::Cuda),
+            cuda_version: Some("13.3".into()),
+            provider_dir: None,
+            onnx_core_library: None,
+            cuda_bin_dir: None,
+            cudnn_bin_dir: None,
+            preload_libraries: Vec::new(),
+            fallback_reason: None,
+        });
+    }
+
     #[test]
     fn managed_cuda_directory_is_injected_only_into_llama_child_path() {
         let cuda = std::env::temp_dir().join("xrtranslate-managed-cuda");
@@ -419,7 +457,8 @@ mod tests {
             serde_json::Value::from("hy-mt2-big");
         let config = AppConfig::from_value(document).unwrap();
 
-        let plan = NativeProviderPlan::resolve(&config, Path::new("release-root")).unwrap();
+        let mut plan = NativeProviderPlan::resolve(&config, Path::new("release-root")).unwrap();
+        attach_test_cuda_runtime(&mut plan);
         let asset = plan.assets.active_asset(ModelCapability::Translation);
 
         assert_eq!(asset.manifest().id, ModelAssetId::HunyuanMt7bGguf);
@@ -432,7 +471,8 @@ mod tests {
     #[test]
     fn runtime_plan_materializes_both_managed_server_specs() {
         let config = AppConfig::from_json_str(include_str!("../../../config.json")).unwrap();
-        let plan = NativeProviderPlan::resolve(&config, Path::new("release-root")).unwrap();
+        let mut plan = NativeProviderPlan::resolve(&config, Path::new("release-root")).unwrap();
+        attach_test_cuda_runtime(&mut plan);
 
         assert_eq!(
             plan.llama_server_path(),
@@ -565,7 +605,8 @@ mod tests {
             serde_json::Value::from("dashscope-key");
         let config = AppConfig::from_value(document).unwrap();
 
-        let plan = NativeProviderPlan::resolve(&config, Path::new("release-root")).unwrap();
+        let mut plan = NativeProviderPlan::resolve(&config, Path::new("release-root")).unwrap();
+        attach_test_cuda_runtime(&mut plan);
 
         assert!(!plan.asr_uses_local_runtime());
         assert_eq!(plan.asr_model_alias(), "qwen-audio-3.0-asr-flash-streaming");

@@ -45,12 +45,14 @@ Use `WINIT_UNIX_BACKEND=x11` or `WINIT_UNIX_BACKEND=wayland` to select a window
 backend when both are available. Linux builds keep the same host/plugin
 composition and shared runtime contracts as Windows builds.
 
-The llama.cpp installer selects archives by the declared target metadata in
-`config.json`; the verified b10333 Ubuntu x86_64 CPU archive is configured for
-`linux-x86_64`. Archives may be declared as `zip` or `tar-gz`; the extractor
-validates paths, rejects links/special entries, and restores executable
-permissions on Unix. Linux GPU archives can be added later as separate
-declared capabilities without changing model download or inference code.
+The archive schema already supports Linux `zip` and `tar-gz` targets; the
+extractor validates paths, rejects links/special entries, and restores
+executable permissions on Unix. Managed local models are currently disabled on
+Linux because no verified Linux NVIDIA detection/runtime closure is published.
+The historical CPU archive remains readable for migration but is never selected
+for a managed model. Small bundled ONNX components remain CPU-capable. Linux
+GPU archives and detection can be added later without changing model download
+or inference code.
 
 ## Platform limits
 

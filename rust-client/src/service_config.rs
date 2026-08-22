@@ -48,7 +48,9 @@ pub(crate) struct OnboardingProviderChoice {
     pub name: String,
     pub remote: bool,
     pub model_asset: Option<String>,
+    pub model_assets: Vec<String>,
     pub supported_languages: Vec<String>,
+    pub voices: std::collections::BTreeMap<String, String>,
 }
 
 /// Editable view of the ASR, translation, and TTS provider portions of `config.json`.
@@ -191,7 +193,9 @@ impl ServiceConfigEditor {
                     name: provider.name.clone(),
                     remote: provider_is_remote(provider),
                     model_asset: provider_model_asset(provider),
-                    supported_languages: provider_supported_languages(provider),
+                    model_assets: provider_model_assets(provider),
+                    supported_languages: provider_model_languages(provider),
+                    voices: provider_voice_presets(provider),
                 })
                 .collect(),
             model: field("model"),
@@ -213,6 +217,55 @@ impl ServiceConfigEditor {
             self.dirty = true;
             self.message = None;
         }
+    }
+
+    pub(crate) fn set_onboarding_model_enabled(
+        &mut self,
+        category_key: &str,
+        provider_name: &str,
+        model_asset: &str,
+        enabled: bool,
+    ) {
+        let Some(provider) = self
+            .categories
+            .iter_mut()
+            .find(|category| category.key == category_key)
+            .and_then(|category| {
+                category
+                    .providers
+                    .iter_mut()
+                    .find(|provider| provider.name == provider_name)
+            })
+        else {
+            return;
+        };
+        update_provider_model_selection(provider, model_asset, enabled);
+        self.dirty = true;
+        self.message = None;
+    }
+
+    pub(crate) fn set_onboarding_voice_preset(
+        &mut self,
+        provider_name: &str,
+        language: &str,
+        preset: &str,
+    ) {
+        let Some(provider) = self
+            .categories
+            .iter_mut()
+            .find(|category| category.key == "tts")
+            .and_then(|category| {
+                category
+                    .providers
+                    .iter_mut()
+                    .find(|provider| provider.name == provider_name)
+            })
+        else {
+            return;
+        };
+        update_provider_voice_preset(provider, language, preset);
+        self.dirty = true;
+        self.message = None;
     }
 
     pub(crate) fn set_onboarding_remote_fields(
@@ -334,6 +387,7 @@ impl ServiceConfigEditor {
         }
 
         let runtime_requirements = self.runtime_requirements();
+        let local_model_availability = runtime_installer.local_model_availability();
         let mut apply_runtime_config = false;
         let mut delete_runtime_requested = false;
         let mut runtime_action = crate::ui::RuntimeUiAction::None;
@@ -419,7 +473,7 @@ impl ServiceConfigEditor {
                             provider_model_asset(&self.categories[cat_idx].providers[provider_idx]);
                         let remote =
                             provider_is_remote(&self.categories[cat_idx].providers[provider_idx]);
-                        let supported_languages = provider_supported_languages(
+                        let supported_languages = provider_model_languages(
                             &self.categories[cat_idx].providers[provider_idx],
                         );
 
@@ -470,6 +524,10 @@ impl ServiceConfigEditor {
                                                 provider_name: &provider_name,
                                                 model_asset: model_asset.as_deref(),
                                                 remote,
+                                                local_models_available: matches!(
+                                                    local_model_availability,
+                                                    crate::runtime_install::LocalModelAvailability::Available { .. }
+                                                ),
                                             },
                                         ) {
                                             self.message = Some(message);
@@ -484,6 +542,16 @@ impl ServiceConfigEditor {
                                         category_key,
                                         &supported_languages,
                                     );
+                                    if category_key == "tts"
+                                        && render_tts_model_selection(
+                                            ui,
+                                            &mut self.categories[cat_idx].providers[provider_idx],
+                                            language,
+                                            &local_model_availability,
+                                        )
+                                    {
+                                        self.dirty = true;
+                                    }
 
                                     let fields_len = self.categories[cat_idx].providers
                                         [provider_idx]
@@ -569,7 +637,7 @@ impl ServiceConfigEditor {
                             provider_model_asset(&self.categories[cat_idx].providers[idx]);
                         let remote = provider_is_remote(&self.categories[cat_idx].providers[idx]);
                         let supported_languages =
-                            provider_supported_languages(&self.categories[cat_idx].providers[idx]);
+                            provider_model_languages(&self.categories[cat_idx].providers[idx]);
 
                         ui.horizontal_wrapped(|ui| {
                             ui.label(
@@ -590,6 +658,10 @@ impl ServiceConfigEditor {
                                     provider_name: &provider_name,
                                     model_asset: model_asset.as_deref(),
                                     remote,
+                                    local_models_available: matches!(
+                                        local_model_availability,
+                                        crate::runtime_install::LocalModelAvailability::Available { .. }
+                                    ) && !runtime_installer.is_busy(),
                                 },
                             ) {
                                 self.message = Some(message);
@@ -602,6 +674,16 @@ impl ServiceConfigEditor {
                             category_key,
                             &supported_languages,
                         );
+                        if category_key == "tts"
+                            && render_tts_model_selection(
+                                ui,
+                                &mut self.categories[cat_idx].providers[idx],
+                                language,
+                                &local_model_availability,
+                            )
+                        {
+                            self.dirty = true;
+                        }
 
                         let fields_len = self.categories[cat_idx].providers[idx]
                             .fields
@@ -686,7 +768,11 @@ impl ServiceConfigEditor {
         match runtime_action {
             crate::ui::RuntimeUiAction::None => {}
             crate::ui::RuntimeUiAction::Install => {
-                if let Err(error) =
+                if model_tasks.is_busy() {
+                    self.message = Some(
+                        "Wait for the queued model downloads before installing the runtime.".into(),
+                    );
+                } else if let Err(error) =
                     runtime_installer.install_recommended(project_root.to_path_buf())
                 {
                     self.message = Some(error);
@@ -914,21 +1000,61 @@ fn validate_tts_provider_asset(tts: &xrtranslate_config::TtsConfig) -> Result<()
         .provider_config(provider)
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| format!("tts.providers.{provider} must be an object"))?;
-    let Some(key) = values
-        .get("model_asset")
-        .and_then(serde_json::Value::as_str)
-    else {
-        return Ok(());
-    };
-    let id = xrtranslate_assets::ModelAssetId::from_config_key(key)
-        .ok_or_else(|| format!("Unknown model asset {key}"))?;
-    let manifest = xrtranslate_assets::manifest_for(id);
-    if manifest.provider != provider
-        || manifest.capability != xrtranslate_assets::ModelCapability::Tts
-    {
-        return Err(format!(
-            "Model asset {key} does not belong to provider {provider} for TTS"
-        ));
+    let keys: Vec<&str> = values
+        .get("model_assets")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            values
+                .get("model_asset")
+                .and_then(serde_json::Value::as_str)
+                .into_iter()
+                .collect()
+        });
+    let mut selected_manifests = Vec::new();
+    let mut claimed_languages = std::collections::BTreeMap::<&str, &str>::new();
+    for key in keys {
+        let id = xrtranslate_assets::ModelAssetId::from_config_key(key)
+            .ok_or_else(|| format!("Unknown model asset {key}"))?;
+        let manifest = xrtranslate_assets::manifest_for(id);
+        if manifest.provider != provider
+            || manifest.capability != xrtranslate_assets::ModelCapability::Tts
+        {
+            return Err(format!(
+                "Model asset {key} does not belong to provider {provider} for TTS"
+            ));
+        }
+        for language in manifest.languages {
+            if let Some(existing) = claimed_languages.insert(language, key) {
+                return Err(format!(
+                    "TTS model assets {existing} and {key} both claim language {language}; select one model variant per language."
+                ));
+            }
+        }
+        selected_manifests.push(manifest);
+    }
+    if let Some(voices) = values.get("voices").and_then(serde_json::Value::as_object) {
+        for (language, value) in voices {
+            let key = value.as_str().ok_or_else(|| {
+                format!("tts.providers.{provider}.voices.{language} must be a string")
+            })?;
+            let valid = selected_manifests.iter().any(|manifest| {
+                manifest
+                    .voice_presets
+                    .iter()
+                    .any(|preset| preset.language == language && preset.key == key)
+            });
+            if !valid {
+                return Err(format!(
+                    "Voice preset {key:?} is not provided by the selected {provider} model for language {language}."
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -940,6 +1066,96 @@ fn provider_model_asset(provider: &ProviderCard) -> Option<String> {
         .find(|field| field.name == "model_asset")
         .map(|field| field.value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+fn provider_model_assets(provider: &ProviderCard) -> Vec<String> {
+    provider
+        .fields
+        .iter()
+        .find(|field| field.name == "model_assets")
+        .and_then(|field| serde_json::from_str::<Vec<String>>(&field.value).ok())
+        .filter(|assets| !assets.is_empty())
+        .unwrap_or_else(|| provider_model_asset(provider).into_iter().collect())
+}
+
+fn update_provider_model_selection(provider: &mut ProviderCard, model_asset: &str, enabled: bool) {
+    let mut assets = provider_model_assets(provider);
+    if enabled {
+        if let Some(next_id) = xrtranslate_assets::ModelAssetId::from_config_key(model_asset) {
+            let next = xrtranslate_assets::manifest_for(next_id);
+            assets.retain(|asset| {
+                let Some(existing_id) = xrtranslate_assets::ModelAssetId::from_config_key(asset)
+                else {
+                    return false;
+                };
+                let existing = xrtranslate_assets::manifest_for(existing_id);
+                existing
+                    .languages
+                    .iter()
+                    .all(|language| !next.languages.iter().any(|candidate| candidate == language))
+            });
+        }
+        if !assets.iter().any(|asset| asset == model_asset) {
+            assets.push(model_asset.to_owned());
+        }
+    } else {
+        assets.retain(|asset| asset != model_asset);
+    }
+    let encoded = serde_json::to_string(&assets).expect("string lists serialize");
+    if let Some(field) = provider
+        .fields
+        .iter_mut()
+        .find(|field| field.name == "model_assets")
+    {
+        field.value = encoded;
+        field.kind = JsonFieldKind::Json;
+    } else {
+        provider.fields.push(ConfigField {
+            name: "model_assets".to_owned(),
+            value: encoded,
+            kind: JsonFieldKind::Json,
+        });
+    }
+    // Preserve the singular key as a compatibility alias for older builds.
+    if let Some(first) = assets.first()
+        && let Some(field) = provider
+            .fields
+            .iter_mut()
+            .find(|field| field.name == "model_asset")
+    {
+        field.value = first.clone();
+    }
+}
+
+fn provider_voice_presets(provider: &ProviderCard) -> std::collections::BTreeMap<String, String> {
+    provider
+        .fields
+        .iter()
+        .find(|field| field.name == "voices")
+        .and_then(|field| {
+            serde_json::from_str::<std::collections::BTreeMap<String, String>>(&field.value).ok()
+        })
+        .unwrap_or_default()
+}
+
+fn update_provider_voice_preset(provider: &mut ProviderCard, language: &str, preset: &str) {
+    let mut voices = provider_voice_presets(provider);
+    voices.insert(language.to_owned(), preset.to_owned());
+    let encoded = serde_json::to_string(&voices).expect("voice maps serialize");
+    if let Some(field) = provider
+        .fields
+        .iter_mut()
+        .find(|field| field.name == "voices")
+    {
+        field.value = encoded;
+        field.kind = JsonFieldKind::Json;
+    } else {
+        provider.fields.push(ConfigField {
+            name: "voices".to_owned(),
+            value: encoded,
+            kind: JsonFieldKind::Json,
+        });
+    }
 }
 
 fn provider_is_remote(provider: &ProviderCard) -> bool {
@@ -964,6 +1180,26 @@ fn provider_supported_languages(provider: &ProviderCard) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn provider_model_languages(provider: &ProviderCard) -> Vec<String> {
+    let mut languages = provider_model_assets(provider)
+        .into_iter()
+        .filter_map(|key| xrtranslate_assets::ModelAssetId::from_config_key(&key))
+        .flat_map(|id| {
+            xrtranslate_assets::manifest_for(id)
+                .languages
+                .iter()
+                .copied()
+        })
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if languages.is_empty() {
+        languages = provider_supported_languages(provider);
+    }
+    languages.sort();
+    languages.dedup();
+    languages
+}
+
 fn render_provider_capabilities(
     ui: &mut eframe::egui::Ui,
     language: crate::i18n::UiLanguage,
@@ -985,6 +1221,125 @@ fn render_provider_capabilities(
     ui.add_space(8.0);
 }
 
+fn render_tts_model_selection(
+    ui: &mut eframe::egui::Ui,
+    provider: &mut ProviderCard,
+    language: crate::i18n::UiLanguage,
+    availability: &crate::runtime_install::LocalModelAvailability,
+) -> bool {
+    let packages = crate::model_install::model_packages_for_provider(
+        &provider.name,
+        xrtranslate_assets::ModelCapability::Tts,
+    );
+    if packages.is_empty() {
+        return false;
+    }
+    let selected = provider_model_assets(provider);
+    let mut change = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            eframe::egui::RichText::new(crate::i18n::tr(language, "Models:"))
+                .size(12.0)
+                .color(crate::ui::theme::text_weak()),
+        );
+        for package in packages {
+            let checked = selected.iter().any(|asset| asset == package.id.as_str());
+            let available = matches!(
+                (availability, package.hardware.accelerator),
+                (
+                    crate::runtime_install::LocalModelAvailability::Available {
+                        memory_bytes,
+                        ..
+                    },
+                    xrtranslate_assets::ModelAccelerator::NvidiaCuda
+                ) if *memory_bytes >= package.hardware.minimum_memory_bytes
+            );
+            let mut next = checked;
+            let label = if package.languages.is_empty() {
+                package.label.to_owned()
+            } else {
+                format!("{} — {}", package.languages.join(", "), package.label)
+            };
+            if ui
+                .add_enabled(
+                    available && (!checked || selected.len() > 1),
+                    eframe::egui::Checkbox::new(&mut next, label),
+                )
+                .changed()
+            {
+                change = Some((package.id.as_str().to_owned(), next));
+            }
+        }
+    });
+    let mut changed = false;
+    if let Some((asset, enabled)) = change {
+        update_provider_model_selection(provider, &asset, enabled);
+        changed = true;
+    }
+    let voices = provider_voice_presets(provider);
+    for asset in provider_model_assets(provider) {
+        let Some(id) = xrtranslate_assets::ModelAssetId::from_config_key(&asset) else {
+            continue;
+        };
+        let manifest = xrtranslate_assets::manifest_for(id);
+        let mut languages = manifest
+            .voice_presets
+            .iter()
+            .map(|preset| preset.language)
+            .collect::<Vec<_>>();
+        languages.sort_unstable();
+        languages.dedup();
+        for voice_language in languages {
+            let choices = manifest
+                .voice_presets
+                .iter()
+                .filter(|preset| preset.language == voice_language)
+                .collect::<Vec<_>>();
+            let Some(default) = choices
+                .iter()
+                .copied()
+                .find(|preset| preset.is_default)
+                .or_else(|| choices.first().copied())
+            else {
+                continue;
+            };
+            let configured_key = voices.get(voice_language);
+            let configured = configured_key
+                .and_then(|key| choices.iter().copied().find(|preset| preset.key == key))
+                .unwrap_or(default);
+            let mut selected_key = configured.key.to_owned();
+            ui.horizontal(|ui| {
+                ui.label(
+                    eframe::egui::RichText::new(format!(
+                        "{} ({voice_language}):",
+                        crate::i18n::tr(language, "Base voice / accent")
+                    ))
+                    .size(12.0)
+                    .color(crate::ui::theme::text_weak()),
+                );
+                eframe::egui::ComboBox::from_id_salt(("tts_voice", &provider.name, id))
+                    .selected_text(configured.label)
+                    .show_ui(ui, |ui| {
+                        for preset in &choices {
+                            ui.selectable_value(
+                                &mut selected_key,
+                                preset.key.to_owned(),
+                                preset.label,
+                            );
+                        }
+                    });
+            });
+            if selected_key != configured.key
+                || configured_key.is_some_and(|key| key != configured.key)
+            {
+                update_provider_voice_preset(provider, voice_language, &selected_key);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 /// Renders the same model lifecycle control inside every provider card that
 /// declares a `model_asset`. The provider configuration, rather than a model
 /// name in the UI, decides which package is offered.
@@ -995,6 +1350,7 @@ struct ProviderModelAction<'a> {
     provider_name: &'a str,
     model_asset: Option<&'a str>,
     remote: bool,
+    local_models_available: bool,
 }
 
 fn render_provider_model_action(
@@ -1059,18 +1415,18 @@ fn render_provider_model_action(
         )
     };
     let clicked = ui
-        .add_enabled(!busy, egui::Button::new(action_label))
+        .add_enabled(
+            !busy && request.local_models_available,
+            egui::Button::new(action_label),
+        )
         .on_hover_text(package.label)
         .clicked();
     let previous_source = model_tasks.use_mirror();
     let mut use_mirror = previous_source;
     crate::ui::components::download_mirror_toggle(ui, request.language, &mut use_mirror);
     if use_mirror != previous_source
-        && let Err(error) = model_tasks.switch_download_source(
-            request.project_root.to_path_buf(),
-            package.id,
-            use_mirror,
-        )
+        && let Err(error) =
+            model_tasks.switch_download_source(request.project_root.to_path_buf(), use_mirror)
     {
         return Some(error);
     }
@@ -1279,7 +1635,16 @@ fn provider_field_is_visible(
     }
     if category_key == "tts"
         && native_model
-        && matches!(field.name.as_str(), "transport" | "url" | "model")
+        && matches!(
+            field.name.as_str(),
+            "transport"
+                | "url"
+                | "model"
+                | "model_asset"
+                | "model_assets"
+                | "supported_languages"
+                | "voices"
+        )
     {
         return false;
     }
@@ -1440,6 +1805,31 @@ mod tests {
             validate_tts_provider_asset(&config.tts)
                 .unwrap_err()
                 .contains("does not belong")
+        );
+    }
+
+    #[test]
+    fn tts_validation_rejects_overlapping_variants_and_invalid_voice_keys() {
+        let mut document: Value = serde_json::from_str(include_str!("../../config.json")).unwrap();
+        document["tts"]["provider"] = Value::from("openvoice");
+        document["tts"]["providers"]["openvoice"]["model_assets"] =
+            serde_json::json!(["openvoice-v2-onnx-fp16", "openvoice-v3-onnx-fp16"]);
+        let config = xrtranslate_config::AppConfig::from_value(document.clone()).unwrap();
+        assert!(
+            validate_tts_provider_asset(&config.tts)
+                .unwrap_err()
+                .contains("both claim language en")
+        );
+
+        document["tts"]["providers"]["openvoice"]["model_assets"] =
+            serde_json::json!(["openvoice-v2-onnx-fp16"]);
+        document["tts"]["providers"]["openvoice"]["voices"] =
+            serde_json::json!({"en": "en-newest"});
+        let config = xrtranslate_config::AppConfig::from_value(document).unwrap();
+        assert!(
+            validate_tts_provider_asset(&config.tts)
+                .unwrap_err()
+                .contains("not provided")
         );
     }
 

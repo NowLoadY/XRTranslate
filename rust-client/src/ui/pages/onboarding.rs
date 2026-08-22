@@ -357,6 +357,7 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
     let mut provider_change = None;
     let mut remote_fields = None;
     let mut delete_model = None;
+    let local_availability = app.runtime_installer.local_model_availability();
     let capabilities = [
         ("asr", ModelCapability::Asr, "Speech Recognition Model"),
         (
@@ -384,6 +385,7 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
                 package.map(|package| package.level),
                 &levels,
                 !app.model_task_manager.is_busy(),
+                &local_availability,
                 if index % 2 == 0 {
                     Color32::from_rgb(59, 130, 246)
                 } else {
@@ -473,6 +475,7 @@ fn onboarding_model_config_card(
     selected_level: Option<ModelLevel>,
     levels: &[NativeModelPackage],
     delete_enabled: bool,
+    local_availability: &crate::runtime_install::LocalModelAvailability,
     stroke_color: Color32,
 ) -> ModelConfigCardResult {
     let mut result = ModelConfigCardResult::default();
@@ -504,7 +507,17 @@ fn onboarding_model_config_card(
                         if remote { "Online API" } else { "Local model" },
                     ))
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut remote, false, i18n::tr(language, "Local model"));
+                        let local_available = matches!(
+                            local_availability,
+                            crate::runtime_install::LocalModelAvailability::Available { .. }
+                        );
+                        ui.add_enabled_ui(local_available, |ui| {
+                            ui.selectable_value(
+                                &mut remote,
+                                false,
+                                i18n::tr(language, "Local model"),
+                            );
+                        });
                         ui.selectable_value(&mut remote, true, i18n::tr(language, "Online API"));
                     });
                 if remote != provider.remote
@@ -537,37 +550,43 @@ fn onboarding_model_config_card(
                     } else {
                         i18n::tr(language, level.as_str()).to_owned()
                     };
-                    egui::ComboBox::from_id_salt((category, "model_level"))
-                        .selected_text(selected_label)
-                        .show_ui(ui, |ui| {
-                            for package in levels {
-                                let present = model_asset_is_present(project_root, package.id)
-                                    .unwrap_or(false);
-                                ui.horizontal(|ui| {
-                                    let label = if present {
-                                        format!(
-                                            "{} · {}",
-                                            i18n::tr(language, package.level.as_str()),
-                                            i18n::tr(language, "Installed")
-                                        )
-                                    } else {
-                                        i18n::tr(language, package.level.as_str()).to_owned()
-                                    };
-                                    ui.selectable_value(&mut level, package.level, label);
-                                    if present
-                                        && ui
-                                            .add_enabled_ui(delete_enabled, |ui| {
-                                                components::resource_delete_button(ui, language)
-                                            })
-                                            .inner
-                                            .clicked()
-                                    {
-                                        result.delete_asset = Some(package.id);
-                                        ui.close();
-                                    }
-                                });
-                            }
-                        });
+                    let local_available = matches!(
+                        local_availability,
+                        crate::runtime_install::LocalModelAvailability::Available { .. }
+                    );
+                    ui.add_enabled_ui(local_available, |ui| {
+                        egui::ComboBox::from_id_salt((category, "model_level"))
+                            .selected_text(selected_label)
+                            .show_ui(ui, |ui| {
+                                for package in levels {
+                                    let present = model_asset_is_present(project_root, package.id)
+                                        .unwrap_or(false);
+                                    ui.horizontal(|ui| {
+                                        let label = if present {
+                                            format!(
+                                                "{} · {}",
+                                                i18n::tr(language, package.level.as_str()),
+                                                i18n::tr(language, "Installed")
+                                            )
+                                        } else {
+                                            i18n::tr(language, package.level.as_str()).to_owned()
+                                        };
+                                        ui.selectable_value(&mut level, package.level, label);
+                                        if present
+                                            && ui
+                                                .add_enabled_ui(delete_enabled, |ui| {
+                                                    components::resource_delete_button(ui, language)
+                                                })
+                                                .inner
+                                                .clicked()
+                                        {
+                                            result.delete_asset = Some(package.id);
+                                            ui.close();
+                                        }
+                                    });
+                                }
+                            });
+                    });
                     if Some(level) != selected_level {
                         result.selected_level = Some(level);
                     }
@@ -632,6 +651,22 @@ fn onboarding_model_config_card(
                         });
                     }
                 });
+            } else {
+                match local_availability {
+                    crate::runtime_install::LocalModelAvailability::Unavailable(reason) => {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(reason).size(11.5).color(theme::text_weak()));
+                    }
+                    crate::runtime_install::LocalModelAvailability::Detecting => {
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new(i18n::tr(language, "Detecting NVIDIA GPU…"))
+                                .size(11.5)
+                                .color(theme::text_weak()),
+                        );
+                    }
+                    crate::runtime_install::LocalModelAvailability::Available { .. } => {}
+                }
             }
         });
     result
@@ -655,6 +690,8 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     let mut selected_provider = None;
     let project_root = app.project_root();
     let mut delete_tts = None;
+    let mut model_change = None;
+    let mut voice_change = None;
 
     Frame::new()
         .fill(theme::surface_control())
@@ -686,27 +723,23 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     .selected_text(selected_label)
                     .show_ui(ui, |ui| {
                         for choice in &provider.choices {
-                            let (label, asset_id, present) =
+                            let (label, _asset_id, _present) =
                                 provider_choice_resource(choice, &project_root, language);
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .selectable_label(provider.selected == choice.name, label)
-                                    .clicked()
-                                {
-                                    selected_provider = Some(choice.name.clone());
-                                }
-                                if present
-                                    && ui
-                                        .add_enabled_ui(!app.model_task_manager.is_busy(), |ui| {
-                                            components::resource_delete_button(ui, language)
-                                        })
-                                        .inner
+                            let local_available = matches!(
+                                app.runtime_installer.local_model_availability(),
+                                crate::runtime_install::LocalModelAvailability::Available { .. }
+                            );
+                            ui.add_enabled_ui(
+                                choice.name == "none" || choice.remote || local_available,
+                                |ui| {
+                                    if ui
+                                        .selectable_label(provider.selected == choice.name, label)
                                         .clicked()
-                                {
-                                    delete_tts = asset_id;
-                                    ui.close();
-                                }
-                            });
+                                    {
+                                        selected_provider = Some(choice.name.clone());
+                                    }
+                                },
+                            );
                         }
                     });
             });
@@ -729,10 +762,161 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     .size(12.5)
                     .color(theme::text_weak()),
                 );
-                if let Some(languages) = provider
+                let selected_choice = provider
                     .choices
                     .iter()
-                    .find(|choice| choice.name == provider.selected)
+                    .find(|choice| choice.name == provider.selected);
+                let packages = crate::model_install::model_packages_for_provider(
+                    &provider.selected,
+                    ModelCapability::Tts,
+                );
+                if !packages.is_empty() {
+                    ui.add_space(5.0);
+                    ui.label(
+                        RichText::new(i18n::tr(language, "Synthesis language models:"))
+                        .size(12.5)
+                        .color(theme::text_weak()),
+                    );
+                    let selected_assets = selected_choice
+                        .map(|choice| choice.model_assets.as_slice())
+                        .unwrap_or_default();
+                    let availability = app.runtime_installer.local_model_availability();
+                    for package in packages {
+                        let checked = selected_assets
+                            .iter()
+                            .any(|asset| asset == package.id.as_str());
+                        let package_enabled = matches!(
+                            (&availability, package.hardware.accelerator),
+                            (
+                                crate::runtime_install::LocalModelAvailability::Available {
+                                    memory_bytes,
+                                    ..
+                                },
+                                xrtranslate_assets::ModelAccelerator::NvidiaCuda
+                            ) if *memory_bytes >= package.hardware.minimum_memory_bytes
+                        );
+                        let may_toggle = package_enabled
+                            && (!checked || selected_assets.len() > 1)
+                            && !app.model_task_manager.is_busy();
+                        ui.horizontal(|ui| {
+                            let mut next = checked;
+                            let language_pack = if package.languages.is_empty() {
+                                package.label.to_owned()
+                            } else {
+                                format!("{} — {}", package.languages.join(", "), package.label)
+                            };
+                            if ui
+                                .add_enabled(may_toggle, egui::Checkbox::new(&mut next, language_pack))
+                                .changed()
+                            {
+                                model_change = Some((
+                                    provider.selected.clone(),
+                                    package.id.as_str().to_owned(),
+                                    next,
+                                ));
+                            }
+                            let present = model_asset_is_present(&project_root, package.id)
+                                .unwrap_or(false);
+                            if present {
+                                ui.label(
+                                    RichText::new(i18n::tr(language, "Installed"))
+                                        .size(11.5)
+                                        .color(theme::text_weak()),
+                                );
+                                if components::resource_delete_button(ui, language).clicked() {
+                                    delete_tts = Some(package.id);
+                                }
+                            }
+                        });
+                    }
+                    if let Some(choice) = selected_choice {
+                        for asset in &choice.model_assets {
+                            let Some(id) = xrtranslate_assets::ModelAssetId::from_config_key(asset)
+                            else {
+                                continue;
+                            };
+                            let manifest = xrtranslate_assets::manifest_for(id);
+                            let mut voice_languages = manifest
+                                .voice_presets
+                                .iter()
+                                .map(|preset| preset.language)
+                                .collect::<Vec<_>>();
+                            voice_languages.sort_unstable();
+                            voice_languages.dedup();
+                            for voice_language in voice_languages {
+                                let choices = manifest
+                                    .voice_presets
+                                    .iter()
+                                    .filter(|preset| preset.language == voice_language)
+                                    .collect::<Vec<_>>();
+                                let Some(default) = choices
+                                    .iter()
+                                    .copied()
+                                    .find(|preset| preset.is_default)
+                                    .or_else(|| choices.first().copied())
+                                else {
+                                    continue;
+                                };
+                                let configured = choice
+                                    .voices
+                                    .get(voice_language)
+                                    .and_then(|key| {
+                                        choices
+                                            .iter()
+                                            .copied()
+                                            .find(|preset| preset.key == key)
+                                    })
+                                    .unwrap_or(default);
+                                let mut selected_key = configured.key.to_owned();
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{} ({voice_language}):",
+                                            i18n::tr(language, "Base voice / accent")
+                                        ))
+                                        .size(12.0)
+                                        .color(theme::text_weak()),
+                                    );
+                                    egui::ComboBox::from_id_salt((
+                                        "onboarding_tts_voice",
+                                        &provider.selected,
+                                        id,
+                                    ))
+                                    .selected_text(configured.label)
+                                    .show_ui(ui, |ui| {
+                                        for preset in &choices {
+                                            ui.selectable_value(
+                                                &mut selected_key,
+                                                preset.key.to_owned(),
+                                                preset.label,
+                                            );
+                                        }
+                                    });
+                                });
+                                if selected_key != configured.key {
+                                    voice_change = Some((
+                                        provider.selected.clone(),
+                                        voice_language.to_owned(),
+                                        selected_key,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    match availability {
+                        crate::runtime_install::LocalModelAvailability::Unavailable(reason) => {
+                            ui.label(RichText::new(reason).size(11.5).color(theme::text_weak()));
+                        }
+                        crate::runtime_install::LocalModelAvailability::Detecting => {
+                            ui.label(
+                                RichText::new(i18n::tr(language, "Detecting NVIDIA GPU…"))
+                                    .size(11.5)
+                                    .color(theme::text_weak()),
+                            );
+                        }
+                        crate::runtime_install::LocalModelAvailability::Available { .. } => {}
+                    }
+                } else if let Some(languages) = selected_choice
                     .map(|choice| choice.supported_languages.as_slice())
                     .filter(|languages| !languages.is_empty())
                 {
@@ -752,6 +936,21 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 
     if let Some(asset_id) = delete_tts {
         app.request_model_resource_deletion(asset_id);
+    }
+
+    if let Some((provider, asset, enabled)) = model_change {
+        app.service_config
+            .set_onboarding_model_enabled("tts", &provider, &asset, enabled);
+        if let Err(error) = app.service_config.save_onboarding_configuration() {
+            app.last_error = Some(error);
+        }
+    }
+    if let Some((provider, voice_language, preset)) = voice_change {
+        app.service_config
+            .set_onboarding_voice_preset(&provider, &voice_language, &preset);
+        if let Err(error) = app.service_config.save_onboarding_configuration() {
+            app.last_error = Some(error);
+        }
     }
 
     if let Some(selected) = selected_provider {
@@ -797,8 +996,10 @@ struct DownloadItem {
     id: xrtranslate_assets::ModelAssetId,
     category_title: &'static str,
     detail: String,
-    download_bytes: Option<u64>,
+    download_bytes: u64,
+    installed_bytes: u64,
     installed: bool,
+    hardware_available: bool,
     stroke_color: Color32,
 }
 
@@ -834,11 +1035,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
     );
 
     let busy = app.model_task_manager.is_busy();
-    let retry = matches!(
-        app.model_task_manager.state(),
-        NativeModelTaskState::Failed(_)
-    );
-    let mut install = None;
+    let mut installs = Vec::new();
     let mut delete_model = None;
 
     // 1. Model packages (ASR, MT, TTS)
@@ -859,6 +1056,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
         }
     }
 
+    let local_availability = app.runtime_installer.local_model_availability();
     let download_items = packages
         .iter()
         .map(|package| {
@@ -884,52 +1082,117 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                     package.label,
                     i18n::tr(language, package.level.as_str())
                 ),
-                download_bytes: (!installed).then_some(package.download_bytes),
+                download_bytes: package.download_bytes,
+                installed_bytes: package.installed_bytes,
                 installed,
+                hardware_available: matches!(
+                    (&local_availability, package.hardware.accelerator),
+                    (
+                        crate::runtime_install::LocalModelAvailability::Available {
+                            memory_bytes,
+                            ..
+                        },
+                        xrtranslate_assets::ModelAccelerator::NvidiaCuda
+                    ) if *memory_bytes >= package.hardware.minimum_memory_bytes
+                ),
                 stroke_color,
             }
         })
         .collect::<Vec<_>>();
 
     if !download_items.is_empty() {
-        ui.label(
-            RichText::new(i18n::tr(language, "Model Packages"))
-                .size(15.0)
-                .color(theme::text_strong())
-                .strong(),
-        );
+        let missing = download_items
+            .iter()
+            .filter(|item| !item.installed && item.hardware_available)
+            .collect::<Vec<_>>();
+        let missing_download_bytes = missing.iter().map(|item| item.download_bytes).sum::<u64>();
+        let missing_installed_bytes = missing.iter().map(|item| item.installed_bytes).sum::<u64>();
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(i18n::tr(language, "Model Packages"))
+                    .size(15.0)
+                    .color(theme::text_strong())
+                    .strong(),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let previous_source = app.model_task_manager.use_mirror();
+                let mut use_mirror = previous_source;
+                components::download_mirror_toggle(ui, language, &mut use_mirror);
+                if use_mirror != previous_source
+                    && let Err(error) = app
+                        .model_task_manager
+                        .switch_download_source(project_root.clone(), use_mirror)
+                {
+                    app.last_error = Some(error);
+                }
+            });
+        });
+        if !missing.is_empty() {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let label = format!(
+                    "{} ({}) · {}",
+                    i18n::tr(language, "Download all required models"),
+                    missing.len(),
+                    components::format_file_size(missing_download_bytes),
+                );
+                if components::primary_button_enabled(ui, &label, !app.runtime_installer.is_busy())
+                    .clicked()
+                {
+                    installs.extend(missing.iter().map(|item| item.id));
+                }
+                ui.label(
+                    RichText::new(format!(
+                        "{}: {}",
+                        i18n::tr(language, "Installed size"),
+                        components::format_file_size(missing_installed_bytes)
+                    ))
+                    .size(12.0)
+                    .color(theme::text_weak()),
+                );
+            });
+        }
         ui.add_space(8.0);
 
         for item in &download_items {
+            let batch = app.model_task_manager.batch_snapshot();
+            let is_active =
+                batch.as_ref().and_then(|batch| batch.current_asset_id) == Some(item.id) && busy;
+            let queued_position = batch.as_ref().and_then(|batch| {
+                batch
+                    .queued_packages
+                    .iter()
+                    .position(|id| *id == item.id)
+                    .map(|position| position + 1)
+            });
+            let failed = batch.as_ref().and_then(|batch| batch.failed_asset_id) == Some(item.id);
             let action = if item.installed {
                 "Installed"
-            } else if retry {
+            } else if is_active {
+                "Downloading"
+            } else if queued_position.is_some() {
+                "Queued"
+            } else if failed {
                 "Retry"
             } else {
                 "Download"
             };
-            let previous_source = app.model_task_manager.use_mirror();
-            let mut use_mirror = app.model_task_manager.use_mirror();
             let (clicked, delete_clicked) = render_download_card(
                 ui,
                 language,
                 item,
                 action,
-                !busy && !item.installed,
+                !item.installed
+                    && !is_active
+                    && queued_position.is_none()
+                    && item.hardware_available
+                    && !app.runtime_installer.is_busy(),
                 !busy,
-                &mut use_mirror,
+                queued_position,
+                is_active.then_some(app.model_task_manager.state()),
             );
-            if use_mirror != previous_source
-                && let Err(error) = app.model_task_manager.switch_download_source(
-                    project_root.clone(),
-                    item.id,
-                    use_mirror,
-                )
-            {
-                app.last_error = Some(error);
-            }
             if clicked {
-                install = Some(item.id);
+                installs.push(item.id);
             }
             if delete_clicked {
                 delete_model = Some(item.id);
@@ -956,10 +1219,10 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
             });
     }
 
-    if let Some(asset_id) = install
+    if !installs.is_empty()
         && let Err(error) = app
             .model_task_manager
-            .install(project_root.clone(), asset_id)
+            .enqueue_many(project_root.clone(), installs)
     {
         app.last_error = Some(error);
     }
@@ -967,7 +1230,13 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
         app.request_model_resource_deletion(asset_id);
     }
 
-    render_model_task_state(ui, language, app.model_task_manager.state());
+    render_model_task_state(
+        ui,
+        language,
+        app.model_task_manager.state(),
+        app.model_task_manager.batch_snapshot().as_ref(),
+        &download_items,
+    );
 
     // 2. Inference Runtime & Hardware Acceleration (if local models are configured)
     let requires_runtime = requirements.llama_cpp || requirements.onnx_tts;
@@ -995,7 +1264,8 @@ fn render_download_card(
     action: &'static str,
     enabled: bool,
     delete_enabled: bool,
-    use_mirror: &mut bool,
+    queued_position: Option<usize>,
+    active_state: Option<&NativeModelTaskState>,
 ) -> (bool, bool) {
     let mut clicked = false;
     let mut delete_clicked = false;
@@ -1022,7 +1292,6 @@ fn render_download_card(
                     );
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    components::download_mirror_toggle(ui, language, use_mirror);
                     if item.installed {
                         if ui
                             .add_enabled_ui(delete_enabled, |ui| {
@@ -1046,15 +1315,15 @@ fn render_download_card(
                                 );
                             });
                     } else {
-                        let action_label = item.download_bytes.map_or_else(
-                            || i18n::tr(language, action).to_owned(),
-                            |bytes| {
+                        let action_label = queued_position.map_or_else(
+                            || {
                                 format!(
                                     "{} · {}",
                                     i18n::tr(language, action),
-                                    components::format_file_size(bytes),
+                                    components::format_file_size(item.download_bytes),
                                 )
                             },
+                            |position| format!("{} #{}", i18n::tr(language, action), position),
                         );
                         if ui
                             .add_enabled(
@@ -1073,6 +1342,48 @@ fn render_download_card(
                     }
                 });
             });
+            ui.add_space(5.0);
+            ui.label(
+                RichText::new(format!(
+                    "{} {} · {} {}",
+                    i18n::tr(language, "Download"),
+                    components::format_file_size(item.download_bytes),
+                    i18n::tr(language, "Installed size"),
+                    components::format_file_size(item.installed_bytes),
+                ))
+                .size(11.5)
+                .color(theme::text_weak()),
+            );
+            if let Some(NativeModelTaskState::Installing {
+                relative_path,
+                downloaded_bytes,
+                total_bytes,
+                ..
+            }) = active_state
+            {
+                ui.add_space(5.0);
+                if *total_bytes > 0 {
+                    let finishing = downloaded_bytes >= total_bytes;
+                    ui.add(
+                        egui::ProgressBar::new(
+                            (*downloaded_bytes as f64 / *total_bytes as f64).clamp(0.0, 1.0) as f32,
+                        )
+                        .text(if finishing {
+                            i18n::tr(language, "Verifying and activating…").to_owned()
+                        } else {
+                            format!(
+                                "{} / {}{}",
+                                components::format_file_size(*downloaded_bytes),
+                                components::format_file_size(*total_bytes),
+                                relative_path
+                                    .as_deref()
+                                    .map(|path| format!(" · {path}"))
+                                    .unwrap_or_default(),
+                            )
+                        }),
+                    );
+                }
+            }
         });
     (clicked, delete_clicked)
 }
@@ -1131,7 +1442,7 @@ fn render_runtime_installation_section(
                 .strong(),
             );
             ui.add_space(8.0);
-            let ready = download_size == Some(0) && !app.runtime_installer.is_busy();
+            let ready = app.runtime_installer.plan_is_ready() && !app.runtime_installer.is_busy();
             let mut use_mirror = app.runtime_installer.use_mirror();
             let previous_source = use_mirror;
             let mut delete_runtime = false;
@@ -1168,7 +1479,9 @@ fn render_runtime_installation_section(
                     let install_clicked = components::primary_button_enabled(
                         ui,
                         &button_text,
-                        download_size.is_some() && !app.runtime_installer.is_busy(),
+                        download_size.is_some()
+                            && !app.runtime_installer.is_busy()
+                            && !app.model_task_manager.is_busy(),
                     )
                     .clicked();
                     if install_clicked {
@@ -1293,6 +1606,8 @@ fn render_model_task_state(
     ui: &mut egui::Ui,
     language: i18n::UiLanguage,
     state: &NativeModelTaskState,
+    batch: Option<&crate::model_install::NativeModelBatchSnapshot>,
+    items: &[DownloadItem],
 ) {
     match state {
         NativeModelTaskState::Idle => {}
@@ -1312,31 +1627,30 @@ fn render_model_task_state(
                     .color(Color32::from_rgb(5, 150, 105)),
             );
         }
-        NativeModelTaskState::Installing {
-            downloaded_bytes,
-            total_bytes,
-            ..
-        } => {
+        NativeModelTaskState::Installing { .. } => {
             ui.add_space(6.0);
-            if *total_bytes > 0 {
+            if let Some(batch) = batch
+                && batch.total_bytes > 0
+            {
+                let current_label = batch
+                    .current_asset_id
+                    .and_then(|id| items.iter().find(|item| item.id == id))
+                    .map_or("model package", |item| item.detail.as_str());
+                let current_number = (batch.completed_packages + 1).min(batch.total_packages);
                 ui.add(
                     egui::ProgressBar::new(
-                        (*downloaded_bytes as f64 / *total_bytes as f64).clamp(0.0, 1.0) as f32,
+                        (batch.downloaded_bytes as f64 / batch.total_bytes as f64).clamp(0.0, 1.0)
+                            as f32,
                     )
                     .text(format!(
-                        "{} / {}",
-                        components::format_file_size(*downloaded_bytes),
-                        components::format_file_size(*total_bytes),
+                        "{} {}/{} · {} · {} / {}",
+                        i18n::tr(language, "Model"),
+                        current_number,
+                        batch.total_packages,
+                        current_label,
+                        components::format_file_size(batch.downloaded_bytes),
+                        components::format_file_size(batch.total_bytes),
                     )),
-                );
-            } else {
-                ui.label(
-                    RichText::new(format!(
-                        "{}...",
-                        components::format_file_size(*downloaded_bytes)
-                    ))
-                    .size(12.0)
-                    .color(theme::text_weak()),
                 );
             }
         }

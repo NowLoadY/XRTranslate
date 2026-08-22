@@ -23,11 +23,11 @@ TTS、ASR 或翻译大模型，也没有 Python 环境。兼容的离线打包�
 
 | 功能 / provider | 模型资源 | 推理资源 | GPU 策略 | 缺失时行为 |
 | --- | --- | --- | --- | --- |
-| ASR `qwen3-gguf` | Qwen3-ASR Q4 GGUF + mmproj，合计 1,924,209,664 B | llama.cpp server | 匹配 CUDA 13.3、13.1 或 12.4；否则 CPU server | 欢迎页下载/修复；未就绪不启动本地 ASR |
+| ASR `qwen3-gguf` | Qwen3-ASR Q4 GGUF + mmproj，合计 1,924,209,664 B | llama.cpp server | NVIDIA >= 8 GiB；匹配 CUDA 13.3、13.1 或 12.4，否则拒绝 | 欢迎页下载/修复；未就绪不启动本地 ASR |
 | 翻译 `hunyuan` 普通 | Hy-MT2 1.8B Q4 GGUF，1,133,080,448 B | 与 ASR 共用 llama.cpp | 与 ASR 共用同一 server/runtime 选择 | 欢迎页下载/修复 |
 | 翻译 `hunyuan` 大 | Hy-MT2 7B Q4 GGUF，4,624,648,896 B | 与 ASR 共用 llama.cpp | 同上 | 欢迎页下载/修复 |
-| TTS `audio8` | Audio8 FP16 ONNX 完整包，2,171,728,005 B | ONNX Runtime 1.28 | Auto/CUDA 优先，失败原子回退 CPU；不使用 Vulkan/DirectML | TTS 是可选功能，可跳过；启用时下载/修复 |
-| TTS `openvoice` | OpenVoice v3 English ONNX 包；安装文件 255,830,497 B，网络传输 207,772,473 B | ONNX Runtime 1.28；BERT/Melo/converter/reference encoder 四 session | Auto/CUDA 优先，任一 session 构建失败则整组回退 CPU；输出仅 English、22,050 Hz | TTS 可跳过；启用时下载/修复；非英文目标不属于当前模型能力 |
+| TTS `audio8` | Audio8 FP16 ONNX 完整包，2,171,728,005 B | ONNX Runtime 1.28 | NVIDIA >= 8 GiB；Auto/CUDA，失败即拒绝，不回退 CPU | TTS 是可选功能，可跳过；启用时下载/修复 |
+| TTS `openvoice` | 互斥 English ONNX 变体：v3 EN-Newest（安装 255,830,497 B / 下载 207,772,473 B）或 v2 五口音（安装 255,966,606 B / 下载 207,838,325 B） | ONNX Runtime 1.28；BERT/Melo/converter/reference encoder 四 session | NVIDIA >= 8 GiB；Auto/CUDA，任一 session 失败则整组失败 | TTS 可跳过；当前验证语种为 English、22,050 Hz；v2 口音不产生重复下载；未安装/激活语种不生成任务 |
 | 远程 OpenAI ASR/翻译 | 无本地模型 | HTTPS + API key | 不需要本地 GPU runtime | 缺 API key 时给出配置诊断，不触发模型下载 |
 | Silero VAD | release 内固定 ONNX，2,327,524 B | CPU ONNX core | CPU，实时小模型不加载 CUDA provider | release 预检失败则拒绝打包 |
 | ERes2NetV2 说话人识别 | release 内固定 ONNX，71,964,309 B | CPU ONNX core | CPU | 同上 |
@@ -37,11 +37,11 @@ TTS、ASR 或翻译大模型，也没有 Python 环境。兼容的离线打包�
 
 | 用户设备 | ONNX 计划 | llama.cpp 计划 | 额外下载 |
 | --- | --- | --- | --- |
-| 无 NVIDIA GPU，或显式选择 CPU | release 内 `runtime/onnxruntime/cpu/onnxruntime.dll` | CPU server（仅本地 ASR/翻译需要） | 不下载任何 CUDA/provider/cuDNN |
+| 无 NVIDIA GPU 或显存 < 8 GiB | release 内小型 ONNX 组件仍可使用 compact CPU core | 大型本地 ASR/翻译/TTS 选项禁用且运行时拒绝 | 不下载模型或 CUDA/provider/cuDNN，不存在大型模型 CPU fallback |
 | NVIDIA + 驱动支持 CUDA 12 | ORT 1.28 CUDA12 同源核心/provider + cuDNN 9 CUDA12 | CUDA 12.4 server | CUDA 12.4 共享包只下载一次；另下载匹配的 cuDNN12 |
 | NVIDIA + 驱动/GPU 支持 CUDA 13 | ORT 1.28 CUDA13 同源核心/provider + cuDNN 9 CUDA13 | 驱动支持时优先 CUDA 13.3，否则选择 CUDA 13.1 | 匹配版本的共享 CUDA 包只下载一次；另下载匹配的 cuDNN13 |
 | NVIDIA Blackwell (50 系, CC 12.0+) | ORT 1.28 CUDA13 同源核心/provider + cuDNN 9 CUDA13 | 驱动 13.1/13.2 选择 b8913 CUDA 13.1；驱动 >= 13.3 优先 CUDA 13.3 | 最低 CUDA 12.8，绝不选 12.4；使用 13.1 时仍提示通过 NVIDIA App 升级驱动 |
-| NVIDIA 存在但无完整兼容归档 | CPU core | CPU server | 计划仍成功，记录明确 fallback reason |
+| NVIDIA 存在但无完整兼容归档 | 小型内置 ONNX 仍使用 CPU core | 大型本地模型不可用 | 计划失败并显示明确的驱动/归档修复原因 |
 
 CPU ONNX 核心为 16,277,856 B，取自官方
 `onnxruntime-win-x64-gpu_cuda13-1.28.0.zip` 的 `onnxruntime.dll`；该核心本身可独立
@@ -113,14 +113,15 @@ runtime/cudnn/
 ## 生命周期与诊断
 
 1. 配置层把当前 ASR、翻译、TTS provider 转成 `RuntimeRequirements`。
-2. 客户端探测 NVIDIA 驱动与 compute capability，计算资源并集和缺失字节。
+2. 客户端探测主 NVIDIA 设备、显存、驱动与 compute capability；显存至少
+   8 GiB 后才计算资源并集和缺失字节。
 3. 用户触发统一下载任务；下载完成后校验、只提取声明文件并原子替换目录。
 4. `runtime/native-runtime.json` 发布 llama 与 ONNX 的独立 backend、CUDA ABI、
-   ONNX core、provider 目录、CUDA/cuDNN 目录、预加载顺序和 fallback reason。
+   ONNX core、provider 目录、CUDA/cuDNN 目录和预加载顺序。
 5. 后端在任何 ONNX API 之前消费该清单。每个 TTS provider 的 session group 必须
-   同时成功使用 CUDA，否则完整 group 回退 CPU；会话就绪事件报告实际 backend，
+   同时成功使用 CUDA，否则完整 group 失败；会话就绪事件报告实际 backend，
    而不是 UI 偏好。
 6. 设置变更采用 last-write-wins：当前不可变下载可完成，随后重新规划并复用已校验资源。
 
-UI 只显示 `计划 CUDA 13/12/CPU`、下载/修复进度、以及后端确认后的
-`实际 CUDA 13/12/CPU`。CPU 零下载、CUDA fallback 和损坏文件都必须显示明确原因。
+UI 只显示 `计划 CUDA 13/12`、下载/修复进度、以及后端确认后的
+`实际 CUDA 13/12`。无合格 NVIDIA、CUDA 闭包不完整和损坏文件都必须显示明确原因。

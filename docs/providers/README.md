@@ -114,7 +114,7 @@ The inference crate then separates reusable mechanics from model semantics:
 | Owner | Shared responsibility | Must not contain |
 | --- | --- | --- |
 | `tts/audio.rs` | PCM conversion and resampling | provider IDs or tensor names |
-| `tts/onnx_runtime.rs` | process-wide ORT bootstrap and atomic CUDA/CPU session grouping | model filenames or text frontend rules |
+| `tts/onnx_runtime.rs` | process-wide ORT bootstrap and atomic CUDA session grouping | model filenames or text frontend rules |
 | `tts/providers/<provider>/` | frontend, tensor layout, model stages, provider limits, fixed output contract | downloads, host probing, UI state |
 | `backend/model_runtime/tts/` | registered profile, erased adapter, asset ownership, config parsing, adapter construction | session queue/order policy |
 | `backend/tts_session.rs` | clone capture and bounded synthesis worker | provider names or model paths |
@@ -140,7 +140,13 @@ a future, separately specified TTS semantic capability requires them.
    implement.
 2. Add one immutable `ModelAssetManifest` under
    `crates/xrtranslate-assets/src/catalog/tts/`. Declare every installed file,
-   source revision, byte size, SHA-256, archive mapping, and required license.
+   source revision, byte size, SHA-256, archive mapping, required license,
+   synthesis language tags, and hardware requirement. Add one manifest per
+   independently installable language pack; do not put an unverified language
+   in editable provider configuration. Mutually exclusive quality variants
+   may claim the same language; selectable accents or speakers contained in
+   one package belong in `voice_presets` and must not be represented as
+   duplicate model downloads.
    Re-export it through the TTS catalogue and aggregate registry.
 3. Reuse `xrtranslate-download` through the assets installer. Do not add HTTP,
    mirror, resume, proxy, retry, checksum, or staging logic to the provider or
@@ -151,17 +157,23 @@ a future, separately specified TTS semantic capability requires them.
    speaker-embedding, and graph-order rules inside the provider directory.
 5. Register the provider and its default asset only in
    `apps/xrtranslate-backend/src/model_runtime/tts/`. The TTS session worker,
-   `main.rs`, and pipeline continue to consume the neutral adapter.
+   `main.rs`, and pipeline continue to consume the neutral adapter. The shared
+   TTS adapter group routes by the languages of active `model_assets`.
 6. Let onboarding and settings enumerate config and manifests. Add a generic
    capability to a shared schema only when multiple providers need the same
    semantics; do not add a provider-name branch for a label or download button.
 7. Add catalogue integrity tests, provider/profile coverage tests, config asset
-   ownership tests, frontend/tensor tests, CPU execution coverage, and an
+   ownership tests, frontend/tensor tests, forced-CUDA coverage, and an
    ignored real-model smoke test. Validate actual output sample rate and real
    voice-cloning quality, not only non-empty bytes.
 8. Update the runtime resource matrix, TTS runtime design, and a provider note
    documenting sources, licenses, limits, and verification evidence. Run the
    complete formatting, compile, and test gates in the refactoring contract.
+
+Downloadable model packages are managed-GPU resources: NVIDIA CUDA and at
+least 8 GiB VRAM are mandatory. A small ONNX model is CPU-exempt only when it
+is bundled and explicitly owned as an application component, not because a
+provider happens to use ONNX files.
 
 ## Other capabilities
 

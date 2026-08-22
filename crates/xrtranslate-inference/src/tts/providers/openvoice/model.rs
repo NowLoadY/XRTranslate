@@ -16,7 +16,10 @@ use crate::{
     },
 };
 
-use super::frontend::{EnglishFrontend, EnglishInputs};
+use super::{
+    OpenVoiceBaseVoice,
+    frontend::{EnglishFrontend, EnglishInputs},
+};
 
 const BASE_SAMPLE_RATE: u32 = 44_100;
 pub(super) const OUTPUT_SAMPLE_RATE: u32 = 22_050;
@@ -37,6 +40,7 @@ pub(super) struct OpenVoiceRuntime {
     converter: Session,
     reference_encoder: Session,
     source_embedding: Vec<f16>,
+    base_voice: OpenVoiceBaseVoice,
     active_device: ActiveOnnxDevice,
 }
 
@@ -45,6 +49,7 @@ impl OpenVoiceRuntime {
         model_dir: &Path,
         device: OnnxExecutionDevice,
         threads: usize,
+        base_voice: OpenVoiceBaseVoice,
     ) -> Result<Self, InferenceError> {
         let config: ModelConfig = serde_json::from_slice(
             &std::fs::read(model_dir.join("model_config.json"))
@@ -60,13 +65,14 @@ impl OpenVoiceRuntime {
             &[&bert_path, &base_path, &converter_path, &reference_path],
             device,
             threads,
-            "openvoice-v3",
+            "openvoice",
         )?;
         let reference_encoder = sessions.pop().expect("four sessions were requested");
         let converter = sessions.pop().expect("four sessions were requested");
         let base = sessions.pop().expect("four sessions were requested");
         let bert = sessions.pop().expect("four sessions were requested");
-        let source_embedding = read_source_embedding(&model_dir.join("voices/en_newest.bin"))?;
+        let source_embedding =
+            read_source_embedding(&model_dir.join(base_voice.source_embedding()))?;
         Ok(Self {
             frontend,
             bert,
@@ -74,6 +80,7 @@ impl OpenVoiceRuntime {
             converter,
             reference_encoder,
             source_embedding,
+            base_voice,
             active_device,
         })
     }
@@ -123,7 +130,7 @@ impl OpenVoiceRuntime {
         speed: f32,
     ) -> Result<SynthesizedPcm, InferenceError> {
         let inputs = self.frontend.encode(&mut self.bert, text)?;
-        let base_audio = self.run_base(inputs, speed)?;
+        let base_audio = self.run_base(inputs, speed, self.base_voice.speaker_id())?;
         let base_audio = resample(&base_audio, BASE_SAMPLE_RATE, OUTPUT_SAMPLE_RATE)?
             .into_iter()
             .map(f16::from_f32)
@@ -174,7 +181,12 @@ impl OpenVoiceRuntime {
         })
     }
 
-    fn run_base(&mut self, inputs: EnglishInputs, speed: f32) -> Result<Vec<f32>, InferenceError> {
+    fn run_base(
+        &mut self,
+        inputs: EnglishInputs,
+        speed: f32,
+        speaker_id: i32,
+    ) -> Result<Vec<f32>, InferenceError> {
         let tokens = inputs.phone_ids.len();
         let phone_ids = Array2::from_shape_vec((1, tokens), inputs.phone_ids)
             .map_err(|error| model_error(error.to_string()))?;
@@ -185,7 +197,7 @@ impl OpenVoiceRuntime {
         let bert = Array3::from_shape_vec((1, 768, tokens), inputs.bert)
             .map_err(|error| model_error(error.to_string()))?;
         let lengths = Array1::from_vec(vec![tokens as i32]);
-        let speakers = Array1::from_vec(vec![0_i32]);
+        let speakers = Array1::from_vec(vec![speaker_id]);
         let length_scale = arr0(f16::from_f32(1.0 / speed));
         let outputs = self
             .base

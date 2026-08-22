@@ -20,7 +20,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.8"
+version = "0.2.9-beta.1"
 edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/NowLoadY/XRTranslate"

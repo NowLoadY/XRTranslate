@@ -8,8 +8,7 @@ use xrtranslate_inference::{
 
 #[derive(Clone)]
 pub(crate) struct NativeTtsAdapter {
-    backend: NativeTtsBackend,
-    supported_languages: Arc<[String]>,
+    models: Arc<[NativeTtsModel]>,
 }
 
 #[derive(Clone)]
@@ -18,42 +17,82 @@ enum NativeTtsBackend {
     Audio8(Audio8OnnxAdapter),
 }
 
+#[derive(Clone)]
+struct NativeTtsModel {
+    backend: NativeTtsBackend,
+    supported_languages: Arc<[String]>,
+}
+
 impl NativeTtsAdapter {
     pub(super) fn openvoice(
         adapter: OpenVoiceOnnxAdapter,
         supported_languages: Vec<String>,
     ) -> Self {
         Self {
-            backend: NativeTtsBackend::OpenVoice(adapter),
-            supported_languages: supported_languages.into(),
+            models: vec![NativeTtsModel {
+                backend: NativeTtsBackend::OpenVoice(adapter),
+                supported_languages: supported_languages.into(),
+            }]
+            .into(),
         }
     }
 
     pub(super) fn audio8(adapter: Audio8OnnxAdapter, supported_languages: Vec<String>) -> Self {
         Self {
-            backend: NativeTtsBackend::Audio8(adapter),
-            supported_languages: supported_languages.into(),
+            models: vec![NativeTtsModel {
+                backend: NativeTtsBackend::Audio8(adapter),
+                supported_languages: supported_languages.into(),
+            }]
+            .into(),
         }
+    }
+
+    pub(super) fn combine(adapters: Vec<Self>) -> Result<Self, String> {
+        let models = adapters
+            .into_iter()
+            .flat_map(|adapter| adapter.models.iter().cloned().collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        if models.is_empty() {
+            return Err(
+                "a native TTS provider must activate at least one model package".to_owned(),
+            );
+        }
+        Ok(Self {
+            models: models.into(),
+        })
     }
 
     /// An empty list means the provider accepts every language. Otherwise a
     /// locale such as `en-US` is matched against both its full tag and base.
     pub(crate) fn supports_language(&self, language: &str) -> bool {
-        language_is_supported(&self.supported_languages, language)
+        self.models
+            .iter()
+            .any(|model| language_is_supported(&model.supported_languages, language))
     }
 
     pub(crate) async fn prepare(&self) -> Result<OnnxExecutionDevice, InferenceError> {
-        match &self.backend {
+        let backend = &self
+            .models
+            .first()
+            .expect("validated TTS model group")
+            .backend;
+        match backend {
             NativeTtsBackend::OpenVoice(adapter) => adapter.prepare().await,
             NativeTtsBackend::Audio8(adapter) => adapter.prepare().await,
         }
     }
 
     pub(crate) async fn has_voice(&self, name: &str) -> bool {
-        match &self.backend {
-            NativeTtsBackend::OpenVoice(adapter) => adapter.has_voice(name).await,
-            NativeTtsBackend::Audio8(adapter) => adapter.has_voice(name).await,
+        for model in self.models.iter() {
+            let found = match &model.backend {
+                NativeTtsBackend::OpenVoice(adapter) => adapter.has_voice(name).await,
+                NativeTtsBackend::Audio8(adapter) => adapter.has_voice(name).await,
+            };
+            if !found {
+                return false;
+            }
         }
+        true
     }
 
     pub(crate) async fn register_voice(
@@ -62,18 +101,21 @@ impl NativeTtsAdapter {
         reference_wav: Vec<u8>,
         transcript: &str,
     ) -> Result<(), InferenceError> {
-        match &self.backend {
-            NativeTtsBackend::OpenVoice(adapter) => {
-                adapter
-                    .register_voice(name, reference_wav, transcript)
-                    .await
-            }
-            NativeTtsBackend::Audio8(adapter) => {
-                adapter
-                    .register_voice(name, reference_wav, transcript)
-                    .await
+        for model in self.models.iter() {
+            match &model.backend {
+                NativeTtsBackend::OpenVoice(adapter) => {
+                    adapter
+                        .register_voice(name, reference_wav.clone(), transcript)
+                        .await?;
+                }
+                NativeTtsBackend::Audio8(adapter) => {
+                    adapter
+                        .register_voice(name, reference_wav.clone(), transcript)
+                        .await?;
+                }
             }
         }
+        Ok(())
     }
 
     pub(crate) async fn synthesize(
@@ -82,7 +124,15 @@ impl NativeTtsAdapter {
         voice: &str,
         target_lang: &str,
     ) -> Result<SynthesizedPcm, InferenceError> {
-        match &self.backend {
+        let model = self
+            .models
+            .iter()
+            .find(|model| language_is_supported(&model.supported_languages, target_lang))
+            .ok_or_else(|| InferenceError::InvalidConfiguration {
+                field: "tts.target_language",
+                message: format!("no active TTS model supports {target_lang:?}"),
+            })?;
+        match &model.backend {
             NativeTtsBackend::OpenVoice(adapter) => {
                 adapter.synthesize(text, voice, target_lang).await
             }

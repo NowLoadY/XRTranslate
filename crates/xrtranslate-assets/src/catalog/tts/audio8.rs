@@ -92,6 +92,9 @@ pub const AUDIO8_TTS_ONNX_FP16: ModelAssetManifest = ModelAssetManifest {
     capability: ModelCapability::Tts,
     level: ModelLevel::Normal,
     provider: "audio8",
+    languages: &[],
+    voice_presets: &[],
+    hardware: super::super::MANAGED_LOCAL_MODEL_HARDWARE,
     audio_output: Some(ModelAudioOutput {
         sample_rate_hz: 44_100,
         channels: 1,

@@ -405,19 +405,30 @@ impl BackendManager {
             ModelCapability::Translation => &config.translation.providers,
             ModelCapability::Tts => &config.tts.providers,
         };
-        let model_asset = providers
+        let provider_config = providers
             .get(provider)
             .and_then(serde_json::Value::as_object)
-            .and_then(|provider| provider.get("model_asset"))
-            .and_then(serde_json::Value::as_str)
             .ok_or_else(|| format!("No local model is configured for {category}:{provider}."))?;
-        let id = ModelAssetId::from_config_key(model_asset).ok_or_else(|| {
-            format!("Unknown model package {model_asset} for {category}:{provider}.")
-        })?;
-        let manifest = manifest_for(id);
-        if manifest.capability != capability || manifest.provider != provider {
+        let model_assets = provider_config
+            .get("model_assets")
+            .and_then(serde_json::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|values| !values.is_empty())
+            .unwrap_or_else(|| {
+                provider_config
+                    .get("model_asset")
+                    .and_then(serde_json::Value::as_str)
+                    .into_iter()
+                    .collect()
+            });
+        if model_assets.is_empty() {
             return Err(format!(
-                "Model package {model_asset} does not belong to {category}:{provider}."
+                "No local model is configured for {category}:{provider}."
             ));
         }
         let mut asset_config = ModelAssetsConfig::with_directory_overrides(
@@ -425,13 +436,26 @@ impl BackendManager {
             config.model_manager.qwen3_asr_gguf_directory,
             config.model_manager.hunyuan_mt_gguf_directory,
         );
-        asset_config.select_asset(id);
+        let mut ids = Vec::new();
+        for model_asset in model_assets {
+            let id = ModelAssetId::from_config_key(model_asset).ok_or_else(|| {
+                format!("Unknown model package {model_asset} for {category}:{provider}.")
+            })?;
+            let manifest = manifest_for(id);
+            if manifest.capability != capability || manifest.provider != provider {
+                return Err(format!(
+                    "Model package {model_asset} does not belong to {category}:{provider}."
+                ));
+            }
+            asset_config.select_asset(id);
+            ids.push(id);
+        }
         let assets = asset_config.resolve(&self.project_root);
         let preflight = assets.check();
         let diagnostics = preflight
             .diagnostics()
             .iter()
-            .filter(|diagnostic| diagnostic.asset_id == id)
+            .filter(|diagnostic| ids.contains(&diagnostic.asset_id))
             .collect::<Vec<_>>();
         if diagnostics.is_empty() {
             Ok("Required native model files are ready. Use the native Verify command before a release to validate SHA-256.".into())

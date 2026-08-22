@@ -1,8 +1,8 @@
 //! ASR model packages.
 
 use super::{
-    ModelAssetId, ModelAssetManifest, ModelCapability, ModelFileRole, ModelLevel, ModelSource,
-    RequiredModelFile,
+    MANAGED_LOCAL_MODEL_HARDWARE, ModelAssetId, ModelAssetManifest, ModelCapability, ModelFileRole,
+    ModelLevel, ModelSource, RequiredModelFile,
 };
 
 const REQUIRED_FILES: &[RequiredModelFile] = &[
@@ -28,6 +28,9 @@ pub const QWEN3_ASR_GGUF: ModelAssetManifest = ModelAssetManifest {
     capability: ModelCapability::Asr,
     level: ModelLevel::Normal,
     provider: "qwen3-gguf",
+    languages: &[],
+    voice_presets: &[],
+    hardware: MANAGED_LOCAL_MODEL_HARDWARE,
     audio_output: None,
     relative_directory: "Qwen3-ASR-1.7B-GGUF",
     required_files: REQUIRED_FILES,
