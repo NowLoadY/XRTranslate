@@ -30,10 +30,19 @@ pub(in crate::model_runtime::tts) fn build(
         .get("speed")
         .and_then(serde_json::Value::as_f64)
         .map_or(defaults.speed, |value| value as f32);
+    let voice_language = supported_languages
+        .first()
+        .map(String::as_str)
+        .ok_or_else(|| {
+            format!(
+                "OpenVoice asset {} declares no language.",
+                model_asset.as_str()
+            )
+        })?;
     let configured_voice = provider
         .get("voices")
         .and_then(serde_json::Value::as_object)
-        .and_then(|voices| voices.get("en"))
+        .and_then(|voices| voices.get(voice_language))
         .and_then(serde_json::Value::as_str);
     let base_voice = base_voice_for(model_asset, configured_voice)?;
     let adapter = OpenVoiceOnnxAdapter::with_synthesis_options(
@@ -61,6 +70,15 @@ fn base_voice_for(
             value => {
                 return Err(format!(
                     "Unknown OpenVoice English base voice {value:?} for {}.",
+                    model_asset.as_str()
+                ));
+            }
+        },
+        ModelAssetId::OpenVoiceV2ZhOnnxFp16 => match configured_voice.unwrap_or("zh-default") {
+            "zh-default" => OpenVoiceBaseVoice::Chinese,
+            value => {
+                return Err(format!(
+                    "Unknown OpenVoice Chinese base voice {value:?} for {}.",
                     model_asset.as_str()
                 ));
             }
@@ -96,6 +114,19 @@ mod tests {
         assert_eq!(
             base_voice_for(ModelAssetId::OpenVoiceV3OnnxFp16, Some("en-us")).unwrap(),
             OpenVoiceBaseVoice::EnglishNewest
+        );
+    }
+
+    #[test]
+    fn chinese_pack_selects_its_packaged_base_speaker() {
+        assert_eq!(
+            base_voice_for(ModelAssetId::OpenVoiceV2ZhOnnxFp16, Some("zh-default")).unwrap(),
+            OpenVoiceBaseVoice::Chinese
+        );
+        assert!(
+            base_voice_for(ModelAssetId::OpenVoiceV2ZhOnnxFp16, Some("en-us"))
+                .unwrap_err()
+                .contains("Chinese")
         );
     }
 }

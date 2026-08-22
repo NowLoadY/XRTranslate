@@ -1,0 +1,2 @@
+# Install with --no-deps inside torch211cu128. PyTorch is intentionally absent.
+pypinyin==0.50.0

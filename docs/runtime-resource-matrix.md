@@ -19,6 +19,13 @@
 TTS、ASR 或翻译大模型，也没有 Python 环境。兼容的离线打包选项只能显式加入
 已校验的 ASR/翻译 GGUF；Audio8 与 OpenVoice TTS 都始终由用户按需下载。
 
+模型包的传输上方只有一个桌面任务管理器。用户快速点击多个下载按钮或选择
+“下载全部”时，请求按 `ModelAssetId` 去重并串行排队；同一时刻只有一个模型包或
+runtime installer 持有传输任务。任务快照同时保存当前包/文件、当前包进度、整个
+批次进度、排队列表和失败状态。每张卡片只渲染属于自己的包状态，批次进度独立
+显示，因此一个大文件的字节数不会覆盖另一个模型的进度条。provider、欢迎页和
+设置页不得另建下载线程或共享一个无资产身份的进度变量。
+
 ## Provider 需求
 
 | 功能 / provider | 模型资源 | 推理资源 | GPU 策略 | 缺失时行为 |
@@ -27,7 +34,7 @@ TTS、ASR 或翻译大模型，也没有 Python 环境。兼容的离线打包�
 | 翻译 `hunyuan` 普通 | Hy-MT2 1.8B Q4 GGUF，1,133,080,448 B | 与 ASR 共用 llama.cpp | 与 ASR 共用同一 server/runtime 选择 | 欢迎页下载/修复 |
 | 翻译 `hunyuan` 大 | Hy-MT2 7B Q4 GGUF，4,624,648,896 B | 与 ASR 共用 llama.cpp | 同上 | 欢迎页下载/修复 |
 | TTS `audio8` | Audio8 FP16 ONNX 完整包，2,171,728,005 B | ONNX Runtime 1.28 | NVIDIA >= 8 GiB；Auto/CUDA，失败即拒绝，不回退 CPU | TTS 是可选功能，可跳过；启用时下载/修复 |
-| TTS `openvoice` | 互斥 English ONNX 变体：v3 EN-Newest（安装 255,830,497 B / 下载 207,772,473 B）或 v2 五口音（安装 255,966,606 B / 下载 207,838,325 B） | ONNX Runtime 1.28；BERT/Melo/converter/reference encoder 四 session | NVIDIA >= 8 GiB；Auto/CUDA，任一 session 失败则整组失败 | TTS 可跳过；当前验证语种为 English、22,050 Hz；v2 口音不产生重复下载；未安装/激活语种不生成任务 |
+| TTS `openvoice` | 可组合语言包：一个 English 变体（v3 EN-Newest，或 v2 五口音）加 Chinese `ZH_MIX_EN` 包；每个包的实时大小来自 manifest | ONNX Runtime 1.28；每个语言包包含 BERT/Melo/converter/reference encoder 四 session | NVIDIA >= 8 GiB；强制 CUDA，任一包/任一 session 失败则 provider 整体未就绪 | TTS 可跳过；最终输出 22,050 Hz；v2 的 US/UK/India/AU/default 是同一包内 preset，不重复下载；只为已激活且支持目标语种的包生成任务 |
 | 远程 OpenAI ASR/翻译 | 无本地模型 | HTTPS + API key | 不需要本地 GPU runtime | 缺 API key 时给出配置诊断，不触发模型下载 |
 | Silero VAD | release 内固定 ONNX，2,327,524 B | CPU ONNX core | CPU，实时小模型不加载 CUDA provider | release 预检失败则拒绝打包 |
 | ERes2NetV2 说话人识别 | release 内固定 ONNX，71,964,309 B | CPU ONNX core | CPU | 同上 |
@@ -51,6 +58,18 @@ CUDA12 provider 归档为 455,344,532 B，CUDA13 为 365,825,268 B；cuDNN
 TTS 请求 CUDA 时下载。共享 CUDA 12.4/13.1/13.3 归档按所选版本使用资源并集去重，
 不会因同时启用 llama.cpp 与 TTS 下载两次；cuDNN 是 ONNX 独立依赖，不放入共享
 CUDA 目录。
+
+### TTS 包选择语义
+
+- `model_assets` 是 provider 范围内有序的已激活包列表；`model_asset` 只保留为旧版
+  单选配置兼容别名。
+- 不同包声明互补语种时可以组合，例如 OpenVoice English 与 Chinese。
+- 两个包声明相同语种时是替换变体，例如 OpenVoice English v2 与 v3，不能同时
+  激活。
+- `voice_presets` 只描述包内已经存在的说话人或口音。OpenVoice v2 的 US/UK 等
+  选择不会增加下载字节；Chinese 使用自己的语言包和默认中文 base speaker。
+- TTS worker 根据翻译结果的目标语种选择已准备好的包。模型已安装但未激活，或
+  已激活但 manifest 不声明该语种时，都不会收到生成任务。
 
 ## ONNX 与 Runtime 目录隔离与兼容性迁移
 
@@ -106,9 +125,9 @@ runtime/cudnn/
    - 若所有前置条件均已就绪，则直接进入主会话翻译界面（`first_run = false`）。
 2. **向导 4 步骤流程**：
    - **Step 1: Welcome**：欢迎页与核心特性介绍（三列卡片：Audio Input, Recognition & Translation, VRChat OSC）；
-   - **Step 2: Install models**：本地/在线 ASR 与翻译模型配置、级别选择与完整性校验下载；
-   - **Step 3: Optional TTS**：选择已配置的语音克隆 provider 及模型，或跳过；
-   - **Step 4: Inference Runtime**：llama.cpp 与 ONNX 统一运行时环境配置（Option A 自动下载检测，Option B 自定义已有目录）。
+   - **Step 2: Configure models**：只配置本地/在线 ASR 与翻译 provider、模型和级别，不在此页启动下载；
+   - **Step 3: Optional TTS**：选择语音克隆 provider、一个或多个互补语言包及包内 voice preset，或跳过；
+   - **Step 4: Download**：集中列出所需模型包和推理 runtime，显示每项传输/安装大小并通过统一队列下载、修复或继续。
 
 ## 生命周期与诊断
 
@@ -118,9 +137,9 @@ runtime/cudnn/
 3. 用户触发统一下载任务；下载完成后校验、只提取声明文件并原子替换目录。
 4. `runtime/native-runtime.json` 发布 llama 与 ONNX 的独立 backend、CUDA ABI、
    ONNX core、provider 目录、CUDA/cuDNN 目录和预加载顺序。
-5. 后端在任何 ONNX API 之前消费该清单。每个 TTS provider 的 session group 必须
-   同时成功使用 CUDA，否则完整 group 失败；会话就绪事件报告实际 backend，
-   而不是 UI 偏好。
+5. 后端在任何 ONNX API 之前消费该清单。每个 TTS provider 的所有已激活语言包
+   和每个包的 session group 必须同时成功使用 CUDA，否则 provider 整体失败；
+   会话就绪事件报告实际 backend，而不是 UI 偏好。
 6. 设置变更采用 last-write-wins：当前不可变下载可完成，随后重新规划并复用已校验资源。
 
 UI 只显示 `计划 CUDA 13/12`、下载/修复进度、以及后端确认后的

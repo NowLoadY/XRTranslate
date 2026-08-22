@@ -1,6 +1,6 @@
 //! ONNX graph contract and signal processing for OpenVoice.
 
-use std::{path::Path, sync::Arc};
+use std::{collections::VecDeque, path::Path, sync::Arc};
 
 use half::f16;
 use ndarray::{Array1, Array2, Array3, arr0};
@@ -17,8 +17,8 @@ use crate::{
 };
 
 use super::{
-    OpenVoiceBaseVoice,
-    frontend::{EnglishFrontend, EnglishInputs},
+    OpenVoiceBaseVoice, OpenVoiceGraphContract,
+    frontend::{MeloFrontend, MeloInputs},
 };
 
 const BASE_SAMPLE_RATE: u32 = 44_100;
@@ -27,6 +27,9 @@ const REFERENCE_FFT_SIZE: usize = 1024;
 const REFERENCE_HOP_SIZE: usize = 256;
 const REFERENCE_PAD: usize = (REFERENCE_FFT_SIZE - REFERENCE_HOP_SIZE) / 2;
 const SPEAKER_EMBEDDING_SIZE: usize = 256;
+const PINNED_MELO_GRAPH_TOKENS: usize = 512;
+const PINNED_MELO_SAFE_PHONES: usize = 28;
+const BASE_SEGMENT_PAUSE_SAMPLES: usize = (BASE_SAMPLE_RATE as usize * 60) / 1_000;
 
 #[derive(Deserialize)]
 struct ModelConfig {
@@ -34,7 +37,7 @@ struct ModelConfig {
 }
 
 pub(super) struct OpenVoiceRuntime {
-    frontend: EnglishFrontend,
+    frontend: MeloFrontend,
     bert: Session,
     base: Session,
     converter: Session,
@@ -56,7 +59,7 @@ impl OpenVoiceRuntime {
                 .map_err(|error| model_error(error.to_string()))?,
         )
         .map_err(|error| model_error(error.to_string()))?;
-        let frontend = EnglishFrontend::load(model_dir, &config.symbols)?;
+        let frontend = MeloFrontend::load(model_dir, &config.symbols, base_voice.frontend_kind())?;
         let bert_path = model_dir.join("models/bert.onnx");
         let base_path = model_dir.join("models/melo.onnx");
         let converter_path = model_dir.join("models/converter.onnx");
@@ -129,8 +132,7 @@ impl OpenVoiceRuntime {
         target_embedding: &[f16],
         speed: f32,
     ) -> Result<SynthesizedPcm, InferenceError> {
-        let inputs = self.frontend.encode(&mut self.bert, text)?;
-        let base_audio = self.run_base(inputs, speed, self.base_voice.speaker_id())?;
+        let base_audio = self.synthesize_base_segments(text, speed)?;
         let base_audio = resample(&base_audio, BASE_SAMPLE_RATE, OUTPUT_SAMPLE_RATE)?
             .into_iter()
             .map(f16::from_f32)
@@ -181,13 +183,73 @@ impl OpenVoiceRuntime {
         })
     }
 
+    fn synthesize_base_segments(
+        &mut self,
+        text: &str,
+        speed: f32,
+    ) -> Result<Vec<f32>, InferenceError> {
+        let mut pending = VecDeque::from([text.trim().to_owned()]);
+        let mut audio = Vec::new();
+        while let Some(segment) = pending.pop_front() {
+            let inputs = self.frontend.encode(&mut self.bert, &segment)?;
+            if self.base_voice.graph_contract() == OpenVoiceGraphContract::XrtranslatePinned512
+                && inputs.phone_ids.len() > PINNED_MELO_SAFE_PHONES
+            {
+                let (left, right) = split_melo_segment(&segment).ok_or_else(|| {
+                    model_error(format!(
+                        "Pinned MeloTTS segment has {} phones and cannot be split safely",
+                        inputs.phone_ids.len()
+                    ))
+                })?;
+                pending.push_front(right);
+                pending.push_front(left);
+                continue;
+            }
+            if !audio.is_empty() {
+                audio.resize(audio.len() + BASE_SEGMENT_PAUSE_SAMPLES, 0.0);
+            }
+            if std::env::var_os("XRTRANSLATE_OPENVOICE_DIAGNOSTICS").is_some() {
+                eprintln!(
+                    "openvoice_melo_segment={segment:?} phones={}",
+                    inputs.phone_ids.len()
+                );
+            }
+            audio.extend(self.run_base(inputs, speed, self.base_voice.speaker_id())?);
+        }
+        Ok(audio)
+    }
+
     fn run_base(
         &mut self,
-        inputs: EnglishInputs,
+        mut inputs: MeloInputs,
         speed: f32,
         speaker_id: i32,
     ) -> Result<Vec<f32>, InferenceError> {
-        let tokens = inputs.phone_ids.len();
+        let actual_tokens = inputs.phone_ids.len();
+        let tokens = if self.base_voice.graph_contract()
+            == OpenVoiceGraphContract::XrtranslatePinned512
+        {
+            if actual_tokens > PINNED_MELO_GRAPH_TOKENS {
+                return Err(model_error(format!(
+                    "Pinned MeloTTS input has {actual_tokens} tokens; the packaged graph supports at most {PINNED_MELO_GRAPH_TOKENS}"
+                )));
+            }
+            inputs.phone_ids.resize(PINNED_MELO_GRAPH_TOKENS, 0);
+            inputs.tones.resize(PINNED_MELO_GRAPH_TOKENS, 0);
+            inputs.language_ids.resize(PINNED_MELO_GRAPH_TOKENS, 0);
+            let mut padded_bert = vec![f16::ZERO; 768 * PINNED_MELO_GRAPH_TOKENS];
+            for channel in 0..768 {
+                padded_bert[channel * PINNED_MELO_GRAPH_TOKENS
+                    ..channel * PINNED_MELO_GRAPH_TOKENS + actual_tokens]
+                    .copy_from_slice(
+                        &inputs.bert[channel * actual_tokens..(channel + 1) * actual_tokens],
+                    );
+            }
+            inputs.bert = padded_bert;
+            PINNED_MELO_GRAPH_TOKENS
+        } else {
+            actual_tokens
+        };
         let phone_ids = Array2::from_shape_vec((1, tokens), inputs.phone_ids)
             .map_err(|error| model_error(error.to_string()))?;
         let tones = Array2::from_shape_vec((1, tokens), inputs.tones)
@@ -196,7 +258,7 @@ impl OpenVoiceRuntime {
             .map_err(|error| model_error(error.to_string()))?;
         let bert = Array3::from_shape_vec((1, 768, tokens), inputs.bert)
             .map_err(|error| model_error(error.to_string()))?;
-        let lengths = Array1::from_vec(vec![tokens as i32]);
+        let lengths = Array1::from_vec(vec![actual_tokens as i32]);
         let speakers = Array1::from_vec(vec![speaker_id]);
         let length_scale = arr0(f16::from_f32(1.0 / speed));
         let outputs = self
@@ -223,6 +285,33 @@ impl OpenVoiceRuntime {
         }
         Ok(audio)
     }
+}
+
+fn split_melo_segment(text: &str) -> Option<(String, String)> {
+    let characters = text.chars().collect::<Vec<_>>();
+    if characters.len() < 2 {
+        return None;
+    }
+    let midpoint = characters.len() / 2;
+    let is_boundary = |character: char| {
+        character.is_whitespace()
+            || matches!(
+                character,
+                '.' | ',' | '!' | '?' | ';' | ':' | '。' | '，' | '！' | '？' | '；' | '：'
+            )
+    };
+    let safe_splits = (1..characters.len()).filter(|index| {
+        !((characters[index - 1].is_ascii_digit() && characters[*index] == '.')
+            || (characters[index - 1] == '.' && characters[*index].is_ascii_digit()))
+    });
+    let split = safe_splits
+        .clone()
+        .filter(|index| is_boundary(characters[index - 1]))
+        .min_by_key(|index| index.abs_diff(midpoint))
+        .or_else(|| safe_splits.min_by_key(|index| index.abs_diff(midpoint)))?;
+    let left = characters[..split].iter().collect::<String>();
+    let right = characters[split..].iter().collect::<String>();
+    Some((left, right))
 }
 
 fn read_source_embedding(path: &Path) -> Result<Vec<f16>, InferenceError> {
@@ -307,5 +396,23 @@ mod tests {
         let spectrum = reference_spectrum(&samples).unwrap();
         assert_eq!(spectrum.len() % 513, 0);
         assert!(spectrum.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn melo_segment_split_prefers_a_nearby_sentence_boundary() {
+        let (left, right) = split_melo_segment("你好，OpenVoice语音翻译已经准备好了。").unwrap();
+        assert_eq!(
+            format!("{left}{right}"),
+            "你好，OpenVoice语音翻译已经准备好了。"
+        );
+        assert!(left.ends_with('，'));
+    }
+
+    #[test]
+    fn melo_segment_split_never_breaks_a_decimal_number() {
+        let (left, right) = split_melo_segment("数值是2.8。后续").unwrap();
+        assert_eq!(format!("{left}{right}"), "数值是2.8。后续");
+        assert!(!left.ends_with("2."));
+        assert!(!right.starts_with(".8"));
     }
 }

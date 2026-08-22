@@ -21,6 +21,8 @@ pub enum ModelAssetId {
     OpenVoiceV3OnnxFp16,
     /// NVIDIA OpenVoice v2 ONNX package with five English accents.
     OpenVoiceV2OnnxFp16,
+    /// XRTranslate reproducible OpenVoice v2 Chinese ONNX language pack.
+    OpenVoiceV2ZhOnnxFp16,
 }
 
 impl ModelAssetId {
@@ -34,6 +36,7 @@ impl ModelAssetId {
             Self::Audio8TtsOnnxFp16 => "audio8-tts-onnx-fp16",
             Self::OpenVoiceV3OnnxFp16 => "openvoice-v3-onnx-fp16",
             Self::OpenVoiceV2OnnxFp16 => "openvoice-v2-onnx-fp16",
+            Self::OpenVoiceV2ZhOnnxFp16 => "openvoice-v2-zh-onnx-fp16",
         }
     }
 
@@ -134,6 +137,8 @@ pub enum ModelFileRole {
     BaseTtsGraph,
     ToneConverterGraph,
     SpeakerEncoderGraph,
+    PhonemeMap,
+    LanguageLexicon,
     PronunciationDictionary,
     Vocabulary,
     SpeakerEmbedding,
@@ -173,6 +178,9 @@ pub struct ModelSource {
     pub repository: &'static str,
     /// Immutable Hugging Face revision from which every declared file came.
     pub revision: &'static str,
+    /// Optional repository directory containing the package files. Local
+    /// required-file paths remain normalized and provider-independent.
+    pub remote_directory: &'static str,
     /// Exact source-file patterns used by an installer, if it has one.
     pub include_patterns: &'static [&'static str],
     /// Per-file source overrides for packages assembled from compatible,
@@ -198,9 +206,18 @@ impl ModelSource {
                 source.repository, source.revision, source.remote_path
             );
         }
+        let remote_path = if self.remote_directory.is_empty() {
+            relative_path.to_owned()
+        } else {
+            format!(
+                "{}/{}",
+                self.remote_directory.trim_end_matches('/'),
+                relative_path
+            )
+        };
         format!(
             "https://huggingface.co/{}/resolve/{}/{}",
-            self.repository, self.revision, relative_path
+            self.repository, self.revision, remote_path
         )
     }
 }

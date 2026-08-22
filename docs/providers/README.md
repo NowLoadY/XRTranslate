@@ -146,7 +146,9 @@ a future, separately specified TTS semantic capability requires them.
    in editable provider configuration. Mutually exclusive quality variants
    may claim the same language; selectable accents or speakers contained in
    one package belong in `voice_presets` and must not be represented as
-   duplicate model downloads.
+   duplicate model downloads. Assign semantic file roles to tokenizer,
+   pronunciation lexicon, phoneme map, graph, embedding, and license inputs;
+   do not hide distinct frontend resources behind one duplicated generic role.
    Re-export it through the TTS catalogue and aggregate registry.
 3. Reuse `xrtranslate-download` through the assets installer. Do not add HTTP,
    mirror, resume, proxy, retry, checksum, or staging logic to the provider or
@@ -187,3 +189,4 @@ runtime and resource lifecycle, consult
 
 - [Qwen Audio streaming ASR](qwen-audio-streaming-asr.md)
 - [OpenVoice TTS](openvoice-tts.md)
+- [OpenVoice language-pack recipe](openvoice-language-packs.md)

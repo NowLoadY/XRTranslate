@@ -12,17 +12,12 @@ use tokenizers::{
 
 use crate::InferenceError;
 
+use super::MeloInputs;
+
 const ENGLISH_LANGUAGE_ID: i32 = 2;
 const ENGLISH_TONE_OFFSET: i32 = 7;
 
-pub(super) struct EnglishInputs {
-    pub(super) phone_ids: Vec<i32>,
-    pub(super) tones: Vec<i32>,
-    pub(super) language_ids: Vec<i32>,
-    pub(super) bert: Vec<f16>,
-}
-
-pub(super) struct EnglishFrontend {
+pub(in crate::tts::providers::openvoice) struct EnglishFrontend {
     tokenizer: Tokenizer,
     dictionary: HashMap<String, Vec<String>>,
     symbol_ids: HashMap<String, i32>,
@@ -70,7 +65,7 @@ impl EnglishFrontend {
         &self,
         bert_session: &mut Session,
         text: &str,
-    ) -> Result<EnglishInputs, InferenceError> {
+    ) -> Result<MeloInputs, InferenceError> {
         let normalized = normalize_text(text);
         if normalized.is_empty() {
             return Err(frontend_error("synthesis text is empty"));
@@ -162,7 +157,7 @@ impl EnglishFrontend {
                 "BERT feature expansion did not match blanked phones",
             ));
         }
-        Ok(EnglishInputs {
+        Ok(MeloInputs {
             phone_ids,
             tones,
             language_ids,
@@ -170,7 +165,7 @@ impl EnglishFrontend {
         })
     }
 
-    fn pronounce(&self, word: &str) -> (Vec<String>, Vec<i32>) {
+    pub(super) fn pronounce(&self, word: &str) -> (Vec<String>, Vec<i32>) {
         if is_supported_punctuation(word) {
             return (vec![normalize_punctuation(word).to_owned()], vec![0]);
         }
@@ -196,6 +191,18 @@ impl EnglishFrontend {
             })
             .unzip();
         (phones, tones)
+    }
+
+    pub(super) fn tokenizer(&self) -> &Tokenizer {
+        &self.tokenizer
+    }
+
+    pub(super) fn phone_id(&self, phone: &str) -> Result<i32, InferenceError> {
+        self.symbol_ids
+            .get(phone)
+            .copied()
+            .or_else(|| self.symbol_ids.get("UNK").copied())
+            .ok_or_else(|| frontend_error(format!("unknown Melo symbol {phone:?}")))
     }
 }
 

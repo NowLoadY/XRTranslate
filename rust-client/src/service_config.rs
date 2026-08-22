@@ -469,8 +469,9 @@ impl ServiceConfigEditor {
                             .name
                             .clone();
                         let is_active = provider_name == active_name;
-                        let model_asset =
-                            provider_model_asset(&self.categories[cat_idx].providers[provider_idx]);
+                        let model_assets = provider_model_assets(
+                            &self.categories[cat_idx].providers[provider_idx],
+                        );
                         let remote =
                             provider_is_remote(&self.categories[cat_idx].providers[provider_idx]);
                         let supported_languages = provider_model_languages(
@@ -522,7 +523,7 @@ impl ServiceConfigEditor {
                                                 language,
                                                 category_key,
                                                 provider_name: &provider_name,
-                                                model_asset: model_asset.as_deref(),
+                                                model_assets: &model_assets,
                                                 remote,
                                                 local_models_available: matches!(
                                                     local_model_availability,
@@ -562,7 +563,7 @@ impl ServiceConfigEditor {
                                                 field,
                                                 category_key,
                                                 &provider_name,
-                                                model_asset.is_some(),
+                                                !model_assets.is_empty(),
                                             )
                                         })
                                         .count();
@@ -589,7 +590,7 @@ impl ServiceConfigEditor {
                                                         field,
                                                         category_key,
                                                         &provider_name,
-                                                        model_asset.is_some(),
+                                                        !model_assets.is_empty(),
                                                     ) {
                                                         continue;
                                                     }
@@ -633,8 +634,8 @@ impl ServiceConfigEditor {
 
                     if let Some(idx) = active_idx {
                         let provider_name = self.categories[cat_idx].providers[idx].name.clone();
-                        let model_asset =
-                            provider_model_asset(&self.categories[cat_idx].providers[idx]);
+                        let model_assets =
+                            provider_model_assets(&self.categories[cat_idx].providers[idx]);
                         let remote = provider_is_remote(&self.categories[cat_idx].providers[idx]);
                         let supported_languages =
                             provider_model_languages(&self.categories[cat_idx].providers[idx]);
@@ -656,7 +657,7 @@ impl ServiceConfigEditor {
                                     language,
                                     category_key,
                                     provider_name: &provider_name,
-                                    model_asset: model_asset.as_deref(),
+                                    model_assets: &model_assets,
                                     remote,
                                     local_models_available: matches!(
                                         local_model_availability,
@@ -693,7 +694,7 @@ impl ServiceConfigEditor {
                                     field,
                                     category_key,
                                     &provider_name,
-                                    model_asset.is_some(),
+                                    !model_assets.is_empty(),
                                 )
                             })
                             .count();
@@ -714,7 +715,7 @@ impl ServiceConfigEditor {
                                             field,
                                             category_key,
                                             &provider_name,
-                                            model_asset.is_some(),
+                                            !model_assets.is_empty(),
                                         ) {
                                             continue;
                                         }
@@ -1125,6 +1126,49 @@ fn update_provider_model_selection(provider: &mut ProviderCard, model_asset: &st
     {
         field.value = first.clone();
     }
+
+    let selected = assets
+        .iter()
+        .filter_map(|asset| xrtranslate_assets::ModelAssetId::from_config_key(asset))
+        .map(xrtranslate_assets::manifest_for)
+        .collect::<Vec<_>>();
+    let mut voices = provider_voice_presets(provider);
+    voices.retain(|language, preset| {
+        selected.iter().any(|manifest| {
+            manifest
+                .voice_presets
+                .iter()
+                .any(|candidate| candidate.language == language && candidate.key == preset)
+        })
+    });
+    for manifest in &selected {
+        for preset in manifest
+            .voice_presets
+            .iter()
+            .filter(|preset| preset.is_default)
+        {
+            voices
+                .entry(preset.language.to_owned())
+                .or_insert_with(|| preset.key.to_owned());
+        }
+    }
+    if !voices.is_empty() || provider.fields.iter().any(|field| field.name == "voices") {
+        let encoded = serde_json::to_string(&voices).expect("voice maps serialize");
+        if let Some(field) = provider
+            .fields
+            .iter_mut()
+            .find(|field| field.name == "voices")
+        {
+            field.value = encoded;
+            field.kind = JsonFieldKind::Json;
+        } else {
+            provider.fields.push(ConfigField {
+                name: "voices".to_owned(),
+                value: encoded,
+                kind: JsonFieldKind::Json,
+            });
+        }
+    }
 }
 
 fn provider_voice_presets(provider: &ProviderCard) -> std::collections::BTreeMap<String, String> {
@@ -1341,14 +1385,14 @@ fn render_tts_model_selection(
 }
 
 /// Renders the same model lifecycle control inside every provider card that
-/// declares a `model_asset`. The provider configuration, rather than a model
-/// name in the UI, decides which package is offered.
+/// declares one or more model assets. The provider configuration, rather than
+/// model names in the UI, decides which complete package set is offered.
 struct ProviderModelAction<'a> {
     project_root: &'a std::path::Path,
     language: crate::i18n::UiLanguage,
     category_key: &'a str,
     provider_name: &'a str,
-    model_asset: Option<&'a str>,
+    model_assets: &'a [String],
     remote: bool,
     local_models_available: bool,
 }
@@ -1362,7 +1406,7 @@ fn render_provider_model_action(
     use crate::model_install::{NativeModelTaskState, model_package_for_provider_config_key};
     use eframe::egui;
 
-    let Some(model_asset) = request.model_asset else {
+    if request.model_assets.is_empty() {
         if request.remote {
             return None;
         }
@@ -1377,7 +1421,7 @@ fn render_provider_model_action(
                 Err(error) => error,
             }
         });
-    };
+    }
 
     let Some(capability) = model_capability_for_category(request.category_key) else {
         return Some(format!(
@@ -1385,18 +1429,34 @@ fn render_provider_model_action(
             request.category_key
         ));
     };
-    let package = match model_package_for_provider_config_key(
-        request.project_root,
-        request.provider_name,
-        capability,
-        model_asset,
-    ) {
-        Ok(package) => package,
+    let packages = match request
+        .model_assets
+        .iter()
+        .map(|model_asset| {
+            model_package_for_provider_config_key(
+                request.project_root,
+                request.provider_name,
+                capability,
+                model_asset,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(packages) => packages,
         Err(error) => return Some(error),
     };
 
-    let ready = model_tasks.is_model_ready(package.id);
-    let present = model_tasks.is_model_present(package.id);
+    let ready = packages
+        .iter()
+        .all(|package| model_tasks.is_model_ready(package.id));
+    let present = packages
+        .iter()
+        .all(|package| model_tasks.is_model_present(package.id));
+    let missing_download_bytes = packages
+        .iter()
+        .filter(|package| !model_tasks.is_model_present(package.id))
+        .map(|package| package.download_bytes)
+        .sum::<u64>();
     let busy = model_tasks.is_busy();
     let action = if present {
         "Verify"
@@ -1411,7 +1471,7 @@ fn render_provider_model_action(
         format!(
             "{} · {}",
             crate::i18n::tr(request.language, action),
-            components::format_file_size(package.download_bytes),
+            components::format_file_size(missing_download_bytes),
         )
     };
     let clicked = ui
@@ -1419,7 +1479,13 @@ fn render_provider_model_action(
             !busy && request.local_models_available,
             egui::Button::new(action_label),
         )
-        .on_hover_text(package.label)
+        .on_hover_text(
+            packages
+                .iter()
+                .map(|package| package.label)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
         .clicked();
     let previous_source = model_tasks.use_mirror();
     let mut use_mirror = previous_source;
@@ -1432,7 +1498,10 @@ fn render_provider_model_action(
     }
     if clicked {
         return model_tasks
-            .install(request.project_root.to_path_buf(), package.id)
+            .enqueue_many(
+                request.project_root.to_path_buf(),
+                packages.iter().map(|package| package.id),
+            )
             .err();
     }
 
@@ -1446,7 +1515,7 @@ fn render_provider_model_action(
             asset_id,
             relative_path,
             ..
-        } if *asset_id == package.id => {
+        } if packages.iter().any(|package| package.id == *asset_id) => {
             if let Some(path) = relative_path {
                 ui.label(
                     egui::RichText::new(path)
@@ -1459,7 +1528,7 @@ fn render_provider_model_action(
         NativeModelTaskState::Installed {
             asset_id,
             directory,
-        } if *asset_id == package.id => {
+        } if packages.iter().any(|package| package.id == *asset_id) => {
             ui.label(
                 egui::RichText::new(directory.display().to_string())
                     .size(11.0)
@@ -1745,7 +1814,8 @@ mod tests {
     use super::{
         ConfigField, JsonFieldKind, ProviderCard, ServiceConfigEditor,
         prompt_target_for_translation_provider, provider_field_is_visible,
-        provider_supported_languages, validate_native_provider_asset, validate_tts_provider_asset,
+        provider_supported_languages, provider_voice_presets, update_provider_model_selection,
+        validate_native_provider_asset, validate_tts_provider_asset,
     };
     use serde_json::Value;
     use xrtranslate_assets::ModelCapability;
@@ -1798,8 +1868,8 @@ mod tests {
         let config = xrtranslate_config::AppConfig::from_value(document.clone()).unwrap();
         assert!(validate_tts_provider_asset(&config.tts).is_ok());
 
-        document["tts"]["providers"]["openvoice"]["model_asset"] =
-            Value::from("audio8-tts-onnx-fp16");
+        document["tts"]["providers"]["openvoice"]["model_assets"] =
+            serde_json::json!(["audio8-tts-onnx-fp16"]);
         let config = xrtranslate_config::AppConfig::from_value(document).unwrap();
         assert!(
             validate_tts_provider_asset(&config.tts)
@@ -1830,6 +1900,37 @@ mod tests {
             validate_tts_provider_asset(&config.tts)
                 .unwrap_err()
                 .contains("not provided")
+        );
+    }
+
+    #[test]
+    fn replacing_a_tts_variant_resets_stale_voice_presets_generically() {
+        let mut provider = ProviderCard {
+            name: "openvoice".into(),
+            fields: vec![
+                ConfigField {
+                    name: "model_asset".into(),
+                    value: "openvoice-v2-onnx-fp16".into(),
+                    kind: JsonFieldKind::String,
+                },
+                ConfigField {
+                    name: "model_assets".into(),
+                    value: r#"["openvoice-v2-onnx-fp16"]"#.into(),
+                    kind: JsonFieldKind::Json,
+                },
+                ConfigField {
+                    name: "voices".into(),
+                    value: r#"{"en":"en-british"}"#.into(),
+                    kind: JsonFieldKind::Json,
+                },
+            ],
+        };
+
+        update_provider_model_selection(&mut provider, "openvoice-v3-onnx-fp16", true);
+
+        assert_eq!(
+            provider_voice_presets(&provider),
+            std::collections::BTreeMap::from([("en".into(), "en-newest".into())])
         );
     }
 

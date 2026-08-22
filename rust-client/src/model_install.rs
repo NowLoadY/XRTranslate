@@ -206,10 +206,6 @@ impl NativeModelTaskManager {
         self.state.is_busy()
     }
 
-    pub fn install(&mut self, project_root: PathBuf, asset_id: ModelAssetId) -> Result<(), String> {
-        self.enqueue_many(project_root, [asset_id])
-    }
-
     /// Adds packages to the current serial batch without losing rapid clicks.
     /// Duplicate, active, completed, and already-present package ids are
     /// ignored. A failed batch is rebuilt in caller order so retrying "all"

@@ -9,9 +9,9 @@ use crate::{
     AUDIO8_TTS_ONNX_FP16, AtomicInstallError, HUNYUAN_MT_GGUF, MANAGED_LOCAL_MODEL_HARDWARE,
     MODEL_ASSET_CATALOG, ModelAssetDiagnostic, ModelAssetId, ModelAssetManifest, ModelAssetProblem,
     ModelAssetsConfig, ModelCapability, ModelFileRole, ModelLevel, ModelSource,
-    OPENVOICE_V2_ONNX_FP16, OPENVOICE_V3_ONNX_FP16, QWEN3_ASR_GGUF, RequiredModelFile,
-    ResolvedModelAsset, ResolvedModelAssets, install::install_verified_directory, manifest_for,
-    preflight::sha256_file,
+    NativeModelInstaller, OPENVOICE_V2_ONNX_FP16, OPENVOICE_V2_ZH_ONNX_FP16,
+    OPENVOICE_V3_ONNX_FP16, QWEN3_ASR_GGUF, RequiredModelFile, ResolvedModelAsset,
+    ResolvedModelAssets, install::install_verified_directory, manifest_for, preflight::sha256_file,
 };
 
 static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
@@ -31,7 +31,7 @@ fn temporary_project_root() -> PathBuf {
 
 #[test]
 fn static_catalog_declares_every_native_model_package() {
-    assert_eq!(MODEL_ASSET_CATALOG.len(), 6);
+    assert_eq!(MODEL_ASSET_CATALOG.len(), 7);
     assert_eq!(QWEN3_ASR_GGUF.required_files.len(), 2);
     assert_eq!(HUNYUAN_MT_GGUF.required_files.len(), 1);
     assert_eq!(
@@ -67,6 +67,16 @@ fn static_catalog_declares_every_native_model_package() {
     let archive = OPENVOICE_V3_ONNX_FP16.source.archive.unwrap();
     assert_eq!(archive.bytes, 204_513_198);
     assert_eq!(OPENVOICE_V3_ONNX_FP16.download_bytes(), 207_772_473);
+    assert_eq!(OPENVOICE_V2_ZH_ONNX_FP16.download_bytes(), 468_011_765);
+    assert_eq!(OPENVOICE_V2_ZH_ONNX_FP16.installed_bytes(), 468_011_765);
+    assert_eq!(OPENVOICE_V2_ZH_ONNX_FP16.languages, &["zh"]);
+    assert_eq!(OPENVOICE_V2_ZH_ONNX_FP16.voice_presets[0].key, "zh-default");
+    assert_eq!(
+        OPENVOICE_V2_ZH_ONNX_FP16
+            .source
+            .hugging_face_resolve_url("models/melo.onnx"),
+        "https://huggingface.co/NowLoadY/XRTranslate-OpenVoice-ONNX/resolve/961ef7e65b63b7793dda61c7fe159a6e5a4b2f04/packages/zh/v1/models/melo.onnx"
+    );
     for manifest in MODEL_ASSET_CATALOG {
         assert!(
             manifest.required_files.iter().any(|file| matches!(
@@ -212,6 +222,21 @@ fn tts_model_variants_for_the_same_language_replace_each_other() {
 }
 
 #[test]
+fn openvoice_language_packs_compose_without_replacing_english() {
+    let mut config = ModelAssetsConfig::default();
+    config.select_asset(ModelAssetId::OpenVoiceV2OnnxFp16);
+    config.select_asset(ModelAssetId::OpenVoiceV2ZhOnnxFp16);
+
+    assert_eq!(
+        config.selected_asset_ids().collect::<Vec<_>>(),
+        vec![
+            ModelAssetId::OpenVoiceV2OnnxFp16,
+            ModelAssetId::OpenVoiceV2ZhOnnxFp16
+        ]
+    );
+}
+
+#[test]
 fn legacy_directory_override_stays_bound_to_its_original_asset() {
     let mut config = ModelAssetsConfig::with_directory_overrides(
         None,
@@ -339,6 +364,7 @@ fn explicit_integrity_verification_accepts_matching_files_and_reports_hash_tampe
         source: ModelSource {
             repository: "fixture/repository",
             revision: "0000000000000000000000000000000000000000",
+            remote_directory: "",
             include_patterns: &["fixture.gguf"],
             file_overrides: &[],
             archive: None,
@@ -390,6 +416,7 @@ fn verified_staging_directory_is_promoted_without_overwriting_an_install() {
         source: ModelSource {
             repository: "fixture/repository",
             revision: "0000000000000000000000000000000000000000",
+            remote_directory: "",
             include_patterns: &["fixture.gguf"],
             file_overrides: &[],
             archive: None,
@@ -409,5 +436,35 @@ fn verified_staging_directory_is_promoted_without_overwriting_an_install() {
         Err(AtomicInstallError::DestinationExists(_))
     ));
 
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[ignore = "downloads the optional 446 MiB public OpenVoice Chinese package"]
+fn public_openvoice_chinese_package_installs_anonymously() {
+    let root = temporary_project_root();
+    let mut config = ModelAssetsConfig::default();
+    config.select_asset(ModelAssetId::OpenVoiceV2ZhOnnxFp16);
+    let assets = config.resolve_selected(&root);
+    let installer = NativeModelInstaller::new(assets.clone()).unwrap();
+    let mut last_downloaded = 0_u64;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let installed = runtime
+        .block_on(
+            installer.install(ModelAssetId::OpenVoiceV2ZhOnnxFp16, |progress| {
+                assert_eq!(progress.asset_id, ModelAssetId::OpenVoiceV2ZhOnnxFp16);
+                assert!(progress.downloaded_bytes >= last_downloaded);
+                assert!(progress.downloaded_bytes <= progress.total_bytes);
+                last_downloaded = progress.downloaded_bytes;
+            }),
+        )
+        .unwrap();
+    let asset = assets.asset(ModelAssetId::OpenVoiceV2ZhOnnxFp16);
+    assert_eq!(installed, asset.directory());
+    assert_eq!(last_downloaded, asset.manifest().download_bytes());
+    assert!(asset.verify_integrity().is_empty());
     fs::remove_dir_all(root).unwrap();
 }

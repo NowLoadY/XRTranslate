@@ -105,6 +105,7 @@ pub const AUDIO8_TTS_ONNX_FP16: ModelAssetManifest = ModelAssetManifest {
     source: ModelSource {
         repository: "Audio8/Audio8-TTS-Preview-0.6B-ONNX-INT4",
         revision: "818569c6b832118ad68d61bbd873abe250fcd68a",
+        remote_directory: "",
         include_patterns: &["*.onnx", "*.onnx.data", "*.json"],
         file_overrides: FP16_SOURCE_OVERRIDES,
         archive: None,

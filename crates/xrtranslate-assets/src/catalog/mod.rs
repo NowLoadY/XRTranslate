@@ -5,7 +5,9 @@ mod types;
 
 pub use asr::QWEN3_ASR_GGUF;
 pub use translation::{HUNYUAN_MT_7B_GGUF, HUNYUAN_MT_GGUF};
-pub use tts::{AUDIO8_TTS_ONNX_FP16, OPENVOICE_V2_ONNX_FP16, OPENVOICE_V3_ONNX_FP16};
+pub use tts::{
+    AUDIO8_TTS_ONNX_FP16, OPENVOICE_V2_ONNX_FP16, OPENVOICE_V2_ZH_ONNX_FP16, OPENVOICE_V3_ONNX_FP16,
+};
 pub use types::{
     MANAGED_LOCAL_MODEL_HARDWARE, MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES, ModelAccelerator,
     ModelArchiveEntry, ModelArchiveSource, ModelAssetId, ModelAssetManifest, ModelAudioOutput,
@@ -20,6 +22,7 @@ pub const MODEL_ASSET_CATALOG: &[ModelAssetManifest] = &[
     HUNYUAN_MT_7B_GGUF,
     AUDIO8_TTS_ONNX_FP16,
     OPENVOICE_V2_ONNX_FP16,
+    OPENVOICE_V2_ZH_ONNX_FP16,
     OPENVOICE_V3_ONNX_FP16,
 ];
 

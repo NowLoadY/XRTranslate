@@ -46,6 +46,7 @@ struct OnnxRuntimeSelection {
     backend: RuntimeBackend,
     provider: Option<ManagedRuntimeAsset>,
     cuda_runtime: Option<ReleaseAsset>,
+    cuda_dependency: Option<ManagedRuntimeAsset>,
     cudnn: Option<ManagedRuntimeAsset>,
     cuda_version: Option<String>,
     fallback_reason: Option<String>,
@@ -657,6 +658,10 @@ async fn install_onnx_runtime(
         .cudnn
         .as_ref()
         .ok_or_else(|| "CUDA ONNX plan is missing its cuDNN runtime archive".to_owned())?;
+    let cuda_dependency = selection
+        .cuda_dependency
+        .as_ref()
+        .ok_or_else(|| "CUDA ONNX plan is missing its CUDA dependency archive".to_owned())?;
     let cuda_version = selection
         .cuda_version
         .as_deref()
@@ -666,6 +671,8 @@ async fn install_onnx_runtime(
     let provider_directory = layout.onnx_runtime_directory(&provider.cuda_version);
     let cuda_ready =
         validate_required_prefixes(&cuda_directory, &cuda_runtime.required_file_prefixes).is_ok();
+    let cuda_dependency_ready =
+        validate_required_files(&cuda_directory, &cuda_dependency.required_files).is_ok();
     let provider_ready =
         validate_required_files(&provider_directory, &provider.required_files).is_ok();
     let cudnn_ready = validate_required_files(&cudnn_directory, &cudnn.required_files).is_ok();
@@ -693,23 +700,73 @@ async fn install_onnx_runtime(
     .map_err(|error| error.to_string())?;
     let mut completed = 0_u64;
 
-    if !cuda_ready {
-        let archive = downloads.join(&cuda_runtime.name);
-        download_runtime_asset(
-            &client,
-            cuda_runtime,
-            &archive,
-            progress_base.saturating_add(completed),
-            progress_total,
-            &sender,
-        )
-        .await?;
-        completed = completed.saturating_add(cuda_runtime.size);
+    if !cuda_ready || !cuda_dependency_ready {
         let staged_cuda = payload.join("cuda");
         fs::create_dir_all(&staged_cuda)
             .map_err(|error| format!("Cannot create staged CUDA folder: {error}"))?;
-        extract_archive(&archive, &staged_cuda, cuda_runtime.archive_format)?;
+        if cuda_ready {
+            for source in
+                resolve_required_prefixes(&cuda_directory, &cuda_runtime.required_file_prefixes)?
+            {
+                let filename = source
+                    .file_name()
+                    .ok_or_else(|| format!("Invalid CUDA runtime file: {}", source.display()))?;
+                fs::copy(&source, staged_cuda.join(filename)).map_err(|error| {
+                    format!(
+                        "Cannot stage existing CUDA file {}: {error}",
+                        source.display()
+                    )
+                })?;
+            }
+        } else {
+            let archive = downloads.join(&cuda_runtime.name);
+            download_runtime_asset(
+                &client,
+                cuda_runtime,
+                &archive,
+                progress_base.saturating_add(completed),
+                progress_total,
+                &sender,
+            )
+            .await?;
+            completed = completed.saturating_add(cuda_runtime.size);
+            extract_archive(&archive, &staged_cuda, cuda_runtime.archive_format)?;
+        }
+        if cuda_dependency_ready {
+            for source in resolve_required_files(&cuda_directory, &cuda_dependency.required_files)?
+            {
+                let filename = source
+                    .file_name()
+                    .ok_or_else(|| format!("Invalid CUDA dependency file: {}", source.display()))?;
+                fs::copy(&source, staged_cuda.join(filename)).map_err(|error| {
+                    format!(
+                        "Cannot stage existing CUDA dependency {}: {error}",
+                        source.display()
+                    )
+                })?;
+            }
+        } else {
+            let archive = downloads.join(&cuda_dependency.name);
+            download_managed_runtime_asset(
+                &client,
+                cuda_dependency,
+                &archive,
+                progress_base.saturating_add(completed),
+                progress_total,
+                &sender,
+            )
+            .await?;
+            completed = completed.saturating_add(cuda_dependency.size);
+            extract_declared_files(
+                &archive,
+                cuda_dependency.archive_format,
+                Path::new(&cuda_dependency.archive_directory),
+                &cuda_dependency.required_files,
+                &staged_cuda,
+            )?;
+        }
         validate_required_prefixes(&staged_cuda, &cuda_runtime.required_file_prefixes)?;
+        validate_required_files(&staged_cuda, &cuda_dependency.required_files)?;
         activate_runtime_directory(&staged_cuda, &cuda_directory)?;
     }
 
@@ -766,6 +823,10 @@ async fn install_onnx_runtime(
 
     let mut preload_libraries =
         resolve_required_prefixes(&cuda_directory, &cuda_runtime.required_file_prefixes)?;
+    preload_libraries.extend(resolve_required_files(
+        &cuda_directory,
+        &cuda_dependency.required_files,
+    )?);
     preload_libraries.extend(resolve_required_files(
         &cudnn_directory,
         &cudnn.required_files,
@@ -1608,6 +1669,8 @@ fn configured_runtime_plan(
         .transpose()?;
     let onnx = if requirements.onnx_tts && requirements.onnx_cuda && blocking_error.is_none() {
         let providers = onnx_assets_from_config(&config.model_manager.onnxruntime)?;
+        let cuda_dependencies =
+            cuda_dependency_assets_from_config(&config.model_manager.onnxruntime)?;
         let cudnn_runtimes = cudnn_assets_from_config(&config.model_manager.onnxruntime)?;
         let cuda_runtimes = llama_assets
             .iter()
@@ -1617,6 +1680,7 @@ fn configured_runtime_plan(
         Some(select_onnx_assets_for_hardware(
             &providers,
             &cuda_runtimes,
+            &cuda_dependencies,
             &cudnn_runtimes,
             eligible_nvidia,
         )?)
@@ -1690,10 +1754,11 @@ fn runtime_marker_matches_plan(
             return false;
         }
         if selection.backend == RuntimeBackend::Cuda {
-            let (Some(version), Some(provider), Some(cuda), Some(cudnn)) = (
+            let (Some(version), Some(provider), Some(cuda), Some(cuda_dependency), Some(cudnn)) = (
                 selection.cuda_version.as_deref(),
                 selection.provider.as_ref(),
                 selection.cuda_runtime.as_ref(),
+                selection.cuda_dependency.as_ref(),
                 selection.cudnn.as_ref(),
             ) else {
                 return false;
@@ -1719,6 +1784,12 @@ fn runtime_marker_matches_plan(
             else {
                 return false;
             };
+            let Ok(cuda_dependency_preloads) =
+                resolve_required_files(&cuda_directory, &cuda_dependency.required_files)
+            else {
+                return false;
+            };
+            expected_preloads.extend(cuda_dependency_preloads);
             let Ok(cudnn_preloads) =
                 resolve_required_files(&cudnn_directory, &cudnn.required_files)
             else {
@@ -1816,6 +1887,18 @@ fn missing_runtime_bytes(
                 validate_required_prefixes(
                     &layout.cuda_runtime_directory(version),
                     &asset.required_file_prefixes,
+                )
+                .is_ok()
+            });
+            if !ready {
+                add(&asset.name, asset.size);
+            }
+        }
+        if let Some(asset) = &selection.cuda_dependency {
+            let ready = selection.cuda_version.as_deref().is_some_and(|version| {
+                validate_required_files(
+                    &layout.cuda_runtime_directory(version),
+                    &asset.required_files,
                 )
                 .is_ok()
             });
@@ -1986,6 +2069,20 @@ fn cudnn_assets_from_config(
     )
 }
 
+fn cuda_dependency_assets_from_config(
+    config: &OnnxRuntimeConfig,
+) -> Result<Vec<ManagedRuntimeAsset>, String> {
+    if config.cuda_dependency_downloads.is_empty() {
+        return Err(
+            "model_manager.onnxruntime.cuda_dependency_downloads is empty in config.json.".into(),
+        );
+    }
+    managed_runtime_assets_from_config(
+        "model_manager.onnxruntime.cuda_dependency_downloads",
+        &config.cuda_dependency_downloads,
+    )
+}
+
 fn managed_runtime_assets_from_config(
     config_path: &str,
     downloads: &[ManagedRuntimeArchive],
@@ -2061,6 +2158,7 @@ fn managed_runtime_assets_from_config(
 fn select_onnx_assets_for_hardware(
     providers: &[ManagedRuntimeAsset],
     cuda_runtimes: &[ReleaseAsset],
+    cuda_dependencies: &[ManagedRuntimeAsset],
     cudnn_runtimes: &[ManagedRuntimeAsset],
     nvidia: Option<&NvidiaCuda>,
 ) -> Result<OnnxRuntimeSelection, String> {
@@ -2093,6 +2191,10 @@ fn select_onnx_assets_for_hardware(
                 provider.target == target
                     && provider.cuda_version.parse::<u16>().ok() == Some(runtime_version.0)
             })?;
+            let cuda_dependency = cuda_dependencies.iter().find(|dependency| {
+                dependency.target == target
+                    && dependency.cuda_version.parse::<u16>().ok() == Some(runtime_version.0)
+            })?;
             let cudnn = cudnn_runtimes.iter().find(|cudnn| {
                 cudnn.target == target
                     && cudnn.cuda_version.parse::<u16>().ok() == Some(runtime_version.0)
@@ -2101,13 +2203,14 @@ fn select_onnx_assets_for_hardware(
                 runtime_version,
                 runtime.clone(),
                 provider.clone(),
+                cuda_dependency.clone(),
                 cudnn.clone(),
             ))
         })
-        .max_by_key(|(version, _, _, _)| *version);
-    let Some((cuda_version, cuda_runtime, provider, cudnn)) = selected else {
+        .max_by_key(|(version, _, _, _, _)| *version);
+    let Some((cuda_version, cuda_runtime, provider, cuda_dependency, cudnn)) = selected else {
         return Err(format!(
-            "NVIDIA GPU {} supports CUDA {}, but no complete ONNX Runtime, CUDA and cuDNN bundle is configured for {target}.",
+            "NVIDIA GPU {} supports CUDA {}, but no complete ONNX Runtime, CUDA math and cuDNN bundle is configured for {target}.",
             nvidia.gpu, nvidia.driver_cuda
         ));
     };
@@ -2115,6 +2218,7 @@ fn select_onnx_assets_for_hardware(
         backend: RuntimeBackend::Cuda,
         provider: Some(provider),
         cuda_runtime: Some(cuda_runtime),
+        cuda_dependency: Some(cuda_dependency),
         cudnn: Some(cudnn),
         cuda_version: Some(format_version(cuda_version)),
         fallback_reason: None,
@@ -2802,6 +2906,16 @@ mod tests {
                 .browser_download_url
                 .starts_with("https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/")
         }));
+        let cuda_dependencies =
+            cuda_dependency_assets_from_config(&config.model_manager.onnxruntime).unwrap();
+        assert_eq!(cuda_dependencies.len(), 2);
+        assert_eq!(cuda_dependencies[0].required_files, ["cufft64_11.dll"]);
+        assert_eq!(cuda_dependencies[1].required_files, ["cufft64_12.dll"]);
+        assert_eq!(cuda_dependencies[1].size, 182_627_436);
+        assert_eq!(
+            cuda_dependencies[1].sha256,
+            "83df908ae67e2b3a86201de8463562ab49dd9ee8b3b5efc3fdc2e681b14b5dd9"
+        );
         let cudnn = cudnn_assets_from_config(&config.model_manager.onnxruntime).unwrap();
         assert_eq!(cudnn.len(), 2);
         assert_eq!(cudnn[0].cuda_version, "12");
@@ -2860,6 +2974,23 @@ mod tests {
         }
     }
 
+    fn cuda_dependency_asset(cuda_version: &str) -> ManagedRuntimeAsset {
+        ManagedRuntimeAsset {
+            name: format!("cufft-cuda-{cuda_version}.zip"),
+            browser_download_url: "https://example.invalid/cufft.zip".into(),
+            size: 1,
+            sha256: "0".repeat(64),
+            archive_format: LlamaCppArchiveFormat::Zip,
+            target: current_runtime_target(),
+            cuda_version: cuda_version.into(),
+            archive_directory: "cufft/bin".into(),
+            required_files: vec![format!(
+                "cufft64_{}.dll",
+                if cuda_version == "13" { "12" } else { "11" }
+            )],
+        }
+    }
+
     #[test]
     fn onnx_and_llama_choose_the_same_cuda_major() {
         let cuda_runtimes = vec![
@@ -2872,6 +3003,7 @@ mod tests {
             let selection = select_onnx_assets_for_hardware(
                 &providers,
                 &cuda_runtimes,
+                &[cuda_dependency_asset("12"), cuda_dependency_asset("13")],
                 &[cudnn_asset("12"), cudnn_asset("13")],
                 Some(&NvidiaCuda {
                     gpu: "NVIDIA GeForce RTX 4090".into(),
@@ -2899,6 +3031,7 @@ mod tests {
         let error = select_onnx_assets_for_hardware(
             &[onnx_asset("13")],
             &[asset("cudart-llama-bin-win-cuda-13.3-x64.zip")],
+            &[cuda_dependency_asset("13")],
             &[cudnn_asset("13")],
             Some(&NvidiaCuda {
                 gpu: "NVIDIA GeForce RTX 5080".into(),
@@ -2929,11 +3062,12 @@ mod tests {
             backend: RuntimeBackend::Cuda,
             provider: Some(onnx_asset("13")),
             cuda_runtime: Some(cuda),
+            cuda_dependency: Some(cuda_dependency_asset("13")),
             cudnn: Some(cudnn_asset("13")),
             cuda_version: Some("13.3".into()),
             fallback_reason: None,
         };
-        assert_eq!(missing_runtime_bytes(&root, Some(&llama), Some(&onnx)), 4);
+        assert_eq!(missing_runtime_bytes(&root, Some(&llama), Some(&onnx)), 5);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2951,10 +3085,12 @@ mod tests {
         let mut provider = onnx_asset("13");
         provider.required_files.push("onnxruntime.dll".into());
         let cudnn = cudnn_asset("13");
+        let cuda_dependency = cuda_dependency_asset("13");
         let selection = OnnxRuntimeSelection {
             backend: RuntimeBackend::Cuda,
             provider: Some(provider.clone()),
             cuda_runtime: Some(cuda.clone()),
+            cuda_dependency: Some(cuda_dependency.clone()),
             cudnn: Some(cudnn.clone()),
             cuda_version: Some("13.1".into()),
             fallback_reason: None,
@@ -2964,6 +3100,7 @@ mod tests {
         let cudnn_directory = layout.cudnn_runtime_directory("13");
         for (directory, files) in [
             (&cuda_directory, &cuda.required_file_prefixes),
+            (&cuda_directory, &cuda_dependency.required_files),
             (&provider_directory, &provider.required_files),
             (&cudnn_directory, &cudnn.required_files),
         ] {
@@ -3122,6 +3259,7 @@ mod tests {
                     backend: RuntimeBackend::Cpu,
                     provider: None,
                     cuda_runtime: None,
+                    cuda_dependency: None,
                     cudnn: None,
                     cuda_version: None,
                     fallback_reason: Some("CUDA provider unavailable; using CPU inference.".into()),

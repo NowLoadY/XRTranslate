@@ -36,6 +36,7 @@ pub const HUNYUAN_MT_GGUF: ModelAssetManifest = ModelAssetManifest {
     source: ModelSource {
         repository: "tencent/Hy-MT2-1.8B-GGUF",
         revision: "1cd5208700acedef4ef93019b6cfc148b8522d45",
+        remote_directory: "",
         include_patterns: &["Hy-MT2-1.8B-Q4_K_M.gguf"],
         file_overrides: &[],
         archive: None,
@@ -57,6 +58,7 @@ pub const HUNYUAN_MT_7B_GGUF: ModelAssetManifest = ModelAssetManifest {
     source: ModelSource {
         repository: "tencent/Hy-MT2-7B-GGUF",
         revision: "707464294cf5b2a5a69982855020858ed58cf1d1",
+        remote_directory: "",
         include_patterns: &["Hy-MT2-7B-Q4_K_M.gguf"],
         file_overrides: &[],
         archive: None,

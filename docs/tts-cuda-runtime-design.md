@@ -133,7 +133,8 @@ repair through the same installer boundary and atomically reconstructs it.
 
 ## Shared inference policy
 
-`Auto` is the production default:
+`Auto` is the production configuration default, but it is not permission for a
+managed model to execute on CPU:
 
 1. consume and validate the managed runtime marker;
 2. preload its exact dependency list before any ORT session is opened;
@@ -141,6 +142,13 @@ repair through the same installer boundary and atomically reconstructs it.
 4. ask the provider to construct its atomic model group on CUDA;
 5. fail atomically if any session cannot be constructed;
 6. warm and reuse the resulting provider runtime and report the active device.
+
+The shared session policy therefore distinguishes automatic host planning from
+execution fallback. `Auto` first resolves an eligible managed CUDA closure;
+the resulting provider request is strict CUDA. An explicit managed
+`OnnxExecutionDevice::Cuda` attempt contains no CPU retry. CPU sessions are
+created only for separately classified small bundled components using the
+compact core.
 
 The shared session builder owns graph optimization, thread policy, CUDA
 provider registration, and atomic failure. It does not know model paths,
@@ -166,15 +174,26 @@ the registration transcript and sampling controls. Its fixed PCM contract is
 
 ### OpenVoice
 
-OpenVoice uses four grouped sessions: QINT8 BERT, FP16 MeloTTS English v2/v3,
-FP16 OpenVoice V2 converter, and the FP32 reference encoder. Its current
-verified packages synthesize English only. The v2 model chooses a speaker ID
-and matching source embedding for five accents; v3 contains only EN-Newest.
-Reference registration derives a speaker embedding from audio and does not use
-the transcript. MeloTTS base
-audio is converted to 22,050 Hz before tone-color conversion; the final PCM
-contract is 22,050 Hz. See [OpenVoice TTS](providers/openvoice-tts.md) for the
-model path, provenance, and test boundary.
+Each active OpenVoice language pack uses four grouped sessions: a contextual
+BERT graph, FP16 MeloTTS base graph, FP16 OpenVoice V2 converter, and FP32
+reference encoder. One English v2 or v3 variant may compose with the Chinese
+`ZH_MIX_EN` pack; all active packs must prepare on CUDA before the provider is
+ready.
+
+The English v2 package chooses a speaker ID and matching source embedding for
+five accents; those presets do not create five model downloads. English v3 is
+a replacement model variant containing `EN-Newest`. Chinese is an independent
+language pack because its Melo checkpoint, multilingual BERT, frontend data,
+language ID, and source embedding differ. Reference registration derives a
+target embedding from audio, does not use the transcript, and registers the
+named voice for every active pack. Language routing then sends synthesis only
+to an active pack whose manifest claims the target language.
+
+MeloTTS base audio is converted to 22,050 Hz before tone-color conversion; the
+final PCM contract is 22,050 Hz for every OpenVoice pack. See
+[OpenVoice TTS](providers/openvoice-tts.md) for provider behavior and
+[OpenVoice language-pack recipe](providers/openvoice-language-packs.md) for
+frontend/export requirements.
 
 These differences must remain inside provider code or explicit typed
 capabilities. The TTS worker must not branch on `audio8` or `openvoice`.
@@ -194,6 +213,13 @@ Onboarding and settings enumerate provider configuration and asset manifests.
 They do not name a model archive, construct a path, or own deletion. Provider
 model checkboxes use manifest language and hardware capabilities; custom
 provider control flow is not required for ordinary model download.
+
+The final Download page and the settings download controls submit model IDs to
+one serial desktop task manager. Rapid requests are de-duplicated while queue
+order is preserved. Per-package progress, aggregate batch progress, queued
+packages, completion, and failure remain separate snapshot fields. Model and
+runtime installers are mutually exclusive, so their shared CUDA files and
+staging ownership cannot race.
 
 The Settings TTS runtime card exposes only `Auto` and `CUDA` and shows
 planned versus active facts:
@@ -226,10 +252,11 @@ Required automated coverage includes:
 - backend diagnostics report the active CUDA backend and ABI;
 - raw PCM rate and provider language limits are honored end to end.
 
-The Audio8 Slow/Fast FP16 group has been exercised with the managed CUDA 13
-closure on an RTX 5070 Ti with driver CUDA 13.3. On the same GPU, OpenVoice's
-forced-CUDA smoke test registered a synthetic reference and generated 56,064
-samples (2.543 seconds) without CPU fallback. Real-reference intelligibility,
-voice similarity, repeatable CUDA quality, cold start, warm first audio, and
-steady-state real-time factor remain required release evidence rather than
-assumptions.
+Hardware smoke evidence is release-specific and must record the selected
+runtime marker, GPU/driver, exact asset revisions, actual execution provider,
+and output contract. A session that requested CUDA but reported
+`CPUExecutionProvider` is a failure, not a fallback result. Synthetic-reference
+non-silence is useful graph-contract evidence but does not establish
+intelligibility or voice cloning. Real-reference intelligibility, voice
+similarity, repeatable CUDA quality, cold start, warm first audio, and
+steady-state real-time factor remain required release evidence.

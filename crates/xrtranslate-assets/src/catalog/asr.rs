@@ -37,6 +37,7 @@ pub const QWEN3_ASR_GGUF: ModelAssetManifest = ModelAssetManifest {
     source: ModelSource {
         repository: "mradermacher/Qwen3-ASR-1.7B-GGUF",
         revision: "cc946c78d3804752f7ba1bc42720c0f7aaf3d1ad",
+        remote_directory: "",
         include_patterns: &["*Q4_K_M.gguf", "*mmproj-f16.gguf"],
         file_overrides: &[],
         archive: None,

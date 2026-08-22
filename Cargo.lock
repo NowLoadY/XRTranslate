@@ -7299,6 +7299,7 @@ version = "0.2.9-beta.1"
 dependencies = [
  "serde",
  "sha2",
+ "tokio",
  "xrtranslate-download",
  "zip",
 ]

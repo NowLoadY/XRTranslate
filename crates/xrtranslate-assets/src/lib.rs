@@ -16,8 +16,8 @@ pub use catalog::{
     ModelAccelerator, ModelArchiveEntry, ModelArchiveSource, ModelAssetId, ModelAssetManifest,
     ModelAudioOutput, ModelAudioSampleFormat, ModelCapability, ModelFileRole, ModelFileSource,
     ModelHardwareRequirements, ModelLevel, ModelSource, ModelVoicePreset, OPENVOICE_V2_ONNX_FP16,
-    OPENVOICE_V3_ONNX_FP16, QWEN3_ASR_GGUF, RequiredModelFile, manifest_for,
-    manifests_for_capability,
+    OPENVOICE_V2_ZH_ONNX_FP16, OPENVOICE_V3_ONNX_FP16, QWEN3_ASR_GGUF, RequiredModelFile,
+    manifest_for, manifests_for_capability,
 };
 pub use install::{
     AtomicInstallError, DownloadProgress, ModelDownloadError, NativeModelInstaller,

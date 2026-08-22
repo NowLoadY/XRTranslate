@@ -71,15 +71,22 @@ impl NativeTtsAdapter {
     }
 
     pub(crate) async fn prepare(&self) -> Result<OnnxExecutionDevice, InferenceError> {
-        let backend = &self
-            .models
-            .first()
-            .expect("validated TTS model group")
-            .backend;
-        match backend {
-            NativeTtsBackend::OpenVoice(adapter) => adapter.prepare().await,
-            NativeTtsBackend::Audio8(adapter) => adapter.prepare().await,
+        let mut prepared_device = None;
+        for model in self.models.iter() {
+            let device = match &model.backend {
+                NativeTtsBackend::OpenVoice(adapter) => adapter.prepare().await?,
+                NativeTtsBackend::Audio8(adapter) => adapter.prepare().await?,
+            };
+            if prepared_device.is_some_and(|prepared| prepared != device) {
+                return Err(InferenceError::InvalidConfiguration {
+                    field: "tts.models",
+                    message: "active TTS language packs resolved to different execution devices"
+                        .to_owned(),
+                });
+            }
+            prepared_device = Some(device);
         }
+        Ok(prepared_device.expect("validated TTS model group"))
     }
 
     pub(crate) async fn has_voice(&self, name: &str) -> bool {

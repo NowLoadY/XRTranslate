@@ -167,9 +167,8 @@ pub(crate) fn build_session_group(
 fn device_attempts(requested: OnnxExecutionDevice) -> &'static [ActiveOnnxDevice] {
     match requested {
         OnnxExecutionDevice::Cpu => &[ActiveOnnxDevice::Cpu],
-        OnnxExecutionDevice::Auto | OnnxExecutionDevice::Cuda => {
-            &[ActiveOnnxDevice::Cuda, ActiveOnnxDevice::Cpu]
-        }
+        OnnxExecutionDevice::Auto => &[ActiveOnnxDevice::Cuda, ActiveOnnxDevice::Cpu],
+        OnnxExecutionDevice::Cuda => &[ActiveOnnxDevice::Cuda],
     }
 }
 
@@ -221,6 +220,18 @@ mod tests {
         assert_eq!(
             device_attempts(OnnxExecutionDevice::Cpu),
             &[ActiveOnnxDevice::Cpu]
+        );
+    }
+
+    #[test]
+    fn explicit_cuda_never_falls_back_to_cpu() {
+        assert_eq!(
+            device_attempts(OnnxExecutionDevice::Cuda),
+            &[ActiveOnnxDevice::Cuda]
+        );
+        assert_eq!(
+            device_attempts(OnnxExecutionDevice::Auto),
+            &[ActiveOnnxDevice::Cuda, ActiveOnnxDevice::Cpu]
         );
     }
 }

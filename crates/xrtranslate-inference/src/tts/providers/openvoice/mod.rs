@@ -20,7 +20,14 @@ use crate::{
     tts::{decode_pcm16_wav, onnx_runtime::OnnxExecutionDevice},
 };
 
+use frontend::MeloFrontendKind;
 use model::OpenVoiceRuntime;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OpenVoiceGraphContract {
+    NvidiaDynamic,
+    XrtranslatePinned512,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OpenVoiceBaseVoice {
@@ -30,6 +37,7 @@ pub enum OpenVoiceBaseVoice {
     EnglishIndian,
     EnglishAustralian,
     EnglishDefault,
+    Chinese,
 }
 
 impl OpenVoiceBaseVoice {
@@ -40,6 +48,7 @@ impl OpenVoiceBaseVoice {
             Self::EnglishIndian => 2,
             Self::EnglishAustralian => 3,
             Self::EnglishDefault => 4,
+            Self::Chinese => 1,
         }
     }
 
@@ -51,6 +60,43 @@ impl OpenVoiceBaseVoice {
             Self::EnglishIndian => "voices/en_india.bin",
             Self::EnglishAustralian => "voices/en_au.bin",
             Self::EnglishDefault => "voices/en_default.bin",
+            Self::Chinese => "voices/zh.bin",
+        }
+    }
+
+    const fn frontend_kind(self) -> MeloFrontendKind {
+        match self {
+            Self::Chinese => MeloFrontendKind::ChineseMixedEnglish,
+            Self::EnglishNewest
+            | Self::EnglishAmerican
+            | Self::EnglishBritish
+            | Self::EnglishIndian
+            | Self::EnglishAustralian
+            | Self::EnglishDefault => MeloFrontendKind::English,
+        }
+    }
+
+    const fn graph_contract(self) -> OpenVoiceGraphContract {
+        match self {
+            Self::Chinese => OpenVoiceGraphContract::XrtranslatePinned512,
+            Self::EnglishNewest
+            | Self::EnglishAmerican
+            | Self::EnglishBritish
+            | Self::EnglishIndian
+            | Self::EnglishAustralian
+            | Self::EnglishDefault => OpenVoiceGraphContract::NvidiaDynamic,
+        }
+    }
+
+    fn supports_language(self, language: &str) -> bool {
+        let language = language.trim().to_ascii_lowercase();
+        match self.frontend_kind() {
+            MeloFrontendKind::ChineseMixedEnglish => {
+                matches!(language.as_str(), "zh" | "zh-cn" | "zh-tw" | "chinese")
+            }
+            MeloFrontendKind::English => {
+                matches!(language.as_str(), "en" | "en-us" | "en-gb" | "english")
+            }
         }
     }
 }
@@ -114,16 +160,16 @@ impl OpenVoiceOnnxAdapter {
         synthesis: OpenVoiceSynthesisOptions,
     ) -> Result<Self, InferenceError> {
         let model_dir = model_dir.into();
-        for relative in [
+        let mut required = vec![
             "model_config.json",
             "models/bert.onnx",
             "models/melo.onnx",
             "models/converter.onnx",
             "models/reference_encoder.onnx",
-            "frontend/cmudict.json",
-            "frontend/bert_vocab.txt",
             synthesis.base_voice.source_embedding(),
-        ] {
+        ];
+        required.extend_from_slice(synthesis.base_voice.frontend_kind().required_files());
+        for relative in required {
             if !model_dir.join(relative).is_file() {
                 return Err(openvoice_error(format!(
                     "model file is missing: {}",
@@ -191,9 +237,15 @@ impl OpenVoiceOnnxAdapter {
         voice: &str,
         target_language: &str,
     ) -> Result<SynthesizedPcm, InferenceError> {
-        if !is_english(target_language) {
+        let base_voice = self
+            .state
+            .lock()
+            .map_err(|_| openvoice_error("runtime lock poisoned"))?
+            .synthesis
+            .base_voice;
+        if !base_voice.supports_language(target_language) {
             return Err(openvoice_error(format!(
-                "The selected OpenVoice base model supports English synthesis, not {target_language:?}"
+                "The selected OpenVoice base model does not support {target_language:?}"
             )));
         }
         let state = Arc::clone(&self.state);
@@ -253,13 +305,6 @@ impl OpenVoiceState {
     }
 }
 
-fn is_english(language: &str) -> bool {
-    matches!(
-        language.trim().to_ascii_lowercase().as_str(),
-        "en" | "en-us" | "en-gb" | "english"
-    )
-}
-
 fn openvoice_error(message: impl Into<String>) -> InferenceError {
     InferenceError::InvalidConfiguration {
         field: "tts.providers.openvoice",
@@ -273,9 +318,31 @@ mod tests {
 
     #[test]
     fn language_gate_is_explicit_about_the_ngc_package_scope() {
-        assert!(is_english("en"));
-        assert!(is_english("EN-US"));
-        assert!(!is_english("zh"));
+        assert!(OpenVoiceBaseVoice::EnglishNewest.supports_language("en"));
+        assert!(OpenVoiceBaseVoice::EnglishNewest.supports_language("EN-US"));
+        assert!(!OpenVoiceBaseVoice::EnglishNewest.supports_language("zh"));
+        assert!(OpenVoiceBaseVoice::Chinese.supports_language("zh-CN"));
+        assert!(!OpenVoiceBaseVoice::Chinese.supports_language("en"));
+    }
+
+    #[test]
+    fn base_voice_selects_an_explicit_frontend_and_graph_contract() {
+        assert_eq!(
+            OpenVoiceBaseVoice::EnglishBritish.frontend_kind(),
+            MeloFrontendKind::English
+        );
+        assert_eq!(
+            OpenVoiceBaseVoice::EnglishBritish.graph_contract(),
+            OpenVoiceGraphContract::NvidiaDynamic
+        );
+        assert_eq!(
+            OpenVoiceBaseVoice::Chinese.frontend_kind(),
+            MeloFrontendKind::ChineseMixedEnglish
+        );
+        assert_eq!(
+            OpenVoiceBaseVoice::Chinese.graph_contract(),
+            OpenVoiceGraphContract::XrtranslatePinned512
+        );
     }
 
     #[tokio::test]
@@ -326,6 +393,63 @@ mod tests {
                 .bytes
                 .chunks_exact(2)
                 .any(|sample| { i16::from_le_bytes([sample[0], sample[1]]).unsigned_abs() > 128 })
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the optional OpenVoice Chinese model package"]
+    async fn installed_model_clones_and_synthesizes_chinese_without_python() {
+        if let Some(libraries) = std::env::var_os("XRTRANSLATE_OPENVOICE_CUDA_PRELOAD") {
+            crate::preload_onnx_cuda_libraries(
+                &std::env::split_paths(&libraries).collect::<Vec<_>>(),
+            )
+            .unwrap();
+        }
+        if let Some(core) = std::env::var_os("XRTRANSLATE_ORT_DYLIB_PATH") {
+            crate::initialize_onnx_runtime(std::path::Path::new(&core)).unwrap();
+        }
+        let model_dir = std::env::var_os("XRTRANSLATE_OPENVOICE_MODEL_DIR")
+            .map(PathBuf::from)
+            .expect("set XRTRANSLATE_OPENVOICE_MODEL_DIR");
+        let requested_device = OnnxExecutionDevice::from_config(
+            &std::env::var("XRTRANSLATE_OPENVOICE_DEVICE").unwrap_or_else(|_| "cuda".into()),
+        );
+        let adapter = OpenVoiceOnnxAdapter::with_synthesis_options(
+            model_dir,
+            requested_device,
+            5,
+            OpenVoiceSynthesisOptions {
+                speed: 1.0,
+                base_voice: OpenVoiceBaseVoice::Chinese,
+            },
+        )
+        .unwrap();
+        let prepared = adapter.prepare().await.unwrap();
+        assert_eq!(prepared, requested_device);
+        let samples = (0..32_000)
+            .map(|index| {
+                let phase = index as f32 * 220.0 * std::f32::consts::TAU / 16_000.0;
+                (phase.sin() * 4_000.0) as i16
+            })
+            .flat_map(i16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let wav = crate::pcm16_mono_16khz_to_wav(&samples).unwrap();
+        adapter.register_voice("smoke", wav, "").await.unwrap();
+        let text = std::env::var("XRTRANSLATE_OPENVOICE_SMOKE_TEXT")
+            .unwrap_or_else(|_| "你好，OpenVoice语音翻译已经准备好了。".into());
+        let audio = adapter.synthesize(&text, "smoke", "zh-CN").await.unwrap();
+        eprintln!(
+            "openvoice_chinese_device={prepared:?} samples={} seconds={:.3}",
+            audio.bytes.len() / 2,
+            audio.bytes.len() as f64 / 2.0 / f64::from(audio.sample_rate)
+        );
+        assert_eq!(audio.sample_rate, model::OUTPUT_SAMPLE_RATE);
+        assert!(audio.bytes.len() > audio.sample_rate as usize);
+        assert!(
+            audio
+                .bytes
+                .chunks_exact(2)
+                .any(|sample| i16::from_le_bytes([sample[0], sample[1]]).unsigned_abs() > 128)
         );
     }
 }

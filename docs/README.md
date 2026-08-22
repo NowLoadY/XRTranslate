@@ -19,8 +19,12 @@ notes live under `providers/`.
 
 - [Provider integration](providers/README.md): where shared infrastructure ends
   and a concrete model/provider adapter begins.
-- [OpenVoice TTS](providers/openvoice-tts.md): current English ONNX model path,
-  voice-cloning contract, sources, limits, and verification boundary.
+- [OpenVoice TTS](providers/openvoice-tts.md): English and Chinese ONNX language
+  packs, packaged accent choices, voice-cloning contract, and verification
+  boundary.
+- [OpenVoice language-pack recipe](providers/openvoice-language-packs.md):
+  reproducible frontend/export requirements and the integration path for
+  additional official MeloTTS languages.
 - [Online API providers](online-api-providers.md): common remote-provider
   configuration and user override behavior.
 - [Runtime resource matrix](runtime-resource-matrix.md): model/runtime packages

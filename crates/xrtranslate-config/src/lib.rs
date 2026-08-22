@@ -1113,6 +1113,10 @@ pub struct OnnxRuntimeConfig {
     /// ONNX Runtime core and execution-provider archives.
     #[serde(default)]
     pub downloads: Vec<ManagedRuntimeArchive>,
+    /// CUDA math-library archives not present in llama.cpp's compact runtime
+    /// bundle but required to initialize the ONNX CUDA execution provider.
+    #[serde(default)]
+    pub cuda_dependency_downloads: Vec<ManagedRuntimeArchive>,
     /// cuDNN archives matched by CUDA major version. Keeping this dependency
     /// declarative lets every ONNX provider share the same GPU runtime closure.
     #[serde(default)]
@@ -1740,6 +1744,14 @@ mod tests {
         assert_eq!(config.model_manager.llama_cpp.downloads.len(), 8);
         assert_eq!(config.model_manager.onnxruntime.release, "1.28.0");
         assert_eq!(config.model_manager.onnxruntime.downloads.len(), 2);
+        assert_eq!(
+            config
+                .model_manager
+                .onnxruntime
+                .cuda_dependency_downloads
+                .len(),
+            2
+        );
         assert_eq!(config.model_manager.onnxruntime.cudnn_downloads.len(), 2);
         assert_eq!(
             config.model_manager.llama_cpp.downloads[0].name,

@@ -160,6 +160,7 @@ pub const OPENVOICE_V3_ONNX_FP16: ModelAssetManifest = ModelAssetManifest {
     source: ModelSource {
         repository: "nvidia/nvigisdk/openvoice",
         revision: "OpenVoice v3",
+        remote_directory: "",
         include_patterns: &["*.zip"],
         file_overrides: OPENVOICE_FILE_OVERRIDES,
         archive: Some(ModelArchiveSource {
@@ -391,6 +392,7 @@ pub const OPENVOICE_V2_ONNX_FP16: ModelAssetManifest = ModelAssetManifest {
     source: ModelSource {
         repository: "nvidia/nvigisdk/openvoice",
         revision: "OpenVoice v2",
+        remote_directory: "",
         include_patterns: &["*.zip"],
         file_overrides: OPENVOICE_FILE_OVERRIDES,
         archive: Some(ModelArchiveSource {
@@ -400,5 +402,155 @@ pub const OPENVOICE_V2_ONNX_FP16: ModelAssetManifest = ModelAssetManifest {
             sha256: "266dc4662965858e07a1c8cb086f17e1c30f0fdc3202e8934103dc7927314811",
             entries: OPENVOICE_V2_ARCHIVE_ENTRIES,
         }),
+    },
+};
+
+const OPENVOICE_V2_ZH_REQUIRED_FILES: &[RequiredModelFile] = &[
+    RequiredModelFile {
+        role: ModelFileRole::RuntimeManifest,
+        relative_path: "package-manifest.json",
+        purpose: "Reproducible conversion provenance and graph contract",
+        bytes: 7_136,
+        sha256: "03f097382e49a2b410203adeedf08f785f1276a276223e4579513a79b28e9aeb",
+    },
+    RequiredModelFile {
+        role: ModelFileRole::ModelConfig,
+        relative_path: "model_config.json",
+        purpose: "MeloTTS Chinese acoustic model configuration",
+        bytes: 2_296,
+        sha256: "d58b5acdab89ad2bbd65325affab309ae3cb964834b02f9a60587474e81c8bb9",
+    },
+    RequiredModelFile {
+        role: ModelFileRole::BaseTtsGraph,
+        relative_path: "models/melo.onnx",
+        purpose: "MeloTTS Chinese mixed-English FP16 base voice graph",
+        bytes: 85_675_331,
+        sha256: "1925a7c6f7416c24ae227465889abd533e285c819761c262faff665d8000b123",
+    },
+    RequiredModelFile {
+        role: ModelFileRole::BertGraph,
+        relative_path: "models/bert.onnx",
+        purpose: "Multilingual BERT FP16 text embedding graph",
+        bytes: 305_406_373,
+        sha256: "ef99a7db948fa82616c5407808ac9c04691a53afc106cc284f84c22a9f6ed353",
+    },
+    RequiredModelFile {
+        role: ModelFileRole::ToneConverterGraph,
+        relative_path: "models/converter.onnx",
+        purpose: "OpenVoice V2 FP16 tone-color converter graph",
+        bytes: 66_284_171,
+        sha256: "72e65cd74c273df1677f8941affcbfef974f48066ab71d0658b1ef4b42c90d8b",
+    },
+    RequiredModelFile {
+        role: ModelFileRole::SpeakerEncoderGraph,
+        relative_path: "models/reference_encoder.onnx",
+        purpose: "OpenVoice V2 FP32 reference speaker encoder graph",
+        bytes: 3_259_275,
+        sha256: "3dd4918cab90e1acf7fa5c6f7539c27710e7a3cdfba550468c5ea49399178bf7",
+    },
+    RequiredModelFile {
+        role: ModelFileRole::Vocabulary,
+        relative_path: "frontend/bert_vocab.txt",
+        purpose: "Multilingual BERT WordPiece vocabulary",
+        bytes: 871_891,
+        sha256: "87b44292b452f6c05afa49b2e488e7eedf79ea4f4c39db6f2f4b37764228ef3f",
+    },
+    RequiredModelFile {
+        role: ModelFileRole::PhonemeMap,
+        relative_path: "frontend/opencpop-strict.txt",
+        purpose: "OpenCPOP Chinese pinyin-to-phone mapping",
+        bytes: 4_513,
+        sha256: "86c4b30928e3a4305c9148058c9e2e56b04ce741363fedff382421f4a1e3709d",
+    },
+    RequiredModelFile {
+        role: ModelFileRole::LanguageLexicon,
+        relative_path: "frontend/chinese_lexicon.json",
+        purpose: "Pinned Chinese phrase and pinyin lexicon",
+        bytes: 1_985_652,
+        sha256: "5c1ba81aa69c6d79ef413256d3e274b1b832434df373ee10929b2ffc059f5752",
+    },
+    RequiredModelFile {
+        role: ModelFileRole::PronunciationDictionary,
+        relative_path: "frontend/cmudict.json",
+        purpose: "English CMU pronunciation dictionary for code-switching",
+        bytes: 4_498_493,
+        sha256: "b0609f32b65f4d04466897a37fb55d3d5e877b65f3df46c145c3c2217b1ff55d",
+    },
+    RequiredModelFile {
+        role: ModelFileRole::SpeakerEmbedding,
+        relative_path: "voices/zh.bin",
+        purpose: "MeloTTS Chinese source speaker embedding",
+        bytes: 1_024,
+        sha256: "1e185b041cde958f51990c736e4f5fa878f3be5ae088fd6441b6ff5a2cd82932",
+    },
+    RequiredModelFile {
+        role: ModelFileRole::License,
+        relative_path: "licenses/openvoice-melotts.txt",
+        purpose: "OpenVoice and MeloTTS MIT license",
+        bytes: 1_071,
+        sha256: "7018bd16b0dca61f76e7a7c901c3e97b64a0636b9574ae8be36856cade9e11a1",
+    },
+    RequiredModelFile {
+        role: ModelFileRole::License,
+        relative_path: "licenses/apache-2.0.txt",
+        purpose: "BERT Apache 2.0 license",
+        bytes: 11_502,
+        sha256: "0c18145191a225d94bb6d36a1dbc993c73b56ffc480af12b000b7b1f493e7789",
+    },
+    RequiredModelFile {
+        role: ModelFileRole::License,
+        relative_path: "licenses/cmudict.txt",
+        purpose: "CMU pronunciation dictionary license notice",
+        bytes: 1_754,
+        sha256: "bd4ce8e44170a5f9f481310ca85c51de3c4f851a65e679b40e603b143bd3542a",
+    },
+    RequiredModelFile {
+        role: ModelFileRole::License,
+        relative_path: "licenses/pypinyin.txt",
+        purpose: "pypinyin MIT license",
+        bytes: 1_105,
+        sha256: "1e6c90014b4912815c296ee64bb6f6280af47e6d4c5d80e86232dfc5defe764c",
+    },
+    RequiredModelFile {
+        role: ModelFileRole::License,
+        relative_path: "licenses/chinese-frontend-notice.txt",
+        purpose: "Chinese frontend generated-data provenance notice",
+        bytes: 178,
+        sha256: "998ef5c85f099aeb285102935b1ac21345e37727ac16987164dd69015082b034",
+    },
+];
+
+const OPENVOICE_V2_ZH_VOICES: &[ModelVoicePreset] = &[ModelVoicePreset {
+    key: "zh-default",
+    label: "Chinese — Default",
+    language: "zh",
+    is_default: true,
+}];
+
+pub const OPENVOICE_V2_ZH_ONNX_FP16: ModelAssetManifest = ModelAssetManifest {
+    id: ModelAssetId::OpenVoiceV2ZhOnnxFp16,
+    label: "OpenVoice v2 (Chinese, ONNX FP16)",
+    capability: ModelCapability::Tts,
+    level: ModelLevel::Normal,
+    provider: "openvoice",
+    languages: &["zh"],
+    voice_presets: OPENVOICE_V2_ZH_VOICES,
+    hardware: super::super::MANAGED_LOCAL_MODEL_HARDWARE,
+    audio_output: Some(ModelAudioOutput {
+        // The Chinese Melo base graph emits 44.1 kHz internally; OpenVoice's
+        // converter contract returns the provider-standard 22.05 kHz PCM.
+        sample_rate_hz: 22_050,
+        channels: 1,
+        sample_format: ModelAudioSampleFormat::PcmI16Le,
+    }),
+    relative_directory: "OpenVoice-v2-ZH-ONNX-FP16",
+    required_files: OPENVOICE_V2_ZH_REQUIRED_FILES,
+    source: ModelSource {
+        repository: "NowLoadY/XRTranslate-OpenVoice-ONNX",
+        revision: "961ef7e65b63b7793dda61c7fe159a6e5a4b2f04",
+        remote_directory: "packages/zh/v1",
+        include_patterns: &["packages/zh/v1/**"],
+        file_overrides: &[],
+        archive: None,
     },
 };
