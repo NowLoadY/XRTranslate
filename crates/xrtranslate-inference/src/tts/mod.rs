@@ -1,4 +1,13 @@
+//! Provider-neutral TTS result types and concrete provider adapters.
+
+mod providers;
+
 use crate::InferenceError;
+
+pub use providers::{
+    Audio8ExecutionDevice, Audio8OnnxAdapter, Audio8SynthesisOptions, initialize_onnx_runtime,
+    preload_onnx_cuda_libraries,
+};
 
 /// Decoded mono PCM returned by a TTS provider.
 #[derive(Clone, Debug, PartialEq, Eq)]

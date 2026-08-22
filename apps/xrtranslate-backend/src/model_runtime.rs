@@ -3,6 +3,9 @@
 //! Provider-specific knowledge belongs here: the transport entrypoint and
 //! session pipeline consume this plan without branching on model names.
 
+mod asr;
+mod translation;
+
 use std::{
     ffi::OsString,
     net::{IpAddr, Ipv4Addr},
@@ -17,91 +20,12 @@ use xrtranslate_config::{
     AppConfig, AsrPromptMode, LocalModelRuntimeConfig, NativeModelRouteConfig,
     NativeRuntimeSelection, ResolvedNativeRuntimeSelection, RuntimeLayout,
 };
-use xrtranslate_inference::{
-    AsrTranscript, AsrVocabularyBias, InferenceError, OpenAiAsrAdapter, OpenAiAsrOptions,
-    Qwen3AsrAdapter, Qwen3AsrOptions, QwenAudioStreamingAdapter, QwenAudioStreamingOptions,
-    ReqwestClient, TranslationAdapter, TranslationProvider,
-};
+use xrtranslate_inference::{InferenceError, ReqwestClient, TranslationAdapter};
 use xrtranslate_supervisor::{LlamaServerEndpoint, LlamaServerSpec};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum AsrProfile {
-    Qwen3Local,
-    OpenAiAudio,
-    QwenAudioStreaming,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TranslationProfile {
-    HunyuanLocal,
-    OpenAiCompatible,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct NativeAsrOptions {
-    pub(crate) language: Option<String>,
-    pub(crate) instruction_prompt: Option<String>,
-    pub(crate) context_bias: Option<String>,
-    pub(crate) vocabulary_bias: Vec<AsrVocabularyBias>,
-    pub(crate) max_tokens: u32,
-}
-
-/// Provider-erased ASR adapter consumed by the generic pipeline. New native
-/// ASR families add one dispatch variant here without leaking their options
-/// into session processing.
-#[derive(Clone, Debug)]
-pub(crate) enum NativeAsrAdapter {
-    Qwen3(Qwen3AsrAdapter<ReqwestClient>),
-    OpenAi(OpenAiAsrAdapter<ReqwestClient>),
-    QwenAudioStreaming(QwenAudioStreamingAdapter),
-}
-
-impl NativeAsrAdapter {
-    pub(crate) async fn transcribe_pcm16(
-        &self,
-        pcm: &[u8],
-        options: NativeAsrOptions,
-    ) -> Result<AsrTranscript, InferenceError> {
-        match self {
-            Self::Qwen3(adapter) => {
-                adapter
-                    .transcribe_pcm16(
-                        pcm,
-                        Qwen3AsrOptions {
-                            language: options.language,
-                            instruction_prompt: options.instruction_prompt,
-                            max_tokens: options.max_tokens,
-                        },
-                    )
-                    .await
-            }
-            Self::OpenAi(adapter) => {
-                adapter
-                    .transcribe_pcm16(
-                        pcm,
-                        OpenAiAsrOptions {
-                            language: options.language,
-                            instruction_prompt: options.instruction_prompt,
-                            max_tokens: options.max_tokens,
-                        },
-                    )
-                    .await
-            }
-            Self::QwenAudioStreaming(adapter) => {
-                adapter
-                    .transcribe_pcm16(
-                        pcm,
-                        QwenAudioStreamingOptions {
-                            language: options.language,
-                            context_bias: options.context_bias,
-                            vocabulary_bias: options.vocabulary_bias,
-                        },
-                    )
-                    .await
-            }
-        }
-    }
-}
+use asr::AsrProfile;
+pub(crate) use asr::{NativeAsrAdapter, NativeAsrOptions};
+use translation::TranslationProfile;
 
 #[derive(Clone, Debug)]
 pub(crate) struct NativeProviderPlan {
@@ -235,10 +159,7 @@ impl NativeProviderPlan {
     }
 
     pub(crate) fn asr_model_alias(&self) -> &str {
-        match self.asr_profile {
-            AsrProfile::Qwen3Local => "qwen3-asr",
-            AsrProfile::OpenAiAudio | AsrProfile::QwenAudioStreaming => &self.route.asr.model,
-        }
+        self.asr_profile.model_alias(&self.route.asr.model)
     }
 
     pub(crate) fn asr_prompt_mode(&self) -> AsrPromptMode {
@@ -258,10 +179,8 @@ impl NativeProviderPlan {
     }
 
     pub(crate) fn translation_model_alias(&self) -> &str {
-        match self.translation_profile {
-            TranslationProfile::HunyuanLocal => "hy-mt2",
-            TranslationProfile::OpenAiCompatible => &self.route.translation.model,
-        }
+        self.translation_profile
+            .model_alias(&self.route.translation.model)
     }
 
     pub(crate) fn translation_supports_reference_context(&self) -> bool {
@@ -272,57 +191,24 @@ impl NativeProviderPlan {
         &self,
         http: ReqwestClient,
     ) -> Result<NativeAsrAdapter, InferenceError> {
-        match self.asr_profile {
-            AsrProfile::Qwen3Local => {
-                Qwen3AsrAdapter::new(http, self.asr_url(), self.asr_model_alias())
-                    .map(NativeAsrAdapter::Qwen3)
-            }
-            AsrProfile::OpenAiAudio => OpenAiAsrAdapter::with_bearer_token(
-                http,
-                self.asr_url(),
-                self.asr_model_alias(),
-                self.route.asr.api_key.as_deref().unwrap_or_default(),
-            )
-            .map(NativeAsrAdapter::OpenAi),
-            AsrProfile::QwenAudioStreaming => QwenAudioStreamingAdapter::new(
-                self.asr_url(),
-                self.asr_model_alias(),
-                self.route.asr.api_key.as_deref().unwrap_or_default(),
-            )
-            .map(NativeAsrAdapter::QwenAudioStreaming),
-        }
+        self.asr_profile.adapter(
+            http,
+            self.asr_url(),
+            self.asr_model_alias(),
+            self.route.asr.api_key.as_deref(),
+        )
     }
 
     pub(crate) fn translation_adapter(
         &self,
         http: ReqwestClient,
     ) -> Result<TranslationAdapter<ReqwestClient>, InferenceError> {
-        match self.translation_profile {
-            TranslationProfile::HunyuanLocal => TranslationAdapter::new(
-                http,
-                self.translation_url(),
-                self.translation_model_alias(),
-                TranslationProvider::Hunyuan,
-            ),
-            TranslationProfile::OpenAiCompatible => {
-                if let Some(token) = self.route.translation.api_key.as_deref() {
-                    TranslationAdapter::with_bearer_token(
-                        http,
-                        self.translation_url(),
-                        self.translation_model_alias(),
-                        TranslationProvider::OpenAiCompatible,
-                        token,
-                    )
-                } else {
-                    TranslationAdapter::new(
-                        http,
-                        self.translation_url(),
-                        self.translation_model_alias(),
-                        TranslationProvider::OpenAiCompatible,
-                    )
-                }
-            }
-        }
+        self.translation_profile.adapter(
+            http,
+            self.translation_url(),
+            self.translation_model_alias(),
+            self.route.translation.api_key.as_deref(),
+        )
     }
 
     pub(crate) fn managed_server_specs(
@@ -414,47 +300,6 @@ fn model_file(
             asset.manifest().id
         )
     })
-}
-
-impl AsrProfile {
-    fn registered(provider: &str, transport: &str) -> Option<Self> {
-        if provider == "qwen-audio-streaming" && transport == "websocket" {
-            return Some(Self::QwenAudioStreaming);
-        }
-        if transport == "openai" {
-            return Some(Self::OpenAiAudio);
-        }
-        match provider {
-            "qwen3-gguf" => Some(Self::Qwen3Local),
-            _ => None,
-        }
-    }
-
-    const fn default_asset(self) -> ModelAssetId {
-        match self {
-            Self::Qwen3Local => ModelAssetId::Qwen3AsrGguf,
-            Self::OpenAiAudio | Self::QwenAudioStreaming => ModelAssetId::Qwen3AsrGguf,
-        }
-    }
-}
-
-impl TranslationProfile {
-    fn registered(provider: &str, transport: &str) -> Option<Self> {
-        if transport == "openai" {
-            return Some(Self::OpenAiCompatible);
-        }
-        match provider {
-            "hunyuan" => Some(Self::HunyuanLocal),
-            _ => None,
-        }
-    }
-
-    const fn default_asset(self) -> ModelAssetId {
-        match self {
-            Self::HunyuanLocal => ModelAssetId::HunyuanMtGguf,
-            Self::OpenAiCompatible => ModelAssetId::HunyuanMtGguf,
-        }
-    }
 }
 
 fn route_asset_id(

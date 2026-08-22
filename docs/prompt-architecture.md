@@ -25,9 +25,12 @@ wire protocol, backend, and inference adapters. Its responsibilities are:
 - canonical built-in graphs and saved-profile normalization;
 - Compose text parsing and graph activation validation.
 
-Provider profiles in `xrtranslate-inference` select a graph provider target and
-own sampling parameters and output cleanup. The OpenAI adapter converts the
-already-rendered messages to JSON without changing their content.
+Translation profiles in `xrtranslate-inference` select a graph provider target
+and own sampling parameters and output cleanup. For ASR, the normalized backend
+runtime profile declares instruction, context-bias, and vocabulary
+capabilities; `pipeline/asr_prompt.rs` renders the matching graph target before
+the adapter converts those neutral fields to its wire format. Adapters do not
+rewrite already-rendered prompt text.
 
 ## Output validation and regeneration
 

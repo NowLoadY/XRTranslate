@@ -143,28 +143,33 @@ prompt rules, launch arguments, or UI labels through plugin and host code.
   family support. It validates provider/asset compatibility and creates model
   servers and inference adapters. Pipelines consume the plan and never branch
   on provider names.
-- `xrtranslate-inference::translation::profile` owns provider-specific prompts,
-  sampling parameters, and output cleanup. Transport and authentication remain
-  in the adapter.
-- A provider may select `transport: "local"` or `transport: "openai"`. The
-  former resolves immutable GGUF assets and managed llama.cpp servers; the
-  latter resolves a model identifier and sends OpenAI Chat Completions-shaped
-  requests with optional Bearer authentication. ASR uses the same neutral
-  audio-chat contract, so ASR and translation can independently be local,
-  remote, or mixed without changing the session pipeline. Remote providers do
-  not require a local model asset or llama-server executable.
+- `xrtranslate-inference::translation::profile` owns translation request
+  profiles, sampling parameters, and output cleanup. ASR adapters live under
+  `xrtranslate-inference::asr::providers`; both capability domains keep
+  transport and authentication in the adapter.
+- A provider may select a declared transport such as `local`, `openai`, or a
+  provider-native `websocket`. Local routes resolve immutable assets and
+  managed runtimes; remote routes resolve a model identifier and let their
+  adapter implement the advertised wire contract. ASR and translation can
+  independently be local, remote, or mixed without changing the session
+  pipeline. Remote providers do not require a local model asset or
+  llama-server executable.
 - Desktop model selection is keyed by provider plus capability (and level when
   writing a choice). Provider setting fields use declarative descriptors;
   unknown configuration fields retain the generic editor fallback.
 
 Adding another size or quantization for an existing family should normally be
 a catalogue-only change (stable asset ID plus manifest). Adding a genuinely
-different provider requires one inference profile and one backend runtime-plan
-registration, plus its manifest and configuration descriptor. It must not
+different provider requires one inference adapter/profile and one backend
+runtime-plan registration, plus any required manifest and configuration
+descriptor. It must not
 require changes to session plugins, the generic pipeline, or model-install UI
 control flow. A backend architecture test requires every catalogued provider to
 have a registered runtime profile, so the UI cannot expose an installable local
 provider that the backend cannot start.
+
+The detailed implementation path and ASR text-capability matrix are maintained
+in [Provider integration](providers/README.md).
 
 ## Ownership boundary
 

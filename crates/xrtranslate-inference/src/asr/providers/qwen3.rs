@@ -2,7 +2,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::json;
 
 use crate::{
-    AsyncHttpClient, InferenceError, OpenAiCompatibleClient,
+    AsrTranscript, AsyncHttpClient, InferenceError, OpenAiCompatibleClient,
     openai::{non_streaming_chat_payload, remove_completion_markers},
     pcm16_mono_16khz_to_wav,
 };
@@ -26,16 +26,6 @@ impl Default for Qwen3AsrOptions {
             max_tokens: 128,
         }
     }
-}
-
-/// A completed Qwen3-ASR transcription.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AsrTranscript {
-    /// Language label emitted by Qwen3-ASR. Forced requests retain their
-    /// requested language even though llama.cpp only returns generated suffix
-    /// tokens and therefore omits the prefilled language marker.
-    pub language: Option<String>,
-    pub text: String,
 }
 
 /// Qwen3-ASR GGUF adapter backed by llama.cpp's OpenAI-compatible endpoint.

@@ -1,5 +1,8 @@
 # Online API providers
 
+For the repository-wide provider boundary and the implementation checklist,
+see [Provider integration](providers/README.md).
+
 The repository `config.json` is the immutable default document. User and
 development changes are stored in a separate `user-config.json` override:
 

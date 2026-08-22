@@ -343,7 +343,7 @@ impl Audio8State {
                 "registration manifest does not match the Audio8 runtime contract",
             ));
         }
-        let decoded = super::tts::decode_pcm16_wav(reference_wav)?;
+        let decoded = crate::tts::decode_pcm16_wav(reference_wav)?;
         let input = resample_pcm16_to_f16(
             &decoded.bytes,
             decoded.sample_rate,
