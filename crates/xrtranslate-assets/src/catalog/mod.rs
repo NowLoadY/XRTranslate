@@ -20,10 +20,10 @@ pub const MODEL_ASSET_CATALOG: &[ModelAssetManifest] = &[
     QWEN3_ASR_GGUF,
     HUNYUAN_MT_GGUF,
     HUNYUAN_MT_7B_GGUF,
-    AUDIO8_TTS_ONNX_FP16,
     OPENVOICE_V2_ONNX_FP16,
     OPENVOICE_V2_ZH_ONNX_FP16,
     OPENVOICE_V3_ONNX_FP16,
+    AUDIO8_TTS_ONNX_FP16,
 ];
 
 /// Compatibility name retained for callers of the original GGUF-only catalog.

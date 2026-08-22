@@ -340,7 +340,7 @@ impl ServiceConfigEditor {
                     .collect()
             })
             .unwrap_or_default();
-        providers.sort_by(|a: &ProviderCard, b: &ProviderCard| a.name.cmp(&b.name));
+        sort_providers(key, &mut providers);
 
         let selected_provider = section
             .and_then(|section| section.get("provider"))
@@ -941,10 +941,27 @@ impl ServiceConfigEditor {
                 })
                 .unwrap_or_default(),
         });
-        category.providers.sort_by(|a, b| a.name.cmp(&b.name));
+        sort_providers(&category.key, &mut category.providers);
         category.selected_provider = name;
         Ok(())
     }
+}
+
+fn provider_sort_rank(category: &str, provider_name: &str) -> i32 {
+    match (category, provider_name) {
+        ("tts", "openvoice") => 0,
+        ("tts", "none") => 1,
+        ("tts", "audio8") => 2,
+        _ => 0,
+    }
+}
+
+fn sort_providers(category: &str, providers: &mut [ProviderCard]) {
+    providers.sort_by(|a, b| {
+        provider_sort_rank(category, &a.name)
+            .cmp(&provider_sort_rank(category, &b.name))
+            .then_with(|| a.name.cmp(&b.name))
+    });
 }
 
 fn prompt_target_for_translation_provider(provider: &str, transport: &str) -> PromptProviderTarget {

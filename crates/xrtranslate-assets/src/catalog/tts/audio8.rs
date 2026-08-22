@@ -88,7 +88,7 @@ const FP16_SOURCE_OVERRIDES: &[ModelFileSource] = &[
 
 pub const AUDIO8_TTS_ONNX_FP16: ModelAssetManifest = ModelAssetManifest {
     id: ModelAssetId::Audio8TtsOnnxFp16,
-    label: "Audio8 TTS (ONNX FP16)",
+    label: "Audio8 TTS (ONNX FP16, slow)",
     capability: ModelCapability::Tts,
     level: ModelLevel::Normal,
     provider: "audio8",
