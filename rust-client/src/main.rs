@@ -3027,6 +3027,11 @@ fn main() -> eframe::Result<()> {
             ui::theme::apply_theme(&cc.egui_ctx);
             if let Some(state) = cc.wgpu_render_state.as_ref() {
                 log::info!("wgpu adapter: {:?}", state.adapter.get_info());
+                ui::organic_border::install(
+                    &state.device,
+                    state.target_format,
+                    &mut state.renderer.write(),
+                );
             } else {
                 log::warn!("wgpu render state is unavailable during app creation");
             }

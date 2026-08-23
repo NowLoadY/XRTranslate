@@ -2,24 +2,36 @@ use crate::ui::theme;
 use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Stroke, Ui, Vec2};
 
 pub fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
-    Frame::new()
-        .fill(Color32::TRANSPARENT)
-        .corner_radius(CornerRadius::same(10))
-        .inner_margin(Margin::same(16))
-        .stroke(Stroke::new(1.0, theme::border()))
-        .shadow(egui::Shadow::NONE)
-        .show(ui, add_contents)
-        .inner
+    let border_id = ui.next_auto_id().with("organic_card_border");
+    crate::ui::organic_border::show(
+        ui,
+        border_id,
+        Frame::new()
+            .fill(Color32::TRANSPARENT)
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(Margin::same(16))
+            .shadow(egui::Shadow::NONE),
+        10.0,
+        theme::border(),
+        add_contents,
+    )
+    .inner
 }
 
 pub fn action_card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
-    Frame::new()
-        .fill(Color32::TRANSPARENT)
-        .corner_radius(CornerRadius::same(10))
-        .stroke(Stroke::new(1.0, theme::border()))
-        .inner_margin(Margin::symmetric(16, 12))
-        .show(ui, add_contents)
-        .inner
+    let border_id = ui.next_auto_id().with("organic_action_card_border");
+    crate::ui::organic_border::show(
+        ui,
+        border_id,
+        Frame::new()
+            .fill(Color32::TRANSPARENT)
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(Margin::symmetric(16, 12)),
+        10.0,
+        theme::border(),
+        add_contents,
+    )
+    .inner
 }
 
 pub fn history_entry_card<R>(
@@ -314,10 +326,23 @@ pub fn section_heading(ui: &mut Ui, title: &str) {
 
 pub fn section<R>(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     ui.push_id(title, |ui| {
-        card(ui, |ui| {
-            section_heading(ui, title);
-            add_contents(ui)
-        })
+        let border_id = ui.make_persistent_id("organic_section_border");
+        crate::ui::organic_border::show(
+            ui,
+            border_id,
+            Frame::new()
+                .fill(Color32::TRANSPARENT)
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(Margin::same(16))
+                .shadow(egui::Shadow::NONE),
+            10.0,
+            theme::border(),
+            |ui| {
+                section_heading(ui, title);
+                add_contents(ui)
+            },
+        )
+        .inner
     })
     .inner
 }
@@ -1266,12 +1291,17 @@ pub fn sub_sidebar<T: Copy + PartialEq>(
     let gap = 5.0;
     let item_height = 42.0_f32;
 
-    Frame::new()
-        .fill(Color32::TRANSPARENT)
-        .corner_radius(CornerRadius::same(10))
-        .stroke(Stroke::new(1.0, theme::border()))
-        .inner_margin(Margin::symmetric(10, 10))
-        .show(ui, |ui| {
+    let border_id = ui.make_persistent_id("sub_sidebar_organic_border");
+    crate::ui::organic_border::show(
+        ui,
+        border_id,
+        Frame::new()
+            .fill(Color32::TRANSPARENT)
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(Margin::symmetric(10, 10)),
+        10.0,
+        theme::border(),
+        |ui| {
             ui.set_width(width);
             ui.vertical(|ui| {
                 ui.label(
@@ -1400,7 +1430,8 @@ pub fn sub_sidebar<T: Copy + PartialEq>(
                     }
                 }
             });
-        });
+        },
+    );
 }
 
 pub fn modern_slider_f64(

@@ -120,12 +120,17 @@ pub fn render_bottom_input_bar(
             };
     }
 
-    egui::Frame::new()
-        .fill(egui::Color32::TRANSPARENT)
-        .stroke(egui::Stroke::new(1.0, crate::ui::theme::border()))
-        .corner_radius(egui::CornerRadius::same(10))
-        .inner_margin(egui::Margin::symmetric(12, 6))
-        .show(ui, |ui| {
+    let input_border_color = crate::ui::theme::border();
+    crate::ui::organic_border::show(
+        ui,
+        container_id.with("organic_border"),
+        egui::Frame::new()
+            .fill(egui::Color32::TRANSPARENT)
+            .corner_radius(egui::CornerRadius::same(10))
+            .inner_margin(egui::Margin::symmetric(12, 6)),
+        10.0,
+        input_border_color,
+        |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let spacing = 4.0;
 
@@ -326,7 +331,8 @@ pub fn render_bottom_input_bar(
                     edit_resp.request_focus();
                 }
             });
-        });
+        },
+    );
 
     if submit && is_enabled && has_text {
         let text = plugin.draft_input().trim().to_string();

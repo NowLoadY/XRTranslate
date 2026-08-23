@@ -1,6 +1,4 @@
-use eframe::egui::{
-    self, Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Stroke, Vec2,
-};
+use eframe::egui::{self, Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Vec2};
 
 #[derive(Clone, Debug)]
 pub struct ModalPage {
@@ -146,6 +144,29 @@ impl ModalDialog {
         }
     }
 
+    pub fn usage_guidelines(language: crate::i18n::UiLanguage) -> Self {
+        let content = crate::i18n::usage_notice_items(language)
+            .into_iter()
+            .map(|item| format!("• {item}"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        Self {
+            open: true,
+            pages: vec![ModalPage::new(
+                crate::i18n::tr(language, "Usage Guidelines"),
+                content,
+            )],
+            current_page: 0,
+            show_ok_button: true,
+            ok_label: crate::i18n::tr(language, "Close").into(),
+            show_cancel_button: false,
+            cancel_label: crate::i18n::tr(language, "Close").into(),
+            action: None,
+            ok_action: None,
+            destructive_ok: false,
+        }
+    }
+
     pub fn take_action(&mut self) -> Option<ModalAction> {
         self.action.take()
     }
@@ -197,13 +218,6 @@ impl ModalDialog {
             return;
         }
 
-        let backdrop_anim = crate::ui::animation::AnimationSystem::animate_bool(
-            ctx,
-            egui::Id::new("modal_backdrop_anim"),
-            self.open,
-            0.20,
-        );
-
         let backdrop_response = egui::Area::new(egui::Id::new("modal_backdrop"))
             .interactable(true)
             .order(egui::Order::Middle)
@@ -212,11 +226,7 @@ impl ModalDialog {
                 let screen = ctx
                     .input(|i| i.raw.screen_rect)
                     .unwrap_or_else(|| ui.max_rect());
-                let resp = ui.allocate_rect(screen, egui::Sense::click());
-                let alpha = (140.0 * backdrop_anim).round() as u8;
-                ui.painter()
-                    .rect_filled(screen, 0.0, Color32::from_black_alpha(alpha));
-                resp
+                ui.allocate_rect(screen, egui::Sense::click())
             })
             .inner;
 
@@ -232,7 +242,7 @@ impl ModalDialog {
         let total_pages = self.pages.len();
         let is_multi_page = total_pages > 1;
 
-        egui::Window::new("modal_dialog_window")
+        let modal_window = egui::Window::new("modal_dialog_window")
             .title_bar(false)
             .resizable(false)
             .order(egui::Order::Foreground)
@@ -240,9 +250,8 @@ impl ModalDialog {
             .fixed_size([540.0, 380.0])
             .frame(
                 Frame::new()
-                    .fill(Color32::WHITE)
+                    .fill(crate::ui::theme::modal_backdrop())
                     .corner_radius(CornerRadius::same(20))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(226, 232, 240)))
                     .inner_margin(Margin::same(20)),
             )
             .show(ctx, |ui| {
@@ -389,6 +398,23 @@ impl ModalDialog {
                 });
             });
 
+        if let Some(window_response) = modal_window {
+            crate::ui::organic_border::paint_with_id(
+                ctx,
+                window_response.response.layer_id,
+                egui::Id::new("modal_organic_border"),
+                window_response.response.rect,
+                crate::ui::organic_border::OrganicBorderStyle {
+                    radius: 20.0,
+                    half_width: 0.75,
+                    displacement: 1.8,
+                    noise_scale: 0.034,
+                    seed: 41.0,
+                    color: crate::ui::theme::border(),
+                },
+            );
+        }
+
         if close_dialog {
             self.open = false;
         }
@@ -425,5 +451,17 @@ mod tests {
         assert_eq!(modal.cancel_label, "取消");
         assert!(modal.destructive_ok);
         assert_eq!(modal.ok_action, Some(ModalAction::ConfirmResourceDeletion));
+    }
+
+    #[test]
+    fn usage_guidelines_modal_reuses_the_localized_notice() {
+        let modal = ModalDialog::usage_guidelines(crate::i18n::UiLanguage::Chinese);
+
+        assert_eq!(modal.pages[0].title, "使用规范");
+        assert!(modal.pages[0].content.contains("仅限克隆您本人的声音"));
+        assert!(modal.pages[0].content.contains("所在国家或地区"));
+        assert!(modal.pages[0].content.contains("重要内容请在使用前核对"));
+        assert_eq!(modal.ok_label, "关闭");
+        assert!(!modal.show_cancel_button);
     }
 }

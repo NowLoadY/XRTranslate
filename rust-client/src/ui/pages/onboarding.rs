@@ -51,13 +51,24 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if app.onboarding_page + 1 == total_pages {
-                        if components::primary_button_enabled(
+                        let open_translation = components::primary_button_enabled(
                             ui,
                             i18n::tr(app.ui_language, "Open Translation"),
                             requirement.is_none(),
                         )
-                        .clicked()
+                        .clicked();
+                        ui.add_space(8.0);
+                        if ui
+                            .link(
+                                RichText::new(i18n::tr(app.ui_language, "Usage Guidelines"))
+                                    .size(12.5),
+                            )
+                            .clicked()
                         {
+                            app.modal_dialog =
+                                crate::ui::modal::ModalDialog::usage_guidelines(app.ui_language);
+                        }
+                        if open_translation {
                             app.finish_onboarding();
                         }
                     } else if components::primary_button_enabled(
@@ -273,12 +284,17 @@ fn onboarding_feature_card(
     stroke_color: Color32,
     language: crate::i18n::UiLanguage,
 ) {
-    Frame::new()
-        .fill(theme::surface_control())
-        .corner_radius(CornerRadius::same(14))
-        .inner_margin(Margin::symmetric(22, 20))
-        .stroke(Stroke::new(1.5, stroke_color))
-        .show(ui, |ui| {
+    let border_id = ui.make_persistent_id(("onboarding_feature_border", title));
+    crate::ui::organic_border::show(
+        ui,
+        border_id,
+        Frame::new()
+            .fill(theme::surface_control())
+            .corner_radius(CornerRadius::same(14))
+            .inner_margin(Margin::symmetric(22, 20)),
+        14.0,
+        stroke_color,
+        |ui| {
             ui.set_width(ui.available_width());
             ui.set_min_height(108.0);
 
@@ -296,7 +312,8 @@ fn onboarding_feature_card(
                     .color(theme::text_weak())
                     .line_height(Some(19.0)),
             );
-        });
+        },
+    );
 }
 
 fn render_onboarding_welcome(language: crate::i18n::UiLanguage, ui: &mut egui::Ui) {
@@ -471,12 +488,17 @@ fn onboarding_model_config_card(
     stroke_color: Color32,
 ) -> ModelConfigCardResult {
     let mut result = ModelConfigCardResult::default();
-    Frame::new()
-        .fill(theme::surface_control())
-        .corner_radius(CornerRadius::same(16))
-        .inner_margin(Margin::same(18))
-        .stroke(Stroke::new(1.5, stroke_color))
-        .show(ui, |ui| {
+    let border_id = ui.make_persistent_id(("onboarding_model_config_border", category));
+    crate::ui::organic_border::show(
+        ui,
+        border_id,
+        Frame::new()
+            .fill(theme::surface_control())
+            .corner_radius(CornerRadius::same(16))
+            .inner_margin(Margin::same(18)),
+        16.0,
+        stroke_color,
+        |ui| {
             ui.set_width(ui.available_width());
             ui.label(
                 RichText::new(i18n::tr(language, title))
@@ -660,7 +682,8 @@ fn onboarding_model_config_card(
                     crate::runtime_install::LocalModelAvailability::Available { .. } => {}
                 }
             }
-        });
+        },
+    );
     result
 }
 
@@ -685,12 +708,18 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     let mut model_change = None;
     let mut voice_change = None;
 
-    Frame::new()
-        .fill(theme::surface_control())
-        .corner_radius(CornerRadius::same(16))
-        .inner_margin(Margin::same(18))
-        .stroke(Stroke::new(1.5, Color32::from_rgb(244, 63, 94)))
-        .show(ui, |ui| {
+    let tts_border_color = Color32::from_rgb(244, 63, 94);
+    let border_id = ui.make_persistent_id("onboarding_tts_border");
+    crate::ui::organic_border::show(
+        ui,
+        border_id,
+        Frame::new()
+            .fill(theme::surface_control())
+            .corner_radius(CornerRadius::same(16))
+            .inner_margin(Margin::same(18)),
+        16.0,
+        tts_border_color,
+        |ui| {
             ui.set_width(ui.available_width());
             ui.label(
                 RichText::new(i18n::tr(language, "Voice cloning & speech synthesis"))
@@ -766,8 +795,8 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     ui.add_space(5.0);
                     ui.label(
                         RichText::new(i18n::tr(language, "Synthesis language models:"))
-                        .size(12.5)
-                        .color(theme::text_weak()),
+                            .size(12.5)
+                            .color(theme::text_weak()),
                     );
                     let selected_assets = selected_choice
                         .map(|choice| choice.model_assets.as_slice())
@@ -798,7 +827,10 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                                 format!("{} — {}", package.languages.join(", "), package.label)
                             };
                             if ui
-                                .add_enabled(may_toggle, egui::Checkbox::new(&mut next, language_pack))
+                                .add_enabled(
+                                    may_toggle,
+                                    egui::Checkbox::new(&mut next, language_pack),
+                                )
                                 .changed()
                             {
                                 model_change = Some((
@@ -807,8 +839,8 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                                     next,
                                 ));
                             }
-                            let present = model_asset_is_present(&project_root, package.id)
-                                .unwrap_or(false);
+                            let present =
+                                model_asset_is_present(&project_root, package.id).unwrap_or(false);
                             if present {
                                 ui.label(
                                     RichText::new(i18n::tr(language, "Installed"))
@@ -853,10 +885,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                                     .voices
                                     .get(voice_language)
                                     .and_then(|key| {
-                                        choices
-                                            .iter()
-                                            .copied()
-                                            .find(|preset| preset.key == key)
+                                        choices.iter().copied().find(|preset| preset.key == key)
                                     })
                                     .unwrap_or(default);
                                 let mut selected_key = configured.key.to_owned();
@@ -924,7 +953,8 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     );
                 }
             }
-        });
+        },
+    );
 
     if let Some(asset_id) = delete_tts {
         app.request_model_resource_deletion(asset_id);
@@ -1275,12 +1305,17 @@ fn render_download_card(
 ) -> (bool, bool) {
     let mut clicked = false;
     let mut delete_clicked = false;
-    Frame::new()
-        .fill(theme::surface_control())
-        .corner_radius(CornerRadius::same(12))
-        .inner_margin(Margin::symmetric(18, 14))
-        .stroke(Stroke::new(1.5, item.stroke_color))
-        .show(ui, |ui| {
+    let border_id = ui.make_persistent_id(("onboarding_download_border", item.id));
+    crate::ui::organic_border::show(
+        ui,
+        border_id,
+        Frame::new()
+            .fill(theme::surface_control())
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(Margin::symmetric(18, 14)),
+        12.0,
+        item.stroke_color,
+        |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
@@ -1390,7 +1425,8 @@ fn render_download_card(
                     );
                 }
             }
-        });
+        },
+    );
     (clicked, delete_clicked)
 }
 

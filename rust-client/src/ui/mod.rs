@@ -2,6 +2,7 @@ pub mod animation;
 pub mod components;
 pub mod fonts;
 pub mod modal;
+pub mod organic_border;
 pub mod pages;
 pub mod theme;
 

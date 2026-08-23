@@ -36,6 +36,12 @@ impl UiLanguage {
     }
 }
 
+const USAGE_NOTICE_KEYS: [&str; 3] = [
+    "Voice cloning is for your own voice only. Do not clone, imitate, or impersonate another person's voice.",
+    "Do not use XRTranslate for unlawful purposes. Comply with the laws and regulations applicable in your country or region, and respect privacy, personality rights, and intellectual property rights.",
+    "Speech recognition, translation, and synthesized speech may contain errors. Verify important content before use.",
+];
+
 /// Looks up a fixed UI string from the consolidated multi-language dictionary.
 /// Missing translations intentionally fall back to the English source key.
 pub fn tr(language: UiLanguage, english: &'static str) -> &'static str {
@@ -58,6 +64,10 @@ pub fn tr(language: UiLanguage, english: &'static str) -> &'static str {
             .find_map(|(key, _zh, _ja, _ko, ru)| (*key == english).then_some(*ru))
             .unwrap_or(english),
     }
+}
+
+pub fn usage_notice_items(language: UiLanguage) -> [&'static str; 3] {
+    USAGE_NOTICE_KEYS.map(|item| tr(language, item))
 }
 
 /// Dynamic counterpart for status text that originates outside the UI layer.
@@ -580,6 +590,41 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "ダウンロードプロキシ: アップデートおよびダウンロードにのみ使用されます。VPNがグローバルモードの場合は空のままにしてください。",
         "다운로드 프록시: 업데이트 및 다운로드에만 사용됩니다. VPN이 전체 모드인 경우 비워 두세요.",
         "Прокси для загрузок: используется только для обновлений и загрузок. Оставьте пустым при глобальном режиме VPN.",
+    ),
+    (
+        "Notice",
+        "声明",
+        "ご利用上の注意",
+        "이용 안내",
+        "Уведомление",
+    ),
+    (
+        "Usage Guidelines",
+        "使用规范",
+        "利用規範",
+        "이용 수칙",
+        "Правила использования",
+    ),
+    (
+        "Voice cloning is for your own voice only. Do not clone, imitate, or impersonate another person's voice.",
+        "声音克隆功能仅限克隆您本人的声音。禁止克隆、模仿或冒充他人的声音。",
+        "音声クローン機能は、ご自身の声にのみ使用できます。他人の声をクローン、模倣、またはなりすましに使用することは禁止されています。",
+        "음성 복제 기능은 본인의 목소리에만 사용할 수 있습니다. 다른 사람의 목소리를 복제, 모방하거나 사칭하는 행위는 금지됩니다.",
+        "Клонирование голоса разрешено только для вашего собственного голоса. Запрещено клонировать или имитировать голос другого человека либо выдавать себя за него.",
+    ),
+    (
+        "Do not use XRTranslate for unlawful purposes. Comply with the laws and regulations applicable in your country or region, and respect privacy, personality rights, and intellectual property rights.",
+        "禁止将 XRTranslate 用于任何非法用途。请遵守所在国家或地区适用的法律法规，并尊重隐私、人格权与知识产权。",
+        "XRTranslateを違法な目的で使用しないでください。お住まいの国または地域で適用される法令を遵守し、プライバシー、人格権、知的財産権を尊重してください。",
+        "XRTranslate를 불법적인 목적으로 사용하지 마세요. 거주 국가 또는 지역에 적용되는 법률과 규정을 준수하고 개인정보, 인격권 및 지식재산권을 존중하세요.",
+        "Не используйте XRTranslate в незаконных целях. Соблюдайте законы и правила, действующие в вашей стране или регионе, и уважайте частную жизнь, личные неимущественные права и интеллектуальную собственность.",
+    ),
+    (
+        "Speech recognition, translation, and synthesized speech may contain errors. Verify important content before use.",
+        "语音识别、翻译及合成语音可能存在错误；重要内容请在使用前核对。",
+        "音声認識、翻訳、合成音声には誤りが含まれる場合があります。重要な内容は使用前に確認してください。",
+        "음성 인식, 번역 및 합성 음성에는 오류가 있을 수 있습니다. 중요한 내용은 사용 전에 확인하세요.",
+        "Распознавание речи, перевод и синтезированная речь могут содержать ошибки. Проверяйте важную информацию перед использованием.",
     ),
     ("About", "关于", "情報", "정보", "О программе"),
     (

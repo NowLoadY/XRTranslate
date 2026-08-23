@@ -119,8 +119,12 @@ pub fn content_backdrop(focused: bool) -> Color32 {
     Color32::from_rgba_unmultiplied(255, 255, 255, alpha)
 }
 
+pub fn modal_backdrop() -> Color32 {
+    Color32::from_rgba_unmultiplied(255, 255, 255, 238)
+}
+
 pub fn border() -> Color32 {
-    Color32::from_rgba_unmultiplied(45, 52, 55, 170)
+    Color32::from_rgba_unmultiplied(28, 33, 36, 210)
 }
 
 pub fn primary() -> Color32 {

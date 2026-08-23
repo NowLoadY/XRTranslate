@@ -238,6 +238,35 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
             }
         }
     });
+    ui.add_space(14.0);
+
+    section(ui, crate::i18n::tr(app.ui_language, "Notice"), |ui| {
+        for (index, item) in crate::i18n::usage_notice_items(app.ui_language)
+            .into_iter()
+            .enumerate()
+        {
+            if index > 0 {
+                ui.add_space(7.0);
+            }
+            render_notice_item(ui, item, index == 0);
+        }
+    });
+}
+
+fn render_notice_item(ui: &mut egui::Ui, text: &str, strong: bool) {
+    ui.horizontal_top(|ui| {
+        ui.label(
+            egui::RichText::new("•")
+                .color(crate::ui::theme::primary_dark())
+                .strong(),
+        );
+        let text = egui::RichText::new(text).size(12.5).color(if strong {
+            crate::ui::theme::text_strong()
+        } else {
+            crate::ui::theme::text_normal()
+        });
+        ui.add(egui::Label::new(if strong { text.strong() } else { text }).wrap());
+    });
 }
 
 fn render_social_link_chip(ui: &mut egui::Ui, label: &str, url: &str) {

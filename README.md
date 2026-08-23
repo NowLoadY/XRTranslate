@@ -153,3 +153,11 @@ This repository contains code released under different open-source licenses:
 - The native Rust client and newly added code are released under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).
 
 Please refer to the corresponding license files and source files for the applicable licensing terms.
+
+---
+
+## Usage Notice
+
+- Voice cloning may only be used with your own voice. Cloning, imitating, or impersonating another person's voice is prohibited.
+- Do not use XRTranslate for unlawful purposes. Comply with the laws and regulations applicable in your country or region, and respect privacy, personality rights, and intellectual property rights.
+- Speech recognition, translation, and synthesized speech may contain errors. Verify important content before use.
