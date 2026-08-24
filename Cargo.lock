@@ -4561,7 +4561,7 @@ dependencies = [
 
 [[package]]
 name = "rust-client"
-version = "0.2.9-beta.1"
+version = "0.2.9-beta.2"
 dependencies = [
  "audioadapter-buffers",
  "bytemuck",
@@ -7296,7 +7296,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-assets"
-version = "0.2.9-beta.1"
+version = "0.2.9-beta.2"
 dependencies = [
  "serde",
  "sha2",
@@ -7307,7 +7307,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-backend"
-version = "0.2.9-beta.1"
+version = "0.2.9-beta.2"
 dependencies = [
  "axum",
  "clap",
@@ -7335,7 +7335,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-config"
-version = "0.2.9-beta.1"
+version = "0.2.9-beta.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -7344,7 +7344,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-denoise"
-version = "0.2.9-beta.1"
+version = "0.2.9-beta.2"
 dependencies = [
  "ndarray",
  "ort",
@@ -7353,7 +7353,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-download"
-version = "0.2.9-beta.1"
+version = "0.2.9-beta.2"
 dependencies = [
  "httpdate",
  "reqwest",
@@ -7363,11 +7363,11 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-engine"
-version = "0.2.9-beta.1"
+version = "0.2.9-beta.2"
 
 [[package]]
 name = "xrtranslate-inference"
-version = "0.2.9-beta.1"
+version = "0.2.9-beta.2"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -7390,7 +7390,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-installer"
-version = "0.2.9-beta.1"
+version = "0.2.9-beta.2"
 dependencies = [
  "clap",
  "tokio",
@@ -7400,7 +7400,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-packager"
-version = "0.2.9-beta.1"
+version = "0.2.9-beta.2"
 dependencies = [
  "clap",
  "serde_json",
@@ -7412,7 +7412,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-prompt"
-version = "0.2.9-beta.1"
+version = "0.2.9-beta.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -7420,7 +7420,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-protocol"
-version = "0.2.9-beta.1"
+version = "0.2.9-beta.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -7430,7 +7430,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-speaker"
-version = "0.2.9-beta.1"
+version = "0.2.9-beta.2"
 dependencies = [
  "ndarray",
  "ort",
@@ -7438,11 +7438,11 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-supervisor"
-version = "0.2.9-beta.1"
+version = "0.2.9-beta.2"
 
 [[package]]
 name = "xrtranslate-updater"
-version = "0.2.9-beta.1"
+version = "0.2.9-beta.2"
 dependencies = [
  "clap",
  "serde_json",
@@ -7450,7 +7450,7 @@ dependencies = [
 
 [[package]]
 name = "xrtranslate-vad"
-version = "0.2.9-beta.1"
+version = "0.2.9-beta.2"
 dependencies = [
  "ndarray",
  "ort",

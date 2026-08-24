@@ -13,3 +13,4 @@
   - Resolved issues with translation contextual fluency and localized natural phrasing (2026.8.20)
   - Suggestions for typing in OSC Studio and for the translation function of typed sentence.
   - Suggestion for Prompt Studio: allow users to customize their own translation.
+  - With **Tony** and **Fox**, we found and solved a runtime bug in the just-released v0.2.8, quick enough that other users never even noticed.(2026.8.22)
