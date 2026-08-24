@@ -1,4 +1,105 @@
-use eframe::egui::{self, Color32, CornerRadius, Margin, Stroke, Visuals};
+use eframe::egui::{self, Color32, CornerRadius, Id, Margin, Stroke, Visuals};
+use serde::{Deserialize, Serialize};
+
+fn ui_theme_id() -> Id {
+    Id::new("xrtranslate_ui_theme")
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeVariant {
+    #[default]
+    Default,
+    HandDrawn,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiTheme {
+    #[serde(default)]
+    pub variant: ThemeVariant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnimationTimings {
+    pub hover: f32,
+    pub active: f32,
+    pub selection: f32,
+    pub toggle: f32,
+    pub button_click: f32,
+    pub primary_click: f32,
+    pub sidebar: f32,
+    pub page: f32,
+    pub page_flip: f32,
+    pub data_text: f32,
+    pub window_resize: f32,
+}
+
+impl Default for AnimationTimings {
+    fn default() -> Self {
+        Self {
+            hover: 0.15,
+            active: 0.08,
+            selection: 0.20,
+            toggle: 0.18,
+            button_click: 0.28,
+            primary_click: 0.25,
+            sidebar: 0.20,
+            page: 0.25,
+            page_flip: 0.28,
+            data_text: 0.32,
+            window_resize: 0.26,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DataTextMotion {
+    pub min_opacity: f32,
+    pub max_offset: f32,
+}
+
+impl Default for DataTextMotion {
+    fn default() -> Self {
+        Self {
+            min_opacity: 0.64,
+            max_offset: 3.0,
+        }
+    }
+}
+
+pub fn install_context(ctx: &egui::Context, theme: UiTheme) {
+    ctx.data_mut(|data| data.insert_temp(ui_theme_id(), theme));
+}
+
+pub fn context_theme(ctx: &egui::Context) -> UiTheme {
+    ctx.data(|data| data.get_temp(ui_theme_id()).unwrap_or_default())
+}
+
+pub fn variant(ctx: &egui::Context) -> ThemeVariant {
+    context_theme(ctx).variant
+}
+
+pub fn is_hand_drawn(ctx: &egui::Context) -> bool {
+    variant(ctx) == ThemeVariant::HandDrawn
+}
+
+pub fn animation_timings(_ctx: &egui::Context) -> AnimationTimings {
+    AnimationTimings::default()
+}
+
+pub fn data_text_motion(_ctx: &egui::Context) -> DataTextMotion {
+    DataTextMotion::default()
+}
+
+pub fn data_text_target_opacity(ctx: &egui::Context, activity: f32) -> f32 {
+    let activity = activity.clamp(0.0, 1.0);
+    let motion = data_text_motion(ctx);
+    motion.min_opacity + (1.0 - motion.min_opacity) * activity
+}
+
+pub fn border_stroke(color: Color32) -> Stroke {
+    Stroke::new(1.0, color)
+}
 
 pub fn apply_theme(ctx: &egui::Context) {
     let mut visuals = Visuals::light();
@@ -13,7 +114,7 @@ pub fn apply_theme(ctx: &egui::Context) {
     // transparent prevents a stale-looking white rectangle below live bubbles.
     visuals.extreme_bg_color = Color32::TRANSPARENT;
 
-    let border_stroke = Stroke::new(1.0, border());
+    let border_stroke = border_stroke(border());
 
     visuals.widgets.noninteractive.bg_fill = Color32::TRANSPARENT;
     visuals.widgets.noninteractive.weak_bg_fill = Color32::TRANSPARENT;
@@ -151,4 +252,46 @@ pub fn danger() -> Color32 {
 
 pub fn border_strong() -> Color32 {
     Color32::from_rgb(70, 78, 81)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_theme_is_the_default() {
+        assert_eq!(UiTheme::default().variant, ThemeVariant::Default);
+        assert_eq!(
+            serde_json::from_str::<UiTheme>("{}").unwrap(),
+            UiTheme::default()
+        );
+    }
+
+    #[test]
+    fn hand_drawn_theme_round_trips_as_snake_case() {
+        let theme = UiTheme {
+            variant: ThemeVariant::HandDrawn,
+        };
+        assert_eq!(
+            serde_json::to_string(&theme).unwrap(),
+            r#"{"variant":"hand_drawn"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<UiTheme>(r#"{"variant":"hand_drawn"}"#).unwrap(),
+            theme
+        );
+    }
+
+    #[test]
+    fn legacy_border_theme_names_are_not_accepted() {
+        assert!(serde_json::from_str::<UiTheme>(r#"{"variant":"organic"}"#).is_err());
+    }
+
+    #[test]
+    fn data_text_opacity_combines_activity_with_a_theme_floor() {
+        let ctx = egui::Context::default();
+        assert_eq!(data_text_target_opacity(&ctx, 0.0), 0.64);
+        assert_eq!(data_text_target_opacity(&ctx, 1.0), 1.0);
+        assert_eq!(data_text_target_opacity(&ctx, 0.5), 0.82);
+    }
 }

@@ -17,6 +17,19 @@ pub struct PromptTemplateProfile {
     pub read_only: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptMode {
+    Ordinary,
+    PseudoStreaming,
+}
+
+impl Default for PromptMode {
+    fn default() -> Self {
+        Self::Ordinary
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PromptGraphProjectFile {
     #[serde(rename = "$schema_guide", default = "default_schema_guide")]
@@ -30,11 +43,12 @@ pub struct PromptGraphProjectFile {
 fn default_schema_guide() -> String {
     "X-Translator Prompt Studio Graph Project Guide for AI / Humans:\n\
     1. NODES (nodes: Array):\n\
-       - Variable Node: {'type': 'variable', 'variable': 'current_input' | 'source_language' | 'target_language' | 'recognition_context'}\n\
+       - Variable Node: {'type': 'variable', 'variable': 'current_input' | 'source_language' | 'target_language' | 'recognition_context' | 'recognition_mode'}\n\
          * 'current_input': Real-time speech transcript sentence to be translated.\n\
          * 'source_language': Source language name (e.g. 'English', 'Japanese').\n\
          * 'target_language': Target language name (e.g. 'Chinese').\n\
          * 'recognition_context': Structured ASR terms rendered as text; it is not the current transcript.\n\
+         * 'recognition_mode': Runtime workflow mode, either 'ordinary' or 'pseudo_streaming'.\n\
        - Input / Data Block (IMPORTANT: built-in blocks ALREADY include descriptive markdown headers):\n\
          * 'terminology': Renders '## Terminology\\n\\n<matched glossary rows>'\n\
          * 'recent_turns': Renders '## Recent Bilingual History\\n\\n<source/target dialogue turns>'\n\
@@ -45,14 +59,15 @@ fn default_schema_guide() -> String {
          * NOTE FOR AI DESIGNERS: Because each data block outputs its own '## Header', DO NOT add extra duplicate headers in Compose templates (e.g. write '{0}', not 'Terminology:\\n{0}').\n\
        - Compose Node: {'type': 'compose', 'text': 'Prompt template text with {0}, {1}, etc.'}\n\
          * Placeholders {0}, {1}, {2}... interpolate outputs from incoming links with input: 0, input: 1, etc.\n\
-       - Switch Node: {'type': 'switch', 'condition': 'has_reference_context' | 'has_recognition_context' | 'source_is_auto'}\n\
+       - Switch Node: {'type': 'switch', 'condition': 'has_reference_context' | 'has_recognition_context' | 'source_is_auto' | 'is_pseudo_streaming'}\n\
          * Evaluates condition at runtime: routes input: 0 (False branch) or input: 1 (True branch).\n\
        - Request Node: {'type': 'request', 'target': 'open_ai_compatible' | 'hunyuan' | 'asr_instruction' | 'asr_context_bias', 'roles': ['system', 'user']}\n\
          * Final output sink. Translation targets carry LLM messages. 'asr_instruction' carries semantic recognition instructions; 'asr_context_bias' carries lexical context only. Weighted vocabulary is structured provider data and is never rendered by this graph.\n\
     2. LINKS (links: Array):\n\
        - {'from': '<source_node_id>', 'to': '<target_node_id>', 'input': <target_slot_index_integer>}\n\
     3. PROVIDER PAGES:\n\
-       - Each node belongs to 'page': 'open_ai_compatible', 'hunyuan', 'asr_instruction', or 'asr_context_bias'. Each delivery graph is an independent DAG pipeline."
+       - One graph owns every recognition mode. Use 'recognition_mode' and 'is_pseudo_streaming' branches instead of creating a separate graph per mode.\n\
+       - Each node belongs to 'page': 'open_ai_compatible', 'hunyuan', 'asr_instruction', or 'asr_context_bias'. Each provider page is an independent DAG pipeline inside the unified graph."
         .into()
 }
 
@@ -99,6 +114,10 @@ impl PromptTemplateProfile {
         graph.schema_version = PromptNodeGraph::CURRENT_SCHEMA_VERSION;
         migrate_shared_nodes(&mut graph);
         ensure_asr_pages(&mut graph);
+        graph =
+            PromptNodeGraph::unify_mode_graphs(graph, &PromptNodeGraph::builtin_pseudo_streaming());
+        graph.upgrade_known_pseudo_streaming_prompts();
+        graph.remove_invalid_socket_links();
         graph.auto_layout();
 
         if let Err(err) = graph.validate_for_activation() {
@@ -119,10 +138,60 @@ impl PromptTemplateProfile {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PromptTemplateLibrary {
     pub active_id: String,
     pub profiles: Vec<PromptTemplateProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct PromptProfileCollection {
+    active_id: String,
+    profiles: Vec<PromptTemplateProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct SplitDomainCollection {
+    translation: PromptProfileCollection,
+    asr: PromptProfileCollection,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PromptTemplateLibraryWire {
+    Current(PromptProfileCollection),
+    ModeSeparated {
+        ordinary: PromptProfileCollection,
+        pseudo_streaming: PromptProfileCollection,
+    },
+    ModeAndDomainSeparated {
+        ordinary: SplitDomainCollection,
+        pseudo_streaming: SplitDomainCollection,
+    },
+}
+
+impl<'de> Deserialize<'de> for PromptTemplateLibrary {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(
+            match PromptTemplateLibraryWire::deserialize(deserializer)? {
+                PromptTemplateLibraryWire::Current(collection) => Self {
+                    active_id: collection.active_id,
+                    profiles: collection.profiles,
+                },
+                PromptTemplateLibraryWire::ModeSeparated {
+                    ordinary,
+                    pseudo_streaming,
+                } => merge_mode_collections(ordinary, pseudo_streaming),
+                PromptTemplateLibraryWire::ModeAndDomainSeparated {
+                    ordinary,
+                    pseudo_streaming,
+                } => merge_split_domain_collections(ordinary, pseudo_streaming),
+            },
+        )
+    }
 }
 
 impl Default for PromptTemplateLibrary {
@@ -139,11 +208,16 @@ impl PromptTemplateLibrary {
 
     pub fn load_from_dir(runtime_dir: &Path) -> Self {
         let path = runtime_dir.join(Self::FILE_NAME);
-        let mut library = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|contents| serde_json::from_str::<Self>(&contents).ok())
+        let contents = std::fs::read_to_string(&path).ok();
+        let mut library = contents
+            .as_deref()
+            .and_then(|contents| serde_json::from_str::<Self>(contents).ok())
             .unwrap_or_default();
+        let stored = library.clone();
         library.normalize();
+        if contents.is_some() && library != stored {
+            let _ = library.save_to_dir(runtime_dir);
+        }
         library
     }
 
@@ -159,7 +233,6 @@ impl PromptTemplateLibrary {
     pub fn normalize(&mut self) {
         self.profiles
             .retain(|profile| !profile.id.trim().is_empty());
-
         for profile in &mut self.profiles {
             if profile.id == BUILTIN_ID {
                 continue;
@@ -171,10 +244,15 @@ impl PromptTemplateLibrary {
             } else {
                 migrate_shared_nodes(&mut profile.graph);
                 ensure_asr_pages(&mut profile.graph);
+                profile.graph = PromptNodeGraph::unify_mode_graphs(
+                    profile.graph.clone(),
+                    &PromptNodeGraph::builtin_pseudo_streaming(),
+                );
+                profile.graph.upgrade_known_pseudo_streaming_prompts();
+                profile.graph.remove_invalid_socket_links();
             }
             profile.read_only = false;
         }
-
         if let Some(profile) = self
             .profiles
             .iter_mut()
@@ -184,7 +262,6 @@ impl PromptTemplateLibrary {
         } else {
             self.profiles.insert(0, builtin_default_profile());
         }
-
         if !self
             .profiles
             .iter()
@@ -227,14 +304,105 @@ fn builtin_default_profile() -> PromptTemplateProfile {
     PromptTemplateProfile {
         id: BUILTIN_ID.into(),
         name: "Built-in Default".into(),
-        description: "The original provider prompts with configurable translation context.".into(),
+        description: "Unified ordinary, pseudo-streaming, translation, and ASR prompt workflow."
+            .into(),
         graph: PromptNodeGraph::builtin_default(),
         read_only: true,
     }
 }
 
+fn merge_mode_collections(
+    ordinary: PromptProfileCollection,
+    pseudo_streaming: PromptProfileCollection,
+) -> PromptTemplateLibrary {
+    let active_id = ordinary.active_id.clone();
+    let fallback_pseudo = PromptNodeGraph::builtin_pseudo_streaming();
+    let active_pseudo = pseudo_streaming
+        .profiles
+        .iter()
+        .find(|profile| profile.id == pseudo_streaming.active_id)
+        .map(|profile| &profile.graph)
+        .unwrap_or(&fallback_pseudo);
+    let mut profiles = ordinary.profiles;
+    for profile in &mut profiles {
+        profile.graph =
+            PromptNodeGraph::merge_complete_mode_graphs(profile.graph.clone(), active_pseudo);
+    }
+    append_preserved_profiles(&mut profiles, pseudo_streaming.profiles, "pseudo-streaming");
+    PromptTemplateLibrary {
+        active_id,
+        profiles,
+    }
+}
+
+fn merge_split_domain_collections(
+    ordinary: SplitDomainCollection,
+    pseudo_streaming: SplitDomainCollection,
+) -> PromptTemplateLibrary {
+    let mut ordinary_collection = ordinary.translation;
+    merge_asr_pages(&mut ordinary_collection.profiles, &ordinary.asr);
+    let mut pseudo_collection = pseudo_streaming.translation;
+    merge_asr_pages(&mut pseudo_collection.profiles, &pseudo_streaming.asr);
+    merge_mode_collections(ordinary_collection, pseudo_collection)
+}
+
+fn merge_asr_pages(
+    translation_profiles: &mut [PromptTemplateProfile],
+    asr: &PromptProfileCollection,
+) {
+    let active_asr = asr
+        .profiles
+        .iter()
+        .find(|profile| profile.id == asr.active_id)
+        .or_else(|| asr.profiles.first())
+        .map(|profile| &profile.graph);
+    for profile in translation_profiles {
+        let Some(asr) = asr
+            .profiles
+            .iter()
+            .find(|asr| asr.id == profile.id)
+            .map(|asr| &asr.graph)
+            .or(active_asr)
+        else {
+            continue;
+        };
+        profile.graph.replace_provider_pages(
+            asr,
+            &[
+                crate::PromptNodePage::AsrInstruction,
+                crate::PromptNodePage::AsrContextBias,
+            ],
+        );
+    }
+}
+
+fn append_preserved_profiles(
+    profiles: &mut Vec<PromptTemplateProfile>,
+    incoming: Vec<PromptTemplateProfile>,
+    prefix: &str,
+) {
+    for mut profile in incoming.into_iter().filter(|profile| !profile.read_only) {
+        if profiles.iter().any(|existing| existing.id == profile.id) {
+            profile.id = format!("{prefix}-{}", profile.id);
+        }
+        profile.name = format!("{} ({prefix})", profile.name);
+        let mut ordinary = PromptNodeGraph::builtin_ordinary();
+        ordinary.replace_provider_pages(
+            &profile.graph,
+            &[
+                crate::PromptNodePage::AsrInstruction,
+                crate::PromptNodePage::AsrContextBias,
+            ],
+        );
+        profile.graph = PromptNodeGraph::merge_complete_mode_graphs(ordinary, &profile.graph);
+        profiles.push(profile);
+    }
+}
+
 fn migrate_shared_nodes(graph: &mut PromptNodeGraph) {
     use crate::{PromptLink, PromptNodePage};
+    use std::collections::{HashMap, HashSet};
+
     if !graph
         .nodes
         .iter()
@@ -243,22 +411,52 @@ fn migrate_shared_nodes(graph: &mut PromptNodeGraph) {
         return;
     }
 
-    let mut new_nodes = Vec::new();
+    let pages = [
+        PromptNodePage::OpenAiCompatible,
+        PromptNodePage::Hunyuan,
+        PromptNodePage::AsrInstruction,
+        PromptNodePage::AsrContextBias,
+    ];
+    let mut used_ids = graph
+        .nodes
+        .iter()
+        .filter(|node| node.page != PromptNodePage::Shared)
+        .map(|node| node.id.clone())
+        .collect::<HashSet<_>>();
+    let mut shared_ids = HashMap::new();
+    let mut new_nodes = graph
+        .nodes
+        .iter()
+        .filter(|node| node.page != PromptNodePage::Shared)
+        .cloned()
+        .collect::<Vec<_>>();
     let mut new_links = Vec::new();
 
-    for node in &graph.nodes {
-        if node.page == PromptNodePage::Shared {
-            let mut openai_node = node.clone();
-            openai_node.id = format!("openai-{}", node.id);
-            openai_node.page = PromptNodePage::OpenAiCompatible;
-            new_nodes.push(openai_node);
-
-            let mut hunyuan_node = node.clone();
-            hunyuan_node.id = format!("hunyuan-{}", node.id);
-            hunyuan_node.page = PromptNodePage::Hunyuan;
-            new_nodes.push(hunyuan_node);
-        } else {
-            new_nodes.push(node.clone());
+    for &page in &pages {
+        for node in graph
+            .nodes
+            .iter()
+            .filter(|node| node.page == PromptNodePage::Shared)
+        {
+            let prefix = match page {
+                PromptNodePage::OpenAiCompatible => "openai",
+                PromptNodePage::Hunyuan => "hunyuan",
+                PromptNodePage::AsrInstruction => "asr-instruction",
+                PromptNodePage::AsrContextBias => "asr-context-bias",
+                PromptNodePage::Shared => unreachable!(),
+            };
+            let preferred = format!("{prefix}-{}", node.id);
+            let mut id = preferred.clone();
+            let mut suffix = 2_u32;
+            while !used_ids.insert(id.clone()) {
+                id = format!("{preferred}-{suffix}");
+                suffix += 1;
+            }
+            let mut cloned = node.clone();
+            cloned.id = id.clone();
+            cloned.page = page;
+            shared_ids.insert((page, node.id.clone()), id);
+            new_nodes.push(cloned);
         }
     }
 
@@ -269,40 +467,29 @@ fn migrate_shared_nodes(graph: &mut PromptNodeGraph) {
         let to_shared = to_node.is_some_and(|n| n.page == PromptNodePage::Shared);
 
         if from_shared && to_shared {
-            new_links.push(PromptLink {
-                from: format!("openai-{}", link.from),
-                to: format!("openai-{}", link.to),
-                input: link.input,
-            });
-            new_links.push(PromptLink {
-                from: format!("hunyuan-{}", link.from),
-                to: format!("hunyuan-{}", link.to),
-                input: link.input,
-            });
+            for &page in &pages {
+                new_links.push(PromptLink {
+                    from: shared_ids[&(page, link.from.clone())].clone(),
+                    to: shared_ids[&(page, link.to.clone())].clone(),
+                    input: link.input,
+                });
+            }
         } else if from_shared {
-            let target_page = to_node
-                .map(|n| n.page)
-                .unwrap_or(PromptNodePage::OpenAiCompatible);
-            let prefix = match target_page {
-                PromptNodePage::Hunyuan => "hunyuan",
-                _ => "openai",
+            let Some(target_page) = to_node.map(|node| node.page) else {
+                continue;
             };
             new_links.push(PromptLink {
-                from: format!("{prefix}-{}", link.from),
+                from: shared_ids[&(target_page, link.from.clone())].clone(),
                 to: link.to.clone(),
                 input: link.input,
             });
         } else if to_shared {
-            let source_page = from_node
-                .map(|n| n.page)
-                .unwrap_or(PromptNodePage::OpenAiCompatible);
-            let prefix = match source_page {
-                PromptNodePage::Hunyuan => "hunyuan",
-                _ => "openai",
+            let Some(source_page) = from_node.map(|node| node.page) else {
+                continue;
             };
             new_links.push(PromptLink {
                 from: link.from.clone(),
-                to: format!("{prefix}-{}", link.to),
+                to: shared_ids[&(source_page, link.to.clone())].clone(),
                 input: link.input,
             });
         } else {
@@ -390,6 +577,24 @@ fn ensure_asr_pages(graph: &mut PromptNodeGraph) {
 mod tests {
     use super::*;
 
+    fn profile_with_legacy_invalid_mode_socket() -> PromptTemplateProfile {
+        let mut profile = PromptTemplateLibrary::editable_copy_of(
+            &builtin_default_profile(),
+            "legacy-invalid-mode-socket",
+        );
+        let node = profile
+            .graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "openai-reference-auto-rules-pseudo-streaming")
+            .unwrap();
+        node.kind = crate::PromptNodeKind::Compose {
+            text: "Legacy pseudo-streaming prompt without placeholders.".into(),
+        };
+        assert!(profile.graph.validate_for_activation().is_err());
+        profile
+    }
+
     #[test]
     fn normalization_restores_the_canonical_builtin() {
         let mut library = PromptTemplateLibrary::default();
@@ -397,6 +602,68 @@ mod tests {
         library.profiles[0].read_only = false;
         library.normalize();
         assert_eq!(library.profiles[0], builtin_default_profile());
+    }
+
+    #[test]
+    fn normalization_removes_legacy_links_to_undeclared_compose_sockets() {
+        let profile = profile_with_legacy_invalid_mode_socket();
+        let mut library = PromptTemplateLibrary {
+            active_id: profile.id.clone(),
+            profiles: vec![profile],
+        };
+
+        library.normalize();
+
+        let migrated = library.active_profile().unwrap();
+        assert!(migrated.graph.validate_for_activation().is_ok());
+        assert!(!migrated.graph.links.iter().any(|link| {
+            link.to == "openai-reference-auto-rules-pseudo-streaming" && link.input == 0
+        }));
+    }
+
+    #[test]
+    fn current_collection_is_rewritten_when_its_graph_needs_migration() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "xrt_prompt_current_upgrade_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let profile = profile_with_legacy_invalid_mode_socket();
+        let library = PromptTemplateLibrary {
+            active_id: profile.id.clone(),
+            profiles: vec![profile],
+        };
+        std::fs::write(
+            temp_dir.join(PromptTemplateLibrary::FILE_NAME),
+            serde_json::to_string_pretty(&library).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = PromptTemplateLibrary::load_from_dir(&temp_dir);
+        let stored =
+            std::fs::read_to_string(temp_dir.join(PromptTemplateLibrary::FILE_NAME)).unwrap();
+        let stored: PromptTemplateLibrary = serde_json::from_str(&stored).unwrap();
+
+        assert!(
+            loaded
+                .active_profile()
+                .unwrap()
+                .graph
+                .validate_for_activation()
+                .is_ok()
+        );
+        assert!(
+            stored
+                .active_profile()
+                .unwrap()
+                .graph
+                .validate_for_activation()
+                .is_ok()
+        );
+        std::fs::remove_dir_all(temp_dir).unwrap();
     }
 
     #[test]
@@ -448,6 +715,9 @@ mod tests {
     #[test]
     fn template_profiles_do_not_serialize_visual_color_configuration() {
         let value = serde_json::to_value(PromptTemplateLibrary::default()).unwrap();
+        assert!(value.get("ordinary").is_none());
+        assert!(value.get("pseudo_streaming").is_none());
+        assert!(value["profiles"].is_array());
         assert!(value["profiles"][0].get("accent").is_none());
     }
 
@@ -478,6 +748,82 @@ mod tests {
         assert_eq!(loaded.profiles[1].name, "Custom Test Profile");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn legacy_mode_separated_file_is_upgraded_and_rewritten() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "xrt_prompt_upgrade_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let legacy = serde_json::json!({
+            "ordinary": {
+                "active_id": "legacy-custom",
+                "profiles": [{
+                    "id": "legacy-custom",
+                    "name": "Legacy",
+                    "description": "",
+                    "graph": PromptNodeGraph::builtin_ordinary(),
+                    "read_only": false
+                }]
+            },
+            "pseudo_streaming": {
+                "active_id": "builtin-pseudo-streaming",
+                "profiles": [{
+                    "id": "builtin-pseudo-streaming",
+                    "name": "Pseudo",
+                    "description": "",
+                    "graph": PromptNodeGraph::builtin_pseudo_streaming(),
+                    "read_only": true
+                }]
+            }
+        });
+        std::fs::write(
+            temp_dir.join(PromptTemplateLibrary::FILE_NAME),
+            serde_json::to_string(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let upgraded = PromptTemplateLibrary::load_from_dir(&temp_dir);
+        assert_eq!(upgraded.active_id, "legacy-custom");
+        let active = upgraded.active_profile().unwrap();
+        assert!(active.graph.nodes.iter().any(|node| matches!(
+            node.kind,
+            crate::PromptNodeKind::Switch {
+                condition: crate::PromptCondition::IsPseudoStreaming
+            }
+        )));
+        let saved =
+            std::fs::read_to_string(temp_dir.join(PromptTemplateLibrary::FILE_NAME)).unwrap();
+        let saved_value: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert!(saved_value.get("ordinary").is_none());
+        assert!(saved_value.get("pseudo_streaming").is_none());
+        assert!(saved_value.get("profiles").is_some());
+        assert!(saved_value.get("active_id").is_some());
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn pseudo_streaming_builtin_prompt_contains_revision_safety_rules() {
+        let graph = PromptNodeGraph::builtin_pseudo_streaming();
+        graph.validate_for_activation().unwrap();
+        let text = graph
+            .nodes
+            .iter()
+            .filter_map(|node| match &node.kind {
+                crate::PromptNodeKind::Compose { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("authoritative"));
+        assert!(text.contains("resurrect"));
+        assert!(text.contains("stable prefix"));
     }
 
     #[test]

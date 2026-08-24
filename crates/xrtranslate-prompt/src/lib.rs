@@ -17,9 +17,10 @@ pub use context::{
 pub use execution::{
     PromptExecution, PromptExecutionTrace, PromptMessage, PromptNodeTrace, PromptRender,
 };
-pub use library::{PromptTemplateLibrary, PromptTemplateProfile};
+pub use library::{PromptMode, PromptTemplateLibrary, PromptTemplateProfile};
 pub use schema::{
-    PromptCondition, PromptGraphError, PromptLink, PromptMessageRole, PromptNode, PromptNodeGraph,
-    PromptNodeKind, PromptNodePage, PromptProviderTarget, PromptVariable,
+    PromptCondition, PromptGraphDomain, PromptGraphError, PromptLink, PromptMessageRole,
+    PromptNode, PromptNodeGraph, PromptNodeKind, PromptNodePage, PromptProviderTarget,
+    PromptVariable,
 };
 pub use template::compose_input_indexes;

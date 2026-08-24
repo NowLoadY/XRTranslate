@@ -33,6 +33,179 @@ const STUTTER_CHARACTERS: &[char] = &[
     '就',
 ];
 
+/// Reconstructs one authoritative transcript from overlapping ASR windows.
+///
+/// The prefix which has left the overlap is immutable; only the current
+/// hypothesis may be revised. Translation should consume [`Self::text`]
+/// instead of translating each overlapping window independently.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RevisableTranscript {
+    stable: String,
+    hypothesis: String,
+}
+
+impl RevisableTranscript {
+    pub fn new(hypothesis: &str) -> Self {
+        Self {
+            stable: String::new(),
+            hypothesis: collapse_asr_split_words(hypothesis.trim()),
+        }
+    }
+
+    pub fn update(&mut self, hypothesis: &str, overlap_ratio: f32) -> String {
+        let hypothesis = collapse_asr_split_words(hypothesis.trim());
+        if hypothesis.is_empty() {
+            return self.text();
+        }
+        if self.hypothesis.is_empty() {
+            self.hypothesis = hypothesis;
+            return self.text();
+        }
+
+        let previous_tokens = revision_tokens(&self.hypothesis);
+        let next_tokens = revision_tokens(&hypothesis);
+        let commit_end = revision_alignment_start(&previous_tokens, &next_tokens).map_or_else(
+            || {
+                let retained = overlap_ratio.clamp(0.15, 0.8);
+                let commit_count =
+                    ((previous_tokens.len() as f32) * (1.0 - retained)).floor() as usize;
+                previous_tokens
+                    .get(commit_count.min(previous_tokens.len().saturating_sub(1)))
+                    .map_or(self.hypothesis.len(), |token| token.start)
+            },
+            |index| previous_tokens[index].start,
+        );
+        append_revision_text(&mut self.stable, self.hypothesis[..commit_end].trim());
+        self.hypothesis = hypothesis;
+        self.text()
+    }
+
+    pub fn text(&self) -> String {
+        let mut text = self.stable.clone();
+        append_revision_text(&mut text, &self.hypothesis);
+        collapse_asr_split_words(&text)
+    }
+}
+
+#[derive(Clone)]
+struct RevisionToken {
+    normalized: String,
+    start: usize,
+}
+
+fn revision_tokens(text: &str) -> Vec<RevisionToken> {
+    let mut tokens = Vec::new();
+    let mut word_start = None;
+    for (offset, character) in text.char_indices() {
+        if is_content_cjk_or_kana(character) || is_hangul(character) {
+            if let Some(start) = word_start.take() {
+                tokens.push(RevisionToken {
+                    normalized: text[start..offset].to_lowercase(),
+                    start,
+                });
+            }
+            tokens.push(RevisionToken {
+                normalized: character.to_string(),
+                start: offset,
+            });
+        } else if character.is_alphanumeric() || character == '\'' {
+            word_start.get_or_insert(offset);
+        } else if let Some(start) = word_start.take() {
+            tokens.push(RevisionToken {
+                normalized: text[start..offset].to_lowercase(),
+                start,
+            });
+        }
+    }
+    if let Some(start) = word_start {
+        tokens.push(RevisionToken {
+            normalized: text[start..].to_lowercase(),
+            start,
+        });
+    }
+    tokens
+}
+
+fn revision_alignment_start(previous: &[RevisionToken], next: &[RevisionToken]) -> Option<usize> {
+    const LIMIT: usize = 32;
+    let previous_offset = previous.len().saturating_sub(LIMIT);
+    let previous = &previous[previous_offset..];
+    let next = &next[..next.len().min(LIMIT)];
+    let mut lengths = vec![vec![0_u8; next.len() + 1]; previous.len() + 1];
+    for left in (0..previous.len()).rev() {
+        for right in (0..next.len()).rev() {
+            lengths[left][right] = if revision_tokens_match(previous, left, next, right) {
+                lengths[left + 1][right + 1].saturating_add(1)
+            } else {
+                lengths[left + 1][right].max(lengths[left][right + 1])
+            };
+        }
+    }
+    if lengths[0][0] == 0 {
+        return None;
+    }
+    let mut left = 0;
+    let mut right = 0;
+    let mut pairs = Vec::new();
+    while left < previous.len() && right < next.len() {
+        if revision_tokens_match(previous, left, next, right) {
+            pairs.push((left, right));
+            left += 1;
+            right += 1;
+        } else if lengths[left + 1][right] >= lengths[left][right + 1] {
+            left += 1;
+        } else {
+            right += 1;
+        }
+    }
+    let &(first_previous, _) = pairs.first()?;
+    let distinctive = pairs
+        .iter()
+        .any(|&(index, _)| previous[index].normalized.chars().count() >= 4);
+    (pairs.len() >= 2 || distinctive).then_some(previous_offset + first_previous)
+}
+
+fn revision_tokens_match(
+    previous: &[RevisionToken],
+    left: usize,
+    next: &[RevisionToken],
+    right: usize,
+) -> bool {
+    let previous_is_last = left == previous.len().saturating_sub(1);
+    let previous_token = &previous[left].normalized;
+    let next_token = &next[right].normalized;
+    previous_token == next_token
+        || ((previous_is_last || right == 0)
+            && (next_token.starts_with(previous_token) || previous_token.starts_with(next_token))
+            && previous_token.len().min(next_token.len()) >= 2)
+}
+
+fn append_revision_text(destination: &mut String, addition: &str) {
+    if addition.is_empty() {
+        return;
+    }
+    if destination
+        .chars()
+        .last()
+        .zip(addition.chars().next())
+        .is_some_and(|(left, right)| {
+            !left.is_whitespace()
+                && !right.is_whitespace()
+                && !is_revision_compact(left)
+                && !is_revision_compact(right)
+        })
+    {
+        destination.push(' ');
+    }
+    destination.push_str(addition);
+}
+
+fn is_revision_compact(character: char) -> bool {
+    is_content_cjk_or_kana(character)
+        || is_hangul(character)
+        || matches!(character as u32, 0x2E80..=0x9FFF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF)
+}
+
 /// One source span prepared for translation.
 ///
 /// [`translation_text`](Self::translation_text) has leading and trailing
@@ -308,6 +481,23 @@ pub fn translation_segment_pairs_for_final_text_with_lang(
         .collect()
 }
 
+/// Produces bounded live-caption segments from a revisable transcript.
+///
+/// Completed sentence boundaries and long comma-delimited clauses are emitted
+/// as stable display units while the final unterminated tail remains a normal
+/// segment that may be replaced by the next ASR revision. The caller keeps the
+/// whole returned list as one authoritative snapshot, so segment indices can
+/// be reconciled atomically by downstream consumers.
+pub fn translation_segment_pairs_for_live_text_with_lang(
+    text: &str,
+    source_lang: &str,
+) -> Vec<TranslationSegmentPair> {
+    split_translation_segments_internal(text, true)
+        .into_iter()
+        .filter_map(|source_text| translation_pair_with_lang(&source_text, source_lang))
+        .collect()
+}
+
 /// Produces cleaned source strings supplied to the translation model for a given source language.
 pub fn translation_segments_for_text_with_lang(text: &str, source_lang: &str) -> Vec<String> {
     translation_segment_pairs_for_text_with_lang(text, source_lang)
@@ -324,6 +514,10 @@ pub fn translation_segment_pairs_for_text(text: &str) -> Vec<TranslationSegmentP
 /// Produces translation segments for a completed ASR chunk.
 pub fn translation_segment_pairs_for_final_text(text: &str) -> Vec<TranslationSegmentPair> {
     translation_segment_pairs_for_final_text_with_lang(text, "auto")
+}
+
+pub fn translation_segment_pairs_for_live_text(text: &str) -> Vec<TranslationSegmentPair> {
+    translation_segment_pairs_for_live_text_with_lang(text, "auto")
 }
 
 /// Produces only the cleaned source strings supplied to the translation model.
@@ -1101,6 +1295,38 @@ fn merge_word_casing(w1: &str, w2: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revisable_transcript_builds_one_authoritative_snapshot() {
+        let mut transcript =
+            RevisableTranscript::new("we prove it by using a high performance numerical trick");
+        assert_eq!(
+            transcript.update(
+                "a high performance computer with extremely powerful computing power",
+                0.34,
+            ),
+            "we prove it by using a high performance computer with extremely powerful computing power"
+        );
+    }
+
+    #[test]
+    fn revisable_transcript_aligns_a_partial_final_word_after_a_leading_token() {
+        let mut transcript = RevisableTranscript::new("we need comput");
+        assert_eq!(
+            transcript.update("the computer power", 0.34),
+            "we need the computer power"
+        );
+    }
+
+    #[test]
+    fn revisable_transcript_replaces_a_corrected_cjk_tail() {
+        let mut transcript =
+            RevisableTranscript::new("证明的过程中，AI只是利用强悍的数分高带技巧。");
+        assert_eq!(
+            transcript.update("AI只是利用强悍和无比强大的算力。", 0.34),
+            "证明的过程中，AI只是利用强悍和无比强大的算力。"
+        );
+    }
 
     #[test]
     fn collapses_adjacent_english_and_chinese_stutters_until_stable() {

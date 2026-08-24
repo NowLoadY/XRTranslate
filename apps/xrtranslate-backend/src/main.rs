@@ -5,6 +5,7 @@
 //! lets the remaining engine work land without another client protocol change.
 
 use std::{
+    collections::HashMap,
     net::SocketAddr,
     path::PathBuf,
     sync::{
@@ -33,12 +34,14 @@ use tokio::{
 };
 use tracing::{info, warn};
 use xrtranslate_config::AppConfig;
-use xrtranslate_engine::{RouteEpoch, translation_segment_pairs_for_final_text_with_lang};
+use xrtranslate_engine::{
+    RevisableTranscript, RouteEpoch, translation_segment_pairs_for_final_text_with_lang,
+};
 use xrtranslate_inference::{AsyncHttpClient, HttpRequest, ReqwestClient, pcm16_mono_16khz_to_wav};
-use xrtranslate_prompt::{AsrPromptContext, PromptNodeGraph};
+use xrtranslate_prompt::{AsrPromptContext, PromptMode, PromptNodeGraph};
 use xrtranslate_protocol::{
     ActionControl, ClientControl, DrainReason, ErrorEvent, EventControl, Feature,
-    InferenceWorkload, LatencyMetrics, PcmFormat, PcmFrame, PipelineDrained,
+    InferenceWorkload, LatencyMetrics, PcmFormat, PcmFrame, PipelineDrained, PromptGraphSet,
     RecognitionStreamEnded, RouteChanged, SegmentBoundary, SegmentTiming, ServerEvent,
     SessionReady, VadActivity, VoiceClonePhase, VoiceCloneState,
 };
@@ -108,6 +111,8 @@ struct StreamWindowContext {
     revisable: bool,
     overlap_ratio: f32,
     boundary: SegmentBoundary,
+    authoritative_snapshot: bool,
+    revision: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -140,6 +145,7 @@ struct UtteranceJob {
     speaker_id: Option<String>,
     workload: InferenceWorkload,
     enqueued_at: Instant,
+    revision: u64,
 }
 
 struct TextJob {
@@ -152,6 +158,13 @@ struct TextJob {
     speaker_id: Option<String>,
     workload: InferenceWorkload,
     enqueued_at: Instant,
+    revision: u64,
+}
+
+fn validate_prompt_graph_set(
+    graphs: &PromptGraphSet,
+) -> Result<(), xrtranslate_prompt::PromptGraphError> {
+    graphs.graph.validate_for_activation()
 }
 
 enum InferenceJob {
@@ -456,7 +469,9 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
 
     let (job_sender, job_receiver) = mpsc::channel(INFERENCE_QUEUE_CAPACITY);
     let (result_sender, mut result_receiver) = mpsc::channel(INFERENCE_RESULT_CAPACITY);
-    let prompt_graph = Arc::new(tokio::sync::RwLock::new(PromptNodeGraph::builtin_default()));
+    let prompt_graphs = Arc::new(tokio::sync::RwLock::new(PromptGraphSet {
+        graph: PromptNodeGraph::builtin_default(),
+    }));
     let worker = tokio::spawn(run_inference_worker(
         pipeline.inference(),
         job_receiver,
@@ -466,7 +481,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
         state.inference_scheduler.clone(),
         Arc::clone(&speaker_recognition_enabled),
         Arc::clone(&speaker_state_revision),
-        Arc::clone(&prompt_graph),
+        Arc::clone(&prompt_graphs),
     ));
     let mut job_sender = Some(job_sender);
     let mut input_state = SessionInputState::Running;
@@ -679,10 +694,10 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                             source_lang: source,
                             target_lang: target,
                             sample_rate,
-                            prompt_graph: graph,
+                            prompt_graphs: graphs,
                         })) => {
-                            if let Some(graph) = graph {
-                                if let Err(error) = graph.validate_for_activation() {
+                            if let Some(graphs) = graphs {
+                                if let Err(error) = validate_prompt_graph_set(&graphs) {
                                     if send_error(
                                         &outbound_sender,
                                         format!("Invalid prompt graph: {error}"),
@@ -694,7 +709,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                                     }
                                     continue;
                                 }
-                                *prompt_graph.write().await = graph;
+                                *prompt_graphs.write().await = graphs;
                             }
                             if let Some(sample_rate) = sample_rate {
                                 if let Err(error) = validate_input_sample_rate(sample_rate) {
@@ -717,10 +732,10 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                             generation_sender.send_replace(generation);
                             info!(%session_id, source_lang = session.source_lang(), target_lang = session.target_lang(), "session route configured");
                         }
-                        Ok(ClientControl::Action(ActionControl::SetPromptGraph {
-                            prompt_graph: graph,
+                        Ok(ClientControl::Action(ActionControl::SetPromptGraphs {
+                            prompt_graphs: graphs,
                         })) => {
-                            if let Err(error) = graph.validate_for_activation() {
+                            if let Err(error) = validate_prompt_graph_set(&graphs) {
                                 if send_error(
                                     &outbound_sender,
                                     format!("Invalid prompt graph: {error}"),
@@ -732,7 +747,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                                 }
                                 continue;
                             }
-                            *prompt_graph.write().await = graph;
+                            *prompt_graphs.write().await = graphs;
                         }
                         Ok(ClientControl::Event(EventControl::ConfigAudio {
                             sample_rate,
@@ -741,7 +756,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                             audio_source: configured_audio_source,
                             vad_threshold,
                             vad_silence_ms,
-                            continuous_recognition,
+                            continuous_recognition: configured_continuous_recognition,
                             workload: configured_workload,
                         })) => {
                             if let Err(error) = validate_input_sample_rate(sample_rate) {
@@ -754,7 +769,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                             if let Err(error) = pipeline.configure_segmentation(
                                 vad_threshold,
                                 vad_silence_ms,
-                                continuous_recognition,
+                                configured_continuous_recognition,
                                 configured_audio_source,
                             ) {
                                 if send_error(&outbound_sender, error).await.is_err() {
@@ -940,7 +955,8 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                                 let target_language = target_lang
                                     .filter(|t| !t.trim().is_empty())
                                     .unwrap_or_else(|| session.target_lang().to_string());
-                                let turn_id = format!("text-{}", next_utterance_sequence);
+                                let revision = next_utterance_sequence;
+                                let turn_id = format!("text-{revision}");
                                 next_utterance_sequence = next_utterance_sequence.wrapping_add(1);
                                 let topic_turn_id = turn_id.clone();
                                 let job = TextJob {
@@ -953,6 +969,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                                     speaker_id: None,
                                     workload,
                                     enqueued_at: Instant::now(),
+                                    revision,
                                 };
                                 if sender.send(InferenceJob::Text(job)).await.is_err() {
                                     break;
@@ -1371,7 +1388,8 @@ fn inference_jobs(
             topic_turn_sequence,
             speaker_id,
         } = timed;
-        let turn_id = format!("{turn_id_prefix}:utterance-{next_utterance_sequence}");
+        let revision = *next_utterance_sequence;
+        let turn_id = format!("{turn_id_prefix}:utterance-{revision}");
         *next_utterance_sequence = (*next_utterance_sequence)
             .checked_add(1)
             .ok_or_else(|| "utterance identity counter exhausted".to_owned())?;
@@ -1399,6 +1417,7 @@ fn inference_jobs(
             speaker_id,
             workload,
             enqueued_at: Instant::now(),
+            revision,
         }));
     }
     Ok(jobs)
@@ -1451,9 +1470,11 @@ async fn run_inference_worker(
     scheduler: InferenceScheduler,
     speaker_recognition_enabled: Arc<AtomicBool>,
     speaker_state_revision: Arc<AtomicU64>,
-    prompt_graph: Arc<tokio::sync::RwLock<PromptNodeGraph>>,
+    prompt_graphs: Arc<tokio::sync::RwLock<PromptGraphSet>>,
 ) {
     let mut previous_transcript: Option<(PipelineGeneration, String)> = None;
+    let mut active_revisable_transcript: Option<(PipelineGeneration, String, RevisableTranscript)> =
+        None;
     let mut adaptive_route = AdaptiveLanguageRoute::default();
     let mut diarizer: Option<xrtranslate_speaker::OnlineSpeakerDiarizer> = None;
     let speaker_min_utterance_ms = inference.speaker_min_utterance_ms().unwrap_or(0);
@@ -1475,6 +1496,13 @@ async fn run_inference_worker(
         }
     };
     let mut pending_translation: Option<tokio::task::JoinHandle<Vec<InferenceEvent>>> = None;
+    // Stable sentence translations are reusable across revisions of one
+    // logical stream. The cache is bounded and excludes the revisable tail,
+    // which must always be regenerated.
+    let stable_translation_cache = Arc::new(tokio::sync::Mutex::new(HashMap::<
+        String,
+        TranslationOutput,
+    >::new()));
     loop {
         let job = if let Some(pending) = pending_translation.as_mut() {
             tokio::select! {
@@ -1603,10 +1631,12 @@ async fn run_inference_worker(
                 if source_rewrite.corrected_text != recognized.source_text {
                     recognized.apply_source_correction(source_rewrite.corrected_text.clone());
                 }
+                let translation_context_segments =
+                    align_translation_contexts(&recognized.segments, &translation_context.segments);
                 for (segment, context) in recognized
                     .segments
                     .iter_mut()
-                    .zip(&translation_context.segments)
+                    .zip(&translation_context_segments)
                 {
                     let rewrite = rewrite_recognition_terms(
                         &segment.translation_text,
@@ -1621,7 +1651,7 @@ async fn run_inference_worker(
                 let segments = recognized.segments.clone();
                 let segment_contexts = segment_contexts(
                     &segments,
-                    &translation_context.segments,
+                    &translation_context_segments,
                     job.turn_id.clone(),
                     job.speaker_id.clone().unwrap_or_default(),
                     StreamWindowContext {
@@ -1630,6 +1660,8 @@ async fn run_inference_worker(
                         revisable: false,
                         overlap_ratio: 0.0,
                         boundary: SegmentBoundary::InputBoundary,
+                        authoritative_snapshot: false,
+                        revision: job.revision,
                     },
                 );
                 if events
@@ -1657,7 +1689,7 @@ async fn run_inference_worker(
                 let history_speaker_id = job.speaker_id.unwrap_or_default();
                 let history_source_language = source_language.clone();
                 let history_target_language = target_language.clone();
-                let prompt_graph_for_turn = Arc::clone(&prompt_graph);
+                let prompt_graph_for_turn = prompt_graphs.read().await.graph.clone();
                 let turn_id_for_end = job.turn_id.clone();
                 pending_translation = Some(tokio::spawn(async move {
                     let translations = futures_util::stream::iter(
@@ -1673,10 +1705,9 @@ async fn run_inference_worker(
                         let target_language = target_language.clone();
                         let source_for_terms = segment.translation_text.clone();
                         let prompt_terms = corpus_context.prompt_terms.clone();
-                        let prompt_graph = Arc::clone(&prompt_graph_for_turn);
+                        let prompt_graph = prompt_graph_for_turn.clone();
                         async move {
                             let _permit = scheduler.acquire_translation(workload).await;
-                            let prompt_graph = prompt_graph.read().await.clone();
                             let prompt_context = prompt_context_for_segment(
                                 &source_language,
                                 &target_language,
@@ -1774,6 +1805,8 @@ async fn run_inference_worker(
                 {
                     break;
                 }
+                active_revisable_transcript = None;
+                stable_translation_cache.lock().await.clear();
                 continue;
             }
             InferenceJob::Drain {
@@ -1843,6 +1876,9 @@ async fn run_inference_worker(
             diarizer_generation = Some(job.generation);
         }
         let overlap_frames = job.utterance.overlap_frames;
+        let overlap_ratio = (overlap_frames.saturating_mul(FRAME_SAMPLES) as f32
+            / job.utterance.samples.len().max(1) as f32)
+            .clamp(0.0, 1.0);
         let (asr_tokens, translation_tokens) = inference.prompt_context_token_budgets();
         let context_budgets = ContextBudgets {
             asr_tokens,
@@ -1896,7 +1932,8 @@ async fn run_inference_worker(
                 "ASR waited for a scheduled model slot"
             );
         }
-        let asr_prompt_graph = prompt_graph.read().await.clone();
+        let prompt_graph_set = prompt_graphs.read().await.clone();
+        let prompt_graph_for_revision = prompt_graph_set.graph;
         let current_generation = *generation.borrow_and_update();
         if current_generation != job.generation {
             drop(asr_permit);
@@ -1908,9 +1945,14 @@ async fn run_inference_worker(
                 &job.source_language,
                 &job.target_language,
                 &mut adaptive_route,
-                &asr_prompt_graph,
+                &prompt_graph_for_revision,
                 AsrPromptContext {
                     vocabulary: asr_context.vocabulary.clone(),
+                    mode: if job.revisable {
+                        PromptMode::PseudoStreaming
+                    } else {
+                        PromptMode::Ordinary
+                    },
                 },
                 &asr_context.echo_guard,
             ) => result,
@@ -1975,6 +2017,22 @@ async fn run_inference_worker(
             continue;
         }
         if job.revisable {
+            let source_snapshot = match &mut active_revisable_transcript {
+                Some((active_generation, active_turn, transcript))
+                    if *active_generation == job.generation
+                        && *active_turn == job.topic_turn_id =>
+                {
+                    transcript.update(&recognized.source_text, overlap_ratio)
+                }
+                _ => {
+                    let transcript = RevisableTranscript::new(&recognized.source_text);
+                    let snapshot = transcript.text();
+                    active_revisable_transcript =
+                        Some((job.generation, job.topic_turn_id.clone(), transcript));
+                    snapshot
+                }
+            };
+            recognized.apply_source_correction(source_snapshot);
             recognized.prepare_revisable_snapshot();
         }
         if *generation.borrow() != job.generation {
@@ -2053,6 +2111,28 @@ async fn run_inference_worker(
         if *generation.borrow() != job.generation {
             continue;
         }
+        let overlap_ms =
+            overlap_frames as f64 * FRAME_SAMPLES as f64 * 1_000.0 / f64::from(SAMPLE_RATE_HZ);
+        let non_overlapping_start_ms = if job.revisable {
+            job.source_start_ms
+        } else {
+            (job.source_start_ms + overlap_ms).min(job.source_end_ms)
+        };
+        let boundary = segment_boundary(&job.utterance.end_reason);
+        let stream_window = StreamWindowContext {
+            start_ms: non_overlapping_start_ms,
+            end_ms: job.source_end_ms,
+            revisable: job.revisable,
+            overlap_ratio,
+            boundary,
+            authoritative_snapshot: job.revisable,
+            revision: job.revision,
+        };
+        let wire_turn_id = if job.revisable {
+            job.topic_turn_id.clone()
+        } else {
+            job.turn_id.clone()
+        };
         let translation_context = match corpus_session
             .prepare_translation(&PrepareTranslationRequest {
                 asr_context_id: asr_context.context_id,
@@ -2072,6 +2152,23 @@ async fn run_inference_worker(
         {
             Ok(context) => context,
             Err(message) => {
+                let fallback_segments = segment_contexts(
+                    &recognized.segments,
+                    &[],
+                    wire_turn_id.clone(),
+                    speaker_id.clone(),
+                    stream_window,
+                );
+                // Corpus is optional enrichment. Preserve successful ASR even
+                // when context selection is temporarily unavailable.
+                let _ = events
+                    .send(InferenceEvent::Recognized {
+                        generation: job.generation,
+                        recognized,
+                        segments: fallback_segments,
+                        reference_samples: Some(job.utterance.samples.clone()),
+                    })
+                    .await;
                 if events
                     .send(InferenceEvent::Error {
                         generation: job.generation,
@@ -2101,10 +2198,12 @@ async fn run_inference_worker(
         if job.revisable {
             recognized.prepare_revisable_snapshot();
         }
+        let translation_context_segments =
+            align_translation_contexts(&recognized.segments, &translation_context.segments);
         for (segment, context) in recognized
             .segments
             .iter_mut()
-            .zip(&translation_context.segments)
+            .zip(&translation_context_segments)
         {
             let rewrite =
                 rewrite_recognition_terms(&segment.translation_text, &context.source_corrections);
@@ -2121,27 +2220,12 @@ async fn run_inference_worker(
         let source_language = recognized.source_language.clone();
         let target_language = recognized.target_language.clone();
         let segments = recognized.segments.clone();
-        let overlap_ms =
-            overlap_frames as f64 * FRAME_SAMPLES as f64 * 1_000.0 / f64::from(SAMPLE_RATE_HZ);
-        let non_overlapping_start_ms = if job.revisable {
-            job.source_start_ms
-        } else {
-            (job.source_start_ms + overlap_ms).min(job.source_end_ms)
-        };
-        let window_ms = (job.source_end_ms - job.source_start_ms).max(1.0);
-        let boundary = segment_boundary(&job.utterance.end_reason);
         let segment_contexts = segment_contexts(
             &segments,
-            &translation_context.segments,
-            job.turn_id.clone(),
+            &translation_context_segments,
+            wire_turn_id,
             speaker_id.clone(),
-            StreamWindowContext {
-                start_ms: non_overlapping_start_ms,
-                end_ms: job.source_end_ms,
-                revisable: job.revisable,
-                overlap_ratio: (overlap_ms / window_ms) as f32,
-                boundary,
-            },
+            stream_window,
         );
         if events
             .send(InferenceEvent::Recognized {
@@ -2168,13 +2252,22 @@ async fn run_inference_worker(
         let history_speaker_id = speaker_id;
         let history_source_language = source_language.clone();
         let history_target_language = target_language.clone();
-        let prompt_graph_for_turn = Arc::clone(&prompt_graph);
+        // One immutable graph drives every provider page in this revision.
+        let prompt_graph_for_turn = prompt_graph_for_revision;
+        let prompt_mode_for_turn = if job.revisable {
+            PromptMode::PseudoStreaming
+        } else {
+            PromptMode::Ordinary
+        };
+        let prompt_graph_fingerprint = prompt_graph_for_turn.fingerprint();
+        let stable_translation_cache = Arc::clone(&stable_translation_cache);
+        let cache_turn_id = logical_turn_id.clone();
         pending_translation = Some(tokio::spawn(async move {
             let translations = futures_util::stream::iter(
                 segments
                     .into_iter()
                     .zip(segment_contexts)
-                    .zip(translation_context.segments),
+                    .zip(translation_context_segments),
             )
             .map(|((segment, segment_context), corpus_context)| {
                 let inference = inference.clone();
@@ -2183,24 +2276,68 @@ async fn run_inference_worker(
                 let target_language = target_language.clone();
                 let source_for_terms = segment.translation_text.clone();
                 let prompt_terms = corpus_context.prompt_terms.clone();
-                let prompt_graph = Arc::clone(&prompt_graph_for_turn);
+                let prompt_graph = prompt_graph_for_turn.clone();
+                let stable_translation_cache = Arc::clone(&stable_translation_cache);
+                let cache_turn_id = cache_turn_id.clone();
+                let prompt_graph_fingerprint = prompt_graph_fingerprint.clone();
                 async move {
                     let _permit = scheduler.acquire_translation(workload).await;
-                    let prompt_graph = prompt_graph.read().await.clone();
-                    let prompt_context = prompt_context_for_segment(
+                    let mut prompt_context = prompt_context_for_segment(
                         &source_language,
                         &target_language,
                         &corpus_context,
                     );
-                    let output = inference
-                        .translate_segment(
-                            &segment,
-                            &source_language,
-                            &target_language,
-                            prompt_graph,
-                            prompt_context,
-                        )
-                        .await;
+                    prompt_context.mode = prompt_mode_for_turn;
+                    let cache_key = format!(
+                        "{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{:?}\x1f{:?}\x1f{:?}\x1f{:?}",
+                        cache_turn_id,
+                        source_for_terms,
+                        source_language,
+                        target_language,
+                        prompt_graph_fingerprint,
+                        prompt_context.language_order,
+                        prompt_context.terminology_rows,
+                        prompt_context.recent_turns,
+                        prompt_context.mode,
+                    );
+                    let cached = if prompt_mode_for_turn == PromptMode::PseudoStreaming
+                        && !segment_context.revisable
+                    {
+                        stable_translation_cache
+                            .lock()
+                            .await
+                            .get(&cache_key)
+                            .cloned()
+                    } else {
+                        None
+                    };
+                    let output = if let Some(output) = cached {
+                        Ok(output)
+                    } else {
+                        let output = inference
+                            .translate_segment(
+                                &segment,
+                                &source_language,
+                                &target_language,
+                                prompt_graph,
+                                prompt_context,
+                            )
+                            .await;
+                        if prompt_mode_for_turn == PromptMode::PseudoStreaming
+                            && !segment_context.revisable
+                        {
+                            if let Ok(translated) = &output {
+                                let mut cache = stable_translation_cache.lock().await;
+                                if cache.len() >= 128 {
+                                    if let Some(oldest) = cache.keys().next().cloned() {
+                                        cache.remove(&oldest);
+                                    }
+                                }
+                                cache.insert(cache_key, translated.clone());
+                            }
+                        }
+                        output
+                    };
                     (segment_context, source_for_terms, prompt_terms, output)
                 }
             })
@@ -2453,6 +2590,44 @@ fn text_density_units(text: &str) -> usize {
     units
 }
 
+/// Keeps post-correction segmentation total with the corpus response.
+///
+/// XR Corpus selects context against the ASR segmentation that was submitted
+/// with the request. A terminology correction can change sentence boundaries
+/// before the authoritative snapshot is emitted. Never let a plain `zip`
+/// silently drop a newly created segment; retain positional context where it
+/// still exists and give unmatched segments an explicit empty context.
+fn align_translation_contexts(
+    segments: &[xrtranslate_engine::TranslationSegmentPair],
+    contexts: &[CorpusSegmentContext],
+) -> Vec<CorpusSegmentContext> {
+    if segments.len() == contexts.len() {
+        return contexts.to_vec();
+    }
+    warn!(
+        segment_count = segments.len(),
+        context_count = contexts.len(),
+        "translation context count changed after source correction; preserving every segment"
+    );
+    segments
+        .iter()
+        .enumerate()
+        .map(|(index, segment)| {
+            contexts
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| CorpusSegmentContext {
+                    corrected_text: segment.translation_text.clone(),
+                    prompt_terms: Vec::new(),
+                    context_data: Default::default(),
+                    source_corrections: Vec::new(),
+                    activation_matches: Vec::new(),
+                    context_matches: Vec::new(),
+                })
+        })
+        .collect()
+}
+
 fn segment_contexts(
     segments: &[xrtranslate_engine::TranslationSegmentPair],
     corpus_contexts: &[CorpusSegmentContext],
@@ -2497,8 +2672,13 @@ fn segment_contexts(
                 source_end_ms: end,
                 timing,
                 boundary: window.boundary,
-                revisable: window.revisable,
+                // Only the final segment is still mutable. Earlier sentence
+                // boundaries are committed subtitle/meeting units while the
+                // whole list remains one atomic snapshot for consumers.
+                revisable: window.revisable && index + 1 == segments.len(),
                 overlap_ratio: window.overlap_ratio,
+                authoritative_snapshot: window.authoritative_snapshot,
+                revision: window.revision,
                 activation_matches: corpus_context
                     .map(|context| context.activation_matches.clone())
                     .unwrap_or_default(),
@@ -2635,13 +2815,40 @@ async fn shutdown_signal() {
 mod tests {
     use super::{
         AudioEpoch, PipelineGeneration, SessionInputState, StreamWindowContext, VoiceCloneCapture,
-        health_url, local_endpoint_port, model_alias_is_advertised, models_url,
-        outbound_is_current, segment_contexts, split_tts_text,
+        align_translation_contexts, health_url, local_endpoint_port, model_alias_is_advertised,
+        models_url, outbound_is_current, segment_contexts, split_tts_text,
     };
     use xrtranslate_engine::{
         EngineConfig, Language, LanguageRoute, SessionEngine, TranslationSegmentPair,
     };
-    use xrtranslate_protocol::{SegmentBoundary, SegmentTiming};
+    use xrtranslate_prompt::PromptNodeGraph;
+    use xrtranslate_protocol::{PromptGraphSet, SegmentBoundary, SegmentTiming};
+
+    #[test]
+    fn every_mode_uses_the_same_graph_snapshot() {
+        let graphs = PromptGraphSet {
+            graph: PromptNodeGraph::builtin_default(),
+        };
+        graphs.graph.validate_for_activation().unwrap();
+    }
+
+    #[test]
+    fn source_correction_context_alignment_never_drops_new_segments() {
+        let segments = vec![
+            TranslationSegmentPair {
+                source_text: "First.".into(),
+                translation_text: "First.".into(),
+            },
+            TranslationSegmentPair {
+                source_text: "Second.".into(),
+                translation_text: "Second.".into(),
+            },
+        ];
+        let aligned = align_translation_contexts(&segments, &[]);
+        assert_eq!(aligned.len(), segments.len());
+        assert_eq!(aligned[0].corrected_text, "First.");
+        assert_eq!(aligned[1].corrected_text, "Second.");
+    }
 
     #[test]
     fn each_voice_clone_attempt_starts_with_an_empty_bounded_capture() {
@@ -2779,6 +2986,8 @@ mod tests {
                 revisable: false,
                 overlap_ratio: 0.0,
                 boundary: SegmentBoundary::Silence,
+                authoritative_snapshot: false,
+                revision: 0,
             },
         );
         assert_eq!(metadata.len(), 2);

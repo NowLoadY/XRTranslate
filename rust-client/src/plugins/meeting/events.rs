@@ -476,6 +476,8 @@ mod tests {
             prompt_trace: None,
             revisable: false,
             overlap_ratio: 0.0,
+            authoritative_snapshot: false,
+            revision: 0,
         });
         sink.flush();
 

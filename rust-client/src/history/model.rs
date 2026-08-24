@@ -16,6 +16,8 @@ pub(crate) struct RecognitionHistoryEntry {
     pub(crate) context_matches: Vec<CorpusTermMatch>,
     pub(crate) revisable: bool,
     pub(crate) overlap_ratio: f32,
+    pub(crate) authoritative_snapshot: bool,
+    pub(crate) revision_id: u64,
     pub(crate) revision: Option<RevisableText>,
 }
 
@@ -25,6 +27,13 @@ pub(crate) struct PendingRecognitionWindow {
     pub(super) turn_id: String,
     pub(super) segment_count: u32,
     pub(super) segments: Vec<(u32, RecognitionHistoryEntry)>,
+}
+
+pub(crate) struct PendingAuthoritativeRecognition {
+    pub(crate) stream_id: u64,
+    pub(crate) revision_id: u64,
+    pub(crate) segment_count: u32,
+    pub(crate) segments: Vec<(u32, RecognitionHistoryEntry)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +59,8 @@ pub(crate) struct TranslationHistoryEntry {
     pub(crate) term_matches: Vec<CorpusTermMatch>,
     pub(crate) revisable: bool,
     pub(crate) overlap_ratio: f32,
+    pub(crate) authoritative_snapshot: bool,
+    pub(crate) revision_id: u64,
     pub(crate) source_revision: Option<RevisableText>,
     pub(crate) translated_revision: Option<RevisableText>,
 }
@@ -57,5 +68,19 @@ pub(crate) struct TranslationHistoryEntry {
 pub(crate) struct StreamMerge {
     pub(crate) entry: TranslationHistoryEntry,
     pub(crate) rolled_over: bool,
+    pub(crate) changed: bool,
+}
+
+pub(crate) struct PendingAuthoritativeTranslation {
+    pub(crate) stream_id: u64,
+    pub(crate) revision_id: u64,
+    pub(crate) segment_count: u32,
+    pub(crate) segments: Vec<(u32, TranslationHistoryEntry)>,
+}
+
+pub(crate) struct AuthoritativeTranslationMerge {
+    pub(crate) accepted: bool,
+    pub(crate) stabilized: Vec<TranslationHistoryEntry>,
+    pub(crate) live: Option<TranslationHistoryEntry>,
     pub(crate) changed: bool,
 }

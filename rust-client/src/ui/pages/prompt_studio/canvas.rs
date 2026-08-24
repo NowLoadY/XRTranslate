@@ -67,6 +67,7 @@ fn condition_expression(condition: PromptCondition) -> &'static str {
         PromptCondition::SourceIsAuto => "Is source language set to auto?",
         PromptCondition::HasReferenceContext => "Is reference context available?",
         PromptCondition::HasRecognitionContext => "Is recognition context available?",
+        PromptCondition::IsPseudoStreaming => "Is recognition mode pseudo-streaming?",
     }
 }
 
@@ -175,6 +176,7 @@ pub(super) fn render_graph_editor(
     let Some(mut draft) = controller.draft.clone() else {
         return;
     };
+    controller.sync_branch_filters(&draft.graph);
     let runtime_trace = (snapshot.selected_id == snapshot.active_id && !controller.dirty)
         .then(|| controller.runtime_trace.clone())
         .flatten()
@@ -185,7 +187,7 @@ pub(super) fn render_graph_editor(
     let validation_error = draft.graph.validate_for_activation().err();
     let error_target = parse_validation_error_target(validation_error.as_ref());
     let editable = !draft.read_only;
-    ui.horizontal(|ui| {
+    crate::ui::layout::flow_row(ui, |ui| {
         ui.label(
             RichText::new(crate::i18n::tr(language, "GRAPH /"))
                 .font(egui::FontId::monospace(10.0))
@@ -218,8 +220,14 @@ pub(super) fn render_graph_editor(
         }
         ui.separator();
         render_provider_tabs(controller, ui);
+    });
+    ui.add_space(2.0);
+    crate::ui::layout::flow_row(ui, |ui| {
+        render_branch_filters(&draft.graph, controller, ui, language);
+    });
+    ui.add_space(2.0);
+    crate::ui::layout::flow_row(ui, |ui| {
         if editable {
-            ui.separator();
             render_node_toolbar(&mut draft, controller, ui, language);
             if small_outline_button(
                 ui,
@@ -303,58 +311,60 @@ pub(super) fn render_graph_editor(
                 }
             }
         }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if editable {
-                if small_outline_button(
+        crate::ui::layout::flow_group(ui, 260.0, |ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if editable {
+                    if small_outline_button(
+                        ui,
+                        crate::i18n::tr(language, "DELETE"),
+                        crate::i18n::tr(language, "Delete prompt design"),
+                    )
+                    .clicked()
+                    {
+                        actions.push(PromptStudioAction::DeleteProfile(draft.id.clone()));
+                    }
+                    if validation_error.is_none()
+                        && draft.id != snapshot.active_id
+                        && style::command_button(ui, crate::i18n::tr(language, "ACTIVATE"), true)
+                            .clicked()
+                    {
+                        actions.push(PromptStudioAction::ActivateProfile(draft.clone()));
+                        controller.dirty = false;
+                    }
+                } else if small_outline_button(
                     ui,
-                    crate::i18n::tr(language, "DELETE"),
-                    crate::i18n::tr(language, "Delete prompt design"),
+                    crate::i18n::tr(language, "EDIT COPY"),
+                    crate::i18n::tr(language, "Create an editable graph copy"),
                 )
                 .clicked()
                 {
-                    actions.push(PromptStudioAction::DeleteProfile(draft.id.clone()));
+                    let mut copy = PromptTemplateLibrary::editable_copy_of(
+                        &draft,
+                        format!("custom-{}", uuid::Uuid::new_v4()),
+                    );
+                    copy.name = format!("{} copy", draft.name);
+                    actions.push(PromptStudioAction::CloneProfile(copy.clone()));
+                    controller.set_draft(copy);
                 }
-                if validation_error.is_none()
-                    && draft.id != snapshot.active_id
-                    && style::command_button(ui, crate::i18n::tr(language, "ACTIVATE"), true)
-                        .clicked()
+                if small_outline_button(
+                    ui,
+                    crate::i18n::tr(language, "EXPORT"),
+                    crate::i18n::tr(language, "Export graph project file"),
+                )
+                .clicked()
                 {
-                    actions.push(PromptStudioAction::ActivateProfile(draft.clone()));
-                    controller.dirty = false;
+                    actions.push(PromptStudioAction::ExportProfile(draft.clone()));
                 }
-            } else if small_outline_button(
-                ui,
-                crate::i18n::tr(language, "EDIT COPY"),
-                crate::i18n::tr(language, "Create an editable graph copy"),
-            )
-            .clicked()
-            {
-                let mut copy = PromptTemplateLibrary::editable_copy_of(
-                    &draft,
-                    format!("custom-{}", uuid::Uuid::new_v4()),
-                );
-                copy.name = format!("{} copy", draft.name);
-                actions.push(PromptStudioAction::CloneProfile(copy.clone()));
-                controller.set_draft(copy);
-            }
-            if small_outline_button(
-                ui,
-                crate::i18n::tr(language, "EXPORT"),
-                crate::i18n::tr(language, "Export graph project file"),
-            )
-            .clicked()
-            {
-                actions.push(PromptStudioAction::ExportProfile(draft.clone()));
-            }
-            if small_outline_button(
-                ui,
-                crate::i18n::tr(language, "IMPORT"),
-                crate::i18n::tr(language, "Import graph project file"),
-            )
-            .clicked()
-            {
-                actions.push(PromptStudioAction::ImportProfile);
-            }
+                if small_outline_button(
+                    ui,
+                    crate::i18n::tr(language, "IMPORT"),
+                    crate::i18n::tr(language, "Import graph project file"),
+                )
+                .clicked()
+                {
+                    actions.push(PromptStudioAction::ImportProfile);
+                }
+            });
         });
     });
     if let Some(error) = &validation_error {
@@ -497,21 +507,23 @@ pub(super) fn render_graph_editor(
                     controller.box_select_current.take(),
                 ) {
                     let selection = rect_between(start, current);
-                    let active_provider = controller.active_provider;
-                    for node in draft
+                    let selected_ids = draft
                         .graph
                         .nodes
                         .iter()
-                        .filter(|node| node.page.is_visible_on(active_provider))
-                    {
-                        if selection.intersects(graph_rect(
-                            canvas,
-                            controller,
-                            node.position,
-                            node_size(node),
-                        )) {
-                            controller.selected_nodes.insert(node.id.clone());
-                        }
+                        .filter(|node| controller.node_is_visible(node))
+                        .filter(|node| {
+                            selection.intersects(graph_rect(
+                                canvas,
+                                controller,
+                                node.position,
+                                node_size(node),
+                            ))
+                        })
+                        .map(|node| node.id.clone())
+                        .collect::<Vec<_>>();
+                    for id in selected_ids {
+                        controller.selected_nodes.insert(id);
                     }
                 }
             }
@@ -610,6 +622,7 @@ pub(super) fn render_graph_editor(
             render_selection_box(&mut canvas_ui, controller);
             navigation::render_canvas_navigation_hint(&canvas_ui, canvas, language);
         });
+    controller.sync_branch_filters(&draft.graph);
     controller.draft = Some(draft);
 }
 
@@ -624,15 +637,108 @@ fn canvas_viewport(parent: &mut egui::Ui, canvas: Rect) -> egui::Ui {
 }
 
 fn render_provider_tabs(controller: &mut PromptStudioController, ui: &mut egui::Ui) {
-    for (target, label) in [
-        (PromptProviderTarget::OpenAiCompatible, "OPENAI"),
-        (PromptProviderTarget::Hunyuan, "HUNYUAN"),
-        (PromptProviderTarget::AsrInstruction, "ASR PROMPT"),
-        (PromptProviderTarget::AsrContextBias, "ASR CONTEXT"),
-    ] {
+    let tabs: &[(PromptProviderTarget, &str)] = match controller.domain() {
+        xrtranslate_prompt::PromptGraphDomain::Translation => &[
+            (PromptProviderTarget::OpenAiCompatible, "OPENAI"),
+            (PromptProviderTarget::Hunyuan, "HUNYUAN"),
+        ],
+        xrtranslate_prompt::PromptGraphDomain::Asr => &[
+            (PromptProviderTarget::AsrInstruction, "ASR INSTRUCTION"),
+            (PromptProviderTarget::AsrContextBias, "ASR CONTEXT BIAS"),
+        ],
+    };
+    for &(target, label) in tabs {
         if style::provider_tab(ui, label, controller.active_provider == target).clicked() {
             controller.select_provider(target);
         }
+    }
+}
+
+fn render_branch_filters(
+    graph: &PromptNodeGraph,
+    controller: &mut PromptStudioController,
+    ui: &mut egui::Ui,
+    language: crate::i18n::UiLanguage,
+) {
+    let conditions = controller.branch_conditions();
+    if conditions.is_empty() {
+        return;
+    }
+    ui.label(
+        RichText::new(crate::i18n::tr(language, "VIEW /"))
+            .font(egui::FontId::monospace(9.5))
+            .color(style::MUTED),
+    );
+    for condition in conditions {
+        let selected = controller.branch_filter(condition);
+        let (label, options) = branch_filter_definition(condition);
+        ui.label(
+            RichText::new(crate::i18n::tr(language, label))
+                .font(egui::FontId::monospace(9.0))
+                .color(style::MUTED),
+        );
+        egui::ComboBox::from_id_salt((
+            "prompt_branch_filter",
+            controller.active_provider,
+            condition,
+        ))
+        .selected_text(crate::i18n::tr(
+            language,
+            options
+                .iter()
+                .find_map(|(label, value)| (*value == selected).then_some(*label))
+                .unwrap_or("All"),
+        ))
+        .width(112.0)
+        .show_ui(ui, |ui| {
+            for (option_label, value) in options {
+                if ui
+                    .selectable_label(selected == value, crate::i18n::tr(language, option_label))
+                    .clicked()
+                {
+                    controller.set_branch_filter(graph, condition, value);
+                }
+            }
+        });
+    }
+}
+
+fn branch_filter_definition(
+    condition: PromptCondition,
+) -> (&'static str, [(&'static str, Option<bool>); 3]) {
+    match condition {
+        PromptCondition::IsPseudoStreaming => (
+            "MODE",
+            [
+                ("All", None),
+                ("Ordinary", Some(false)),
+                ("Pseudo-streaming", Some(true)),
+            ],
+        ),
+        PromptCondition::SourceIsAuto => (
+            "SOURCE",
+            [
+                ("All", None),
+                ("Explicit", Some(false)),
+                ("Auto", Some(true)),
+            ],
+        ),
+        PromptCondition::HasReferenceContext => (
+            "REFERENCE CONTEXT",
+            [
+                ("All", None),
+                ("No context", Some(false)),
+                ("With context", Some(true)),
+            ],
+        ),
+        PromptCondition::HasRecognitionContext => (
+            "RECOGNITION CONTEXT",
+            [
+                ("All", None),
+                ("No context", Some(false)),
+                ("With context", Some(true)),
+            ],
+        ),
     }
 }
 
@@ -661,12 +767,21 @@ fn render_node_menu(
                 .small()
                 .strong(),
         );
-        for (label, variable) in [
-            ("Source language", PromptVariable::SourceLanguage),
-            ("Target language", PromptVariable::TargetLanguage),
-            ("Current input", PromptVariable::CurrentInput),
-            ("Recognition context", PromptVariable::RecognitionContext),
-        ] {
+        let variables: &[(&str, PromptVariable)] = match controller.domain() {
+            xrtranslate_prompt::PromptGraphDomain::Translation => &[
+                ("Source language", PromptVariable::SourceLanguage),
+                ("Target language", PromptVariable::TargetLanguage),
+                ("Current input", PromptVariable::CurrentInput),
+                ("Recognition mode", PromptVariable::RecognitionMode),
+            ],
+            xrtranslate_prompt::PromptGraphDomain::Asr => &[
+                ("Source language", PromptVariable::SourceLanguage),
+                ("Expected languages", PromptVariable::TargetLanguage),
+                ("Recognition context", PromptVariable::RecognitionContext),
+                ("Recognition mode", PromptVariable::RecognitionMode),
+            ],
+        };
+        for &(label, variable) in variables {
             if ui.button(crate::i18n::tr(language, label)).clicked() {
                 let position = node_add_position(controller, &draft.graph, preferred_center);
                 let before = draft.clone();
@@ -675,34 +790,44 @@ fn render_node_menu(
                 ui.close();
             }
         }
-        ui.separator();
-        ui.label(
-            RichText::new(crate::i18n::tr(language, "REFERENCE DATA"))
-                .small()
-                .strong(),
-        );
-        for (label, block) in available_blocks() {
-            if ui.button(crate::i18n::tr(language, label)).clicked() {
-                let position = node_add_position(controller, &draft.graph, preferred_center);
-                let before = draft.clone();
-                let id = draft.graph.add_input(page, block, position);
-                finish_node_add(draft, controller, before, id);
-                ui.close();
+        if controller.domain() == xrtranslate_prompt::PromptGraphDomain::Translation {
+            ui.separator();
+            ui.label(
+                RichText::new(crate::i18n::tr(language, "REFERENCE DATA"))
+                    .small()
+                    .strong(),
+            );
+            for (label, block) in available_blocks() {
+                if ui.button(crate::i18n::tr(language, label)).clicked() {
+                    let position = node_add_position(controller, &draft.graph, preferred_center);
+                    let before = draft.clone();
+                    let id = draft.graph.add_input(page, block, position);
+                    finish_node_add(draft, controller, before, id);
+                    ui.close();
+                }
             }
         }
     });
     ui.menu_button(crate::i18n::tr(language, "Logic"), |ui| {
-        for (label, condition) in [
-            ("Source is auto", PromptCondition::SourceIsAuto),
-            (
-                "Has reference context",
-                PromptCondition::HasReferenceContext,
-            ),
-            (
-                "Has recognition context",
-                PromptCondition::HasRecognitionContext,
-            ),
-        ] {
+        let conditions: &[(&str, PromptCondition)] = match controller.domain() {
+            xrtranslate_prompt::PromptGraphDomain::Translation => &[
+                ("Source is auto", PromptCondition::SourceIsAuto),
+                (
+                    "Has reference context",
+                    PromptCondition::HasReferenceContext,
+                ),
+                ("Is pseudo-streaming", PromptCondition::IsPseudoStreaming),
+            ],
+            xrtranslate_prompt::PromptGraphDomain::Asr => &[
+                ("Source is auto", PromptCondition::SourceIsAuto),
+                (
+                    "Has recognition context",
+                    PromptCondition::HasRecognitionContext,
+                ),
+                ("Is pseudo-streaming", PromptCondition::IsPseudoStreaming),
+            ],
+        };
+        for &(label, condition) in conditions {
             if ui.button(crate::i18n::tr(language, label)).clicked() {
                 let position = node_add_position(controller, &draft.graph, preferred_center);
                 let before = draft.clone();

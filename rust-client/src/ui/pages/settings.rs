@@ -11,6 +11,9 @@ pub enum SettingsSection {
 }
 
 pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
+    // The settings navigator and its active pane can wrap internally, but both
+    // must retain a usable side-by-side editing area.
+    crate::ui::layout::require_content_size(ui, egui::vec2(520.0, 360.0));
     ui.label(
         egui::RichText::new(crate::i18n::tr(app.ui_language, "Settings"))
             .size(22.0)
@@ -103,6 +106,38 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
     });
     ui.add_space(14.0);
 
+    section(ui, crate::i18n::tr(app.ui_language, "Theme"), |ui| {
+        crate::ui::layout::flow_row(ui, |ui| {
+            ui.label(crate::i18n::tr(app.ui_language, "Theme variant"));
+            let mut variant = app.ui_theme.variant;
+            egui::ComboBox::from_id_salt("settings_theme_variant")
+                .selected_text(match variant {
+                    crate::ui::theme::ThemeVariant::Default => {
+                        crate::i18n::tr(app.ui_language, "Default")
+                    }
+                    crate::ui::theme::ThemeVariant::HandDrawn => {
+                        crate::i18n::tr(app.ui_language, "Hand-drawn")
+                    }
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut variant,
+                        crate::ui::theme::ThemeVariant::Default,
+                        crate::i18n::tr(app.ui_language, "Default"),
+                    );
+                    ui.selectable_value(
+                        &mut variant,
+                        crate::ui::theme::ThemeVariant::HandDrawn,
+                        crate::i18n::tr(app.ui_language, "Hand-drawn"),
+                    );
+                });
+            if variant != app.ui_theme.variant {
+                app.set_ui_theme(crate::ui::theme::UiTheme { variant });
+            }
+        });
+    });
+    ui.add_space(14.0);
+
     section(ui, crate::i18n::tr(app.ui_language, "Downloads"), |ui| {
         ui.label(
             egui::RichText::new(crate::i18n::tr(app.ui_language, "Download proxy"))
@@ -133,7 +168,7 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
     ui.add_space(14.0);
 
     section(ui, crate::i18n::tr(app.ui_language, "About"), |ui| {
-        ui.horizontal(|ui| {
+        crate::ui::layout::flow_row(ui, |ui| {
             ui.label(
                 egui::RichText::new(crate::i18n::tr(app.ui_language, "Version:"))
                     .color(crate::ui::theme::text_strong())
@@ -146,7 +181,7 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
             );
         });
         ui.add_space(8.0);
-        ui.horizontal(|ui| {
+        crate::ui::layout::flow_row(ui, |ui| {
             ui.label(
                 egui::RichText::new("GitHub:")
                     .color(crate::ui::theme::text_strong())
@@ -373,7 +408,7 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     }
 
     ui.add_space(10.0);
-    ui.horizontal(|ui| {
+    crate::ui::layout::flow_row(ui, |ui| {
         let busy = app.app_update_manager.is_busy();
         let is_actionable = matches!(
             &state,
@@ -413,7 +448,7 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 
 fn render_server_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     section(ui, crate::i18n::tr(app.ui_language, "Backend"), |ui| {
-        ui.horizontal(|ui| {
+        crate::ui::layout::flow_row(ui, |ui| {
             ui.label(format!(
                 "{}:",
                 crate::i18n::tr(app.ui_language, "Runtime Directory")
@@ -437,7 +472,7 @@ fn render_server_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     ui.add_space(14.0);
 
     section(ui, crate::i18n::tr(app.ui_language, "Server"), |ui| {
-        ui.horizontal(|ui| {
+        crate::ui::layout::flow_row(ui, |ui| {
             ui.label("URL:");
             if ui
                 .add(

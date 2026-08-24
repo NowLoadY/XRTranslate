@@ -39,8 +39,11 @@ mod window_backdrop;
 use audio::{AudioSystem, InputConfigInfo, InputDevice};
 use client_settings::{CaptureSource, ClientSettings, RecognitionSettings};
 use history::{
-    PendingFinalAsr, PendingRecognitionWindow, RecognitionHistoryEntry, TranslationHistoryEntry,
-    collect_recognition_window, merge_stream_recognition, merge_stream_translation,
+    PendingAuthoritativeRecognition, PendingAuthoritativeTranslation, PendingFinalAsr,
+    PendingRecognitionWindow, RecognitionHistoryEntry, TranslationHistoryEntry,
+    collect_authoritative_recognition_snapshot, collect_authoritative_translation_snapshot,
+    collect_recognition_window, merge_authoritative_recognition_snapshot,
+    merge_authoritative_translation_snapshot, merge_stream_recognition, merge_stream_translation,
     upsert_completed_translation,
 };
 use i18n::UiLanguage;
@@ -57,6 +60,7 @@ use session_coordinator::{
 };
 use ui::{NavigationState, Page};
 use xrtranslate_prompt::{PromptExecutionTrace, PromptProviderTarget, PromptTemplateLibrary};
+use xrtranslate_protocol::PromptGraphSet;
 
 pub const LANGUAGE_OPTIONS: &[(&str, &str)] = &[
     ("zh", "Chinese"),
@@ -204,6 +208,7 @@ struct XRTranslateApp {
     pub first_run: bool,
     pub onboarding_page: usize,
     pub ui_language: UiLanguage,
+    pub ui_theme: ui::theme::UiTheme,
     navigation: NavigationState,
     window_backdrop: window_backdrop::WindowBackdrop,
     mute_self_pauses_translation: Arc<AtomicBool>,
@@ -332,9 +337,60 @@ impl Default for XRTranslateApp {
         std::thread::Builder::new()
             .name("session-event-pump".into())
             .spawn(move || {
+                let mut pending_authoritative_sources =
+                    Vec::<PendingAuthoritativeRecognition>::new();
+                let mut pending_authoritative_translations =
+                    Vec::<PendingAuthoritativeTranslation>::new();
+                let mut pending_source_events =
+                    std::collections::HashMap::<(u64, u64), Vec<SessionEvent>>::new();
+                let mut pending_translation_events =
+                    std::collections::HashMap::<(u64, u64), Vec<SessionEvent>>::new();
                 while let Ok(event) = rx.recv() {
-                    for subscriber in &session_event_subscribers {
-                        subscriber.on_session_event(&event);
+                    pending_source_events.retain(|(stream_id, revision), _| {
+                        pending_authoritative_sources.iter().any(|snapshot| {
+                            snapshot.stream_id == *stream_id && snapshot.revision_id == *revision
+                        })
+                    });
+                    pending_translation_events.retain(|(stream_id, revision), _| {
+                        pending_authoritative_translations.iter().any(|snapshot| {
+                            snapshot.stream_id == *stream_id && snapshot.revision_id == *revision
+                        })
+                    });
+                    let defer_subscribers = matches!(
+                        &event,
+                        SessionEvent::SourceSegment {
+                            authoritative_snapshot: true,
+                            ..
+                        } | SessionEvent::Translation {
+                            authoritative_snapshot: true,
+                            ..
+                        }
+                    );
+                    if !defer_subscribers {
+                        for subscriber in &session_event_subscribers {
+                            subscriber.on_session_event(&event);
+                        }
+                    }
+                    if defer_subscribers {
+                        match &event {
+                            SessionEvent::SourceSegment {
+                                stream_id,
+                                revision,
+                                ..
+                            } => pending_source_events
+                                .entry((*stream_id, *revision))
+                                .or_default()
+                                .push(event.clone()),
+                            SessionEvent::Translation {
+                                stream_id,
+                                revision,
+                                ..
+                            } => pending_translation_events
+                                .entry((*stream_id, *revision))
+                                .or_default()
+                                .push(event.clone()),
+                            _ => {}
+                        }
                     }
                     let mut state = shared_state_clone.lock().unwrap();
                     match event {
@@ -355,6 +411,10 @@ impl Default for XRTranslateApp {
                                 entry.live = false;
                             }
                             state.pending_recognition_windows.clear();
+                            pending_authoritative_sources.clear();
+                            pending_authoritative_translations.clear();
+                            pending_source_events.clear();
+                            pending_translation_events.clear();
                             state.tts_runtime_backend = None;
                             state.tts_runtime_cuda_version = None;
                             microphone_vad_active_clone.store(false, Ordering::Relaxed);
@@ -422,6 +482,8 @@ impl Default for XRTranslateApp {
                                         context_matches: Vec::new(),
                                         revisable: false,
                                         overlap_ratio: 0.0,
+                                        authoritative_snapshot: false,
+                                        revision_id: 0,
                                         revision: None,
                                     });
                                     if state.recognition_history.len() > 100 {
@@ -454,6 +516,8 @@ impl Default for XRTranslateApp {
                             segment_count,
                             revisable,
                             overlap_ratio,
+                            authoritative_snapshot,
+                            revision,
                         } => {
                             if text.is_empty() {
                                 continue;
@@ -507,29 +571,61 @@ impl Default for XRTranslateApp {
                                 context_matches,
                                 revisable,
                                 overlap_ratio,
+                                authoritative_snapshot,
+                                revision_id: revision,
                                 revision: None,
                             };
-                            let complete = collect_recognition_window(
-                                &mut state.pending_recognition_windows,
-                                stream_id,
-                                continuous,
-                                segment_index,
-                                segment_count,
-                                entry,
-                            );
-                            if let Some(entry) = complete {
-                                if continuous {
-                                    merge_stream_recognition(
+                            if authoritative_snapshot {
+                                let complete = collect_authoritative_recognition_snapshot(
+                                    &mut pending_authoritative_sources,
+                                    stream_id,
+                                    revision,
+                                    segment_index,
+                                    segment_count,
+                                    entry,
+                                );
+                                if let Some(entries) = complete {
+                                    let accepted = merge_authoritative_recognition_snapshot(
                                         &mut state.recognition_history,
                                         stream_id,
-                                        entry,
+                                        entries,
                                     );
-                                } else if state.recognition_history.last() != Some(&entry) {
-                                    state.recognition_history.push(entry);
+                                    if accepted {
+                                        for event in pending_source_events
+                                            .remove(&(stream_id, revision))
+                                            .unwrap_or_default()
+                                        {
+                                            for subscriber in &session_event_subscribers {
+                                                subscriber.on_session_event(&event);
+                                            }
+                                        }
+                                    } else {
+                                        pending_source_events.remove(&(stream_id, revision));
+                                    }
                                 }
-                                if state.recognition_history.len() > 100 {
-                                    state.recognition_history.remove(0);
+                            } else {
+                                let complete = collect_recognition_window(
+                                    &mut state.pending_recognition_windows,
+                                    stream_id,
+                                    continuous,
+                                    segment_index,
+                                    segment_count,
+                                    entry,
+                                );
+                                if let Some(entry) = complete {
+                                    if continuous {
+                                        merge_stream_recognition(
+                                            &mut state.recognition_history,
+                                            stream_id,
+                                            entry,
+                                        );
+                                    } else if state.recognition_history.last() != Some(&entry) {
+                                        state.recognition_history.push(entry);
+                                    }
                                 }
+                            }
+                            if state.recognition_history.len() > 100 {
+                                state.recognition_history.remove(0);
                             }
                         }
                         SessionEvent::Translation {
@@ -541,7 +637,7 @@ impl Default for XRTranslateApp {
                             translated,
                             turn_id,
                             segment_index,
-                            segment_count: _,
+                            segment_count,
                             speaker_id,
                             source_start_ms,
                             source_end_ms,
@@ -551,6 +647,8 @@ impl Default for XRTranslateApp {
                             prompt_trace,
                             revisable,
                             overlap_ratio,
+                            authoritative_snapshot,
+                            revision,
                         } => {
                             if !publish_to_host_outputs {
                                 continue;
@@ -572,10 +670,66 @@ impl Default for XRTranslateApp {
                                 term_matches,
                                 revisable,
                                 overlap_ratio,
+                                authoritative_snapshot,
+                                revision_id: revision,
                                 source_revision: None,
                                 translated_revision: None,
                             };
-                            if continuous {
+                            if authoritative_snapshot {
+                                let complete = collect_authoritative_translation_snapshot(
+                                    &mut pending_authoritative_translations,
+                                    stream_id,
+                                    revision,
+                                    segment_index,
+                                    segment_count,
+                                    fragment,
+                                );
+                                if let Some(entries) = complete {
+                                    let merged = merge_authoritative_translation_snapshot(
+                                        &mut state.translations,
+                                        stream_id,
+                                        entries,
+                                    );
+                                    if merged.accepted {
+                                        for event in pending_translation_events
+                                            .remove(&(stream_id, revision))
+                                            .unwrap_or_default()
+                                        {
+                                            for subscriber in &session_event_subscribers {
+                                                subscriber.on_session_event(&event);
+                                            }
+                                        }
+                                        for entry in &merged.stabilized {
+                                            publish_host_output(
+                                                &host_output_subscribers,
+                                                HostOutputEvent::Caption {
+                                                    stream_id,
+                                                    source: &entry.source,
+                                                    translated: &entry.translated,
+                                                    speaker: &entry.speaker_id,
+                                                    update: CaptionUpdate::RollOver,
+                                                },
+                                            );
+                                        }
+                                        if merged.changed
+                                            && let Some(entry) = merged.live.as_ref()
+                                        {
+                                            publish_host_output(
+                                                &host_output_subscribers,
+                                                HostOutputEvent::Caption {
+                                                    stream_id,
+                                                    source: &entry.source,
+                                                    translated: &entry.translated,
+                                                    speaker: &entry.speaker_id,
+                                                    update: CaptionUpdate::Replace,
+                                                },
+                                            );
+                                        }
+                                    } else {
+                                        pending_translation_events.remove(&(stream_id, revision));
+                                    }
+                                }
+                            } else if continuous {
                                 let merged = merge_stream_translation(
                                     &mut state.translations,
                                     stream_id,
@@ -628,23 +782,27 @@ impl Default for XRTranslateApp {
                             if !publish_to_host_outputs {
                                 continue;
                             }
-                            if let Some(entry) = state
-                                .translations
-                                .iter_mut()
-                                .rfind(|entry| entry.stream_id == Some(stream_id) && entry.live)
-                            {
-                                entry.live = false;
+                            for entry in &mut state.translations {
+                                if entry.stream_id == Some(stream_id) {
+                                    entry.live = false;
+                                }
                             }
-                            if let Some(entry) = state
-                                .recognition_history
-                                .iter_mut()
-                                .rfind(|entry| entry.stream_id == Some(stream_id) && entry.live)
-                            {
-                                entry.live = false;
+                            for entry in &mut state.recognition_history {
+                                if entry.stream_id == Some(stream_id) {
+                                    entry.live = false;
+                                }
                             }
                             state
                                 .pending_recognition_windows
                                 .retain(|window| window.stream_id != stream_id);
+                            pending_authoritative_sources
+                                .retain(|snapshot| snapshot.stream_id != stream_id);
+                            pending_authoritative_translations
+                                .retain(|snapshot| snapshot.stream_id != stream_id);
+                            pending_source_events
+                                .retain(|(pending_stream, _), _| *pending_stream != stream_id);
+                            pending_translation_events
+                                .retain(|(pending_stream, _), _| *pending_stream != stream_id);
                             publish_host_output(
                                 &host_output_subscribers,
                                 HostOutputEvent::StreamEnded(stream_id),
@@ -803,6 +961,7 @@ impl Default for XRTranslateApp {
             first_run,
             onboarding_page,
             ui_language: settings.ui_language,
+            ui_theme: settings.ui_theme,
             navigation: NavigationState {
                 collapsed: settings.sidebar_collapsed,
                 page: settings.active_page,
@@ -949,7 +1108,9 @@ impl XRTranslateApp {
             continuous_recognition: recognition.continuous_recognition,
             audio_source,
             finish_when_audio_ends,
-            prompt_graph: Some(self.prompt_library.active_graph()),
+            prompt_graphs: Some(PromptGraphSet {
+                graph: self.prompt_library.active_graph(),
+            }),
         }
     }
 
@@ -973,8 +1134,11 @@ impl XRTranslateApp {
             state.latest_asr_prompt_trace = None;
             state.latest_translation_prompt_trace = None;
         }
+        let graphs = PromptGraphSet {
+            graph: self.prompt_library.active_graph(),
+        };
         for session in &self.sessions {
-            session.update_prompt_template(graph.clone());
+            session.update_prompt_templates(graphs.clone());
         }
         self.save_settings();
     }
@@ -987,6 +1151,9 @@ impl XRTranslateApp {
 
         for action in actions {
             match action {
+                PromptStudioAction::SwitchDomain(next_domain) => {
+                    self.prompt_studio.switch_domain(next_domain);
+                }
                 PromptStudioAction::SelectProfile(id) => {
                     self.prompt_studio.select_profile(id, &self.prompt_library);
                 }
@@ -1464,6 +1631,7 @@ impl XRTranslateApp {
             tts_enabled: self.tts_enabled,
             mute_self_pauses_translation: self.mute_self_pauses_translation.load(Ordering::Relaxed),
             ui_language: self.ui_language,
+            ui_theme: self.ui_theme,
             first_run: self.first_run,
             server_url: self.server_url.clone(),
             download_proxy_url: self.download_proxy_url.clone(),
@@ -1518,6 +1686,11 @@ impl XRTranslateApp {
 
     pub fn set_ui_language(&mut self, language: UiLanguage) {
         self.ui_language = language;
+        self.save_settings();
+    }
+
+    pub fn set_ui_theme(&mut self, theme: ui::theme::UiTheme) {
+        self.ui_theme = theme;
         self.save_settings();
     }
 
@@ -2760,6 +2933,8 @@ impl XRTranslateApp {
 
 impl eframe::App for XRTranslateApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        ui::theme::install_context(ui.ctx(), self.ui_theme);
+        ui::layout::begin_frame(ui.ctx());
         self.model_task_manager.poll();
         if let Some(path) = self.runtime_installer.poll() {
             self.backend_manager.use_installed_llama_server(&path);
@@ -2791,6 +2966,7 @@ impl eframe::App for XRTranslateApp {
         if self.first_run {
             ui::render_onboarding_fullscreen(self, ui);
             self.render_modal_layer(ui.ctx());
+            ui::layout::finish_frame(ui.ctx());
             return;
         }
 
@@ -2814,7 +2990,7 @@ impl eframe::App for XRTranslateApp {
                 ui.ctx(),
                 egui::Id::new("sidebar_expand_anim"),
                 expand_target,
-                0.20,
+                ui::theme::animation_timings(ui.ctx()).sidebar,
             );
             let eased_expand = ui::animation::AnimationSystem::ease_out_cubic(expand_factor);
             let sidebar_width = egui::lerp(54.0..=200.0, eased_expand);
@@ -2942,6 +3118,7 @@ impl eframe::App for XRTranslateApp {
             });
 
         self.render_modal_layer(ui.ctx());
+        ui::layout::finish_frame(ui.ctx());
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -3001,7 +3178,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1080.0, 720.0])
-            .with_min_inner_size([880.0, 600.0])
+            .with_min_inner_size(ui::layout::BASE_MIN_INNER_SIZE)
             // Keep the native non-client frame stable from CreateWindowExW
             // onward. Toggling decorations after the first transparent frame
             // can leave a stale DWM frame behind on Windows.

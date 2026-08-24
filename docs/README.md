@@ -14,6 +14,8 @@ notes live under `providers/`.
   dependency rules.
 - [Prompt architecture](prompt-architecture.md): Prompt Studio semantics,
   execution traces, and provider delivery boundaries.
+- [UI architecture](ui-architecture.md): shared theme tokens, animation timing,
+  and opt-in GPU border rendering.
 
 ## Providers and runtime
 

@@ -127,14 +127,20 @@ impl RecognizedOutput {
 
     pub(crate) fn prepare_revisable_snapshot(&mut self) {
         let cleaned = strip_filler_edges_for_lang(&self.source_text, &self.source_language);
-        self.segments = vec![TranslationSegmentPair {
-            source_text: self.source_text.clone(),
-            translation_text: if cleaned.is_empty() {
-                self.source_text.clone()
-            } else {
-                cleaned
-            },
-        }];
+        self.segments = xrtranslate_engine::translation_segment_pairs_for_live_text_with_lang(
+            &self.source_text,
+            &self.source_language,
+        );
+        if self.segments.is_empty() {
+            self.segments = vec![TranslationSegmentPair {
+                source_text: self.source_text.clone(),
+                translation_text: if cleaned.is_empty() {
+                    self.source_text.clone()
+                } else {
+                    cleaned
+                },
+            }];
+        }
     }
 
     /// Removes text produced from the duplicated audio at a hard VAD boundary.
@@ -249,11 +255,16 @@ impl FixedWindow {
                 return Vec::new();
             }
             self.gate_open = true;
-            self.current_topic_turn_sequence = self.next_topic_turn_sequence;
-            self.next_topic_turn_sequence = self
-                .next_topic_turn_sequence
-                .checked_add(1)
-                .expect("continuous topic turn sequence overflow");
+            // Short pauses close the audio gate, but they do not end the
+            // logical streaming turn. Keep one identity until StreamEnded so
+            // overlapping revisions replace one corpus/history record.
+            if !self.stream_open {
+                self.current_topic_turn_sequence = self.next_topic_turn_sequence;
+                self.next_topic_turn_sequence = self
+                    .next_topic_turn_sequence
+                    .checked_add(1)
+                    .expect("continuous topic turn sequence overflow");
+            }
             self.stream_open = true;
             self.idle_frames = 0;
             self.quiet_frames = 0;
@@ -994,11 +1005,12 @@ impl NativeInference {
             &active_targets,
             &prompt_context,
         )?;
+        let context_free_prompt = prompt_context.without_recognition_context();
         let context_free_delivery = self.asr_prompt.delivery(
             prompt_graph,
             source_language,
             &active_targets,
-            &AsrPromptContext::default(),
+            &context_free_prompt,
         )?;
         let Some(auto_result) = self
             .transcribe_attempt(
@@ -1049,7 +1061,7 @@ impl NativeInference {
                         prompt_graph,
                         language.code(),
                         &active_targets,
-                        &AsrPromptContext::default(),
+                        &context_free_prompt,
                     )?;
                     let Some(mut forced) = self
                         .transcribe_attempt(
@@ -1078,7 +1090,7 @@ impl NativeInference {
                             prompt_graph,
                             forced_language.code(),
                             &active_targets,
-                            &AsrPromptContext::default(),
+                            &context_free_prompt,
                         )?;
                         let Some(alternate) = self
                             .transcribe_attempt(
@@ -1222,9 +1234,11 @@ impl NativeInference {
         options.prompt_graph = prompt_graph;
         options.context_window_tokens = self.translation_context_window_tokens;
         options.max_tokens = self.translation_max_output_tokens;
-        if self.translation_supports_reference_context {
-            options.prompt_context = prompt_context;
-        }
+        options.prompt_context = if self.translation_supports_reference_context {
+            prompt_context
+        } else {
+            prompt_context.without_reference_context()
+        };
         let mt_started = Instant::now();
         let mut context_window_retried = false;
         let mut rejected_output_retried = false;
@@ -1245,7 +1259,7 @@ impl NativeInference {
                         "translation context exceeded the provider window; retrying current segment without optional context"
                     );
                     context_window_retried = true;
-                    options.prompt_context = TranslationPromptContext::default();
+                    options.prompt_context = options.prompt_context.without_reference_context();
                 }
                 Err(error) if !rejected_output_retried && error.is_rejected_output() => {
                     warn!(
@@ -1253,7 +1267,7 @@ impl NativeInference {
                         "translation output failed prompt-aware quality checks; regenerating current segment once"
                     );
                     rejected_output_retried = true;
-                    options.prompt_context = TranslationPromptContext::default();
+                    options.prompt_context = options.prompt_context.without_reference_context();
                 }
                 Err(error) if error.is_rejected_output() => {
                     warn!(
@@ -1403,11 +1417,15 @@ pub(crate) fn validate_input_chunk_size(bytes: usize) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::{
-        FRAME_SAMPLES, FixedWindow, FixedWindowEvent, MAX_INPUT_PCM_BYTES, TimedUtterance,
-        Utterance, UtteranceEndReason, asr_language, frames_for_ms, is_context_window_error,
-        translation_route, vad_is_active, validate_input_chunk_size, validate_input_sample_rate,
+        FRAME_SAMPLES, FixedWindow, FixedWindowEvent, MAX_INPUT_PCM_BYTES, RecognizedOutput,
+        TimedUtterance, Utterance, UtteranceEndReason, asr_language, frames_for_ms,
+        is_context_window_error, translation_route, vad_is_active, validate_input_chunk_size,
+        validate_input_sample_rate,
     };
+    use xrtranslate_engine::translation_segment_pairs_for_final_text_with_lang;
     use xrtranslate_inference::InferenceError;
     use xrtranslate_protocol::AudioSource;
 
@@ -1517,6 +1535,42 @@ mod tests {
     }
 
     #[test]
+    fn revisable_snapshot_splits_stable_sentences_and_keeps_a_live_tail() {
+        let mut recognized = RecognizedOutput {
+            source_text: "The first sentence is complete. The second sentence is still live".into(),
+            segments: translation_segment_pairs_for_final_text_with_lang(
+                "The first sentence is complete. The second sentence is still live",
+                "English",
+            ),
+            source_language: "English".into(),
+            target_language: "Chinese".into(),
+            asr_elapsed: Duration::ZERO,
+            route_switched: None,
+            prompt_trace: None,
+        };
+
+        recognized.prepare_revisable_snapshot();
+
+        assert_eq!(recognized.segments.len(), 2);
+        assert_eq!(
+            recognized.segments[0].source_text,
+            "The first sentence is complete."
+        );
+        assert_eq!(
+            recognized.segments[1].source_text,
+            "The second sentence is still live"
+        );
+        assert!(
+            recognized
+                .segments
+                .iter()
+                .map(|segment| segment.source_text.as_str())
+                .collect::<String>()
+                .contains("The second sentence")
+        );
+    }
+
+    #[test]
     fn fixed_window_ignores_idle_audio_but_keeps_bounded_pre_roll() {
         let mut window = FixedWindow::new(AudioSource::Microphone);
         let frame = vec![0_i16; FRAME_SAMPLES];
@@ -1572,7 +1626,7 @@ mod tests {
             assert!(window.push(&speech, true).is_empty());
         }
         assert!(window.gate_open);
-        assert_eq!(window.current_topic_turn_sequence, 2);
+        assert_eq!(window.current_topic_turn_sequence, 1);
     }
 
     #[test]

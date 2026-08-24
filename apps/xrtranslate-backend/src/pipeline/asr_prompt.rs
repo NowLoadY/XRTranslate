@@ -160,6 +160,7 @@ mod tests {
                 "en, zh",
                 &AsrPromptContext {
                     vocabulary: vec![" XRTranslate ".into(), "VRChat".into()],
+                    mode: xrtranslate_prompt::PromptMode::Ordinary,
                 },
             )
             .unwrap();
@@ -190,6 +191,7 @@ mod tests {
                 "en, zh",
                 &AsrPromptContext {
                     vocabulary: vec!["XRTranslate".into(), "VRChat".into()],
+                    mode: xrtranslate_prompt::PromptMode::Ordinary,
                 },
             )
             .unwrap();

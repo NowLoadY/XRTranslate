@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::context::render_block;
 use crate::{
-    AsrPromptContext, PromptCondition, PromptGraphError, PromptMessageRole, PromptNodeGraph,
-    PromptNodeKind, PromptProviderTarget, PromptVariable, TranslationPromptContext,
+    AsrPromptContext, PromptCondition, PromptGraphError, PromptMessageRole, PromptMode,
+    PromptNodeGraph, PromptNodeKind, PromptProviderTarget, PromptVariable,
+    TranslationPromptContext,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +54,7 @@ struct ExecutionContext<'a> {
     target_language: &'a str,
     recognition_context: &'a str,
     has_recognition_context: bool,
+    mode: PromptMode,
     reference: &'a TranslationPromptContext,
 }
 
@@ -114,6 +116,10 @@ impl PromptNodeGraph {
             ));
         }
         let recognition_context = context.recognition_context_text();
+        let reference = TranslationPromptContext {
+            mode: context.mode,
+            ..TranslationPromptContext::default()
+        };
         self.render_with_trace_internal(
             target,
             "",
@@ -121,7 +127,7 @@ impl PromptNodeGraph {
             expected_languages,
             &recognition_context,
             context.has_recognition_context(),
-            &TranslationPromptContext::default(),
+            &reference,
             false,
         )
     }
@@ -155,6 +161,7 @@ impl PromptNodeGraph {
             target_language: target_language.trim(),
             recognition_context: recognition_context.trim(),
             has_recognition_context,
+            mode: reference.mode,
             reference,
         };
         let request = self
@@ -295,6 +302,11 @@ impl PromptNodeGraph {
                 PromptVariable::TargetLanguage => context.target_language.to_owned(),
                 PromptVariable::CurrentInput => context.source_text.to_owned(),
                 PromptVariable::RecognitionContext => context.recognition_context.to_owned(),
+                PromptVariable::RecognitionMode => match context.mode {
+                    PromptMode::Ordinary => "ordinary",
+                    PromptMode::PseudoStreaming => "pseudo_streaming",
+                }
+                .to_owned(),
             }),
             PromptNodeKind::Compose { text } => {
                 crate::template::render_compose_text(text, |input| {
@@ -317,6 +329,9 @@ impl PromptNodeGraph {
                         context.reference.has_reference_context()
                     }
                     PromptCondition::HasRecognitionContext => context.has_recognition_context,
+                    PromptCondition::IsPseudoStreaming => {
+                        context.mode == PromptMode::PseudoStreaming
+                    }
                 });
                 selected_input = Some(input);
                 self.links

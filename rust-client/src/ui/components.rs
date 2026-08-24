@@ -86,26 +86,25 @@ pub fn swap_capsule_button(ui: &mut Ui, enabled: bool) -> egui::Response {
             .unwrap_or(false)
     });
 
-    let hover_factor = crate::ui::animation::AnimationSystem::animate_bool(
+    let hover_factor = crate::ui::animation::AnimationSystem::hover(
         ui.ctx(),
         id.with("hover"),
         is_hovered && enabled,
-        0.15,
     );
-    let active_factor = crate::ui::animation::AnimationSystem::animate_bool(
+    let active_factor = crate::ui::animation::AnimationSystem::active(
         ui.ctx(),
         id.with("active"),
         is_active && enabled,
-        0.08,
     );
 
     let current_time = ui.ctx().input(|i| i.time);
     let click_time = ui.memory(|m| m.data.get_temp::<f64>(id.with("click_time")).unwrap_or(0.0));
     let elapsed = (current_time - click_time) as f32;
-    let is_animating_click = elapsed >= 0.0 && elapsed < 0.28;
+    let click_duration = crate::ui::animation::AnimationSystem::button_click_duration(ui.ctx());
+    let is_animating_click = elapsed >= 0.0 && elapsed < click_duration;
     let click_factor = if is_animating_click {
         ui.ctx().request_repaint();
-        let t = (elapsed / 0.28).clamp(0.0, 1.0);
+        let t = (elapsed / click_duration).clamp(0.0, 1.0);
         (1.0 - crate::ui::animation::AnimationSystem::ease_out_cubic(t)).clamp(0.0, 1.0)
     } else {
         0.0
@@ -397,26 +396,25 @@ pub fn animated_button_enabled_with_id(
             .unwrap_or(false)
     });
 
-    let hover_factor = crate::ui::animation::AnimationSystem::animate_bool(
+    let hover_factor = crate::ui::animation::AnimationSystem::hover(
         ui.ctx(),
         id.with("anim_hover"),
         is_hovered && enabled,
-        0.15,
     );
-    let active_factor = crate::ui::animation::AnimationSystem::animate_bool(
+    let active_factor = crate::ui::animation::AnimationSystem::active(
         ui.ctx(),
         id.with("anim_active"),
         is_active && enabled,
-        0.08,
     );
 
     let current_time = ui.ctx().input(|i| i.time);
     let click_time = ui.memory(|m| m.data.get_temp::<f64>(id.with("click_time")).unwrap_or(0.0));
     let elapsed = (current_time - click_time) as f32;
-    let is_animating_click = elapsed >= 0.0 && elapsed < 0.25;
+    let click_duration = crate::ui::animation::AnimationSystem::primary_click_duration(ui.ctx());
+    let is_animating_click = elapsed >= 0.0 && elapsed < click_duration;
     let click_factor = if is_animating_click {
         ui.ctx().request_repaint();
-        let t = (elapsed / 0.25).clamp(0.0, 1.0);
+        let t = (elapsed / click_duration).clamp(0.0, 1.0);
         (1.0 - crate::ui::animation::AnimationSystem::ease_out_cubic(t)).clamp(0.0, 1.0)
     } else {
         0.0
@@ -515,17 +513,15 @@ pub fn primary_button_enabled_with_id(
             .unwrap_or(false)
     });
 
-    let hover_factor = crate::ui::animation::AnimationSystem::animate_bool(
+    let hover_factor = crate::ui::animation::AnimationSystem::hover(
         ui.ctx(),
         id.with("anim_hover"),
         is_hovered && enabled,
-        0.15,
     );
-    let active_factor = crate::ui::animation::AnimationSystem::animate_bool(
+    let active_factor = crate::ui::animation::AnimationSystem::active(
         ui.ctx(),
         id.with("anim_active"),
         is_active && enabled,
-        0.08,
     );
 
     let rest_fill = Color32::from_rgb(37, 99, 235);
@@ -621,6 +617,8 @@ pub fn searchable_combobox_with_options<T: PartialEq + Clone>(
 ) -> bool {
     let mut changed = false;
     let search_id = ui.make_persistent_id(&id).with("combo_search");
+    let selected_text = selected_text.into();
+    let control_width = crate::ui::layout::control_width(ui, &selected_text, width, 96.0, 240.0);
 
     ui.scope(|ui| {
         if !frame {
@@ -637,16 +635,14 @@ pub fn searchable_combobox_with_options<T: PartialEq + Clone>(
             ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
         }
 
-        let mut combo = egui::ComboBox::from_id_salt(&id)
+        let combo = egui::ComboBox::from_id_salt(&id)
             .selected_text(
-                egui::RichText::new(selected_text.into())
+                egui::RichText::new(selected_text)
                     .size(12.0)
                     .color(crate::ui::theme::text_strong()),
             )
+            .width(control_width)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
-        if let Some(w) = width {
-            combo = combo.width(w);
-        }
 
         combo.show_ui(ui, |ui| {
             let is_more_than_3 = options.len() > 3;
@@ -945,17 +941,15 @@ pub fn danger_button_enabled(ui: &mut Ui, text: &str, enabled: bool) -> egui::Re
             .unwrap_or(false)
     });
 
-    let hover_factor = crate::ui::animation::AnimationSystem::animate_bool(
+    let hover_factor = crate::ui::animation::AnimationSystem::hover(
         ui.ctx(),
         id.with("anim_hover"),
         is_hovered && enabled,
-        0.15,
     );
-    let active_factor = crate::ui::animation::AnimationSystem::animate_bool(
+    let active_factor = crate::ui::animation::AnimationSystem::active(
         ui.ctx(),
         id.with("anim_active"),
         is_active && enabled,
-        0.08,
     );
 
     let rest_fill = Color32::from_rgb(239, 68, 68);
@@ -1047,24 +1041,12 @@ pub fn pill_toggle(ui: &mut Ui, checked: &mut bool) -> egui::Response {
             .unwrap_or(false)
     });
 
-    let hover_factor = crate::ui::animation::AnimationSystem::animate_bool(
-        ui.ctx(),
-        id.with("hover"),
-        is_hovered,
-        0.15,
-    );
-    let active_factor = crate::ui::animation::AnimationSystem::animate_bool(
-        ui.ctx(),
-        id.with("active"),
-        is_active,
-        0.08,
-    );
-    let switch_factor = crate::ui::animation::AnimationSystem::animate_bool(
-        ui.ctx(),
-        id.with("switch"),
-        *checked,
-        0.18,
-    );
+    let hover_factor =
+        crate::ui::animation::AnimationSystem::hover(ui.ctx(), id.with("hover"), is_hovered);
+    let active_factor =
+        crate::ui::animation::AnimationSystem::active(ui.ctx(), id.with("active"), is_active);
+    let switch_factor =
+        crate::ui::animation::AnimationSystem::toggle(ui.ctx(), id.with("switch"), *checked);
 
     let (rect, mut response) = ui.allocate_exact_size(Vec2::new(36.0, 20.0), egui::Sense::click());
     if response.clicked() {
@@ -1331,25 +1313,22 @@ pub fn sub_sidebar<T: Copy + PartialEq>(
                             .unwrap_or(false)
                     });
 
-                    let select_factor = crate::ui::animation::AnimationSystem::animate_bool(
+                    let select_factor = crate::ui::animation::AnimationSystem::selection(
                         ui.ctx(),
                         id.with("select"),
                         is_selected,
-                        0.20,
                     );
 
-                    let hover_factor = crate::ui::animation::AnimationSystem::animate_bool(
+                    let hover_factor = crate::ui::animation::AnimationSystem::hover(
                         ui.ctx(),
                         id.with("hover"),
                         is_hovered && !is_selected,
-                        0.15,
                     );
 
-                    let active_factor = crate::ui::animation::AnimationSystem::animate_bool(
+                    let active_factor = crate::ui::animation::AnimationSystem::active(
                         ui.ctx(),
                         id.with("active"),
                         is_active && !is_selected,
-                        0.08,
                     );
 
                     let bg_fill = Color32::TRANSPARENT;
@@ -1622,18 +1601,10 @@ pub fn reset_button(ui: &mut Ui, id_salt: &str) -> egui::Response {
             .unwrap_or(false)
     });
 
-    let hover_factor = crate::ui::animation::AnimationSystem::animate_bool(
-        ui.ctx(),
-        id.with("hover"),
-        is_hovered,
-        0.15,
-    );
-    let active_factor = crate::ui::animation::AnimationSystem::animate_bool(
-        ui.ctx(),
-        id.with("active"),
-        is_active,
-        0.08,
-    );
+    let hover_factor =
+        crate::ui::animation::AnimationSystem::hover(ui.ctx(), id.with("hover"), is_hovered);
+    let active_factor =
+        crate::ui::animation::AnimationSystem::active(ui.ctx(), id.with("active"), is_active);
 
     let current_time = ui.ctx().input(|i| i.time);
     let spin_start = ui.memory(|m| m.data.get_temp::<f64>(id.with("spin_start")).unwrap_or(0.0));

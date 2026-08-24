@@ -148,6 +148,72 @@ pub enum ClientControl {
     Event(EventControl),
 }
 
+/// One immutable graph contains every recognition mode and provider page.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PromptGraphSet {
+    pub graph: PromptNodeGraph,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PromptGraphSetWire {
+    Current {
+        graph: PromptNodeGraph,
+    },
+    ModeSeparated {
+        ordinary: PromptNodeGraph,
+        pseudo_streaming: PromptNodeGraph,
+    },
+    ModeAndDomainSeparated {
+        ordinary_translation: PromptNodeGraph,
+        ordinary_asr: PromptNodeGraph,
+        pseudo_streaming_translation: PromptNodeGraph,
+        pseudo_streaming_asr: PromptNodeGraph,
+    },
+    Bare(PromptNodeGraph),
+}
+
+impl<'de> Deserialize<'de> for PromptGraphSet {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(match PromptGraphSetWire::deserialize(deserializer)? {
+            PromptGraphSetWire::Current { graph } => Self { graph },
+            PromptGraphSetWire::ModeSeparated {
+                ordinary,
+                pseudo_streaming,
+            } => Self {
+                graph: PromptNodeGraph::merge_complete_mode_graphs(ordinary, &pseudo_streaming),
+            },
+            PromptGraphSetWire::ModeAndDomainSeparated {
+                ordinary_translation,
+                ordinary_asr,
+                pseudo_streaming_translation,
+                pseudo_streaming_asr,
+            } => {
+                let pages = [
+                    xrtranslate_prompt::PromptNodePage::AsrInstruction,
+                    xrtranslate_prompt::PromptNodePage::AsrContextBias,
+                ];
+                let mut ordinary = ordinary_translation;
+                ordinary.replace_provider_pages(&ordinary_asr, &pages);
+                let mut pseudo_streaming = pseudo_streaming_translation;
+                pseudo_streaming.replace_provider_pages(&pseudo_streaming_asr, &pages);
+                Self {
+                    graph: PromptNodeGraph::merge_complete_mode_graphs(ordinary, &pseudo_streaming),
+                }
+            }
+            PromptGraphSetWire::Bare(graph) => Self {
+                graph: PromptNodeGraph::unify_mode_graphs(
+                    graph,
+                    &PromptNodeGraph::builtin_pseudo_streaming(),
+                ),
+            },
+        })
+    }
+}
+
 /// Action-discriminated client controls.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -159,12 +225,19 @@ pub enum ActionControl {
         target_lang: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sample_rate: Option<u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        prompt_graph: Option<PromptNodeGraph>,
+        #[serde(
+            default,
+            alias = "prompt_graph",
+            skip_serializing_if = "Option::is_none"
+        )]
+        prompt_graphs: Option<PromptGraphSet>,
     },
-    /// Replaces the prompt composition for future translation requests without
-    /// resetting the active audio recognition pipeline.
-    SetPromptGraph { prompt_graph: PromptNodeGraph },
+    /// Replaces the unified graph for future inference requests.
+    #[serde(alias = "set_prompt_graph")]
+    SetPromptGraphs {
+        #[serde(alias = "prompt_graph")]
+        prompt_graphs: PromptGraphSet,
+    },
     /// Enables or disables a session feature.
     ToggleFeature { feature: Feature, enabled: bool },
     /// Submits a direct text turn for standard translation processing (segmenting,
@@ -380,6 +453,14 @@ pub struct SourceSegmentReady {
     pub revisable: bool,
     /// Fraction of this window which repeats audio from its predecessor.
     pub overlap_ratio: f32,
+    /// This event contains the complete current logical-turn snapshot. A
+    /// consumer must replace its provisional value atomically instead of
+    /// attempting to merge the source or translation text independently.
+    #[serde(default)]
+    pub authoritative_snapshot: bool,
+    /// Monotonic backend-issued revision of the logical live turn.
+    #[serde(default)]
+    pub revision: u64,
 }
 
 /// A completed translation and its latency information.
@@ -409,6 +490,13 @@ pub struct TranslationReady {
     pub revisable: bool,
     /// Fraction of this window which repeats audio from its predecessor.
     pub overlap_ratio: f32,
+    /// True when source and translation are one versioned, authoritative
+    /// snapshot of the current logical turn.
+    #[serde(default)]
+    pub authoritative_snapshot: bool,
+    /// Must equal the source snapshot revision used for this translation.
+    #[serde(default)]
+    pub revision: u64,
     pub clone_audio_path: String,
     pub tts_audio_path: String,
     pub metrics: LatencyMetrics,
@@ -537,12 +625,12 @@ mod tests {
     }
 
     #[test]
-    fn session_config_serializes_to_the_legacy_json_shape() {
+    fn session_config_omits_an_unset_graph_snapshot() {
         let control = ClientControl::Action(ActionControl::SessionConfig {
             source_lang: "auto".into(),
             target_lang: "zh,en".into(),
             sample_rate: None,
-            prompt_graph: None,
+            prompt_graphs: None,
         });
 
         assert_eq!(
@@ -554,15 +642,44 @@ mod tests {
     #[test]
     fn prompt_graph_controls_use_a_typed_json_object() {
         let graph = PromptNodeGraph::builtin_default();
-        let control = ClientControl::Action(ActionControl::SetPromptGraph {
-            prompt_graph: graph.clone(),
+        let control = ClientControl::Action(ActionControl::SetPromptGraphs {
+            prompt_graphs: PromptGraphSet {
+                graph: graph.clone(),
+            },
         });
         let json = serde_json::to_value(&control).unwrap();
-        assert!(json["prompt_graph"].is_object());
+        assert!(json["prompt_graphs"]["graph"].is_object());
         assert_eq!(
             serde_json::from_value::<ClientControl>(json).unwrap(),
             control
         );
+    }
+
+    #[test]
+    fn legacy_mode_graph_snapshot_is_promoted_to_one_mode_aware_graph() {
+        let mut ordinary = PromptNodeGraph::builtin_pseudo_streaming();
+        if let Some(xrtranslate_prompt::PromptNodeKind::Compose { text }) = ordinary
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "openai-explicit-instruction")
+            .map(|node| &mut node.kind)
+        {
+            *text = "Ordinary instruction: {0}".into();
+        }
+        let legacy = serde_json::json!({
+            "ordinary": ordinary,
+            "pseudo_streaming": PromptNodeGraph::builtin_pseudo_streaming(),
+        });
+
+        let promoted: PromptGraphSet = serde_json::from_value(legacy).unwrap();
+
+        promoted.graph.validate_for_activation().unwrap();
+        assert!(promoted.graph.nodes.iter().any(|node| matches!(
+            node.kind,
+            xrtranslate_prompt::PromptNodeKind::Switch {
+                condition: xrtranslate_prompt::PromptCondition::IsPseudoStreaming
+            }
+        )));
     }
 
     #[test]
@@ -730,6 +847,8 @@ mod tests {
                 boundary: SegmentBoundary::Unknown,
                 revisable: false,
                 overlap_ratio: 0.0,
+                authoritative_snapshot: false,
+                revision: 0,
                 clone_audio_path: String::new(),
                 tts_audio_path: String::new(),
                 metrics: LatencyMetrics {
@@ -770,6 +889,8 @@ mod tests {
             boundary: SegmentBoundary::Unknown,
             revisable: false,
             overlap_ratio: 0.0,
+            authoritative_snapshot: false,
+            revision: 0,
             clone_audio_path: String::new(),
             tts_audio_path: String::new(),
             metrics: LatencyMetrics {
@@ -804,6 +925,8 @@ mod tests {
             boundary: SegmentBoundary::SpeakerChange,
             revisable: false,
             overlap_ratio: 0.0,
+            authoritative_snapshot: false,
+            revision: 0,
         });
 
         let json = serde_json::to_string(&event).unwrap();
@@ -838,6 +961,8 @@ mod tests {
             boundary: SegmentBoundary::Unknown,
             revisable: false,
             overlap_ratio: 0.0,
+            authoritative_snapshot: false,
+            revision: 0,
         });
 
         let json = serde_json::to_string(&event).unwrap();

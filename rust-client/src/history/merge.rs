@@ -10,6 +10,9 @@ pub(crate) fn collect_recognition_window(
     segment_count: u32,
     entry: RecognitionHistoryEntry,
 ) -> Option<RecognitionHistoryEntry> {
+    if segment_count == 0 || segment_index == 0 || segment_index > segment_count {
+        return None;
+    }
     let turn_id = entry.turn_id.clone();
     let index = pending
         .iter()
@@ -28,7 +31,10 @@ pub(crate) fn collect_recognition_window(
             pending.len() - 1
         });
     let window = &mut pending[index];
-    window.segment_count = window.segment_count.max(segment_count.max(1));
+    if window.segment_count != segment_count {
+        pending.remove(index);
+        return None;
+    }
     if let Some((_, existing)) = window
         .segments
         .iter_mut()
@@ -38,7 +44,10 @@ pub(crate) fn collect_recognition_window(
     } else {
         window.segments.push((segment_index, entry));
     }
-    if window.segments.len() < window.segment_count as usize {
+    if window.segments.len() != window.segment_count as usize
+        || !(1..=window.segment_count)
+            .all(|expected| window.segments.iter().any(|(index, _)| *index == expected))
+    {
         return None;
     }
 
@@ -77,12 +86,124 @@ pub(crate) fn collect_recognition_window(
     Some(combined)
 }
 
+pub(crate) fn collect_authoritative_recognition_snapshot(
+    pending: &mut Vec<PendingAuthoritativeRecognition>,
+    stream_id: u64,
+    revision_id: u64,
+    segment_index: u32,
+    segment_count: u32,
+    entry: RecognitionHistoryEntry,
+) -> Option<Vec<RecognitionHistoryEntry>> {
+    if segment_count == 0 || segment_index == 0 || segment_index > segment_count {
+        return None;
+    }
+    let index = pending
+        .iter()
+        .position(|snapshot| snapshot.stream_id == stream_id && snapshot.revision_id == revision_id)
+        .unwrap_or_else(|| {
+            if pending.len() >= 32 {
+                pending.remove(0);
+            }
+            pending.push(PendingAuthoritativeRecognition {
+                stream_id,
+                revision_id,
+                segment_count,
+                segments: Vec::new(),
+            });
+            pending.len() - 1
+        });
+    let snapshot = &mut pending[index];
+    if snapshot.segment_count != segment_count {
+        pending.remove(index);
+        return None;
+    }
+    if let Some((_, existing)) = snapshot
+        .segments
+        .iter_mut()
+        .find(|(index, _)| *index == segment_index)
+    {
+        *existing = entry;
+    } else {
+        snapshot.segments.push((segment_index, entry));
+    }
+    if snapshot.segments.len() != snapshot.segment_count as usize
+        || !(1..=snapshot.segment_count).all(|expected| {
+            snapshot
+                .segments
+                .iter()
+                .any(|(index, _)| *index == expected)
+        })
+    {
+        return None;
+    }
+    let mut snapshot = pending.remove(index);
+    snapshot.segments.sort_by_key(|(index, _)| *index);
+    Some(
+        snapshot
+            .segments
+            .into_iter()
+            .map(|(_, entry)| entry)
+            .collect(),
+    )
+}
+
+pub(crate) fn merge_authoritative_recognition_snapshot(
+    history: &mut Vec<RecognitionHistoryEntry>,
+    stream_id: u64,
+    mut entries: Vec<RecognitionHistoryEntry>,
+) -> bool {
+    if entries.is_empty() {
+        return false;
+    }
+    entries.sort_by_key(|entry| entry.revision_id);
+    let revision = entries[0].revision_id;
+    if history.iter().any(|entry| {
+        entry.stream_id == Some(stream_id)
+            && entry.authoritative_snapshot
+            && entry.revision_id >= revision
+    }) {
+        return false;
+    }
+    history.retain(|entry| {
+        !(entry.stream_id == Some(stream_id) && (entry.authoritative_snapshot || entry.live))
+    });
+    let entry_count = entries.len();
+    for (index, entry) in entries.iter_mut().enumerate() {
+        entry.stream_id = Some(stream_id);
+        entry.live = index + 1 == entry_count;
+        entry.revision = None;
+    }
+    history.extend(entries);
+    true
+}
+
 pub(crate) fn merge_stream_recognition(
     history: &mut Vec<RecognitionHistoryEntry>,
     stream_id: u64,
     mut fragment: RecognitionHistoryEntry,
 ) {
     retain_recognition_tail(&mut fragment);
+    if fragment.authoritative_snapshot {
+        if history.iter().any(|entry| {
+            entry.stream_id == Some(stream_id)
+                && entry.authoritative_snapshot
+                && entry.revision_id >= fragment.revision_id
+        }) {
+            return;
+        }
+        if let Some(current) = history
+            .iter_mut()
+            .rfind(|entry| entry.stream_id == Some(stream_id) && entry.live)
+        {
+            let source_start_ms = current.source_start_ms.min(fragment.source_start_ms);
+            *current = fragment;
+            current.source_start_ms = source_start_ms;
+            current.timing = xrtranslate_protocol::SegmentTiming::MergedWindows;
+        } else {
+            history.push(fragment);
+        }
+        return;
+    }
     let Some(current) = history
         .iter_mut()
         .rfind(|entry| entry.stream_id == Some(stream_id) && entry.live)
@@ -182,6 +303,43 @@ pub(crate) fn merge_stream_translation(
         Some(&mut fragment.term_matches),
         STREAM_TEXT_LIMIT,
     );
+    if fragment.authoritative_snapshot {
+        if let Some(newest) = history
+            .iter()
+            .filter(|entry| entry.stream_id == Some(stream_id) && entry.authoritative_snapshot)
+            .max_by_key(|entry| entry.revision_id)
+            && newest.revision_id >= fragment.revision_id
+        {
+            return StreamMerge {
+                entry: newest.clone(),
+                rolled_over: false,
+                changed: false,
+            };
+        }
+        if let Some(current) = history
+            .iter_mut()
+            .rfind(|entry| entry.stream_id == Some(stream_id) && entry.live)
+        {
+            let source_start_ms = current.source_start_ms.min(fragment.source_start_ms);
+            let changed = current.source != fragment.source
+                || current.translated != fragment.translated
+                || current.term_matches != fragment.term_matches;
+            *current = fragment;
+            current.source_start_ms = source_start_ms;
+            current.timing = xrtranslate_protocol::SegmentTiming::MergedWindows;
+            return StreamMerge {
+                entry: current.clone(),
+                rolled_over: false,
+                changed,
+            };
+        }
+        history.push(fragment.clone());
+        return StreamMerge {
+            entry: fragment,
+            rolled_over: false,
+            changed: true,
+        };
+    }
     let Some(current) = history
         .iter_mut()
         .rfind(|entry| entry.stream_id == Some(stream_id) && entry.live)
@@ -294,6 +452,145 @@ pub(crate) fn merge_stream_translation(
         entry: current.clone(),
         rolled_over: false,
         changed: source_changed || translated_changed,
+    }
+}
+
+pub(crate) fn collect_authoritative_translation_snapshot(
+    pending: &mut Vec<PendingAuthoritativeTranslation>,
+    stream_id: u64,
+    revision_id: u64,
+    segment_index: u32,
+    segment_count: u32,
+    entry: TranslationHistoryEntry,
+) -> Option<Vec<TranslationHistoryEntry>> {
+    if segment_count == 0 || segment_index == 0 || segment_index > segment_count {
+        return None;
+    }
+    let index = pending
+        .iter()
+        .position(|snapshot| snapshot.stream_id == stream_id && snapshot.revision_id == revision_id)
+        .unwrap_or_else(|| {
+            if pending.len() >= 32 {
+                pending.remove(0);
+            }
+            pending.push(PendingAuthoritativeTranslation {
+                stream_id,
+                revision_id,
+                segment_count,
+                segments: Vec::new(),
+            });
+            pending.len() - 1
+        });
+    let snapshot = &mut pending[index];
+    if snapshot.segment_count != segment_count {
+        pending.remove(index);
+        return None;
+    }
+    if let Some((_, existing)) = snapshot
+        .segments
+        .iter_mut()
+        .find(|(index, _)| *index == segment_index)
+    {
+        *existing = entry;
+    } else {
+        snapshot.segments.push((segment_index, entry));
+    }
+    if snapshot.segments.len() != snapshot.segment_count as usize
+        || !(1..=snapshot.segment_count).all(|expected| {
+            snapshot
+                .segments
+                .iter()
+                .any(|(index, _)| *index == expected)
+        })
+    {
+        return None;
+    }
+    let mut snapshot = pending.remove(index);
+    snapshot.segments.sort_by_key(|(index, _)| *index);
+    Some(
+        snapshot
+            .segments
+            .into_iter()
+            .map(|(_, entry)| entry)
+            .collect(),
+    )
+}
+
+pub(crate) fn merge_authoritative_translation_snapshot(
+    history: &mut Vec<TranslationHistoryEntry>,
+    stream_id: u64,
+    mut entries: Vec<TranslationHistoryEntry>,
+) -> AuthoritativeTranslationMerge {
+    if entries.is_empty() {
+        return AuthoritativeTranslationMerge {
+            accepted: false,
+            stabilized: Vec::new(),
+            live: None,
+            changed: false,
+        };
+    }
+    entries.sort_by_key(|entry| entry.segment_index);
+    let revision = entries[0].revision_id;
+    if let Some(newest) = history
+        .iter()
+        .filter(|entry| entry.stream_id == Some(stream_id) && entry.authoritative_snapshot)
+        .max_by_key(|entry| entry.revision_id)
+        && newest.revision_id >= revision
+    {
+        return AuthoritativeTranslationMerge {
+            accepted: false,
+            live: history
+                .iter()
+                .rfind(|entry| entry.stream_id == Some(stream_id) && entry.live)
+                .cloned(),
+            stabilized: Vec::new(),
+            changed: false,
+        };
+    }
+
+    let old_entries = history
+        .iter()
+        .filter(|entry| {
+            entry.stream_id == Some(stream_id) && (entry.authoritative_snapshot || entry.live)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let old_by_index = |index: u32| {
+        old_entries
+            .iter()
+            .find(|entry| entry.segment_index == index)
+    };
+    let mut stabilized = Vec::new();
+    let mut changed = old_entries.len() != entries.len();
+    let entry_count = entries.len();
+    for (index, entry) in entries.iter_mut().enumerate() {
+        entry.stream_id = Some(stream_id);
+        entry.live = index + 1 == entry_count;
+        let old = old_by_index(entry.segment_index);
+        let content_changed = old.is_none_or(|old| {
+            let mut old = old.clone();
+            old.live = entry.live;
+            // Revision IDs identify snapshots, but are not visible caption
+            // content. Ignore them here so an unchanged tail does not cause
+            // an OSC Replace on every ASR revision.
+            old.revision_id = entry.revision_id;
+            old != *entry
+        });
+        changed |= content_changed;
+        if !entry.live && (old.is_none() || old.is_some_and(|old| old.live)) {
+            stabilized.push(entry.clone());
+        }
+    }
+    history.retain(|entry| {
+        !(entry.stream_id == Some(stream_id) && (entry.authoritative_snapshot || entry.live))
+    });
+    history.extend(entries.iter().cloned());
+    let live = entries.last().cloned();
+    AuthoritativeTranslationMerge {
+        accepted: true,
+        stabilized,
+        live,
+        changed,
     }
 }
 
@@ -422,6 +719,8 @@ mod tests {
             term_matches: Vec::new(),
             revisable: false,
             overlap_ratio: 0.0,
+            authoritative_snapshot: false,
+            revision_id: 0,
             source_revision: None,
             translated_revision: None,
         }
@@ -450,6 +749,8 @@ mod tests {
             context_matches: Vec::new(),
             revisable: true,
             overlap_ratio: 0.34,
+            authoritative_snapshot: false,
+            revision_id: 0,
             revision: None,
         }
     }
@@ -512,6 +813,65 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].source, "First revised");
         assert_eq!(history[1].source, "Second");
+    }
+
+    #[test]
+    fn authoritative_snapshot_waits_for_all_segments_and_removes_old_tail() {
+        let mut pending = Vec::new();
+        let mut first = snapshot(3, "First sentence.", "第一句。");
+        first.authoritative_snapshot = true;
+        first.revision_id = 1;
+        first.segment_index = 1;
+        assert!(
+            collect_authoritative_translation_snapshot(&mut pending, 3, 1, 1, 2, first,).is_none()
+        );
+
+        let mut second = snapshot(3, "Live tail", "实时尾句");
+        second.authoritative_snapshot = true;
+        second.revision_id = 1;
+        second.segment_index = 2;
+        let entries =
+            collect_authoritative_translation_snapshot(&mut pending, 3, 1, 2, 2, second).unwrap();
+        let mut history = Vec::new();
+        let merged = merge_authoritative_translation_snapshot(&mut history, 3, entries);
+        assert!(merged.changed);
+        assert_eq!(merged.stabilized.len(), 1);
+        assert_eq!(history.len(), 2);
+        assert!(!history[0].live);
+        assert!(history[1].live);
+
+        let mut corrected = snapshot(3, "Revised complete sentence.", "修订后的完整句。");
+        corrected.authoritative_snapshot = true;
+        corrected.revision_id = 2;
+        corrected.segment_index = 1;
+        let entries =
+            collect_authoritative_translation_snapshot(&mut pending, 3, 2, 1, 1, corrected)
+                .unwrap();
+        let merged = merge_authoritative_translation_snapshot(&mut history, 3, entries);
+        assert!(merged.changed);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].source, "Revised complete sentence.");
+        assert!(history[0].live);
+    }
+
+    #[test]
+    fn unchanged_authoritative_content_does_not_repeat_live_caption_replace() {
+        let mut first = snapshot(3, "Stable sentence.", "稳定句。");
+        first.authoritative_snapshot = true;
+        first.revision_id = 1;
+        first.segment_index = 1;
+        let mut history = Vec::new();
+        let merged = merge_authoritative_translation_snapshot(&mut history, 3, vec![first]);
+        assert!(merged.changed);
+
+        let mut repeat = snapshot(3, "Stable sentence.", "稳定句。");
+        repeat.authoritative_snapshot = true;
+        repeat.revision_id = 2;
+        repeat.segment_index = 1;
+        let merged = merge_authoritative_translation_snapshot(&mut history, 3, vec![repeat]);
+        assert!(merged.accepted);
+        assert!(!merged.changed);
+        assert!(merged.stabilized.is_empty());
     }
 
     #[test]
@@ -613,6 +973,47 @@ mod tests {
     }
 
     #[test]
+    fn recognition_window_rejects_invalid_or_conflicting_segment_plans() {
+        let mut pending = Vec::<PendingRecognitionWindow>::new();
+        assert!(
+            collect_recognition_window(
+                &mut pending,
+                7,
+                true,
+                0,
+                2,
+                recognition_snapshot(7, "turn-invalid", "bad"),
+            )
+            .is_none()
+        );
+        assert!(pending.is_empty());
+
+        assert!(
+            collect_recognition_window(
+                &mut pending,
+                7,
+                true,
+                1,
+                2,
+                recognition_snapshot(7, "turn-conflict", "first"),
+            )
+            .is_none()
+        );
+        assert!(
+            collect_recognition_window(
+                &mut pending,
+                7,
+                true,
+                2,
+                3,
+                recognition_snapshot(7, "turn-conflict", "second"),
+            )
+            .is_none()
+        );
+        assert!(pending.is_empty());
+    }
+
+    #[test]
     fn recognition_history_revises_the_shared_audio_window_in_place() {
         let mut history = Vec::new();
         merge_stream_recognition(
@@ -630,5 +1031,51 @@ mod tests {
             history[0].text,
             "你停在了这条我们熟悉的街。然后继续向前走。"
         );
+    }
+
+    #[test]
+    fn authoritative_translation_replaces_semantic_rewrites_atomically() {
+        let mut history = Vec::new();
+        let mut first = snapshot(
+            7,
+            "证明的过程中，AI只是利用强悍的数分高带技巧。",
+            "During the proof, AI uses numerical tricks.",
+        );
+        first.authoritative_snapshot = true;
+        first.revision_id = 4;
+        merge_stream_translation(&mut history, 7, first);
+
+        let mut corrected = snapshot(
+            7,
+            "证明的过程中，AI只是利用强悍和无比强大的算力。",
+            "During the proof, AI simply relies on immense computing power.",
+        );
+        corrected.authoritative_snapshot = true;
+        corrected.revision_id = 5;
+        let update = merge_stream_translation(&mut history, 7, corrected);
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            update.entry.translated,
+            "During the proof, AI simply relies on immense computing power."
+        );
+    }
+
+    #[test]
+    fn stale_authoritative_translation_cannot_overwrite_a_newer_revision() {
+        let mut history = Vec::new();
+        let mut newest = snapshot(7, "correct source", "correct translation");
+        newest.authoritative_snapshot = true;
+        newest.revision_id = 9;
+        merge_stream_translation(&mut history, 7, newest);
+
+        let mut stale = snapshot(7, "stale source", "stale translation");
+        stale.authoritative_snapshot = true;
+        stale.revision_id = 8;
+        let update = merge_stream_translation(&mut history, 7, stale);
+
+        assert!(!update.changed);
+        assert_eq!(history[0].source, "correct source");
+        assert_eq!(history[0].translated, "correct translation");
     }
 }

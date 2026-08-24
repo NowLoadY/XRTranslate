@@ -23,8 +23,28 @@ pub(crate) const AUTO_REFERENCE_CONTEXT_INSTRUCTION: &str = concat!(
     "Translate only the current input. Do not translate, repeat, summarize, or explain the context. Unless explicitly requested otherwise, output only the final translation."
 );
 
+pub(crate) const LEGACY_PSEUDO_HUNYUAN_EXPLICIT_INSTRUCTION: &str = concat!(
+    "You are a real-time pseudo-stream speech translator. If the current input is already {0}, output it ",
+    "unchanged; otherwise translate only this authoritative current snapshot segment into natural, fluent {0}. ",
+    "The input may revise a previous live tail. Do not repeat stable prefix text, copy the previous revision, ",
+    "or add content missing from the current input. Output only the translation."
+);
+
+const PSEUDO_HUNYUAN_EXPLICIT_INSTRUCTION: &str = concat!(
+    "Translate the AUTHORITATIVE CURRENT SEGMENT from {0} into {1}. ",
+    "The output must be in {1}; never return a corrected or paraphrased {0} sentence. ",
+    "Translate the current segment completely as it is now. Do not repeat a stable prefix or add text from an ",
+    "older revision. Return only the translation, without explanations."
+);
+
 impl PromptNodeGraph {
     pub fn builtin_default() -> Self {
+        let ordinary = Self::builtin_ordinary();
+        let pseudo_streaming = Self::builtin_pseudo_streaming();
+        Self::unify_mode_graphs(ordinary, &pseudo_streaming)
+    }
+
+    pub(crate) fn builtin_ordinary() -> Self {
         let mut builder = GraphBuilder::default();
         builder.build_openai_flow();
         builder.build_hunyuan_flow();
@@ -33,6 +53,513 @@ impl PromptNodeGraph {
         let mut graph = builder.finish();
         graph.auto_layout();
         graph
+    }
+
+    /// Builds the legacy pseudo-stream branch source used when constructing
+    /// and migrating the unified mode-aware graph.
+    pub fn builtin_pseudo_streaming() -> Self {
+        let mut graph = Self::builtin_ordinary();
+        let explicit_rules = concat!(
+            "You are translating one segment from a pseudo-streaming speech snapshot. ",
+            "The Current input is the authoritative text for this segment. It may replace an earlier live tail, ",
+            "so translate the current input in full and correct any changed recognition.\n\n",
+            "Previous Revision of Current Speech is only an older hypothesis of the same speech. ",
+            "Use it to keep wording stable when meaning is unchanged, but never copy text or meaning that is absent ",
+            "from the current input. Do not resurrect content removed from the current snapshot.\n\n",
+            "Stable prefix segments may already be visible in floating subtitles or OSC. Do not repeat or translate ",
+            "those segments; output only this current segment. Surrounding source, recent turns, and terminology are ",
+            "reference context only and are never part of the translation payload.\n\n",
+            "Translate only the current {0} input into natural, idiomatic {1}. Preserve names, numbers, terms, tone, ",
+            "and intent unless the current source clearly corrects them. Output only the final translation."
+        );
+        let auto_rules = concat!(
+            "You are translating one segment from a pseudo-streaming speech snapshot. ",
+            "The Current input is the authoritative text for this segment and can revise a previous live tail. ",
+            "Infer the source language from the current input and translate it into the other configured language among {0}.\n\n",
+            "Previous Revision of Current Speech is an older hypothesis only. It may guide correction and stable ",
+            "wording, but it is not additional input: never copy absent text, repeat a stable prefix, or resurrect ",
+            "content that disappeared from the current snapshot.\n\n",
+            "Surrounding source, recent turns, and terminology are reference context only. Translate only the current ",
+            "segment, preserve names, numbers, tone, and intent, and output only the final translation."
+        );
+        let openai_explicit_instruction = concat!(
+            "You are a real-time pseudo-stream speech translator. If the current input is already {0}, output it ",
+            "unchanged; otherwise translate only this authoritative current snapshot segment into natural, fluent {0}. ",
+            "The input may revise a previous live tail. Do not repeat stable prefix text, copy the previous revision, ",
+            "or add content missing from the current input. Output only the translation."
+        );
+        let hunyuan_explicit_instruction = PSEUDO_HUNYUAN_EXPLICIT_INSTRUCTION;
+        let auto_instruction = concat!(
+            "You are a real-time pseudo-stream speech translator. The current input is authoritative and may revise ",
+            "a previous live tail. Its language is one of the following: {0}. Translate only this current segment into ",
+            "the OTHER language from that list. Do not repeat stable prefix text or resurrect old-revision content. ",
+            "Output only the translation."
+        );
+        let explicit_user =
+            "Source language: {0}\nAuthoritative current segment (translate only this):\n{1}";
+        let auto_user = "Authoritative current segment (translate only this):\n{0}";
+        let asr_explicit = concat!(
+            "Transcribe the entire current audio window accurately in {0}. This window may overlap an earlier ",
+            "window: preserve every word audible now, including repeated overlap, but do not infer or combine text ",
+            "from any earlier window. Do not translate. Return only the transcript."
+        );
+        let asr_auto = concat!(
+            "Transcribe the entire current audio window accurately. The spoken language is one of {0}. This window ",
+            "may overlap an earlier window: preserve every word audible now, including repeated overlap, but do not ",
+            "infer or combine text from any earlier window. Do not translate. Return only the transcript."
+        );
+        let asr_with_context = concat!(
+            "{0}\n\nRecognition vocabulary (spelling aid only; include a term only when it is audible):\n{1}"
+        );
+        for (prefix, rules, instruction, auto_rules, auto_instruction, explicit_user, auto_user) in [
+            (
+                "openai",
+                explicit_rules,
+                openai_explicit_instruction,
+                auto_rules,
+                auto_instruction,
+                explicit_user,
+                auto_user,
+            ),
+            (
+                "hunyuan",
+                explicit_rules,
+                hunyuan_explicit_instruction,
+                auto_rules,
+                auto_instruction,
+                explicit_user,
+                auto_user,
+            ),
+        ] {
+            replace_compose_text(
+                &mut graph,
+                &format!("{prefix}-reference-explicit-rules"),
+                rules,
+            );
+            replace_compose_text(
+                &mut graph,
+                &format!("{prefix}-reference-auto-rules"),
+                auto_rules,
+            );
+            replace_compose_text(
+                &mut graph,
+                &format!("{prefix}-explicit-instruction"),
+                instruction,
+            );
+            replace_compose_text(
+                &mut graph,
+                &format!("{prefix}-auto-instruction"),
+                auto_instruction,
+            );
+            replace_compose_text(
+                &mut graph,
+                &format!("{prefix}-explicit-user"),
+                explicit_user,
+            );
+            replace_compose_text(&mut graph, &format!("{prefix}-auto-user"), auto_user);
+        }
+        replace_compose_text(&mut graph, "asr-instruction-explicit", asr_explicit);
+        replace_compose_text(&mut graph, "asr-instruction-auto", asr_auto);
+        replace_compose_text(&mut graph, "asr-instruction-with-context", asr_with_context);
+        graph
+    }
+
+    pub fn unify_mode_graphs(mut ordinary: Self, pseudo_streaming: &Self) -> Self {
+        ensure_recognition_mode_variables(&mut ordinary);
+        for id in [
+            "openai-reference-explicit-rules",
+            "openai-reference-auto-rules",
+            "openai-explicit-instruction",
+            "openai-auto-instruction",
+            "openai-explicit-user",
+            "openai-auto-user",
+            "hunyuan-reference-explicit-rules",
+            "hunyuan-reference-auto-rules",
+            "hunyuan-explicit-instruction",
+            "hunyuan-auto-instruction",
+            "hunyuan-explicit-user",
+            "hunyuan-auto-user",
+            "asr-instruction-explicit",
+            "asr-instruction-auto",
+            "asr-instruction-with-context",
+        ] {
+            let Some(pseudo_text) = pseudo_streaming.nodes.iter().find_map(|node| {
+                (node.id == id)
+                    .then_some(&node.kind)
+                    .and_then(|kind| match kind {
+                        PromptNodeKind::Compose { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+            }) else {
+                continue;
+            };
+            split_compose_by_mode(&mut ordinary, id, pseudo_text);
+        }
+        ordinary.auto_layout();
+        ordinary
+    }
+
+    /// Promotes two complete legacy mode graphs into one graph without
+    /// assuming built-in node IDs. Each pseudo-streaming DAG is namespaced and
+    /// selected immediately before the matching provider request.
+    pub fn merge_complete_mode_graphs(mut ordinary: Self, pseudo_streaming: &Self) -> Self {
+        use std::collections::{HashMap, HashSet};
+
+        if ordinary.nodes.iter().any(|node| {
+            matches!(
+                node.kind,
+                PromptNodeKind::Switch {
+                    condition: PromptCondition::IsPseudoStreaming
+                }
+            )
+        }) {
+            return ordinary;
+        }
+        ensure_recognition_mode_variables(&mut ordinary);
+
+        let mut used_ids = ordinary
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<HashSet<_>>();
+        let mut pseudo_ids = HashMap::new();
+        for node in pseudo_streaming
+            .nodes
+            .iter()
+            .filter(|node| !matches!(node.kind, PromptNodeKind::Request { .. }))
+        {
+            let id = unique_mode_node_id(&mut used_ids, &format!("{}-pseudo-streaming", node.id));
+            let mut cloned = node.clone();
+            cloned.id = id.clone();
+            cloned.label = format!("{} / PSEUDO-STREAMING", cloned.label);
+            pseudo_ids.insert(node.id.clone(), id);
+            ordinary.nodes.push(cloned);
+        }
+
+        for link in &pseudo_streaming.links {
+            let (Some(from), Some(to)) = (pseudo_ids.get(&link.from), pseudo_ids.get(&link.to))
+            else {
+                continue;
+            };
+            ordinary.links.push(PromptLink {
+                from: from.clone(),
+                to: to.clone(),
+                input: link.input,
+            });
+        }
+
+        let requests = ordinary
+            .nodes
+            .iter()
+            .filter_map(|node| match &node.kind {
+                PromptNodeKind::Request { target, roles } => {
+                    Some((node.id.clone(), node.page, *target, roles.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for (request_id, page, target, roles) in requests {
+            let Some((pseudo_request_id, pseudo_roles)) =
+                pseudo_streaming
+                    .nodes
+                    .iter()
+                    .find_map(|node| match &node.kind {
+                        PromptNodeKind::Request {
+                            target: pseudo_target,
+                            roles,
+                        } if *pseudo_target == target => Some((node.id.as_str(), roles)),
+                        _ => None,
+                    })
+            else {
+                continue;
+            };
+            if roles != *pseudo_roles {
+                continue;
+            }
+
+            for input in 0..roles.len() as u8 {
+                let ordinary_source = ordinary
+                    .links
+                    .iter()
+                    .find(|link| link.to == request_id && link.input == input)
+                    .map(|link| link.from.clone());
+                let pseudo_source = pseudo_streaming
+                    .links
+                    .iter()
+                    .find(|link| link.to == pseudo_request_id && link.input == input)
+                    .and_then(|link| pseudo_ids.get(&link.from))
+                    .cloned();
+                let (Some(ordinary_source), Some(pseudo_source)) = (ordinary_source, pseudo_source)
+                else {
+                    continue;
+                };
+
+                ordinary
+                    .links
+                    .retain(|link| !(link.to == request_id && link.input == input));
+                let switch_id = unique_mode_node_id(
+                    &mut used_ids,
+                    &format!("{request_id}-recognition-mode-{input}"),
+                );
+                ordinary.nodes.push(PromptNode {
+                    id: switch_id.clone(),
+                    label: "SELECT RECOGNITION MODE".into(),
+                    page,
+                    kind: PromptNodeKind::Switch {
+                        condition: PromptCondition::IsPseudoStreaming,
+                    },
+                    position: [0.0, 0.0],
+                });
+                ordinary.links.extend([
+                    PromptLink {
+                        from: ordinary_source,
+                        to: switch_id.clone(),
+                        input: 0,
+                    },
+                    PromptLink {
+                        from: pseudo_source,
+                        to: switch_id.clone(),
+                        input: 1,
+                    },
+                    PromptLink {
+                        from: switch_id,
+                        to: request_id.clone(),
+                        input,
+                    },
+                ]);
+            }
+        }
+
+        ordinary.auto_layout();
+        ordinary
+    }
+
+    pub fn replace_provider_pages(&mut self, source: &Self, pages: &[PromptNodePage]) {
+        use std::collections::{HashMap, HashSet};
+
+        let removed_ids = self
+            .nodes
+            .iter()
+            .filter(|node| pages.contains(&node.page))
+            .map(|node| node.id.clone())
+            .collect::<HashSet<_>>();
+        self.nodes.retain(|node| !pages.contains(&node.page));
+        self.links
+            .retain(|link| !removed_ids.contains(&link.from) && !removed_ids.contains(&link.to));
+        let mut used_ids = self
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<HashSet<_>>();
+
+        for &page in pages {
+            let mut selected = source
+                .nodes
+                .iter()
+                .filter(|node| node.page == page)
+                .map(|node| node.id.clone())
+                .collect::<HashSet<_>>();
+            let mut pending = selected.iter().cloned().collect::<Vec<_>>();
+            while let Some(to) = pending.pop() {
+                for link in source.links.iter().filter(|link| link.to == to) {
+                    let Some(node) = source.nodes.iter().find(|node| node.id == link.from) else {
+                        continue;
+                    };
+                    if matches!(node.page, PromptNodePage::Shared)
+                        && selected.insert(node.id.clone())
+                    {
+                        pending.push(node.id.clone());
+                    }
+                }
+            }
+
+            let mut ids = HashMap::new();
+            for node in source
+                .nodes
+                .iter()
+                .filter(|node| selected.contains(&node.id))
+            {
+                let preferred = if node.page == PromptNodePage::Shared {
+                    format!("{}-{}", page_id(page), node.id)
+                } else {
+                    node.id.clone()
+                };
+                let id = unique_mode_node_id(&mut used_ids, &preferred);
+                let mut cloned = node.clone();
+                cloned.id = id.clone();
+                cloned.page = page;
+                ids.insert(node.id.clone(), id);
+                self.nodes.push(cloned);
+            }
+            self.links.extend(source.links.iter().filter_map(|link| {
+                Some(PromptLink {
+                    from: ids.get(&link.from)?.clone(),
+                    to: ids.get(&link.to)?.clone(),
+                    input: link.input,
+                })
+            }));
+        }
+    }
+
+    /// Upgrades the shipped pseudo-streaming Hunyuan prompt whose target-only
+    /// placeholder was historically connected to the source-language socket.
+    /// User-authored prompt text is left untouched.
+    pub(crate) fn upgrade_known_pseudo_streaming_prompts(&mut self) {
+        let id = "hunyuan-explicit-instruction-pseudo-streaming";
+        let should_upgrade = self.nodes.iter().any(|node| {
+            node.id == id
+                && matches!(
+                    &node.kind,
+                    PromptNodeKind::Compose { text }
+                        if text == LEGACY_PSEUDO_HUNYUAN_EXPLICIT_INSTRUCTION
+                )
+        });
+        if !should_upgrade {
+            return;
+        }
+
+        replace_compose_text(self, id, PSEUDO_HUNYUAN_EXPLICIT_INSTRUCTION);
+        self.links.retain(|link| link.to != id);
+        self.links.extend([
+            PromptLink {
+                from: "hunyuan-source-language".into(),
+                to: id.into(),
+                input: 0,
+            },
+            PromptLink {
+                from: "hunyuan-target-language".into(),
+                to: id.into(),
+                input: 1,
+            },
+        ]);
+    }
+}
+
+fn unique_mode_node_id(used: &mut std::collections::HashSet<String>, preferred: &str) -> String {
+    if used.insert(preferred.to_owned()) {
+        return preferred.to_owned();
+    }
+    for suffix in 2_u32.. {
+        let candidate = format!("{preferred}-{suffix}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    unreachable!()
+}
+
+fn ensure_recognition_mode_variables(graph: &mut PromptNodeGraph) {
+    for page in [
+        PromptNodePage::OpenAiCompatible,
+        PromptNodePage::Hunyuan,
+        PromptNodePage::AsrInstruction,
+        PromptNodePage::AsrContextBias,
+    ] {
+        let id = format!("{}-recognition-mode", page_id(page));
+        if !graph.nodes.iter().any(|node| node.id == id) {
+            graph.nodes.push(PromptNode {
+                id,
+                label: "RECOGNITION MODE".into(),
+                page,
+                kind: PromptNodeKind::Variable {
+                    variable: PromptVariable::RecognitionMode,
+                },
+                position: [0.0, 0.0],
+            });
+        }
+    }
+}
+
+fn page_id(page: PromptNodePage) -> &'static str {
+    match page {
+        PromptNodePage::Shared => "shared",
+        PromptNodePage::OpenAiCompatible => "openai",
+        PromptNodePage::Hunyuan => "hunyuan",
+        PromptNodePage::AsrInstruction => "asr-instruction",
+        PromptNodePage::AsrContextBias => "asr-context-bias",
+    }
+}
+
+fn split_compose_by_mode(graph: &mut PromptNodeGraph, id: &str, pseudo_text: &str) {
+    let Some(index) = graph.nodes.iter().position(|node| node.id == id) else {
+        return;
+    };
+    if matches!(
+        graph.nodes[index].kind,
+        PromptNodeKind::Switch {
+            condition: PromptCondition::IsPseudoStreaming
+        }
+    ) {
+        return;
+    }
+    let PromptNodeKind::Compose {
+        text: ordinary_text,
+    } = &graph.nodes[index].kind
+    else {
+        return;
+    };
+    if ordinary_text == pseudo_text {
+        return;
+    }
+
+    let page = graph.nodes[index].page;
+    let mut ordinary = graph.nodes[index].clone();
+    ordinary.id = format!("{id}-ordinary");
+    ordinary.label = format!("{} / ORDINARY", ordinary.label);
+    let mut pseudo = ordinary.clone();
+    pseudo.id = format!("{id}-pseudo-streaming");
+    pseudo.label = ordinary.label.replace(" / ORDINARY", " / PSEUDO-STREAMING");
+    pseudo.kind = PromptNodeKind::Compose {
+        text: pseudo_text.into(),
+    };
+    graph.nodes[index] = PromptNode {
+        id: id.into(),
+        label: "SELECT RECOGNITION MODE".into(),
+        page,
+        kind: PromptNodeKind::Switch {
+            condition: PromptCondition::IsPseudoStreaming,
+        },
+        position: [0.0, 0.0],
+    };
+
+    let incoming = graph
+        .links
+        .iter()
+        .filter(|link| link.to == id)
+        .cloned()
+        .collect::<Vec<_>>();
+    graph.links.retain(|link| link.to != id);
+    for link in incoming {
+        graph.links.push(PromptLink {
+            from: link.from.clone(),
+            to: ordinary.id.clone(),
+            input: link.input,
+        });
+        graph.links.push(PromptLink {
+            from: link.from,
+            to: pseudo.id.clone(),
+            input: link.input,
+        });
+    }
+    graph.links.push(PromptLink {
+        from: ordinary.id.clone(),
+        to: id.into(),
+        input: 0,
+    });
+    graph.links.push(PromptLink {
+        from: pseudo.id.clone(),
+        to: id.into(),
+        input: 1,
+    });
+    graph.nodes.push(ordinary);
+    graph.nodes.push(pseudo);
+}
+
+fn replace_compose_text(graph: &mut PromptNodeGraph, id: &str, text: &str) {
+    if let Some(node) = graph.nodes.iter_mut().find(|node| node.id == id) {
+        if let PromptNodeKind::Compose { text: node_text } = &mut node.kind {
+            *node_text = text.into();
+        }
     }
 }
 
@@ -520,7 +1047,8 @@ impl GraphBuilder {
 mod tests {
     use super::*;
     use crate::{
-        AsrPromptContext, PromptMessage, PromptTurn, SurroundingSource, TranslationPromptContext,
+        AsrPromptContext, PromptMessage, PromptMode, PromptTurn, SurroundingSource,
+        TranslationPromptContext,
     };
 
     fn context() -> TranslationPromptContext {
@@ -549,6 +1077,7 @@ mod tests {
                 before: "Before it.".into(),
                 after: "After it.".into(),
             }),
+            mode: PromptMode::Ordinary,
         }
     }
 
@@ -678,6 +1207,56 @@ After current input: speaker-01 en / After it."
         assert_eq!(
             rendered.messages[1].content,
             "Source language: English\nCurrent input:\nGood morning"
+        );
+    }
+
+    #[test]
+    fn unified_graph_selects_prompt_text_from_runtime_recognition_mode() {
+        let graph = PromptNodeGraph::builtin_default();
+        let ordinary = graph
+            .render_with_trace(
+                PromptProviderTarget::OpenAiCompatible,
+                "Correct this live tail",
+                "English",
+                "Chinese",
+                &TranslationPromptContext::default(),
+            )
+            .unwrap();
+        let pseudo = graph
+            .render_with_trace(
+                PromptProviderTarget::OpenAiCompatible,
+                "Correct this live tail",
+                "English",
+                "Chinese",
+                &TranslationPromptContext {
+                    mode: PromptMode::PseudoStreaming,
+                    ..TranslationPromptContext::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            ordinary
+                .trace
+                .node("openai-explicit-instruction")
+                .unwrap()
+                .selected_input,
+            Some(0)
+        );
+        assert_eq!(
+            pseudo
+                .trace
+                .node("openai-explicit-instruction")
+                .unwrap()
+                .selected_input,
+            Some(1)
+        );
+        assert!(!ordinary.render.messages[0].content.contains("live tail"));
+        assert!(pseudo.render.messages[0].content.contains("live tail"));
+        assert!(
+            pseudo.render.messages[1]
+                .content
+                .contains("Authoritative current segment")
         );
     }
 
@@ -837,6 +1416,7 @@ After current input: speaker-01 en / After it."
                 "English, Chinese",
                 &AsrPromptContext {
                     vocabulary: vec!["XRTranslate".into(), "VRChat".into()],
+                    mode: PromptMode::Ordinary,
                 },
             )
             .unwrap();
@@ -855,6 +1435,7 @@ After current input: speaker-01 en / After it."
                 "English, Chinese",
                 &AsrPromptContext {
                     vocabulary: vec!["XRTranslate".into(), "VRChat".into()],
+                    mode: PromptMode::Ordinary,
                 },
             )
             .unwrap();
@@ -871,7 +1452,7 @@ After current input: speaker-01 en / After it."
     #[test]
     fn builtin_graph_uses_compose_nodes_instead_of_fragmented_text_nodes() {
         let graph = PromptNodeGraph::builtin_default();
-        assert!(graph.nodes.len() <= 55, "{} nodes", graph.nodes.len());
+        assert!(graph.nodes.len() <= 85, "{} nodes", graph.nodes.len());
         assert!(
             graph
                 .nodes
@@ -966,12 +1547,18 @@ After current input: speaker-01 en / After it."
         for (id, label) in [
             ("openai-reference-context", "TRANSLATION CONTEXT"),
             (
-                "openai-reference-explicit-rules",
-                "EXPLICIT REFERENCE RULES",
+                "openai-reference-explicit-rules-ordinary",
+                "EXPLICIT REFERENCE RULES / ORDINARY",
             ),
-            ("openai-reference-auto-rules", "AUTO REFERENCE RULES"),
+            (
+                "openai-reference-auto-rules-ordinary",
+                "AUTO REFERENCE RULES / ORDINARY",
+            ),
             ("openai-reference-handling-rules", "SELECT REFERENCE RULES"),
-            ("openai-explicit-instruction", "EXPLICIT SOURCE INSTRUCTION"),
+            (
+                "openai-explicit-instruction-ordinary",
+                "EXPLICIT SOURCE INSTRUCTION / ORDINARY",
+            ),
             ("openai-system", "SELECT SYSTEM PROMPT"),
             ("hunyuan-with-context", "USER PROMPT WITH CONTEXT"),
         ] {
@@ -992,12 +1579,12 @@ After current input: speaker-01 en / After it."
         let explicit_rules = graph
             .nodes
             .iter()
-            .find(|node| node.id == "openai-reference-explicit-rules")
+            .find(|node| node.id == "openai-reference-explicit-rules-ordinary")
             .unwrap();
         let auto_rules = graph
             .nodes
             .iter()
-            .find(|node| node.id == "openai-reference-auto-rules")
+            .find(|node| node.id == "openai-reference-auto-rules-ordinary")
             .unwrap();
         let switch_rules = graph
             .nodes
@@ -1015,8 +1602,8 @@ After current input: speaker-01 en / After it."
             .find(|node| node.id == "hunyuan-with-context")
             .unwrap();
 
-        assert_eq!(explicit_rules.label, "EXPLICIT REFERENCE RULES");
-        assert_eq!(auto_rules.label, "AUTO REFERENCE RULES");
+        assert_eq!(explicit_rules.label, "EXPLICIT REFERENCE RULES / ORDINARY");
+        assert_eq!(auto_rules.label, "AUTO REFERENCE RULES / ORDINARY");
         assert_eq!(switch_rules.label, "SELECT REFERENCE RULES");
         assert!(explicit_rules.layout_height() > 142.0);
         assert!(auto_rules.layout_height() > 142.0);
@@ -1066,7 +1653,7 @@ After current input: speaker-01 en / After it."
         let node = graph
             .nodes
             .iter_mut()
-            .find(|node| node.id == "openai-explicit-instruction")
+            .find(|node| node.id == "openai-explicit-instruction-ordinary")
             .unwrap();
         node.kind = PromptNodeKind::Compose {
             text: "Translate {5}".into(),
@@ -1076,7 +1663,7 @@ After current input: speaker-01 en / After it."
         let mut graph = PromptNodeGraph::builtin_default();
         graph
             .links
-            .retain(|link| !(link.to == "openai-explicit-instruction" && link.input == 0));
+            .retain(|link| !(link.to == "openai-explicit-instruction-ordinary" && link.input == 0));
         assert!(graph.validate_for_activation().is_err());
     }
 
@@ -1087,7 +1674,7 @@ After current input: speaker-01 en / After it."
         let hunyuan_explicit = graph
             .nodes
             .iter()
-            .find(|node| node.id == "hunyuan-explicit-instruction")
+            .find(|node| node.id == "hunyuan-explicit-instruction-ordinary")
             .unwrap();
         match &hunyuan_explicit.kind {
             PromptNodeKind::Compose { text } => {
@@ -1106,7 +1693,7 @@ After current input: speaker-01 en / After it."
         let explicit_rules = graph
             .nodes
             .iter()
-            .find(|node| node.id == "openai-reference-explicit-rules")
+            .find(|node| node.id == "openai-reference-explicit-rules-ordinary")
             .unwrap();
         match &explicit_rules.kind {
             PromptNodeKind::Compose { text } => {
@@ -1125,7 +1712,7 @@ After current input: speaker-01 en / After it."
         let auto_rules = graph
             .nodes
             .iter()
-            .find(|node| node.id == "openai-reference-auto-rules")
+            .find(|node| node.id == "openai-reference-auto-rules-ordinary")
             .unwrap();
         match &auto_rules.kind {
             PromptNodeKind::Compose { text } => {

@@ -36,3 +36,6 @@ dist/
 
 # Third party reference repositories
 third_party/Audio8_TTS/
+
+# Internal design notes
+deepthink/

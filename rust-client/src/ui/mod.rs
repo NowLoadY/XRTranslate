@@ -1,6 +1,7 @@
 pub mod animation;
 pub mod components;
 pub mod fonts;
+pub mod layout;
 pub mod modal;
 pub mod organic_border;
 pub mod pages;
@@ -259,9 +260,8 @@ fn sidebar_text_button(
             .unwrap_or(false)
     });
 
-    let hover = animation::AnimationSystem::animate_bool(ui.ctx(), id.with("hover"), hovered, 0.15);
-    let active_factor =
-        animation::AnimationSystem::animate_bool(ui.ctx(), id.with("active"), active, 0.08);
+    let hover = animation::AnimationSystem::hover(ui.ctx(), id.with("hover"), hovered);
+    let active_factor = animation::AnimationSystem::active(ui.ctx(), id.with("active"), active);
 
     let bg_fill = Color32::TRANSPARENT;
     let foreground =
@@ -358,20 +358,12 @@ fn nav_item_animated(
             .unwrap_or(false)
     });
 
-    let hover_factor = animation::AnimationSystem::animate_bool(
-        ui.ctx(),
-        id.with("hover"),
-        is_hovered && !is_selected,
-        0.15,
-    );
-    let active_factor = animation::AnimationSystem::animate_bool(
-        ui.ctx(),
-        id.with("active"),
-        is_active && !is_selected,
-        0.08,
-    );
+    let hover_factor =
+        animation::AnimationSystem::hover(ui.ctx(), id.with("hover"), is_hovered && !is_selected);
+    let active_factor =
+        animation::AnimationSystem::active(ui.ctx(), id.with("active"), is_active && !is_selected);
     let select_factor =
-        animation::AnimationSystem::animate_bool(ui.ctx(), id.with("select"), is_selected, 0.20);
+        animation::AnimationSystem::selection(ui.ctx(), id.with("select"), is_selected);
 
     let bg_fill = Color32::TRANSPARENT;
     let text_color = animation::AnimationSystem::lerp_color(
@@ -478,18 +470,10 @@ fn guide_button_animated(
             .unwrap_or(false)
     });
 
-    let hover_factor = animation::AnimationSystem::animate_bool(
-        ui.ctx(),
-        guide_id.with("hover"),
-        is_hovered,
-        0.15,
-    );
-    let active_factor = animation::AnimationSystem::animate_bool(
-        ui.ctx(),
-        guide_id.with("active"),
-        is_active,
-        0.08,
-    );
+    let hover_factor =
+        animation::AnimationSystem::hover(ui.ctx(), guide_id.with("hover"), is_hovered);
+    let active_factor =
+        animation::AnimationSystem::active(ui.ctx(), guide_id.with("active"), is_active);
 
     let bg_fill = Color32::TRANSPARENT;
     let foreground = animation::AnimationSystem::lerp_color(

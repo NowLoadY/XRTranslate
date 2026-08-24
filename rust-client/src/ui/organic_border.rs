@@ -180,6 +180,15 @@ pub fn paint_with_id(
     rect: Rect,
     style: OrganicBorderStyle,
 ) {
+    if !crate::ui::theme::is_hand_drawn(ctx) {
+        ctx.layer_painter(layer_id).rect_stroke(
+            rect,
+            egui::CornerRadius::same(style.radius.round().clamp(0.0, 255.0) as u8),
+            crate::ui::theme::border_stroke(style.color),
+            egui::StrokeKind::Inside,
+        );
+        return;
+    }
     paint_with_painter(&ctx.layer_painter(layer_id), id, rect, style);
 }
 
@@ -196,6 +205,11 @@ pub fn show<R>(
     color: Color32,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<R> {
+    if !crate::ui::theme::is_hand_drawn(ui.ctx()) {
+        return frame
+            .stroke(crate::ui::theme::border_stroke(color))
+            .show(ui, add_contents);
+    }
     let response = frame
         .outer_margin(Margin::same(LAYOUT_GUTTER))
         .show(ui, add_contents);

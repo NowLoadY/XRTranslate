@@ -21,6 +21,87 @@ impl AnimationSystem {
         Self::animate_value(ctx, id, target, duration)
     }
 
+    pub fn hover(ctx: &egui::Context, id: Id, active: bool) -> f32 {
+        Self::animate_bool(
+            ctx,
+            id,
+            active,
+            crate::ui::theme::animation_timings(ctx).hover,
+        )
+    }
+
+    pub fn active(ctx: &egui::Context, id: Id, active: bool) -> f32 {
+        Self::animate_bool(
+            ctx,
+            id,
+            active,
+            crate::ui::theme::animation_timings(ctx).active,
+        )
+    }
+
+    pub fn selection(ctx: &egui::Context, id: Id, active: bool) -> f32 {
+        Self::animate_bool(
+            ctx,
+            id,
+            active,
+            crate::ui::theme::animation_timings(ctx).selection,
+        )
+    }
+
+    pub fn toggle(ctx: &egui::Context, id: Id, active: bool) -> f32 {
+        Self::animate_bool(
+            ctx,
+            id,
+            active,
+            crate::ui::theme::animation_timings(ctx).toggle,
+        )
+    }
+
+    pub fn button_click_duration(ctx: &egui::Context) -> f32 {
+        crate::ui::theme::animation_timings(ctx).button_click
+    }
+
+    pub fn primary_click_duration(ctx: &egui::Context) -> f32 {
+        crate::ui::theme::animation_timings(ctx).primary_click
+    }
+
+    /// Renders changing data with a shared freshness-to-opacity mapping.
+    ///
+    /// The activity value is semantic rather than visual: callers provide how
+    /// current or active the data is, while the theme owns the presentation.
+    pub fn render_data_text<R>(
+        ui: &mut egui::Ui,
+        id: Id,
+        activity: f32,
+        add_contents: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> R {
+        let motion = crate::ui::theme::data_text_motion(ui.ctx());
+        let timings = crate::ui::theme::animation_timings(ui.ctx());
+        let target_opacity = crate::ui::theme::data_text_target_opacity(ui.ctx(), activity);
+        let opacity = Self::animate_value(
+            ui.ctx(),
+            id.with("opacity"),
+            target_opacity,
+            timings.data_text,
+        );
+        let target_offset = (1.0 - activity.clamp(0.0, 1.0)) * motion.max_offset;
+        let offset = Self::animate_value(
+            ui.ctx(),
+            id.with("offset"),
+            target_offset,
+            timings.data_text,
+        );
+
+        ui.scope(|ui| {
+            ui.set_opacity(opacity);
+            if offset > 0.1 {
+                ui.add_space(offset);
+            }
+            add_contents(ui)
+        })
+        .inner
+    }
+
     #[allow(dead_code)]
     pub fn lerp_f32(from: f32, to: f32, t: f32) -> f32 {
         let factor = t.clamp(0.0, 1.0);
@@ -78,7 +159,7 @@ impl AnimationSystem {
         });
 
         let elapsed = (current_time - start_time) as f32;
-        let duration = 0.25;
+        let duration = crate::ui::theme::animation_timings(ui.ctx()).page;
         let raw_t = (elapsed / duration).clamp(0.0, 1.0);
 
         if raw_t < 1.0 {
@@ -96,7 +177,7 @@ impl AnimationSystem {
             if eased < 0.999 {
                 ui.set_opacity(eased);
             }
-            add_contents(ui)
+            crate::ui::layout::contain_width(ui, add_contents)
         })
         .inner
     }
@@ -129,7 +210,7 @@ impl AnimationSystem {
         });
 
         let elapsed = (current_time - start_time) as f32;
-        let duration = 0.28; // 280ms page flip slide
+        let duration = crate::ui::theme::animation_timings(ui.ctx()).page_flip;
         let raw_t = (elapsed / duration).clamp(0.0, 1.0);
 
         if raw_t < 1.0 {

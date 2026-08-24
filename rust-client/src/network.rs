@@ -12,10 +12,10 @@ use tokio_tungstenite::{
     connect_async,
     tungstenite::{self, Message},
 };
-use xrtranslate_prompt::{PromptExecutionTrace, PromptNodeGraph};
+use xrtranslate_prompt::PromptExecutionTrace;
 use xrtranslate_protocol::{
-    CorpusTermMatch, DrainReason, InferenceWorkload, SegmentBoundary, SegmentTiming,
-    ServerEvent as ProtocolServerEvent,
+    CorpusTermMatch, DrainReason, InferenceWorkload, PromptGraphSet, SegmentBoundary,
+    SegmentTiming, ServerEvent as ProtocolServerEvent,
 };
 
 use crate::client_settings::CaptureSource;
@@ -85,6 +85,8 @@ pub enum SessionEvent {
         segment_count: u32,
         revisable: bool,
         overlap_ratio: f32,
+        authoritative_snapshot: bool,
+        revision: u64,
     },
     Translation {
         stream_id: u64,
@@ -106,6 +108,8 @@ pub enum SessionEvent {
         prompt_trace: Option<PromptExecutionTrace>,
         revisable: bool,
         overlap_ratio: f32,
+        authoritative_snapshot: bool,
+        revision: u64,
     },
     StreamEnded {
         stream_id: u64,
@@ -160,8 +164,8 @@ enum SessionCommand {
     },
     SetTtsEnabled(bool),
     BeginVoiceClone,
-    UpdatePromptTemplate {
-        graph: PromptNodeGraph,
+    UpdatePromptTemplates {
+        graphs: PromptGraphSet,
     },
     TranslateText {
         text: String,
@@ -270,10 +274,10 @@ impl SessionHandle {
         let _ = self.command_tx.try_send(SessionCommand::BeginVoiceClone);
     }
 
-    pub fn update_prompt_template(&self, graph: PromptNodeGraph) {
+    pub fn update_prompt_templates(&self, graphs: PromptGraphSet) {
         let _ = self
             .command_tx
-            .try_send(SessionCommand::UpdatePromptTemplate { graph });
+            .try_send(SessionCommand::UpdatePromptTemplates { graphs });
     }
 
     /// Submits a direct text turn to the standard translation pipeline.
@@ -354,7 +358,7 @@ pub struct SessionConfig {
     /// websocket writer. This is required for file import and graceful live
     /// capture shutdown, where a producer disconnect marks end-of-input.
     pub finish_when_audio_ends: bool,
-    pub prompt_graph: Option<PromptNodeGraph>,
+    pub prompt_graphs: Option<PromptGraphSet>,
 }
 
 pub fn start_session(
@@ -430,7 +434,7 @@ async fn run_session(
         mut continuous_recognition,
         mut audio_source,
         finish_when_audio_ends,
-        prompt_graph,
+        prompt_graphs,
     } = config;
     let workload = if finish_when_audio_ends {
         InferenceWorkload::Offline
@@ -455,7 +459,7 @@ async fn run_session(
             "source_lang": source_lang,
             "target_lang": target_lang,
             "sample_rate": 16_000,
-            "prompt_graph": prompt_graph,
+            "prompt_graphs": prompt_graphs,
             "vad_threshold": vad_threshold,
             "vad_silence_ms": vad_silence_ms,
             "continuous_recognition": continuous_recognition,
@@ -536,6 +540,11 @@ async fn run_session(
             _ = ticker.tick() => {
                 if cancel_requested.load(Ordering::Acquire) {
                     let _ = write.close().await;
+                    let _ = event_tx.send(SessionEvent::StreamEnded {
+                        stream_id,
+                        publish_to_host_outputs,
+                    });
+                    let _ = event_tx.send(SessionEvent::Disconnected("Cancelled".into()));
                     return;
                 }
                 if stop_requested.load(Ordering::Acquire) {
@@ -551,6 +560,11 @@ async fn run_session(
             Some(command) = command_rx.recv() => {
                 if matches!(command, SessionCommand::Cancel) {
                     let _ = write.close().await;
+                    let _ = event_tx.send(SessionEvent::StreamEnded {
+                        stream_id,
+                        publish_to_host_outputs,
+                    });
+                    let _ = event_tx.send(SessionEvent::Disconnected("Cancelled".into()));
                     return;
                 }
                 let is_finish = matches!(&command, SessionCommand::Finish);
@@ -712,12 +726,12 @@ where
         SessionCommand::BeginVoiceClone => {
             send_json(write, json!({"action": "begin_voice_clone"})).await
         }
-        SessionCommand::UpdatePromptTemplate { graph } => {
+        SessionCommand::UpdatePromptTemplates { graphs } => {
             send_json(
                 write,
                 json!({
-                    "action": "set_prompt_graph",
-                    "prompt_graph": graph,
+                    "action": "set_prompt_graphs",
+                    "prompt_graphs": graphs,
                 }),
             )
             .await
@@ -949,6 +963,14 @@ fn forward_server_event(
                     .unwrap_or(1),
                 revisable,
                 overlap_ratio: overlap_ratio as f32,
+                authoritative_snapshot: data
+                    .and_then(|d| d.get("authoritative_snapshot"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                revision: data
+                    .and_then(|d| d.get("revision"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default(),
             });
         }
         Some("translation_ready") => {
@@ -1021,6 +1043,14 @@ fn forward_server_event(
                 prompt_trace: event_metadata(data, "prompt_trace"),
                 revisable,
                 overlap_ratio: overlap_ratio as f32,
+                authoritative_snapshot: data
+                    .and_then(|d| d.get("authoritative_snapshot"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                revision: data
+                    .and_then(|d| d.get("revision"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default(),
             });
         }
         Some("recognition_stream_ended") => {
@@ -1295,6 +1325,28 @@ mod tests {
             term_matches[0].sources[0].corpus_id,
             "games.overwatch.heroes"
         );
+    }
+
+    #[test]
+    fn authoritative_translation_retains_its_backend_revision() {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        forward_server_event(
+            &sender,
+            r#"{"action":"translation_ready","data":{"source_text":"corrected","translated_text":"final","speaker_id":"","revisable":true,"overlap_ratio":0.34,"authoritative_snapshot":true,"revision":17}}"#,
+            42,
+            true,
+            true,
+            CaptureSource::Microphone,
+        );
+
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            SessionEvent::Translation {
+                authoritative_snapshot: true,
+                revision: 17,
+                ..
+            }
+        ));
     }
 
     #[test]

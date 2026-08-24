@@ -4,7 +4,7 @@ use crate::i18n::UiLanguage;
 use crate::plugins::PluginId;
 use crate::plugins::osc::runtime::OscSettings;
 use crate::plugins::{PluginPreferences, PluginRegistry};
-use crate::ui::Page;
+use crate::ui::{Page, theme::UiTheme};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use xrtranslate_prompt::PromptTemplateLibrary;
@@ -87,6 +87,8 @@ pub struct ClientSettings {
     pub mute_self_pauses_translation: bool,
     #[serde(default)]
     pub ui_language: UiLanguage,
+    #[serde(default)]
+    pub ui_theme: UiTheme,
     #[serde(default = "default_true")]
     pub first_run: bool,
     #[serde(default = "default_server_url")]
@@ -162,6 +164,7 @@ impl Default for ClientSettings {
             tts_enabled: false,
             mute_self_pauses_translation: false,
             ui_language: UiLanguage::default(),
+            ui_theme: UiTheme::default(),
             first_run: true,
             server_url: default_server_url(),
             download_proxy_url: String::new(),

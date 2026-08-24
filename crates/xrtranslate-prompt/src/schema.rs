@@ -76,6 +76,7 @@ pub enum PromptVariable {
     TargetLanguage,
     CurrentInput,
     RecognitionContext,
+    RecognitionMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -84,6 +85,7 @@ pub enum PromptCondition {
     SourceIsAuto,
     HasReferenceContext,
     HasRecognitionContext,
+    IsPseudoStreaming,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -94,6 +96,13 @@ pub enum PromptProviderTarget {
     OpenAiCompatible,
     AsrInstruction,
     AsrContextBias,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptGraphDomain {
+    Translation,
+    Asr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -606,14 +615,34 @@ impl PromptNodeGraph {
         self.nodes
             .iter()
             .find(|node| node.id == id)
-            .is_some_and(|node| match node.kind {
-                PromptNodeKind::Compose { ref text } => {
-                    crate::compose_input_indexes(text).is_ok_and(|inputs| inputs.contains(&input))
-                }
-                PromptNodeKind::Switch { .. } => input < 2,
-                PromptNodeKind::Request { ref roles, .. } => usize::from(input) < roles.len(),
-                _ => false,
-            })
+            .is_some_and(|node| node_has_declared_input(node, input))
+    }
+
+    pub(crate) fn remove_invalid_socket_links(&mut self) {
+        let nodes = self
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node))
+            .collect::<HashMap<_, _>>();
+        let mut accepted = Vec::with_capacity(self.links.len());
+        let mut sockets = HashSet::new();
+        for link in std::mem::take(&mut self.links) {
+            let (Some(source), Some(target)) =
+                (nodes.get(link.from.as_str()), nodes.get(link.to.as_str()))
+            else {
+                continue;
+            };
+            if link.from == link.to
+                || !node_has_declared_input(target, link.input)
+                || !pages_can_connect(source.page, target.page)
+                || !sockets.insert((link.to.clone(), link.input))
+                || links_reach(&accepted, &link.to, &link.from)
+            {
+                continue;
+            }
+            accepted.push(link);
+        }
+        self.links = accepted;
     }
 
     pub(crate) fn reaches(&self, start: &str, target: &str) -> bool {
@@ -670,6 +699,37 @@ impl PromptNodeGraph {
     }
 }
 
+fn links_reach(links: &[PromptLink], start: &str, target: &str) -> bool {
+    let mut pending = vec![start];
+    let mut visited = HashSet::new();
+    while let Some(current) = pending.pop() {
+        if current == target {
+            return true;
+        }
+        if !visited.insert(current) {
+            continue;
+        }
+        pending.extend(
+            links
+                .iter()
+                .filter(|link| link.from == current)
+                .map(|link| link.to.as_str()),
+        );
+    }
+    false
+}
+
+fn node_has_declared_input(node: &PromptNode, input: u8) -> bool {
+    match &node.kind {
+        PromptNodeKind::Compose { text } => {
+            crate::compose_input_indexes(text).is_ok_and(|inputs| inputs.contains(&input))
+        }
+        PromptNodeKind::Switch { .. } => input < 2,
+        PromptNodeKind::Request { roles, .. } => usize::from(input) < roles.len(),
+        _ => false,
+    }
+}
+
 fn append_compose_input(text: &mut String, input: u8) {
     if !text.is_empty() {
         if text.ends_with("\n\n") {
@@ -695,12 +755,14 @@ pub(crate) fn default_node_label(kind: &PromptNodeKind) -> String {
             PromptVariable::TargetLanguage => "TARGET LANGUAGE".into(),
             PromptVariable::CurrentInput => "CURRENT INPUT".into(),
             PromptVariable::RecognitionContext => "RECOGNITION CONTEXT".into(),
+            PromptVariable::RecognitionMode => "RECOGNITION MODE".into(),
         },
         PromptNodeKind::Compose { .. } => "COMPOSE TEXT".into(),
         PromptNodeKind::Switch { condition } => match condition {
             PromptCondition::SourceIsAuto => "SELECT SOURCE MODE".into(),
             PromptCondition::HasReferenceContext => "SELECT CONTEXT MODE".into(),
             PromptCondition::HasRecognitionContext => "SELECT ASR CONTEXT MODE".into(),
+            PromptCondition::IsPseudoStreaming => "SELECT RECOGNITION MODE".into(),
         },
         PromptNodeKind::Request { target, .. } => {
             let provider = match target {
@@ -721,6 +783,7 @@ fn node_semantic_rank(node: &PromptNode) -> (usize, String) {
             PromptVariable::TargetLanguage => 1,
             PromptVariable::CurrentInput => 2,
             PromptVariable::RecognitionContext => 3,
+            PromptVariable::RecognitionMode => 4,
         },
         PromptNodeKind::Input { block } => match block {
             TranslationPromptBlock::LanguageOrder => 3,
@@ -876,7 +939,7 @@ mod tests {
         let PromptNodeKind::Compose { text } = &mut changed
             .nodes
             .iter_mut()
-            .find(|node| node.id == "openai-reference-explicit-rules")
+            .find(|node| node.id == "openai-reference-explicit-rules-ordinary")
             .unwrap()
             .kind
         else {

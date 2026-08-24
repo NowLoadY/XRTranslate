@@ -46,6 +46,7 @@ pub(crate) fn prompt_context_for_segment(
                 before: source.before.clone(),
                 after: source.after.clone(),
             }),
+        mode: xrtranslate_prompt::PromptMode::Ordinary,
     }
 }
 

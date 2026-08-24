@@ -1,11 +1,14 @@
 use serde::{Deserialize, Serialize};
 
+use crate::PromptMode;
+
 /// Provider-neutral facts available before speech recognition. The prompt
 /// graph may render these terms into a free-form instruction prompt or a
 /// lexical context field, while weighted vocabulary delivery stays separate.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AsrPromptContext {
     pub vocabulary: Vec<String>,
+    pub mode: PromptMode,
 }
 
 impl AsrPromptContext {
@@ -20,6 +23,13 @@ impl AsrPromptContext {
             .filter(|term| !term.is_empty())
             .collect::<Vec<_>>()
             .join(", ")
+    }
+
+    pub fn without_recognition_context(&self) -> Self {
+        Self {
+            vocabulary: Vec::new(),
+            mode: self.mode,
+        }
     }
 
     /// Selects complete recognition terms whose rendered comma-separated text
@@ -42,7 +52,10 @@ impl AsrPromptContext {
             used_chars += separator_chars + term_chars;
             vocabulary.push(term.to_owned());
         }
-        Self { vocabulary }
+        Self {
+            vocabulary,
+            mode: self.mode,
+        }
     }
 }
 
@@ -53,6 +66,7 @@ pub struct TranslationPromptContext {
     pub recent_turns: Vec<PromptTurn>,
     pub previous_revision: Option<PromptTurn>,
     pub surrounding_source: Option<SurroundingSource>,
+    pub mode: PromptMode,
 }
 
 impl TranslationPromptContext {
@@ -60,6 +74,13 @@ impl TranslationPromptContext {
         TranslationPromptBlock::builtin_reference_blocks()
             .iter()
             .any(|block| render_block(block, self).is_some())
+    }
+
+    pub fn without_reference_context(&self) -> Self {
+        Self {
+            mode: self.mode,
+            ..Self::default()
+        }
     }
 
     pub fn reference_text_for_quality_checks(&self) -> Option<String> {
@@ -232,11 +253,13 @@ fn append_source_line(
 #[cfg(test)]
 mod tests {
     use super::AsrPromptContext;
+    use crate::PromptMode;
 
     #[test]
     fn recognition_context_bounds_complete_terms_and_exact_separator_cost() {
         let context = AsrPromptContext {
             vocabulary: vec!["Alpha".into(), "Beta".into(), "TooLongForGap".into()],
+            mode: PromptMode::Ordinary,
         };
 
         let bounded = context.bounded_recognition_context(11);
