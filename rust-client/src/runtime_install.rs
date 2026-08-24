@@ -105,7 +105,15 @@ struct NvidiaCuda {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LocalModelAvailability {
     Detecting,
-    Available { gpu: String, memory_bytes: u64 },
+    Available {
+        gpu: String,
+        memory_bytes: u64,
+    },
+    InsufficientVram {
+        gpu: String,
+        memory_bytes: u64,
+        required_bytes: u64,
+    },
     Unavailable(String),
 }
 
@@ -1646,6 +1654,15 @@ fn configured_runtime_plan(
     let blocking_error = if requires_managed_model {
         match &local_models {
             LocalModelAvailability::Available { .. } => None,
+            LocalModelAvailability::InsufficientVram {
+                gpu,
+                memory_bytes,
+                required_bytes,
+            } => Some(format!(
+                "NVIDIA GPU {gpu} has {:.1} GiB of VRAM; managed local models require at least {:.0} GiB.",
+                *memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+                *required_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+            )),
             LocalModelAvailability::Unavailable(reason) => Some(reason.clone()),
             LocalModelAvailability::Detecting => {
                 Some("NVIDIA GPU detection did not complete.".to_owned())
@@ -1819,11 +1836,11 @@ fn local_model_availability(nvidia: Option<&NvidiaCuda>) -> LocalModelAvailabili
         ));
     }
     if nvidia.memory_bytes < MIN_LOCAL_MODEL_VRAM_BYTES {
-        return LocalModelAvailability::Unavailable(format!(
-            "NVIDIA GPU {} has {:.1} GiB of VRAM; managed local models require at least 8 GiB.",
-            nvidia.gpu,
-            nvidia.memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
-        ));
+        return LocalModelAvailability::InsufficientVram {
+            gpu: nvidia.gpu.clone(),
+            memory_bytes: nvidia.memory_bytes,
+            required_bytes: MIN_LOCAL_MODEL_VRAM_BYTES,
+        };
     }
     LocalModelAvailability::Available {
         gpu: nvidia.gpu.clone(),
@@ -3469,7 +3486,12 @@ mod tests {
         };
         assert!(matches!(
             local_model_availability(Some(&low_memory)),
-            LocalModelAvailability::Unavailable(reason) if reason.contains("at least 8 GiB")
+            LocalModelAvailability::InsufficientVram {
+                memory_bytes,
+                required_bytes,
+                ..
+            } if memory_bytes == 7 * 1024 * 1024 * 1024
+                && required_bytes == 8 * 1024 * 1024 * 1024
         ));
         assert!(matches!(
             local_model_availability(None),

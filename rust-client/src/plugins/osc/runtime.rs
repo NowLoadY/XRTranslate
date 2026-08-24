@@ -1,6 +1,7 @@
 use super::chatbox::{
     HistoryMessage, ManualMessage, build_chatbox_text, render_entry, sanitize_chatbox_segment,
 };
+use crate::client_settings::CaptureSource;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use parking_lot::Mutex;
 use rosc::{OscBundle, OscMessage, OscPacket, OscType, decoder, encoder};
@@ -16,6 +17,26 @@ use std::time::{Duration, Instant};
 
 const MUTE_PATH: &str = "/avatar/parameters/MuteSelf";
 const COOLDOWN: Duration = Duration::from_millis(500);
+pub const MAX_PREFIX_LENGTH: usize = 24;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OscInputSource {
+    #[default]
+    Unknown,
+    Microphone,
+    SystemAudio,
+    Typing,
+}
+
+impl From<CaptureSource> for OscInputSource {
+    fn from(source: CaptureSource) -> Self {
+        match source {
+            CaptureSource::Microphone => Self::Microphone,
+            CaptureSource::SystemAudio => Self::SystemAudio,
+            CaptureSource::Both => Self::Unknown,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OscFormatMode {
     BilingualSourceFirst, // Source \n Target
@@ -179,6 +200,22 @@ pub struct OscSettings {
     pub typing_source_lang: String,
     #[serde(default = "default_typing_target_lang")]
     pub typing_target_lang: String,
+    #[serde(default = "default_microphone_prefix")]
+    pub microphone_prefix: String,
+    #[serde(default = "default_system_audio_prefix")]
+    pub system_audio_prefix: String,
+    #[serde(default = "default_typing_prefix")]
+    pub typing_prefix: String,
+}
+
+fn default_microphone_prefix() -> String {
+    "MIC ".into()
+}
+fn default_system_audio_prefix() -> String {
+    "SYS ".into()
+}
+fn default_typing_prefix() -> String {
+    "TXT ".into()
 }
 
 impl Default for OscSettings {
@@ -197,6 +234,9 @@ impl Default for OscSettings {
             show_speaker_number: false,
             typing_source_lang: default_typing_source_lang(),
             typing_target_lang: default_typing_target_lang(),
+            microphone_prefix: default_microphone_prefix(),
+            system_audio_prefix: default_system_audio_prefix(),
+            typing_prefix: default_typing_prefix(),
         }
     }
 }
@@ -268,7 +308,24 @@ impl OscSettings {
         if !self.history_ttl_seconds.is_finite() || self.history_ttl_seconds < 0.0 {
             return Err("OSC history TTL must be non-negative".into());
         }
+        if self.microphone_prefix.chars().count() > MAX_PREFIX_LENGTH
+            || self.system_audio_prefix.chars().count() > MAX_PREFIX_LENGTH
+            || self.typing_prefix.chars().count() > MAX_PREFIX_LENGTH
+        {
+            return Err(format!(
+                "OSC prefixes must be at most {MAX_PREFIX_LENGTH} characters"
+            ));
+        }
         Ok(())
+    }
+
+    pub fn prefix_for(&self, source: OscInputSource) -> &str {
+        match source {
+            OscInputSource::Microphone => &self.microphone_prefix,
+            OscInputSource::SystemAudio => &self.system_audio_prefix,
+            OscInputSource::Typing => &self.typing_prefix,
+            OscInputSource::Unknown => "",
+        }
     }
 }
 
@@ -301,6 +358,8 @@ struct QueuedMessage {
 enum Command {
     Message {
         stream_id: u64,
+        audio_source: OscInputSource,
+        is_typing: bool,
         source: String,
         translated: String,
         speaker_id: String,
@@ -314,6 +373,8 @@ enum Command {
     },
     RollStream {
         stream_id: u64,
+        audio_source: OscInputSource,
+        is_typing: bool,
         source: String,
         translated: String,
         speaker_id: String,
@@ -333,6 +394,8 @@ impl OscHandle {
     pub fn add_message_for_stream(
         &self,
         stream_id: u64,
+        audio_source: CaptureSource,
+        is_typing: bool,
         source: &str,
         translated: &str,
         speaker_id: &str,
@@ -340,6 +403,12 @@ impl OscHandle {
     ) {
         let _ = self.tx.send(Command::Message {
             stream_id,
+            audio_source: if is_typing {
+                OscInputSource::Typing
+            } else {
+                audio_source.into()
+            },
+            is_typing,
             source: sanitize_chatbox_segment(source),
             translated: sanitize_chatbox_segment(translated),
             speaker_id: speaker_id.trim().into(),
@@ -355,14 +424,6 @@ impl OscHandle {
         });
     }
 
-    #[allow(dead_code)]
-    pub fn send_manual_message_with_ttl(&self, text: &str, ttl: Option<Duration>) {
-        let _ = self.tx.send(Command::ManualMessage {
-            text: text.trim().into(),
-            ttl,
-        });
-    }
-
     pub fn end_stream_for(&self, stream_id: u64) {
         let _ = self.tx.send(Command::EndStream(stream_id));
     }
@@ -370,12 +431,20 @@ impl OscHandle {
     pub fn roll_stream_for(
         &self,
         stream_id: u64,
+        audio_source: CaptureSource,
+        is_typing: bool,
         source: &str,
         translated: &str,
         speaker_id: &str,
     ) {
         let _ = self.tx.send(Command::RollStream {
             stream_id,
+            audio_source: if is_typing {
+                OscInputSource::Typing
+            } else {
+                audio_source.into()
+            },
+            is_typing,
             source: sanitize_chatbox_segment(source),
             translated: sanitize_chatbox_segment(translated),
             speaker_id: speaker_id.trim().into(),
@@ -466,11 +535,6 @@ impl OscManager {
     pub fn send_manual_message(&self, text: &str) {
         self.handle().send_manual_message(text);
     }
-    #[allow(dead_code)]
-    pub fn send_manual_message_with_ttl(&self, text: &str, ttl: Option<Duration>) {
-        self.handle().send_manual_message_with_ttl(text, ttl);
-    }
-
     pub fn handle(&self) -> OscHandle {
         OscHandle {
             tx: self.tx.clone(),
@@ -644,6 +708,8 @@ fn dispatch_loop(
             Ok(Command::ManualMessage { .. }) => {}
             Ok(Command::Message {
                 stream_id,
+                audio_source,
+                is_typing,
                 source,
                 translated,
                 speaker_id,
@@ -654,6 +720,11 @@ fn dispatch_loop(
                 expire_chatbox_entries(&mut history, &mut live, now);
                 let entry = HistoryMessage {
                     stream_id,
+                    source_kind: if is_typing {
+                        OscInputSource::Typing
+                    } else {
+                        audio_source
+                    },
                     source,
                     translated,
                     speaker_id,
@@ -694,6 +765,8 @@ fn dispatch_loop(
             Ok(Command::Message { .. }) => {}
             Ok(Command::RollStream {
                 stream_id,
+                audio_source,
+                is_typing,
                 source,
                 translated,
                 speaker_id,
@@ -705,6 +778,11 @@ fn dispatch_loop(
                 }
                 live.push(HistoryMessage {
                     stream_id,
+                    source_kind: if is_typing {
+                        OscInputSource::Typing
+                    } else {
+                        audio_source
+                    },
                     source,
                     translated,
                     speaker_id,
@@ -993,6 +1071,7 @@ mod tests {
     fn history_message(expires_at: Instant, text: &str) -> HistoryMessage {
         HistoryMessage {
             stream_id: 0,
+            source_kind: OscInputSource::Unknown,
             source: text.into(),
             translated: String::new(),
             speaker_id: String::new(),
@@ -1130,6 +1209,8 @@ mod tests {
 
         tx.send(Command::Message {
             stream_id: 1,
+            audio_source: OscInputSource::Unknown,
+            is_typing: false,
             source: "hello".into(),
             translated: "你好".into(),
             speaker_id: "speaker-01".into(),
@@ -1166,6 +1247,8 @@ mod tests {
 
         tx.send(Command::Message {
             stream_id: 1,
+            audio_source: OscInputSource::Unknown,
+            is_typing: false,
             source: "first".into(),
             translated: "one".into(),
             speaker_id: String::new(),
@@ -1176,6 +1259,8 @@ mod tests {
         assert_eq!(receive_chatbox_input(&receiver).0, "first\none");
         tx.send(Command::RollStream {
             stream_id: 1,
+            audio_source: OscInputSource::Unknown,
+            is_typing: false,
             source: "second".into(),
             translated: "two".into(),
             speaker_id: String::new(),
@@ -1210,6 +1295,8 @@ mod tests {
         // 1. Send an initial ASR message
         tx.send(Command::Message {
             stream_id: 1,
+            audio_source: OscInputSource::Unknown,
+            is_typing: false,
             source: "speech 1".into(),
             translated: "翻译 1".into(),
             speaker_id: String::new(),
@@ -1230,7 +1317,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             receive_chatbox_input(&receiver).0,
-            "speech 1\n翻译 1\n⌨️ typing test"
+            "speech 1\n翻译 1\nTXT typing test"
         );
 
         // Wait past the 500ms cooldown so next ASR update can send
@@ -1240,6 +1327,8 @@ mod tests {
         // It updates the space above the manual message while keeping manual text at the bottom.
         tx.send(Command::Message {
             stream_id: 2,
+            audio_source: OscInputSource::Unknown,
+            is_typing: false,
             source: "speech 2".into(),
             translated: "翻译 2".into(),
             speaker_id: String::new(),
@@ -1249,13 +1338,13 @@ mod tests {
         .unwrap();
         let (during_text, _) = receive_chatbox_input(&receiver);
         assert!(during_text.contains("speech 2"));
-        assert!(during_text.ends_with("⌨️ typing test"));
+        assert!(during_text.ends_with("TXT typing test"));
 
         // 4. Wait past the manual message TTL and cooldown,
         // at which point manual text disappears and full ASR messages remain!
         let (resumed_text, _) = receive_chatbox_input(&receiver);
         assert!(resumed_text.contains("speech 2"));
-        assert!(!resumed_text.contains("⌨️ typing test"));
+        assert!(!resumed_text.contains("TXT typing test"));
 
         tx.send(Command::Shutdown).unwrap();
         worker.join().unwrap();
@@ -1283,7 +1372,7 @@ mod tests {
             ttl: Some(Duration::from_millis(80)),
         })
         .unwrap();
-        assert_eq!(receive_chatbox_input(&receiver).0, "⌨️ temporary note");
+        assert_eq!(receive_chatbox_input(&receiver).0, "TXT temporary note");
 
         // After TTL expires, with no other ASR messages, chatbox should clear.
         assert_eq!(receive_chatbox_input(&receiver).0, String::new());

@@ -312,6 +312,20 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "NVIDIA GPU 감지 중…",
         "Обнаружение NVIDIA GPU…",
     ),
+    (
+        "Local models are unavailable on this device. You can continue with an online API, or update the NVIDIA driver or GPU and try again.",
+        "此设备当前无法使用本地模型。你可以继续使用在线 API，或升级 NVIDIA 驱动或显卡后重试。",
+        "このデバイスではローカルモデルを使用できません。オンライン API を使用するか、NVIDIA ドライバーまたは GPU を更新して再試行してください。",
+        "이 장치에서는 로컬 모델을 사용할 수 없습니다. 온라인 API를 계속 사용하거나 NVIDIA 드라이버 또는 GPU를 업데이트한 후 다시 시도하세요.",
+        "Локальные модели недоступны на этом устройстве. Можно продолжить с онлайн-API или обновить драйвер NVIDIA либо GPU и повторить попытку.",
+    ),
+    (
+        "Your GPU has less than 8 GiB of VRAM. Local models require at least 8 GiB, so this option is disabled.",
+        "你的 GPU 显存不足 8 GiB。本地模型至少需要 8 GiB 显存，因此该选项已禁用。",
+        "GPU の VRAM が 8 GiB 未満です。ローカルモデルには 8 GiB 以上が必要なため、この項目は無効です。",
+        "GPU VRAM이 8 GiB 미만입니다. 로컬 모델에는 최소 8 GiB가 필요하므로 이 옵션이 비활성화되었습니다.",
+        "Объём видеопамяти GPU меньше 8 ГиБ. Для локальных моделей требуется не менее 8 ГиБ, поэтому этот вариант отключён.",
+    ),
     ("Device", "设备", "デバイス", "장치", "Устройство"),
     (
         "Auto selects the newest compatible managed CUDA and cuDNN runtime. Managed local models never fall back to CPU.",
@@ -527,6 +541,13 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     ),
     ("General", "常规", "一般", "일반", "Общие"),
     ("Language", "语言", "言語", "언어", "Язык"),
+    (
+        "Language & Theme",
+        "语言与主题",
+        "言語とテーマ",
+        "언어 및 테마",
+        "Язык и тема",
+    ),
     (
         "Downloads",
         "下载设置",

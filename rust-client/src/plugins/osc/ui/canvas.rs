@@ -248,12 +248,12 @@ pub fn render_bottom_input_bar(
                 ui.add_space(spacing);
 
                 let mode_text = if translate_mode {
-                    egui::RichText::new(format!("🌐 {}", crate::i18n::tr(language, "Translate")))
+                    egui::RichText::new(crate::i18n::tr(language, "Translate"))
                         .color(egui::Color32::from_rgb(37, 99, 235))
                         .size(12.0)
                         .strong()
                 } else {
-                    egui::RichText::new(format!("⌨️ {}", crate::i18n::tr(language, "Direct")))
+                    egui::RichText::new(crate::i18n::tr(language, "Direct"))
                         .color(crate::ui::theme::text_weak())
                         .size(12.0)
                 };

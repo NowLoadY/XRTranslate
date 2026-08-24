@@ -9,7 +9,6 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
-use xrtranslate_assets::{ModelAssetId, ModelAssetsConfig, ModelCapability, manifest_for};
 use xrtranslate_config::{AppConfig, RuntimeLayout, StorageConfig};
 
 const MIN_LOG_FILE_BYTES: u64 = 64 * 1024;
@@ -385,89 +384,6 @@ impl BackendManager {
     fn finish_corpus_log_capture(&mut self) {
         if let Some(capture) = self.corpus_log_capture.take() {
             capture.finish();
-        }
-    }
-
-    /// Checks the declared model package from the shared, version-pinned Rust
-    /// manifest without invoking an external downloader.
-    pub fn check_model_files(&self, category: &str, provider: &str) -> Result<String, String> {
-        let config_path = self.project_root.join("config.json");
-        let config = AppConfig::from_path_with_user_config(&config_path, &self.project_root)
-            .map_err(|error| format!("Cannot read {}: {error}", config_path.display()))?;
-        let capability = match category {
-            "asr" => ModelCapability::Asr,
-            "translation" => ModelCapability::Translation,
-            "tts" => ModelCapability::Tts,
-            _ => return Err(format!("Unknown model category: {category}")),
-        };
-        let providers = match capability {
-            ModelCapability::Asr => &config.asr.providers,
-            ModelCapability::Translation => &config.translation.providers,
-            ModelCapability::Tts => &config.tts.providers,
-        };
-        let provider_config = providers
-            .get(provider)
-            .and_then(serde_json::Value::as_object)
-            .ok_or_else(|| format!("No local model is configured for {category}:{provider}."))?;
-        let model_assets = provider_config
-            .get("model_assets")
-            .and_then(serde_json::Value::as_array)
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .collect::<Vec<_>>()
-            })
-            .filter(|values| !values.is_empty())
-            .unwrap_or_else(|| {
-                provider_config
-                    .get("model_asset")
-                    .and_then(serde_json::Value::as_str)
-                    .into_iter()
-                    .collect()
-            });
-        if model_assets.is_empty() {
-            return Err(format!(
-                "No local model is configured for {category}:{provider}."
-            ));
-        }
-        let mut asset_config = ModelAssetsConfig::with_directory_overrides(
-            config.model_manager.models_directory,
-            config.model_manager.qwen3_asr_gguf_directory,
-            config.model_manager.hunyuan_mt_gguf_directory,
-        );
-        let mut ids = Vec::new();
-        for model_asset in model_assets {
-            let id = ModelAssetId::from_config_key(model_asset).ok_or_else(|| {
-                format!("Unknown model package {model_asset} for {category}:{provider}.")
-            })?;
-            let manifest = manifest_for(id);
-            if manifest.capability != capability || manifest.provider != provider {
-                return Err(format!(
-                    "Model package {model_asset} does not belong to {category}:{provider}."
-                ));
-            }
-            asset_config.select_asset(id);
-            ids.push(id);
-        }
-        let assets = asset_config.resolve(&self.project_root);
-        let preflight = assets.check();
-        let diagnostics = preflight
-            .diagnostics()
-            .iter()
-            .filter(|diagnostic| ids.contains(&diagnostic.asset_id))
-            .collect::<Vec<_>>();
-        if diagnostics.is_empty() {
-            Ok("Required native model files are ready. Use the native Verify command before a release to validate SHA-256.".into())
-        } else {
-            Err(format!(
-                "Missing native model files:\n{}",
-                diagnostics
-                    .iter()
-                    .map(|diagnostic| format!("- {diagnostic}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ))
         }
     }
 

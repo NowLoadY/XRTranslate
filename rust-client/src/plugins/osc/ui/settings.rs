@@ -82,15 +82,6 @@ pub fn render(
 
                     ui.add_space(10.0);
 
-                    components::modern_slider_f64(
-                        ui,
-                        &mut plugin.draft_mut().history_ttl_seconds,
-                        10.0..=20.0,
-                        15.0,
-                        crate::i18n::tr(language, "History TTL:"),
-                        "s",
-                    );
-
                     ui.add_space(12.0);
 
                     ui.horizontal(|ui| {

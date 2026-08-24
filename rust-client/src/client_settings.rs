@@ -254,6 +254,17 @@ impl ClientSettings {
             crate::feature_access::is_available(crate::feature_access::Feature::OscChatbox);
         self.osc_settings.show_speaker_number &=
             crate::feature_access::is_available(crate::feature_access::Feature::SpeakerNumbers);
+        // Replace the old emoji defaults that render as tofu on systems without
+        // an emoji-capable egui font, while preserving user-customized prefixes.
+        for (prefix, legacy, replacement) in [
+            (&mut self.osc_settings.microphone_prefix, "🎙️ ", "MIC "),
+            (&mut self.osc_settings.system_audio_prefix, "🔊 ", "SYS "),
+            (&mut self.osc_settings.typing_prefix, "⌨️ ", "TXT "),
+        ] {
+            if prefix == legacy {
+                *prefix = replacement.into();
+            }
+        }
         self.mute_self_pauses_translation &=
             crate::feature_access::is_available(crate::feature_access::Feature::MuteSync);
     }
@@ -479,6 +490,20 @@ mod tests {
         let serialized = serde_json::to_value(&loaded).unwrap();
         assert!(serialized.get("speaker_recognition_enabled").is_none());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_emoji_prefix_defaults_migrate_without_overwriting_custom_text() {
+        let mut settings = ClientSettings::default();
+        settings.osc_settings.microphone_prefix = "🎙️ ".into();
+        settings.osc_settings.system_audio_prefix = "game: ".into();
+        settings.osc_settings.typing_prefix = "⌨️ ".into();
+
+        settings.normalize_feature_dependencies();
+
+        assert_eq!(settings.osc_settings.microphone_prefix, "MIC ");
+        assert_eq!(settings.osc_settings.system_audio_prefix, "game: ");
+        assert_eq!(settings.osc_settings.typing_prefix, "TXT ");
     }
 
     #[test]

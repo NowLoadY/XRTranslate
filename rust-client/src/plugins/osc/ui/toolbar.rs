@@ -1,4 +1,6 @@
-use super::super::runtime::{BannerConfig, BannerContentType, OscFormatMode, OscMessageSeparator};
+use super::super::runtime::{
+    BannerConfig, BannerContentType, MAX_PREFIX_LENGTH, OscFormatMode, OscMessageSeparator,
+};
 use crate::ui::components::{self, card};
 use eframe::egui;
 
@@ -194,6 +196,53 @@ pub fn render_toolbar(
                     }
 
                     ui.add_space(8.0);
+
+                    for (label, value) in [
+                        ("Microphone prefix:", 0usize),
+                        ("System audio prefix:", 1usize),
+                        ("Typing prefix:", 2usize),
+                    ] {
+                        let response = ui.horizontal(|ui| {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(100.0, 20.0),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(crate::i18n::tr(language, label))
+                                            .color(crate::ui::theme::text_strong())
+                                            .strong(),
+                                    );
+                                },
+                            );
+                            match value {
+                                0 => ui.add(
+                                    egui::TextEdit::singleline(
+                                        &mut plugin.draft_mut().microphone_prefix,
+                                    )
+                                    .desired_width(180.0)
+                                    .char_limit(MAX_PREFIX_LENGTH),
+                                ),
+                                1 => ui.add(
+                                    egui::TextEdit::singleline(
+                                        &mut plugin.draft_mut().system_audio_prefix,
+                                    )
+                                    .desired_width(180.0)
+                                    .char_limit(MAX_PREFIX_LENGTH),
+                                ),
+                                _ => ui.add(
+                                    egui::TextEdit::singleline(
+                                        &mut plugin.draft_mut().typing_prefix,
+                                    )
+                                    .desired_width(180.0)
+                                    .char_limit(MAX_PREFIX_LENGTH),
+                                ),
+                            }
+                        });
+                        changed |= response.inner.changed();
+                        ui.add_space(4.0);
+                    }
+
+                    ui.add_space(4.0);
 
                     if components::modern_slider_f64(
                         ui,

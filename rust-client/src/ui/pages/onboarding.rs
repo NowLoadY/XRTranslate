@@ -474,6 +474,45 @@ struct RemoteProviderFields {
     commit: bool,
 }
 
+fn local_model_warning_icon(
+    ui: &mut egui::Ui,
+    language: i18n::UiLanguage,
+    availability: &crate::runtime_install::LocalModelAvailability,
+) {
+    let tooltip = match availability {
+        crate::runtime_install::LocalModelAvailability::InsufficientVram {
+            gpu,
+            memory_bytes,
+            required_bytes,
+        } => format!(
+            "{}\n\n{gpu}: {:.1} GiB / {:.0} GiB",
+            i18n::tr(
+                language,
+                "Your GPU has less than 8 GiB of VRAM. Local models require at least 8 GiB, so this option is disabled."
+            ),
+            *memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+            *required_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+        ),
+        crate::runtime_install::LocalModelAvailability::Unavailable(reason) => format!(
+            "{}\n\n{}",
+            i18n::tr(
+                language,
+                "Local models are unavailable on this device. You can continue with an online API, or update the NVIDIA driver or GPU and try again."
+            ),
+            reason
+        ),
+        crate::runtime_install::LocalModelAvailability::Detecting
+        | crate::runtime_install::LocalModelAvailability::Available { .. } => return,
+    };
+    let icon = egui::Image::new(egui::include_image!(
+        "../../../resources/icons/alert-triangle.svg"
+    ))
+    .fit_to_exact_size(egui::vec2(18.0, 18.0))
+    .tint(Color32::from_rgb(217, 119, 6))
+    .sense(egui::Sense::hover());
+    ui.add(icon).on_hover_text(tooltip);
+}
+
 fn onboarding_model_config_card(
     ui: &mut egui::Ui,
     language: i18n::UiLanguage,
@@ -534,6 +573,7 @@ fn onboarding_model_config_card(
                         });
                         ui.selectable_value(&mut remote, true, i18n::tr(language, "Online API"));
                     });
+                local_model_warning_icon(ui, language, local_availability);
                 if remote != provider.remote
                     && let Some(choice) = provider
                         .choices
@@ -667,10 +707,8 @@ fn onboarding_model_config_card(
                 });
             } else {
                 match local_availability {
-                    crate::runtime_install::LocalModelAvailability::Unavailable(reason) => {
-                        ui.add_space(8.0);
-                        ui.label(RichText::new(reason).size(11.5).color(theme::text_weak()));
-                    }
+                    crate::runtime_install::LocalModelAvailability::InsufficientVram { .. } => {}
+                    crate::runtime_install::LocalModelAvailability::Unavailable(_) => {}
                     crate::runtime_install::LocalModelAvailability::Detecting => {
                         ui.add_space(8.0);
                         ui.label(
@@ -734,6 +772,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             };
             ui.horizontal(|ui| {
                 ui.label(i18n::tr(language, "Provider:"));
+                let local_availability = app.runtime_installer.local_model_availability();
                 let selected_label = provider
                     .choices
                     .iter()
@@ -747,7 +786,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                             let (label, _asset_id, _present) =
                                 provider_choice_resource(choice, &project_root, language);
                             let local_available = matches!(
-                                app.runtime_installer.local_model_availability(),
+                                &local_availability,
                                 crate::runtime_install::LocalModelAvailability::Available { .. }
                             );
                             ui.add_enabled_ui(
@@ -763,6 +802,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                             );
                         }
                     });
+                local_model_warning_icon(ui, language, &local_availability);
             });
             ui.add_space(10.0);
             if provider.selected == "none" {
@@ -925,9 +965,10 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                         }
                     }
                     match availability {
-                        crate::runtime_install::LocalModelAvailability::Unavailable(reason) => {
-                            ui.label(RichText::new(reason).size(11.5).color(theme::text_weak()));
-                        }
+                        crate::runtime_install::LocalModelAvailability::InsufficientVram {
+                            ..
+                        } => {}
+                        crate::runtime_install::LocalModelAvailability::Unavailable(_) => {}
                         crate::runtime_install::LocalModelAvailability::Detecting => {
                             ui.label(
                                 RichText::new(i18n::tr(language, "Detecting NVIDIA GPU…"))

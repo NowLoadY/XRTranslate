@@ -3,13 +3,14 @@ use std::{collections::VecDeque, time::Instant};
 use crate::presentation::speaker::compact_speaker_label;
 
 use super::{
-    runtime::{OscFormatMode, OscMessageSeparator, OscSettings},
+    runtime::{OscFormatMode, OscInputSource, OscMessageSeparator, OscSettings},
     sys_info::SystemMetrics,
 };
 
 #[derive(Clone)]
 pub(super) struct HistoryMessage {
     pub(super) stream_id: u64,
+    pub(super) source_kind: OscInputSource,
     pub(super) source: String,
     pub(super) translated: String,
     pub(super) speaker_id: String,
@@ -41,8 +42,11 @@ pub(super) fn build_chatbox_text(
     if let Some(manual) = manual_message {
         let manual_raw = manual.text.trim();
         if !manual_raw.is_empty() {
-            let manual_tagged = format!("⌨️ {manual_raw}");
-            let manual_text = trim_text(&manual_tagged, settings.max_text_length);
+            let manual_text = fit_prefixed_text(
+                settings.prefix_for(OscInputSource::Typing),
+                manual_raw,
+                settings.max_text_length,
+            );
             let manual_len = manual_text.chars().count();
             if entries.is_empty() || manual_len >= settings.max_text_length {
                 return manual_text;
@@ -96,7 +100,13 @@ fn fit_asr_entries(
         if entries.len() > 1 {
             entries.pop_front();
         } else {
-            return trim_text(&render_entry(first, settings), limit);
+            let rendered = render_entry(first, settings);
+            let label = entry_prefix(first, settings);
+            return if !label.is_empty() && rendered.starts_with(&label) {
+                fit_prefixed_text(&label, &rendered[label.len()..], limit)
+            } else {
+                trim_text(&rendered, limit)
+            };
         }
     }
     String::new()
@@ -132,7 +142,10 @@ fn render_entries<'a>(
             .flatten();
 
         if !source.is_empty() && !target.is_empty() && source != target {
-            sources.push(with_speaker(&source, speaker.as_deref()));
+            sources.push(with_speaker(
+                &with_source_prefix(&source, entry.source_kind, settings),
+                speaker.as_deref(),
+            ));
             targets.push(target);
         } else if let Some(text) = (!target.is_empty())
             .then_some(target)
@@ -140,10 +153,16 @@ fn render_entries<'a>(
         {
             match settings.format_mode {
                 OscFormatMode::BilingualTargetFirst => {
-                    targets.push(with_speaker(&text, speaker.as_deref()));
+                    targets.push(with_speaker(
+                        &with_source_prefix(&text, entry.source_kind, settings),
+                        speaker.as_deref(),
+                    ));
                 }
                 OscFormatMode::BilingualSourceFirst | OscFormatMode::Inline => {
-                    sources.push(with_speaker(&text, speaker.as_deref()));
+                    sources.push(with_speaker(
+                        &with_source_prefix(&text, entry.source_kind, settings),
+                        speaker.as_deref(),
+                    ));
                 }
                 OscFormatMode::TargetOnly => unreachable!(),
             }
@@ -167,6 +186,15 @@ fn render_entries<'a>(
 
 fn with_speaker(text: &str, speaker: Option<&str>) -> String {
     speaker.map_or_else(|| text.to_string(), |label| format!("[{label}] {text}"))
+}
+
+fn with_source_prefix(text: &str, source: OscInputSource, settings: &OscSettings) -> String {
+    let prefix = prefixed_label(settings.prefix_for(source));
+    if prefix.is_empty() {
+        text.to_string()
+    } else {
+        format!("{prefix}{text}")
+    }
 }
 
 fn compose_chatbox(prefix: &str, content: &str, suffix: &str) -> String {
@@ -222,12 +250,19 @@ pub(super) fn render_entry(entry: &HistoryMessage, settings: &OscSettings) -> St
         return String::new();
     }
 
+    let prefix = prefixed_label(settings.prefix_for(entry.source_kind));
+    let decorated = if prefix.is_empty() {
+        core_text
+    } else {
+        format!("{prefix}{core_text}")
+    };
+
     if settings.show_speaker_number
         && let Some(label) = compact_speaker_label(&entry.speaker_id)
     {
-        format!("[{label}] {core_text}")
+        format!("[{label}] {decorated}")
     } else {
-        core_text
+        decorated
     }
 }
 
@@ -311,8 +346,26 @@ fn fit_single_entry(
         }
     }
     let content_limit = limit.saturating_sub(decoration_length(prefix, suffix));
-    let content = trim_text(&rendered, content_limit);
+    let entry_label = entry_prefix(entry, settings);
+    let content = if !entry_label.is_empty() && rendered.starts_with(&entry_label) {
+        fit_prefixed_text(&entry_label, &rendered[entry_label.len()..], content_limit)
+    } else {
+        trim_text(&rendered, content_limit)
+    };
     compose_chatbox(prefix, &content, suffix)
+}
+
+fn entry_prefix(entry: &HistoryMessage, settings: &OscSettings) -> String {
+    let speaker = settings
+        .show_speaker_number
+        .then(|| compact_speaker_label(&entry.speaker_id))
+        .flatten()
+        .map(|label| format!("[{label}] "))
+        .unwrap_or_default();
+    format!(
+        "{speaker}{}",
+        prefixed_label(settings.prefix_for(entry.source_kind))
+    )
 }
 
 fn decoration_length(prefix: &str, suffix: &str) -> usize {
@@ -344,6 +397,50 @@ fn trim_text(text: &str, limit: usize) -> String {
     tail.trim_start().into()
 }
 
+fn sanitize_prefix(text: &str) -> String {
+    let mut value = text
+        .trim()
+        .chars()
+        .map(|c| {
+            if c == '\n' || c == '\r' || c == '\t' {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect::<String>();
+    value.truncate(
+        value
+            .char_indices()
+            .nth(super::runtime::MAX_PREFIX_LENGTH)
+            .map_or(value.len(), |(i, _)| i),
+    );
+    value
+}
+
+fn fit_prefixed_text(prefix: &str, text: &str, limit: usize) -> String {
+    let prefix = prefixed_label(prefix);
+    let text = sanitize_chatbox_segment(text);
+    if prefix.is_empty() {
+        return trim_text(&text, limit);
+    }
+    if limit <= prefix.chars().count() {
+        return trim_text(&prefix, limit);
+    }
+    let content_limit = limit - prefix.chars().count();
+    let content = trim_text(&text, content_limit);
+    format!("{prefix}{content}")
+}
+
+fn prefixed_label(text: &str) -> String {
+    let prefix = sanitize_prefix(text);
+    if prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{prefix} ")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -354,6 +451,7 @@ mod tests {
     fn history_message(expires_at: Instant, text: &str) -> HistoryMessage {
         HistoryMessage {
             stream_id: 0,
+            source_kind: OscInputSource::Unknown,
             source: text.into(),
             translated: String::new(),
             speaker_id: String::new(),
@@ -463,7 +561,7 @@ mod tests {
         assert!(normal_text.contains("FOOTER"));
         assert!(normal_text.contains("hello ASR"));
 
-        // 2. With manual message: Header and footer are suppressed, manual message is at bottom with ⌨️ tag
+        // 2. With manual message: Header and footer are suppressed, manual message is at bottom with the typing prefix
         let manual = ManualMessage {
             text: "typing note".into(),
             expires_at: now + Duration::from_secs(10),
@@ -471,7 +569,7 @@ mod tests {
         let combined = build_chatbox_text(&history, &[], Some(&manual), &settings, &metrics);
         assert!(!combined.contains("HEADER"));
         assert!(!combined.contains("FOOTER"));
-        assert_eq!(combined, "hello ASR\n⌨️ typing note");
+        assert_eq!(combined, "hello ASR\nTXT typing note");
 
         // 3. When manual message takes most space, ASR space shrinks accordingly
         let tight_settings = OscSettings {
@@ -480,7 +578,7 @@ mod tests {
         };
         let tight_combined =
             build_chatbox_text(&history, &[], Some(&manual), &tight_settings, &metrics);
-        assert_eq!(tight_combined, "ASR\n⌨️ typing note");
+        assert_eq!(tight_combined, "ASR\nTXT typing note");
         assert!(tight_combined.chars().count() <= 20);
     }
 
@@ -496,6 +594,42 @@ mod tests {
 
         entry.speaker_id = "speaker-unknown".into();
         assert_eq!(render_entry(&entry, &settings), "[S?] hello");
+    }
+
+    #[test]
+    fn source_prefixes_are_included_in_the_same_length_budget() {
+        let mut entry = history_message(Instant::now(), "0123456789");
+        entry.source_kind = OscInputSource::Microphone;
+        let settings = OscSettings {
+            microphone_prefix: "🎙️".into(),
+            max_text_length: 8,
+            ..OscSettings::default()
+        };
+        let text = build_chatbox_text(&[entry], &[], None, &settings, &SystemMetrics::default());
+        assert_eq!(text, "🎙️ 56789");
+        assert!(text.chars().count() <= settings.max_text_length);
+    }
+
+    #[test]
+    fn typing_prefix_is_used_for_direct_manual_messages() {
+        let settings = OscSettings {
+            typing_prefix: "[chat]".into(),
+            max_text_length: 12,
+            ..OscSettings::default()
+        };
+        let manual = ManualMessage {
+            text: "hello world".into(),
+            expires_at: Instant::now(),
+        };
+        let text = build_chatbox_text(
+            &[],
+            &[],
+            Some(&manual),
+            &settings,
+            &SystemMetrics::default(),
+        );
+        assert_eq!(text, "[chat] world");
+        assert!(text.chars().count() <= settings.max_text_length);
     }
 
     #[test]

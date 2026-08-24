@@ -1,4 +1,4 @@
-use crate::network::SessionEvent;
+use crate::{client_settings::CaptureSource, network::SessionEvent};
 
 /// Read-only observer for the generic recognition/translation event stream.
 ///
@@ -22,6 +22,8 @@ pub enum CaptionUpdate {
 pub enum HostOutputEvent<'a> {
     Caption {
         stream_id: u64,
+        audio_source: CaptureSource,
+        is_typing: bool,
         source: &'a str,
         translated: &'a str,
         speaker: &'a str,

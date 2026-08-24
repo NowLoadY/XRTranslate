@@ -60,6 +60,7 @@ pub enum SessionEvent {
     },
     Asr {
         stream_id: u64,
+        audio_source: CaptureSource,
         continuous: bool,
         publish_to_host_outputs: bool,
         kind: String,
@@ -886,6 +887,7 @@ fn forward_server_event(
 
             let _ = event_tx.send(SessionEvent::Asr {
                 stream_id,
+                audio_source,
                 continuous: continuous_recognition,
                 publish_to_host_outputs,
                 kind,
@@ -1169,6 +1171,7 @@ mod tests {
             receiver.try_recv().unwrap(),
             SessionEvent::Asr {
                 stream_id: 41,
+                audio_source: _,
                 continuous: true,
                 publish_to_host_outputs: true,
                 kind,

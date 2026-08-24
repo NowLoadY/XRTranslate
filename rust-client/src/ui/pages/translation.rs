@@ -540,7 +540,7 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                         status.state == xrtranslate_protocol::VoiceClonePhase::Ready
                     }) {
                         ui.label(
-                            egui::RichText::new("✓").color(egui::Color32::from_rgb(5, 150, 105)),
+                            egui::RichText::new("OK").color(egui::Color32::from_rgb(5, 150, 105)),
                         );
                     } else if let Some(message) = status.as_ref().and_then(|status| {
                         (status.state == xrtranslate_protocol::VoiceClonePhase::Failed)

@@ -16,19 +16,32 @@ impl HostOutputSubscriber for OscHandle {
         match event {
             HostOutputEvent::Caption {
                 stream_id,
+                audio_source,
+                is_typing,
                 source,
                 translated,
                 speaker,
                 update: CaptionUpdate::RollOver,
-            } => self.roll_stream_for(stream_id, source, translated, speaker),
+            } => self.roll_stream_for(
+                stream_id,
+                audio_source,
+                is_typing,
+                source,
+                translated,
+                speaker,
+            ),
             HostOutputEvent::Caption {
                 stream_id,
+                audio_source,
+                is_typing,
                 source,
                 translated,
                 speaker,
                 update,
             } => self.add_message_for_stream(
                 stream_id,
+                audio_source,
+                is_typing,
                 source,
                 translated,
                 speaker,

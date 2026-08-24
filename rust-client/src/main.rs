@@ -432,6 +432,7 @@ impl Default for XRTranslateApp {
                         },
                         SessionEvent::Asr {
                             stream_id,
+                            audio_source,
                             continuous,
                             publish_to_host_outputs,
                             kind,
@@ -446,6 +447,8 @@ impl Default for XRTranslateApp {
                                     &host_output_subscribers,
                                     HostOutputEvent::Caption {
                                         stream_id,
+                                        audio_source,
+                                        is_typing: false,
                                         source: &text,
                                         translated: "",
                                         speaker: "",
@@ -704,6 +707,8 @@ impl Default for XRTranslateApp {
                                                 &host_output_subscribers,
                                                 HostOutputEvent::Caption {
                                                     stream_id,
+                                                    audio_source,
+                                                    is_typing: entry.turn_id.starts_with("text-"),
                                                     source: &entry.source,
                                                     translated: &entry.translated,
                                                     speaker: &entry.speaker_id,
@@ -718,6 +723,8 @@ impl Default for XRTranslateApp {
                                                 &host_output_subscribers,
                                                 HostOutputEvent::Caption {
                                                     stream_id,
+                                                    audio_source,
+                                                    is_typing: entry.turn_id.starts_with("text-"),
                                                     source: &entry.source,
                                                     translated: &entry.translated,
                                                     speaker: &entry.speaker_id,
@@ -740,6 +747,8 @@ impl Default for XRTranslateApp {
                                         &host_output_subscribers,
                                         HostOutputEvent::Caption {
                                             stream_id,
+                                            audio_source,
+                                            is_typing: merged.entry.turn_id.starts_with("text-"),
                                             source: &merged.entry.source,
                                             translated: &merged.entry.translated,
                                             speaker: &merged.entry.speaker_id,
@@ -751,6 +760,8 @@ impl Default for XRTranslateApp {
                                         &host_output_subscribers,
                                         HostOutputEvent::Caption {
                                             stream_id,
+                                            audio_source,
+                                            is_typing: merged.entry.turn_id.starts_with("text-"),
                                             source: &merged.entry.source,
                                             translated: &merged.entry.translated,
                                             speaker: &merged.entry.speaker_id,
@@ -763,6 +774,8 @@ impl Default for XRTranslateApp {
                                     &host_output_subscribers,
                                     HostOutputEvent::Caption {
                                         stream_id,
+                                        audio_source,
+                                        is_typing: fragment.turn_id.starts_with("text-"),
                                         source: &fragment.source,
                                         translated: &fragment.translated,
                                         speaker: &fragment.speaker_id,
@@ -1345,7 +1358,9 @@ impl XRTranslateApp {
                     text,
                     source_lang,
                     target_lang,
-                } => self.translate_text(&text, Some(source_lang), Some(target_lang)),
+                } => {
+                    self.translate_text(&text, Some(source_lang), Some(target_lang));
+                }
             }
         }
     }

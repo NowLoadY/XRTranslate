@@ -66,23 +66,11 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                             }
                             SettingsSection::ServiceProviders => {
                                 let project_root = app.project_root();
-                                let live_tts_backend = app.tts_runtime_backend.clone();
-                                let live_tts_cuda_version = app.tts_runtime_cuda_version.clone();
-                                let (apply, delete_runtime) = app.service_config.render(
-                                    ui,
-                                    &mut app.backend_manager,
-                                    &mut app.model_task_manager,
-                                    &mut app.runtime_installer,
-                                    live_tts_backend.as_deref(),
-                                    live_tts_cuda_version.as_deref(),
-                                    &project_root,
-                                    app.ui_language,
-                                );
+                                let apply =
+                                    app.service_config
+                                        .render(ui, &project_root, app.ui_language);
                                 if apply {
                                     app.apply_service_configuration(Some(ui.ctx().clone()));
-                                }
-                                if delete_runtime {
-                                    app.request_runtime_resource_deletion();
                                 }
                             }
                             SettingsSection::Plugins => {
@@ -99,71 +87,75 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 }
 
 fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
-    section(ui, crate::i18n::tr(app.ui_language, "Language"), |ui| {
-        if components::language_selector(ui, "settings_ui_language", &mut app.ui_language) {
-            app.set_ui_language(app.ui_language);
-        }
-    });
-    ui.add_space(14.0);
-
-    section(ui, crate::i18n::tr(app.ui_language, "Theme"), |ui| {
-        crate::ui::layout::flow_row(ui, |ui| {
-            ui.label(crate::i18n::tr(app.ui_language, "Theme variant"));
-            let mut variant = app.ui_theme.variant;
-            egui::ComboBox::from_id_salt("settings_theme_variant")
-                .selected_text(match variant {
-                    crate::ui::theme::ThemeVariant::Default => {
-                        crate::i18n::tr(app.ui_language, "Default")
-                    }
-                    crate::ui::theme::ThemeVariant::HandDrawn => {
-                        crate::i18n::tr(app.ui_language, "Hand-drawn")
-                    }
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut variant,
-                        crate::ui::theme::ThemeVariant::Default,
-                        crate::i18n::tr(app.ui_language, "Default"),
-                    );
-                    ui.selectable_value(
-                        &mut variant,
-                        crate::ui::theme::ThemeVariant::HandDrawn,
-                        crate::i18n::tr(app.ui_language, "Hand-drawn"),
-                    );
-                });
-            if variant != app.ui_theme.variant {
-                app.set_ui_theme(crate::ui::theme::UiTheme { variant });
-            }
-        });
-    });
+    section(
+        ui,
+        crate::i18n::tr(app.ui_language, "Language & Theme"),
+        |ui| {
+            crate::ui::layout::flow_row(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr(app.ui_language, "Language"))
+                        .color(crate::ui::theme::text_strong())
+                        .strong(),
+                );
+                if components::language_selector(ui, "settings_ui_language", &mut app.ui_language) {
+                    app.set_ui_language(app.ui_language);
+                }
+                ui.add_space(18.0);
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr(app.ui_language, "Theme"))
+                        .color(crate::ui::theme::text_strong())
+                        .strong(),
+                );
+                ui.label(crate::i18n::tr(app.ui_language, "Theme variant"));
+                let mut variant = app.ui_theme.variant;
+                egui::ComboBox::from_id_salt("settings_theme_variant")
+                    .selected_text(match variant {
+                        crate::ui::theme::ThemeVariant::Default => {
+                            crate::i18n::tr(app.ui_language, "Default")
+                        }
+                        crate::ui::theme::ThemeVariant::HandDrawn => {
+                            crate::i18n::tr(app.ui_language, "Hand-drawn")
+                        }
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut variant,
+                            crate::ui::theme::ThemeVariant::Default,
+                            crate::i18n::tr(app.ui_language, "Default"),
+                        );
+                        ui.selectable_value(
+                            &mut variant,
+                            crate::ui::theme::ThemeVariant::HandDrawn,
+                            crate::i18n::tr(app.ui_language, "Hand-drawn"),
+                        );
+                    });
+                if variant != app.ui_theme.variant {
+                    app.set_ui_theme(crate::ui::theme::UiTheme { variant });
+                }
+            });
+        },
+    );
     ui.add_space(14.0);
 
     section(ui, crate::i18n::tr(app.ui_language, "Downloads"), |ui| {
-        ui.label(
-            egui::RichText::new(crate::i18n::tr(app.ui_language, "Download proxy"))
-                .color(crate::ui::theme::text_strong())
-                .strong(),
-        );
-        let response = ui.add(
-            egui::TextEdit::singleline(&mut app.download_proxy_url)
-                .hint_text(crate::i18n::tr(
-                    app.ui_language,
-                    "Optional, e.g. http://127.0.0.1:7890",
-                ))
-                .desired_width(300.0),
-        );
-        if response.lost_focus() || response.changed() {
-            app.set_download_proxy_url(app.download_proxy_url.clone());
-        }
-        ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new(crate::i18n::tr(
-                app.ui_language,
-                "Used only for updates and downloads. Leave empty when your VPN uses global mode.",
-            ))
-            .size(12.0)
-            .color(crate::ui::theme::text_weak()),
-        );
+        crate::ui::layout::flow_row(ui, |ui| {
+            ui.label(
+                egui::RichText::new(crate::i18n::tr(app.ui_language, "Download proxy"))
+                    .color(crate::ui::theme::text_strong())
+                    .strong(),
+            );
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut app.download_proxy_url)
+                    .hint_text(crate::i18n::tr(
+                        app.ui_language,
+                        "Optional, e.g. http://127.0.0.1:7890",
+                    ))
+                    .desired_width((ui.available_width() - 120.0).max(220.0)),
+            );
+            if response.lost_focus() || response.changed() {
+                app.set_download_proxy_url(app.download_proxy_url.clone());
+            }
+        });
     });
     ui.add_space(14.0);
 

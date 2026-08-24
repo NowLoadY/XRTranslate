@@ -2,7 +2,6 @@ use serde_json::{Map, Value};
 use std::path::PathBuf;
 use xrtranslate_prompt::PromptProviderTarget;
 
-use crate::ui::components;
 use provider_schema::{ProviderFieldEditor, provider_field_descriptor};
 
 mod provider_schema;
@@ -31,7 +30,6 @@ struct ServiceCategory {
     title: &'static str,
     selected_provider: String,
     providers: Vec<ProviderCard>,
-    show_all: bool,
 }
 
 #[derive(Clone)]
@@ -396,23 +394,19 @@ impl ServiceConfigEditor {
             title,
             selected_provider,
             providers,
-            show_all: false,
         }
     }
 
     pub fn render(
         &mut self,
         ui: &mut eframe::egui::Ui,
-        backend: &mut crate::backend::BackendManager,
-        model_tasks: &mut crate::model_install::NativeModelTaskManager,
-        runtime_installer: &mut crate::runtime_install::RuntimeInstaller,
-        live_tts_backend: Option<&str>,
-        live_tts_cuda_version: Option<&str>,
         project_root: &std::path::Path,
         language: crate::i18n::UiLanguage,
-    ) -> (bool, bool) {
+    ) -> bool {
         use crate::ui::components::{self, section};
         use eframe::egui;
+
+        let mut apply_configuration = false;
 
         ui.label(
             egui::RichText::new(crate::i18n::tr(language, "Service Providers"))
@@ -422,23 +416,36 @@ impl ServiceConfigEditor {
         );
         ui.add_space(14.0);
 
-        if model_tasks.needs_discovery()
-            && let Err(error) = model_tasks.discover_existing(project_root.to_path_buf())
-        {
-            self.message = Some(error);
-        }
-
-        let runtime_requirements = self.runtime_requirements();
-        let local_model_availability = runtime_installer.local_model_availability();
-        let mut apply_runtime_config = false;
-        let mut delete_runtime_requested = false;
-        let mut runtime_action = crate::ui::RuntimeUiAction::None;
         for cat_idx in 0..self.categories.len() {
             let category_title = crate::i18n::tr(language, self.categories[cat_idx].title);
             let category_key = self.categories[cat_idx].key;
+            let eligible_indices = self.categories[cat_idx]
+                .providers
+                .iter()
+                .enumerate()
+                .filter_map(|(index, provider)| {
+                    provider_is_usable(provider, category_key, project_root).then_some(index)
+                })
+                .collect::<Vec<_>>();
+            let active_index = eligible_indices
+                .iter()
+                .copied()
+                .find(|index| {
+                    self.categories[cat_idx].providers[*index].name
+                        == self.categories[cat_idx].selected_provider
+                })
+                .or_else(|| eligible_indices.first().copied());
+            if let Some(index) = active_index {
+                let selected = self.categories[cat_idx].providers[index].name.clone();
+                if self.categories[cat_idx].selected_provider != selected {
+                    self.categories[cat_idx].selected_provider = selected;
+                    self.dirty = true;
+                }
+            }
 
             section(ui, category_title, |ui| {
-                // Row 1: Active Provider selector & View All toggle
+                // Only providers whose remote settings or local model files are usable
+                // are offered here. New services belong in onboarding.
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(crate::i18n::tr(language, "Provider:")).strong());
                     let previous = self.categories[cat_idx].selected_provider.clone();
@@ -448,10 +455,9 @@ impl ServiceConfigEditor {
                         &self.categories[cat_idx].selected_provider
                     };
 
-                    let provider_names: Vec<String> = self.categories[cat_idx]
-                        .providers
+                    let provider_names: Vec<String> = eligible_indices
                         .iter()
-                        .map(|p| p.name.clone())
+                        .map(|index| self.categories[cat_idx].providers[*index].name.clone())
                         .collect();
 
                     let combo_resp = egui::ComboBox::from_id_salt((category_key, "provider_combo"))
@@ -473,27 +479,11 @@ impl ServiceConfigEditor {
                     if combo_resp.response.changed() {
                         self.dirty = true;
                     }
-
-                    ui.add_space(16.0);
-                    ui.checkbox(
-                        &mut self.categories[cat_idx].show_all,
-                        crate::i18n::tr(language, "All providers"),
-                    );
-                    if ui
-                        .button(crate::i18n::tr(language, "Add online API"))
-                        .clicked()
-                    {
-                        if let Err(error) = self.add_remote_provider(category_key) {
-                            self.message = Some(error);
-                        } else {
-                            self.dirty = true;
-                        }
-                    }
                 });
 
                 ui.add_space(12.0);
 
-                if self.categories[cat_idx].providers.is_empty() {
+                if eligible_indices.is_empty() {
                     ui.label(
                         egui::RichText::new(crate::i18n::tr(language, "No providers"))
                             .color(crate::ui::theme::text_weak()),
@@ -501,343 +491,102 @@ impl ServiceConfigEditor {
                     return;
                 }
 
-                let show_all = self.categories[cat_idx].show_all;
                 let active_name = self.categories[cat_idx].selected_provider.clone();
+                // Render the active usable provider only.
+                let active_idx = self.categories[cat_idx]
+                    .providers
+                    .iter()
+                    .position(|p| p.name == active_name);
 
-                if show_all {
-                    // Render Grid for ALL Providers
-                    for provider_idx in 0..self.categories[cat_idx].providers.len() {
-                        let provider_name = self.categories[cat_idx].providers[provider_idx]
-                            .name
-                            .clone();
-                        let is_active = provider_name == active_name;
-                        let model_assets = provider_model_assets(
-                            &self.categories[cat_idx].providers[provider_idx],
+                if let Some(idx) = active_idx {
+                    let provider_name = self.categories[cat_idx].providers[idx].name.clone();
+                    let model_assets =
+                        provider_model_assets(&self.categories[cat_idx].providers[idx]);
+                    let supported_languages =
+                        provider_model_languages(&self.categories[cat_idx].providers[idx]);
+
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            egui::RichText::new(&provider_name)
+                                .size(13.5)
+                                .color(crate::ui::theme::text_strong())
+                                .strong(),
                         );
-                        let remote =
-                            provider_is_remote(&self.categories[cat_idx].providers[provider_idx]);
-                        let supported_languages = provider_model_languages(
-                            &self.categories[cat_idx].providers[provider_idx],
+                        ui.add_space(8.0);
+                    });
+                    ui.add_space(10.0);
+                    render_provider_capabilities(ui, language, category_key, &supported_languages);
+                    if category_key == "tts"
+                        && render_tts_model_selection(
+                            ui,
+                            &mut self.categories[cat_idx].providers[idx],
+                            language,
+                            project_root,
+                        )
+                    {
+                        self.dirty = true;
+                    }
+
+                    let fields_len = self.categories[cat_idx].providers[idx]
+                        .fields
+                        .iter()
+                        .filter(|field| {
+                            provider_field_is_visible(
+                                field,
+                                category_key,
+                                &provider_name,
+                                !model_assets.is_empty(),
+                            )
+                        })
+                        .count();
+                    if fields_len == 0 {
+                        ui.label(
+                            egui::RichText::new(crate::i18n::tr(language, "No parameters"))
+                                .color(crate::ui::theme::text_weak()),
                         );
-
-                        ui.push_id(&provider_name, |ui| {
-                            egui::Frame::new()
-                                .fill(if is_active {
-                                    egui::Color32::from_rgb(240, 246, 255)
-                                } else {
-                                    egui::Color32::from_gray(250)
-                                })
-                                .corner_radius(egui::CornerRadius::same(8))
-                                .inner_margin(egui::Margin::same(12))
-                                .stroke(egui::Stroke::new(
-                                    1.0,
-                                    if is_active {
-                                        egui::Color32::from_rgb(59, 130, 246)
-                                    } else {
-                                        egui::Color32::from_gray(225)
-                                    },
-                                ))
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new(&provider_name)
-                                                .strong()
-                                                .size(14.0)
-                                                .color(crate::ui::theme::text_strong()),
-                                        );
-                                        if is_active {
-                                            ui.label(
-                                                egui::RichText::new(crate::i18n::tr(
-                                                    language, "(Active)",
-                                                ))
-                                                .color(egui::Color32::from_rgb(37, 99, 235))
-                                                .size(12.0)
-                                                .strong(),
-                                            );
-                                        }
-                                        if let Some(message) = render_provider_model_action(
-                                            ui,
-                                            backend,
-                                            model_tasks,
-                                            ProviderModelAction {
-                                                project_root,
-                                                language,
-                                                category_key,
-                                                provider_name: &provider_name,
-                                                model_assets: &model_assets,
-                                                remote,
-                                                local_models_available: matches!(
-                                                    local_model_availability,
-                                                    crate::runtime_install::LocalModelAvailability::Available { .. }
-                                                ),
-                                            },
-                                        ) {
-                                            self.message = Some(message);
-                                        }
-                                    });
-
-                                    ui.add_space(8.0);
-
-                                    render_provider_capabilities(
+                    } else {
+                        egui::Grid::new((category_key, &provider_name, "active_grid"))
+                            .num_columns(2)
+                            .spacing([20.0, 10.0])
+                            .min_col_width(140.0)
+                            .show(ui, |ui| {
+                                for field in &mut self.categories[cat_idx].providers[idx].fields {
+                                    if !provider_field_is_visible(
+                                        field,
+                                        category_key,
+                                        &provider_name,
+                                        !model_assets.is_empty(),
+                                    ) {
+                                        continue;
+                                    }
+                                    let label = provider_field_label(language, &field.name);
+                                    let label_response = ui.label(
+                                        egui::RichText::new(label)
+                                            .strong()
+                                            .color(crate::ui::theme::text_strong()),
+                                    );
+                                    if let Some(help) = provider_field_help(language, &field.name) {
+                                        label_response.on_hover_text(help);
+                                    }
+                                    let edit_w = (ui.available_width() - 20.0).clamp(240.0, 360.0);
+                                    if render_field_input(
                                         ui,
+                                        field,
+                                        edit_w,
                                         language,
                                         category_key,
-                                        &supported_languages,
-                                    );
-                                    if category_key == "tts"
-                                        && render_tts_model_selection(
-                                            ui,
-                                            &mut self.categories[cat_idx].providers[provider_idx],
-                                            language,
-                                            &local_model_availability,
-                                        )
-                                    {
+                                        &provider_name,
+                                        project_root,
+                                    ) {
                                         self.dirty = true;
                                     }
-
-                                    let fields_len = self.categories[cat_idx].providers
-                                        [provider_idx]
-                                        .fields
-                                        .iter()
-                                        .filter(|field| {
-                                            provider_field_is_visible(
-                                                field,
-                                                category_key,
-                                                &provider_name,
-                                                !model_assets.is_empty(),
-                                            )
-                                        })
-                                        .count();
-                                    if fields_len == 0 {
-                                        ui.label(
-                                            egui::RichText::new(crate::i18n::tr(
-                                                language,
-                                                "No parameters",
-                                            ))
-                                            .color(crate::ui::theme::text_weak())
-                                            .size(12.0),
-                                        );
-                                    } else {
-                                        egui::Grid::new((category_key, &provider_name, "all_grid"))
-                                            .num_columns(2)
-                                            .spacing([16.0, 8.0])
-                                            .min_col_width(130.0)
-                                            .show(ui, |ui| {
-                                                for field in &mut self.categories[cat_idx].providers
-                                                    [provider_idx]
-                                                    .fields
-                                                {
-                                                    if !provider_field_is_visible(
-                                                        field,
-                                                        category_key,
-                                                        &provider_name,
-                                                        !model_assets.is_empty(),
-                                                    ) {
-                                                        continue;
-                                                    }
-                                                    let label =
-                                                        provider_field_label(language, &field.name);
-                                                    let label_response = ui.label(
-                                                        egui::RichText::new(label)
-                                                            .color(crate::ui::theme::text_normal()),
-                                                    );
-                                                    if let Some(help) =
-                                                        provider_field_help(language, &field.name)
-                                                    {
-                                                        label_response.on_hover_text(help);
-                                                    }
-                                                    let edit_w =
-                                                        (ui.available_width() - 20.0).max(200.0);
-                                                    if render_field_input(
-                                                        ui,
-                                                        field,
-                                                        edit_w,
-                                                        language,
-                                                        category_key,
-                                                        &provider_name,
-                                                    ) {
-                                                        self.dirty = true;
-                                                    }
-                                                    ui.end_row();
-                                                }
-                                            });
-                                    }
-                                });
-                        });
-                        ui.add_space(10.0);
+                                    ui.end_row();
+                                }
+                            });
                     }
-                } else {
-                    // Render Form Grid for the ACTIVE Provider Only
-                    let active_idx = self.categories[cat_idx]
-                        .providers
-                        .iter()
-                        .position(|p| p.name == active_name);
-
-                    if let Some(idx) = active_idx {
-                        let provider_name = self.categories[cat_idx].providers[idx].name.clone();
-                        let model_assets =
-                            provider_model_assets(&self.categories[cat_idx].providers[idx]);
-                        let remote = provider_is_remote(&self.categories[cat_idx].providers[idx]);
-                        let supported_languages =
-                            provider_model_languages(&self.categories[cat_idx].providers[idx]);
-
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                egui::RichText::new(&provider_name)
-                                    .size(13.5)
-                                    .color(crate::ui::theme::text_strong())
-                                    .strong(),
-                            );
-                            ui.add_space(8.0);
-                            if let Some(message) = render_provider_model_action(
-                                ui,
-                                backend,
-                                model_tasks,
-                                ProviderModelAction {
-                                    project_root,
-                                    language,
-                                    category_key,
-                                    provider_name: &provider_name,
-                                    model_assets: &model_assets,
-                                    remote,
-                                    local_models_available: matches!(
-                                        local_model_availability,
-                                        crate::runtime_install::LocalModelAvailability::Available { .. }
-                                    ) && !runtime_installer.is_busy(),
-                                },
-                            ) {
-                                self.message = Some(message);
-                            }
-                        });
-                        ui.add_space(10.0);
-                        render_provider_capabilities(
-                            ui,
-                            language,
-                            category_key,
-                            &supported_languages,
-                        );
-                        if category_key == "tts"
-                            && render_tts_model_selection(
-                                ui,
-                                &mut self.categories[cat_idx].providers[idx],
-                                language,
-                                &local_model_availability,
-                            )
-                        {
-                            self.dirty = true;
-                        }
-
-                        let fields_len = self.categories[cat_idx].providers[idx]
-                            .fields
-                            .iter()
-                            .filter(|field| {
-                                provider_field_is_visible(
-                                    field,
-                                    category_key,
-                                    &provider_name,
-                                    !model_assets.is_empty(),
-                                )
-                            })
-                            .count();
-                        if fields_len == 0 {
-                            ui.label(
-                                egui::RichText::new(crate::i18n::tr(language, "No parameters"))
-                                    .color(crate::ui::theme::text_weak()),
-                            );
-                        } else {
-                            egui::Grid::new((category_key, &provider_name, "active_grid"))
-                                .num_columns(2)
-                                .spacing([20.0, 10.0])
-                                .min_col_width(140.0)
-                                .show(ui, |ui| {
-                                    for field in &mut self.categories[cat_idx].providers[idx].fields
-                                    {
-                                        if !provider_field_is_visible(
-                                            field,
-                                            category_key,
-                                            &provider_name,
-                                            !model_assets.is_empty(),
-                                        ) {
-                                            continue;
-                                        }
-                                        let label = provider_field_label(language, &field.name);
-                                        let label_response = ui.label(
-                                            egui::RichText::new(label)
-                                                .strong()
-                                                .color(crate::ui::theme::text_strong()),
-                                        );
-                                        if let Some(help) =
-                                            provider_field_help(language, &field.name)
-                                        {
-                                            label_response.on_hover_text(help);
-                                        }
-                                        let edit_w =
-                                            (ui.available_width() - 20.0).clamp(240.0, 360.0);
-                                        if render_field_input(
-                                            ui,
-                                            field,
-                                            edit_w,
-                                            language,
-                                            category_key,
-                                            &provider_name,
-                                        ) {
-                                            self.dirty = true;
-                                        }
-                                        ui.end_row();
-                                    }
-                                });
-                        }
-                    }
-                }
-                if category_key == "tts" && runtime_requirements.onnx_tts && !self.dirty {
-                    ui.add_space(12.0);
-                    let can_delete_runtime =
-                        runtime_installer.managed_resources_are_present(project_root);
-                    runtime_action = crate::ui::render_tts_runtime_status(
-                        ui,
-                        language,
-                        runtime_installer,
-                        runtime_requirements,
-                        can_delete_runtime,
-                        live_tts_backend,
-                        live_tts_cuda_version,
-                    );
                 }
             });
             ui.add_space(12.0);
-        }
-
-        match runtime_action {
-            crate::ui::RuntimeUiAction::None => {}
-            crate::ui::RuntimeUiAction::Install => {
-                if model_tasks.is_busy() {
-                    self.message = Some(
-                        "Wait for the queued model downloads before installing the runtime.".into(),
-                    );
-                } else if let Err(error) =
-                    runtime_installer.install_recommended(project_root.to_path_buf())
-                {
-                    self.message = Some(error);
-                }
-            }
-            crate::ui::RuntimeUiAction::Retry => {
-                if let Err(error) =
-                    runtime_installer.prepare_for(project_root.to_path_buf(), runtime_requirements)
-                {
-                    self.message = Some(error);
-                }
-            }
-            crate::ui::RuntimeUiAction::SwitchSource(use_mirror) => {
-                if let Err(error) =
-                    runtime_installer.switch_download_source(project_root.to_path_buf(), use_mirror)
-                {
-                    self.message = Some(error);
-                }
-            }
-            crate::ui::RuntimeUiAction::DeleteResources => {
-                delete_runtime_requested = true;
-            }
         }
 
         // Action Toolbar
@@ -851,10 +600,8 @@ impl ServiceConfigEditor {
             if save.clicked() {
                 match self.save() {
                     Ok(()) => {
-                        apply_runtime_config = true;
-                        self.message = Some(
-                            crate::i18n::tr(language, "Saved. Applying model settings.").to_owned(),
-                        )
+                        apply_configuration = true;
+                        self.message = Some(crate::i18n::tr(language, "Saved.").to_owned());
                     }
                     Err(error) => self.message = Some(error),
                 }
@@ -880,7 +627,7 @@ impl ServiceConfigEditor {
                     .size(12.0),
             );
         }
-        (apply_runtime_config, delete_runtime_requested)
+        apply_configuration
     }
 
     fn save(&mut self) -> Result<(), String> {
@@ -928,63 +675,6 @@ impl ServiceConfigEditor {
                 }
             }
         }
-        Ok(())
-    }
-
-    fn add_remote_provider(&mut self, category_key: &str) -> Result<(), String> {
-        let category_index = self
-            .categories
-            .iter()
-            .position(|category| category.key == category_key)
-            .ok_or_else(|| format!("Unknown provider category {category_key}"))?;
-        let providers = self
-            .document
-            .get_mut(category_key)
-            .and_then(Value::as_object_mut)
-            .and_then(|section| section.get_mut("providers"))
-            .and_then(Value::as_object_mut)
-            .ok_or_else(|| format!("Missing {category_key}.providers section"))?;
-        let base = "openai-custom";
-        let mut name = base.to_owned();
-        let mut index = 2;
-        while providers.contains_key(&name) {
-            name = format!("{base}-{index}");
-            index += 1;
-        }
-        providers.insert(
-            name.clone(),
-            serde_json::json!({
-                "transport": "openai",
-                "url": "https://api.openai.com/v1/chat/completions",
-                "api_key": "",
-                "model": if category_key == "asr" { "gpt-4o-transcribe" } else { "gpt-4o-mini" },
-                "context_window_tokens": 8192,
-                "max_tokens": if category_key == "asr" { 256 } else { 512 },
-                "parallel_slots": 2,
-                "asr_prompt_mode": if category_key == "asr" { "instruction" } else { "none" },
-                "supports_prompt_context": true
-            }),
-        );
-        let category = &mut self.categories[category_index];
-        category.providers.push(ProviderCard {
-            name: name.clone(),
-            fields: providers
-                .get(&name)
-                .and_then(Value::as_object)
-                .map(|config| {
-                    config
-                        .iter()
-                        .map(|(name, value)| ConfigField {
-                            name: name.clone(),
-                            value: display_value(value),
-                            kind: field_kind(value),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-        });
-        sort_providers(&category.key, &mut category.providers);
-        category.selected_provider = name;
         Ok(())
     }
 }
@@ -1289,6 +979,38 @@ fn provider_is_remote(provider: &ProviderCard) -> bool {
         })
 }
 
+fn provider_is_usable(
+    provider: &ProviderCard,
+    category_key: &str,
+    project_root: &std::path::Path,
+) -> bool {
+    if provider.name == "none" {
+        return true;
+    }
+    if provider_is_remote(provider) {
+        let field = |name: &str| {
+            provider
+                .fields
+                .iter()
+                .find(|field| field.name == name)
+                .is_some_and(|field| !field.value.trim().is_empty())
+        };
+        return field("model") && field("api_key");
+    }
+    let Some(capability) = model_capability_for_category(category_key) else {
+        return false;
+    };
+    let assets = provider_model_assets(provider);
+    !assets.is_empty()
+        && assets.iter().all(|key| {
+            xrtranslate_assets::ModelAssetId::from_config_key(key).is_some_and(|id| {
+                xrtranslate_assets::manifest_for(id).capability == capability
+                    && crate::model_install::model_asset_is_present(project_root, id)
+                        .unwrap_or(false)
+            })
+        })
+}
+
 fn provider_supported_languages(provider: &ProviderCard) -> Vec<String> {
     provider
         .fields
@@ -1343,7 +1065,7 @@ fn render_tts_model_selection(
     ui: &mut eframe::egui::Ui,
     provider: &mut ProviderCard,
     language: crate::i18n::UiLanguage,
-    availability: &crate::runtime_install::LocalModelAvailability,
+    project_root: &std::path::Path,
 ) -> bool {
     let packages = crate::model_install::model_packages_for_provider(
         &provider.name,
@@ -1362,16 +1084,8 @@ fn render_tts_model_selection(
         );
         for package in packages {
             let checked = selected.iter().any(|asset| asset == package.id.as_str());
-            let available = matches!(
-                (availability, package.hardware.accelerator),
-                (
-                    crate::runtime_install::LocalModelAvailability::Available {
-                        memory_bytes,
-                        ..
-                    },
-                    xrtranslate_assets::ModelAccelerator::NvidiaCuda
-                ) if *memory_bytes >= package.hardware.minimum_memory_bytes
-            );
+            let available = crate::model_install::model_asset_is_present(project_root, package.id)
+                .unwrap_or(false);
             let mut next = checked;
             let label = if package.languages.is_empty() {
                 package.label.to_owned()
@@ -1458,175 +1172,6 @@ fn render_tts_model_selection(
     changed
 }
 
-/// Renders the same model lifecycle control inside every provider card that
-/// declares one or more model assets. The provider configuration, rather than
-/// model names in the UI, decides which complete package set is offered.
-struct ProviderModelAction<'a> {
-    project_root: &'a std::path::Path,
-    language: crate::i18n::UiLanguage,
-    category_key: &'a str,
-    provider_name: &'a str,
-    model_assets: &'a [String],
-    remote: bool,
-    local_models_available: bool,
-}
-
-fn render_provider_model_action(
-    ui: &mut eframe::egui::Ui,
-    backend: &mut crate::backend::BackendManager,
-    model_tasks: &mut crate::model_install::NativeModelTaskManager,
-    request: ProviderModelAction<'_>,
-) -> Option<String> {
-    use crate::model_install::{NativeModelTaskState, model_package_for_provider_config_key};
-    use eframe::egui;
-
-    if request.model_assets.is_empty() {
-        if request.remote {
-            return None;
-        }
-        return crate::ui::components::animated_button(
-            ui,
-            crate::i18n::tr(request.language, "Check model files"),
-        )
-        .clicked()
-        .then(|| {
-            match backend.check_model_files(request.category_key, request.provider_name) {
-                Ok(message) => message,
-                Err(error) => error,
-            }
-        });
-    }
-
-    let Some(capability) = model_capability_for_category(request.category_key) else {
-        return Some(format!(
-            "Unknown model capability for service category {}.",
-            request.category_key
-        ));
-    };
-    let packages = match request
-        .model_assets
-        .iter()
-        .map(|model_asset| {
-            model_package_for_provider_config_key(
-                request.project_root,
-                request.provider_name,
-                capability,
-                model_asset,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(packages) => packages,
-        Err(error) => return Some(error),
-    };
-
-    let ready = packages
-        .iter()
-        .all(|package| model_tasks.is_model_ready(package.id));
-    let present = packages
-        .iter()
-        .all(|package| model_tasks.is_model_present(package.id));
-    let missing_download_bytes = packages
-        .iter()
-        .filter(|package| !model_tasks.is_model_present(package.id))
-        .map(|package| package.download_bytes)
-        .sum::<u64>();
-    let busy = model_tasks.is_busy();
-    let action = if present {
-        "Verify"
-    } else if matches!(model_tasks.state(), NativeModelTaskState::Failed(_)) {
-        "Retry"
-    } else {
-        "Download"
-    };
-    let action_label = if present {
-        crate::i18n::tr(request.language, action).to_owned()
-    } else {
-        format!(
-            "{} · {}",
-            crate::i18n::tr(request.language, action),
-            components::format_file_size(missing_download_bytes),
-        )
-    };
-    let clicked = ui
-        .add_enabled(
-            !busy && request.local_models_available,
-            egui::Button::new(action_label),
-        )
-        .on_hover_text(
-            packages
-                .iter()
-                .map(|package| package.label)
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
-        .clicked();
-    let previous_source = model_tasks.use_mirror();
-    let mut use_mirror = previous_source;
-    crate::ui::components::download_mirror_toggle(ui, request.language, &mut use_mirror);
-    if use_mirror != previous_source
-        && let Err(error) =
-            model_tasks.switch_download_source(request.project_root.to_path_buf(), use_mirror)
-    {
-        return Some(error);
-    }
-    if clicked {
-        return model_tasks
-            .enqueue_many(
-                request.project_root.to_path_buf(),
-                packages.iter().map(|package| package.id),
-            )
-            .err();
-    }
-
-    let status = match model_tasks.state() {
-        NativeModelTaskState::Discovering => Some("Looking for existing model packages..."),
-        NativeModelTaskState::Detected { .. } if ready => Some("Model package verified."),
-        NativeModelTaskState::Detected { .. } if present => {
-            Some("Model files found. Verify before use.")
-        }
-        NativeModelTaskState::Installing {
-            asset_id,
-            relative_path,
-            ..
-        } if packages.iter().any(|package| package.id == *asset_id) => {
-            if let Some(path) = relative_path {
-                ui.label(
-                    egui::RichText::new(path)
-                        .size(11.0)
-                        .color(crate::ui::theme::text_weak()),
-                );
-            }
-            Some("Preparing native model installation...")
-        }
-        NativeModelTaskState::Installed {
-            asset_id,
-            directory,
-        } if packages.iter().any(|package| package.id == *asset_id) => {
-            ui.label(
-                egui::RichText::new(directory.display().to_string())
-                    .size(11.0)
-                    .color(crate::ui::theme::text_weak()),
-            );
-            Some("Model package verified.")
-        }
-        NativeModelTaskState::Failed(error) => return Some(error.clone()),
-        _ => None,
-    };
-    if let Some(status) = status {
-        ui.label(
-            egui::RichText::new(crate::i18n::tr(request.language, status))
-                .size(11.0)
-                .color(if ready {
-                    egui::Color32::from_rgb(5, 150, 105)
-                } else {
-                    crate::ui::theme::text_weak()
-                }),
-        );
-    }
-    None
-}
-
 fn render_field_input(
     ui: &mut eframe::egui::Ui,
     field: &mut ConfigField,
@@ -1634,6 +1179,7 @@ fn render_field_input(
     language: crate::i18n::UiLanguage,
     category_key: &str,
     provider_name: &str,
+    project_root: &std::path::Path,
 ) -> bool {
     use eframe::egui;
 
@@ -1658,6 +1204,11 @@ fn render_field_input(
                         provider_name,
                         capability,
                     ) {
+                        if !crate::model_install::model_asset_is_present(project_root, package.id)
+                            .unwrap_or(false)
+                        {
+                            continue;
+                        }
                         ui.selectable_value(
                             &mut selected,
                             package.id,
@@ -1887,7 +1438,7 @@ fn parse_value(value: &str, kind: JsonFieldKind) -> Result<Value, String> {
 mod tests {
     use super::{
         ConfigField, JsonFieldKind, OnboardingSaveOutcome, ProviderCard, ServiceConfigEditor,
-        prompt_target_for_translation_provider, provider_field_is_visible,
+        prompt_target_for_translation_provider, provider_field_is_visible, provider_is_usable,
         provider_supported_languages, provider_voice_presets, update_provider_model_selection,
         validate_native_provider_asset, validate_tts_provider_asset,
     };
@@ -1915,6 +1466,60 @@ mod tests {
             supports_vocabulary_bias: false,
             vocabulary_weight: 4,
         }
+    }
+
+    fn provider_card(name: &str, fields: &[(&str, &str)]) -> ProviderCard {
+        ProviderCard {
+            name: name.into(),
+            fields: fields
+                .iter()
+                .map(|(name, value)| ConfigField {
+                    name: (*name).into(),
+                    value: (*value).into(),
+                    kind: JsonFieldKind::String,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn settings_only_offer_configured_remote_providers() {
+        let configured = provider_card(
+            "openai",
+            &[
+                ("transport", "openai"),
+                ("model", "gpt-4o-mini"),
+                ("api_key", "secret"),
+            ],
+        );
+        let missing_key = provider_card(
+            "openai",
+            &[
+                ("transport", "openai"),
+                ("model", "gpt-4o-mini"),
+                ("api_key", ""),
+            ],
+        );
+
+        assert!(provider_is_usable(
+            &configured,
+            "translation",
+            std::path::Path::new(".")
+        ));
+        assert!(!provider_is_usable(
+            &missing_key,
+            "translation",
+            std::path::Path::new(".")
+        ));
+    }
+
+    #[test]
+    fn settings_keep_the_tts_disabled_option_available() {
+        assert!(provider_is_usable(
+            &provider_card("none", &[]),
+            "tts",
+            std::path::Path::new(".")
+        ));
     }
 
     #[test]

@@ -10,7 +10,6 @@ pub mod theme;
 use eframe::egui::{self, Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Stroke};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-pub use components::{RuntimeUiAction, render_tts_runtime_status};
 pub use pages::onboarding::render_onboarding_fullscreen;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Default)]

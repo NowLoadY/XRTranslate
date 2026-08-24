@@ -36,7 +36,6 @@ pub enum NativeModelTaskState {
     },
     Installed {
         asset_id: ModelAssetId,
-        directory: PathBuf,
     },
     Failed(String),
 }
@@ -97,7 +96,6 @@ enum NativeModelTaskResult {
     },
     Installed {
         asset_id: ModelAssetId,
-        directory: PathBuf,
     },
     Cancelled,
     Failed(String),
@@ -423,10 +421,7 @@ impl NativeModelTaskManager {
                 self.known_present.extend(ready.iter().copied());
                 self.state = NativeModelTaskState::Detected { present, ready };
             }
-            NativeModelTaskResult::Installed {
-                asset_id,
-                directory,
-            } => {
+            NativeModelTaskResult::Installed { asset_id } => {
                 self.known_present.insert(asset_id);
                 if let Some(batch) = &mut self.install_batch {
                     if !batch.completed.contains(&asset_id) {
@@ -437,10 +432,7 @@ impl NativeModelTaskManager {
                     }
                     batch.failed_asset_id = None;
                 }
-                self.state = NativeModelTaskState::Installed {
-                    asset_id,
-                    directory,
-                };
+                self.state = NativeModelTaskState::Installed { asset_id };
                 if let Err(error) = self.start_next_queued() {
                     self.state = NativeModelTaskState::Failed(error);
                 }
@@ -625,10 +617,7 @@ fn install_model(
     }));
 
     match result {
-        Ok(directory) => NativeModelTaskResult::Installed {
-            asset_id,
-            directory,
-        },
+        Ok(_) => NativeModelTaskResult::Installed { asset_id },
         Err(error) if error.is_cancelled() || cancellation_observer.is_cancelled() => {
             let cleanup = load_assets(&project_root).and_then(|assets| {
                 clear_model_staging(&assets, asset_id).map_err(|error| error.to_string())
@@ -703,38 +692,6 @@ pub fn catalog_model_packages(
         .catalog_assets()
         .map(|asset| package_from_manifest(asset.manifest()))
         .collect())
-}
-
-/// Resolves one provider's declared `model_asset` without assuming that the
-/// provider is currently selected. This lets the service-provider UI render
-/// the same card action for active and previewed providers.
-pub fn model_package_for_config_key(
-    project_root: &std::path::Path,
-    key: &str,
-) -> Result<NativeModelPackage, String> {
-    let config = load_config(project_root)?;
-    let assets = configured_assets(&config, project_root)?;
-    let id = ModelAssetId::from_config_key(key)
-        .ok_or_else(|| format!("Unknown model_asset in provider configuration: {key}"))?;
-    let manifest = assets.asset(id).manifest();
-    Ok(package_from_manifest(manifest))
-}
-
-/// Resolves a package while preserving the provider and capability boundary
-/// of the provider card that requested it.
-pub fn model_package_for_provider_config_key(
-    project_root: &std::path::Path,
-    provider: &str,
-    capability: ModelCapability,
-    key: &str,
-) -> Result<NativeModelPackage, String> {
-    let package = model_package_for_config_key(project_root, key)?;
-    if package.provider != provider || package.capability != capability {
-        return Err(format!(
-            "Model package {key} does not belong to provider {provider} for {capability:?}."
-        ));
-    }
-    Ok(package)
 }
 
 fn package_from_manifest(manifest: &xrtranslate_assets::ModelAssetManifest) -> NativeModelPackage {
