@@ -235,7 +235,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builtin_preferences_enable_both_plugins() {
+    fn builtin_preferences_enable_default_plugins() {
         let preferences = PluginPreferences::default();
         assert!(preferences.is_enabled(PluginId::OSC));
         assert!(!preferences.is_enabled(PluginId::MEETING));
@@ -258,6 +258,17 @@ mod tests {
                 .descriptors()
                 .windows(2)
                 .all(|pair| pair[0].navigation_order < pair[1].navigation_order)
+        );
+    }
+
+    #[test]
+    fn core_studios_are_not_plugins() {
+        assert!(PluginId::parse("audio_studio").is_none());
+        assert!(
+            PluginRegistry::builtin()
+                .descriptors()
+                .iter()
+                .all(|descriptor| descriptor.title_key != "Audio Studio")
         );
     }
 }

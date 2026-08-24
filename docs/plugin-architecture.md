@@ -188,6 +188,16 @@ value's meaning and migration. Plugin UI may update plugin-owned controller or
 draft state directly; effects requiring host capabilities must be returned as a
 typed action. Plugin UI must never receive `&mut XRTranslateApp`.
 
+Graph-based plugin pages use `ui::graph_editor` as the single owner of editor
+interaction semantics: graph switching, node/link selection, multi-node drag,
+box selection, wire creation and atomic rewiring, cancellation, keyboard
+commands, history stacks, viewport navigation, node placement, and navigation
+hints. `ui::graph_canvas` owns domain-neutral geometry and painting primitives.
+Prompt Studio and Audio Studio project their domain node/link identifiers onto
+those shared modules; they may render different node bodies and validate
+different graph rules, but must not introduce a second editor state machine or
+copy the shared operations into a plugin-private controller.
+
 ```text
 audio/backend session
         |
@@ -216,7 +226,50 @@ hooks explicitly. This explicit composition is intentional until all plugins
 share a real behavior seam; metadata alone must not pretend to remove typed
 runtime dispatch.
 
-Current ownership is:
+Core Studio infrastructure is owned outside the plugin catalogue:
+
+- `audio_studio`: the one user-authored global audio graph, preset templates, validation,
+  core persistence, and routing controller. `ui::pages::audio_studio` owns its
+  page, alongside `ui::pages::prompt_studio`. It compiles its graph into the
+  neutral host audio route contract; the host owns microphone, system-loopback,
+  application process-loopback, render-output, and bounded TTS PCM routing.
+  A system-audio node stores a typed endpoint/application capture choice rather
+  than encoding applications as fake devices. Shared audio code never imports
+  Audio Studio node or preset types. Optional VoiceMeeter metadata appears in
+  the host snapshot only when the host found the installed Remote API. The
+  graph stores only the selected B1/B2/B3 intent; Windows registry discovery,
+  DLL lifetime, strip control, and restoration remain host responsibilities.
+  Audio Studio does not contain graph pages or competing saved routes. Loading
+  a preset is an explicitly confirmed whole-graph replacement; it never creates
+  another graph. The persisted graph always has one stable global identity, and
+  edits made while live routing is active are reported as unapplied until the
+  route is updated. Older unsupported Audio Studio documents are replaced with
+  the current translation-safe default instead of exposing storage schema errors
+  in the product UI. Structural validation decides whether a route can run. A separate risk report
+  follows active graph paths, classifies blocking feedback and non-blocking
+  contamination/acoustic risks, and maps every diagnosis back to its nodes and
+  links so the graph remains the explanation of the real audio path.
+  Audio-route lifecycle is independent from recognition/translation lifecycle:
+  Audio Studio may enable a render route and configure the core ASR input, but
+  it never starts or stops translation. A valid global graph synchronizes its
+  ASR branch immediately when its source, device, application, or relevant link
+  changes; enabling the real-time render route is not a prerequisite.
+  Mixer nodes allocate one stable socket per connection plus one empty socket
+  for the next connection. The on/off state belongs to the link, so the canvas,
+  validator, risk analyzer, compiler, and Translation-page projection all read
+  the same routing fact instead of maintaining a page-specific mode flag.
+  Translation state shown in Audio Studio is a read-only host snapshot. If an enabled route selects a VoiceMeeter
+  endpoint, the host starts VoiceMeeter automatically and shuts it down later
+  only when that process was originally started by XRTranslate.
+  The global graph is the source of truth for ASR when Translation starts. A
+  valid ASR branch and the Translation page consume one typed host input
+  selection. Application identity is stable and visible on the Translation
+  page; a live PID is resolved from automatic discovery only when capture
+  starts. The page must never display an endpoint while the executor is actually
+  using an application target. ASR input changes are rejected while translation
+  is running rather than silently changing only the future or displayed state.
+
+Current plugin ownership is:
 
 - `plugins::osc`: OSC settings, UDP listener/writer, caption formatting,
   preview/settings UI, mute-state capability, and a `HostOutputSubscriber`.

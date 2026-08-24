@@ -1,6 +1,9 @@
 pub mod animation;
 pub mod components;
 pub mod fonts;
+pub(crate) mod graph_canvas;
+pub(crate) mod graph_editor;
+pub(crate) mod graph_style;
 pub mod layout;
 pub mod modal;
 pub mod organic_border;
@@ -18,6 +21,7 @@ pub enum Page {
     Translation,
     Plugin(crate::plugins::PluginId),
     Settings,
+    AudioStudio,
     PromptStudio,
 }
 
@@ -29,6 +33,7 @@ impl Serialize for Page {
         match self {
             Self::Translation => serializer.serialize_str("Translation"),
             Self::Settings => serializer.serialize_str("Settings"),
+            Self::AudioStudio => serializer.serialize_str("AudioStudio"),
             Self::PromptStudio => serializer.serialize_str("PromptStudio"),
             Self::Plugin(id) => serializer.serialize_str(&format!("plugin:{}", id.as_str())),
         }
@@ -44,6 +49,7 @@ impl<'de> Deserialize<'de> for Page {
         match value.as_str() {
             "Translation" | "translation" => Ok(Self::Translation),
             "Settings" | "settings" => Ok(Self::Settings),
+            "AudioStudio" => Ok(Self::AudioStudio),
             "PromptStudio" | "prompt_studio" | "prompt-studio" => Ok(Self::PromptStudio),
             // Compatibility with the former derived enum representation.
             "Osc" | "osc" => Ok(Self::Plugin(crate::plugins::PluginId::OSC)),
@@ -89,6 +95,22 @@ mod page_tests {
     }
 
     #[test]
+    fn core_studio_pages_have_stable_readable_serialization() {
+        assert_eq!(
+            serde_json::to_string(&Page::AudioStudio).unwrap(),
+            r#""AudioStudio""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Page::PromptStudio).unwrap(),
+            r#""PromptStudio""#
+        );
+        assert_eq!(
+            serde_json::from_str::<Page>(r#""AudioStudio""#).unwrap(),
+            Page::AudioStudio
+        );
+    }
+
+    #[test]
     fn legacy_plugin_page_names_still_load() {
         assert_eq!(
             serde_json::from_str::<Page>(r#""Osc""#).unwrap(),
@@ -117,6 +139,7 @@ pub fn render_sidebar(
     let icon_settings = include_image!("../../resources/icons/settings.svg");
     let icon_guide = include_image!("../../resources/icons/guide.svg");
     let icon_prompt = include_image!("../../resources/icons/prompt-studio.svg");
+    let icon_audio = include_image!("../../resources/icons/audio-studio.svg");
     let icon_expand = include_image!("../../resources/icons/chevron-right.svg");
     let icon_collapse = include_image!("../../resources/icons/chevron-left.svg");
 
@@ -179,7 +202,7 @@ pub fn render_sidebar(
             .iter()
             .collect::<Vec<_>>();
         plugin_descriptors.sort_by_key(|descriptor| descriptor.navigation_order);
-        for descriptor in plugin_descriptors {
+        for descriptor in &plugin_descriptors {
             if !plugin_preferences.is_enabled(descriptor.id) {
                 continue;
             }
@@ -193,6 +216,15 @@ pub fn render_sidebar(
             );
             ui.add_space(4.0);
         }
+        nav_item_animated(
+            ui,
+            navigation,
+            Page::AudioStudio,
+            icon_audio,
+            crate::i18n::tr(language, "Audio Studio"),
+            expand_factor,
+        );
+        ui.add_space(4.0);
         nav_item_animated(
             ui,
             navigation,

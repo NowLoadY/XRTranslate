@@ -103,8 +103,51 @@ start inference, or choose storage locations.
   catalogue-managed llama.cpp, CUDA, cuDNN, and ONNX CUDA directories. External
   custom runtimes and the packaged CPU ONNX core are never deleted automatically.
 - `rust-client/src/audio.rs` and the player window host expose capability
-  methods. Unsupported host capabilities return typed/actionable errors; they
-  are not represented by fake devices or duplicated UI pipelines.
+  methods. The audio host owns device enumeration and independent real-time
+  route lifecycles; core studios and plugins supply neutral route configurations
+  and bounded PCM inputs without leaking feature-specific node types into the host. Unsupported host
+  capabilities return typed/actionable errors; they are not represented by
+  fake devices or duplicated UI pipelines. A game-microphone route may target
+  an already installed virtual-cable render endpoint, but user-mode routing
+  must not claim to create a system capture endpoint. A bundled replacement
+  would be a separately installed and signed driver capability.
+- Windows system-audio capture is a typed choice between endpoint loopback and
+  application process-tree loopback. Endpoint loopback captures every stream
+  rendered to that endpoint; application loopback captures the selected process
+  and its child processes through the Windows process-loopback API. Persisted
+  graphs identify an application by normalized executable identity and display
+  name. The host resolves that identity to a current process ID when compiling
+  a route; process IDs are runtime state and must never be persisted as graph
+  identity. Applications appear only when the Windows audio-session inventory
+  can associate a render session with their process.
+- Audio discovery is host-owned, automatic, and demand-driven. Entering
+  Translation or Audio Studio refreshes the source snapshot once; opening the
+  application selector refreshes its Windows audio sessions again. Discovery
+  must not poll continuously in the background. Each category permits only one
+  in-flight scan and retains its last successful snapshot; a refresh must not
+  temporarily invalidate graphs, clear unrelated errors, reset level meters, or
+  require a page-specific refresh button.
+- Audio Studio persists exactly one global graph for the host audio topology.
+  Presets are replacement templates, not independently active documents, so
+  monitor, virtual-microphone, TTS, BGM, and ASR branches cannot acquire hidden
+  cross-page precedence. The graph's ASR branch is synchronized before the core
+  Translation workflow starts; starting live routing controls only monitor and
+  application-microphone outputs.
+- Mixer connections use stable, dynamically allocated input ports. Each input
+  connection owns its persisted enabled state; a disabled connection remains
+  visible and editable but is excluded from execution, risk analysis, and ASR
+  source derivation. Microphone, system-audio, and combined recognition modes
+  are derived from these visible connection states rather than stored as a
+  second hidden ASR setting.
+- Optional virtual-mixer control remains a host adapter, not an audio-engine
+  dependency. On Windows, the VoiceMeeter adapter is constructed only when the
+  official uninstall registration and matching installed Remote DLL exist. It
+  loads that DLL in place, logs in for the desktop lifetime, and exposes a
+  focused status/launch/shutdown/strip-to-bus capability to Audio Studio.
+  VoiceMeeter is launched automatically only while an enabled route needs one
+  of its endpoints, and is shut down only if XRTranslate launched it. Route leases
+  restore the previous B1/B2/B3 button value on replacement, failure, stop, or
+  shutdown; they never reset the mixer or bundle a vendor DLL.
 
 ## Adding a target
 

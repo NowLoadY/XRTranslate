@@ -21,6 +21,7 @@ pub use library::{PromptMode, PromptTemplateLibrary, PromptTemplateProfile};
 pub use schema::{
     PromptCondition, PromptGraphDomain, PromptGraphError, PromptLink, PromptMessageRole,
     PromptNode, PromptNodeGraph, PromptNodeKind, PromptNodePage, PromptProviderTarget,
-    PromptVariable,
+    PromptSystemValue, PromptTextComparison, PromptValueType, PromptVariable, condition_label,
+    system_value_label,
 };
 pub use template::compose_input_indexes;

@@ -1353,24 +1353,34 @@ fn render_download_card(
         Frame::new()
             .fill(theme::surface_control())
             .corner_radius(CornerRadius::same(12))
-            .inner_margin(Margin::symmetric(18, 14)),
+            .inner_margin(Margin::symmetric(16, 10)),
         12.0,
         item.stroke_color,
         |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.vertical(|ui| {
+                ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(i18n::tr(language, item.category_title))
-                            .size(15.0)
+                            .size(14.5)
                             .color(theme::text_strong())
                             .strong(),
                     );
-                    ui.add_space(2.0);
                     ui.label(
                         RichText::new(&item.detail)
                             .size(13.0)
                             .color(theme::text_weak()),
+                    );
+                    ui.label(
+                        RichText::new(format!(
+                            "· {} {} · {} {}",
+                            i18n::tr(language, "Download"),
+                            components::format_file_size(item.download_bytes),
+                            i18n::tr(language, "Installed size"),
+                            components::format_file_size(item.installed_bytes),
+                        ))
+                        .size(12.0)
+                        .color(theme::text_weak()),
                     );
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1385,14 +1395,15 @@ fn render_download_card(
                             delete_clicked = true;
                         }
                         Frame::new()
-                            .fill(Color32::from_rgb(16, 185, 129))
-                            .corner_radius(CornerRadius::same(10))
-                            .inner_margin(Margin::symmetric(18, 7))
+                            .fill(Color32::from_rgba_unmultiplied(16, 185, 129, 20))
+                            .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(16, 185, 129, 100)))
+                            .corner_radius(CornerRadius::same(8))
+                            .inner_margin(Margin::symmetric(14, 5))
                             .show(ui, |ui| {
                                 ui.label(
                                     RichText::new(i18n::tr(language, "Installed"))
-                                        .color(Color32::WHITE)
-                                        .size(13.0)
+                                        .color(Color32::from_rgb(5, 150, 105))
+                                        .size(12.5)
                                         .strong(),
                                 );
                             });
@@ -1407,35 +1418,19 @@ fn render_download_card(
                             },
                             |position| format!("{} #{}", i18n::tr(language, action), position),
                         );
-                        if ui
-                            .add_enabled(
-                                enabled,
-                                egui::Button::new(
-                                    RichText::new(action_label).color(Color32::WHITE).strong(),
-                                )
-                                .fill(Color32::from_rgb(37, 99, 235))
-                                .min_size(egui::Vec2::new(110.0, 32.0))
-                                .corner_radius(CornerRadius::same(10)),
-                            )
-                            .clicked()
+                        if components::primary_button_enabled_with_id(
+                            ui,
+                            ("download_card", item.id),
+                            &action_label,
+                            enabled,
+                        )
+                        .clicked()
                         {
                             clicked = true;
                         }
                     }
                 });
             });
-            ui.add_space(5.0);
-            ui.label(
-                RichText::new(format!(
-                    "{} {} · {} {}",
-                    i18n::tr(language, "Download"),
-                    components::format_file_size(item.download_bytes),
-                    i18n::tr(language, "Installed size"),
-                    components::format_file_size(item.installed_bytes),
-                ))
-                .size(11.5)
-                .color(theme::text_weak()),
-            );
             if let Some(NativeModelTaskState::Installing {
                 relative_path,
                 downloaded_bytes,
@@ -1532,9 +1527,10 @@ fn render_runtime_installation_section(
             ui.horizontal(|ui| {
                 if ready {
                     Frame::new()
-                        .fill(Color32::from_rgb(16, 185, 129))
-                        .corner_radius(CornerRadius::same(10))
-                        .inner_margin(Margin::symmetric(18, 7))
+                        .fill(Color32::from_rgba_unmultiplied(16, 185, 129, 20))
+                        .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(16, 185, 129, 100)))
+                        .corner_radius(CornerRadius::same(8))
+                        .inner_margin(Margin::symmetric(14, 5))
                         .show(ui, |ui| {
                             ui.label(
                                 RichText::new(format!(
@@ -1542,8 +1538,8 @@ fn render_runtime_installation_section(
                                     i18n::tr(language, "Installed"),
                                     backend
                                 ))
-                                .color(Color32::WHITE)
-                                .size(13.0)
+                                .color(Color32::from_rgb(5, 150, 105))
+                                .size(12.5)
                                 .strong(),
                             );
                         });

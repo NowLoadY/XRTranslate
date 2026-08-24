@@ -230,30 +230,25 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
                             }
                             if contributor.contributions.len() == 1 {
                                 ui.add_space(4.0);
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "— {}",
-                                        contributor.contributions[0]
-                                    ))
-                                    .size(12.0)
-                                    .color(crate::ui::theme::text_weak()),
+                                let text = format!("— {}", contributor.contributions[0]);
+                                ui.add(
+                                    egui::Label::new(contributor_markdown_job(&text, 12.0)).wrap(),
                                 );
                             }
                         });
                         if contributor.contributions.len() > 1 {
                             ui.add_space(2.0);
                             for item in &contributor.contributions {
-                                ui.horizontal(|ui| {
+                                ui.horizontal_top(|ui| {
                                     ui.add_space(8.0);
                                     ui.label(
                                         egui::RichText::new("•")
                                             .size(11.0)
                                             .color(crate::ui::theme::primary_dark()),
                                     );
-                                    ui.label(
-                                        egui::RichText::new(item)
-                                            .size(12.0)
-                                            .color(crate::ui::theme::text_weak()),
+                                    ui.add(
+                                        egui::Label::new(contributor_markdown_job(item, 12.0))
+                                            .wrap(),
                                     );
                                 });
                             }
@@ -278,6 +273,26 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
             render_notice_item(ui, item, index == 0);
         }
     });
+}
+
+fn contributor_markdown_job(text: &str, size: f32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    for span in crate::contributors::parse_inline_markdown(text) {
+        job.append(
+            &span.text,
+            0.0,
+            egui::TextFormat {
+                font_id: egui::FontId::proportional(size),
+                color: if span.strong {
+                    crate::ui::theme::text_strong()
+                } else {
+                    crate::ui::theme::text_weak()
+                },
+                ..Default::default()
+            },
+        );
+    }
+    job
 }
 
 fn render_notice_item(ui: &mut egui::Ui, text: &str, strong: bool) {

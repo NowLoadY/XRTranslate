@@ -3,9 +3,7 @@ use xrtranslate_prompt::PromptTemplateProfile;
 /// Manages undo and redo stacks for prompt studio graph drafts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PromptStudioHistory {
-    undo_stack: Vec<PromptTemplateProfile>,
-    redo_stack: Vec<PromptTemplateProfile>,
-    max_depth: usize,
+    history: crate::ui::graph_editor::GraphEditHistory<PromptTemplateProfile>,
 }
 
 impl Default for PromptStudioHistory {
@@ -17,9 +15,7 @@ impl Default for PromptStudioHistory {
 impl PromptStudioHistory {
     pub fn new(max_depth: usize) -> Self {
         Self {
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
-            max_depth: max_depth.max(1),
+            history: crate::ui::graph_editor::GraphEditHistory::new(max_depth),
         }
     }
 
@@ -28,59 +24,45 @@ impl PromptStudioHistory {
         if before.read_only {
             return;
         }
-        if let Some(last) = self.undo_stack.last() {
-            if last == &before {
-                return;
-            }
-        }
-        self.undo_stack.push(before);
-        if self.undo_stack.len() > self.max_depth {
-            self.undo_stack.remove(0);
-        }
-        self.redo_stack.clear();
+        self.history.push(before);
     }
 
     /// Undoes the last mutation and pushes the current state to the redo stack.
     pub fn undo(&mut self, current: PromptTemplateProfile) -> Option<PromptTemplateProfile> {
-        if current.read_only || self.undo_stack.is_empty() {
+        if current.read_only {
             return None;
         }
-        let previous = self.undo_stack.pop()?;
-        self.redo_stack.push(current);
-        Some(previous)
+        self.history.undo(current)
     }
 
     /// Redoes the undone mutation and pushes the current state to the undo stack.
     pub fn redo(&mut self, current: PromptTemplateProfile) -> Option<PromptTemplateProfile> {
-        if current.read_only || self.redo_stack.is_empty() {
+        if current.read_only {
             return None;
         }
-        let next = self.redo_stack.pop()?;
-        self.undo_stack.push(current);
-        Some(next)
+        self.history.redo(current)
     }
 
     pub fn can_undo(&self, read_only: bool) -> bool {
-        !read_only && !self.undo_stack.is_empty()
+        !read_only && self.history.can_undo()
     }
 
     pub fn can_redo(&self, read_only: bool) -> bool {
-        !read_only && !self.redo_stack.is_empty()
+        !read_only && self.history.can_redo()
     }
 
     pub fn clear(&mut self) {
-        self.undo_stack.clear();
-        self.redo_stack.clear();
+        self.history.clear();
     }
 
     #[cfg(test)]
     pub fn undo_count(&self) -> usize {
-        self.undo_stack.len()
+        self.history.undo_count()
     }
 
     #[cfg(test)]
     pub fn redo_count(&self) -> usize {
-        self.redo_stack.len()
+        self.history.redo_count()
     }
 }
 

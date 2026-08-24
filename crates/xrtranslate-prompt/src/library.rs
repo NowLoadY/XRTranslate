@@ -43,7 +43,7 @@ pub struct PromptGraphProjectFile {
 fn default_schema_guide() -> String {
     "X-Translator Prompt Studio Graph Project Guide for AI / Humans:\n\
     1. NODES (nodes: Array):\n\
-       - Variable Node: {'type': 'variable', 'variable': 'current_input' | 'source_language' | 'target_language' | 'recognition_context' | 'recognition_mode'}\n\
+       - System Value Node: {'type': 'system_value', 'value': 'current_input' | 'source_language' | 'target_language' | 'recognition_context' | 'recognition_mode' | ...}\n\
          * 'current_input': Real-time speech transcript sentence to be translated.\n\
          * 'source_language': Source language name (e.g. 'English', 'Japanese').\n\
          * 'target_language': Target language name (e.g. 'Chinese').\n\
@@ -57,17 +57,20 @@ fn default_schema_guide() -> String {
          * 'surrounding_source': Renders '## Current Utterance Context (context only; do not translate)\\n\\n<lines>'\n\
          * 'custom_text': Renders '## Custom Reference Text\\n\\n<custom user text>'\n\
          * NOTE FOR AI DESIGNERS: Because each data block outputs its own '## Header', DO NOT add extra duplicate headers in Compose templates (e.g. write '{0}', not 'Terminology:\\n{0}').\n\
+       - Bool Value Node: {'type': 'bool_value', 'value': true | false}. This is editor-owned data, not a hidden host predicate.\n\
+       - Condition Value Node: {'type': 'condition_value', 'condition': 'has_reference_context' | 'has_recognition_context' | ...}. This is a host-owned boolean fact.\n\
+       - Text Comparison Node: {'type': 'text_comparison', 'operator': 'equals' | 'not_equals' | 'contains' | 'starts_with' | 'ends_with', 'expected': '<text>', 'case_sensitive': true | false}. Input 0 is TEXT; output is BOOL.\n\
        - Compose Node: {'type': 'compose', 'text': 'Prompt template text with {0}, {1}, etc.'}\n\
          * Placeholders {0}, {1}, {2}... interpolate outputs from incoming links with input: 0, input: 1, etc.\n\
-       - Switch Node: {'type': 'switch', 'condition': 'has_reference_context' | 'has_recognition_context' | 'source_is_auto' | 'is_pseudo_streaming'}\n\
-         * Evaluates condition at runtime: routes input: 0 (False branch) or input: 1 (True branch).\n\
+       - Switch Node: {'type': 'switch'}. Input 0 is BOOL, input 1 is FALSE TEXT, and input 2 is TRUE TEXT.\n\
+       - Text Switch Node: {'type': 'text_switch'}. Input 0 is a finite TEXT selector. Its named TEXT sockets are derived from the selector source's possible outputs; never write or cache a 'cases' field.\n\
        - Request Node: {'type': 'request', 'target': 'open_ai_compatible' | 'hunyuan' | 'asr_instruction' | 'asr_context_bias', 'roles': ['system', 'user']}\n\
          * Final output sink. Translation targets carry LLM messages. 'asr_instruction' carries semantic recognition instructions; 'asr_context_bias' carries lexical context only. Weighted vocabulary is structured provider data and is never rendered by this graph.\n\
     2. LINKS (links: Array):\n\
        - {'from': '<source_node_id>', 'to': '<target_node_id>', 'input': <target_slot_index_integer>}\n\
     3. PROVIDER PAGES:\n\
-       - One graph owns every recognition mode. Use 'recognition_mode' and 'is_pseudo_streaming' branches instead of creating a separate graph per mode.\n\
-       - Each node belongs to 'page': 'open_ai_compatible', 'hunyuan', 'asr_instruction', or 'asr_context_bias'. Each provider page is an independent DAG pipeline inside the unified graph."
+       - One graph owns every recognition mode. Connect the recognition_mode System Value directly to a Text Switch; 'ordinary' and 'pseudo_streaming' become its named branches.\n\
+       - Each node belongs to 'page': 'shared', 'open_ai_compatible', 'hunyuan', 'asr_instruction', or 'asr_context_bias'. Shared nodes may feed compatible provider pages; each provider page is a DAG pipeline inside the unified graph."
         .into()
 }
 
@@ -104,6 +107,7 @@ impl PromptTemplateProfile {
         if graph.nodes.is_empty() {
             return Err("Imported prompt graph contains no nodes.".into());
         }
+        let imported_graph = graph.clone();
 
         for node in &mut graph.nodes {
             if node.label.trim().is_empty() {
@@ -111,12 +115,18 @@ impl PromptTemplateProfile {
             }
         }
 
-        graph.schema_version = PromptNodeGraph::CURRENT_SCHEMA_VERSION;
-        migrate_shared_nodes(&mut graph);
+        let migrate_legacy_shared_nodes = graph.schema_version < 7;
+        if graph.schema_version <= PromptNodeGraph::CURRENT_SCHEMA_VERSION {
+            graph.migrate_legacy_dataflow();
+        }
+        if migrate_legacy_shared_nodes {
+            migrate_shared_nodes(&mut graph);
+        }
         ensure_asr_pages(&mut graph);
         graph =
             PromptNodeGraph::unify_mode_graphs(graph, &PromptNodeGraph::builtin_pseudo_streaming());
         graph.upgrade_known_pseudo_streaming_prompts();
+        graph.sync_text_switch_cases(&imported_graph);
         graph.remove_invalid_socket_links();
         graph.auto_layout();
 
@@ -237,18 +247,26 @@ impl PromptTemplateLibrary {
             if profile.id == BUILTIN_ID {
                 continue;
             }
+            let stored_graph = profile.graph.clone();
+            let migrate_legacy_shared_nodes = profile.graph.schema_version < 7;
+            if profile.graph.schema_version <= PromptNodeGraph::CURRENT_SCHEMA_VERSION {
+                profile.graph.migrate_legacy_dataflow();
+            }
             if profile.graph.schema_version != PromptNodeGraph::CURRENT_SCHEMA_VERSION
                 || profile.graph.nodes.is_empty()
             {
                 profile.graph = PromptNodeGraph::builtin_default();
             } else {
-                migrate_shared_nodes(&mut profile.graph);
+                if migrate_legacy_shared_nodes {
+                    migrate_shared_nodes(&mut profile.graph);
+                }
                 ensure_asr_pages(&mut profile.graph);
                 profile.graph = PromptNodeGraph::unify_mode_graphs(
                     profile.graph.clone(),
                     &PromptNodeGraph::builtin_pseudo_streaming(),
                 );
                 profile.graph.upgrade_known_pseudo_streaming_prompts();
+                profile.graph.sync_text_switch_cases(&stored_graph);
                 profile.graph.remove_invalid_socket_links();
             }
             profile.read_only = false;
@@ -525,16 +543,29 @@ fn ensure_asr_pages(graph: &mut PromptNodeGraph) {
         if exists {
             continue;
         }
-        let source_nodes = canonical
+        let mut source_ids = canonical
             .nodes
             .iter()
             .filter(|node| node.page == page)
-            .cloned()
-            .collect::<Vec<_>>();
-        let source_ids = source_nodes
-            .iter()
             .map(|node| node.id.clone())
             .collect::<HashSet<_>>();
+        let mut pending = source_ids.iter().cloned().collect::<Vec<_>>();
+        while let Some(to) = pending.pop() {
+            for link in canonical.links.iter().filter(|link| link.to == to) {
+                let Some(source) = canonical.nodes.iter().find(|node| node.id == link.from) else {
+                    continue;
+                };
+                if source.page == PromptNodePage::Shared && source_ids.insert(source.id.clone()) {
+                    pending.push(source.id.clone());
+                }
+            }
+        }
+        let source_nodes = canonical
+            .nodes
+            .iter()
+            .filter(|node| source_ids.contains(&node.id))
+            .cloned()
+            .collect::<Vec<_>>();
         let mut used_ids = graph
             .nodes
             .iter()
@@ -543,6 +574,14 @@ fn ensure_asr_pages(graph: &mut PromptNodeGraph) {
         let mut id_map = HashMap::new();
         for mut node in source_nodes {
             let source_id = node.id.clone();
+            if node.page == PromptNodePage::Shared
+                && let Some(existing) = graph.nodes.iter().find(|existing| {
+                    existing.id == node.id && existing.page == PromptNodePage::Shared
+                })
+            {
+                id_map.insert(source_id, existing.id.clone());
+                continue;
+            }
             if used_ids.contains(&node.id) {
                 let mut suffix = 1_u32;
                 loop {
@@ -792,12 +831,13 @@ mod tests {
         let upgraded = PromptTemplateLibrary::load_from_dir(&temp_dir);
         assert_eq!(upgraded.active_id, "legacy-custom");
         let active = upgraded.active_profile().unwrap();
-        assert!(active.graph.nodes.iter().any(|node| matches!(
-            node.kind,
-            crate::PromptNodeKind::Switch {
-                condition: crate::PromptCondition::IsPseudoStreaming
-            }
-        )));
+        assert!(active.graph.nodes.iter().any(|node| {
+            matches!(node.kind, crate::PromptNodeKind::TextSwitch)
+                && active
+                    .graph
+                    .text_switch_cases(&node.id)
+                    .is_some_and(|cases| cases.iter().any(|case| case == "pseudo_streaming"))
+        }));
         let saved =
             std::fs::read_to_string(temp_dir.join(PromptTemplateLibrary::FILE_NAME)).unwrap();
         let saved_value: serde_json::Value = serde_json::from_str(&saved).unwrap();

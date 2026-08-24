@@ -99,11 +99,36 @@ boundaries. They interpolate connected inputs through `{0}` to `{9}`; literal
 braces use `{{` and `}}`. A Compose text made only of input slots separated by
 one consistent whitespace separator joins its non-empty inputs with that
 separator. This makes `{0}\n\n{1}\n\n{2}` the general form of an optional block
-join without a separate Concat node. Variable nodes expose source language,
-target language, current input, and recognition context. Context input nodes render the terminology,
-history, previous revision, and surrounding-source sections. Condition nodes
-select the explicit/automatic language branch and the with/without-reference
-branch. Provider adapters must not add separators around these values.
+join without a separate Concat node. System Value nodes are explicit
+host/runtime inputs. Their typed text outputs expose source language, target
+language, current input, recognition context, recognition mode, terminology,
+history, previous revision, surrounding source, and the other neutral context
+facts. Static custom text remains a separate editor-owned input and is never
+presented as runtime data. Condition Value nodes are explicit host/runtime
+boolean inputs. A Switch has one typed condition input followed by FALSE and
+TRUE text inputs; it cannot inspect the execution context or name a hidden
+predicate itself. The validator rejects condition-to-text and
+text-to-condition links. Provider adapters must not add separators around
+these values.
+
+Text outputs have two complementary views. The execution trace exposes the
+current text produced for a real request. The graph schema may also expose a
+finite set of possible texts without executing the graph: custom text exposes
+its one static value, Recognition Mode exposes `ordinary` and
+`pseudo_streaming`, and a Text Switch recursively unions the finite outputs of
+its connected branches. Unknown runtime text has no invented finite set.
+A Text Switch connects its selector at input 0 and derives one named branch
+socket per possible selector value. Those case names are not serialized on the
+switch, so the upstream text metadata remains the single source of truth. When
+metadata changes, the editor preserves branch wires by matching case text, not
+its former socket index; removed cases lose their wires. Empty cases are
+invalid and duplicate values are collapsed in declaration order.
+
+The canonical Recognition Mode path connects its System Value directly to a
+Text Switch. The canonical source-language choice connects Source Language to
+a case-sensitive Text Comparison against `auto`, then feeds ordinary boolean
+Switch nodes. Host-owned conditions remain for facts such as reference-context
+and recognition-context presence.
 
 The built-in graph uses no fragmented Text nodes. Static prompt structure is
 kept inside semantic Compose nodes so graph wires represent data flow rather
@@ -175,15 +200,22 @@ space, newline, heading, boundary, and current-input label.
 
 ## Schema and validation
 
-Graph schema version and canvas layout version are independent. Prompt Studio
-has not shipped a public graph schema, so unsupported custom schema versions are
-replaced with the canonical graph.
+Graph schema version and canvas layout version are independent. Schema v7
+introduced explicit typed System Value and Condition Value nodes. Saved v6
+graphs migrate in place: legacy runtime Variable/context Input nodes become
+System Value nodes, every implicit Switch predicate becomes a Condition Value,
+and its former FALSE/TRUE links move behind the new condition socket. Unknown
+unsupported schema versions are still replaced with the canonical graph.
+Schema v8 added editor-owned Bool Value, Text Comparison, and finite-text
+branching. Schema v9 makes Text Switch cases derived metadata rather than a
+second serialized copy and gives the canonical Recognition Mode and source
+language paths the typed flows described above.
 
 The WebSocket protocol carries `PromptNodeGraph` as a typed JSON object. A
 backend validates a graph before activating it and reports malformed graphs as
 client errors. Activation requires exactly one Request for each translation
 provider target, at most one Request for each ASR delivery target, every Request
-input to be connected, and the target's required variable to be reachable:
+input to be connected, and the target's required System Value to be reachable:
 Current Input for translation and Recognition Context for lexical ASR context.
 An ASR instruction may use source/expected languages without depending on
 recognition vocabulary; the canonical instruction optionally incorporates it.
@@ -215,9 +247,9 @@ their connected source. Request nodes expose numbered role inputs such as `1
 SYSTEM` and `2 USER`; their exact assembled messages appear in the runtime pane.
 
 Node tones are derived from node kind and are not template configuration.
-Inputs, variables, composition, conditions, and provider requests keep stable,
-restrained grayscale roles; outgoing sockets and wires inherit the source kind
-tone.
+Static inputs, System Values, Condition Values, composition, switches, and
+provider requests keep stable, restrained grayscale roles; outgoing sockets
+and wires inherit the source kind tone.
 The toolbar and canvas context menu share the same categorized node catalogue.
 Toolbar additions use the viewport center, while context-menu additions use the
 pointer location. Neither operation rearranges existing nodes.

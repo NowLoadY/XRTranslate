@@ -11,6 +11,7 @@ use std::sync::{
 
 mod app_update;
 mod audio;
+mod audio_studio;
 mod backend;
 mod child_process;
 mod client_settings;
@@ -34,9 +35,20 @@ pub mod session_coordinator;
 mod streaming;
 mod ui;
 pub mod version;
+mod voicemeeter;
 mod window_backdrop;
 
-use audio::{AudioSystem, InputConfigInfo, InputDevice};
+use audio::{
+    AudioApplication, AudioRouteConfig, AudioRouteLoopbackConfig, AudioRouteLoopbackTarget,
+    AudioRouteSourceConfig, AudioSystem, InputConfigInfo, InputDevice,
+};
+use audio_studio::{
+    ApplicationSelection, AudioDeviceRole, AudioGraph, AudioNodeKind, AudioStudioController,
+    AudioStudioHostAction, AudioStudioHostEvent, AudioStudioUiAction, HostAudioApplication,
+    HostAudioCapabilities, HostAudioDevice, HostAudioSnapshot, SystemAudioCapture,
+    VoiceMeeterBus as StudioVoiceMeeterBus, VoiceMeeterEdition as StudioVoiceMeeterEdition,
+    VoiceMeeterInputSnapshot, VoiceMeeterSnapshot, VoiceMeeterStripIndex,
+};
 use client_settings::{CaptureSource, ClientSettings, RecognitionSettings};
 use history::{
     PendingAuthoritativeRecognition, PendingAuthoritativeTranslation, PendingFinalAsr,
@@ -136,6 +148,349 @@ fn meeting_source_name_to_capture(source: &str) -> CaptureSource {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AudioStudioAsrPlan {
+    capture_source: CaptureSource,
+    microphone_device_id: Option<String>,
+    system_audio_input: Option<SystemAudioInputSelection>,
+}
+
+impl AudioStudioAsrPlan {
+    fn matches_current_settings(
+        &self,
+        capture_source: CaptureSource,
+        microphone_device_id: &str,
+        system_audio_input: &SystemAudioInputSelection,
+    ) -> bool {
+        self.capture_source == capture_source
+            && self
+                .microphone_device_id
+                .as_ref()
+                .is_none_or(|device_id| device_id == microphone_device_id)
+            && self
+                .system_audio_input
+                .as_ref()
+                .is_none_or(|input| input == system_audio_input)
+    }
+}
+
+/// The one authoritative system-audio input used by the Translation pipeline.
+/// Endpoint IDs and stable application identities belong here; a process ID is
+/// resolved only when capture starts, because it changes whenever an app restarts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SystemAudioInputSelection {
+    Endpoint { device_id: String },
+    Application { application: ApplicationSelection },
+}
+
+#[derive(Clone, Debug)]
+struct CompiledAudioStudioGraph {
+    routes: Vec<AudioRouteConfig>,
+    asr: Option<AudioStudioAsrPlan>,
+}
+
+/// Compiles plugin-owned graph semantics into the host's existing neutral
+/// capabilities. Render branches become independent real-time audio routes;
+/// one ASR branch becomes the ordinary translation capture lifecycle.
+fn compile_audio_studio_route(
+    graph: &audio_studio::AudioGraph,
+) -> Result<CompiledAudioStudioGraph, String> {
+    use audio_studio::{AudioNodeKind, AudioProcessor, NodeId};
+
+    let validation = graph.validate();
+    if !validation.is_valid() {
+        let summary = validation
+            .issues
+            .iter()
+            .take(3)
+            .map(|issue| issue.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!("Audio graph is invalid: {summary}"));
+    }
+
+    let upstream_of = |sink: &NodeId| {
+        let mut reverse = std::collections::HashMap::<NodeId, Vec<NodeId>>::new();
+        for link in graph.links.iter().filter(|link| link.enabled) {
+            reverse
+                .entry(link.to.node_id.clone())
+                .or_default()
+                .push(link.from.node_id.clone());
+        }
+        let mut upstream = std::collections::HashSet::new();
+        let mut pending = vec![sink.clone()];
+        while let Some(node_id) = pending.pop() {
+            if !upstream.insert(node_id.clone()) {
+                continue;
+            }
+            if let Some(inputs) = reverse.get(&node_id) {
+                pending.extend(inputs.iter().cloned());
+            }
+        }
+        upstream
+    };
+
+    let render_sinks = graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            !node.bypassed
+                && matches!(
+                    node.kind,
+                    AudioNodeKind::MonitorOutput { .. }
+                        | AudioNodeKind::GameMicrophoneOutput {
+                            device_id: Some(_),
+                            ..
+                        }
+                )
+                && graph.has_enabled_source_path(&node.id)
+        })
+        .collect::<Vec<_>>();
+    let routes = render_sinks
+        .into_iter()
+        .map(|render_sink| -> Result<AudioRouteConfig, String> {
+            let upstream = upstream_of(&render_sink.id);
+            let mut route = AudioRouteConfig {
+                output_device_id: render_sink
+                    .kind
+                    .selected_device()
+                    .map(|device| device.0.clone())
+                    .unwrap_or_default(),
+                tts_gain: None,
+                ..AudioRouteConfig::default()
+            };
+            for node in graph
+                .nodes
+                .iter()
+                .filter(|node| upstream.contains(&node.id) && !node.bypassed)
+            {
+                match &node.kind {
+                    AudioNodeKind::Microphone { device_id } => {
+                        if route.microphone.is_some() {
+                            return Err("The current executor supports one microphone source".into());
+                        }
+                        route.microphone = Some(AudioRouteSourceConfig {
+                            device_id: device_id
+                                .as_ref()
+                                .map(|device| device.0.clone())
+                                .unwrap_or_default(),
+                            gain: 1.0,
+                        });
+                    }
+                    AudioNodeKind::SystemAudio { capture } => {
+                        if route.system_loopback.is_some() {
+                            return Err(
+                                "The current executor supports one system-audio source".into()
+                            );
+                        }
+                        let target = match capture {
+                            SystemAudioCapture::Endpoint { device_id, .. } => {
+                                AudioRouteLoopbackTarget::Endpoint {
+                                    device_id: device_id
+                                        .as_ref()
+                                        .map(|device| device.0.clone())
+                                        .unwrap_or_default(),
+                                }
+                            }
+                            SystemAudioCapture::Application {
+                                application,
+                                resolved_process_id,
+                            } => AudioRouteLoopbackTarget::Application {
+                                process_id: resolved_process_id.ok_or_else(|| {
+                                    "The selected application's audio session is unavailable"
+                                        .to_owned()
+                                })?,
+                                application_name: application
+                                    .as_ref()
+                                    .map(|application| application.display_name.clone())
+                                    .unwrap_or_else(|| "selected application".into()),
+                            },
+                        };
+                        route.system_loopback = Some(AudioRouteLoopbackConfig {
+                            target,
+                            gain: 1.0,
+                        });
+                    }
+                    AudioNodeKind::TextToSpeech => route.tts_gain = Some(1.0),
+                    AudioNodeKind::Media { .. } => {
+                        return Err(
+                            "Direct media-file nodes are not executable yet; use a System Audio node and play BGM through the selected endpoint"
+                                .into(),
+                        );
+                    }
+                    AudioNodeKind::Processing {
+                        processor:
+                            AudioProcessor::Gain { .. }
+                            | AudioProcessor::NoiseGate { .. }
+                            | AudioProcessor::Compressor { .. }
+                            | AudioProcessor::Ducker { .. },
+                    } => {
+                        return Err(
+                            "This processor is saved in the graph but is not available in the first real-time executor"
+                                .into(),
+                        );
+                    }
+                    AudioNodeKind::Processing {
+                        processor: AudioProcessor::Limiter { ceiling_db },
+                    } => {
+                        route.output_ceiling = route
+                            .output_ceiling
+                            .min(10.0_f32.powf(ceiling_db / 20.0).clamp(0.01, 1.0));
+                    }
+                    AudioNodeKind::Mixer
+                    | AudioNodeKind::AsrTap
+                    | AudioNodeKind::MonitorOutput { .. }
+                    | AudioNodeKind::GameMicrophoneOutput { .. } => {}
+                }
+            }
+            if route.microphone.is_none()
+                && route.system_loopback.is_none()
+                && route.tts_gain.is_none()
+            {
+                return Err("The selected output has no executable audio source".into());
+            }
+            Ok(route)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let asr_sinks = graph
+        .nodes
+        .iter()
+        .filter(|node| !node.bypassed && matches!(node.kind, AudioNodeKind::AsrTap))
+        .filter(|node| graph.has_enabled_source_path(&node.id))
+        .collect::<Vec<_>>();
+    if asr_sinks.len() > 1 {
+        return Err("The current translation host supports one ASR sink per graph".into());
+    }
+    let asr = asr_sinks
+        .first()
+        .map(|sink| -> Result<AudioStudioAsrPlan, String> {
+            let upstream = upstream_of(&sink.id);
+            let mut microphone_device_id = None;
+            let mut system_audio_input = None;
+            for node in graph
+                .nodes
+                .iter()
+                .filter(|node| upstream.contains(&node.id) && !node.bypassed)
+            {
+                match &node.kind {
+                    AudioNodeKind::Microphone { device_id } => {
+                        if microphone_device_id.is_some() {
+                            return Err("The ASR branch supports one microphone source".into());
+                        }
+                        microphone_device_id = Some(
+                            device_id
+                                .as_ref()
+                                .map(|device| device.0.clone())
+                                .unwrap_or_default(),
+                        );
+                    }
+                    AudioNodeKind::SystemAudio { capture } => {
+                        if system_audio_input.is_some() {
+                            return Err("The ASR branch supports one system-audio source".into());
+                        }
+                        system_audio_input = Some(match capture {
+                            SystemAudioCapture::Endpoint { device_id, .. } => {
+                                SystemAudioInputSelection::Endpoint {
+                                    device_id: device_id
+                                        .as_ref()
+                                        .map(|device| device.0.clone())
+                                        .unwrap_or_default(),
+                                }
+                            }
+                            SystemAudioCapture::Application { application, .. } => {
+                                SystemAudioInputSelection::Application {
+                                    application: application.clone().ok_or_else(|| {
+                                        "Select an application for the ASR input".to_owned()
+                                    })?,
+                                }
+                            }
+                        });
+                    }
+                    AudioNodeKind::TextToSpeech => {
+                        return Err("TTS cannot be connected to ASR; route it to a monitor or game-microphone output".into());
+                    }
+                    AudioNodeKind::Media { .. } => {
+                        return Err("Direct media-file ASR is not available in Audio Studio yet".into());
+                    }
+                    AudioNodeKind::Processing { .. } => {
+                        return Err("DSP nodes on the ASR branch are not executable yet".into());
+                    }
+                    AudioNodeKind::Mixer
+                    | AudioNodeKind::AsrTap
+                    | AudioNodeKind::MonitorOutput { .. }
+                    | AudioNodeKind::GameMicrophoneOutput { .. } => {}
+                }
+            }
+            let capture_source = match (
+                microphone_device_id.is_some(),
+                system_audio_input.is_some(),
+            ) {
+                (true, true) => CaptureSource::Both,
+                (true, false) => CaptureSource::Microphone,
+                (false, true) => CaptureSource::SystemAudio,
+                (false, false) => return Err("The ASR sink has no executable source".into()),
+            };
+            Ok(AudioStudioAsrPlan {
+                capture_source,
+                microphone_device_id,
+                system_audio_input,
+            })
+        })
+        .transpose()?;
+
+    if routes.is_empty() && asr.is_none() {
+        return Err("This graph has no executable ASR, monitor, or game-microphone output".into());
+    }
+    Ok(CompiledAudioStudioGraph { routes, asr })
+}
+
+/// Compile only the branch that feeds recognition. A partially configured
+/// render branch must not prevent Audio Studio from synchronizing ASR input.
+fn compile_audio_studio_asr(
+    graph: &audio_studio::AudioGraph,
+) -> Result<Option<AudioStudioAsrPlan>, String> {
+    use audio_studio::{AudioNodeKind, NodeId};
+
+    let asr_sinks = graph
+        .nodes
+        .iter()
+        .filter(|node| !node.bypassed && matches!(node.kind, AudioNodeKind::AsrTap))
+        .filter(|node| graph.has_enabled_source_path(&node.id))
+        .collect::<Vec<_>>();
+    if asr_sinks.is_empty() {
+        return Ok(None);
+    }
+    if asr_sinks.len() > 1 {
+        return Err("The current translation host supports one ASR sink per graph".into());
+    }
+
+    let mut reverse = std::collections::HashMap::<NodeId, Vec<NodeId>>::new();
+    for link in graph.links.iter().filter(|link| link.enabled) {
+        reverse
+            .entry(link.to.node_id.clone())
+            .or_default()
+            .push(link.from.node_id.clone());
+    }
+    let mut retained = std::collections::HashSet::new();
+    let mut pending = vec![asr_sinks[0].id.clone()];
+    while let Some(node_id) = pending.pop() {
+        if !retained.insert(node_id.clone()) {
+            continue;
+        }
+        if let Some(inputs) = reverse.get(&node_id) {
+            pending.extend(inputs.iter().cloned());
+        }
+    }
+
+    let mut asr_graph = graph.clone();
+    asr_graph.nodes.retain(|node| retained.contains(&node.id));
+    asr_graph.links.retain(|link| {
+        link.enabled && retained.contains(&link.from.node_id) && retained.contains(&link.to.node_id)
+    });
+    compile_audio_studio_route(&asr_graph).map(|execution| execution.asr)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PendingResourceDeletion {
     Model(xrtranslate_assets::ModelAssetId),
@@ -146,9 +501,15 @@ struct XRTranslateApp {
     audio_system: AudioSystem,
     devices: Vec<InputDevice>,
     device_refresh_rx: Option<Receiver<AudioDeviceSnapshot>>,
+    application_refresh_rx: Option<Receiver<Result<Vec<AudioApplication>, String>>>,
+    last_device_refresh_request: Option<std::time::Instant>,
+    last_application_refresh_request: Option<std::time::Instant>,
+    last_audio_discovery_page: Option<Page>,
     selected_device_id: String,
     loopback_devices: Vec<InputDevice>,
+    audio_applications: Vec<AudioApplication>,
     selected_loopback_device_id: String,
+    system_audio_input: SystemAudioInputSelection,
     tts_output_devices: Vec<InputDevice>,
     selected_tts_output_device_id: String,
     capture_source: CaptureSource,
@@ -182,6 +543,10 @@ struct XRTranslateApp {
     tts_runtime_backend: Option<String>,
     tts_runtime_cuda_version: Option<String>,
     osc_plugin: OscPlugin,
+    audio_studio: AudioStudioController,
+    voicemeeter_remote: Option<voicemeeter::VoiceMeeterRemote>,
+    voicemeeter_route: Option<voicemeeter::VoiceMeeterStripRouteGuard>,
+    audio_studio_started_voicemeeter: bool,
     meeting_plugin: MeetingPlugin,
     player_plugin: plugins::player::VideoPlayerPlugin,
     host_audio_import: Option<media_import::AudioImportHandle>,
@@ -225,6 +590,7 @@ struct XRTranslateApp {
 struct AudioDeviceSnapshot {
     devices: Vec<InputDevice>,
     loopback_devices: Vec<InputDevice>,
+    output_devices: Vec<InputDevice>,
 }
 
 #[derive(Default)]
@@ -274,18 +640,29 @@ impl Default for XRTranslateApp {
         let audio_system = AudioSystem::new();
         let devices = audio_system.available_devices();
         let loopback_devices = audio_system.available_loopback_devices();
+        let audio_applications = audio_system.available_audio_applications();
         let tts_output_devices = audio_system.available_output_devices();
         let (event_tx, event_rx) = unbounded();
         let backend_manager = backend::BackendManager::load();
         let service_config = service_config::ServiceConfigEditor::load();
         let mut settings = ClientSettings::load(&backend_manager.project_root());
         settings.sanitize_devices(&devices, &loopback_devices);
-
+        let initial_system_audio_input = SystemAudioInputSelection::Endpoint {
+            device_id: settings.selected_loopback_device_id.clone(),
+        };
         let osc_plugin = OscPlugin::new(
             settings.osc_settings.clone(),
             settings.plugin_preferences.is_enabled(PluginId::OSC),
         );
         let meeting_plugin = MeetingPlugin::open(&backend_manager.project_root());
+        let audio_studio = AudioStudioController::open(&backend_manager.project_root());
+        let voicemeeter_remote = match voicemeeter::VoiceMeeterRemote::discover() {
+            Ok(remote) => remote,
+            Err(error) => {
+                log::warn!("VoiceMeeter integration is unavailable: {error}");
+                None
+            }
+        };
         let player_plugin = plugins::player::VideoPlayerPlugin::new();
         let mut model_task_manager = model_install::NativeModelTaskManager::default();
         model_task_manager.set_proxy_url(&settings.download_proxy_url);
@@ -915,9 +1292,15 @@ impl Default for XRTranslateApp {
             audio_system,
             devices,
             device_refresh_rx: None,
+            application_refresh_rx: None,
+            last_device_refresh_request: None,
+            last_application_refresh_request: None,
+            last_audio_discovery_page: None,
             selected_device_id: settings.selected_device_id,
             loopback_devices,
+            audio_applications,
             selected_loopback_device_id: settings.selected_loopback_device_id,
+            system_audio_input: initial_system_audio_input,
             tts_output_devices,
             selected_tts_output_device_id: settings.selected_tts_output_device_id,
             capture_source: settings.capture_source,
@@ -951,6 +1334,10 @@ impl Default for XRTranslateApp {
             tts_runtime_backend: None,
             tts_runtime_cuda_version: None,
             osc_plugin,
+            audio_studio,
+            voicemeeter_remote,
+            voicemeeter_route: None,
+            audio_studio_started_voicemeeter: false,
             meeting_plugin,
             player_plugin,
             host_audio_import: None,
@@ -992,6 +1379,7 @@ impl Default for XRTranslateApp {
             overlay_max_count_atomic,
             overlay_font_size_atomic,
         };
+        let _ = app.sync_translation_input_to_audio_studio();
         app.check_for_updates();
         app
     }
@@ -1283,6 +1671,525 @@ impl XRTranslateApp {
         }
     }
 
+    pub(crate) fn open_audio_studio(&mut self) {
+        self.navigation.page = Page::AudioStudio;
+        self.save_settings();
+    }
+
+    fn audio_studio_host_snapshot(&self) -> HostAudioSnapshot {
+        fn add_default(devices: &mut Vec<HostAudioDevice>, role: AudioDeviceRole, name: &str) {
+            devices.push(HostAudioDevice {
+                id: audio_studio::DeviceId::new(""),
+                name: name.into(),
+                role,
+                is_default: true,
+                voicemeeter_strip_index: None,
+            });
+        }
+
+        fn shape(edition: StudioVoiceMeeterEdition) -> (u8, u8) {
+            match edition {
+                StudioVoiceMeeterEdition::Standard => (2, 1),
+                StudioVoiceMeeterEdition::Banana => (3, 2),
+                StudioVoiceMeeterEdition::Potato => (5, 3),
+            }
+        }
+
+        fn strip_for(name: &str, edition: StudioVoiceMeeterEdition) -> Option<u8> {
+            let name = name.to_ascii_lowercase();
+            if !name.contains("voicemeeter") {
+                return None;
+            }
+            let (physical, virtuals) = shape(edition);
+            for number in 1..=5u8 {
+                if name.contains(&format!("voicemeeter in {number}")) {
+                    return (number <= physical).then_some(number - 1);
+                }
+            }
+            if name.contains("aux input") {
+                return (virtuals >= 2).then_some(physical + 1);
+            }
+            if name.contains("vaio3 input") {
+                return (virtuals >= 3).then_some(physical + 2);
+            }
+            name.contains("voicemeeter input").then_some(physical)
+        }
+
+        let remote_status = self
+            .voicemeeter_remote
+            .as_ref()
+            .and_then(|remote| remote.status().ok());
+        let inferred = if self.devices.iter().any(|device| {
+            let name = device.name.to_ascii_lowercase();
+            name.contains("out b3") || name.contains("vaio3 output")
+        }) {
+            StudioVoiceMeeterEdition::Potato
+        } else if self.devices.iter().any(|device| {
+            let name = device.name.to_ascii_lowercase();
+            name.contains("out b2") || name.contains("aux output")
+        }) {
+            StudioVoiceMeeterEdition::Banana
+        } else {
+            StudioVoiceMeeterEdition::Standard
+        };
+        let edition = remote_status
+            .as_ref()
+            .and_then(|status| status.edition)
+            .and_then(|edition| match edition {
+                voicemeeter::VoiceMeeterEdition::Standard => {
+                    Some(StudioVoiceMeeterEdition::Standard)
+                }
+                voicemeeter::VoiceMeeterEdition::Banana => Some(StudioVoiceMeeterEdition::Banana),
+                voicemeeter::VoiceMeeterEdition::Potato => Some(StudioVoiceMeeterEdition::Potato),
+                voicemeeter::VoiceMeeterEdition::Unknown(_) => None,
+            })
+            .unwrap_or(inferred);
+
+        let mut devices = Vec::new();
+        let is_game_microphone_render = |name: &str| {
+            let name = name.to_ascii_lowercase();
+            [
+                "voicemeeter",
+                "vb-audio",
+                "cable input",
+                "virtual cable",
+                "virtual audio cable",
+            ]
+            .iter()
+            .any(|marker| name.contains(marker))
+        };
+        if !self.devices.is_empty() {
+            add_default(
+                &mut devices,
+                AudioDeviceRole::MicrophoneCapture,
+                "Default microphone",
+            );
+        }
+        devices.extend(self.devices.iter().map(|device| HostAudioDevice {
+            id: audio_studio::DeviceId::new(device.id.clone()),
+            name: device.name.clone(),
+            role: AudioDeviceRole::MicrophoneCapture,
+            is_default: false,
+            voicemeeter_strip_index: None,
+        }));
+        if !self.loopback_devices.is_empty() {
+            add_default(
+                &mut devices,
+                AudioDeviceRole::SystemAudioCapture,
+                "Default system playback (loopback)",
+            );
+        }
+        devices.extend(self.loopback_devices.iter().map(|device| HostAudioDevice {
+            id: audio_studio::DeviceId::new(device.id.clone()),
+            name: device.name.clone(),
+            role: AudioDeviceRole::SystemAudioCapture,
+            is_default: false,
+            voicemeeter_strip_index: None,
+        }));
+        if !self.tts_output_devices.is_empty() {
+            add_default(
+                &mut devices,
+                AudioDeviceRole::MonitorRender,
+                "Default speaker",
+            );
+        }
+        for device in &self.tts_output_devices {
+            devices.push(HostAudioDevice {
+                id: audio_studio::DeviceId::new(device.id.clone()),
+                name: device.name.clone(),
+                role: AudioDeviceRole::MonitorRender,
+                is_default: false,
+                voicemeeter_strip_index: None,
+            });
+            if is_game_microphone_render(&device.name) {
+                let strip = strip_for(&device.name, edition);
+                devices.push(HostAudioDevice {
+                    id: audio_studio::DeviceId::new(device.id.clone()),
+                    name: device.name.clone(),
+                    role: AudioDeviceRole::GameMicrophoneSink,
+                    is_default: false,
+                    voicemeeter_strip_index: strip.map(VoiceMeeterStripIndex),
+                });
+            }
+        }
+        let game_microphone_output = devices
+            .iter()
+            .any(|device| device.role == AudioDeviceRole::GameMicrophoneSink);
+        let voicemeeter = self.voicemeeter_remote.as_ref().map(|_| {
+            let (_, bus_count) = shape(edition);
+            VoiceMeeterSnapshot {
+                edition,
+                running: remote_status.as_ref().is_some_and(|status| status.running),
+                version: remote_status
+                    .as_ref()
+                    .and_then(|status| status.version)
+                    .map(|version| version.to_string()),
+                inputs: devices
+                    .iter()
+                    .filter_map(|device| {
+                        device
+                            .voicemeeter_strip_index
+                            .map(|strip_index| VoiceMeeterInputSnapshot {
+                                strip_index,
+                                name: device.name.clone(),
+                                device_id: Some(device.id.clone()),
+                            })
+                    })
+                    .collect(),
+                buses: [
+                    StudioVoiceMeeterBus::B1,
+                    StudioVoiceMeeterBus::B2,
+                    StudioVoiceMeeterBus::B3,
+                ]
+                .into_iter()
+                .take(bus_count as usize)
+                .collect(),
+            }
+        });
+        HostAudioSnapshot {
+            // Startup performs an initial synchronous discovery. Periodic
+            // background refreshes preserve that last-good snapshot and must
+            // not temporarily invalidate every graph while a scan is running.
+            discovery_complete: true,
+            translation_workflow_running: self.is_translating
+                || self.backend_start_deadline.is_some(),
+            translation_workflow_locked_by: self
+                .session_owner
+                .plugin()
+                .map(|owner| owner.display_name(self.ui_language).to_owned())
+                .or_else(|| {
+                    self.active_plugin_session()
+                        .map(|binding| binding.owner.display_name(self.ui_language).to_owned())
+                }),
+            capabilities: HostAudioCapabilities {
+                microphone_capture: !self.devices.is_empty(),
+                system_audio_capture: !self.loopback_devices.is_empty(),
+                application_audio_capture: cfg!(windows),
+                exclude_own_process_audio: false,
+                tts_feedback_suppression: cfg!(windows) && !self.loopback_devices.is_empty(),
+                tts_source: self.service_config.tts_is_configured(),
+                media_source: false,
+                monitor_output: !self.tts_output_devices.is_empty(),
+                game_microphone_output,
+                game_microphone_without_external_driver: false,
+                multiple_render_sinks: true,
+            },
+            devices,
+            applications: self
+                .audio_applications
+                .iter()
+                .map(|application| HostAudioApplication {
+                    id: audio_studio::ApplicationId::new(application.id.clone()),
+                    display_name: application.name.clone(),
+                    process_id: application.process_id,
+                    active: application.active,
+                })
+                .collect(),
+            voicemeeter,
+        }
+    }
+
+    fn apply_audio_studio_ui_actions(&mut self, actions: Vec<AudioStudioUiAction>) {
+        for action in actions {
+            let snapshot = self.audio_studio_host_snapshot();
+            match self.audio_studio.handle_ui_action(action, &snapshot) {
+                Ok(host_actions) => self.apply_audio_studio_host_actions(host_actions),
+                Err(error) => self.last_error = Some(error.to_string()),
+            }
+        }
+    }
+
+    fn reconcile_audio_studio_live_routing(&mut self) {
+        let _ = self
+            .audio_studio
+            .sync_translation_workflow_running(self.is_translating);
+        let snapshot = self.audio_studio_host_snapshot();
+        match self.audio_studio.reconcile_live_routing(&snapshot) {
+            Ok(actions) => self.apply_audio_studio_host_actions(actions),
+            Err(error) => self.last_error = Some(error.to_string()),
+        }
+    }
+
+    fn configure_voicemeeter_for_graph(&mut self, graph: &AudioGraph) -> Result<(), String> {
+        let snapshot = self.audio_studio_host_snapshot();
+        let requested = graph.nodes.iter().find_map(|node| match &node.kind {
+            AudioNodeKind::GameMicrophoneOutput {
+                device_id: Some(device_id),
+                voicemeeter_bus: Some(bus),
+            } => Some((device_id.clone(), *bus)),
+            _ => None,
+        });
+        let requires_voicemeeter = requested.is_some()
+            || graph.nodes.iter().any(|node| {
+                node.kind.selected_device().is_some_and(|selected| {
+                    snapshot
+                        .devices
+                        .iter()
+                        .any(|device| &device.id == selected && device.requires_voicemeeter())
+                })
+            });
+        if let Some(route) = self.voicemeeter_route.take() {
+            route.clear().map_err(|error| error.to_string())?;
+        }
+        if !requires_voicemeeter {
+            self.stop_audio_studio_managed_voicemeeter()?;
+            return Ok(());
+        }
+        let remote = self
+            .voicemeeter_remote
+            .as_ref()
+            .ok_or_else(|| "VoiceMeeter is not installed".to_string())?;
+        let status = remote.status().map_err(|error| error.to_string())?;
+        if !status.running {
+            let edition = match self
+                .audio_studio_host_snapshot()
+                .voicemeeter
+                .map(|snapshot| snapshot.edition)
+                .unwrap_or(StudioVoiceMeeterEdition::Standard)
+            {
+                StudioVoiceMeeterEdition::Standard => voicemeeter::VoiceMeeterEdition::Standard,
+                StudioVoiceMeeterEdition::Banana => voicemeeter::VoiceMeeterEdition::Banana,
+                StudioVoiceMeeterEdition::Potato => voicemeeter::VoiceMeeterEdition::Potato,
+            };
+            remote.start(edition).map_err(|error| error.to_string())?;
+            self.audio_studio_started_voicemeeter = true;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while std::time::Instant::now() < deadline {
+                if remote.status().is_ok_and(|status| status.running) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            if !remote.status().is_ok_and(|status| status.running) {
+                let _ = remote.shutdown();
+                self.audio_studio_started_voicemeeter = false;
+                return Err("VoiceMeeter did not become ready after automatic startup".into());
+            }
+        }
+        let Some((device_id, bus)) = requested else {
+            return Ok(());
+        };
+        let Some(strip) = snapshot
+            .devices
+            .iter()
+            .find(|device| device.id == device_id)
+            .and_then(|device| device.voicemeeter_strip_index)
+        else {
+            return Ok(());
+        };
+        let bus = match bus {
+            StudioVoiceMeeterBus::B1 => voicemeeter::VoiceMeeterBus::B1,
+            StudioVoiceMeeterBus::B2 => voicemeeter::VoiceMeeterBus::B2,
+            StudioVoiceMeeterBus::B3 => voicemeeter::VoiceMeeterBus::B3,
+        };
+        self.voicemeeter_route = Some(
+            remote
+                .configure(strip.0, bus, true)
+                .map_err(|error| error.to_string())?,
+        );
+        Ok(())
+    }
+
+    fn stop_audio_studio_managed_voicemeeter(&mut self) -> Result<(), String> {
+        if !self.audio_studio_started_voicemeeter {
+            return Ok(());
+        }
+        if let Some(remote) = &self.voicemeeter_remote {
+            remote.shutdown().map_err(|error| error.to_string())?;
+        }
+        self.audio_studio_started_voicemeeter = false;
+        Ok(())
+    }
+
+    fn configure_translation_input_from_audio_studio(
+        &mut self,
+        plan: &AudioStudioAsrPlan,
+    ) -> Result<(), String> {
+        if plan.matches_current_settings(
+            self.capture_source,
+            &self.selected_device_id,
+            &self.system_audio_input,
+        ) {
+            return Ok(());
+        }
+        let previous_source = self.capture_source;
+        self.capture_source = plan.capture_source;
+        if let Some(device_id) = &plan.microphone_device_id {
+            self.selected_device_id.clone_from(device_id);
+        }
+        if let Some(input) = &plan.system_audio_input {
+            if let SystemAudioInputSelection::Endpoint { device_id } = input {
+                self.selected_loopback_device_id.clone_from(device_id);
+            }
+            self.system_audio_input = input.clone();
+        } else {
+            self.system_audio_input = SystemAudioInputSelection::Endpoint {
+                device_id: self.selected_loopback_device_id.clone(),
+            };
+        }
+        self.refresh_selected_input_config();
+        self.save_settings();
+        if self.is_translating {
+            if self.capture_source.routes().len() != previous_source.routes().len() {
+                for session in &self.sessions {
+                    session.stop();
+                }
+                self.sessions.clear();
+                self.audio_txs.clear();
+                self.audio_system.stop();
+                self.is_translating = false;
+                self.start_session(None);
+                return Ok(());
+            }
+            if self.audio_txs.is_empty() {
+                self.last_error = Some("Active audio channel is unavailable".into());
+                return Ok(());
+            }
+            let routes = self.capture_source.routes();
+            let audio_txs = self.audio_txs.clone();
+            if let Err(error) = self.start_selected_capture(routes, &audio_txs) {
+                self.last_error = Some(format!("Could not switch audio source: {error}"));
+            }
+        }
+        Ok(())
+    }
+
+    fn sync_translation_input_to_audio_studio(&mut self) -> Result<(), String> {
+        let input_mode = match self.capture_source {
+            CaptureSource::Microphone => audio_studio::graph::AsrInputMode::Microphone,
+            CaptureSource::SystemAudio => audio_studio::graph::AsrInputMode::SystemAudio,
+            CaptureSource::Both => audio_studio::graph::AsrInputMode::Both,
+        };
+        let microphone_device_id = (!self.selected_device_id.trim().is_empty())
+            .then(|| audio_studio::DeviceId::new(self.selected_device_id.clone()));
+        let system_capture = match &self.system_audio_input {
+            SystemAudioInputSelection::Endpoint { device_id } => SystemAudioCapture::Endpoint {
+                device_id: (!device_id.trim().is_empty())
+                    .then(|| audio_studio::DeviceId::new(device_id.clone())),
+                capture_policy: audio_studio::SystemCapturePolicy::SuppressDuringOwnTts,
+            },
+            SystemAudioInputSelection::Application { application } => {
+                SystemAudioCapture::Application {
+                    application: Some(application.clone()),
+                    resolved_process_id: None,
+                }
+            }
+        };
+        self.audio_studio
+            .sync_translation_input(input_mode, microphone_device_id, system_capture)
+            .map_err(|error| error.to_string())?;
+        self.audio_studio
+            .sync_translation_workflow_running(self.is_translating)
+            .map_err(|error| error.to_string())
+    }
+
+    fn apply_audio_studio_host_actions(&mut self, actions: Vec<AudioStudioHostAction>) {
+        for action in actions {
+            match action {
+                AudioStudioHostAction::DiscoverApplications => {
+                    self.request_audio_application_refresh();
+                }
+                AudioStudioHostAction::ConfigureAsrInput { graph } => {
+                    let result = compile_audio_studio_asr(&graph).and_then(|asr| {
+                        let plan =
+                            asr.ok_or_else(|| "The selected graph has no ASR input".to_owned())?;
+                        self.configure_translation_input_from_audio_studio(&plan)
+                    });
+                    match result {
+                        Ok(()) => self.last_error = None,
+                        Err(error) => self.last_error = Some(error),
+                    }
+                }
+                AudioStudioHostAction::ChooseMedia { graph_id, node_id } => {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Audio", &["wav", "flac", "mp3", "ogg", "m4a"])
+                        .pick_file()
+                    {
+                        self.audio_studio
+                            .handle_host_event(AudioStudioHostEvent::MediaSelected {
+                                graph_id,
+                                node_id,
+                                source: path.to_string_lossy().into_owned(),
+                            });
+                    }
+                }
+                AudioStudioHostAction::ActivateGraph { request_id, graph } => {
+                    let result = self
+                        .configure_voicemeeter_for_graph(&graph)
+                        .and_then(|_| compile_audio_studio_route(&graph))
+                        .and_then(|execution| {
+                            self.audio_system
+                                .replace_audio_routes(execution.routes)
+                                .map(|_| ())
+                                .map_err(|error| error.to_string())?;
+
+                            Ok(())
+                        });
+                    match result {
+                        Ok(()) => {
+                            self.last_error = None;
+                            self.audio_studio
+                                .handle_host_event(AudioStudioHostEvent::Activated { request_id });
+                        }
+                        Err(message) => {
+                            if let Some(route) = self.voicemeeter_route.take() {
+                                let _ = route.clear();
+                            }
+                            let _ = self.stop_audio_studio_managed_voicemeeter();
+                            self.last_error = Some(message.clone());
+                            self.audio_studio.handle_host_event(
+                                AudioStudioHostEvent::ActivationFailed {
+                                    request_id,
+                                    message,
+                                },
+                            );
+                        }
+                    }
+                }
+                AudioStudioHostAction::DeactivateGraph { request_id } => {
+                    let stop_result = self
+                        .audio_system
+                        .replace_audio_routes(Vec::new())
+                        .map(|_| ())
+                        .map_err(|error| error.to_string());
+                    if let Some(route) = self.voicemeeter_route.take() {
+                        let _ = route.clear();
+                    }
+                    let voicemeeter_result = self.stop_audio_studio_managed_voicemeeter();
+                    match stop_result.and(voicemeeter_result) {
+                        Ok(()) => self.last_error = None,
+                        Err(error) => self.last_error = Some(error),
+                    }
+                    self.audio_studio
+                        .handle_host_event(AudioStudioHostEvent::Deactivated { request_id });
+                }
+                AudioStudioHostAction::EnqueueTts { text, .. } => {
+                    if !self.tts_enabled {
+                        self.set_tts_enabled(true);
+                    }
+                    self.translate_text(&text, None, None);
+                }
+                AudioStudioHostAction::SetTranslationWorkflowEnabled(enabled) => {
+                    let plugin_owner = self.session_owner.plugin().is_some()
+                        || self.active_plugin_session().is_some();
+                    if plugin_owner {
+                        self.last_error =
+                            Some("The translation bus is currently used by another feature".into());
+                    } else if enabled
+                        && !self.is_translating
+                        && self.backend_start_deadline.is_none()
+                    {
+                        self.start(None);
+                    } else if !enabled
+                        && (self.is_translating || self.backend_start_deadline.is_some())
+                    {
+                        self.stop();
+                    }
+                }
+            }
+        }
+    }
+
     pub(crate) fn plugin_disable_block_reason(&self, id: PluginId) -> Option<String> {
         match id {
             PluginId::MEETING => self
@@ -1376,6 +2283,38 @@ impl XRTranslateApp {
             },
         );
         self.apply_osc_actions(actions);
+    }
+
+    fn render_audio_studio_page(&mut self, ui: &mut egui::Ui) {
+        let host_audio = self.audio_studio_host_snapshot();
+        let mut snapshot = self.audio_studio.snapshot(&host_audio);
+        let route_levels = self.audio_system.active_audio_route_levels();
+        let routed = route_levels.iter().copied().fold(
+            audio::AudioRouteLevels::default(),
+            |mut aggregate, levels| {
+                aggregate.microphone = aggregate.microphone.max(levels.microphone);
+                aggregate.system_loopback = aggregate.system_loopback.max(levels.system_loopback);
+                aggregate.tts = aggregate.tts.max(levels.tts);
+                aggregate.output = aggregate.output.max(levels.output);
+                aggregate
+            },
+        );
+        snapshot.signal_levels = audio_studio::AudioStudioSignalLevels {
+            microphone: routed.microphone.max(if self.is_translating {
+                f32::from_bits(self.input_level.load(Ordering::Relaxed))
+            } else {
+                0.0
+            }),
+            system_audio: routed.system_loopback.max(if self.is_translating {
+                f32::from_bits(self.loopback_level.load(Ordering::Relaxed))
+            } else {
+                0.0
+            }),
+            tts: routed.tts,
+            output: routed.output,
+        };
+        let actions = ui::pages::audio_studio::render(&snapshot, ui);
+        self.apply_audio_studio_ui_actions(actions);
     }
 
     fn meeting_ui_snapshot(&self) -> MeetingUiSnapshot {
@@ -1808,6 +2747,12 @@ impl XRTranslateApp {
         if self.backend_start_deadline.is_some() {
             return;
         }
+        if let Err(error) = self.sync_translation_input_to_audio_studio() {
+            self.last_error = Some(format!(
+                "Could not synchronize Translation audio input with Audio Studio: {error}"
+            ));
+            return;
+        }
         match self.backend_manager.prepare(&self.server_url) {
             Ok(backend::BackendStart::Ready) => self.start_session(ctx),
             Ok(backend::BackendStart::Starting(stage)) => {
@@ -2155,9 +3100,29 @@ impl XRTranslateApp {
     fn refresh_selected_input_config(&mut self) {
         let result = match self.capture_source {
             CaptureSource::Microphone => self.audio_system.input_config(&self.selected_device_id),
-            CaptureSource::SystemAudio => self
-                .audio_system
-                .loopback_config(&self.selected_loopback_device_id),
+            CaptureSource::SystemAudio => match &self.system_audio_input {
+                SystemAudioInputSelection::Application { application } => {
+                    if self
+                        .audio_applications
+                        .iter()
+                        .any(|candidate| candidate.id == application.id.0)
+                    {
+                        Ok(InputConfigInfo {
+                            sample_rate: audio::AUDIO_ROUTE_SAMPLE_RATE,
+                            channels: 2,
+                            sample_format: "F32 application loopback".into(),
+                        })
+                    } else {
+                        Err(format!(
+                            "{} is not running or has no Windows audio session",
+                            application.display_name
+                        ))
+                    }
+                }
+                SystemAudioInputSelection::Endpoint { device_id } => {
+                    self.audio_system.loopback_config(device_id)
+                }
+            },
             CaptureSource::Both => self.audio_system.input_config(&self.selected_device_id),
         };
         match result {
@@ -2172,10 +3137,18 @@ impl XRTranslateApp {
         }
     }
 
-    fn request_audio_device_refresh(&mut self, ctx: eframe::egui::Context) {
+    fn request_audio_device_refresh(&mut self) {
         if self.device_refresh_rx.is_some() {
             return;
         }
+        let now = std::time::Instant::now();
+        if self
+            .last_device_refresh_request
+            .is_some_and(|last| now.duration_since(last) < std::time::Duration::from_millis(500))
+        {
+            return;
+        }
+        self.last_device_refresh_request = Some(now);
 
         let (tx, rx) = bounded(1);
         self.device_refresh_rx = Some(rx);
@@ -2186,9 +3159,9 @@ impl XRTranslateApp {
                 let snapshot = AudioDeviceSnapshot {
                     devices: audio_system.available_devices(),
                     loopback_devices: audio_system.available_loopback_devices(),
+                    output_devices: audio_system.available_output_devices(),
                 };
                 let _ = tx.send(snapshot);
-                ctx.request_repaint();
             });
         if let Err(error) = spawn_result {
             self.device_refresh_rx = None;
@@ -2205,16 +3178,77 @@ impl XRTranslateApp {
                 self.device_refresh_rx = None;
                 self.devices = snapshot.devices;
                 self.loopback_devices = snapshot.loopback_devices;
-                self.refresh_selected_input_config();
-                if !self.is_translating {
-                    self.reset_audio_levels();
-                }
+                self.tts_output_devices = snapshot.output_devices;
             }
             Err(crossbeam_channel::TryRecvError::Empty) => {}
             Err(crossbeam_channel::TryRecvError::Disconnected) => {
                 self.device_refresh_rx = None;
                 self.last_error = Some("Audio device refresh stopped unexpectedly".into());
             }
+        }
+    }
+
+    fn request_audio_application_refresh(&mut self) {
+        if self.application_refresh_rx.is_some() {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if self
+            .last_application_refresh_request
+            .is_some_and(|last| now.duration_since(last) < std::time::Duration::from_millis(500))
+        {
+            return;
+        }
+        self.last_application_refresh_request = Some(now);
+        let (tx, rx) = bounded(1);
+        self.application_refresh_rx = Some(rx);
+        let spawn_result = std::thread::Builder::new()
+            .name("audio-application-refresh".into())
+            .spawn(move || {
+                let audio_system = AudioSystem::new();
+                let result = audio_system.try_available_audio_applications();
+                let _ = tx.send(result);
+            });
+        if let Err(error) = spawn_result {
+            self.application_refresh_rx = None;
+            log::warn!("Could not refresh audio applications: {error}");
+        }
+    }
+
+    fn poll_audio_application_refresh(&mut self) {
+        let Some(rx) = &self.application_refresh_rx else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(applications)) => {
+                self.application_refresh_rx = None;
+                if self.audio_applications != applications {
+                    self.audio_applications = applications;
+                }
+            }
+            Ok(Err(error)) => {
+                self.application_refresh_rx = None;
+                // A transient COM/session-enumeration failure must not erase
+                // the last-good application list or unrelated host errors.
+                log::warn!("Could not refresh audio applications: {error}");
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => {}
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                self.application_refresh_rx = None;
+                log::warn!("Audio application refresh stopped unexpectedly");
+            }
+        }
+    }
+
+    fn discover_audio_sources_on_page_entry(&mut self) {
+        let page = self.navigation.page;
+        if self.last_audio_discovery_page == Some(page) {
+            return;
+        }
+        self.last_audio_discovery_page = Some(page);
+        if matches!(page, Page::Translation | Page::AudioStudio) {
+            self.request_audio_device_refresh();
+            self.request_audio_application_refresh();
         }
     }
 
@@ -2358,6 +3392,34 @@ impl XRTranslateApp {
         self.microphone_vad_active.store(false, Ordering::Relaxed);
         self.loopback_vad_active.store(false, Ordering::Relaxed);
         self.audio_system.stop();
+        let application_capture = if routes.contains(&CaptureSource::SystemAudio) {
+            match &self.system_audio_input {
+                SystemAudioInputSelection::Application { application } => {
+                    let application = application.clone();
+                    let applications = self
+                        .audio_system
+                        .try_available_audio_applications()
+                        .map_err(|error| {
+                            format!("Could not refresh application audio before capture: {error}")
+                        })?;
+                    let process_id = applications
+                        .iter()
+                        .find(|candidate| candidate.id == application.id.0)
+                        .map(|candidate| candidate.process_id)
+                        .ok_or_else(|| {
+                            format!(
+                                "{} is not running or has no Windows audio session",
+                                application.display_name
+                            )
+                        })?;
+                    self.audio_applications = applications;
+                    Some((process_id, application.display_name))
+                }
+                SystemAudioInputSelection::Endpoint { .. } => None,
+            }
+        } else {
+            None
+        };
         for (source, audio_tx) in routes.iter().zip(audio_txs) {
             let result = match source {
                 CaptureSource::Microphone => self.audio_system.start_capture(
@@ -2365,11 +3427,28 @@ impl XRTranslateApp {
                     audio_tx.clone(),
                     Arc::clone(&self.input_level),
                 ),
-                CaptureSource::SystemAudio => self.audio_system.start_loopback_capture(
-                    &self.selected_loopback_device_id,
-                    audio_tx.clone(),
-                    Arc::clone(&self.loopback_level),
-                ),
+                CaptureSource::SystemAudio => match &application_capture {
+                    Some((process_id, application_name)) => {
+                        self.audio_system.start_application_loopback_capture(
+                            *process_id,
+                            application_name,
+                            audio_tx.clone(),
+                            Arc::clone(&self.loopback_level),
+                        )
+                    }
+                    None => {
+                        let SystemAudioInputSelection::Endpoint { device_id } =
+                            &self.system_audio_input
+                        else {
+                            unreachable!("application capture was resolved before starting")
+                        };
+                        self.audio_system.start_loopback_capture(
+                            device_id,
+                            audio_tx.clone(),
+                            Arc::clone(&self.loopback_level),
+                        )
+                    }
+                },
                 CaptureSource::Both => unreachable!("Both expands into individual capture routes"),
             };
             if let Err(error) = result {
@@ -2389,6 +3468,33 @@ impl XRTranslateApp {
     }
 
     fn switch_capture_device(&mut self, source: CaptureSource, previous_device_id: String) {
+        let previous_system_audio_input = self.system_audio_input.clone();
+        if source == CaptureSource::SystemAudio {
+            self.system_audio_input = SystemAudioInputSelection::Endpoint {
+                device_id: self.selected_loopback_device_id.clone(),
+            };
+        }
+        let attempted_device_id = match source {
+            CaptureSource::Microphone => self.selected_device_id.clone(),
+            CaptureSource::SystemAudio => self.selected_loopback_device_id.clone(),
+            CaptureSource::Both => unreachable!("Device selectors use concrete routes"),
+        };
+        let attempted_system_audio_input = self.system_audio_input.clone();
+        if let Err(error) = self.sync_translation_input_to_audio_studio() {
+            match source {
+                CaptureSource::Microphone => self.selected_device_id = previous_device_id,
+                CaptureSource::SystemAudio => {
+                    self.selected_loopback_device_id = previous_device_id;
+                    self.system_audio_input = previous_system_audio_input;
+                }
+                CaptureSource::Both => unreachable!("Device selectors use concrete routes"),
+            }
+            self.refresh_selected_input_config();
+            self.last_error = Some(format!(
+                "Could not synchronize the selected audio device with Audio Studio: {error}"
+            ));
+            return;
+        }
         self.refresh_selected_input_config();
         self.save_settings();
         if !self.is_translating {
@@ -2409,11 +3515,32 @@ impl XRTranslateApp {
             }
             Err(error) => {
                 match source {
-                    CaptureSource::Microphone => self.selected_device_id = previous_device_id,
+                    CaptureSource::Microphone => {
+                        self.selected_device_id = previous_device_id.clone()
+                    }
                     CaptureSource::SystemAudio => {
-                        self.selected_loopback_device_id = previous_device_id
+                        self.selected_loopback_device_id = previous_device_id.clone();
+                        self.system_audio_input = previous_system_audio_input.clone();
                     }
                     CaptureSource::Both => unreachable!("Device selectors use concrete routes"),
+                }
+                if let Err(rollback_error) = self.sync_translation_input_to_audio_studio() {
+                    match source {
+                        CaptureSource::Microphone => self.selected_device_id = attempted_device_id,
+                        CaptureSource::SystemAudio => {
+                            self.selected_loopback_device_id = attempted_device_id;
+                            self.system_audio_input = attempted_system_audio_input;
+                        }
+                        CaptureSource::Both => {
+                            unreachable!("Device selectors use concrete routes")
+                        }
+                    }
+                    self.refresh_selected_input_config();
+                    self.save_settings();
+                    self.last_error = Some(format!(
+                        "Could not switch audio device: {error}; Audio Studio could not restore the previous selection: {rollback_error}"
+                    ));
+                    return;
                 }
                 self.refresh_selected_input_config();
                 self.save_settings();
@@ -2431,6 +3558,15 @@ impl XRTranslateApp {
     }
 
     fn switch_capture_source(&mut self, previous_source: CaptureSource) {
+        let attempted_source = self.capture_source;
+        if let Err(error) = self.sync_translation_input_to_audio_studio() {
+            self.capture_source = previous_source;
+            self.refresh_selected_input_config();
+            self.last_error = Some(format!(
+                "Could not synchronize the selected audio source with Audio Studio: {error}"
+            ));
+            return;
+        }
         self.refresh_selected_input_config();
         self.save_settings();
         if !self.is_translating {
@@ -2457,6 +3593,15 @@ impl XRTranslateApp {
         let audio_txs = self.audio_txs.clone();
         if let Err(error) = self.start_selected_capture(routes, &audio_txs) {
             self.capture_source = previous_source;
+            if let Err(rollback_error) = self.sync_translation_input_to_audio_studio() {
+                self.capture_source = attempted_source;
+                self.refresh_selected_input_config();
+                self.save_settings();
+                self.last_error = Some(format!(
+                    "Could not switch audio source: {error}; Audio Studio could not restore the previous source: {rollback_error}"
+                ));
+                return;
+            }
             self.refresh_selected_input_config();
             self.save_settings();
             self.last_error = Some(format!("Could not switch audio source: {error}"));
@@ -2946,6 +4091,15 @@ impl XRTranslateApp {
     }
 }
 
+impl Drop for XRTranslateApp {
+    fn drop(&mut self) {
+        if let Some(route) = self.voicemeeter_route.take() {
+            let _ = route.clear();
+        }
+        let _ = self.stop_audio_studio_managed_voicemeeter();
+    }
+}
+
 impl eframe::App for XRTranslateApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui::theme::install_context(ui.ctx(), self.ui_theme);
@@ -2973,6 +4127,9 @@ impl eframe::App for XRTranslateApp {
             .mpv_installer
             .set_proxy_url(Some(self.download_proxy_url.clone()));
         self.poll_audio_device_refresh();
+        self.poll_audio_application_refresh();
+        self.discover_audio_sources_on_page_entry();
+        self.reconcile_audio_studio_live_routing();
         self.poll_audio_import();
         self.player_plugin
             .on_visibility_changed(self.navigation.page == Page::Plugin(PluginId::VIDEO_PLAYER));
@@ -3086,6 +4243,14 @@ impl eframe::App for XRTranslateApp {
                     );
                     return;
                 }
+                if self.navigation.page == Page::AudioStudio {
+                    ui::animation::AnimationSystem::render_animated_page(
+                        ui,
+                        Page::AudioStudio,
+                        |ui| self.render_audio_studio_page(ui),
+                    );
+                    return;
+                }
                 if self.navigation.page == Page::PromptStudio {
                     ui::animation::AnimationSystem::render_animated_page(
                         ui,
@@ -3128,6 +4293,7 @@ impl eframe::App for XRTranslateApp {
                                 |ui| ui::pages::settings::render(self, ui),
                             );
                         }
+                        Page::AudioStudio => unreachable!(),
                         Page::PromptStudio => unreachable!(),
                     });
             });
@@ -3264,7 +4430,206 @@ fn configure_transparent_wgpu(
 
 #[cfg(test)]
 mod tests {
-    use super::{initialize_live_audio, vad_threshold_for_background_noise};
+    use super::{
+        AudioStudioAsrPlan, CaptureSource, SystemAudioInputSelection, XRTranslateApp,
+        audio_studio::{AudioStudioPreset, graph_for_preset},
+        compile_audio_studio_asr, compile_audio_studio_route, initialize_live_audio,
+        vad_threshold_for_background_noise,
+    };
+
+    #[test]
+    fn unchanged_audio_studio_asr_plan_matches_running_translation_settings() {
+        let system_audio_input = SystemAudioInputSelection::Endpoint {
+            device_id: "loopback".into(),
+        };
+        let plan = AudioStudioAsrPlan {
+            capture_source: CaptureSource::Both,
+            microphone_device_id: Some("microphone".into()),
+            system_audio_input: Some(system_audio_input.clone()),
+        };
+
+        assert!(plan.matches_current_settings(
+            CaptureSource::Both,
+            "microphone",
+            &system_audio_input
+        ));
+        assert!(!plan.matches_current_settings(
+            CaptureSource::SystemAudio,
+            "microphone",
+            &system_audio_input
+        ));
+    }
+
+    #[test]
+    fn audio_studio_translation_safe_preset_executes_both_asr_and_tts_monitor_branches() {
+        let mut graph = graph_for_preset(AudioStudioPreset::TranslationSafe);
+        graph
+            .links
+            .iter_mut()
+            .find(|l| l.id.0 == "asr-mixer-to-asr")
+            .unwrap()
+            .enabled = true;
+        let execution = compile_audio_studio_route(&graph).unwrap();
+
+        assert_eq!(execution.routes.len(), 1);
+        assert!(execution.routes[0].tts_gain.is_some());
+        assert_eq!(
+            execution.asr.map(|plan| plan.capture_source),
+            Some(CaptureSource::SystemAudio)
+        );
+    }
+
+    #[test]
+    fn audio_studio_karaoke_preset_is_a_render_route_without_an_asr_branch() {
+        let mut graph = graph_for_preset(AudioStudioPreset::VrchatKaraoke);
+        let game_microphone = graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id.0 == "game-microphone")
+            .expect("karaoke preset must contain game microphone output");
+        if let super::audio_studio::AudioNodeKind::GameMicrophoneOutput { device_id, .. } =
+            &mut game_microphone.kind
+        {
+            *device_id = Some(super::audio_studio::DeviceId::new("virtual-microphone"));
+        }
+        let execution = compile_audio_studio_route(&graph).unwrap();
+
+        let route = execution
+            .routes
+            .first()
+            .expect("karaoke must render its mix");
+        assert!(route.microphone.is_some());
+        assert!(route.system_loopback.is_some());
+        assert!((route.output_ceiling - 10.0_f32.powf(-1.0 / 20.0)).abs() < 0.0001);
+        assert!(execution.asr.is_none());
+    }
+
+    #[test]
+    fn audio_studio_tts_conversation_preset_declares_a_microphone_input() {
+        let mut graph = graph_for_preset(AudioStudioPreset::TtsToGameMicrophone);
+        graph
+            .links
+            .iter_mut()
+            .find(|l| l.id.0 == "asr-mixer-to-asr")
+            .unwrap()
+            .enabled = true;
+        let game_microphone = graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id.0 == "game-microphone")
+            .expect("TTS preset must contain game microphone output");
+        if let super::audio_studio::AudioNodeKind::GameMicrophoneOutput { device_id, .. } =
+            &mut game_microphone.kind
+        {
+            *device_id = Some(super::audio_studio::DeviceId::new("virtual-microphone"));
+        }
+        let execution = compile_audio_studio_route(&graph).unwrap();
+
+        assert_eq!(execution.routes.len(), 1);
+        assert!(execution.routes[0].tts_gain.is_some());
+        assert_eq!(
+            execution.asr.map(|plan| plan.capture_source),
+            Some(CaptureSource::Microphone)
+        );
+    }
+
+    #[test]
+    fn audio_studio_complete_default_keeps_asr_when_render_branch_is_unconfigured() {
+        let mut graph = graph_for_preset(AudioStudioPreset::CompleteAudioSystem);
+        graph
+            .links
+            .iter_mut()
+            .find(|l| l.id.0 == "asr-mixer-to-asr")
+            .unwrap()
+            .enabled = true;
+
+        let execution = compile_audio_studio_route(&graph).unwrap();
+        assert_eq!(
+            execution.routes.len(),
+            1,
+            "the TTS monitor is ready by default"
+        );
+        assert_eq!(
+            execution.asr.map(|plan| plan.capture_source),
+            Some(CaptureSource::Both)
+        );
+        assert!(compile_audio_studio_asr(&graph).unwrap().is_some());
+    }
+
+    #[test]
+    fn audio_studio_asr_ignores_a_switched_off_mixer_input() {
+        let mut graph = graph_for_preset(AudioStudioPreset::CompleteAudioSystem);
+        graph
+            .links
+            .iter_mut()
+            .find(|l| l.id.0 == "asr-mixer-to-asr")
+            .unwrap()
+            .enabled = true;
+        graph
+            .links
+            .iter_mut()
+            .find(|link| link.id.0 == "recognition-to-asr-mixer")
+            .expect("complete graph must connect recognition system audio")
+            .enabled = false;
+
+        let plan = compile_audio_studio_asr(&graph)
+            .unwrap()
+            .expect("complete graph must compile an ASR plan");
+        assert_eq!(plan.capture_source, CaptureSource::Microphone);
+        assert!(plan.microphone_device_id.is_some());
+        assert!(plan.system_audio_input.is_none());
+    }
+
+    #[test]
+    fn audio_studio_complete_graph_compiles_each_configured_render_sink() {
+        use super::audio_studio::{AudioNodeKind, DeviceId, NodeId, SystemAudioCapture};
+
+        let mut graph = graph_for_preset(AudioStudioPreset::CompleteAudioSystem);
+        graph
+            .links
+            .iter_mut()
+            .find(|l| l.id.0 == "asr-mixer-to-asr")
+            .unwrap()
+            .enabled = true;
+        let bgm = graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == NodeId::new("bgm"))
+            .expect("complete graph must contain BGM");
+        if let AudioNodeKind::SystemAudio {
+            capture:
+                SystemAudioCapture::Application {
+                    application,
+                    resolved_process_id,
+                },
+        } = &mut bgm.kind
+        {
+            *application = Some(super::audio_studio::ApplicationSelection {
+                id: super::audio_studio::ApplicationId::new("music"),
+                display_name: "Music".into(),
+            });
+            *resolved_process_id = Some(42);
+        } else {
+            panic!("complete graph BGM must use application capture");
+        }
+        let game_microphone = graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == NodeId::new("game-microphone"))
+            .expect("complete graph must contain game microphone output");
+        if let AudioNodeKind::GameMicrophoneOutput { device_id, .. } = &mut game_microphone.kind {
+            *device_id = Some(DeviceId::new("virtual-microphone"));
+        }
+
+        let execution = compile_audio_studio_route(&graph).unwrap();
+        assert_eq!(execution.routes.len(), 2);
+        assert!(execution.routes.iter().any(|route| {
+            route.output_device_id == "virtual-microphone"
+                && route.microphone.is_some()
+                && route.system_loopback.is_some()
+                && route.tts_gain.is_some()
+        }));
+    }
 
     #[test]
     fn noisier_environment_uses_a_stricter_vad_threshold() {
@@ -3313,5 +4678,53 @@ mod tests {
 
         assert_eq!(error, "device unavailable");
         assert_eq!(events, ["output-ready", "capture-failed"]);
+    }
+
+    #[test]
+    fn startup_syncs_audio_studio_recognition_inputs_with_saved_capture_source() {
+        let mut app = XRTranslateApp::default();
+        app.capture_source = CaptureSource::Microphone;
+        app.selected_device_id = "test-mic".into();
+        app.sync_translation_input_to_audio_studio().unwrap();
+
+        let graph = &app.audio_studio.settings().graph;
+        let mic_link = graph
+            .links
+            .iter()
+            .find(|l| l.id.0 == "microphone-to-asr-mixer")
+            .unwrap();
+        let sys_link = graph
+            .links
+            .iter()
+            .find(|l| l.id.0 == "recognition-to-asr-mixer")
+            .unwrap();
+        let bus_link = graph
+            .links
+            .iter()
+            .find(|l| l.id.0 == "asr-mixer-to-asr")
+            .unwrap();
+
+        assert!(mic_link.enabled, "Microphone input should be enabled");
+        assert!(!sys_link.enabled, "System audio input should be disabled");
+        assert!(!bus_link.enabled, "Translation bus should be disabled when not translating");
+
+        // Test system audio
+        app.capture_source = CaptureSource::SystemAudio;
+        app.sync_translation_input_to_audio_studio().unwrap();
+
+        let graph = &app.audio_studio.settings().graph;
+        let mic_link = graph
+            .links
+            .iter()
+            .find(|l| l.id.0 == "microphone-to-asr-mixer")
+            .unwrap();
+        let sys_link = graph
+            .links
+            .iter()
+            .find(|l| l.id.0 == "recognition-to-asr-mixer")
+            .unwrap();
+
+        assert!(!mic_link.enabled, "Microphone input should be disabled");
+        assert!(sys_link.enabled, "System audio input should be enabled");
     }
 }

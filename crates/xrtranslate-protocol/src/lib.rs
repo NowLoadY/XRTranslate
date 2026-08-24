@@ -657,7 +657,7 @@ mod tests {
 
     #[test]
     fn legacy_mode_graph_snapshot_is_promoted_to_one_mode_aware_graph() {
-        let mut ordinary = PromptNodeGraph::builtin_pseudo_streaming();
+        let mut ordinary = PromptNodeGraph::builtin_default();
         if let Some(xrtranslate_prompt::PromptNodeKind::Compose { text }) = ordinary
             .nodes
             .iter_mut()
@@ -676,8 +676,8 @@ mod tests {
         promoted.graph.validate_for_activation().unwrap();
         assert!(promoted.graph.nodes.iter().any(|node| matches!(
             node.kind,
-            xrtranslate_prompt::PromptNodeKind::Switch {
-                condition: xrtranslate_prompt::PromptCondition::IsPseudoStreaming
+            xrtranslate_prompt::PromptNodeKind::SystemValue {
+                value: xrtranslate_prompt::PromptSystemValue::RecognitionMode
             }
         )));
     }

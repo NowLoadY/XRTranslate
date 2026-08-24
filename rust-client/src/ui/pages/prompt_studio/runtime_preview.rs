@@ -1,5 +1,5 @@
 use eframe::egui::{self, Align, Layout, Pos2, Rect, RichText, Stroke, UiBuilder};
-use xrtranslate_prompt::{PromptExecutionTrace, PromptNode, PromptNodeKind};
+use xrtranslate_prompt::{PromptExecutionTrace, PromptNode, PromptNodeGraph, PromptNodeKind};
 
 pub(super) const WIDTH: f32 = 220.0;
 const INSET: f32 = 8.0;
@@ -25,6 +25,7 @@ pub(super) fn configuration_right(node_rect: Rect, scale: f32) -> f32 {
 pub(super) fn render(
     ui: &mut egui::Ui,
     node_rect: Rect,
+    graph: &PromptNodeGraph,
     node: &PromptNode,
     trace: Option<&PromptExecutionTrace>,
     scale: f32,
@@ -52,7 +53,10 @@ pub(super) fn render(
                 format!(
                     "{} / {}",
                     crate::i18n::tr(language, "LIVE OUTPUT"),
-                    crate::i18n::tr_dynamic(language, &super::input_socket_label(node, input))
+                    crate::i18n::tr_dynamic(
+                        language,
+                        &super::input_socket_label(graph, node, input),
+                    )
                 )
             },
         ),

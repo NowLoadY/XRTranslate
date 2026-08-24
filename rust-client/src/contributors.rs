@@ -18,6 +18,64 @@ pub struct Contributor {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InlineMarkdownSpan {
+    pub text: String,
+    pub strong: bool,
+}
+
+/// Parses paired Markdown strong markers while preserving unmatched markers.
+pub fn parse_inline_markdown(text: &str) -> Vec<InlineMarkdownSpan> {
+    let mut spans = Vec::new();
+    let mut cursor = 0;
+    while cursor < text.len() {
+        let remaining = &text[cursor..];
+        let next = [(remaining.find("**"), "**"), (remaining.find("__"), "__")]
+            .into_iter()
+            .filter_map(|(position, marker)| position.map(|position| (position, marker)))
+            .min_by_key(|(position, _)| *position);
+        let Some((open, marker)) = next else {
+            push_inline_span(&mut spans, remaining, false);
+            break;
+        };
+        push_inline_span(&mut spans, &remaining[..open], false);
+        let content_start = open + marker.len();
+        let after_open = &remaining[content_start..];
+        let Some(close) = after_open.find(marker) else {
+            push_inline_span(&mut spans, &remaining[open..], false);
+            break;
+        };
+        if close == 0 {
+            push_inline_span(
+                &mut spans,
+                &remaining[open..content_start + marker.len()],
+                false,
+            );
+            cursor += content_start + marker.len();
+            continue;
+        }
+        push_inline_span(&mut spans, &after_open[..close], true);
+        cursor += content_start + close + marker.len();
+    }
+    spans
+}
+
+fn push_inline_span(spans: &mut Vec<InlineMarkdownSpan>, text: &str, strong: bool) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(previous) = spans.last_mut()
+        && previous.strong == strong
+    {
+        previous.text.push_str(text);
+    } else {
+        spans.push(InlineMarkdownSpan {
+            text: text.to_owned(),
+            strong,
+        });
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ContributorRole {
     CodeContributors,
     BetaTesters,
@@ -425,19 +483,6 @@ fn clean_description_item(s: &str) -> String {
         .trim_start_matches('~')
         .trim();
 
-    while (cleaned.starts_with("**") && cleaned.ends_with("**") && cleaned.len() >= 4)
-        || (cleaned.starts_with("__") && cleaned.ends_with("__") && cleaned.len() >= 4)
-    {
-        cleaned = &cleaned[2..cleaned.len() - 2];
-        cleaned = cleaned.trim();
-    }
-    while (cleaned.starts_with('*') && cleaned.ends_with('*') && cleaned.len() >= 2)
-        || (cleaned.starts_with('_') && cleaned.ends_with('_') && cleaned.len() >= 2)
-    {
-        cleaned = &cleaned[1..cleaned.len() - 1];
-        cleaned = cleaned.trim();
-    }
-
     cleaned.to_string()
 }
 
@@ -684,5 +729,52 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].role, ContributorRole::CodeContributors);
         assert_eq!(groups[1].role, ContributorRole::BetaTesters);
+    }
+
+    #[test]
+    fn parses_inline_strong_markdown_without_dropping_unmatched_markers() {
+        assert_eq!(
+            parse_inline_markdown("With **Tony** and **Fox**, fixed it."),
+            vec![
+                InlineMarkdownSpan {
+                    text: "With ".into(),
+                    strong: false,
+                },
+                InlineMarkdownSpan {
+                    text: "Tony".into(),
+                    strong: true,
+                },
+                InlineMarkdownSpan {
+                    text: " and ".into(),
+                    strong: false,
+                },
+                InlineMarkdownSpan {
+                    text: "Fox".into(),
+                    strong: true,
+                },
+                InlineMarkdownSpan {
+                    text: ", fixed it.".into(),
+                    strong: false,
+                },
+            ]
+        );
+        assert_eq!(
+            parse_inline_markdown("Keep **unfinished"),
+            vec![InlineMarkdownSpan {
+                text: "Keep **unfinished".into(),
+                strong: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn contributor_descriptions_preserve_inline_markdown_for_rendering() {
+        let groups = parse_contributors_markdown(
+            "## Beta Testers\n- **Tester**\n  - With **Tony** and **Fox**, fixed it.\n",
+        );
+        assert_eq!(
+            groups[0].contributors[0].contributions,
+            ["With **Tony** and **Fox**, fixed it."]
+        );
     }
 }

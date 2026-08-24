@@ -264,19 +264,46 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     .strong(),
             );
             let previous_source = app.capture_source;
+            let selected_source_text = match (&app.capture_source, &app.system_audio_input) {
+                (
+                    CaptureSource::SystemAudio,
+                    crate::SystemAudioInputSelection::Application { application },
+                ) => format!(
+                    "{} · {}",
+                    crate::i18n::tr(app.ui_language, "Application audio"),
+                    application.display_name
+                ),
+                (
+                    CaptureSource::Both,
+                    crate::SystemAudioInputSelection::Application { application },
+                ) => format!(
+                    "{} · {}",
+                    crate::i18n::tr(app.ui_language, "Both"),
+                    application.display_name
+                ),
+                (CaptureSource::Microphone, _) => {
+                    crate::i18n::tr(app.ui_language, "Microphone").to_owned()
+                }
+                (CaptureSource::SystemAudio, _) => {
+                    crate::i18n::tr(app.ui_language, "System Audio").to_owned()
+                }
+                (CaptureSource::Both, _) => crate::i18n::tr(app.ui_language, "Both").to_owned(),
+            };
             egui::ComboBox::from_id_salt("capture_source")
-                .selected_text(match app.capture_source {
-                    CaptureSource::Microphone => crate::i18n::tr(app.ui_language, "Microphone"),
-                    CaptureSource::SystemAudio => crate::i18n::tr(app.ui_language, "System Audio"),
-                    CaptureSource::Both => crate::i18n::tr(app.ui_language, "Both"),
-                })
+                .selected_text(selected_source_text)
                 .show_ui(ui, |ui| {
                     ui.selectable_value(
                         &mut app.capture_source,
                         CaptureSource::Microphone,
                         crate::i18n::tr(app.ui_language, "Microphone"),
                     );
-                    ui.add_enabled_ui(!app.loopback_devices.is_empty(), |ui| {
+                    let system_audio_available = !app.loopback_devices.is_empty()
+                        || !app.audio_applications.is_empty()
+                        || matches!(
+                            &app.system_audio_input,
+                            crate::SystemAudioInputSelection::Application { .. }
+                        );
+                    ui.add_enabled_ui(system_audio_available, |ui| {
                         ui.selectable_value(
                             &mut app.capture_source,
                             CaptureSource::SystemAudio,
@@ -292,24 +319,19 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             if app.capture_source != previous_source {
                 app.switch_capture_source(previous_source);
             }
-
-            ui.add_space(6.0);
-            if components::animated_button_enabled(
-                ui,
-                crate::i18n::tr(app.ui_language, "Refresh"),
-                app.device_refresh_rx.is_none(),
-            )
-            .clicked()
-            {
-                app.request_audio_device_refresh(ui.ctx().clone());
-            }
         });
 
         ui.add_space(8.0);
         render_capture_device_selector(app, ui);
 
         ui.add_space(10.0);
-        if app.capture_source == CaptureSource::Both && !app.loopback_devices.is_empty() {
+        if app.capture_source == CaptureSource::Both
+            && (!app.loopback_devices.is_empty()
+                || matches!(
+                    &app.system_audio_input,
+                    crate::SystemAudioInputSelection::Application { .. }
+                ))
+        {
             let avail_w = ui.available_width();
             if avail_w < 620.0 {
                 egui::Frame::new()
@@ -1023,8 +1045,17 @@ fn render_audio_level(
 
 fn render_capture_device_selector(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     crate::ui::layout::flow_row(ui, |ui| {
+        let input_label = if app.capture_source == CaptureSource::SystemAudio
+            && matches!(
+                &app.system_audio_input,
+                crate::SystemAudioInputSelection::Application { .. }
+            ) {
+            "Input:"
+        } else {
+            "Device:"
+        };
         ui.label(
-            egui::RichText::new(crate::i18n::tr(app.ui_language, "Device:"))
+            egui::RichText::new(crate::i18n::tr(app.ui_language, input_label))
                 .color(crate::ui::theme::text_strong())
                 .strong(),
         );
@@ -1057,42 +1088,7 @@ fn render_capture_device_selector(app: &mut crate::XRTranslateApp, ui: &mut egui
                 }
             }
             CaptureSource::SystemAudio => {
-                if app.loopback_devices.is_empty() {
-                    ui.label(crate::i18n::tr(
-                        app.ui_language,
-                        "System audio capture is unavailable on this host",
-                    ));
-                    return;
-                }
-                let previous_device = app.selected_loopback_device_id.clone();
-                let current_name = app
-                    .loopback_devices
-                    .iter()
-                    .find(|device| device.id == app.selected_loopback_device_id)
-                    .map(|device| device.name.as_str())
-                    .unwrap_or(crate::i18n::tr(
-                        app.ui_language,
-                        "Default render output (loopback)",
-                    ));
-
-                let mut loopback_options = vec![(
-                    String::new(),
-                    crate::i18n::tr(app.ui_language, "Default render output (loopback)")
-                        .to_string(),
-                )];
-                for device in &app.loopback_devices {
-                    loopback_options.push((device.id.clone(), device.name.clone()));
-                }
-
-                if components::searchable_combobox(
-                    ui,
-                    "loopback_device_selector",
-                    current_name,
-                    &mut app.selected_loopback_device_id,
-                    &loopback_options,
-                ) {
-                    app.switch_capture_device(CaptureSource::SystemAudio, previous_device);
-                }
+                render_system_audio_input_selector(app, ui, "loopback_device_selector");
             }
             CaptureSource::Both => {
                 let previous_device = app.selected_device_id.clone();
@@ -1135,7 +1131,13 @@ fn render_capture_device_selector(app: &mut crate::XRTranslateApp, ui: &mut egui
         render_audio_level(ui, id_source, level, vad_active, true, app.is_translating);
     });
 
-    if app.capture_source == CaptureSource::Both && !app.loopback_devices.is_empty() {
+    if app.capture_source == CaptureSource::Both
+        && (!app.loopback_devices.is_empty()
+            || matches!(
+                &app.system_audio_input,
+                crate::SystemAudioInputSelection::Application { .. }
+            ))
+    {
         ui.add_space(6.0);
         crate::ui::layout::flow_row(ui, |ui| {
             ui.label(
@@ -1143,6 +1145,66 @@ fn render_capture_device_selector(app: &mut crate::XRTranslateApp, ui: &mut egui
                     .color(crate::ui::theme::text_strong())
                     .strong(),
             );
+            render_system_audio_input_selector(app, ui, "both_loopback_device_selector");
+            ui.add_space(8.0);
+            render_audio_level(
+                ui,
+                "system_audio",
+                &app.loopback_level,
+                &app.loopback_vad_active,
+                true,
+                app.is_translating,
+            );
+        });
+    }
+}
+
+fn render_system_audio_input_selector(
+    app: &mut crate::XRTranslateApp,
+    ui: &mut egui::Ui,
+    combo_id: &'static str,
+) {
+    match app.system_audio_input.clone() {
+        crate::SystemAudioInputSelection::Application { application } => {
+            let available = app
+                .audio_applications
+                .iter()
+                .any(|candidate| candidate.id == application.id.0);
+            let status = if available {
+                crate::i18n::tr(app.ui_language, "Application audio")
+            } else {
+                crate::i18n::tr(app.ui_language, "Not running")
+            };
+            ui.label(
+                egui::RichText::new(format!("{} · {status}", application.display_name)).color(
+                    if available {
+                        crate::ui::theme::text_strong()
+                    } else {
+                        crate::ui::theme::danger()
+                    },
+                ),
+            )
+            .on_hover_text(crate::i18n::tr(
+                app.ui_language,
+                "Configured by the applied Audio Studio route",
+            ));
+            if components::animated_button(
+                ui,
+                crate::i18n::tr(app.ui_language, "Edit in Audio Studio"),
+            )
+            .clicked()
+            {
+                app.open_audio_studio();
+            }
+        }
+        crate::SystemAudioInputSelection::Endpoint { .. } => {
+            if app.loopback_devices.is_empty() {
+                ui.label(crate::i18n::tr(
+                    app.ui_language,
+                    "System audio capture is unavailable on this host",
+                ));
+                return;
+            }
             let previous_device = app.selected_loopback_device_id.clone();
             let current_name = app
                 .loopback_devices
@@ -1160,25 +1222,15 @@ fn render_capture_device_selector(app: &mut crate::XRTranslateApp, ui: &mut egui
             for device in &app.loopback_devices {
                 loopback_options.push((device.id.clone(), device.name.clone()));
             }
-
             if components::searchable_combobox(
                 ui,
-                "both_loopback_device_selector",
+                combo_id,
                 current_name,
                 &mut app.selected_loopback_device_id,
                 &loopback_options,
             ) {
                 app.switch_capture_device(CaptureSource::SystemAudio, previous_device);
             }
-            ui.add_space(8.0);
-            render_audio_level(
-                ui,
-                "system_audio",
-                &app.loopback_level,
-                &app.loopback_vad_active,
-                true,
-                app.is_translating,
-            );
-        });
+        }
     }
 }

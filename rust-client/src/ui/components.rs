@@ -420,7 +420,12 @@ pub fn animated_button_enabled_with_id(
         0.0
     };
 
-    let fill = theme::surface_control();
+    let fill = if enabled {
+        let hover_bg = theme::surface_control_hover();
+        crate::ui::animation::AnimationSystem::lerp_color(theme::surface_control(), hover_bg, hover_factor)
+    } else {
+        theme::surface_control()
+    };
 
     let text_color = if enabled {
         let base = crate::ui::animation::AnimationSystem::lerp_color(
@@ -438,7 +443,16 @@ pub fn animated_button_enabled_with_id(
         crate::ui::theme::text_weak()
     };
 
-    let stroke = Stroke::new(1.0, theme::border());
+    let stroke = if enabled {
+        let stroke_color = crate::ui::animation::AnimationSystem::lerp_color(
+            theme::border(),
+            theme::primary(),
+            hover_factor * 0.4,
+        );
+        Stroke::new(1.0, stroke_color)
+    } else {
+        Stroke::new(1.0, theme::border())
+    };
 
     let resp = ui
         .add_enabled_ui(enabled, |ui| {
@@ -524,19 +538,34 @@ pub fn primary_button_enabled_with_id(
         is_active && enabled,
     );
 
-    let rest_fill = Color32::from_rgb(37, 99, 235);
-    let hover_fill = Color32::from_rgb(59, 130, 246);
-    let active_fill = Color32::from_rgb(29, 78, 216);
-
+    let primary_rgb = theme::primary();
     let (fill, stroke, text_color) = if enabled {
-        let base =
-            crate::ui::animation::AnimationSystem::lerp_color(rest_fill, hover_fill, hover_factor);
-        let current_fill =
-            crate::ui::animation::AnimationSystem::lerp_color(base, active_fill, active_factor);
-        (current_fill, Stroke::NONE, Color32::WHITE)
+        let alpha = (0.08 + 0.12 * hover_factor + 0.10 * active_factor).clamp(0.0, 1.0);
+        let border_alpha = (0.35 + 0.45 * hover_factor + 0.20 * active_factor).clamp(0.0, 1.0);
+        let current_fill = Color32::from_rgba_unmultiplied(
+            primary_rgb.r(),
+            primary_rgb.g(),
+            primary_rgb.b(),
+            (alpha * 255.0) as u8,
+        );
+        let current_stroke = Stroke::new(
+            1.0,
+            Color32::from_rgba_unmultiplied(
+                primary_rgb.r(),
+                primary_rgb.g(),
+                primary_rgb.b(),
+                (border_alpha * 255.0) as u8,
+            ),
+        );
+        let text_color = crate::ui::animation::AnimationSystem::lerp_color(
+            theme::primary_dark(),
+            theme::primary(),
+            hover_factor,
+        );
+        (current_fill, current_stroke, text_color)
     } else {
         (
-            theme::surface_control(),
+            Color32::TRANSPARENT,
             Stroke::new(1.0, theme::border()),
             crate::ui::theme::text_weak(),
         )
@@ -928,8 +957,25 @@ pub fn danger_button(ui: &mut Ui, text: &str) -> egui::Response {
     danger_button_enabled(ui, text, true)
 }
 
+pub fn danger_button_with_id(
+    ui: &mut Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    text: &str,
+) -> egui::Response {
+    danger_button_enabled_with_id(ui, id_source, text, true)
+}
+
 pub fn danger_button_enabled(ui: &mut Ui, text: &str, enabled: bool) -> egui::Response {
-    let id = ui.make_persistent_id(text);
+    danger_button_enabled_with_id(ui, text, text, enabled)
+}
+
+pub fn danger_button_enabled_with_id(
+    ui: &mut Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    text: &str,
+    enabled: bool,
+) -> egui::Response {
+    let id = ui.make_persistent_id(id_source);
     let is_hovered = ui.memory(|m| {
         m.data
             .get_temp::<bool>(id.with("hover_state"))
@@ -952,63 +998,52 @@ pub fn danger_button_enabled(ui: &mut Ui, text: &str, enabled: bool) -> egui::Re
         is_active && enabled,
     );
 
-    let rest_fill = Color32::from_rgb(239, 68, 68);
-    let hover_fill = Color32::from_rgb(220, 38, 38);
-    let active_fill = Color32::from_rgb(185, 28, 28);
-
-    let fill = if enabled {
-        let base =
-            crate::ui::animation::AnimationSystem::lerp_color(rest_fill, hover_fill, hover_factor);
-        crate::ui::animation::AnimationSystem::lerp_color(base, active_fill, active_factor)
-    } else {
-        Color32::from_rgb(254, 202, 202)
-    };
-
-    let text_color = Color32::WHITE;
-
-    let rest_shadow = egui::Shadow {
-        offset: [0, 2],
-        blur: 4,
-        spread: 0,
-        color: Color32::from_black_alpha(15),
-    };
-    let hover_shadow = egui::Shadow {
-        offset: [0, 3],
-        blur: 6,
-        spread: 0,
-        color: Color32::from_black_alpha(20),
-    };
-    let active_shadow = egui::Shadow {
-        offset: [0, 1],
-        blur: 2,
-        spread: 0,
-        color: Color32::from_black_alpha(8),
-    };
-
-    let shadow = if enabled {
-        let base = crate::ui::animation::AnimationSystem::lerp_shadow(
-            rest_shadow,
-            hover_shadow,
+    let danger_rgb = (239, 68, 68);
+    let (fill, stroke, text_color) = if enabled {
+        let alpha = (0.08 + 0.12 * hover_factor + 0.10 * active_factor).clamp(0.0, 1.0);
+        let border_alpha = (0.35 + 0.45 * hover_factor + 0.20 * active_factor).clamp(0.0, 1.0);
+        let current_fill = Color32::from_rgba_unmultiplied(
+            danger_rgb.0,
+            danger_rgb.1,
+            danger_rgb.2,
+            (alpha * 255.0) as u8,
+        );
+        let current_stroke = Stroke::new(
+            1.0,
+            Color32::from_rgba_unmultiplied(
+                danger_rgb.0,
+                danger_rgb.1,
+                danger_rgb.2,
+                (border_alpha * 255.0) as u8,
+            ),
+        );
+        let text_color = crate::ui::animation::AnimationSystem::lerp_color(
+            Color32::from_rgb(185, 28, 28),
+            Color32::from_rgb(220, 38, 38),
             hover_factor,
         );
-        crate::ui::animation::AnimationSystem::lerp_shadow(base, active_shadow, active_factor)
+        (current_fill, current_stroke, text_color)
     } else {
-        egui::Shadow::NONE
+        (
+            Color32::TRANSPARENT,
+            Stroke::new(1.0, theme::border()),
+            crate::ui::theme::text_weak(),
+        )
     };
 
     let resp = ui
         .add_enabled_ui(enabled, |ui| {
             Frame::new()
                 .fill(fill)
-                .stroke(Stroke::NONE)
-                .corner_radius(CornerRadius::same(16))
-                .inner_margin(Margin::symmetric(18, 8))
-                .shadow(shadow)
+                .stroke(stroke)
+                .corner_radius(CornerRadius::same(8))
+                .inner_margin(Margin::symmetric(14, 6))
+                .shadow(egui::Shadow::NONE)
                 .show(ui, |ui| {
                     ui.label(
                         egui::RichText::new(text)
                             .color(text_color)
-                            .size(13.5)
+                            .size(13.0)
                             .strong(),
                     );
                 })
@@ -1140,15 +1175,66 @@ pub fn download_mirror_toggle(
 }
 
 pub fn resource_delete_button(ui: &mut Ui, language: crate::i18n::UiLanguage) -> egui::Response {
+    let id = ui.make_persistent_id("resource_delete_btn");
+    let is_hovered = ui.memory(|m| {
+        m.data
+            .get_temp::<bool>(id.with("hover_state"))
+            .unwrap_or(false)
+    });
+    let is_active = ui.memory(|m| {
+        m.data
+            .get_temp::<bool>(id.with("active_state"))
+            .unwrap_or(false)
+    });
+    let hover_factor = crate::ui::animation::AnimationSystem::hover(
+        ui.ctx(),
+        id.with("anim_hover"),
+        is_hovered,
+    );
+    let active_factor = crate::ui::animation::AnimationSystem::active(
+        ui.ctx(),
+        id.with("anim_active"),
+        is_active,
+    );
+
+    let alpha = (0.06 + 0.12 * hover_factor + 0.08 * active_factor).clamp(0.0, 1.0);
+    let border_alpha = (0.25 + 0.45 * hover_factor + 0.15 * active_factor).clamp(0.0, 1.0);
+    let fill = Color32::from_rgba_unmultiplied(239, 68, 68, (alpha * 255.0) as u8);
+    let stroke = Stroke::new(
+        1.0,
+        Color32::from_rgba_unmultiplied(239, 68, 68, (border_alpha * 255.0) as u8),
+    );
+    let tint = crate::ui::animation::AnimationSystem::lerp_color(
+        Color32::from_rgb(185, 28, 28),
+        Color32::from_rgb(239, 68, 68),
+        hover_factor,
+    );
+
     let icon = egui::Image::new(egui::include_image!("../../resources/icons/trash.svg"))
-        .fit_to_exact_size(egui::Vec2::splat(14.0))
-        .tint(Color32::from_rgb(185, 28, 28));
-    ui.add(
-        egui::Button::image(icon)
-            .frame(false)
-            .min_size(egui::Vec2::splat(22.0)),
-    )
-    .on_hover_text(crate::i18n::tr(language, "Delete"))
+        .fit_to_exact_size(egui::Vec2::splat(13.0))
+        .tint(tint);
+
+    let resp = Frame::new()
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(Margin::symmetric(7, 5))
+        .show(ui, |ui| {
+            ui.add(icon)
+        })
+        .response
+        .interact(egui::Sense::click())
+        .on_hover_text(crate::i18n::tr(language, "Delete"));
+
+    ui.memory_mut(|m| {
+        m.data.insert_temp(id.with("hover_state"), resp.hovered());
+        m.data
+            .insert_temp(id.with("active_state"), resp.is_pointer_button_down_on());
+    });
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp
 }
 
 pub fn feature_checkbox(

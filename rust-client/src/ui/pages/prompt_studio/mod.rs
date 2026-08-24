@@ -14,8 +14,9 @@ use std::collections::{HashMap, HashSet};
 use xrtranslate_prompt::{
     PromptCondition, PromptExecutionTrace, PromptGraphDomain, PromptLink, PromptMessageRole,
     PromptNode, PromptNodeGraph, PromptNodeKind, PromptNodePage, PromptProviderTarget,
-    PromptTemplateLibrary, PromptTemplateProfile, PromptVariable, TranslationPromptBlock,
-    compose_input_indexes,
+    PromptSystemValue, PromptTemplateLibrary, PromptTemplateProfile, PromptTextComparison,
+    PromptVariable, TranslationPromptBlock, compose_input_indexes, condition_label,
+    system_value_label,
 };
 
 const NODE_WIDTH: f32 = 220.0;
@@ -30,6 +31,9 @@ pub struct PromptLinkKey {
     pub input: u8,
 }
 
+type PromptGraphEditorState =
+    crate::ui::graph_editor::GraphEditorState<String, PromptLinkKey, String, (String, u8)>;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NodeTitleEdit {
     pub node_id: String,
@@ -37,7 +41,7 @@ pub struct NodeTitleEdit {
 }
 
 #[derive(Clone, Debug)]
-pub struct PromptStudioController {
+pub(crate) struct PromptStudioController {
     domain: PromptGraphDomain,
     selected_id: String,
     draft: Option<PromptTemplateProfile>,
@@ -47,24 +51,12 @@ pub struct PromptStudioController {
     editing_title: Option<NodeTitleEdit>,
     title_edit_start_profile: Option<PromptTemplateProfile>,
     text_edit_start_profile: Option<PromptTemplateProfile>,
-    wire_from: Option<String>,
-    wire_from_input: Option<(String, u8)>,
-    pan: Vec2,
-    zoom: f32,
-    fit_pending: bool,
-    selected_nodes: HashSet<String>,
-    selected_links: HashSet<PromptLinkKey>,
-    drag_node: Option<String>,
-    drag_origins: HashMap<String, [f32; 2]>,
-    box_select_start: Option<Pos2>,
-    box_select_current: Option<Pos2>,
-    canvas_size: Vec2,
-    add_node_center: Option<[f32; 2]>,
+    editor: PromptGraphEditorState,
     active_provider: PromptProviderTarget,
     branch_filters: HashMap<PromptCondition, Option<bool>>,
+    text_branch_filters: HashMap<String, Option<String>>,
     branch_hidden_nodes: HashSet<String>,
     runtime_trace: Option<PromptExecutionTrace>,
-    wire_base_zoom: Option<f32>,
 }
 
 impl Default for PromptStudioController {
@@ -85,24 +77,12 @@ impl PromptStudioController {
             editing_title: None,
             title_edit_start_profile: None,
             text_edit_start_profile: None,
-            wire_from: None,
-            wire_from_input: None,
-            pan: Vec2::ZERO,
-            zoom: 1.0,
-            fit_pending: true,
-            selected_nodes: HashSet::new(),
-            selected_links: HashSet::new(),
-            drag_node: None,
-            drag_origins: HashMap::new(),
-            box_select_start: None,
-            box_select_current: None,
-            canvas_size: Vec2::new(960.0, 540.0),
-            add_node_center: None,
+            editor: PromptGraphEditorState::default(),
             active_provider,
             branch_filters: HashMap::new(),
+            text_branch_filters: HashMap::new(),
             branch_hidden_nodes: HashSet::new(),
             runtime_trace: None,
-            wire_base_zoom: None,
         }
     }
 
@@ -138,8 +118,8 @@ impl PromptStudioController {
         {
             self.draft = Some(selected.clone());
             self.dirty = false;
-            self.fit_pending = true;
             self.history.clear();
+            self.editor.reset_for_graph(selected.id.clone());
             self.cleanup_transient_state();
             self.sync_current_branch_filters();
         }
@@ -164,9 +144,9 @@ impl PromptStudioController {
             .find(|profile| profile.id == self.selected_id)
             .cloned();
         self.history.clear();
+        self.editor.reset_for_graph(self.selected_id.clone());
         self.cleanup_transient_state();
         self.sync_current_branch_filters();
-        self.fit_pending = true;
     }
 
     pub fn select_profile_from_snapshot(&mut self, id: String, profiles: &[PromptTemplateProfile]) {
@@ -179,9 +159,9 @@ impl PromptStudioController {
             .find(|profile| profile.id == self.selected_id)
             .cloned();
         self.history.clear();
+        self.editor.reset_for_graph(self.selected_id.clone());
         self.cleanup_transient_state();
         self.sync_current_branch_filters();
-        self.fit_pending = true;
     }
 
     pub fn domain(&self) -> PromptGraphDomain {
@@ -196,7 +176,7 @@ impl PromptStudioController {
         self.active_provider = default_target_for_domain(domain);
         self.cleanup_transient_state();
         self.sync_current_branch_filters();
-        self.fit_pending = true;
+        self.canvas.fit_pending = true;
         self.runtime_trace = None;
     }
 
@@ -204,8 +184,8 @@ impl PromptStudioController {
         self.selected_id = profile.id.clone();
         self.draft = Some(profile);
         self.dirty = true;
-        self.fit_pending = true;
         self.history.clear();
+        self.editor.replace_graph(self.selected_id.clone());
         self.cleanup_transient_state();
         self.sync_current_branch_filters();
     }
@@ -280,32 +260,36 @@ impl PromptStudioController {
     }
 
     pub fn cleanup_transient_state(&mut self) {
-        self.wire_from = None;
-        self.wire_from_input = None;
-        self.drag_node = None;
-        self.drag_origins.clear();
+        self.editor.clear_interaction();
         self.drag_start_profile = None;
         self.editing_title = None;
         self.title_edit_start_profile = None;
         self.text_edit_start_profile = None;
-        self.box_select_start = None;
-        self.box_select_current = None;
-        self.wire_base_zoom = None;
         if let Some(draft) = &self.draft {
-            let valid_node_ids: HashSet<&str> =
-                draft.graph.nodes.iter().map(|n| n.id.as_str()).collect();
-            self.selected_nodes
-                .retain(|id| valid_node_ids.contains(id.as_str()));
-            self.selected_links.retain(|key| {
-                draft
-                    .graph
-                    .links
-                    .iter()
-                    .any(|l| l.from == key.from && l.to == key.to && l.input == key.input)
-            });
+            let valid_node_ids = draft
+                .graph
+                .nodes
+                .iter()
+                .map(|node| node.id.clone())
+                .collect::<HashSet<_>>();
+            let valid_links = draft
+                .graph
+                .links
+                .iter()
+                .map(|link| PromptLinkKey {
+                    from: link.from.clone(),
+                    to: link.to.clone(),
+                    input: link.input,
+                })
+                .collect::<HashSet<_>>();
+            self.editor
+                .selected_nodes
+                .retain(|id| valid_node_ids.contains(id));
+            self.editor
+                .selected_links
+                .retain(|link| valid_links.contains(link));
         } else {
-            self.selected_nodes.clear();
-            self.selected_links.clear();
+            self.editor.clear_selection();
         }
     }
 
@@ -313,37 +297,26 @@ impl PromptStudioController {
         self.dirty = true;
     }
 
-    fn finish_wire(&mut self) -> Option<String> {
-        self.wire_from_input = None;
-        self.wire_from.take()
-    }
-
     fn new_node_position(&self, graph: &PromptNodeGraph) -> [f32; 2] {
-        let center = (self.canvas_size * 0.5 - self.pan) / self.zoom;
-        self.new_node_position_near(graph, [center.x, center.y])
+        self.new_node_position_near(graph, self.add_node_center)
     }
 
-    fn new_node_position_near(&self, graph: &PromptNodeGraph, center: [f32; 2]) -> [f32; 2] {
+    fn new_node_position_near(
+        &self,
+        graph: &PromptNodeGraph,
+        center: impl Into<Option<[f32; 2]>>,
+    ) -> [f32; 2] {
         let candidate_size = Vec2::new(540.0, 220.0);
-        let mut candidate = [
-            ((center[0] - candidate_size.x * 0.5) / 16.0).round() * 16.0,
-            ((center[1] - candidate_size.y * 0.5) / 16.0).round() * 16.0,
-        ];
-
-        while graph
-            .nodes
-            .iter()
-            .filter(|node| self.node_is_visible(node))
-            .any(|node| {
-                graph_space_rect(candidate, candidate_size)
-                    .expand(8.0)
-                    .intersects(graph_space_rect(node.position, node_size(node)).expand(8.0))
-            })
-        {
-            candidate[0] += 32.0;
-            candidate[1] += 32.0;
-        }
-        candidate
+        self.editor.new_node_position(
+            graph
+                .nodes
+                .iter()
+                .filter(|node| self.node_is_visible(node))
+                .map(|node| graph_space_rect(node.position, node_size(graph, node))),
+            candidate_size,
+            center.into(),
+            16.0,
+        )
     }
 
     fn select_provider(&mut self, target: PromptProviderTarget) {
@@ -352,14 +325,11 @@ impl PromptStudioController {
         }
         self.active_provider = target;
         self.branch_filters.clear();
+        self.text_branch_filters.clear();
         self.branch_hidden_nodes.clear();
-        self.selected_nodes.clear();
-        self.selected_links.clear();
-        self.wire_from = None;
-        self.wire_from_input = None;
-        self.box_select_start = None;
-        self.box_select_current = None;
-        self.fit_pending = true;
+        self.editor.clear_interaction();
+        self.editor.clear_selection();
+        self.editor.canvas.fit_pending = true;
         self.sync_current_branch_filters();
     }
 
@@ -376,14 +346,26 @@ impl PromptStudioController {
         for condition in conditions {
             self.branch_filters.entry(condition).or_insert(None);
         }
+        let text_sources = text_branch_sources_on_page(graph, self.active_provider);
+        self.text_branch_filters
+            .retain(|source, _| text_sources.iter().any(|(id, _)| id == source));
+        for (source, _) in &text_sources {
+            self.text_branch_filters
+                .entry(source.clone())
+                .or_insert(None);
+        }
         self.branch_hidden_nodes =
             branch_hidden_nodes(graph, self.active_provider, &self.branch_filters);
-        self.selected_nodes
-            .retain(|id| !self.branch_hidden_nodes.contains(id));
-        self.selected_links.retain(|link| {
-            !self.branch_hidden_nodes.contains(&link.from)
-                && !self.branch_hidden_nodes.contains(&link.to)
-        });
+        self.branch_hidden_nodes.extend(text_branch_hidden_nodes(
+            graph,
+            self.active_provider,
+            &self.text_branch_filters,
+        ));
+        let hidden = self.branch_hidden_nodes.clone();
+        self.editor.selected_nodes.retain(|id| !hidden.contains(id));
+        self.editor
+            .selected_links
+            .retain(|link| !hidden.contains(&link.from) && !hidden.contains(&link.to));
     }
 
     fn sync_current_branch_filters(&mut self) {
@@ -391,6 +373,7 @@ impl PromptStudioController {
             self.sync_branch_filters(&graph);
         } else {
             self.branch_filters.clear();
+            self.text_branch_filters.clear();
             self.branch_hidden_nodes.clear();
         }
     }
@@ -426,7 +409,58 @@ impl PromptStudioController {
         }
         *filter = branch;
         self.sync_branch_filters(graph);
-        self.fit_pending = true;
+        self.canvas.fit_pending = true;
+    }
+
+    fn text_branch_filters(&self, graph: &PromptNodeGraph) -> Vec<(String, String, Vec<String>)> {
+        text_branch_sources_on_page(graph, self.active_provider)
+            .into_iter()
+            .filter_map(|(source_id, cases)| {
+                let label = graph
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == source_id)
+                    .map(node_display_label)?;
+                Some((source_id, label, cases))
+            })
+            .collect()
+    }
+
+    fn text_branch_filter(&self, source_id: &str) -> Option<&str> {
+        self.text_branch_filters
+            .get(source_id)
+            .and_then(Option::as_deref)
+    }
+
+    fn set_text_branch_filter(
+        &mut self,
+        graph: &PromptNodeGraph,
+        source_id: &str,
+        value: Option<String>,
+    ) {
+        let Some(filter) = self.text_branch_filters.get_mut(source_id) else {
+            return;
+        };
+        if *filter == value {
+            return;
+        }
+        *filter = value;
+        self.sync_branch_filters(graph);
+        self.canvas.fit_pending = true;
+    }
+}
+
+impl std::ops::Deref for PromptStudioController {
+    type Target = PromptGraphEditorState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.editor
+    }
+}
+
+impl std::ops::DerefMut for PromptStudioController {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.editor
     }
 }
 
@@ -440,10 +474,96 @@ fn branch_conditions_on_page(
         .iter()
         .filter(|node| node.page.is_visible_on(target))
         .filter_map(|node| match node.kind {
-            PromptNodeKind::Switch { condition } if seen.insert(condition) => Some(condition),
+            PromptNodeKind::ConditionValue { condition } if seen.insert(condition) => {
+                Some(condition)
+            }
             _ => None,
         })
         .collect()
+}
+
+fn text_branch_sources_on_page(
+    graph: &PromptNodeGraph,
+    target: PromptProviderTarget,
+) -> Vec<(String, Vec<String>)> {
+    let mut sources = Vec::<(String, Vec<String>)>::new();
+    for node in graph.nodes.iter().filter(|node| {
+        node.page.is_visible_on(target) && matches!(node.kind, PromptNodeKind::TextSwitch)
+    }) {
+        let Some(source) = graph
+            .links
+            .iter()
+            .find(|link| link.to == node.id && link.input == 0)
+            .map(|link| link.from.clone())
+        else {
+            continue;
+        };
+        let Some(cases) = graph.text_switch_cases(&node.id) else {
+            continue;
+        };
+        if let Some((_, existing)) = sources.iter_mut().find(|(id, _)| id == &source) {
+            for case in &cases {
+                if !existing.contains(case) {
+                    existing.push(case.clone());
+                }
+            }
+        } else {
+            sources.push((source, cases));
+        }
+    }
+    sources
+}
+
+fn text_branch_hidden_nodes(
+    graph: &PromptNodeGraph,
+    target: PromptProviderTarget,
+    filters: &HashMap<String, Option<String>>,
+) -> HashSet<String> {
+    let mut hidden = HashSet::new();
+    for (source_id, selected) in filters {
+        let Some(selected) = selected else {
+            continue;
+        };
+        for node in graph.nodes.iter().filter(|node| {
+            node.page.is_visible_on(target)
+                && matches!(node.kind, PromptNodeKind::TextSwitch)
+                && graph
+                    .links
+                    .iter()
+                    .any(|link| link.to == node.id && link.input == 0 && link.from == *source_id)
+        }) {
+            let Some(cases) = graph.text_switch_cases(&node.id) else {
+                continue;
+            };
+            let Some(selected_input) = cases
+                .iter()
+                .position(|case| case == selected)
+                .map(|index| index as u8 + 1)
+            else {
+                continue;
+            };
+            let mut selected_ancestors = HashSet::new();
+            let mut opposite_ancestors = HashSet::new();
+            for link in graph
+                .links
+                .iter()
+                .filter(|link| link.to == node.id && link.input > 0)
+            {
+                if link.input == selected_input {
+                    collect_upstream_ancestors(graph, target, &link.from, &mut selected_ancestors);
+                } else {
+                    collect_upstream_ancestors(graph, target, &link.from, &mut opposite_ancestors);
+                }
+            }
+            hidden.extend(
+                opposite_ancestors
+                    .difference(&selected_ancestors)
+                    .filter(|id| *id != &node.id)
+                    .cloned(),
+            );
+        }
+    }
+    hidden
 }
 
 fn branch_hidden_nodes(
@@ -461,13 +581,21 @@ fn branch_hidden_nodes(
         let mut condition_switches = HashSet::new();
         for node in graph.nodes.iter().filter(|node| {
             node.page.is_visible_on(target)
-                && matches!(node.kind, PromptNodeKind::Switch { condition: value } if value == condition)
+                && matches!(node.kind, PromptNodeKind::Switch { .. })
+                && graph.links.iter().any(|link| {
+                    link.to == node.id
+                        && link.input == 0
+                        && graph.nodes.iter().any(|source| {
+                            source.id == link.from
+                                && matches!(source.kind, PromptNodeKind::ConditionValue { condition: value } if value == condition)
+                        })
+                })
         }) {
             condition_switches.insert(node.id.clone());
             for link in graph.links.iter().filter(|link| link.to == node.id) {
-                let ancestors = if link.input == 0 {
+                let ancestors = if link.input == 1 {
                     &mut false_ancestors
-                } else if link.input == 1 {
+                } else if link.input == 2 {
                     &mut true_ancestors
                 } else {
                     continue;
@@ -751,10 +879,12 @@ fn available_blocks() -> Vec<(&'static str, TranslationPromptBlock)> {
     ]
 }
 
-fn node_size(node: &PromptNode) -> Vec2 {
+fn node_size(graph: &PromptNodeGraph, node: &PromptNode) -> Vec2 {
     Vec2::new(
         runtime_preview::base_width(&node.kind) + runtime_preview::WIDTH,
-        node.layout_height().max(156.0),
+        graph
+            .node_layout_height(&node.id)
+            .unwrap_or_else(|| node.layout_height()),
     )
 }
 
@@ -803,8 +933,13 @@ fn block_or_kind_label(kind: &PromptNodeKind) -> &'static str {
     match kind {
         PromptNodeKind::Input { block } => block.preview_name(),
         PromptNodeKind::Variable { variable } => variable_name(*variable),
+        PromptNodeKind::SystemValue { value } => system_value_label(*value),
+        PromptNodeKind::ConditionValue { condition } => condition_label(*condition),
+        PromptNodeKind::BoolValue { .. } => "BOOLEAN VALUE",
+        PromptNodeKind::TextComparison { .. } => "TEXT COMPARISON",
         PromptNodeKind::Compose { .. } => "COMPOSE TEXT",
-        PromptNodeKind::Switch { condition } => condition_name(*condition),
+        PromptNodeKind::Switch { .. } => "CONDITIONAL SWITCH",
+        PromptNodeKind::TextSwitch => "TEXT BRANCH SELECTOR",
         PromptNodeKind::Request { .. } => "PROVIDER REQUEST",
     }
 }
@@ -871,41 +1006,18 @@ fn variable_name(variable: PromptVariable) -> &'static str {
     }
 }
 
-fn condition_name(condition: PromptCondition) -> &'static str {
-    match condition {
-        PromptCondition::SourceIsAuto => "SOURCE IS AUTO",
-        PromptCondition::HasReferenceContext => "HAS REFERENCE CONTEXT",
-        PromptCondition::HasRecognitionContext => "HAS RECOGNITION CONTEXT",
-        PromptCondition::IsPseudoStreaming => "IS PSEUDO-STREAMING",
-    }
-}
-
-fn input_socket_label(node: &PromptNode, input: u8) -> String {
+fn input_socket_label(graph: &PromptNodeGraph, node: &PromptNode, input: u8) -> String {
     match &node.kind {
-        PromptNodeKind::Switch {
-            condition: PromptCondition::SourceIsAuto,
-        } if input == 0 => "EXPLICIT".into(),
-        PromptNodeKind::Switch {
-            condition: PromptCondition::SourceIsAuto,
-        } => "AUTO".into(),
-        PromptNodeKind::Switch {
-            condition: PromptCondition::HasReferenceContext,
-        } if input == 0 => "NO CONTEXT".into(),
-        PromptNodeKind::Switch {
-            condition: PromptCondition::HasReferenceContext,
-        } => "WITH CONTEXT".into(),
-        PromptNodeKind::Switch {
-            condition: PromptCondition::HasRecognitionContext,
-        } if input == 0 => "NO CONTEXT".into(),
-        PromptNodeKind::Switch {
-            condition: PromptCondition::HasRecognitionContext,
-        } => "WITH CONTEXT".into(),
-        PromptNodeKind::Switch {
-            condition: PromptCondition::IsPseudoStreaming,
-        } if input == 0 => "ORDINARY".into(),
-        PromptNodeKind::Switch {
-            condition: PromptCondition::IsPseudoStreaming,
-        } => "PSEUDO-STREAMING".into(),
+        PromptNodeKind::Switch { .. } if input == 0 => "CONDITION · BOOL".into(),
+        PromptNodeKind::Switch { .. } if input == 1 => "FALSE · TEXT".into(),
+        PromptNodeKind::Switch { .. } => "TRUE · TEXT".into(),
+        PromptNodeKind::TextComparison { .. } => "TEXT".into(),
+        PromptNodeKind::TextSwitch if input == 0 => "VALUE · TEXT".into(),
+        PromptNodeKind::TextSwitch => graph
+            .text_switch_cases(&node.id)
+            .unwrap_or_default()
+            .get(usize::from(input.saturating_sub(1)))
+            .map_or_else(|| "CASE · TEXT".into(), |case| format!("{case} · TEXT")),
         PromptNodeKind::Compose { .. } => format!("{{{input}}}"),
         PromptNodeKind::Request { roles, .. } => roles
             .get(usize::from(input))
@@ -985,8 +1097,8 @@ mod tests {
         );
         assert!(graph.connect(&shared, &ordinary, 0));
         assert!(graph.connect(&shared, &pseudo, 0));
-        assert!(graph.connect(&ordinary, &switch, 0));
-        assert!(graph.connect(&pseudo, &switch, 1));
+        assert!(graph.connect(&ordinary, &switch, 1));
+        assert!(graph.connect(&pseudo, &switch, 2));
         assert!(graph.connect(&switch, &downstream, 0));
         (graph, shared, ordinary, pseudo, switch)
     }
@@ -1004,7 +1116,9 @@ mod tests {
         assert!(
             !graph_space_rect(second, Vec2::new(320.0, 220.0))
                 .expand(8.0)
-                .intersects(graph_space_rect(existing.position, node_size(existing)).expand(8.0))
+                .intersects(
+                    graph_space_rect(existing.position, node_size(&graph, existing)).expand(8.0),
+                )
         );
     }
 
@@ -1137,10 +1251,14 @@ mod tests {
         controller.sync_branch_filters(&graph);
 
         let conditions = controller.branch_conditions();
-        assert!(conditions.contains(&PromptCondition::IsPseudoStreaming));
-        assert!(conditions.contains(&PromptCondition::SourceIsAuto));
         assert!(conditions.contains(&PromptCondition::HasReferenceContext));
         assert!(!conditions.contains(&PromptCondition::HasRecognitionContext));
+        assert!(!conditions.contains(&PromptCondition::IsPseudoStreaming));
+        let text_filters = controller.text_branch_filters(&graph);
+        assert!(text_filters.iter().any(|(source, _, cases)| {
+            source == "shared-recognition-mode"
+                && cases == &["ordinary".to_owned(), "pseudo_streaming".to_owned()]
+        }));
     }
 
     #[test]
@@ -1193,7 +1311,11 @@ mod tests {
         let mut controller = PromptStudioController::default();
         controller.sync_branch_filters(&graph);
 
-        controller.set_branch_filter(&graph, PromptCondition::IsPseudoStreaming, Some(true));
+        controller.set_text_branch_filter(
+            &graph,
+            "shared-recognition-mode",
+            Some("pseudo_streaming".into()),
+        );
 
         for id in [
             "openai-explicit-instruction-pseudo-streaming",
@@ -1227,8 +1349,8 @@ mod tests {
             PromptCondition::SourceIsAuto,
             [500.0, 400.0],
         );
-        assert!(graph.connect(&hunyuan_false, &hunyuan_switch, 0));
-        assert!(graph.connect(&hunyuan_true, &hunyuan_switch, 1));
+        assert!(graph.connect(&hunyuan_false, &hunyuan_switch, 1));
+        assert!(graph.connect(&hunyuan_true, &hunyuan_switch, 2));
         let mut profile = new_profile();
         profile.graph = graph;
         let mut controller = PromptStudioController::default();
@@ -1268,8 +1390,8 @@ mod tests {
             PromptCondition::SourceIsAuto,
             [500.0, 500.0],
         );
-        assert!(graph.connect(&explicit, &source_switch, 0));
-        assert!(graph.connect(&auto, &source_switch, 1));
+        assert!(graph.connect(&explicit, &source_switch, 1));
+        assert!(graph.connect(&auto, &source_switch, 2));
         let mut controller = PromptStudioController::default();
         controller.sync_branch_filters(&graph);
 
@@ -1430,8 +1552,8 @@ mod tests {
     fn wire_dragging_near_edge_triggers_auto_pan_and_dynamic_zoom() {
         let context = egui::Context::default();
         let mut controller = PromptStudioController::default();
-        controller.zoom = 1.0;
-        controller.pan = Vec2::ZERO;
+        controller.canvas.zoom = 1.0;
+        controller.canvas.pan = Vec2::ZERO;
 
         let canvas = Rect::from_min_size(Pos2::new(100.0, 100.0), Vec2::new(800.0, 600.0));
 
@@ -1444,13 +1566,15 @@ mod tests {
             .push(egui::Event::PointerMoved(Pos2::new(880.0, 300.0)));
 
         let mut output = context.run_ui(input, |ui| {
-            navigation::update_wire_dragging_navigation(&mut controller, canvas, ui, true);
+            controller
+                .canvas
+                .update_wire_dragging_navigation(canvas, ui, true);
         });
         output.textures_delta.clear();
 
         // Pan should have moved left (pan.x < 0) to reveal nodes to the right, and zoom out slightly
-        assert!(controller.pan.x < 0.0);
-        assert!(controller.zoom < 1.0);
-        assert_eq!(controller.wire_base_zoom, Some(1.0));
+        assert!(controller.canvas.pan.x < 0.0);
+        assert!(controller.canvas.zoom < 1.0);
+        assert_eq!(controller.canvas.wire_base_zoom(), Some(1.0));
     }
 }

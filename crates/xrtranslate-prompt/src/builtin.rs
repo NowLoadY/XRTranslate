@@ -1,6 +1,7 @@
 use crate::{
     PromptCondition, PromptLink, PromptMessageRole, PromptNode, PromptNodeGraph, PromptNodeKind,
-    PromptNodePage, PromptProviderTarget, PromptVariable, TranslationPromptBlock,
+    PromptNodePage, PromptProviderTarget, PromptSystemValue, PromptVariable,
+    TranslationPromptBlock,
 };
 
 pub(crate) const BUILTIN_ID: &str = "builtin-default";
@@ -165,7 +166,7 @@ impl PromptNodeGraph {
     }
 
     pub fn unify_mode_graphs(mut ordinary: Self, pseudo_streaming: &Self) -> Self {
-        ensure_recognition_mode_variables(&mut ordinary);
+        ensure_recognition_mode_value(&mut ordinary);
         for id in [
             "openai-reference-explicit-rules",
             "openai-reference-auto-rules",
@@ -206,16 +207,14 @@ impl PromptNodeGraph {
         use std::collections::{HashMap, HashSet};
 
         if ordinary.nodes.iter().any(|node| {
-            matches!(
-                node.kind,
-                PromptNodeKind::Switch {
-                    condition: PromptCondition::IsPseudoStreaming
-                }
-            )
+            matches!(node.kind, PromptNodeKind::TextSwitch)
+                && ordinary
+                    .text_switch_cases(&node.id)
+                    .is_some_and(|cases| cases.iter().any(|value| value == "pseudo_streaming"))
         }) {
             return ordinary;
         }
-        ensure_recognition_mode_variables(&mut ordinary);
+        let recognition_mode_value = ensure_recognition_mode_value(&mut ordinary);
 
         let mut used_ids = ordinary
             .nodes
@@ -305,21 +304,24 @@ impl PromptNodeGraph {
                     id: switch_id.clone(),
                     label: "SELECT RECOGNITION MODE".into(),
                     page,
-                    kind: PromptNodeKind::Switch {
-                        condition: PromptCondition::IsPseudoStreaming,
-                    },
+                    kind: PromptNodeKind::TextSwitch,
                     position: [0.0, 0.0],
                 });
                 ordinary.links.extend([
                     PromptLink {
-                        from: ordinary_source,
+                        from: recognition_mode_value.clone(),
                         to: switch_id.clone(),
                         input: 0,
                     },
                     PromptLink {
-                        from: pseudo_source,
+                        from: ordinary_source,
                         to: switch_id.clone(),
                         input: 1,
+                    },
+                    PromptLink {
+                        from: pseudo_source,
+                        to: switch_id.clone(),
+                        input: 2,
                     },
                     PromptLink {
                         from: switch_id,
@@ -448,26 +450,20 @@ fn unique_mode_node_id(used: &mut std::collections::HashSet<String>, preferred: 
     unreachable!()
 }
 
-fn ensure_recognition_mode_variables(graph: &mut PromptNodeGraph) {
-    for page in [
-        PromptNodePage::OpenAiCompatible,
-        PromptNodePage::Hunyuan,
-        PromptNodePage::AsrInstruction,
-        PromptNodePage::AsrContextBias,
-    ] {
-        let id = format!("{}-recognition-mode", page_id(page));
-        if !graph.nodes.iter().any(|node| node.id == id) {
-            graph.nodes.push(PromptNode {
-                id,
-                label: "RECOGNITION MODE".into(),
-                page,
-                kind: PromptNodeKind::Variable {
-                    variable: PromptVariable::RecognitionMode,
-                },
-                position: [0.0, 0.0],
-            });
-        }
+fn ensure_recognition_mode_value(graph: &mut PromptNodeGraph) -> String {
+    const MODE_ID: &str = "shared-recognition-mode";
+    if !graph.nodes.iter().any(|node| node.id == MODE_ID) {
+        graph.nodes.push(PromptNode {
+            id: MODE_ID.into(),
+            label: "RECOGNITION MODE".into(),
+            page: PromptNodePage::Shared,
+            kind: PromptNodeKind::SystemValue {
+                value: PromptSystemValue::RecognitionMode,
+            },
+            position: [0.0, 0.0],
+        });
     }
+    MODE_ID.into()
 }
 
 fn page_id(page: PromptNodePage) -> &'static str {
@@ -484,14 +480,6 @@ fn split_compose_by_mode(graph: &mut PromptNodeGraph, id: &str, pseudo_text: &st
     let Some(index) = graph.nodes.iter().position(|node| node.id == id) else {
         return;
     };
-    if matches!(
-        graph.nodes[index].kind,
-        PromptNodeKind::Switch {
-            condition: PromptCondition::IsPseudoStreaming
-        }
-    ) {
-        return;
-    }
     let PromptNodeKind::Compose {
         text: ordinary_text,
     } = &graph.nodes[index].kind
@@ -516,9 +504,7 @@ fn split_compose_by_mode(graph: &mut PromptNodeGraph, id: &str, pseudo_text: &st
         id: id.into(),
         label: "SELECT RECOGNITION MODE".into(),
         page,
-        kind: PromptNodeKind::Switch {
-            condition: PromptCondition::IsPseudoStreaming,
-        },
+        kind: PromptNodeKind::TextSwitch,
         position: [0.0, 0.0],
     };
 
@@ -541,15 +527,21 @@ fn split_compose_by_mode(graph: &mut PromptNodeGraph, id: &str, pseudo_text: &st
             input: link.input,
         });
     }
+    let condition_id = ensure_recognition_mode_value(graph);
     graph.links.push(PromptLink {
-        from: ordinary.id.clone(),
+        from: condition_id,
         to: id.into(),
         input: 0,
     });
     graph.links.push(PromptLink {
-        from: pseudo.id.clone(),
+        from: ordinary.id.clone(),
         to: id.into(),
         input: 1,
+    });
+    graph.links.push(PromptLink {
+        from: pseudo.id.clone(),
+        to: id.into(),
+        input: 2,
     });
     graph.nodes.push(ordinary);
     graph.nodes.push(pseudo);
@@ -566,6 +558,19 @@ fn replace_compose_text(graph: &mut PromptNodeGraph, id: &str, text: &str) {
 impl Default for PromptNodeGraph {
     fn default() -> Self {
         Self::builtin_default()
+    }
+}
+
+fn system_value_from_block(block: TranslationPromptBlock) -> PromptSystemValue {
+    match block {
+        TranslationPromptBlock::LanguageOrder => PromptSystemValue::LanguageOrder,
+        TranslationPromptBlock::Terminology => PromptSystemValue::Terminology,
+        TranslationPromptBlock::RecentTurns { limit } => PromptSystemValue::RecentTurns { limit },
+        TranslationPromptBlock::PreviousRevision => PromptSystemValue::PreviousRevision,
+        TranslationPromptBlock::SurroundingSource => PromptSystemValue::SurroundingSource,
+        TranslationPromptBlock::CustomText { .. } => {
+            unreachable!("custom text is not a host system value")
+        }
     }
 }
 
@@ -589,6 +594,13 @@ impl GraphBuilder {
             PromptVariable::TargetLanguage,
         );
         self.variable("openai-current-input", page, PromptVariable::CurrentInput);
+        self.text_comparison(
+            "openai-source-is-auto",
+            page,
+            "SOURCE LANGUAGE IS AUTO",
+            "openai-source-language",
+            "auto",
+        );
 
         for (id, block) in [
             (
@@ -612,7 +624,13 @@ impl GraphBuilder {
                 TranslationPromptBlock::SurroundingSource,
             ),
         ] {
-            self.node(id, page, PromptNodeKind::Input { block });
+            self.node(
+                id,
+                page,
+                PromptNodeKind::SystemValue {
+                    value: system_value_from_block(block),
+                },
+            );
         }
 
         self.compose(
@@ -649,11 +667,11 @@ impl GraphBuilder {
             AUTO_REFERENCE_CONTEXT_INSTRUCTION,
             &["openai-target-language"],
         );
-        self.switch(
+        self.switch_on(
             "openai-reference-handling-rules",
             page,
             "SELECT REFERENCE RULES",
-            PromptCondition::SourceIsAuto,
+            "openai-source-is-auto",
             "openai-reference-explicit-rules",
             "openai-reference-auto-rules",
         );
@@ -672,11 +690,11 @@ impl GraphBuilder {
             "You are a real-time speech translator. The input language is one of the following: {0}. Translate it into the OTHER language from that list. Output only the translation.",
             &["openai-target-language"],
         );
-        self.switch(
+        self.switch_on(
             "openai-instruction",
             page,
             "SELECT SOURCE INSTRUCTION",
-            PromptCondition::SourceIsAuto,
+            "openai-source-is-auto",
             "openai-explicit-instruction",
             "openai-auto-instruction",
         );
@@ -714,11 +732,11 @@ impl GraphBuilder {
             "Current input:\n{0}",
             &["openai-current-input"],
         );
-        self.switch(
+        self.switch_on(
             "openai-user",
             page,
             "SELECT USER MESSAGE",
-            PromptCondition::SourceIsAuto,
+            "openai-source-is-auto",
             "openai-explicit-user",
             "openai-auto-user",
         );
@@ -745,6 +763,13 @@ impl GraphBuilder {
             PromptVariable::TargetLanguage,
         );
         self.variable("hunyuan-current-input", page, PromptVariable::CurrentInput);
+        self.text_comparison(
+            "hunyuan-source-is-auto",
+            page,
+            "SOURCE LANGUAGE IS AUTO",
+            "hunyuan-source-language",
+            "auto",
+        );
 
         for (id, block) in [
             (
@@ -768,7 +793,13 @@ impl GraphBuilder {
                 TranslationPromptBlock::SurroundingSource,
             ),
         ] {
-            self.node(id, page, PromptNodeKind::Input { block });
+            self.node(
+                id,
+                page,
+                PromptNodeKind::SystemValue {
+                    value: system_value_from_block(block),
+                },
+            );
         }
 
         self.compose(
@@ -805,11 +836,11 @@ impl GraphBuilder {
             AUTO_REFERENCE_CONTEXT_INSTRUCTION,
             &["hunyuan-target-language"],
         );
-        self.switch(
+        self.switch_on(
             "hunyuan-reference-handling-rules",
             page,
             "SELECT REFERENCE RULES",
-            PromptCondition::SourceIsAuto,
+            "hunyuan-source-is-auto",
             "hunyuan-reference-explicit-rules",
             "hunyuan-reference-auto-rules",
         );
@@ -828,11 +859,11 @@ impl GraphBuilder {
             "Translate the following text into the other language among {0}. Output only the translation; do not add explanations.",
             &["hunyuan-target-language"],
         );
-        self.switch(
+        self.switch_on(
             "hunyuan-instruction",
             page,
             "SELECT SOURCE INSTRUCTION",
-            PromptCondition::SourceIsAuto,
+            "hunyuan-source-is-auto",
             "hunyuan-explicit-instruction",
             "hunyuan-auto-instruction",
         );
@@ -888,6 +919,13 @@ impl GraphBuilder {
             page,
             PromptVariable::RecognitionContext,
         );
+        self.text_comparison(
+            "asr-instruction-source-is-auto",
+            page,
+            "SOURCE LANGUAGE IS AUTO",
+            "asr-instruction-source-language",
+            "auto",
+        );
         self.compose(
             "asr-instruction-explicit",
             page,
@@ -902,11 +940,11 @@ impl GraphBuilder {
             "Transcribe the current audio accurately. Expected spoken languages are {0}. Detect which language is actually spoken; both listed languages are equally valid, so do not prefer the first language in the list. Do not translate the speech. Return only the transcript without explanation or commentary.",
             &["asr-instruction-expected-languages"],
         );
-        self.switch(
+        self.switch_on(
             "asr-instruction-source-mode",
             page,
             "SELECT ASR SOURCE MODE",
-            PromptCondition::SourceIsAuto,
+            "asr-instruction-source-is-auto",
             "asr-instruction-explicit",
             "asr-instruction-auto",
         );
@@ -965,7 +1003,13 @@ impl GraphBuilder {
     }
 
     fn variable(&mut self, id: &str, page: PromptNodePage, variable: PromptVariable) {
-        self.node(id, page, PromptNodeKind::Variable { variable });
+        self.node(
+            id,
+            page,
+            PromptNodeKind::SystemValue {
+                value: variable.into(),
+            },
+        );
     }
 
     fn compose(
@@ -987,6 +1031,42 @@ impl GraphBuilder {
         }
     }
 
+    fn text_comparison(
+        &mut self,
+        id: &str,
+        page: PromptNodePage,
+        label: &str,
+        source: &str,
+        expected: &str,
+    ) {
+        self.labeled_node(
+            id,
+            page,
+            label,
+            PromptNodeKind::TextComparison {
+                operator: crate::PromptTextComparison::Equals,
+                expected: expected.into(),
+                case_sensitive: true,
+            },
+        );
+        self.link(source, id, 0);
+    }
+
+    fn switch_on(
+        &mut self,
+        id: &str,
+        page: PromptNodePage,
+        label: &str,
+        condition_source: &str,
+        false_source: &str,
+        true_source: &str,
+    ) {
+        self.labeled_node(id, page, label, PromptNodeKind::Switch { condition: None });
+        self.link(condition_source, id, 0);
+        self.link(false_source, id, 1);
+        self.link(true_source, id, 2);
+    }
+
     fn switch(
         &mut self,
         id: &str,
@@ -996,9 +1076,13 @@ impl GraphBuilder {
         false_source: &str,
         true_source: &str,
     ) {
-        self.labeled_node(id, page, label, PromptNodeKind::Switch { condition });
-        self.link(false_source, id, 0);
-        self.link(true_source, id, 1);
+        let condition_id = format!("{id}-condition");
+        self.node(
+            &condition_id,
+            page,
+            PromptNodeKind::ConditionValue { condition },
+        );
+        self.switch_on(id, page, label, &condition_id, false_source, true_source);
     }
 
     fn output(
@@ -1241,7 +1325,7 @@ After current input: speaker-01 en / After it."
                 .node("openai-explicit-instruction")
                 .unwrap()
                 .selected_input,
-            Some(0)
+            Some(1)
         );
         assert_eq!(
             pseudo
@@ -1249,7 +1333,7 @@ After current input: speaker-01 en / After it."
                 .node("openai-explicit-instruction")
                 .unwrap()
                 .selected_input,
-            Some(1)
+            Some(2)
         );
         assert!(!ordinary.render.messages[0].content.contains("live tail"));
         assert!(pseudo.render.messages[0].content.contains("live tail"));
@@ -1360,7 +1444,7 @@ After current input: speaker-01 en / After it."
         );
         assert_eq!(
             execution.trace.node("hunyuan-user").unwrap().selected_input,
-            Some(1)
+            Some(2)
         );
         assert!(
             execution
@@ -1452,7 +1536,7 @@ After current input: speaker-01 en / After it."
     #[test]
     fn builtin_graph_uses_compose_nodes_instead_of_fragmented_text_nodes() {
         let graph = PromptNodeGraph::builtin_default();
-        assert!(graph.nodes.len() <= 85, "{} nodes", graph.nodes.len());
+        assert!(graph.nodes.len() <= 110, "{} nodes", graph.nodes.len());
         assert!(
             graph
                 .nodes
@@ -1626,8 +1710,26 @@ After current input: speaker-01 en / After it."
     }
 
     #[test]
-    fn source_auto_condition_preserves_the_original_case_sensitive_behavior() {
-        let rendered = PromptNodeGraph::builtin_default()
+    fn source_auto_text_comparison_preserves_the_original_case_sensitive_behavior() {
+        let graph = PromptNodeGraph::builtin_default();
+        assert!(graph.nodes.iter().any(|node| {
+            node.id == "openai-source-is-auto"
+                && matches!(
+                    node.kind,
+                    PromptNodeKind::TextComparison {
+                        operator: crate::PromptTextComparison::Equals,
+                        ref expected,
+                        case_sensitive: true,
+                    } if expected == "auto"
+                )
+        }));
+        assert!(!graph.nodes.iter().any(|node| matches!(
+            node.kind,
+            PromptNodeKind::ConditionValue {
+                condition: PromptCondition::SourceIsAuto
+            }
+        )));
+        let rendered = graph
             .render(
                 PromptProviderTarget::OpenAiCompatible,
                 "Good morning",

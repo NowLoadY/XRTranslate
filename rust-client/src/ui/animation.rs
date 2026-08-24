@@ -118,22 +118,6 @@ impl AnimationSystem {
         )
     }
 
-    pub fn lerp_shadow(from: egui::Shadow, to: egui::Shadow, t: f32) -> egui::Shadow {
-        let factor = t.clamp(0.0, 1.0);
-        egui::Shadow {
-            offset: [
-                (from.offset[0] as f32 + (to.offset[0] as f32 - from.offset[0] as f32) * factor)
-                    .round() as i8,
-                (from.offset[1] as f32 + (to.offset[1] as f32 - from.offset[1] as f32) * factor)
-                    .round() as i8,
-            ],
-            blur: (from.blur as f32 + (to.blur as f32 - from.blur as f32) * factor).round() as u8,
-            spread: (from.spread as f32 + (to.spread as f32 - from.spread as f32) * factor).round()
-                as u8,
-            color: Self::lerp_color(from.color, to.color, factor),
-        }
-    }
-
     pub fn render_animated_page<P, R>(
         ui: &mut egui::Ui,
         page_id: P,

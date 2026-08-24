@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::context::render_block;
 use crate::{
     AsrPromptContext, PromptCondition, PromptGraphError, PromptMessageRole, PromptMode,
-    PromptNodeGraph, PromptNodeKind, PromptProviderTarget, PromptVariable,
-    TranslationPromptContext,
+    PromptNodeGraph, PromptNodeKind, PromptProviderTarget, PromptSystemValue, PromptTextComparison,
+    PromptVariable, TranslationPromptContext,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +56,93 @@ struct ExecutionContext<'a> {
     has_recognition_context: bool,
     mode: PromptMode,
     reference: &'a TranslationPromptContext,
+}
+
+#[derive(Clone)]
+enum ExecutionValue {
+    Text(String),
+    Condition(bool),
+}
+
+impl ExecutionValue {
+    fn trace_output(&self) -> String {
+        match self {
+            Self::Text(value) => value.clone(),
+            Self::Condition(value) => value.to_string(),
+        }
+    }
+}
+
+fn render_system_value(value: PromptSystemValue, context: &ExecutionContext<'_>) -> Option<String> {
+    Some(match value {
+        PromptSystemValue::SourceLanguage => context.source_language.to_owned(),
+        PromptSystemValue::TargetLanguage => context.target_language.to_owned(),
+        PromptSystemValue::CurrentInput => context.source_text.to_owned(),
+        PromptSystemValue::RecognitionContext => context.recognition_context.to_owned(),
+        PromptSystemValue::RecognitionMode => match context.mode {
+            PromptMode::Ordinary => "ordinary".into(),
+            PromptMode::PseudoStreaming => "pseudo_streaming".into(),
+        },
+        PromptSystemValue::LanguageOrder => {
+            return render_block(
+                &crate::TranslationPromptBlock::LanguageOrder,
+                context.reference,
+            );
+        }
+        PromptSystemValue::Terminology => {
+            return render_block(
+                &crate::TranslationPromptBlock::Terminology,
+                context.reference,
+            );
+        }
+        PromptSystemValue::RecentTurns { limit } => {
+            return render_block(
+                &crate::TranslationPromptBlock::RecentTurns { limit },
+                context.reference,
+            );
+        }
+        PromptSystemValue::PreviousRevision => {
+            return render_block(
+                &crate::TranslationPromptBlock::PreviousRevision,
+                context.reference,
+            );
+        }
+        PromptSystemValue::SurroundingSource => {
+            return render_block(
+                &crate::TranslationPromptBlock::SurroundingSource,
+                context.reference,
+            );
+        }
+    })
+}
+
+fn evaluate_condition(condition: PromptCondition, context: &ExecutionContext<'_>) -> bool {
+    match condition {
+        PromptCondition::SourceIsAuto => context.source_language == "auto",
+        PromptCondition::HasReferenceContext => context.reference.has_reference_context(),
+        PromptCondition::HasRecognitionContext => context.has_recognition_context,
+        PromptCondition::IsPseudoStreaming => context.mode == PromptMode::PseudoStreaming,
+    }
+}
+
+fn compare_text(
+    value: &str,
+    expected: &str,
+    operator: PromptTextComparison,
+    case_sensitive: bool,
+) -> bool {
+    let (value, expected) = if case_sensitive {
+        (value.to_owned(), expected.to_owned())
+    } else {
+        (value.to_lowercase(), expected.to_lowercase())
+    };
+    match operator {
+        PromptTextComparison::Equals => value == expected,
+        PromptTextComparison::NotEquals => value != expected,
+        PromptTextComparison::Contains => value.contains(&expected),
+        PromptTextComparison::StartsWith => value.starts_with(&expected),
+        PromptTextComparison::EndsWith => value.ends_with(&expected),
+    }
 }
 
 impl PromptNodeGraph {
@@ -185,7 +272,7 @@ impl PromptNodeGraph {
                 .find(|link| link.to == request.id && usize::from(link.input) == input)
                 .ok_or_else(|| PromptGraphError::new("provider request input is not connected"))?;
             let mut visiting = HashSet::new();
-            let Some(content) =
+            let Some(ExecutionValue::Text(content)) =
                 self.evaluate(&link.from, &context, &mut cache, &mut traced, &mut visiting)
             else {
                 return Err(PromptGraphError::new(format!(
@@ -283,10 +370,10 @@ impl PromptNodeGraph {
         &self,
         id: &str,
         context: &ExecutionContext<'_>,
-        cache: &mut HashMap<String, Option<String>>,
+        cache: &mut HashMap<String, Option<ExecutionValue>>,
         traced: &mut HashMap<String, PromptNodeTrace>,
         visiting: &mut HashSet<String>,
-    ) -> Option<String> {
+    ) -> Option<ExecutionValue> {
         if let Some(value) = cache.get(id) {
             return value.clone();
         }
@@ -296,8 +383,10 @@ impl PromptNodeGraph {
         let node = self.nodes.iter().find(|node| node.id == id)?;
         let mut selected_input = None;
         let value = match &node.kind {
-            PromptNodeKind::Input { block } => render_block(block, context.reference),
-            PromptNodeKind::Variable { variable } => Some(match variable {
+            PromptNodeKind::Input { block } => {
+                render_block(block, context.reference).map(ExecutionValue::Text)
+            }
+            PromptNodeKind::Variable { variable } => Some(ExecutionValue::Text(match variable {
                 PromptVariable::SourceLanguage => context.source_language.to_owned(),
                 PromptVariable::TargetLanguage => context.target_language.to_owned(),
                 PromptVariable::CurrentInput => context.source_text.to_owned(),
@@ -307,32 +396,76 @@ impl PromptNodeGraph {
                     PromptMode::PseudoStreaming => "pseudo_streaming",
                 }
                 .to_owned(),
-            }),
+            })),
+            PromptNodeKind::SystemValue { value } => {
+                render_system_value(*value, context).map(ExecutionValue::Text)
+            }
+            PromptNodeKind::ConditionValue { condition } => Some(ExecutionValue::Condition(
+                evaluate_condition(*condition, context),
+            )),
+            PromptNodeKind::BoolValue { value } => Some(ExecutionValue::Condition(*value)),
+            PromptNodeKind::TextComparison {
+                operator,
+                expected,
+                case_sensitive,
+            } => {
+                let input = self
+                    .links
+                    .iter()
+                    .find(|link| link.to == id && link.input == 0)
+                    .and_then(|link| self.evaluate(&link.from, context, cache, traced, visiting));
+                match input {
+                    Some(ExecutionValue::Text(value)) => Some(ExecutionValue::Condition(
+                        compare_text(&value, expected, *operator, *case_sensitive),
+                    )),
+                    _ => None,
+                }
+            }
             PromptNodeKind::Compose { text } => {
                 crate::template::render_compose_text(text, |input| {
                     let link = self
                         .links
                         .iter()
                         .find(|link| link.to == id && link.input == input)?;
-                    Some(
-                        self.evaluate(&link.from, context, cache, traced, visiting)
-                            .unwrap_or_default(),
-                    )
+                    match self.evaluate(&link.from, context, cache, traced, visiting) {
+                        Some(ExecutionValue::Text(value)) => Some(value),
+                        None => Some(String::new()),
+                        Some(ExecutionValue::Condition(_)) => None,
+                    }
                 })
                 .ok()
                 .filter(|value| !value.is_empty())
+                .map(ExecutionValue::Text)
             }
-            PromptNodeKind::Switch { condition } => {
-                let input = u8::from(match condition {
-                    PromptCondition::SourceIsAuto => context.source_language == "auto",
-                    PromptCondition::HasReferenceContext => {
-                        context.reference.has_reference_context()
-                    }
-                    PromptCondition::HasRecognitionContext => context.has_recognition_context,
-                    PromptCondition::IsPseudoStreaming => {
-                        context.mode == PromptMode::PseudoStreaming
-                    }
-                });
+            PromptNodeKind::Switch { .. } => {
+                let condition_link = self
+                    .links
+                    .iter()
+                    .find(|link| link.to == id && link.input == 0)?;
+                let ExecutionValue::Condition(condition) =
+                    self.evaluate(&condition_link.from, context, cache, traced, visiting)?
+                else {
+                    return None;
+                };
+                let input = if condition { 2 } else { 1 };
+                selected_input = Some(input);
+                self.links
+                    .iter()
+                    .find(|link| link.to == id && link.input == input)
+                    .and_then(|link| self.evaluate(&link.from, context, cache, traced, visiting))
+            }
+            PromptNodeKind::TextSwitch => {
+                let selector_link = self
+                    .links
+                    .iter()
+                    .find(|link| link.to == id && link.input == 0)?;
+                let ExecutionValue::Text(selector) =
+                    self.evaluate(&selector_link.from, context, cache, traced, visiting)?
+                else {
+                    return None;
+                };
+                let cases = self.text_switch_cases(id)?;
+                let input = cases.iter().position(|case| case == &selector)? as u8 + 1;
                 selected_input = Some(input);
                 self.links
                     .iter()
@@ -347,7 +480,10 @@ impl PromptNodeGraph {
             id.into(),
             PromptNodeTrace {
                 node_id: id.into(),
-                output: value.clone().unwrap_or_default(),
+                output: value
+                    .as_ref()
+                    .map(ExecutionValue::trace_output)
+                    .unwrap_or_default(),
                 selected_input,
             },
         );
@@ -370,6 +506,14 @@ impl PromptNodeGraph {
         let value = match &node.kind {
             PromptNodeKind::Input { block } => Some(format!("[{}]", block.preview_name())),
             PromptNodeKind::Variable { variable } => Some(format!("[{variable:?}]")),
+            PromptNodeKind::SystemValue { value } => Some(format!("[SYSTEM: {value:?}]")),
+            PromptNodeKind::ConditionValue { condition } => {
+                Some(format!("[CONDITION: {condition:?}]"))
+            }
+            PromptNodeKind::BoolValue { value } => Some(value.to_string()),
+            PromptNodeKind::TextComparison {
+                operator, expected, ..
+            } => Some(format!("[TEXT {operator:?} {expected:?}]")),
             PromptNodeKind::Compose { text } => {
                 crate::template::render_compose_text(text, |input| {
                     let Some(link) = self
@@ -387,7 +531,13 @@ impl PromptNodeGraph {
                 .ok()
                 .filter(|value| !value.is_empty())
             }
-            PromptNodeKind::Switch { condition } => {
+            PromptNodeKind::Switch { .. } => {
+                let condition = self
+                    .links
+                    .iter()
+                    .find(|link| link.to == id && link.input == 0)
+                    .and_then(|link| self.evaluate_preview(&link.from, cache, visiting))
+                    .unwrap_or_else(|| "(unconnected condition)".into());
                 let mut branch = |input| {
                     self.links
                         .iter()
@@ -396,10 +546,35 @@ impl PromptNodeGraph {
                         .unwrap_or_else(|| "(unconnected)".into())
                 };
                 Some(format!(
-                    "IF {condition:?} {{ FALSE: {} | TRUE: {} }}",
-                    branch(0),
-                    branch(1)
+                    "IF {condition} {{ FALSE: {} | TRUE: {} }}",
+                    branch(1),
+                    branch(2)
                 ))
+            }
+            PromptNodeKind::TextSwitch => {
+                let selector = self
+                    .links
+                    .iter()
+                    .find(|link| link.to == id && link.input == 0)
+                    .and_then(|link| self.evaluate_preview(&link.from, cache, visiting))
+                    .unwrap_or_else(|| "(unconnected text value)".into());
+                let branches = self
+                    .text_switch_cases(id)
+                    .unwrap_or_default()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, case)| {
+                        let value = self
+                            .links
+                            .iter()
+                            .find(|link| link.to == id && usize::from(link.input) == index + 1)
+                            .and_then(|link| self.evaluate_preview(&link.from, cache, visiting))
+                            .unwrap_or_else(|| "(unconnected)".into());
+                        format!("{case:?}: {value}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                Some(format!("MATCH {selector} {{ {branches} }}"))
             }
             PromptNodeKind::Request { .. } => None,
         };

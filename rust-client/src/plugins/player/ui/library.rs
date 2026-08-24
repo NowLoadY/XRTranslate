@@ -217,8 +217,12 @@ pub(super) fn render_library(
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if components::danger_button(ui, tr(language, "Delete"))
-                                        .clicked()
+                                    if components::danger_button_with_id(
+                                        ui,
+                                        ("delete", task.created_at_sec, task.title.as_str()),
+                                        tr(language, "Delete"),
+                                    )
+                                    .clicked()
                                     {
                                         task_to_delete = Some(task.id.clone());
                                     }

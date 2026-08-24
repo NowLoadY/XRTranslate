@@ -115,6 +115,20 @@ pub fn tr_dynamic<'a>(language: UiLanguage, english: &'a str) -> Cow<'a, str> {
 
 /// Consolidated single-source-of-truth dictionary: `(English Key, Chinese (zh), Japanese (ja), Korean (ko), Russian (ru))`
 const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
+    (
+        "Audio Studio",
+        "音频工作室",
+        "オーディオスタジオ",
+        "오디오 스튜디오",
+        "Аудиостудия",
+    ),
+    (
+        "Route, monitor, and mix microphones, system audio, TTS, and media sources.",
+        "连接、监听并混合麦克风、系统音频、TTS 与媒体音源。",
+        "マイク、システム音声、TTS、メディア音源を接続・モニター・ミックスします。",
+        "마이크, 시스템 오디오, TTS 및 미디어 소스를 연결하고 모니터링하며 믹싱합니다.",
+        "Маршрутизация, мониторинг и микширование микрофона, системного звука, TTS и медиа.",
+    ),
     ("EXPORT", "导出工程", "エクスポート", "내보내기", "Экспорт"),
     ("IMPORT", "导入工程", "インポート", "가져오기", "Импорт"),
     (
@@ -1641,6 +1655,34 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Системный звук (WASAPI)",
     ),
     ("Refresh", "刷新", "更新", "새로고침", "Обновить"),
+    (
+        "Application audio",
+        "应用音频",
+        "アプリ音声",
+        "애플리케이션 오디오",
+        "Звук приложения",
+    ),
+    (
+        "Not running",
+        "未运行",
+        "実行されていません",
+        "실행 중이 아님",
+        "Не запущено",
+    ),
+    (
+        "Edit in Audio Studio",
+        "在音频工作室中编辑",
+        "Audio Studio で編集",
+        "Audio Studio에서 편집",
+        "Изменить в Audio Studio",
+    ),
+    (
+        "Configured by the applied Audio Studio route",
+        "由已应用的音频工作室路线配置",
+        "適用済みの Audio Studio ルートで設定されています",
+        "적용된 Audio Studio 경로에서 구성됨",
+        "Настроено применённым маршрутом Audio Studio",
+    ),
     (
         "Start Translation",
         "开始翻译",
