@@ -397,7 +397,11 @@ fn apply_model_runtime(
         .context_window_tokens
         .checked_mul(u32::from(runtime.parallel_slots))
         .ok_or("model context_window_tokens × parallel_slots exceeds u32")?;
-    spec.parallel_slots = (runtime.parallel_slots > 1).then_some(runtime.parallel_slots);
+    // Keep the child server's slot count identical to the backend scheduler.
+    // Omitting --parallel for one slot makes llama-server fall back to its
+    // own default (currently four slots), which can create hidden GPU work
+    // and queueing that the backend cannot account for.
+    spec.parallel_slots = Some(runtime.parallel_slots);
     Ok(())
 }
 
@@ -488,6 +492,7 @@ mod tests {
         assert_eq!(translation.model_alias, "hy-mt2");
         assert_eq!(asr.endpoint.port, 8101);
         assert_eq!(translation.endpoint.port, 8102);
+        assert_eq!(asr.parallel_slots, Some(1));
         assert_eq!(translation.context_size, 4_096);
         assert_eq!(translation.parallel_slots, Some(2));
     }
