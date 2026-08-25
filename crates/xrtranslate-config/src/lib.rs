@@ -94,6 +94,7 @@ impl RuntimeLayout {
     pub const ONNX_CPU_RUNTIME_DIRECTORY: &'static str = "runtime/onnxruntime/cpu";
     pub const ONNX_CORE_LIBRARY: &'static str = "onnxruntime.dll";
     pub const NATIVE_RUNTIME_SELECTION_FILE: &'static str = "runtime/native-runtime.json";
+    pub const VOICE_CLONES_DIRECTORY: &'static str = "runtime/voice_clones";
 
     #[must_use]
     pub fn for_project_root(project_root: impl AsRef<Path>) -> Self {
@@ -174,6 +175,11 @@ impl RuntimeLayout {
     #[must_use]
     pub fn native_runtime_selection_file(&self) -> PathBuf {
         self.runtime_root.join("native-runtime.json")
+    }
+
+    #[must_use]
+    pub fn voice_clones_directory(&self) -> PathBuf {
+        self.runtime_root.join("voice_clones")
     }
 
     #[must_use]
@@ -1696,6 +1702,10 @@ mod tests {
         assert_eq!(
             layout.native_runtime_selection_file(),
             PathBuf::from("/tmp/xrtranslate-release/custom_runtime/native-runtime.json")
+        );
+        assert_eq!(
+            layout.voice_clones_directory(),
+            PathBuf::from("/tmp/xrtranslate-release/custom_runtime/voice_clones")
         );
 
         let external_layout = RuntimeLayout::new(&root, Some("/mnt/ai/runtime"));

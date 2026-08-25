@@ -700,6 +700,8 @@ impl Default for XRTranslateApp {
 
         let shared_session_state = Arc::new(Mutex::new(SharedSessionState {
             connection_status: "Ready".into(),
+            microphone_clone_state: settings.microphone_clone_state.clone(),
+            loopback_clone_state: settings.loopback_clone_state.clone(),
             ..Default::default()
         }));
         let overlay_manager = Arc::new(Mutex::new(overlay_manager::OverlayManager::new()));
@@ -1345,8 +1347,8 @@ impl Default for XRTranslateApp {
             target_lang: settings.target_lang,
             denoise_enabled: settings.denoise_enabled,
             tts_enabled: settings.tts_enabled && service_config.tts_is_configured(),
-            microphone_clone_state: None,
-            loopback_clone_state: None,
+            microphone_clone_state: settings.microphone_clone_state,
+            loopback_clone_state: settings.loopback_clone_state,
             tts_runtime_backend: None,
             tts_runtime_cuda_version: None,
             osc_plugin,
@@ -2599,6 +2601,8 @@ impl XRTranslateApp {
             target_lang: self.target_lang.clone(),
             denoise_enabled: self.denoise_enabled,
             tts_enabled: self.tts_enabled,
+            microphone_clone_state: self.microphone_clone_state.clone(),
+            loopback_clone_state: self.loopback_clone_state.clone(),
             mute_self_pauses_translation: self.mute_self_pauses_translation.load(Ordering::Relaxed),
             ui_language: self.ui_language,
             ui_theme: self.ui_theme,
@@ -3941,8 +3945,15 @@ impl XRTranslateApp {
             self.partial_text = state.partial_text.clone();
             self.recognition_history = state.recognition_history.clone();
             self.translations = state.translations.clone();
+            let prev_microphone_clone_state = self.microphone_clone_state.clone();
+            let prev_loopback_clone_state = self.loopback_clone_state.clone();
             self.microphone_clone_state = state.microphone_clone_state.clone();
             self.loopback_clone_state = state.loopback_clone_state.clone();
+            if self.microphone_clone_state != prev_microphone_clone_state
+                || self.loopback_clone_state != prev_loopback_clone_state
+            {
+                self.save_settings();
+            }
             self.tts_runtime_backend = state.tts_runtime_backend.clone();
             self.tts_runtime_cuda_version = state.tts_runtime_cuda_version.clone();
             let prompt_trace = match self.prompt_studio.active_provider() {

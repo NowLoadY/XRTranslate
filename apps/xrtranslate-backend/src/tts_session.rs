@@ -4,6 +4,9 @@
 //! epochs remain in `main`. This module owns only clone capture and the bounded
 //! synthesis worker shared by every native TTS provider.
 
+use std::{fs, path::Path};
+
+use serde::{Deserialize, Serialize};
 use tokio::{sync::mpsc, time::Instant};
 use tracing::{info, warn};
 use xrtranslate_config::AppConfig;
@@ -157,6 +160,125 @@ pub(crate) fn clone_voice_name(source: AudioSource) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct PersistedVoiceMetadata {
+    pub(crate) voice_name: String,
+    pub(crate) transcript: String,
+    #[serde(default)]
+    pub(crate) created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PersistedVoiceClone {
+    pub(crate) voice_name: String,
+    pub(crate) transcript: String,
+    pub(crate) wav_bytes: Vec<u8>,
+}
+
+pub(crate) fn sanitize_voice_file_name(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    if sanitized.trim().is_empty() {
+        "voice".to_string()
+    } else {
+        sanitized
+    }
+}
+
+pub(crate) fn save_persisted_voice_clone(
+    voice_clones_dir: &Path,
+    voice_name: &str,
+    wav: &[u8],
+    transcript: &str,
+) -> Result<(), std::io::Error> {
+    fs::create_dir_all(voice_clones_dir)?;
+    let file_stem = sanitize_voice_file_name(voice_name);
+    let wav_path = voice_clones_dir.join(format!("{file_stem}.wav"));
+    let meta_path = voice_clones_dir.join(format!("{file_stem}.json"));
+
+    fs::write(&wav_path, wav)?;
+
+    let created_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let metadata = PersistedVoiceMetadata {
+        voice_name: voice_name.to_owned(),
+        transcript: transcript.to_owned(),
+        created_at_ms,
+    };
+    let json_bytes = serde_json::to_vec_pretty(&metadata)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    fs::write(&meta_path, json_bytes)?;
+    Ok(())
+}
+
+pub(crate) fn load_persisted_voice_clones(voice_clones_dir: &Path) -> Vec<PersistedVoiceClone> {
+    if !voice_clones_dir.is_dir() {
+        return Vec::new();
+    }
+    let Ok(entries) = fs::read_dir(voice_clones_dir) else {
+        return Vec::new();
+    };
+
+    let mut clones = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("json")) {
+            let Ok(content) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(metadata) = serde_json::from_str::<PersistedVoiceMetadata>(&content) else {
+                continue;
+            };
+            let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let wav_path = voice_clones_dir.join(format!("{file_stem}.wav"));
+            if !wav_path.is_file() {
+                continue;
+            }
+            let Ok(wav_bytes) = fs::read(&wav_path) else {
+                continue;
+            };
+            clones.push(PersistedVoiceClone {
+                voice_name: metadata.voice_name,
+                transcript: metadata.transcript,
+                wav_bytes,
+            });
+        }
+    }
+    clones.sort_by(|a, b| a.voice_name.cmp(&b.voice_name));
+    clones
+}
+
+pub(crate) async fn restore_persisted_voice_clones(
+    voice_clones_dir: &Path,
+    adapter: &NativeTtsAdapter,
+) -> usize {
+    let clones = load_persisted_voice_clones(voice_clones_dir);
+    let mut restored = 0;
+    for clone in clones {
+        match adapter
+            .register_voice(&clone.voice_name, clone.wav_bytes, &clone.transcript)
+            .await
+        {
+            Ok(()) => {
+                info!(voice = %clone.voice_name, "restored persisted voice clone");
+                restored += 1;
+            }
+            Err(error) => {
+                warn!(
+                    voice = %clone.voice_name,
+                    %error,
+                    "failed to restore persisted voice clone into active TTS provider"
+                );
+            }
+        }
+    }
+    restored
+}
+
 pub(crate) fn max_input_chars(config: &AppConfig) -> usize {
     config
         .tts
@@ -203,5 +325,41 @@ mod tests {
         let chunks = split_text("你好，世界。这是一段语音。", 6);
         assert_eq!(chunks.concat(), "你好，世界。这是一段语音。");
         assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 6));
+    }
+
+    #[test]
+    fn persisted_voice_clones_save_and_load_round_trip() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "xrtranslate-test-voice-clones-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&temp_dir);
+
+        let wav_data = b"RIFFfake_wav_data_for_testing";
+        let transcript = "testing voice clone transcript";
+        save_persisted_voice_clone(&temp_dir, "xrtranslate_microphone", wav_data, transcript)
+            .expect("save should succeed");
+
+        let loaded = load_persisted_voice_clones(&temp_dir);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].voice_name, "xrtranslate_microphone");
+        assert_eq!(loaded[0].transcript, transcript);
+        assert_eq!(loaded[0].wav_bytes, wav_data);
+
+        // Overwrite with new data
+        let new_wav = b"RIFFnew_wav_data";
+        let new_transcript = "updated transcript";
+        save_persisted_voice_clone(&temp_dir, "xrtranslate_microphone", new_wav, new_transcript)
+            .expect("overwrite should succeed");
+
+        let reloaded = load_persisted_voice_clones(&temp_dir);
+        assert_eq!(reloaded.len(), 1);
+        assert_eq!(reloaded[0].transcript, new_transcript);
+        assert_eq!(reloaded[0].wav_bytes, new_wav);
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }

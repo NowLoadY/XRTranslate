@@ -123,6 +123,22 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
                             "https://github.com/NowLoadY/XRTranslate",
                         ));
                     }
+                    ui.add_space(4.0);
+                    let website_icon = egui::Image::new(egui::include_image!(
+                        "../../../resources/icons/globe.svg"
+                    ))
+                    .fit_to_exact_size(egui::vec2(20.0, 20.0))
+                    .tint(theme::text_weak());
+
+                    let website_btn = ui
+                        .add(egui::Button::image(website_icon).frame(false))
+                        .on_hover_text("chatgpt.site: https://xrtranslate.nowloady.chatgpt.site")
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if website_btn.clicked() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(
+                            "https://xrtranslate.nowloady.chatgpt.site",
+                        ));
+                    }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
                             RichText::new(format!(

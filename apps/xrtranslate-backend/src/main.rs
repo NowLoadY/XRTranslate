@@ -33,7 +33,7 @@ use tokio::{
     sync::{mpsc, watch},
 };
 use tracing::{info, warn};
-use xrtranslate_config::AppConfig;
+use xrtranslate_config::{AppConfig, RuntimeLayout};
 use xrtranslate_engine::{
     RevisableTranscript, RouteEpoch, translation_segment_pairs_for_final_text_with_lang,
 };
@@ -78,7 +78,8 @@ use model_runtime::{
 use scheduler::InferenceScheduler;
 use tts_session::{
     TtsSynthesisJob, VoiceCloneCapture, clone_voice_name, max_input_chars as tts_max_input_chars,
-    run_tts_worker, split_text as split_tts_text,
+    restore_persisted_voice_clones, run_tts_worker, save_persisted_voice_clone,
+    split_text as split_tts_text,
 };
 use xr_corpus_client::CorpusClient;
 use xr_corpus_protocol::{
@@ -297,6 +298,7 @@ struct BackendState {
     model_plan: Arc<NativeProviderPlan>,
     corpus_client: CorpusClient,
     project_root: PathBuf,
+    voice_clones_dir: PathBuf,
     next_session_id: Arc<AtomicU64>,
     inference_scheduler: InferenceScheduler,
     tts: Option<NativeTtsAdapter>,
@@ -369,6 +371,14 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => OnnxRuntimeDiagnostic::default(),
     };
+    let voice_clones_dir =
+        RuntimeLayout::for_config(&project_root, &config.model_manager).voice_clones_directory();
+    if let Some(adapter) = &tts {
+        let restored = restore_persisted_voice_clones(&voice_clones_dir, adapter).await;
+        if restored > 0 {
+            info!(restored, "restored persisted voice clones");
+        }
+    }
     info!(
         provider = %config.tts.provider,
         configured = tts.is_some(),
@@ -381,6 +391,7 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
         model_plan,
         corpus_client,
         project_root,
+        voice_clones_dir,
         next_session_id: Arc::new(AtomicU64::new(1)),
         inference_scheduler,
         tts,
@@ -557,7 +568,27 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                             Some(tts) => {
                                 let pcm = samples.into_iter().flat_map(i16::to_le_bytes).collect::<Vec<_>>();
                                 match pcm16_mono_16khz_to_wav(&pcm) {
-                                    Ok(wav) => tts.register_voice(clone_voice_name(audio_source), wav, &transcript).await.map_err(|error| error.to_string()),
+                                    Ok(wav) => {
+                                        let result = tts
+                                            .register_voice(clone_voice_name(audio_source), wav.clone(), &transcript)
+                                            .await
+                                            .map_err(|error| error.to_string());
+                                        if result.is_ok() {
+                                            if let Err(error) = save_persisted_voice_clone(
+                                                &state.voice_clones_dir,
+                                                clone_voice_name(audio_source),
+                                                &wav,
+                                                &transcript,
+                                            ) {
+                                                warn!(
+                                                    voice = clone_voice_name(audio_source),
+                                                    %error,
+                                                    "failed to persist voice clone to disk"
+                                                );
+                                            }
+                                        }
+                                        result
+                                    }
                                     Err(error) => Err(error.to_string()),
                                 }
                             }

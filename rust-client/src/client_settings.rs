@@ -83,6 +83,10 @@ pub struct ClientSettings {
     pub denoise_enabled: bool,
     #[serde(default)]
     pub tts_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub microphone_clone_state: Option<xrtranslate_protocol::VoiceCloneState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loopback_clone_state: Option<xrtranslate_protocol::VoiceCloneState>,
     #[serde(default)]
     pub mute_self_pauses_translation: bool,
     #[serde(default)]
@@ -162,6 +166,8 @@ impl Default for ClientSettings {
             target_lang: default_target_lang(),
             denoise_enabled: true,
             tts_enabled: false,
+            microphone_clone_state: None,
+            loopback_clone_state: None,
             mute_self_pauses_translation: false,
             ui_language: UiLanguage::default(),
             ui_theme: UiTheme::default(),
@@ -563,6 +569,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(state["first_run"], false);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn voice_clone_state_is_preserved_across_save_and_load() {
+        let root = std::env::temp_dir().join("xrtranslate_test_voice_clone_persistence");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let mic_state = xrtranslate_protocol::VoiceCloneState {
+            state: xrtranslate_protocol::VoiceClonePhase::Ready,
+            collected_seconds: 0.0,
+            required_seconds: 0.5,
+            message: None,
+        };
+        let settings = ClientSettings {
+            microphone_clone_state: Some(mic_state.clone()),
+            ..ClientSettings::default()
+        };
+        settings.save(&root).unwrap();
+
+        let loaded = ClientSettings::load(&root);
+        assert_eq!(loaded.microphone_clone_state, Some(mic_state));
+        assert_eq!(loaded.loopback_clone_state, None);
 
         let _ = std::fs::remove_dir_all(root);
     }

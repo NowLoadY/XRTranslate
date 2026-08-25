@@ -191,6 +191,19 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
                 "https://github.com/NowLoadY/XRTranslate",
             );
         });
+        ui.add_space(8.0);
+        crate::ui::layout::flow_row(ui, |ui| {
+            ui.label(
+                egui::RichText::new("chatgpt.site:")
+                    .color(crate::ui::theme::text_strong())
+                    .strong(),
+            );
+            ui.add_space(4.0);
+            ui.hyperlink_to(
+                "https://xrtranslate.nowloady.chatgpt.site",
+                "https://xrtranslate.nowloady.chatgpt.site",
+            );
+        });
         ui.add_space(14.0);
         render_update_controls(app, ui);
 
