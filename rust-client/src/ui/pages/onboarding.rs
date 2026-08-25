@@ -178,6 +178,8 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
                         if proxy_response.lost_focus() || proxy_response.changed() {
                             app.set_download_proxy_url(proxy);
                         }
+                        ui.add_space(8.0);
+                        crate::ui::pages::settings::render_update_action_button(app, ui);
                     });
                 });
                 ui.add_space(8.0);

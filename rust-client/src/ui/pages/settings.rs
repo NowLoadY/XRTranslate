@@ -353,11 +353,47 @@ fn render_social_link_chip(ui: &mut egui::Ui, label: &str, url: &str) {
         });
 }
 
+pub(crate) fn render_update_action_button(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
+    use crate::app_update::AppUpdateState;
+
+    let state = app.app_update_state().clone();
+    let busy = app.app_update_manager.is_busy();
+    let is_actionable = matches!(
+        &state,
+        AppUpdateState::Ready(_) | AppUpdateState::Available(_)
+    );
+    let label = match &state {
+        AppUpdateState::Ready(_) => "Install and Restart",
+        AppUpdateState::Available(_) => "Download Update",
+        AppUpdateState::Checking => "Checking...",
+        AppUpdateState::Downloading { .. } => "Downloading...",
+        AppUpdateState::Installing => "Installing...",
+        AppUpdateState::Current | AppUpdateState::Idle => "Check for Updates",
+        AppUpdateState::Failed(_) => "Try Again",
+    };
+    let clicked = if is_actionable {
+        components::primary_button_enabled(ui, label, !busy).clicked()
+    } else {
+        components::animated_button_enabled(ui, label, !busy).clicked()
+    };
+    if clicked {
+        match &state {
+            AppUpdateState::Ready(_) => app.install_update_and_restart(),
+            AppUpdateState::Available(_) => app.download_update(),
+            AppUpdateState::Current | AppUpdateState::Idle | AppUpdateState::Failed(_) => {
+                app.check_for_updates()
+            }
+            AppUpdateState::Checking
+            | AppUpdateState::Downloading { .. }
+            | AppUpdateState::Installing => {}
+        }
+    }
+}
+
 fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     use crate::app_update::AppUpdateState;
     use crate::client_settings::UpdateChannel;
 
-    let state = app.app_update_state().clone();
     let mut beta_enabled = app.update_channel == UpdateChannel::Beta;
     if ui
         .checkbox(&mut beta_enabled, "Receive beta updates")
@@ -380,6 +416,7 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 .strong(),
         );
         ui.add_space(4.0);
+        let state = app.app_update_state().clone();
         let status = match &state {
             AppUpdateState::Idle => "Ready",
             AppUpdateState::Checking => "Checking for updates...",
@@ -423,8 +460,7 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             _ => {}
         }
     });
-
-    if let AppUpdateState::Failed(error) = &state {
+    if let AppUpdateState::Failed(error) = app.app_update_state() {
         ui.add_space(6.0);
         ui.label(
             egui::RichText::new(error)
@@ -432,43 +468,9 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 .color(egui::Color32::from_rgb(220, 38, 38)),
         );
     }
-
     ui.add_space(10.0);
     crate::ui::layout::flow_row(ui, |ui| {
-        let busy = app.app_update_manager.is_busy();
-        let is_actionable = matches!(
-            &state,
-            AppUpdateState::Ready(_) | AppUpdateState::Available(_)
-        );
-        let primary_label = match &state {
-            AppUpdateState::Ready(_) => "Install and Restart",
-            AppUpdateState::Available(_) => "Download Update",
-            AppUpdateState::Checking => "Checking...",
-            AppUpdateState::Downloading { .. } => "Downloading...",
-            AppUpdateState::Installing => "Installing...",
-            AppUpdateState::Current => "Check for Updates",
-            AppUpdateState::Failed(_) => "Try Again",
-            AppUpdateState::Idle => "Check for Updates",
-        };
-
-        let btn_clicked = if is_actionable {
-            components::primary_button_enabled(ui, primary_label, !busy).clicked()
-        } else {
-            components::animated_button_enabled(ui, primary_label, !busy).clicked()
-        };
-
-        if btn_clicked {
-            match &state {
-                AppUpdateState::Ready(_) => app.install_update_and_restart(),
-                AppUpdateState::Available(_) => app.download_update(),
-                AppUpdateState::Current | AppUpdateState::Idle | AppUpdateState::Failed(_) => {
-                    app.check_for_updates()
-                }
-                AppUpdateState::Checking
-                | AppUpdateState::Downloading { .. }
-                | AppUpdateState::Installing => {}
-            }
-        }
+        render_update_action_button(app, ui);
     });
 }
 
