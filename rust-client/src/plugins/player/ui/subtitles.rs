@@ -90,9 +90,10 @@ pub(super) fn render_subtitles_card(
                         .color(crate::ui::theme::text_strong()),
                 );
                 ui.add_space(8.0);
-                components::speaker_badge(
-                    ui,
-                    &format!("{} {}", cues_count, tr(language, "Subtitles Count")),
+                ui.label(
+                    egui::RichText::new(format!("{} {}", cues_count, tr(language, "Subtitles Count")))
+                        .size(12.0)
+                        .color(crate::ui::theme::text_weak()),
                 );
 
                 if is_manually_scrolling {

@@ -735,18 +735,21 @@ fn render_links(
                 ),
             );
             if animated_signals.active.contains(&link.id) {
-                paint_signal_particles(
-                    ui,
-                    points,
-                    animated_signals.time_seconds,
-                    animated_signals
-                        .levels
-                        .get(&link.id)
-                        .copied()
-                        .unwrap_or(0.0),
-                    if selected { LINK_SELECTED } else { risk_color },
-                    &link.id,
-                );
+                let level = animated_signals
+                    .levels
+                    .get(&link.id)
+                    .copied()
+                    .unwrap_or(0.0);
+                if level >= 0.001 {
+                    paint_signal_particles(
+                        ui,
+                        points,
+                        animated_signals.time_seconds,
+                        level,
+                        if selected { LINK_SELECTED } else { risk_color },
+                        &link.id,
+                    );
+                }
             }
         }
     }
@@ -948,26 +951,60 @@ fn paint_signal_particles(
     color: Color32,
     link_id: &LinkId,
 ) {
+    if level < 0.001 {
+        return;
+    }
+
     const PARTICLES: usize = 4;
     const TRAIL_RADII: [f32; 3] = [1.0, 0.62, 0.34];
-    const TRAIL_GAP: f32 = 0.018;
 
-    // RMS is perceptually compressed so ordinary speech remains readable.
-    // Color is deliberately constant: signal strength is conveyed by size.
-    // Keep silence/activity pilot dots clearly visible on high-DPI displays.
-    // A mild perceptual curve gives ordinary speech and music useful size
-    // variation without changing particle color or brightness.
-    let radius = 2.4 + level.clamp(0.0, 1.0).powf(0.35) * 6.1;
-    let speed = 0.23_f64;
-    let id_offset = link_id.0.bytes().fold(0_u32, |hash, byte| {
-        hash.wrapping_mul(31).wrapping_add(u32::from(byte))
-    }) as f64
-        / u32::MAX as f64;
-    let phase = (time_seconds * speed + id_offset).fract() as f32;
+    // High sensitivity & large dynamic range:
+    // Only active when sound is present; completely silent routes show zero particles.
+    let boosted_level = ((level - 0.001) / 0.999 * 2.2).clamp(0.0, 1.0);
+    let dynamic_factor = boosted_level.sqrt() * 0.75 + (boosted_level * boosted_level) * 0.25;
+    let radius = 1.8 + dynamic_factor * 11.7;
+    let trail_gap = 0.015 + dynamic_factor * 0.024;
+
+    // True physical forward integration (Phase Accumulator):
+    // Speed varies dynamically from 0.18 (idle) to 0.66 (energetic audio rush).
+    // By accumulating delta phase: phase = (prev_phase + dt * speed),
+    // particles accelerate strictly forward when speaking and smoothly decelerate without rewinding.
+    let id = ui.make_persistent_id(("audio_signal_particle_phase", &link_id.0));
+    let (last_time, prev_phase) = ui.memory(|m| {
+        m.data
+            .get_temp::<(f64, f32)>(id)
+            .unwrap_or_else(|| {
+                let id_offset = (link_id.0.bytes().fold(0_u32, |hash, byte| {
+                    hash.wrapping_mul(31).wrapping_add(u32::from(byte))
+                }) as f64
+                    / u32::MAX as f64) as f32;
+                (time_seconds, id_offset)
+            })
+    });
+
+    let dt = (time_seconds - last_time).clamp(0.0, 0.1) as f32;
+    let speed = 0.18 + dynamic_factor * 0.48;
+    let phase = (prev_phase + dt * speed).fract();
+
+    ui.memory_mut(|m| {
+        m.data.insert_temp(id, (time_seconds, phase));
+    });
+
     for particle in 0..PARTICLES {
         let head = (phase + particle as f32 / PARTICLES as f32).fract();
+
+        // Ambient glow halo on energetic voice/audio peaks
+        if boosted_level > 0.05 {
+            let lead_point = graph_canvas::cubic_point(points, head);
+            let glow_alpha = (((boosted_level - 0.05) / 0.95) * 90.0).clamp(0.0, 85.0) as u8;
+            let glow_color =
+                Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), glow_alpha);
+            ui.painter()
+                .circle_filled(lead_point, radius * 1.85, glow_color);
+        }
+
         for (trail_index, scale) in TRAIL_RADII.into_iter().enumerate() {
-            let t = head - trail_index as f32 * TRAIL_GAP;
+            let t = head - trail_index as f32 * trail_gap;
             if t < 0.0 {
                 continue;
             }
@@ -1257,10 +1294,12 @@ fn render_node_control(
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
         child.add_enabled_ui(locked_by.is_none(), |child| {
-            egui::ComboBox::from_id_salt(("audio_device", &node.id.0))
-                .selected_text(&selected_text)
-                .width(control_rect.width())
-                .show_ui(child, |ui| {
+            crate::ui::components::combobox_ui_with_width(
+                child,
+                ("audio_device", &node.id.0),
+                &selected_text,
+                Some(control_rect.width()),
+                |ui| {
                     let automatic_label = if role == AudioDeviceRole::GameMicrophoneSink {
                         match candidates.as_slice() {
                             [device] => format!("Auto · {}", device.name),
@@ -1339,7 +1378,9 @@ fn render_node_control(
                 .max_rect(row_rect)
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
-        child.add(
+        crate::ui::components::text_edit_ui(
+            &mut child,
+            ("audio_speak_into_route", &node.id.0),
             egui::TextEdit::singleline(&mut text)
                 .hint_text("Speak into route…")
                 .desired_width((row_rect.width() - 54.0).max(40.0)),
@@ -1383,14 +1424,17 @@ fn render_system_audio_control(
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     let endpoint_mode = matches!(capture, SystemAudioCapture::Endpoint { .. });
-    egui::ComboBox::from_id_salt(("system_audio_mode", &node.id.0))
-        .selected_text(if endpoint_mode {
-            "Entire output device"
-        } else {
-            "One application"
-        })
-        .width(mode_rect.width())
-        .show_ui(&mut mode_ui, |ui| {
+    let selected_mode_text = if endpoint_mode {
+        "Entire output device"
+    } else {
+        "One application"
+    };
+    crate::ui::components::combobox_ui_with_width(
+        &mut mode_ui,
+        ("system_audio_mode", &node.id.0),
+        selected_mode_text,
+        Some(mode_rect.width()),
+        |ui| {
             if ui
                 .selectable_label(endpoint_mode, "Entire output device")
                 .on_hover_text("Captures every application playing on the selected output device")
@@ -1444,10 +1488,12 @@ fn render_system_audio_control(
                 .and_then(|selected| candidates.iter().find(|device| &device.id == selected))
                 .map(|device| device.name.clone())
                 .unwrap_or_else(|| "System default".into());
-            egui::ComboBox::from_id_salt(("system_audio_endpoint", &node.id.0))
-                .selected_text(selected_text)
-                .width(source_rect.width())
-                .show_ui(&mut source_ui, |ui| {
+            crate::ui::components::combobox_ui_with_width(
+                &mut source_ui,
+                ("system_audio_endpoint", &node.id.0),
+                selected_text,
+                Some(source_rect.width()),
+                |ui| {
                     if ui
                         .selectable_label(device_id.is_none(), "System default")
                         .clicked()
@@ -1486,10 +1532,12 @@ fn render_system_audio_control(
                 .as_ref()
                 .map(|application| application.display_name.clone())
                 .unwrap_or_else(|| "Select an application…".into());
-            let combo = egui::ComboBox::from_id_salt(("system_audio_application", &node.id.0))
-                .selected_text(selected_text)
-                .width(source_rect.width())
-                .show_ui(&mut source_ui, |ui| {
+            let combo = crate::ui::components::combobox_ui_with_width(
+                &mut source_ui,
+                ("system_audio_application", &node.id.0),
+                selected_text,
+                Some(source_rect.width()),
+                |ui| {
                     if host_audio.applications.is_empty() {
                         ui.label("No application audio sessions found · refreshed on access");
                     }

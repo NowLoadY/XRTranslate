@@ -3,7 +3,7 @@ use crate::plugins::player::{
     VideoPlayerAction, controller::VideoPlayerController, i18n::tr, task::MediaType,
 };
 use crate::ui::components;
-use eframe::egui::{self, Color32, CornerRadius, Frame, Margin};
+use eframe::egui::{self, Color32};
 
 pub(super) fn render_library(
     controller: &mut VideoPlayerController,
@@ -99,39 +99,30 @@ pub(super) fn render_library(
                     ui.vertical(|ui| {
                         // 1. Header Row (Badge + Title + Metadata)
                         ui.horizontal(|ui| {
-                            let (badge_bg, badge_fg, badge_text) =
+                            let (badge_fg, badge_text) =
                                 match (&task.source, task.media_type) {
                                     (super::super::backend::MediaSource::NetworkStream(_), _) => (
-                                        Color32::from_rgb(236, 253, 245),
                                         Color32::from_rgb(5, 150, 105),
                                         tr(language, "STREAM"),
                                     ),
                                     (_, MediaType::AudioOnly) => (
-                                        Color32::from_rgb(243, 232, 255),
                                         Color32::from_rgb(147, 51, 234),
                                         tr(language, "AUDIO FILE"),
                                     ),
                                     (_, MediaType::Video) => (
-                                        Color32::from_rgb(238, 242, 255),
                                         Color32::from_rgb(79, 70, 229),
                                         tr(language, "VIDEO FILE"),
                                     ),
                                 };
 
-                            Frame::new()
-                                .fill(badge_bg)
-                                .corner_radius(CornerRadius::same(6))
-                                .inner_margin(Margin::symmetric(6, 3))
-                                .show(ui, |ui| {
-                                    ui.label(
-                                        egui::RichText::new(badge_text)
-                                            .color(badge_fg)
-                                            .strong()
-                                            .size(11.0),
-                                    );
-                                });
+                            ui.label(
+                                egui::RichText::new(badge_text)
+                                    .color(badge_fg)
+                                    .strong()
+                                    .size(11.5),
+                            );
 
-                            ui.add_space(8.0);
+                            ui.add_space(4.0);
 
                             ui.vertical(|ui| {
                                 ui.label(

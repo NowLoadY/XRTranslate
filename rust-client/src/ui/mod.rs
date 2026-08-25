@@ -7,6 +7,7 @@ pub(crate) mod graph_style;
 pub mod layout;
 pub mod modal;
 pub mod organic_border;
+pub mod organic_line;
 pub mod pages;
 pub mod theme;
 
@@ -216,6 +217,11 @@ pub fn render_sidebar(
             );
             ui.add_space(4.0);
         }
+
+        ui.add_space(8.0);
+        components::wavy_divider_black_shadow(ui);
+        ui.add_space(8.0);
+
         nav_item_animated(
             ui,
             navigation,
@@ -432,8 +438,20 @@ fn nav_item_animated(
                         base.b(),
                         (255.0 * select_factor) as u8,
                     );
-                    ui.painter()
-                        .rect_filled(bar_rect, CornerRadius::same(2), bar_color);
+                    if theme::is_hand_drawn(ui.ctx()) {
+                        let top = egui::pos2(bar_rect.center().x, bar_rect.top() + 0.5);
+                        let btm = egui::pos2(bar_rect.center().x, bar_rect.bottom() - 0.5);
+                        organic_line::paint_hand_drawn_line(
+                            ui.painter(),
+                            id.with("sidebar_active_bar"),
+                            top,
+                            btm,
+                            Stroke::new(2.4, bar_color),
+                        );
+                    } else {
+                        ui.painter()
+                            .rect_filled(bar_rect, CornerRadius::same(2), bar_color);
+                    }
                     ui.add_space(3.0);
                 }
 

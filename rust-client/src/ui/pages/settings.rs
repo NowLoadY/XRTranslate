@@ -108,16 +108,19 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
                 );
                 ui.label(crate::i18n::tr(app.ui_language, "Theme variant"));
                 let mut variant = app.ui_theme.variant;
-                egui::ComboBox::from_id_salt("settings_theme_variant")
-                    .selected_text(match variant {
-                        crate::ui::theme::ThemeVariant::Default => {
-                            crate::i18n::tr(app.ui_language, "Default")
-                        }
-                        crate::ui::theme::ThemeVariant::HandDrawn => {
-                            crate::i18n::tr(app.ui_language, "Hand-drawn")
-                        }
-                    })
-                    .show_ui(ui, |ui| {
+                let selected_variant_text = match variant {
+                    crate::ui::theme::ThemeVariant::Default => {
+                        crate::i18n::tr(app.ui_language, "Default")
+                    }
+                    crate::ui::theme::ThemeVariant::HandDrawn => {
+                        crate::i18n::tr(app.ui_language, "Hand-drawn")
+                    }
+                };
+                crate::ui::components::combobox_ui(
+                    ui,
+                    "settings_theme_variant",
+                    selected_variant_text,
+                    |ui| {
                         ui.selectable_value(
                             &mut variant,
                             crate::ui::theme::ThemeVariant::Default,
@@ -128,7 +131,8 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
                             crate::ui::theme::ThemeVariant::HandDrawn,
                             crate::i18n::tr(app.ui_language, "Hand-drawn"),
                         );
-                    });
+                    },
+                );
                 if variant != app.ui_theme.variant {
                     app.set_ui_theme(crate::ui::theme::UiTheme { variant });
                 }
@@ -144,7 +148,9 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
                     .color(crate::ui::theme::text_strong())
                     .strong(),
             );
-            let response = ui.add(
+            let response = crate::ui::components::text_edit_ui(
+                ui,
+                "settings_download_proxy_url",
                 egui::TextEdit::singleline(&mut app.download_proxy_url)
                     .hint_text(crate::i18n::tr(
                         app.ui_language,
@@ -481,12 +487,13 @@ fn render_server_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     section(ui, crate::i18n::tr(app.ui_language, "Server"), |ui| {
         crate::ui::layout::flow_row(ui, |ui| {
             ui.label("URL:");
-            if ui
-                .add(
-                    egui::TextEdit::singleline(&mut app.server_url)
-                        .desired_width((ui.available_width() - 100.0).clamp(240.0, 360.0)),
-                )
-                .changed()
+            if crate::ui::components::text_edit_ui(
+                ui,
+                "settings_server_url",
+                egui::TextEdit::singleline(&mut app.server_url)
+                    .desired_width((ui.available_width() - 100.0).clamp(240.0, 360.0)),
+            )
+            .changed()
             {
                 app.save_settings();
             }

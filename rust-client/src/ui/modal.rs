@@ -1,4 +1,4 @@
-use eframe::egui::{self, Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Vec2};
+use eframe::egui::{self, Align, Color32, CornerRadius, Frame, Layout, Margin, RichText};
 
 #[derive(Clone, Debug)]
 pub struct ModalPage {
@@ -242,6 +242,7 @@ impl ModalDialog {
         let total_pages = self.pages.len();
         let is_multi_page = total_pages > 1;
 
+        let is_hand_drawn = crate::ui::theme::is_hand_drawn(ctx);
         let modal_window = egui::Window::new("modal_dialog_window")
             .title_bar(false)
             .resizable(false)
@@ -250,7 +251,11 @@ impl ModalDialog {
             .fixed_size([540.0, 380.0])
             .frame(
                 Frame::new()
-                    .fill(crate::ui::theme::modal_backdrop())
+                    .fill(if is_hand_drawn {
+                        Color32::TRANSPARENT
+                    } else {
+                        crate::ui::theme::modal_backdrop()
+                    })
                     .corner_radius(CornerRadius::same(20))
                     .inner_margin(Margin::same(20)),
             )
@@ -265,11 +270,46 @@ impl ModalDialog {
                         );
 
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let close_btn = ui.add(
-                                egui::Button::new(RichText::new("×").size(16.0).strong())
-                                    .min_size(Vec2::new(26.0, 26.0))
-                                    .corner_radius(CornerRadius::same(13)),
+                            let close_id = ui.make_persistent_id("modal_close_btn");
+                            let is_hovered = ui.memory(|m| {
+                                m.data
+                                    .get_temp::<bool>(close_id.with("hover_state"))
+                                    .unwrap_or(false)
+                            });
+                            let hover_factor = crate::ui::animation::AnimationSystem::hover(
+                                ui.ctx(),
+                                close_id.with("anim_hover"),
+                                is_hovered,
                             );
+                            let bg_color = Color32::from_rgba_unmultiplied(
+                                188,
+                                198,
+                                201,
+                                ((0.18 * hover_factor) * 255.0) as u8,
+                            );
+                            let text_color = crate::ui::animation::AnimationSystem::lerp_color(
+                                crate::ui::theme::text_weak(),
+                                crate::ui::theme::text_strong(),
+                                hover_factor,
+                            );
+                            let close_btn = Frame::new()
+                                .fill(bg_color)
+                                .corner_radius(CornerRadius::same(13))
+                                .inner_margin(Margin::symmetric(7, 3))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new("×")
+                                            .size(16.0)
+                                            .color(text_color)
+                                            .strong(),
+                                    )
+                                })
+                                .response
+                                .interact(egui::Sense::click());
+                            ui.memory_mut(|m| {
+                                m.data
+                                    .insert_temp(close_id.with("hover_state"), close_btn.hovered());
+                            });
                             if close_btn.hovered() {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                             }
@@ -279,9 +319,7 @@ impl ModalDialog {
                         });
                     });
 
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(10.0);
+                    ui.add_space(12.0);
 
                     let body_height = if is_multi_page { 220.0 } else { 240.0 };
                     egui::ScrollArea::vertical()
@@ -302,7 +340,7 @@ impl ModalDialog {
 
                                 ui.add_space(6.0);
                                 ui.horizontal(|ui| {
-                                    if crate::ui::components::animated_button(
+                                    if crate::ui::components::secondary_button(
                                         ui,
                                         crate::i18n::tr(language, "Copy Log"),
                                     )
@@ -328,9 +366,7 @@ impl ModalDialog {
                             }
                         });
 
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(8.0);
+                    ui.add_space(14.0);
 
                     ui.horizontal(|ui| {
                         if is_multi_page {
@@ -349,7 +385,7 @@ impl ModalDialog {
                             ui.add_space(12.0);
 
                             if self.current_page > 0
-                                && crate::ui::components::animated_button(
+                                && crate::ui::components::secondary_button(
                                     ui,
                                     crate::i18n::tr(language, "Prev"),
                                 )
@@ -377,10 +413,14 @@ impl ModalDialog {
                                     } else {
                                         &self.ok_label
                                     };
+                                let is_final_or_single_page =
+                                    !is_multi_page || self.current_page + 1 == total_pages;
                                 let confirmed = if self.destructive_ok {
                                     crate::ui::components::danger_button(ui, ok_text).clicked()
-                                } else {
+                                } else if is_final_or_single_page {
                                     crate::ui::components::primary_button(ui, ok_text).clicked()
+                                } else {
+                                    crate::ui::components::secondary_button(ui, ok_text).clicked()
                                 };
                                 if confirmed {
                                     self.action = self.ok_action;
@@ -388,7 +428,7 @@ impl ModalDialog {
                                 }
                             }
                             if self.show_cancel_button
-                                && crate::ui::components::animated_button(ui, &self.cancel_label)
+                                && crate::ui::components::secondary_button(ui, &self.cancel_label)
                                     .clicked()
                             {
                                 close_dialog = true;
@@ -399,20 +439,26 @@ impl ModalDialog {
             });
 
         if let Some(window_response) = modal_window {
-            crate::ui::organic_border::paint_with_id(
-                ctx,
-                window_response.response.layer_id,
-                egui::Id::new("modal_organic_border"),
-                window_response.response.rect,
-                crate::ui::organic_border::OrganicBorderStyle {
-                    radius: 20.0,
-                    half_width: 0.75,
-                    displacement: 1.8,
-                    noise_scale: 0.034,
-                    seed: 41.0,
-                    color: crate::ui::theme::border(),
-                },
-            );
+            if is_hand_drawn {
+                let fill_layer = egui::LayerId::new(
+                    egui::Order::Middle,
+                    egui::Id::new("modal_organic_fill_layer"),
+                );
+                crate::ui::organic_border::paint_with_id(
+                    ctx,
+                    fill_layer,
+                    egui::Id::new("modal_organic_fill"),
+                    window_response.response.rect,
+                    crate::ui::organic_border::OrganicBorderStyle {
+                        radius: 20.0,
+                        half_width: 0.0,
+                        displacement: 1.8,
+                        noise_scale: 0.034,
+                        seed: 41.0,
+                        color: crate::ui::theme::modal_backdrop(),
+                    },
+                );
+            }
         }
 
         if close_dialog {

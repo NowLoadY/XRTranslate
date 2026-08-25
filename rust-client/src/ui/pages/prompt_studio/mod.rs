@@ -757,10 +757,12 @@ fn render_header(
                     .color(style::MUTED),
                 );
                 ui.add_space(5.0);
-                egui::ComboBox::from_id_salt("prompt_design_select")
-                    .width(180.0)
-                    .selected_text(crate::i18n::tr_dynamic(language, &snapshot.draft.name))
-                    .show_ui(ui, |ui| {
+                crate::ui::components::combobox_ui_with_width(
+                    ui,
+                    "prompt_design_select",
+                    crate::i18n::tr_dynamic(language, &snapshot.draft.name),
+                    Some(180.0),
+                    |ui| {
                         for profile in &snapshot.profiles {
                             let name = crate::i18n::tr_dynamic(language, &profile.name);
                             let label = if profile.id == snapshot.active_id {

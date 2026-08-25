@@ -569,7 +569,7 @@ mod tests {
         let combined = build_chatbox_text(&history, &[], Some(&manual), &settings, &metrics);
         assert!(!combined.contains("HEADER"));
         assert!(!combined.contains("FOOTER"));
-        assert_eq!(combined, "hello ASR\nTXT typing note");
+        assert_eq!(combined, "hello ASR\n💬 typing note");
 
         // 3. When manual message takes most space, ASR space shrinks accordingly
         let tight_settings = OscSettings {
@@ -578,7 +578,7 @@ mod tests {
         };
         let tight_combined =
             build_chatbox_text(&history, &[], Some(&manual), &tight_settings, &metrics);
-        assert_eq!(tight_combined, "ASR\nTXT typing note");
+        assert_eq!(tight_combined, "ASR\n💬 typing note");
         assert!(tight_combined.chars().count() <= 20);
     }
 

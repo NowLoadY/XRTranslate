@@ -74,9 +74,11 @@ pub fn render_toolbar(
                             },
                         );
 
-                        let format_resp = egui::ComboBox::from_id_salt("osc_format_mode")
-                            .selected_text(plugin.draft().format_mode.label(language))
-                            .show_ui(ui, |ui| {
+                        let format_resp = components::combobox_ui(
+                            ui,
+                            "osc_format_mode",
+                            plugin.draft().format_mode.label(language),
+                            |ui| {
                                 let r1 = ui.selectable_value(
                                     &mut plugin.draft_mut().format_mode,
                                     OscFormatMode::BilingualSourceFirst,
@@ -98,7 +100,8 @@ pub fn render_toolbar(
                                     OscFormatMode::TargetOnly.label(language),
                                 );
                                 r1.changed() || r2.changed() || r3.changed() || r4.changed()
-                            });
+                            },
+                        );
                         if format_resp.inner.unwrap_or(false) {
                             changed = true;
                         }
@@ -145,14 +148,14 @@ pub fn render_toolbar(
                                 );
                             },
                         );
-                        let response = egui::ComboBox::from_id_salt("osc_message_separator")
-                            .selected_text(
-                                plugin
-                                    .draft()
-                                    .message_separator
-                                    .layout_label(language, target_only),
-                            )
-                            .show_ui(ui, |ui| {
+                        let response = components::combobox_ui(
+                            ui,
+                            "osc_message_separator",
+                            plugin
+                                .draft()
+                                .message_separator
+                                .layout_label(language, target_only),
+                            |ui| {
                                 let mut selection_changed = false;
                                 for value in
                                     [OscMessageSeparator::NewLine, OscMessageSeparator::Space]
@@ -166,7 +169,8 @@ pub fn render_toolbar(
                                         .changed();
                                 }
                                 selection_changed
-                            });
+                            },
+                        );
                         if response.inner.unwrap_or(false) {
                             changed = true;
                         }
@@ -202,7 +206,7 @@ pub fn render_toolbar(
                         ("System audio prefix:", 1usize),
                         ("Typing prefix:", 2usize),
                     ] {
-                        let response = ui.horizontal(|ui| {
+                        let row_changed = ui.horizontal(|ui| {
                             ui.allocate_ui_with_layout(
                                 egui::vec2(100.0, 20.0),
                                 egui::Layout::left_to_right(egui::Align::Center),
@@ -214,31 +218,72 @@ pub fn render_toolbar(
                                     );
                                 },
                             );
+                            let mut local_changed = false;
                             match value {
-                                0 => ui.add(
-                                    egui::TextEdit::singleline(
-                                        &mut plugin.draft_mut().microphone_prefix,
-                                    )
-                                    .desired_width(180.0)
-                                    .char_limit(MAX_PREFIX_LENGTH),
-                                ),
-                                1 => ui.add(
-                                    egui::TextEdit::singleline(
-                                        &mut plugin.draft_mut().system_audio_prefix,
-                                    )
-                                    .desired_width(180.0)
-                                    .char_limit(MAX_PREFIX_LENGTH),
-                                ),
-                                _ => ui.add(
-                                    egui::TextEdit::singleline(
-                                        &mut plugin.draft_mut().typing_prefix,
-                                    )
-                                    .desired_width(180.0)
-                                    .char_limit(MAX_PREFIX_LENGTH),
-                                ),
-                            }
-                        });
-                        changed |= response.inner.changed();
+                                0 => {
+                                    let edit_resp = components::text_edit_ui(
+                                        ui,
+                                        "osc_mic_prefix",
+                                        egui::TextEdit::singleline(
+                                            &mut plugin.draft_mut().microphone_prefix,
+                                        )
+                                        .hint_text("e.g. 🎤")
+                                        .desired_width(180.0)
+                                        .char_limit(MAX_PREFIX_LENGTH),
+                                    );
+                                    if edit_resp.changed() {
+                                        local_changed = true;
+                                    }
+                                    let reset_resp = components::reset_button(ui, "osc_mic_prefix");
+                                    if reset_resp.clicked() {
+                                        plugin.draft_mut().microphone_prefix = "🎤".into();
+                                        local_changed = true;
+                                    }
+                                }
+                                1 => {
+                                    let edit_resp = components::text_edit_ui(
+                                        ui,
+                                        "osc_sys_prefix",
+                                        egui::TextEdit::singleline(
+                                            &mut plugin.draft_mut().system_audio_prefix,
+                                        )
+                                        .hint_text("e.g. 🔊")
+                                        .desired_width(180.0)
+                                        .char_limit(MAX_PREFIX_LENGTH),
+                                    );
+                                    if edit_resp.changed() {
+                                        local_changed = true;
+                                    }
+                                    let reset_resp = components::reset_button(ui, "osc_sys_prefix");
+                                    if reset_resp.clicked() {
+                                        plugin.draft_mut().system_audio_prefix = "🔊".into();
+                                        local_changed = true;
+                                    }
+                                }
+                                _ => {
+                                    let edit_resp = components::text_edit_ui(
+                                        ui,
+                                        "osc_txt_prefix",
+                                        egui::TextEdit::singleline(
+                                            &mut plugin.draft_mut().typing_prefix,
+                                        )
+                                        .hint_text("e.g. 💬")
+                                        .desired_width(180.0)
+                                        .char_limit(MAX_PREFIX_LENGTH),
+                                    );
+                                    if edit_resp.changed() {
+                                        local_changed = true;
+                                    }
+                                    let reset_resp = components::reset_button(ui, "osc_txt_prefix");
+                                    if reset_resp.clicked() {
+                                        plugin.draft_mut().typing_prefix = "💬".into();
+                                        local_changed = true;
+                                    }
+                                }
+                            };
+                            local_changed
+                        }).inner;
+                        changed |= row_changed;
                         ui.add_space(4.0);
                     }
 
@@ -289,9 +334,11 @@ fn render_banner_selector(
             },
         );
 
-        let combo_resp = egui::ComboBox::from_id_salt(combo_id)
-            .selected_text(banner.content_type.label(language))
-            .show_ui(ui, |ui| {
+        let combo_resp = components::combobox_ui(
+            ui,
+            combo_id,
+            banner.content_type.label(language),
+            |ui| {
                 let r1 = ui.selectable_value(
                     &mut banner.content_type,
                     BannerContentType::None,
@@ -318,7 +365,8 @@ fn render_banner_selector(
                     BannerContentType::GpuStatus.label(language),
                 );
                 r1.changed() || r2.changed() || r3.changed() || r4.changed() || r5.changed()
-            });
+            },
+        );
 
         if combo_resp.inner.unwrap_or(false) {
             changed = true;
@@ -329,25 +377,26 @@ fn render_banner_selector(
         match banner.content_type {
             BannerContentType::None => {}
             BannerContentType::CustomText => {
-                if ui
-                    .add(
-                        egui::TextEdit::singleline(&mut banner.custom_text)
-                            .hint_text("e.g. [AFK] or [CN/JP]")
-                            .desired_width(150.0),
-                    )
-                    .changed()
+                if components::text_edit_ui(
+                    ui,
+                    combo_id,
+                    egui::TextEdit::singleline(&mut banner.custom_text)
+                        .hint_text("e.g. [AFK] or [CN/JP]")
+                        .desired_width(150.0),
+                )
+                .changed()
                 {
                     changed = true;
                 }
             }
             BannerContentType::SystemTime => {}
             BannerContentType::CpuStatus | BannerContentType::GpuStatus => {
-                if ui
-                    .checkbox(
-                        &mut banner.show_device_name,
-                        crate::i18n::tr(language, "Full Name"),
-                    )
-                    .changed()
+                if components::checkbox(
+                    ui,
+                    &mut banner.show_device_name,
+                    crate::i18n::tr(language, "Full Name"),
+                )
+                .changed()
                 {
                     changed = true;
                 }

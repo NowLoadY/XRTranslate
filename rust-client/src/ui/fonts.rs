@@ -39,6 +39,21 @@ const WINDOWS_FONTS: &[SystemFont] = &[
         file_name: "Nirmala.ttc",
         purpose: "Indic and Devanagari",
     },
+    SystemFont {
+        name: "cascadia_code",
+        file_name: "CascadiaCode.ttf",
+        purpose: "Emoji and Modern Pictographs",
+    },
+    SystemFont {
+        name: "cascadia_mono",
+        file_name: "CascadiaMono.ttf",
+        purpose: "Monospace Symbols",
+    },
+    SystemFont {
+        name: "segoe_ui_symbol",
+        file_name: "seguisym.ttf",
+        purpose: "Symbols and Icons",
+    },
 ];
 
 pub fn configure_multilingual_fonts(ctx: &egui::Context) {
@@ -91,7 +106,15 @@ mod tests {
                 .iter()
                 .map(|font| font.name)
                 .collect::<Vec<_>>(),
-            ["microsoft_yahei", "malgun_gothic", "segoe_ui", "nirmala_ui"]
+            [
+                "microsoft_yahei",
+                "malgun_gothic",
+                "segoe_ui",
+                "nirmala_ui",
+                "cascadia_code",
+                "cascadia_mono",
+                "segoe_ui_symbol",
+            ]
         );
     }
 
@@ -108,10 +131,11 @@ mod tests {
                 (
                     fonts.has_glyphs(&font, "Tiếng Việt"),
                     fonts.has_glyphs(&font, "नमस्ते दुनिया"),
+                    fonts.has_glyphs(&font, "🎤 🔊 💬"),
                 )
             }));
         });
         output.textures_delta.clear();
-        assert_eq!(coverage, Some((true, true)));
+        assert_eq!(coverage, Some((true, true, true)));
     }
 }

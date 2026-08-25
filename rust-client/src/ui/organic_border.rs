@@ -181,12 +181,20 @@ pub fn paint_with_id(
     style: OrganicBorderStyle,
 ) {
     if !crate::ui::theme::is_hand_drawn(ctx) {
-        ctx.layer_painter(layer_id).rect_stroke(
-            rect,
-            egui::CornerRadius::same(style.radius.round().clamp(0.0, 255.0) as u8),
-            crate::ui::theme::border_stroke(style.color),
-            egui::StrokeKind::Inside,
-        );
+        if style.half_width > 0.0 {
+            ctx.layer_painter(layer_id).rect_stroke(
+                rect,
+                egui::CornerRadius::same(style.radius.round().clamp(0.0, 255.0) as u8),
+                crate::ui::theme::border_stroke(style.color),
+                egui::StrokeKind::Inside,
+            );
+        } else {
+            ctx.layer_painter(layer_id).rect_filled(
+                rect,
+                egui::CornerRadius::same(style.radius.round().clamp(0.0, 255.0) as u8),
+                style.color,
+            );
+        }
         return;
     }
     paint_with_painter(&ctx.layer_painter(layer_id), id, rect, style);
@@ -282,8 +290,12 @@ impl CallbackTrait for OrganicBorderCallback {
         let pixels_per_point = screen_descriptor.pixels_per_point;
         let [r, g, b, a] = self.style.color.to_srgba_unmultiplied();
         // SDF antialiasing reduces edge coverage once more than an egui line.
-        // Compensate here so organic and straight borders have comparable weight.
-        let alpha = (a as f32 / 255.0 * 1.25).min(1.0);
+        // Compensate for strokes so organic and straight borders have comparable weight.
+        let alpha = if self.style.half_width <= 0.0 {
+            a as f32 / 255.0
+        } else {
+            (a as f32 / 255.0 * 1.25).min(1.0)
+        };
         let uniform = OrganicBorderUniform {
             size_px: self.size_points.map(|value| value * pixels_per_point),
             radius_px: self.style.radius * pixels_per_point,

@@ -47,43 +47,25 @@ pub(super) fn render_task_control_card(
                 ui.add_space(8.0);
 
                 if task.is_task_running {
-                    Frame::new()
-                        .fill(Color32::from_rgb(220, 252, 231))
-                        .corner_radius(CornerRadius::same(6))
-                        .inner_margin(Margin::symmetric(8, 2))
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(format!("● {}", tr(language, "Running")))
-                                    .size(11.5)
-                                    .color(Color32::from_rgb(22, 101, 52))
-                                    .strong(),
-                            );
-                        });
+                    ui.label(
+                        egui::RichText::new(format!("● {}", tr(language, "Running")))
+                            .size(11.5)
+                            .color(Color32::from_rgb(22, 101, 52))
+                            .strong(),
+                    );
                 } else if task.subtitles.count() > 0 {
-                    Frame::new()
-                        .fill(Color32::from_rgb(238, 242, 255))
-                        .corner_radius(CornerRadius::same(6))
-                        .inner_margin(Margin::symmetric(8, 2))
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(format!("✓ {}", tr(language, "Completed")))
-                                    .size(11.5)
-                                    .color(Color32::from_rgb(79, 70, 229))
-                                    .strong(),
-                            );
-                        });
+                    ui.label(
+                        egui::RichText::new(format!("✓ {}", tr(language, "Completed")))
+                            .size(11.5)
+                            .color(Color32::from_rgb(79, 70, 229))
+                            .strong(),
+                    );
                 } else {
-                    Frame::new()
-                        .fill(Color32::from_rgb(241, 245, 249))
-                        .corner_radius(CornerRadius::same(6))
-                        .inner_margin(Margin::symmetric(8, 2))
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(format!("○ {}", tr(language, "Idle / Ready")))
-                                    .size(11.5)
-                                    .color(crate::ui::theme::text_weak()),
-                            );
-                        });
+                    ui.label(
+                        egui::RichText::new(format!("○ {}", tr(language, "Idle / Ready")))
+                            .size(11.5)
+                            .color(crate::ui::theme::text_weak()),
+                    );
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -253,16 +235,19 @@ pub(super) fn render_task_control_card(
                             .color(crate::ui::theme::text_weak()),
                     );
                     ui.add_space(3.0);
-                    egui::ComboBox::from_id_salt("player_source_lang_select")
-                        .selected_text(match task.source_language.as_str() {
-                            "auto" => tr(language, "Auto Detect"),
-                            "zh" => tr(language, "Chinese"),
-                            "ja" => tr(language, "Japanese"),
-                            "en" => tr(language, "English"),
-                            "ko" => tr(language, "Korean"),
-                            _ => &task.source_language,
-                        })
-                        .show_ui(ui, |ui| {
+                    let source_text = match task.source_language.as_str() {
+                        "auto" => tr(language, "Auto Detect").to_owned(),
+                        "zh" => tr(language, "Chinese").to_owned(),
+                        "ja" => tr(language, "Japanese").to_owned(),
+                        "en" => tr(language, "English").to_owned(),
+                        "ko" => tr(language, "Korean").to_owned(),
+                        _ => task.source_language.clone(),
+                    };
+                    crate::ui::components::combobox_ui(
+                        ui,
+                        "player_source_lang_select",
+                        source_text,
+                        |ui| {
                             let options = [
                                 ("auto", tr(language, "Auto Detect")),
                                 ("zh", tr(language, "Chinese")),
@@ -275,7 +260,8 @@ pub(super) fn render_task_control_card(
                                     task_settings_changed = true;
                                 }
                             }
-                        });
+                        },
+                    );
                 });
 
                 // Col 1: Target Language
@@ -286,16 +272,19 @@ pub(super) fn render_task_control_card(
                             .color(crate::ui::theme::text_weak()),
                     );
                     ui.add_space(3.0);
-                    egui::ComboBox::from_id_salt("player_target_lang_select")
-                        .selected_text(match task.target_language.as_str() {
-                            "zh" => tr(language, "Chinese"),
-                            "zh-TW" => tr(language, "Traditional Chinese"),
-                            "ja" => tr(language, "Japanese"),
-                            "en" => tr(language, "English"),
-                            "ko" => tr(language, "Korean"),
-                            _ => &task.target_language,
-                        })
-                        .show_ui(ui, |ui| {
+                    let target_text = match task.target_language.as_str() {
+                        "zh" => tr(language, "Chinese").to_owned(),
+                        "zh-TW" => tr(language, "Traditional Chinese").to_owned(),
+                        "ja" => tr(language, "Japanese").to_owned(),
+                        "en" => tr(language, "English").to_owned(),
+                        "ko" => tr(language, "Korean").to_owned(),
+                        _ => task.target_language.clone(),
+                    };
+                    crate::ui::components::combobox_ui(
+                        ui,
+                        "player_target_lang_select",
+                        target_text,
+                        |ui| {
                             let options = [
                                 ("zh", tr(language, "Chinese")),
                                 ("zh-TW", tr(language, "Traditional Chinese")),
@@ -308,7 +297,8 @@ pub(super) fn render_task_control_card(
                                     task_settings_changed = true;
                                 }
                             }
-                        });
+                        },
+                    );
                 });
 
                 // Col 2: Subtitle Mode

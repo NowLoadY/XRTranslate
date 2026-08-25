@@ -289,9 +289,7 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 }
                 (CaptureSource::Both, _) => crate::i18n::tr(app.ui_language, "Both").to_owned(),
             };
-            egui::ComboBox::from_id_salt("capture_source")
-                .selected_text(selected_source_text)
-                .show_ui(ui, |ui| {
+            components::combobox_ui(ui, "capture_source", selected_source_text, |ui| {
                     ui.selectable_value(
                         &mut app.capture_source,
                         CaptureSource::Microphone,
@@ -984,16 +982,20 @@ fn render_input_adaptation(
                         .strong(),
                 );
                 let previous = recognition.continuous_recognition;
-                egui::ComboBox::from_id_salt(("recognition_timing", source))
-                    .selected_text(if recognition.continuous_recognition {
-                        always
-                    } else {
-                        speak
-                    })
-                    .show_ui(ui, |ui| {
+                let selected_timing_text = if recognition.continuous_recognition {
+                    always
+                } else {
+                    speak
+                };
+                components::combobox_ui(
+                    ui,
+                    ("recognition_timing", source),
+                    selected_timing_text,
+                    |ui| {
                         ui.selectable_value(&mut recognition.continuous_recognition, false, speak);
                         ui.selectable_value(&mut recognition.continuous_recognition, true, always);
-                    });
+                    },
+                );
                 recognition.continuous_recognition != previous
             })
             .inner;

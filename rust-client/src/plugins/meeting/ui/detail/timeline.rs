@@ -17,13 +17,17 @@ pub(super) fn render_timeline(
     ui: &mut egui::Ui,
 ) {
     ui.horizontal(|ui| {
-        ui.add(
+        crate::ui::components::text_edit_ui(
+            ui,
+            "meeting_search",
             egui::TextEdit::singleline(&mut controller.search)
                 .hint_text(tr(language, "Search this meeting"))
                 .desired_width(240.0),
         );
         ui.add_space(10.0);
-        ui.add(
+        crate::ui::components::text_edit_ui(
+            ui,
+            "meeting_new_topic",
             egui::TextEdit::singleline(&mut controller.new_topic_title)
                 .hint_text(tr(language, "New topic title"))
                 .desired_width(200.0),
@@ -50,7 +54,11 @@ pub(super) fn render_timeline(
                             .speaker_name_drafts
                             .entry(speaker.id.clone())
                             .or_insert_with(|| speaker.name.clone());
-                        ui.add(egui::TextEdit::singleline(name).desired_width(180.0));
+                        crate::ui::components::text_edit_ui(
+                            ui,
+                            ("speaker_name", &speaker.id),
+                            egui::TextEdit::singleline(name).desired_width(180.0),
+                        );
                         if components::animated_button(ui, tr(language, "Rename")).clicked() {
                             *action = UiAction::RenameSpeaker(speaker.id.clone(), name.clone());
                         }
@@ -176,7 +184,9 @@ pub(super) fn render_timeline(
     }
     ui.separator();
     ui.horizontal(|ui| {
-        ui.add(
+        crate::ui::components::text_edit_ui(
+            ui,
+            "meeting_quick_note",
             egui::TextEdit::singleline(&mut controller.quick_note)
                 .hint_text(tr(language, "Quick note linked to the latest message"))
                 .desired_width(f32::INFINITY),

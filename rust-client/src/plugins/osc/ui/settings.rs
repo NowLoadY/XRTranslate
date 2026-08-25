@@ -40,7 +40,9 @@ pub fn render(
                                     .color(crate::ui::theme::text_strong())
                                     .size(12.5),
                             );
-                            ui.add(
+                            crate::ui::components::text_edit_ui(
+                                ui,
+                                "osc_target_ip",
                                 egui::TextEdit::singleline(&mut plugin.draft_mut().ip)
                                     .desired_width(140.0),
                             );

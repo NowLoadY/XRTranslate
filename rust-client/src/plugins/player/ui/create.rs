@@ -6,7 +6,7 @@ use crate::plugins::player::{
     task::{MediaType, detect_media_type},
 };
 use crate::ui::components;
-use eframe::egui::{self, Color32, CornerRadius, Frame, Margin};
+use eframe::egui::{self, Color32};
 use std::path::Path;
 
 pub(super) fn render_create(
@@ -54,7 +54,9 @@ pub(super) fn render_create(
 
                     ui.horizontal(|ui| {
                         let text_width = (ui.available_width() - 95.0).max(100.0);
-                        ui.add(
+                        components::text_edit_ui(
+                            ui,
+                            "player_draft_source",
                             egui::TextEdit::singleline(&mut controller.draft_source)
                                 .hint_text(tr(
                                     language,
@@ -103,39 +105,23 @@ pub(super) fn render_create(
                             ui.add_space(6.0);
                             match media_type {
                                 MediaType::AudioOnly => {
-                                    Frame::new()
-                                        .fill(Color32::from_rgb(243, 232, 255))
-                                        .corner_radius(CornerRadius::same(6))
-                                        .inner_margin(Margin::symmetric(8, 4))
-                                        .show(ui, |ui| {
-                                            ui.horizontal(|ui| {
-                                                ui.label(
-                                                    egui::RichText::new(format!(
-                                                        "🎵 {}",
-                                                        tr(language, "Audio file detected")
-                                                    ))
-                                                    .size(12.0)
-                                                    .color(Color32::from_rgb(126, 34, 206))
-                                                    .strong(),
-                                                );
-                                            });
-                                        });
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "🎵 {}",
+                                            tr(language, "Audio file detected")
+                                        ))
+                                        .size(12.0)
+                                        .color(Color32::from_rgb(126, 34, 206))
+                                        .strong(),
+                                    );
                                 }
                                 MediaType::Video => {
-                                    Frame::new()
-                                        .fill(Color32::from_rgb(238, 242, 255))
-                                        .corner_radius(CornerRadius::same(6))
-                                        .inner_margin(Margin::symmetric(8, 4))
-                                        .show(ui, |ui| {
-                                            ui.horizontal(|ui| {
-                                                ui.label(
-                                                    egui::RichText::new("🎬 Video file detected")
-                                                        .size(12.0)
-                                                        .color(Color32::from_rgb(67, 56, 202))
-                                                        .strong(),
-                                                );
-                                            });
-                                        });
+                                    ui.label(
+                                        egui::RichText::new("🎬 Video file detected")
+                                            .size(12.0)
+                                            .color(Color32::from_rgb(67, 56, 202))
+                                            .strong(),
+                                    );
                                 }
                             }
                         }
@@ -152,7 +138,9 @@ pub(super) fn render_create(
                             .color(crate::ui::theme::text_strong()),
                     );
                     ui.add_space(8.0);
-                    ui.add(
+                    components::text_edit_ui(
+                        ui,
+                        "player_draft_title",
                         egui::TextEdit::singleline(&mut controller.draft_title)
                             .hint_text(tr(language, "Leave empty to use file name"))
                             .desired_width(ui.available_width()),

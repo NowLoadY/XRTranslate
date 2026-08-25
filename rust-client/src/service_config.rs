@@ -449,10 +449,10 @@ impl ServiceConfigEditor {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(crate::i18n::tr(language, "Provider:")).strong());
                     let previous = self.categories[cat_idx].selected_provider.clone();
-                    let selected_label = if self.categories[cat_idx].selected_provider.is_empty() {
-                        crate::i18n::tr(language, "No providers configured")
+                    let selected_label = if previous.is_empty() {
+                        crate::i18n::tr(language, "No providers configured").to_owned()
                     } else {
-                        &self.categories[cat_idx].selected_provider
+                        previous.clone()
                     };
 
                     let provider_names: Vec<String> = eligible_indices
@@ -460,9 +460,11 @@ impl ServiceConfigEditor {
                         .map(|index| self.categories[cat_idx].providers[*index].name.clone())
                         .collect();
 
-                    let combo_resp = egui::ComboBox::from_id_salt((category_key, "provider_combo"))
-                        .selected_text(selected_label)
-                        .show_ui(ui, |ui| {
+                    let combo_resp = crate::ui::components::combobox_ui(
+                        ui,
+                        (category_key, "provider_combo"),
+                        selected_label,
+                        |ui| {
                             for name in &provider_names {
                                 ui.selectable_value(
                                     &mut self.categories[cat_idx].selected_provider,
@@ -470,7 +472,8 @@ impl ServiceConfigEditor {
                                     name,
                                 );
                             }
-                        });
+                        },
+                    );
 
                     if self.categories[cat_idx].selected_provider != previous {
                         self.dirty = true;
@@ -1149,9 +1152,11 @@ fn render_tts_model_selection(
                     .size(12.0)
                     .color(crate::ui::theme::text_weak()),
                 );
-                eframe::egui::ComboBox::from_id_salt(("tts_voice", &provider.name, id))
-                    .selected_text(configured.label)
-                    .show_ui(ui, |ui| {
+                crate::ui::components::combobox_ui(
+                    ui,
+                    ("tts_voice", &provider.name, id),
+                    configured.label,
+                    |ui| {
                         for preset in &choices {
                             ui.selectable_value(
                                 &mut selected_key,
@@ -1159,7 +1164,8 @@ fn render_tts_model_selection(
                                 preset.label,
                             );
                         }
-                    });
+                    },
+                );
             });
             if selected_key != configured.key
                 || configured_key.is_some_and(|key| key != configured.key)
@@ -1196,26 +1202,28 @@ fn render_field_input(
         let current = xrtranslate_assets::manifest_for(current_id);
         let capability = model_capability_for_category(category_key).unwrap_or(current.capability);
         let mut selected = current_id;
-        let response =
-            egui::ComboBox::from_id_salt(("provider_model_level", provider_name, capability))
-                .selected_text(crate::i18n::tr(language, current.level.as_str()))
-                .show_ui(ui, |ui| {
-                    for package in crate::model_install::model_level_packages_for_provider(
-                        provider_name,
-                        capability,
-                    ) {
-                        if !crate::model_install::model_asset_is_present(project_root, package.id)
-                            .unwrap_or(false)
-                        {
-                            continue;
-                        }
-                        ui.selectable_value(
-                            &mut selected,
-                            package.id,
-                            crate::i18n::tr(language, package.level.as_str()),
-                        );
+        let response = crate::ui::components::combobox_ui(
+            ui,
+            ("provider_model_level", provider_name, capability),
+            crate::i18n::tr(language, current.level.as_str()),
+            |ui| {
+                for package in crate::model_install::model_level_packages_for_provider(
+                    provider_name,
+                    capability,
+                ) {
+                    if !crate::model_install::model_asset_is_present(project_root, package.id)
+                        .unwrap_or(false)
+                    {
+                        continue;
                     }
-                });
+                    ui.selectable_value(
+                        &mut selected,
+                        package.id,
+                        crate::i18n::tr(language, package.level.as_str()),
+                    );
+                }
+            },
+        );
         if response.response.changed() || selected != current_id {
             field.value = selected.as_str().to_owned();
             return true;
@@ -1249,13 +1257,14 @@ fn render_field_input(
                 unreachable!("numeric editor checked above")
             };
             let Ok(mut value) = field.value.trim().parse::<u32>() else {
-                return ui
-                    .add(
-                        egui::TextEdit::singleline(&mut field.value)
-                            .desired_width(width.min(180.0))
-                            .hint_text(crate::i18n::tr(language, "Positive integer")),
-                    )
-                    .changed();
+                return crate::ui::components::text_edit_ui(
+                    ui,
+                    ("field_value_num", &field.name),
+                    egui::TextEdit::singleline(&mut field.value)
+                        .desired_width(width.min(180.0))
+                        .hint_text(crate::i18n::tr(language, "Positive integer")),
+                )
+                .changed();
             };
             let response = ui.add(
                 egui::DragValue::new(&mut value)
@@ -1275,9 +1284,11 @@ fn render_field_input(
             {
                 let mut changed = false;
                 let current = field.value.clone();
-                egui::ComboBox::from_id_salt(&field.name)
-                    .selected_text(&current)
-                    .show_ui(ui, |ui| {
+                crate::ui::components::combobox_ui(
+                    ui,
+                    &field.name,
+                    &current,
+                    |ui| {
                         for &opt in options {
                             if ui
                                 .selectable_value(&mut field.value, opt.to_string(), opt)
@@ -1286,7 +1297,8 @@ fn render_field_input(
                                 changed = true;
                             }
                         }
-                    });
+                    },
+                );
                 changed
             } else {
                 crate::ui::components::singleline_input(

@@ -78,6 +78,20 @@ fn border_alpha(uv: vec2<f32>) -> f32 {
     let half_size = border.size_px * 0.5 - vec2<f32>(border.inset_px);
     let base_distance = rounded_box_sdf(point, half_size, border.radius_px);
 
+    if border.half_width_px <= 0.0 {
+        let reach = border.displacement_px + 2.5;
+        if base_distance > reach {
+            return 0.0;
+        }
+        if base_distance < -reach {
+            return 1.0;
+        }
+        let noise = organic_noise(point * border.noise_scale_px);
+        let distance = base_distance + (noise * 2.0 - 1.0) * border.displacement_px;
+        let antialias = max(fwidth(distance), 0.75);
+        return 1.0 - smoothstep(-antialias, antialias, distance);
+    }
+
     // Most fragments are far from the outline. Skip the noise work for them.
     let reach = border.displacement_px + border.half_width_px + 2.5;
     if abs(base_distance) > reach {

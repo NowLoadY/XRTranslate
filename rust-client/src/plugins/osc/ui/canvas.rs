@@ -15,16 +15,10 @@ pub fn render_canvas(
         let limit = plugin.draft().max_text_length;
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-            let (bg_color, text_color) = if char_count > limit {
-                (
-                    egui::Color32::from_rgb(254, 242, 242),
-                    egui::Color32::from_rgb(220, 38, 38),
-                )
+            let text_color = if char_count > limit {
+                egui::Color32::from_rgb(220, 38, 38)
             } else {
-                (
-                    egui::Color32::from_rgb(239, 246, 255),
-                    crate::ui::theme::primary_dark(),
-                )
+                crate::ui::theme::text_weak()
             };
             let lifecycle = if preview.typing {
                 Some(crate::i18n::tr(language, "Live").to_owned())
@@ -38,19 +32,12 @@ pub fn render_canvas(
                 |lifecycle| format!("{char_count}/{limit} · {lifecycle}"),
             );
 
-            egui::Frame::new()
-                .fill(bg_color)
-                .stroke(egui::Stroke::NONE)
-                .corner_radius(egui::CornerRadius::same(10))
-                .inner_margin(egui::Margin::symmetric(10, 4))
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(status)
-                            .color(text_color)
-                            .size(11.5)
-                            .strong(),
-                    );
-                });
+            ui.label(
+                egui::RichText::new(status)
+                    .font(egui::FontId::monospace(11.5))
+                    .color(text_color)
+                    .strong(),
+            );
         });
 
         ui.add_space(8.0);

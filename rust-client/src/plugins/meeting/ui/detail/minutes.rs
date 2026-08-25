@@ -22,7 +22,9 @@ pub(super) fn render_minutes(
     );
     ui.add_space(6.0);
 
-    let minutes_response = ui.add(
+    let minutes_response = crate::ui::components::text_edit_ui(
+        ui,
+        "meeting_minutes_draft",
         egui::TextEdit::multiline(&mut controller.minutes_draft)
             .desired_rows(18)
             .desired_width(f32::INFINITY),
@@ -46,8 +48,11 @@ pub(super) fn render_minutes(
                             .strong()
                             .size(12.0),
                     );
-                    let response =
-                        ui.add(egui::TextEdit::singleline(&mut marker.text).desired_width(420.0));
+                    let response = crate::ui::components::text_edit_ui(
+                        ui,
+                        ("marker_text", &marker.id),
+                        egui::TextEdit::singleline(&mut marker.text).desired_width(420.0),
+                    );
                     if response.lost_focus() && response.changed() {
                         *action = UiAction::SaveMarker(marker.clone());
                     }

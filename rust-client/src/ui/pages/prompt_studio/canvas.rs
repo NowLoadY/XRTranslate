@@ -225,13 +225,14 @@ pub(super) fn render_graph_editor(
         );
         ui.add_space(5.0);
         if editable {
-            if ui
-                .add(
-                    egui::TextEdit::singleline(&mut draft.name)
-                        .font(egui::FontId::monospace(12.0))
-                        .desired_width(260.0),
-                )
-                .changed()
+            if crate::ui::components::text_edit_ui(
+                ui,
+                "prompt_graph_name",
+                egui::TextEdit::singleline(&mut draft.name)
+                    .font(egui::FontId::monospace(12.0))
+                    .desired_width(260.0),
+            )
+            .changed()
             {
                 controller.mark_dirty();
             }
@@ -657,29 +658,33 @@ fn render_branch_filters(
                 .font(egui::FontId::monospace(9.0))
                 .color(style::MUTED),
         );
-        egui::ComboBox::from_id_salt((
-            "prompt_branch_filter",
-            controller.active_provider,
-            condition,
-        ))
-        .selected_text(crate::i18n::tr(
+        let selected_branch_text = crate::i18n::tr(
             language,
             options
                 .iter()
                 .find_map(|(label, value)| (*value == selected).then_some(*label))
                 .unwrap_or("All"),
-        ))
-        .width(112.0)
-        .show_ui(ui, |ui| {
-            for (option_label, value) in options {
-                if ui
-                    .selectable_label(selected == value, crate::i18n::tr(language, option_label))
-                    .clicked()
-                {
-                    controller.set_branch_filter(graph, condition, value);
+        );
+        crate::ui::components::combobox_ui_with_width(
+            ui,
+            (
+                "prompt_branch_filter",
+                controller.active_provider,
+                condition,
+            ),
+            selected_branch_text,
+            Some(112.0),
+            |ui| {
+                for (option_label, value) in options {
+                    if ui
+                        .selectable_label(selected == value, crate::i18n::tr(language, option_label))
+                        .clicked()
+                    {
+                        controller.set_branch_filter(graph, condition, value);
+                    }
                 }
-            }
-        });
+            },
+        );
     }
     for (source_id, label, cases) in text_filters {
         let selected = controller.text_branch_filter(&source_id).map(str::to_owned);
@@ -688,37 +693,39 @@ fn render_branch_filters(
                 .font(egui::FontId::monospace(9.0))
                 .color(style::MUTED),
         );
-        egui::ComboBox::from_id_salt((
-            "prompt_text_branch_filter",
-            controller.active_provider,
-            &source_id,
-        ))
-        .selected_text(
-            selected
-                .as_deref()
-                .map(display_text_case)
-                .unwrap_or_else(|| crate::i18n::tr(language, "All").to_owned()),
-        )
-        .width(132.0)
-        .show_ui(ui, |ui| {
-            if ui
-                .selectable_label(selected.is_none(), crate::i18n::tr(language, "All"))
-                .clicked()
-            {
-                controller.set_text_branch_filter(graph, &source_id, None);
-            }
-            for case in cases {
+        let selected_text_filter = selected
+            .as_deref()
+            .map(display_text_case)
+            .unwrap_or_else(|| crate::i18n::tr(language, "All").to_owned());
+        crate::ui::components::combobox_ui_with_width(
+            ui,
+            (
+                "prompt_text_branch_filter",
+                controller.active_provider,
+                &source_id,
+            ),
+            selected_text_filter,
+            Some(112.0),
+            |ui| {
                 if ui
-                    .selectable_label(
-                        selected.as_deref() == Some(case.as_str()),
-                        display_text_case(&case),
-                    )
+                    .selectable_label(selected.is_none(), crate::i18n::tr(language, "All"))
                     .clicked()
                 {
-                    controller.set_text_branch_filter(graph, &source_id, Some(case));
+                    controller.set_text_branch_filter(graph, &source_id, None);
                 }
-            }
-        });
+                for case in cases {
+                    if ui
+                        .selectable_label(
+                            selected.as_deref() == Some(&case),
+                            display_text_case(&case),
+                        )
+                        .clicked()
+                    {
+                        controller.set_text_branch_filter(graph, &source_id, Some(case));
+                    }
+                }
+            },
+        );
     }
 }
 
@@ -1616,9 +1623,11 @@ fn draw_node(
             );
             let mut discrete_changed = false;
             ui.scope_builder(UiBuilder::new().max_rect(operator_rect), |ui| {
-                egui::ComboBox::from_id_salt(("prompt_text_comparison", &node.id))
-                    .selected_text(format!("{operator:?}"))
-                    .show_ui(ui, |ui| {
+                crate::ui::components::combobox_ui(
+                    ui,
+                    ("prompt_text_comparison", &node.id),
+                    format!("{operator:?}"),
+                    |ui| {
                         for option in [
                             PromptTextComparison::Equals,
                             PromptTextComparison::NotEquals,
@@ -1630,7 +1639,8 @@ fn draw_node(
                                 .selectable_value(operator, option, format!("{option:?}"))
                                 .changed();
                         }
-                    });
+                    },
+                );
             });
             let expected_rect = Rect::from_min_size(
                 Pos2::new(rect.left() + 22.0 * scale, rect.top() + 70.0 * scale),
@@ -1639,12 +1649,15 @@ fn draw_node(
                     24.0 * scale,
                 ),
             );
-            let response = ui.put(
-                expected_rect,
-                egui::TextEdit::singleline(expected)
-                    .hint_text("Expected text")
-                    .font(egui::FontId::monospace(9.0 * scale)),
-            );
+            let response = ui.scope_builder(UiBuilder::new().max_rect(expected_rect), |ui| {
+                crate::ui::components::text_edit_ui(
+                    ui,
+                    ("prompt_node_expected", &node.id),
+                    egui::TextEdit::singleline(expected)
+                        .hint_text("Expected text")
+                        .font(egui::FontId::monospace(9.0 * scale)),
+                )
+            }).inner;
             if response.gained_focus() && controller.text_edit_start_profile.is_none() {
                 controller.text_edit_start_profile = Some(before.clone());
             }

@@ -554,12 +554,11 @@ fn onboarding_model_config_card(
             ui.horizontal(|ui| {
                 ui.label(i18n::tr(language, "Mode"));
                 let mut remote = provider.remote;
-                egui::ComboBox::from_id_salt((category, "provider_mode"))
-                    .selected_text(i18n::tr(
-                        language,
-                        if remote { "Online API" } else { "Local model" },
-                    ))
-                    .show_ui(ui, |ui| {
+                let mode_text = i18n::tr(
+                    language,
+                    if remote { "Online API" } else { "Local model" },
+                );
+                components::combobox_ui(ui, (category, "provider_mode"), mode_text, |ui| {
                         let local_available = matches!(
                             local_availability,
                             crate::runtime_install::LocalModelAvailability::Available { .. }
@@ -609,9 +608,7 @@ fn onboarding_model_config_card(
                         crate::runtime_install::LocalModelAvailability::Available { .. }
                     );
                     ui.add_enabled_ui(local_available, |ui| {
-                        egui::ComboBox::from_id_salt((category, "model_level"))
-                            .selected_text(selected_label)
-                            .show_ui(ui, |ui| {
+                        components::combobox_ui(ui, (category, "model_level"), selected_label, |ui| {
                                 for package in levels {
                                     let present = model_asset_is_present(project_root, package.id)
                                         .unwrap_or(false);
@@ -629,7 +626,11 @@ fn onboarding_model_config_card(
                                         if present
                                             && ui
                                                 .add_enabled_ui(delete_enabled, |ui| {
-                                                    components::resource_delete_button(ui, language)
+                                                    components::resource_delete_button(
+                                                        ui,
+                                                        package.id,
+                                                        language,
+                                                    )
                                                 })
                                                 .inner
                                                 .clicked()
@@ -647,9 +648,7 @@ fn onboarding_model_config_card(
                 } else {
                     ui.add_space(12.0);
                     ui.label(i18n::tr(language, "Provider:"));
-                    egui::ComboBox::from_id_salt((category, "online_provider"))
-                        .selected_text(&provider.selected)
-                        .show_ui(ui, |ui| {
+                    components::combobox_ui(ui, (category, "online_provider"), &provider.selected, |ui| {
                             for choice in &provider.choices {
                                 if choice.remote
                                     && ui
@@ -779,9 +778,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     .find(|choice| choice.name == provider.selected)
                     .map(|choice| provider_choice_resource(choice, &project_root, language).0)
                     .unwrap_or_else(|| provider.selected.clone());
-                egui::ComboBox::from_id_salt(("tts", "provider"))
-                    .selected_text(selected_label)
-                    .show_ui(ui, |ui| {
+                components::combobox_ui(ui, ("tts", "provider"), selected_label, |ui| {
                         for choice in &provider.choices {
                             let (label, _asset_id, _present) =
                                 provider_choice_resource(choice, &project_root, language);
@@ -887,7 +884,13 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                                         .size(11.5)
                                         .color(theme::text_weak()),
                                 );
-                                if components::resource_delete_button(ui, language).clicked() {
+                                if components::resource_delete_button(
+                                    ui,
+                                    package.id,
+                                    language,
+                                )
+                                .clicked()
+                                {
                                     delete_tts = Some(package.id);
                                 }
                             }
@@ -938,21 +941,20 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                                         .size(12.0)
                                         .color(theme::text_weak()),
                                     );
-                                    egui::ComboBox::from_id_salt((
-                                        "onboarding_tts_voice",
-                                        &provider.selected,
-                                        id,
-                                    ))
-                                    .selected_text(configured.label)
-                                    .show_ui(ui, |ui| {
-                                        for preset in &choices {
-                                            ui.selectable_value(
-                                                &mut selected_key,
-                                                preset.key.to_owned(),
-                                                preset.label,
-                                            );
-                                        }
-                                    });
+                                    components::combobox_ui(
+                                        ui,
+                                        ("onboarding_tts_voice", &provider.selected, id),
+                                        configured.label,
+                                        |ui| {
+                                            for preset in &choices {
+                                                ui.selectable_value(
+                                                    &mut selected_key,
+                                                    preset.key.to_owned(),
+                                                    preset.label,
+                                                );
+                                            }
+                                        },
+                                    );
                                 });
                                 if selected_key != configured.key {
                                     voice_change = Some((
@@ -1387,7 +1389,11 @@ fn render_download_card(
                     if item.installed {
                         if ui
                             .add_enabled_ui(delete_enabled, |ui| {
-                                components::resource_delete_button(ui, language)
+                                components::resource_delete_button(
+                                    ui,
+                                    item.id,
+                                    language,
+                                )
                             })
                             .inner
                             .clicked()
@@ -1577,7 +1583,12 @@ fn render_runtime_installation_section(
                     }
                 }
                 if managed_runtime_present
-                    && components::resource_delete_button(ui, language).clicked()
+                    && components::resource_delete_button(
+                        ui,
+                        "managed_runtime",
+                        language,
+                    )
+                    .clicked()
                 {
                     delete_runtime = true;
                 }

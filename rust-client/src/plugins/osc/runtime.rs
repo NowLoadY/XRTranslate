@@ -209,13 +209,13 @@ pub struct OscSettings {
 }
 
 fn default_microphone_prefix() -> String {
-    "MIC ".into()
+    "🎤".into()
 }
 fn default_system_audio_prefix() -> String {
-    "SYS ".into()
+    "🔊".into()
 }
 fn default_typing_prefix() -> String {
-    "TXT ".into()
+    "💬".into()
 }
 
 impl Default for OscSettings {
@@ -1317,7 +1317,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             receive_chatbox_input(&receiver).0,
-            "speech 1\n翻译 1\nTXT typing test"
+            "speech 1\n翻译 1\n💬 typing test"
         );
 
         // Wait past the 500ms cooldown so next ASR update can send
@@ -1338,13 +1338,13 @@ mod tests {
         .unwrap();
         let (during_text, _) = receive_chatbox_input(&receiver);
         assert!(during_text.contains("speech 2"));
-        assert!(during_text.ends_with("TXT typing test"));
+        assert!(during_text.ends_with("💬 typing test"));
 
         // 4. Wait past the manual message TTL and cooldown,
         // at which point manual text disappears and full ASR messages remain!
         let (resumed_text, _) = receive_chatbox_input(&receiver);
         assert!(resumed_text.contains("speech 2"));
-        assert!(!resumed_text.contains("TXT typing test"));
+        assert!(!resumed_text.contains("💬 typing test"));
 
         tx.send(Command::Shutdown).unwrap();
         worker.join().unwrap();
@@ -1372,7 +1372,7 @@ mod tests {
             ttl: Some(Duration::from_millis(80)),
         })
         .unwrap();
-        assert_eq!(receive_chatbox_input(&receiver).0, "TXT temporary note");
+        assert_eq!(receive_chatbox_input(&receiver).0, "💬 temporary note");
 
         // After TTL expires, with no other ASR messages, chatbox should clear.
         assert_eq!(receive_chatbox_input(&receiver).0, String::new());
