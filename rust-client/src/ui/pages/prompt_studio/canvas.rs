@@ -1240,6 +1240,24 @@ fn render_nodes(
             && controller.drag_node.as_deref() == Some(node.id.as_str())
         {
             controller.update_node_drag(response.drag_delta());
+            let movements = controller
+                .drag_origins
+                .iter()
+                .map(|(node_id, origin)| crate::ui::graph_editor::NodeMove {
+                    node_id: node_id.clone(),
+                    position: controller.display_position(node_id, *origin),
+                })
+                .collect::<Vec<_>>();
+            for movement in movements {
+                if let Some(target) = profile
+                    .graph
+                    .nodes
+                    .iter_mut()
+                    .find(|target| target.id == movement.node_id)
+                {
+                    target.position = movement.position;
+                }
+            }
             if response.drag_delta().length_sq() > f32::EPSILON {
                 controller.mark_dirty();
             }
