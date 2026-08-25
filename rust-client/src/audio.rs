@@ -11,7 +11,6 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
 };
 use std::thread;
-#[cfg(windows)]
 use std::time::Duration;
 
 #[cfg(windows)]
@@ -46,6 +45,7 @@ pub struct InputConfigInfo {
 
 pub const AUDIO_ROUTE_SAMPLE_RATE: u32 = 48_000;
 const DEFAULT_ROUTE_QUEUE_MS: u32 = 250;
+const MICROPHONE_SUBSCRIBER_QUEUE_CAPACITY: usize = 64;
 
 /// One capture node in a host-owned audio route. An empty device ID selects
 /// the current host default; endpoint names are deliberately not identifiers.
@@ -473,7 +473,10 @@ struct MicrophoneFanout {
 
 impl MicrophoneFanout {
     fn attach(&self) -> Receiver<Vec<f32>> {
-        let (tx, rx) = bounded::<Vec<f32>>(16);
+        // Both mode can have a render-route subscriber and an ASR subscriber
+        // on the same physical stream. Keep enough buffered audio for a brief
+        // scheduling stall so one subscriber does not immediately lose a turn.
+        let (tx, rx) = bounded::<Vec<f32>>(MICROPHONE_SUBSCRIBER_QUEUE_CAPACITY);
         self.senders.lock().push(tx);
         rx
     }
@@ -1407,7 +1410,7 @@ impl AudioSystem {
             .name("audio-resampler".into())
             .spawn(move || {
                 let mut pending = VecDeque::new();
-                while let Ok(samples) = raw_rx.recv() {
+                'worker: while let Ok(samples) = raw_rx.recv() {
                     if let Some(level) = &level {
                         update_input_level(&samples, level);
                     }
@@ -1429,11 +1432,23 @@ impl AudioSystem {
                                 None,
                             ) {
                                 output.truncate(frames_written);
-                                let _ = output_tx.try_send(output);
+                                match output_tx.send_timeout(output, Duration::from_millis(100)) {
+                                    Ok(()) => {}
+                                    Err(crossbeam_channel::SendTimeoutError::Timeout(_)) => {}
+                                    Err(crossbeam_channel::SendTimeoutError::Disconnected(_)) => {
+                                        break 'worker;
+                                    }
+                                }
                             }
                         }
                     } else {
-                        let _ = output_tx.try_send(samples);
+                        match output_tx.send_timeout(samples, Duration::from_millis(100)) {
+                            Ok(()) => {}
+                            Err(crossbeam_channel::SendTimeoutError::Timeout(_)) => {}
+                            Err(crossbeam_channel::SendTimeoutError::Disconnected(_)) => {
+                                break 'worker;
+                            }
+                        }
                     }
                 }
             })
