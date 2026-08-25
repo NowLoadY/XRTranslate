@@ -2,7 +2,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::json;
 
 use crate::{
-    AsrTranscript, AsyncHttpClient, InferenceError, OpenAiCompatibleClient,
+    AsrTranscript, AsrVocabularyBias, AsyncHttpClient, InferenceError, OpenAiCompatibleClient,
     openai::{non_streaming_chat_payload, remove_completion_markers},
     pcm16_mono_16khz_to_wav,
 };
@@ -13,6 +13,14 @@ pub struct Qwen3AsrOptions {
     /// Language name understood by Qwen3-ASR (for example `English` or
     /// `Chinese`). An empty value asks the model to infer the language.
     pub language: Option<String>,
+    /// Official Qwen3-ASR recognition context. This is sent as the system
+    /// message content, exactly as the Python/vLLM implementation does.
+    pub context_bias: Option<String>,
+    /// Lexical terms to include in the official context field. Qwen3-ASR does
+    /// not expose weighted hotwords, so weights are intentionally ignored.
+    pub vocabulary_bias: Vec<AsrVocabularyBias>,
+    /// Retained for provider-neutral API compatibility. Qwen3-ASR does not
+    /// accept semantic instruction prompts; callers should use context_bias.
     pub instruction_prompt: Option<String>,
     /// Maximum generated transcript tokens.
     pub max_tokens: u32,
@@ -22,6 +30,8 @@ impl Default for Qwen3AsrOptions {
     fn default() -> Self {
         Self {
             language: None,
+            context_bias: None,
+            vocabulary_bias: Vec::new(),
             instruction_prompt: None,
             max_tokens: 128,
         }
@@ -93,15 +103,10 @@ impl<C: AsyncHttpClient> Qwen3AsrAdapter<C> {
         let wav = pcm16_mono_16khz_to_wav(pcm)?;
         let encoded_wav = STANDARD.encode(wav);
 
-        // Qwen3-ASR is an audio-first model. Its official chat/vLLM contract
-        // sends only one user message containing the audio. Supplying a
-        // generic translation-style system prompt makes the model treat the
-        // request like a normal Qwen chat turn and can cause language drift
-        // (for example, English speech being emitted in Chinese). Keep the
-        // provider-neutral option for API compatibility, but do not inject it
-        // into the local Qwen3 prompt. Explicit language forcing remains the
-        // llama.cpp-compatible assistant prefill below.
         let mut messages = Vec::new();
+        if let Some(context) = qwen3_context(&options.context_bias, &options.vocabulary_bias) {
+            messages.push(json!({"role": "system", "content": context}));
+        }
         let content = vec![json!({
             "type": "input_audio",
             "input_audio": {"data": encoded_wav, "format": "wav"}
@@ -136,6 +141,28 @@ fn normalized_optional(value: &Option<String>) -> Option<&str> {
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
+}
+
+fn qwen3_context(
+    context_bias: &Option<String>,
+    vocabulary_bias: &[AsrVocabularyBias],
+) -> Option<String> {
+    let mut terms = Vec::new();
+    if let Some(context) = normalized_optional(context_bias) {
+        terms.extend(
+            context
+                .split(',')
+                .map(str::trim)
+                .filter(|term| !term.is_empty())
+                .map(str::to_owned),
+        );
+    }
+    for term in vocabulary_bias.iter().map(|term| term.text.trim()) {
+        if !term.is_empty() && !terms.iter().any(|existing| existing == term) {
+            terms.push(term.to_owned());
+        }
+    }
+    (!terms.is_empty()).then(|| terms.join(", "))
 }
 
 #[must_use]
@@ -295,7 +322,12 @@ mod tests {
                 &[1, 0, 2, 0],
                 Qwen3AsrOptions {
                     language: Some("English".into()),
-                    instruction_prompt: Some("Names: Codex".into()),
+                    context_bias: Some("Names: Codex".into()),
+                    vocabulary_bias: vec![AsrVocabularyBias {
+                        text: "VRChat".into(),
+                        weight: 4,
+                    }],
+                    instruction_prompt: Some("Do not translate".into()),
                     ..Default::default()
                 },
             )
@@ -311,16 +343,21 @@ mod tests {
         assert_eq!(request.body["model"], "qwen3-asr");
         assert_eq!(request.body["temperature"], 0.0);
         assert_eq!(request.body["stream"], false);
-        assert_eq!(request.body["messages"].as_array().unwrap().len(), 2);
+        assert_eq!(request.body["messages"].as_array().unwrap().len(), 3);
+        assert_eq!(request.body["messages"][0]["role"], "system");
         assert_eq!(
-            request.body["messages"][0]["content"][0]["type"],
+            request.body["messages"][0]["content"],
+            "Names: Codex, VRChat"
+        );
+        assert_eq!(
+            request.body["messages"][1]["content"][0]["type"],
             "input_audio"
         );
         assert_eq!(
-            request.body["messages"][0]["content"][0]["input_audio"]["format"],
+            request.body["messages"][1]["content"][0]["input_audio"]["format"],
             "wav"
         );
-        let encoded = request.body["messages"][0]["content"][0]["input_audio"]["data"]
+        let encoded = request.body["messages"][1]["content"][0]["input_audio"]["data"]
             .as_str()
             .unwrap();
         let wav = STANDARD.decode(encoded).unwrap();
@@ -328,18 +365,18 @@ mod tests {
         assert_eq!(&wav[8..12], b"WAVE");
         assert_eq!(&wav[44..], &[1, 0, 2, 0]);
         assert_eq!(
-            request.body["messages"][0]["content"]
+            request.body["messages"][1]["content"]
                 .as_array()
                 .unwrap()
                 .len(),
             1
         );
-        assert_eq!(request.body["messages"][1]["role"], "assistant");
+        assert_eq!(request.body["messages"][2]["role"], "assistant");
         assert_eq!(
-            request.body["messages"][1]["content"],
+            request.body["messages"][2]["content"],
             "language English<asr_text>"
         );
-        assert!(!request.body.to_string().contains("Names: Codex"));
+        assert!(!request.body.to_string().contains("Do not translate"));
     }
 
     #[tokio::test]

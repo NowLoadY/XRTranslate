@@ -100,6 +100,8 @@ impl NativeAsrAdapter {
                         pcm,
                         Qwen3AsrOptions {
                             language: options.language,
+                            context_bias: options.context_bias,
+                            vocabulary_bias: options.vocabulary_bias,
                             instruction_prompt: options.instruction_prompt,
                             max_tokens: options.max_tokens,
                         },

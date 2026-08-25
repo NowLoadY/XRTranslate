@@ -14,7 +14,7 @@
         "url": "https://api.openai.com/v1/chat/completions"
       },
       "qwen3-gguf": {
-        "asr_prompt_mode": "instruction",
+        "asr_prompt_mode": "context_bias",
         "context_window_tokens": 4800,
         "max_tokens": 128,
         "model_asset": "qwen3-asr-gguf",
