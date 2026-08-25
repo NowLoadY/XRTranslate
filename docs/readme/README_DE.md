@@ -77,6 +77,18 @@ Unterstützt schnelle Texteingabe und Echtzeit-Übersetzung über OSC.
   <img src="../../assets/preview-OSC-type.png" alt="OSC-Texteingabe und Echtzeit-Übersetzung" width="760" />
 </p>
 
+Lassen Sie jede Übersetzung zu Ihrem Stil passen.
+
+<p align="center">
+  <img src="../../assets/preview-PromptStudio.png" alt="Übersetzungsstil anpassen" width="760" />
+</p>
+
+Mit Audio Studio behalten Sie Mikrofon, Systemaudio und Übersetzungsrouten bequem im Blick.
+
+<p align="center">
+  <img src="../../assets/preview-AudioStudio.png" alt="XRTranslate Audio Studio" width="900" />
+</p>
+
 ---
 
 ## Benutzerhandbuch

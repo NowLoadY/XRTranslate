@@ -77,6 +77,18 @@ OSC-субтитры могут отображаться раздельно по
   <img src="../../assets/preview-OSC-type.png" alt="Ввод через OSC и перевод в реальном времени" width="760" />
 </p>
 
+Добавьте каждому переводу свой стиль.
+
+<p align="center">
+  <img src="../../assets/preview-PromptStudio.png" alt="Настройка стиля перевода" width="760" />
+</p>
+
+Audio Studio помогает держать микрофон, системный звук и маршруты перевода под рукой.
+
+<p align="center">
+  <img src="../../assets/preview-AudioStudio.png" alt="XRTranslate Audio Studio" width="900" />
+</p>
+
 ---
 
 ## Руководство пользователя

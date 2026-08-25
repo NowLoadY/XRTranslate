@@ -77,6 +77,18 @@ Stödjer snabb textinmatning och realtidsöversättning via OSC.
   <img src="../../assets/preview-OSC-type.png" alt="OSC-textinmatning och realtidsöversättning" width="760" />
 </p>
 
+Ge varje översättning din egen stil.
+
+<p align="center">
+  <img src="../../assets/preview-PromptStudio.png" alt="Anpassa din översättningsstil" width="760" />
+</p>
+
+Med Audio Studio är det enkelt att hålla koll på mikrofon, systemljud och översättningsvägar.
+
+<p align="center">
+  <img src="../../assets/preview-AudioStudio.png" alt="XRTranslate Audio Studio" width="900" />
+</p>
+
 ---
 
 ## Användarguide

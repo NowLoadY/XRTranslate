@@ -77,6 +77,18 @@ Prise en charge de la saisie rapide au clavier et de la transmission de traducti
   <img src="../../assets/preview-OSC-type.png" alt="Saisie OSC et traduction en temps réel" width="760" />
 </p>
 
+Donnez à chaque traduction votre propre style.
+
+<p align="center">
+  <img src="../../assets/preview-PromptStudio.png" alt="Personnalisez votre style de traduction" width="760" />
+</p>
+
+Audio Studio vous aide à garder un œil sur le micro, l’audio système et les routes de traduction.
+
+<p align="center">
+  <img src="../../assets/preview-AudioStudio.png" alt="XRTranslate Audio Studio" width="900" />
+</p>
+
 ---
 
 ## Guide d'utilisation

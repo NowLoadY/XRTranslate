@@ -77,6 +77,18 @@ OSC 字幕可以逐条显示，也可以合并排列。
   <img src="../../assets/preview-OSC-type.png" alt="OSC 打字输入与实时翻译" width="760" />
 </p>
 
+让每次翻译都更像你的风格。
+
+<p align="center">
+  <img src="../../assets/preview-PromptStudio.png" alt="自定义你的翻译风格" width="760" />
+</p>
+
+Audio Studio 让麦克风、系统音频和翻译路由一目了然。
+
+<p align="center">
+  <img src="../../assets/preview-AudioStudio.png" alt="XRTranslate Audio Studio" width="900" />
+</p>
+
 ---
 
 ## 使用指南

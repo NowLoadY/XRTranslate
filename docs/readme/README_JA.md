@@ -77,6 +77,18 @@ OSC を介した高速タイピング入力とリアルタイム翻訳送信に�
   <img src="../../assets/preview-OSC-type.png" alt="OSC タイピング入力とリアルタイム翻訳" width="760" />
 </p>
 
+翻訳に自分らしいスタイルを加えられます。
+
+<p align="center">
+  <img src="../../assets/preview-PromptStudio.png" alt="翻訳スタイルをカスタマイズ" width="760" />
+</p>
+
+Audio Studio なら、マイク・システム音声・翻訳ルートをすっきり確認できます。
+
+<p align="center">
+  <img src="../../assets/preview-AudioStudio.png" alt="XRTranslate Audio Studio" width="900" />
+</p>
+
 ---
 
 ## 利用ガイド

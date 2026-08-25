@@ -77,6 +77,18 @@ OSC를 통한 빠른 타이핑 입력 및 실시간 번역 전송을 지원합�
   <img src="../../assets/preview-OSC-type.png" alt="OSC 타이핑 입력 및 실시간 번역" width="760" />
 </p>
 
+번역마다 나만의 스타일을 더해 보세요.
+
+<p align="center">
+  <img src="../../assets/preview-PromptStudio.png" alt="번역 스타일 사용자 지정" width="760" />
+</p>
+
+Audio Studio에서 마이크, 시스템 오디오, 번역 경로를 한눈에 확인할 수 있습니다.
+
+<p align="center">
+  <img src="../../assets/preview-AudioStudio.png" alt="XRTranslate Audio Studio" width="900" />
+</p>
+
 ---
 
 ## 사용 가이드

@@ -83,6 +83,12 @@ Make every translation sound like you!
   <img src="assets/preview-PromptStudio.png" alt="Customize your translation style!" width="760" />
 </p>
 
+Keep your microphone, system audio, and translation routes easy to follow with Audio Studio.
+
+<p align="center">
+  <img src="assets/preview-AudioStudio.png" alt="XRTranslate Audio Studio" width="900" />
+</p>
+
 ---
 
 ## User Guide

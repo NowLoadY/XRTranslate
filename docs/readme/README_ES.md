@@ -77,6 +77,18 @@ Admite escritura rápida y transmisión de traducción en tiempo real a través 
   <img src="../../assets/preview-OSC-type.png" alt="Escritura OSC y traducción en tiempo real" width="760" />
 </p>
 
+Haz que cada traducción tenga tu propio estilo.
+
+<p align="center">
+  <img src="../../assets/preview-PromptStudio.png" alt="Personaliza tu estilo de traducción" width="760" />
+</p>
+
+Audio Studio le ayuda a tener a mano el micrófono, el audio del sistema y las rutas de traducción.
+
+<p align="center">
+  <img src="../../assets/preview-AudioStudio.png" alt="XRTranslate Audio Studio" width="900" />
+</p>
+
 ---
 
 ## Guía de usuario
