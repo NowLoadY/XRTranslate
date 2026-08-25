@@ -93,11 +93,15 @@ impl<C: AsyncHttpClient> Qwen3AsrAdapter<C> {
         let wav = pcm16_mono_16khz_to_wav(pcm)?;
         let encoded_wav = STANDARD.encode(wav);
 
+        // Qwen3-ASR is an audio-first model. Its official chat/vLLM contract
+        // sends only one user message containing the audio. Supplying a
+        // generic translation-style system prompt makes the model treat the
+        // request like a normal Qwen chat turn and can cause language drift
+        // (for example, English speech being emitted in Chinese). Keep the
+        // provider-neutral option for API compatibility, but do not inject it
+        // into the local Qwen3 prompt. Explicit language forcing remains the
+        // llama.cpp-compatible assistant prefill below.
         let mut messages = Vec::new();
-        if let Some(context) = normalized_optional(&options.instruction_prompt) {
-            messages.push(json!({"role": "system", "content": context}));
-        }
-
         let content = vec![json!({
             "type": "input_audio",
             "input_audio": {"data": encoded_wav, "format": "wav"}
@@ -307,16 +311,16 @@ mod tests {
         assert_eq!(request.body["model"], "qwen3-asr");
         assert_eq!(request.body["temperature"], 0.0);
         assert_eq!(request.body["stream"], false);
-        assert_eq!(request.body["messages"][0]["role"], "system");
+        assert_eq!(request.body["messages"].as_array().unwrap().len(), 2);
         assert_eq!(
-            request.body["messages"][1]["content"][0]["type"],
+            request.body["messages"][0]["content"][0]["type"],
             "input_audio"
         );
         assert_eq!(
-            request.body["messages"][1]["content"][0]["input_audio"]["format"],
+            request.body["messages"][0]["content"][0]["input_audio"]["format"],
             "wav"
         );
-        let encoded = request.body["messages"][1]["content"][0]["input_audio"]["data"]
+        let encoded = request.body["messages"][0]["content"][0]["input_audio"]["data"]
             .as_str()
             .unwrap();
         let wav = STANDARD.decode(encoded).unwrap();
@@ -324,17 +328,18 @@ mod tests {
         assert_eq!(&wav[8..12], b"WAVE");
         assert_eq!(&wav[44..], &[1, 0, 2, 0]);
         assert_eq!(
-            request.body["messages"][1]["content"]
+            request.body["messages"][0]["content"]
                 .as_array()
                 .unwrap()
                 .len(),
             1
         );
-        assert_eq!(request.body["messages"][2]["role"], "assistant");
+        assert_eq!(request.body["messages"][1]["role"], "assistant");
         assert_eq!(
-            request.body["messages"][2]["content"],
+            request.body["messages"][1]["content"],
             "language English<asr_text>"
         );
+        assert!(!request.body.to_string().contains("Names: Codex"));
     }
 
     #[tokio::test]
