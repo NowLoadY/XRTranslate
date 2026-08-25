@@ -199,6 +199,21 @@ pub fn render_toolbar(
                         changed = true;
                     }
 
+                    ui.add_space(4.0);
+                    let mut persistent_banners = plugin.draft().persistent_banners;
+                    if components::feature_checkbox(
+                        ui,
+                        crate::feature_access::Feature::OscChatbox,
+                        language,
+                        &mut persistent_banners,
+                        crate::i18n::tr(language, "Keep header and footer visible"),
+                    )
+                    .changed()
+                    {
+                        plugin.draft_mut().persistent_banners = persistent_banners;
+                        changed = true;
+                    }
+
                     ui.add_space(8.0);
 
                     for (label, value) in [

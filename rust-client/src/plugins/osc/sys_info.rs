@@ -80,6 +80,26 @@ impl SystemMonitor {
     }
 }
 
+#[cfg(windows)]
+fn get_formatted_time() -> String {
+    use windows_sys::Win32::Foundation::SYSTEMTIME;
+    use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+
+    let mut local = SYSTEMTIME {
+        wYear: 0,
+        wMonth: 0,
+        wDayOfWeek: 0,
+        wDay: 0,
+        wHour: 0,
+        wMinute: 0,
+        wSecond: 0,
+        wMilliseconds: 0,
+    };
+    unsafe { GetLocalTime(&mut local) };
+    format!("{:02}:{:02}:{:02}", local.wHour, local.wMinute, local.wSecond)
+}
+
+#[cfg(not(windows))]
 fn get_formatted_time() -> String {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

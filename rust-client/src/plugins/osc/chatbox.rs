@@ -63,13 +63,18 @@ pub(super) fn build_chatbox_text(
         }
     }
 
-    // Header and footer exist only while live messages remain and no manual message is active.
-    if entries.is_empty() {
-        return String::new();
-    }
-
     let prefix = settings.header_config.render_text(metrics);
     let suffix = settings.footer_config.render_text(metrics);
+
+    // In persistent mode the decorations remain visible after message TTLs
+    // expire; ordinary messages still disappear from `history`/`live`.
+    if entries.is_empty() {
+        return if settings.persistent_banners {
+            fit_decorations(&prefix, &suffix, settings.max_text_length)
+        } else {
+            String::new()
+        };
+    }
 
     while let Some(first) = entries.front() {
         let combined = compose_chatbox(&prefix, &render_entries(entries.iter(), settings), &suffix);
@@ -203,6 +208,24 @@ fn compose_chatbox(prefix: &str, content: &str, suffix: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn fit_decorations(prefix: &str, suffix: &str, limit: usize) -> String {
+    if limit == 0 {
+        return String::new();
+    }
+    let mut prefix = prefix.to_string();
+    let mut suffix = suffix.to_string();
+    while decoration_length(&prefix, &suffix) > limit {
+        if !suffix.is_empty() {
+            suffix = trim_text(&suffix, suffix.chars().count().saturating_sub(1));
+        } else if !prefix.is_empty() {
+            prefix = trim_text(&prefix, prefix.chars().count().saturating_sub(1));
+        } else {
+            break;
+        }
+    }
+    compose_chatbox(&prefix, &suffix, "")
 }
 
 pub(super) fn render_entry(entry: &HistoryMessage, settings: &OscSettings) -> String {
@@ -508,6 +531,36 @@ mod tests {
         assert_eq!(
             build_chatbox_text(&history, &[], None, &settings, &metrics),
             "first target second target"
+        );
+    }
+
+    #[test]
+    fn persistent_banners_remain_after_message_history_expires() {
+        let now = Instant::now();
+        let history = vec![history_message(now, "expired")];
+        let settings = OscSettings {
+            persistent_banners: true,
+            header_config: BannerConfig {
+                content_type: BannerContentType::CustomText,
+                custom_text: "HEADER".into(),
+                show_device_name: false,
+            },
+            footer_config: BannerConfig {
+                content_type: BannerContentType::CustomText,
+                custom_text: "FOOTER".into(),
+                show_device_name: false,
+            },
+            ..OscSettings::default()
+        };
+        let metrics = SystemMetrics::default();
+
+        assert_eq!(
+            build_chatbox_text(&[], &[], None, &settings, &metrics),
+            "HEADER\nFOOTER"
+        );
+        assert_eq!(
+            build_chatbox_text(&history, &[], None, &settings, &metrics),
+            "HEADER\nexpired\nFOOTER"
         );
     }
 

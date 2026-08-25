@@ -1,10 +1,10 @@
 use audioadapter_buffers::direct::InterleavedSlice;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, Stream};
-use crossbeam_channel::{Receiver, Sender, bounded};
+use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use parking_lot::Mutex;
 use rubato::{Fft, FixedSync, Indexing, Resampler};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
 use std::sync::{
     Arc, Weak,
@@ -335,6 +335,7 @@ pub struct AudioSystem {
     tts_player: Option<TtsPlayer>,
     audio_routes: Vec<AudioRouteHandle>,
     routed_tts_targets: Arc<Mutex<Vec<RoutedTtsTarget>>>,
+    microphone_fanout: Option<(String, Arc<MicrophoneFanout>)>,
 }
 
 #[derive(Clone)]
@@ -456,15 +457,33 @@ struct TtsPlayer {
 }
 
 enum ActiveCapture {
-    Microphone(Stream),
+    MicrophoneSubscription(thread::JoinHandle<()>),
     #[cfg(windows)]
     Loopback(LoopbackCapture),
+}
+
+/// A single physical microphone stream shared by multiple rendered routes.
+/// Opening the same input endpoint more than once is rejected by some audio
+/// backends, so route-local workers subscribe to this fanout instead.
+struct MicrophoneFanout {
+    senders: Arc<Mutex<Vec<Sender<Vec<f32>>>>>,
+    sample_rate: u32,
+    _stream: Stream,
+}
+
+impl MicrophoneFanout {
+    fn attach(&self) -> Receiver<Vec<f32>> {
+        let (tx, rx) = bounded::<Vec<f32>>(16);
+        self.senders.lock().push(tx);
+        rx
+    }
 }
 
 struct AudioRouteResources {
     output: Stream,
     inputs: Vec<Stream>,
     source_workers: Vec<thread::JoinHandle<()>>,
+    shared_microphones: Vec<Arc<MicrophoneFanout>>,
     #[cfg(windows)]
     loopback: Option<LoopbackCapture>,
 }
@@ -475,6 +494,7 @@ impl AudioRouteResources {
             output,
             inputs,
             source_workers,
+            shared_microphones,
             #[cfg(windows)]
             loopback,
         } = self;
@@ -487,16 +507,19 @@ impl AudioRouteResources {
         for worker in source_workers {
             let _ = worker.join();
         }
+        drop(shared_microphones);
     }
 }
 
 impl ActiveCapture {
     fn stop(self) {
         match self {
-            Self::Microphone(stream) => {
+            Self::MicrophoneSubscription(worker) => {
                 let _ = thread::Builder::new()
-                    .name("audio-stream-reaper".into())
-                    .spawn(move || drop(stream));
+                    .name("audio-subscription-reaper".into())
+                    .spawn(move || {
+                        let _ = worker.join();
+                    });
             }
             #[cfg(windows)]
             Self::Loopback(capture) => capture.stop(),
@@ -609,6 +632,7 @@ impl AudioSystem {
             tts_player: None,
             audio_routes: Vec::new(),
             routed_tts_targets: Arc::new(Mutex::new(Vec::new())),
+            microphone_fanout: None,
         }
     }
 
@@ -712,6 +736,9 @@ impl AudioSystem {
             capture.stop();
         }
         self.clear_tts_playback();
+        if self.audio_routes.is_empty() {
+            self.microphone_fanout = None;
+        }
     }
 
     pub fn clear_tts_playback(&mut self) {
@@ -784,9 +811,32 @@ impl AudioSystem {
         &mut self,
         configs: Vec<AudioRouteConfig>,
     ) -> Result<Vec<AudioRouteHandle>, AudioRouteError> {
+        let mut microphone_counts = HashMap::<String, usize>::new();
+        for config in &configs {
+            if let Some(source) = &config.microphone {
+                *microphone_counts
+                    .entry(source.device_id.clone())
+                    .or_default() += 1;
+            }
+        }
+        let mut microphone_fanouts = HashMap::<String, Arc<MicrophoneFanout>>::new();
+        for (device_id, count) in microphone_counts {
+            if let Some((active_id, fanout)) = &self.microphone_fanout
+                && active_id == &device_id
+            {
+                microphone_fanouts.insert(device_id, Arc::clone(fanout));
+            } else if count > 1 {
+                let fanout = Arc::new(self.build_microphone_fanout(&device_id)?);
+                microphone_fanouts.insert(device_id, fanout);
+            }
+        }
         let mut replacements = Vec::with_capacity(configs.len());
         for config in configs {
-            match self.build_audio_route(config) {
+            let fanout = config
+                .microphone
+                .as_ref()
+                .and_then(|source| microphone_fanouts.get(&source.device_id).cloned());
+            match self.build_audio_route(config, fanout) {
                 Ok(handle) => replacements.push(handle),
                 Err(error) => {
                     for handle in replacements {
@@ -807,6 +857,9 @@ impl AudioSystem {
                 })
             })
             .collect::<Vec<_>>();
+        if let Some((device_id, fanout)) = microphone_fanouts.into_iter().next() {
+            self.microphone_fanout = Some((device_id, fanout));
+        }
         if !replacement_targets.is_empty() {
             // Stop legacy queueing without dropping its render-tail guard: a
             // shared-mode output may still reach loopback briefly after the
@@ -824,6 +877,9 @@ impl AudioSystem {
         let previous = std::mem::replace(&mut self.audio_routes, replacements.clone());
         for handle in previous {
             handle.stop();
+        }
+        if replacements.is_empty() && self.active_captures.is_empty() {
+            self.microphone_fanout = None;
         }
         for (index, handle) in replacements.iter().enumerate() {
             let status = handle.status();
@@ -845,6 +901,7 @@ impl AudioSystem {
     fn build_audio_route(
         &self,
         config: AudioRouteConfig,
+        microphone_fanout: Option<Arc<MicrophoneFanout>>,
     ) -> Result<AudioRouteHandle, AudioRouteError> {
         validate_audio_route_config(&config)?;
 
@@ -940,13 +997,20 @@ impl AudioSystem {
 
         let mut inputs = Vec::new();
         let mut source_workers = Vec::new();
+        let mut shared_microphones = Vec::new();
         if let (Some(source), Some(buffer)) = (&config.microphone, &control.microphone) {
-            let (stream, worker) =
-                self.build_route_microphone(source, Arc::clone(buffer), Arc::clone(&control))?;
-            stream.play().map_err(|error| {
-                AudioRouteError::StreamStart(format!("cannot start microphone node: {error}"))
-            })?;
-            inputs.push(stream);
+            let (stream, worker) = self.build_route_microphone(
+                source,
+                Arc::clone(buffer),
+                Arc::clone(&control),
+                microphone_fanout.as_ref(),
+            )?;
+            if let Some(stream) = stream {
+                inputs.push(stream);
+            }
+            if let Some(fanout) = microphone_fanout {
+                shared_microphones.push(fanout);
+            }
             source_workers.push(worker);
         }
 
@@ -984,6 +1048,7 @@ impl AudioSystem {
             output,
             inputs,
             source_workers,
+            shared_microphones,
             #[cfg(windows)]
             loopback,
         });
@@ -1017,6 +1082,125 @@ impl AudioSystem {
         }
     }
 
+    fn build_microphone_fanout(
+        &self,
+        device_id: &str,
+    ) -> Result<MicrophoneFanout, AudioRouteError> {
+        let device = if device_id.is_empty() {
+            self.host.default_input_device().ok_or_else(|| {
+                AudioRouteError::DeviceUnavailable(
+                    "no default microphone is available for the route".into(),
+                )
+            })?
+        } else {
+            let parsed_id = device_id.parse().map_err(|error| {
+                AudioRouteError::DeviceUnavailable(format!(
+                    "invalid microphone ID '{device_id}': {error}"
+                ))
+            })?;
+            self.host.device_by_id(&parsed_id).ok_or_else(|| {
+                AudioRouteError::DeviceUnavailable(format!(
+                    "microphone '{device_id}' is no longer available"
+                ))
+            })?
+        };
+        let config = device.default_input_config().map_err(|error| {
+            AudioRouteError::DeviceUnavailable(format!(
+                "cannot read the selected microphone format: {error}"
+            ))
+        })?;
+        let channels = config.channels() as usize;
+        let sample_rate = config.sample_rate();
+        let sample_format = config.sample_format();
+        let stream_config: cpal::StreamConfig = config.into();
+        let senders = Arc::new(Mutex::new(Vec::<Sender<Vec<f32>>>::new()));
+        let stream = match sample_format {
+            cpal::SampleFormat::F32 => build_microphone_fanout_stream::<f32>(
+                &device,
+                stream_config,
+                channels,
+                Arc::clone(&senders),
+            ),
+            cpal::SampleFormat::F64 => build_microphone_fanout_stream::<f64>(
+                &device,
+                stream_config,
+                channels,
+                Arc::clone(&senders),
+            ),
+            cpal::SampleFormat::I8 => build_microphone_fanout_stream::<i8>(
+                &device,
+                stream_config,
+                channels,
+                Arc::clone(&senders),
+            ),
+            cpal::SampleFormat::I16 => build_microphone_fanout_stream::<i16>(
+                &device,
+                stream_config,
+                channels,
+                Arc::clone(&senders),
+            ),
+            cpal::SampleFormat::I24 => build_microphone_fanout_stream::<cpal::I24>(
+                &device,
+                stream_config,
+                channels,
+                Arc::clone(&senders),
+            ),
+            cpal::SampleFormat::I32 => build_microphone_fanout_stream::<i32>(
+                &device,
+                stream_config,
+                channels,
+                Arc::clone(&senders),
+            ),
+            cpal::SampleFormat::I64 => build_microphone_fanout_stream::<i64>(
+                &device,
+                stream_config,
+                channels,
+                Arc::clone(&senders),
+            ),
+            cpal::SampleFormat::U8 => build_microphone_fanout_stream::<u8>(
+                &device,
+                stream_config,
+                channels,
+                Arc::clone(&senders),
+            ),
+            cpal::SampleFormat::U16 => build_microphone_fanout_stream::<u16>(
+                &device,
+                stream_config,
+                channels,
+                Arc::clone(&senders),
+            ),
+            cpal::SampleFormat::U24 => build_microphone_fanout_stream::<cpal::U24>(
+                &device,
+                stream_config,
+                channels,
+                Arc::clone(&senders),
+            ),
+            cpal::SampleFormat::U32 => build_microphone_fanout_stream::<u32>(
+                &device,
+                stream_config,
+                channels,
+                Arc::clone(&senders),
+            ),
+            cpal::SampleFormat::U64 => build_microphone_fanout_stream::<u64>(
+                &device,
+                stream_config,
+                channels,
+                Arc::clone(&senders),
+            ),
+            format => Err(AudioRouteError::StreamStart(format!(
+                "unsupported microphone sample format: {format}"
+            ))),
+        }?;
+        stream.play().map_err(|error| {
+            AudioRouteError::StreamStart(format!("cannot start microphone node: {error}"))
+        })?;
+        Ok(MicrophoneFanout {
+            senders,
+            sample_rate,
+            _stream: stream,
+        })
+    }
+
     /// Start capturing from a device by name.
     /// If name is empty, uses the system default input device.
     pub fn start_capture(
@@ -1025,79 +1209,30 @@ impl AudioSystem {
         tx: Sender<Vec<f32>>,
         level: Arc<AtomicU32>,
     ) -> Result<(), String> {
-        // Build and start the replacement before replacing `active_stream`.
-        // If this fails (for example, a device was unplugged), the current microphone
-        // remains active and the translation session keeps receiving audio.
-        let device = if device_id.is_empty() {
-            self.host
-                .default_input_device()
-                .ok_or("No default input device available.")?
-        } else {
-            let parsed_id = device_id
-                .parse()
-                .map_err(|error| format!("Invalid microphone ID '{device_id}': {error}"))?;
-            self.host
-                .device_by_id(&parsed_id)
-                .ok_or_else(|| format!("Microphone '{device_id}' is no longer available"))?
+        let fanout = match &self.microphone_fanout {
+            Some((active_id, fanout)) if active_id == device_id => Arc::clone(fanout),
+            _ => {
+                let fanout = Arc::new(
+                    self.build_microphone_fanout(device_id)
+                        .map_err(|error| error.to_string())?,
+                );
+                self.microphone_fanout = Some((device_id.to_owned(), Arc::clone(&fanout)));
+                fanout
+            }
         };
-
-        let config = device
-            .default_input_config()
-            .map_err(|e| format!("Failed to get default input config: {}", e))?;
-
-        let sample_rate = config.sample_rate();
-        let channels = config.channels() as usize;
-        let sample_format = config.sample_format();
-
-        log::info!("Starting capture on device: '{}'", device);
-        log::info!(
-            "Format: {:?}, Rate: {}, Channels: {}",
-            sample_format,
-            sample_rate,
-            channels
-        );
-
-        // We target 16kHz for the ASR model
-        let target_rate = 16000;
-
-        let stream_config: cpal::StreamConfig = config.into();
-
-        macro_rules! build_stream {
-            ($sample:ty) => {
-                self.build_stream::<$sample>(
-                    &device,
-                    (stream_config, channels, sample_rate, target_rate),
-                    tx,
-                    level,
-                )
-            };
-        }
-        let stream = match sample_format {
-            cpal::SampleFormat::F32 => build_stream!(f32),
-            cpal::SampleFormat::F64 => build_stream!(f64),
-            cpal::SampleFormat::I8 => build_stream!(i8),
-            cpal::SampleFormat::I16 => build_stream!(i16),
-            cpal::SampleFormat::I24 => build_stream!(cpal::I24),
-            cpal::SampleFormat::I32 => build_stream!(i32),
-            cpal::SampleFormat::I64 => build_stream!(i64),
-            cpal::SampleFormat::U8 => build_stream!(u8),
-            cpal::SampleFormat::U16 => build_stream!(u16),
-            cpal::SampleFormat::U24 => build_stream!(cpal::U24),
-            cpal::SampleFormat::U32 => build_stream!(u32),
-            cpal::SampleFormat::U64 => build_stream!(u64),
-            sample_format => Err(format!(
-                "Unsupported microphone sample format: {sample_format}"
-            )),
-        }?;
-
-        stream
-            .play()
-            .map_err(|e| format!("Failed to play stream: {}", e))?;
-        self.add_active_capture(ActiveCapture::Microphone(stream));
-
+        let worker = Self::spawn_processing_worker_with_level(
+            fanout.attach(),
+            fanout.sample_rate,
+            16_000,
+            tx,
+            Some(level),
+        )
+        .map_err(|error| format!("Failed to start microphone processing: {error}"))?;
+        self.add_active_capture(ActiveCapture::MicrophoneSubscription(worker));
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn build_stream<T: Sample + cpal::SizedSample>(
         &self,
         device: &cpal::Device,
@@ -1165,7 +1300,13 @@ impl AudioSystem {
         source: &AudioRouteSourceConfig,
         sink: Arc<AudioRouteSourceBuffer>,
         control: Arc<AudioRouteControl>,
-    ) -> Result<(Stream, thread::JoinHandle<()>), AudioRouteError> {
+        fanout: Option<&Arc<MicrophoneFanout>>,
+    ) -> Result<(Option<Stream>, thread::JoinHandle<()>), AudioRouteError> {
+        if let Some(fanout) = fanout {
+            let worker =
+                spawn_route_source_worker(fanout.attach(), fanout.sample_rate, Arc::clone(&sink))?;
+            return Ok((None, worker));
+        }
         let device = if source.device_id.is_empty() {
             self.host.default_input_device().ok_or_else(|| {
                 AudioRouteError::DeviceUnavailable(
@@ -1227,7 +1368,7 @@ impl AudioSystem {
                 "unsupported microphone sample format: {format}"
             ))),
         }?;
-        Ok((stream, worker))
+        Ok((Some(stream), worker))
     }
 
     fn spawn_processing_worker(
@@ -1236,6 +1377,17 @@ impl AudioSystem {
         target_rate: u32,
         output_tx: Sender<Vec<f32>>,
     ) -> Result<(), String> {
+        Self::spawn_processing_worker_with_level(raw_rx, src_rate, target_rate, output_tx, None)
+            .map(|_| ())
+    }
+
+    fn spawn_processing_worker_with_level(
+        raw_rx: Receiver<Vec<f32>>,
+        src_rate: u32,
+        target_rate: u32,
+        output_tx: Sender<Vec<f32>>,
+        level: Option<Arc<AtomicU32>>,
+    ) -> Result<thread::JoinHandle<()>, String> {
         let mut resampler = if src_rate != target_rate {
             Some(
                 Fft::<f32>::new(
@@ -1256,6 +1408,9 @@ impl AudioSystem {
             .spawn(move || {
                 let mut pending = VecDeque::new();
                 while let Ok(samples) = raw_rx.recv() {
+                    if let Some(level) = &level {
+                        update_input_level(&samples, level);
+                    }
                     if let Some(resampler) = &mut resampler {
                         pending.extend(samples);
                         while pending.len() >= resampler.input_frames_next() {
@@ -1282,7 +1437,6 @@ impl AudioSystem {
                     }
                 }
             })
-            .map(|_| ())
             .map_err(|error| format!("Failed to start audio processing thread: {error}"))
     }
 
@@ -1539,13 +1693,7 @@ where
             move |data: &[T], _: &cpal::InputCallbackInfo| {
                 let mono = data
                     .chunks(channels)
-                    .map(|frame| {
-                        frame
-                            .iter()
-                            .map(|sample| f32::from_sample(*sample))
-                            .sum::<f32>()
-                            / frame.len().max(1) as f32
-                    })
+                    .map(microphone_frame_to_mono::<T>)
                     .collect::<Vec<_>>();
                 update_input_level(&mono, &source.level);
                 if let Err(error) = raw_tx.try_send(mono) {
@@ -1568,6 +1716,63 @@ where
         .map_err(|error| {
             AudioRouteError::StreamStart(format!("cannot create microphone node: {error}"))
         })
+}
+
+fn build_microphone_fanout_stream<T>(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    channels: usize,
+    senders: Arc<Mutex<Vec<Sender<Vec<f32>>>>>,
+) -> Result<Stream, AudioRouteError>
+where
+    T: Sample + cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    device
+        .build_input_stream(
+            config,
+            move |data: &[T], _: &cpal::InputCallbackInfo| {
+                let mono = data
+                    .chunks(channels)
+                    .map(microphone_frame_to_mono::<T>)
+                    .collect::<Vec<_>>();
+                let mut subscribers = senders.lock();
+                subscribers.retain(|sender| match sender.try_send(mono.clone()) {
+                    Ok(()) | Err(TrySendError::Full(_)) => true,
+                    Err(TrySendError::Disconnected(_)) => false,
+                });
+            },
+            move |error| {
+                log::error!("shared microphone stream failed: {error}");
+            },
+            None,
+        )
+        .map_err(|error| {
+            AudioRouteError::StreamStart(format!("cannot create shared microphone node: {error}"))
+        })
+}
+
+fn microphone_frame_to_mono<T>(frame: &[T]) -> f32
+where
+    T: Sample,
+    f32: cpal::FromSample<T>,
+{
+    if frame.len() >= 6 {
+        let left = f32::from_sample(frame[0]);
+        let right = f32::from_sample(frame[1]);
+        let center = f32::from_sample(frame[2]);
+        let surround_left = f32::from_sample(frame[4]);
+        let surround_right = f32::from_sample(frame[5]);
+        center * 0.85 + (left + right) * 0.12 + (surround_left + surround_right) * 0.03
+    } else if frame.len() == 2 {
+        (f32::from_sample(frame[0]) + f32::from_sample(frame[1])) * 0.5
+    } else {
+        frame
+            .iter()
+            .map(|sample| f32::from_sample(*sample))
+            .sum::<f32>()
+            / frame.len().max(1) as f32
+    }
 }
 
 fn spawn_route_source_worker(
@@ -1598,6 +1803,7 @@ fn spawn_route_source_worker(
         .spawn(move || {
             let mut pending = VecDeque::new();
             while let Ok(samples) = raw_rx.recv() {
+                update_input_level(&samples, &sink.level);
                 let Some(resampler) = &mut resampler else {
                     sink.push(samples);
                     continue;

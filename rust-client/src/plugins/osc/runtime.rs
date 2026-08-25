@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 const MUTE_PATH: &str = "/avatar/parameters/MuteSelf";
 const COOLDOWN: Duration = Duration::from_millis(500);
+const BANNER_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 pub const MAX_PREFIX_LENGTH: usize = 24;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -192,6 +193,9 @@ pub struct OscSettings {
     pub history_ttl_seconds: f64,
     pub header_config: BannerConfig,
     pub footer_config: BannerConfig,
+    /// Keeps configured header/footer content visible after message TTL expiry.
+    #[serde(default)]
+    pub persistent_banners: bool,
     pub format_mode: OscFormatMode,
     #[serde(default)]
     pub message_separator: OscMessageSeparator,
@@ -229,6 +233,7 @@ impl Default for OscSettings {
             history_ttl_seconds: 15.0,
             header_config: BannerConfig::default(),
             footer_config: BannerConfig::default(),
+            persistent_banners: false,
             format_mode: OscFormatMode::BilingualSourceFirst,
             message_separator: OscMessageSeparator::default(),
             show_speaker_number: false,
@@ -674,11 +679,13 @@ fn dispatch_loop(
     let mut manual_message: Option<ManualMessage> = None;
     let mut pending = None;
     let mut last_send = Instant::now() - COOLDOWN;
+    let mut next_banner_refresh = banner_refresh_deadline(&settings, Instant::now());
     loop {
         let wait = dispatch_wait(
             pending.as_ref(),
             last_send,
             next_content_expiry(&history, &live, manual_message.as_ref()),
+            next_banner_refresh,
         );
         match rx.recv_timeout(wait) {
             Ok(Command::ManualMessage { text, ttl }) if settings.enabled => {
@@ -842,6 +849,7 @@ fn dispatch_loop(
                 }
                 settings = updated;
                 let now = Instant::now();
+                next_banner_refresh = banner_refresh_deadline(&settings, now);
                 expire_chatbox_entries(&mut history, &mut live, now);
                 if settings.enabled {
                     let metrics = monitor.snapshot();
@@ -883,7 +891,12 @@ fn dispatch_loop(
                     }
                 }
                 let asr_expired = expire_chatbox_entries(&mut history, &mut live, now);
-                if manual_expired || asr_expired {
+                let banner_refresh_due =
+                    next_banner_refresh.is_some_and(|deadline| now >= deadline);
+                if banner_refresh_due {
+                    next_banner_refresh = banner_refresh_deadline(&settings, now);
+                }
+                if manual_expired || asr_expired || banner_refresh_due {
                     let metrics = monitor.snapshot();
                     queue_message(
                         &mut pending,
@@ -995,16 +1008,25 @@ fn dispatch_wait(
     pending: Option<&QueuedMessage>,
     last_send: Instant,
     content_expiry: Option<Instant>,
+    banner_refresh: Option<Instant>,
 ) -> Duration {
     let now = Instant::now();
     let send_wait = pending.map(|_| COOLDOWN.saturating_sub(now.duration_since(last_send)));
     let expiry_wait = content_expiry.map(|expires_at| expires_at.saturating_duration_since(now));
-    match (send_wait, expiry_wait) {
-        (Some(send), Some(expiry)) => send.min(expiry),
-        (Some(send), None) => send,
-        (None, Some(expiry)) => expiry,
-        (None, None) => Duration::from_secs(3600),
-    }
+    let banner_wait = banner_refresh.map(|deadline| deadline.saturating_duration_since(now));
+    [send_wait, expiry_wait, banner_wait]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(Duration::from_secs(3600))
+}
+
+fn banner_refresh_deadline(settings: &OscSettings, now: Instant) -> Option<Instant> {
+    (settings.enabled
+        && settings.persistent_banners
+        && (settings.header_config.content_type != BannerContentType::None
+            || settings.footer_config.content_type != BannerContentType::None))
+        .then_some(now + BANNER_REFRESH_INTERVAL)
 }
 
 fn next_content_expiry(
