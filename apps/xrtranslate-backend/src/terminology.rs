@@ -31,6 +31,11 @@ pub(crate) fn rewrite_recognition_terms(
             let end = usize::try_from(correction.end_byte).ok()?;
             (start < end
                 && end <= source_text.len()
+                // Corpus offsets are byte offsets, but Rust string slices must
+                // start and end on UTF-8 character boundaries. Treat malformed
+                // ranges as unusable data instead of panicking the worker.
+                && source_text.is_char_boundary(start)
+                && source_text.is_char_boundary(end)
                 && !correction.corrected_text.trim().is_empty())
             .then_some((start, end, correction))
         })
@@ -312,6 +317,17 @@ mod tests {
         assert_eq!(rewrite.term_matches[0].text, "femboy");
         assert_eq!(rewrite.term_matches[0].start_byte, 16);
         assert_eq!(rewrite.term_matches[0].end_byte, 22);
+    }
+
+    #[test]
+    fn ignores_recognition_correction_with_invalid_utf8_boundaries() {
+        let source = "不会查到一家PG号";
+        // Both offsets intentionally fall inside the first three-byte
+        // character, as can happen with stale Corpus byte offsets.
+        let rewrite = rewrite_recognition_terms(source, &[correction(1, 2, "", "Public")]);
+
+        assert_eq!(rewrite.corrected_text, source);
+        assert!(rewrite.term_matches.is_empty());
     }
 
     #[test]
