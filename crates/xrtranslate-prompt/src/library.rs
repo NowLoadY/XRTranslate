@@ -248,6 +248,12 @@ impl PromptTemplateLibrary {
                 continue;
             }
             let stored_graph = profile.graph.clone();
+            let stored_positions = profile
+                .graph
+                .nodes
+                .iter()
+                .map(|node| (node.id.clone(), node.position))
+                .collect::<std::collections::HashMap<_, _>>();
             let migrate_legacy_shared_nodes = profile.graph.schema_version < 7;
             if profile.graph.schema_version <= PromptNodeGraph::CURRENT_SCHEMA_VERSION {
                 profile.graph.migrate_legacy_dataflow();
@@ -265,6 +271,11 @@ impl PromptTemplateLibrary {
                     profile.graph.clone(),
                     &PromptNodeGraph::builtin_pseudo_streaming(),
                 );
+                for node in &mut profile.graph.nodes {
+                    if let Some(position) = stored_positions.get(&node.id) {
+                        node.position = *position;
+                    }
+                }
                 profile.graph.upgrade_known_pseudo_streaming_prompts();
                 profile.graph.sync_text_switch_cases(&stored_graph);
                 profile.graph.remove_invalid_socket_links();
@@ -761,6 +772,12 @@ mod tests {
             .find(|node| node.page == crate::PromptNodePage::OpenAiCompatible)
             .map(|node| node.id.clone())
             .expect("built-in graph has a translation node");
+        graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == custom_node_id)
+            .unwrap()
+            .position = [123.0, 456.0];
         let retained_ids = graph
             .nodes
             .iter()
@@ -795,6 +812,16 @@ mod tests {
         assert!(migrated.graph.nodes.iter().any(|node| {
             node.id == custom_node_id && node.page == crate::PromptNodePage::OpenAiCompatible
         }));
+        assert_eq!(
+            migrated
+                .graph
+                .nodes
+                .iter()
+                .find(|node| node.id == custom_node_id)
+                .unwrap()
+                .position,
+            [123.0, 456.0]
+        );
         for target in [
             crate::PromptProviderTarget::AsrInstruction,
             crate::PromptProviderTarget::AsrContextBias,
