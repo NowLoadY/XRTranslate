@@ -1,9 +1,9 @@
 use super::{
     graph::{
-        ApplicationId, AsrInputMode, AudioGraph, AudioLink, AudioNode, AudioNodeKind, DeviceId,
-        GraphEndpoint, GraphId, GraphIssueCode, GraphPosition, GraphValidation,
-        GraphValidationIssue, LinkId, NodeId, SystemAudioCapture, SystemCapturePolicy,
-        VoiceMeeterBus,
+        ApplicationId, AsrInputMode, AudioGraph, AudioLink, AudioNode, AudioNodeKind,
+        AudioProcessor, DeviceId, GraphEndpoint, GraphId, GraphIssueCode, GraphPosition,
+        GraphValidation, GraphValidationIssue, LinkId, NodeId, SystemAudioCapture,
+        SystemCapturePolicy, VoiceMeeterBus,
     },
     persistence::{
         AudioStudioPersistenceError, AudioStudioRepository, AudioStudioSettings, DeviceDefaults,
@@ -336,6 +336,10 @@ pub enum AudioStudioUiAction {
     /// not mutate graph state and never creates an undo entry.
     DiscoverApplications,
     ChooseMedia(NodeId),
+    SetNodeGain {
+        node_id: NodeId,
+        gain_db: f32,
+    },
     EnqueueTts {
         node_id: NodeId,
         text: String,
@@ -488,6 +492,7 @@ impl AudioStudioController {
                 | AudioStudioUiAction::SetNodeDevice { .. }
                 | AudioStudioUiAction::SetSystemAudioCapture { .. }
                 | AudioStudioUiAction::SetNodeVoiceMeeterBus { .. }
+                | AudioStudioUiAction::SetNodeGain { .. }
                 | AudioStudioUiAction::Connect { .. }
                 | AudioStudioUiAction::Rewire { .. }
                 | AudioStudioUiAction::DeleteLink(_)
@@ -504,6 +509,7 @@ impl AudioStudioController {
                 | AudioStudioUiAction::RemoveNode(_)
                 | AudioStudioUiAction::SetNodeDevice { .. }
                 | AudioStudioUiAction::SetSystemAudioCapture { .. }
+                | AudioStudioUiAction::SetNodeGain { .. }
                 | AudioStudioUiAction::SetDeviceDefaults(_)
                 | AudioStudioUiAction::Connect { .. }
                 | AudioStudioUiAction::Rewire { .. }
@@ -625,6 +631,24 @@ impl AudioStudioController {
                     ));
                 };
                 *voicemeeter_bus = bus;
+                self.dirty = true;
+            }
+            AudioStudioUiAction::SetNodeGain { node_id, gain_db } => {
+                let graph = self.selected_graph_mut();
+                let node = graph
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == node_id)
+                    .ok_or_else(|| AudioStudioControllerError::NodeNotFound(node_id.clone()))?;
+                let AudioNodeKind::Processing {
+                    processor: AudioProcessor::Gain { gain_db: current_db },
+                } = &mut node.kind
+                else {
+                    return Err(AudioStudioControllerError::InvalidEdit(
+                        "Gain can only be set on a Gain processing node".into(),
+                    ));
+                };
+                *current_db = gain_db;
                 self.dirty = true;
             }
             AudioStudioUiAction::MoveNode { node_id, position } => {
@@ -2232,7 +2256,7 @@ mod tests {
         let system_input = graph
             .links
             .iter_mut()
-            .find(|link| link.id == LinkId::new("recognition-to-asr-mixer"))
+            .find(|link| link.id == LinkId::new("gain-rec-sys-to-asr-mixer"))
             .unwrap();
         system_input.enabled = false;
         assert!(!analyze_route_risks(&graph).risks.iter().any(|risk| {
@@ -2302,7 +2326,7 @@ mod tests {
         let actions = controller
             .handle_ui_action(
                 AudioStudioUiAction::SetLinkEnabled {
-                    link_id: LinkId::new("recognition-to-asr-mixer"),
+                    link_id: LinkId::new("gain-rec-sys-to-asr-mixer"),
                     enabled: false,
                 },
                 &host,
@@ -2324,7 +2348,7 @@ mod tests {
         controller
             .handle_ui_action(
                 AudioStudioUiAction::SetLinkEnabled {
-                    link_id: LinkId::new("recognition-to-asr-mixer"),
+                    link_id: LinkId::new("gain-rec-sys-to-asr-mixer"),
                     enabled: false,
                 },
                 &host,
@@ -2333,7 +2357,7 @@ mod tests {
         let actions = controller
             .handle_ui_action(
                 AudioStudioUiAction::SetLinkEnabled {
-                    link_id: LinkId::new("microphone-to-asr-mixer"),
+                    link_id: LinkId::new("gain-mic-asr-to-asr-mixer"),
                     enabled: false,
                 },
                 &host,
@@ -2423,7 +2447,7 @@ mod tests {
 
         let result = controller.handle_ui_action(
             AudioStudioUiAction::SetLinkEnabled {
-                link_id: LinkId::new("recognition-to-asr-mixer"),
+                link_id: LinkId::new("gain-rec-sys-to-asr-mixer"),
                 enabled: false,
             },
             &host,
@@ -2436,7 +2460,7 @@ mod tests {
         // Non-ASR link modification should succeed
         let ok_result = controller.handle_ui_action(
             AudioStudioUiAction::SetLinkEnabled {
-                link_id: LinkId::new("microphone-to-game-mixer"),
+                link_id: LinkId::new("gain-mic-game-to-game-mixer"),
                 enabled: false,
             },
             &host,

@@ -97,7 +97,30 @@ fn node_palette(kind: &AudioNodeKind) -> NodePalette {
     }
 }
 
+fn is_gain_node(node: &AudioNode) -> bool {
+    matches!(
+        node.kind,
+        AudioNodeKind::Processing {
+            processor: AudioProcessor::Gain { .. },
+        }
+    )
+}
+
+fn gain_node_value(node: &AudioNode) -> f32 {
+    if let AudioNodeKind::Processing {
+        processor: AudioProcessor::Gain { gain_db },
+    } = node.kind
+    {
+        gain_db
+    } else {
+        0.0
+    }
+}
+
 fn node_size(node: &AudioNode) -> Vec2 {
+    if is_gain_node(node) {
+        return Vec2::splat(52.0);
+    }
     let device_node = matches!(
         node.kind,
         AudioNodeKind::Microphone { .. }
@@ -436,7 +459,9 @@ fn port_position(
     output: bool,
     zoom: f32,
 ) -> Pos2 {
-    let y = if port.0 == PortId::SIDECHAIN {
+    let y = if is_gain_node(node) {
+        rect.center().y
+    } else if port.0 == PortId::SIDECHAIN {
         rect.bottom() - 16.0 * zoom
     } else if !output && matches!(node.kind, AudioNodeKind::Mixer) {
         let row = input_ports(graph, node)
@@ -512,6 +537,10 @@ enum CanvasCommand {
         node_id: NodeId,
         bus: Option<VoiceMeeterBus>,
     },
+    SetNodeGain {
+        node_id: NodeId,
+        gain_db: f32,
+    },
     ChooseMedia(NodeId),
     EnqueueTts {
         node_id: NodeId,
@@ -553,12 +582,23 @@ fn render_graph_canvas(
                 state.canvas.fit_pending = false;
             }
 
+            let pointer = response.interact_pointer_pos();
+            let pointer_over_gain_node = pointer.is_some_and(|pointer| {
+                graph
+                    .nodes
+                    .iter()
+                    .any(|node| {
+                        is_gain_node(node)
+                            && node_rect(graph, canvas, state, node, &snapshot.host_audio)
+                                .contains(pointer)
+                    })
+            });
+
             let mut canvas_ui = graph_canvas::canvas_viewport(ui, canvas);
-            state.handle_navigation(canvas, &response, &canvas_ui, true, true);
+            state.handle_navigation(canvas, &response, &canvas_ui, true, !pointer_over_gain_node);
             graph_canvas::paint_grid(&canvas_ui, canvas, &state.canvas, GRID);
 
             let positions = endpoint_positions(graph, canvas, state, &snapshot.host_audio);
-            let pointer = response.interact_pointer_pos();
             let pointer_over_node = pointer.is_some_and(|pointer| {
                 graph
                     .nodes
@@ -874,24 +914,13 @@ fn link_signal_targets(
         .iter()
         .filter(|link| link.enabled)
         .map(|link| {
-            let mut level = node_output_signal(
+            let level = node_output_signal(
                 graph,
                 &link.from.node_id,
                 snapshot,
                 &mut memo,
                 &mut visiting,
             );
-            if snapshot.live_routing_matches_graph
-                && graph.node(&link.to.node_id).is_some_and(|node| {
-                    matches!(
-                        node.kind,
-                        AudioNodeKind::MonitorOutput { .. }
-                            | AudioNodeKind::GameMicrophoneOutput { .. }
-                    )
-                })
-            {
-                level = snapshot.signal_levels.output;
-            }
             (link.id.clone(), level.clamp(0.0, 1.0))
         })
         .collect()
@@ -919,7 +948,7 @@ fn node_output_signal(
         AudioNodeKind::SystemAudio { .. } => snapshot.signal_levels.system_audio,
         AudioNodeKind::TextToSpeech => snapshot.signal_levels.tts,
         AudioNodeKind::Media { .. } => 0.0,
-        AudioNodeKind::Mixer | AudioNodeKind::Processing { .. } => {
+        AudioNodeKind::Mixer => {
             graph
                 .links
                 .iter()
@@ -933,6 +962,23 @@ fn node_output_signal(
                 .sum::<f32>()
                 .sqrt()
                 .clamp(0.0, 1.0)
+        }
+        AudioNodeKind::Processing { processor } => {
+            let input_signal = graph
+                .links
+                .iter()
+                .filter(|link| {
+                    link.enabled
+                        && link.to.node_id == *node_id
+                        && link.to.port_id.0 != PortId::SIDECHAIN
+                })
+                .map(|link| node_output_signal(graph, &link.from.node_id, snapshot, memo, visiting))
+                .fold(0.0_f32, |acc, val| acc.max(val));
+            let multiplier = match processor {
+                AudioProcessor::Gain { gain_db } => 10.0_f32.powf(gain_db / 20.0),
+                _ => 1.0,
+            };
+            (input_signal * multiplier).clamp(0.0, 1.0)
         }
         AudioNodeKind::AsrTap
         | AudioNodeKind::MonitorOutput { .. }
@@ -1014,6 +1060,232 @@ fn paint_signal_particles(
     }
 }
 
+fn render_gain_orb_node(
+    graph: &AudioGraph,
+    node: &AudioNode,
+    host_audio: &HostAudioSnapshot,
+    canvas: Rect,
+    ui: &mut egui::Ui,
+    state: &mut AudioStudioCanvasState,
+    commands: &mut Vec<CanvasCommand>,
+) {
+    let rect = node_rect(graph, canvas, state, node, host_audio);
+    let center = rect.center();
+    let zoom = state.canvas.zoom;
+    let radius = (rect.width() * 0.5).max(10.0);
+
+    let id = ui.make_persistent_id(("audio_gain_orb", &node.id.0));
+    let response = ui.interact(rect, id, Sense::click_and_drag());
+
+    // Selection
+    if response.clicked() {
+        let extend = ui.input(|input| input.modifiers.shift || input.modifiers.ctrl);
+        state.select_node(node.id.clone(), extend);
+    }
+
+    // Double-click resets to 1.0x (0.0 dB)
+    if response.double_clicked() {
+        commands.push(CanvasCommand::SetNodeGain {
+            node_id: node.id.clone(),
+            gain_db: 0.0,
+        });
+    }
+
+    // Node drag on canvas
+    if response.drag_started() {
+        state.begin_node_drag(
+            node.id.clone(),
+            graph
+                .nodes
+                .iter()
+                .map(|n| (n.id.clone(), [n.position.x, n.position.y])),
+        );
+    }
+    if response.dragged() && state.drag_node.as_ref() == Some(&node.id) {
+        state.update_node_drag(response.drag_delta());
+    }
+    if response.drag_stopped() && state.drag_node.as_ref() == Some(&node.id) {
+        commands.extend(
+            state
+                .finish_node_drag(Some(16.0))
+                .into_iter()
+                .map(|movement| CanvasCommand::MoveNode {
+                    node_id: movement.node_id,
+                    position: GraphPosition {
+                        x: movement.position[0],
+                        y: movement.position[1],
+                    },
+                }),
+        );
+    }
+
+    let current_gain_db = gain_node_value(node);
+    let mut linear_gain = 10.0_f32.powf(current_gain_db / 20.0);
+
+    // Mouse wheel scroll adjustment:
+    let is_hovered = response.hovered();
+    let wheel_steps = if is_hovered {
+        ui.input(|i| {
+            let mut steps = 0.0_f32;
+            for event in &i.raw.events {
+                if let egui::Event::MouseWheel { delta, .. } = event {
+                    if delta.y > 0.0 {
+                        steps += 1.0;
+                    } else if delta.y < 0.0 {
+                        steps -= 1.0;
+                    }
+                }
+            }
+            steps
+        })
+    } else {
+        0.0
+    };
+
+    let mut changed_by_wheel = false;
+    if wheel_steps != 0.0 {
+        linear_gain = ((linear_gain + wheel_steps * 0.1) * 10.0).round() / 10.0;
+        linear_gain = linear_gain.clamp(0.0, 5.0);
+        let new_gain_db = if linear_gain < 0.001 {
+            -60.0
+        } else {
+            20.0 * linear_gain.log10()
+        };
+        commands.push(CanvasCommand::SetNodeGain {
+            node_id: node.id.clone(),
+            gain_db: new_gain_db,
+        });
+        changed_by_wheel = true;
+    }
+
+    // Control state tracking:
+    let now = ui.input(|i| i.time);
+    let last_interact_id = id.with("last_interact");
+    let mut last_interact = ui.data(|d| d.get_temp::<f64>(last_interact_id)).unwrap_or(0.0);
+    if is_hovered || response.dragged() || changed_by_wheel {
+        last_interact = now;
+        ui.data_mut(|d| d.insert_temp(last_interact_id, now));
+    }
+    let is_controlling = is_hovered || (now - last_interact) < 1.2;
+    if is_controlling && !is_hovered {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+    }
+
+    let selected = state.selected_nodes.contains(&node.id);
+    let base_border = crate::ui::theme::border();
+    let border_color = if selected {
+        LINK_SELECTED
+    } else if is_controlling {
+        crate::ui::theme::text_strong()
+    } else {
+        base_border
+    };
+    let stroke_width = if selected { 2.2 } else if is_controlling { 1.4 } else { 1.0 } * zoom;
+
+    // 1. Unfilled sphere body remains transparent (per user: "球内没有水的部分保持透明")
+
+    // 2. Liquid fill
+    let fill_fraction = if linear_gain <= 1.0 {
+        (linear_gain * 0.5).clamp(0.0, 0.5)
+    } else {
+        (0.5 + 0.125 * (linear_gain - 1.0)).clamp(0.5, 1.0)
+    };
+    let y_water = rect.bottom() - fill_fraction * (2.0 * radius);
+    let dy_from_center = y_water - center.y;
+
+    if fill_fraction > 0.002 {
+        let liquid_alpha = if is_controlling { 135 } else { 85 };
+        let liquid_color = Color32::from_rgba_unmultiplied(
+            border_color.r(),
+            border_color.g(),
+            border_color.b(),
+            liquid_alpha,
+        );
+
+        if fill_fraction >= 0.995 || dy_from_center <= -radius {
+            ui.painter().circle_filled(center, radius, liquid_color);
+        } else if dy_from_center < radius {
+            let half_chord = (radius * radius - dy_from_center * dy_from_center).max(0.0).sqrt();
+            let left_intersect = Pos2::new(center.x - half_chord, y_water);
+            let right_intersect = Pos2::new(center.x + half_chord, y_water);
+
+            let start_angle = (dy_from_center / radius).clamp(-1.0, 1.0).asin();
+            let steps = 32;
+            let mut liquid_polygon = Vec::with_capacity(steps + 2);
+            liquid_polygon.push(left_intersect);
+            liquid_polygon.push(right_intersect);
+            for i in 1..steps {
+                let frac = i as f32 / steps as f32;
+                let theta = start_angle + (std::f32::consts::PI - 2.0 * start_angle) * frac;
+                let px = center.x + radius * theta.cos();
+                let py = center.y + radius * theta.sin();
+                liquid_polygon.push(Pos2::new(px, py));
+            }
+            ui.painter().add(egui::Shape::convex_polygon(
+                liquid_polygon,
+                liquid_color,
+                Stroke::NONE,
+            ));
+
+            // Water surface line
+            ui.painter().line_segment(
+                [left_intersect, right_intersect],
+                Stroke::new(1.1 * zoom, border_color),
+            );
+        }
+    }
+
+    // 3. Middle reference line (equator line at 1.0x)
+    let mid_color = Color32::from_rgba_unmultiplied(
+        border_color.r(),
+        border_color.g(),
+        border_color.b(),
+        if is_controlling { 110 } else { 55 },
+    );
+    ui.painter().line_segment(
+        [
+            Pos2::new(center.x - radius * 0.8, center.y),
+            Pos2::new(center.x + radius * 0.8, center.y),
+        ],
+        Stroke::new(0.8 * zoom, mid_color),
+    );
+
+    // 4. Fine outer circle outline
+    ui.painter().circle_stroke(
+        center,
+        radius,
+        Stroke::new(stroke_width, border_color),
+    );
+
+    // 5. Value display floating ABOVE the ball only when controlling (per user: "数值仅在控制时显示在球的上方")
+    if is_controlling {
+        let value_text = if linear_gain < 0.01 {
+            "MUTE".to_string()
+        } else if (linear_gain - 1.0).abs() < 0.02 {
+            "1.0x (0 dB)".to_string()
+        } else {
+            format!("{:.1}x ({:+.1} dB)", linear_gain, current_gain_db)
+        };
+
+        let label_pos = Pos2::new(center.x, rect.top() - 14.0 * zoom);
+        ui.painter().text(
+            label_pos,
+            Align2::CENTER_BOTTOM,
+            value_text,
+            FontId::proportional((11.5 * zoom).clamp(8.5, 14.0)),
+            crate::ui::theme::text_strong(),
+        );
+    }
+
+    // 6. Ports (In on left, Out on right)
+    for port in input_ports(graph, node) {
+        render_port(graph, node, &port, false, rect, ui, state, host_audio, commands);
+    }
+    for port in output_ports(node) {
+        render_port(graph, node, &port, true, rect, ui, state, host_audio, commands);
+    }
+}
+
 fn render_node(
     graph: &AudioGraph,
     node: &AudioNode,
@@ -1024,6 +1296,10 @@ fn render_node(
     state: &mut AudioStudioCanvasState,
     commands: &mut Vec<CanvasCommand>,
 ) {
+    if is_gain_node(node) {
+        render_gain_orb_node(graph, node, host_audio, canvas, ui, state, commands);
+        return;
+    }
     let devices = &host_audio.devices;
     let rect = node_rect(graph, canvas, state, node, host_audio);
     let header = Rect::from_min_max(
@@ -1715,6 +1991,9 @@ fn render_port(
     ui.painter().circle_filled(center, radius, color);
     ui.painter()
         .circle_stroke(center, radius + 1.0, Stroke::new(1.0, Color32::WHITE));
+    if is_gain_node(node) {
+        return;
+    }
     let shows_input_toggle = !output && connected_link.is_some() && state.canvas.zoom >= 0.65;
     let label_position = if output {
         Pos2::new(center.x - 11.0 * state.canvas.zoom, center.y)
@@ -1924,6 +2203,7 @@ fn render_scoped(snapshot: &AudioStudioUiSnapshot, ui: &mut egui::Ui) -> Vec<Aud
                 | CanvasCommand::SetSystemAudioCapture { .. }
                 | CanvasCommand::SetLinkEnabled { .. }
                 | CanvasCommand::SetNodeVoiceMeeterBus { .. }
+                | CanvasCommand::SetNodeGain { .. }
         ) {
             state.history.push(snapshot.selected_graph.clone());
         }
@@ -1959,6 +2239,9 @@ fn render_scoped(snapshot: &AudioStudioUiSnapshot, ui: &mut egui::Ui) -> Vec<Aud
             }
             CanvasCommand::SetNodeVoiceMeeterBus { node_id, bus } => {
                 AudioStudioUiAction::SetNodeVoiceMeeterBus { node_id, bus }
+            }
+            CanvasCommand::SetNodeGain { node_id, gain_db } => {
+                AudioStudioUiAction::SetNodeGain { node_id, gain_db }
             }
             CanvasCommand::ChooseMedia(node_id) => AudioStudioUiAction::ChooseMedia(node_id),
             CanvasCommand::EnqueueTts { node_id, text } => {

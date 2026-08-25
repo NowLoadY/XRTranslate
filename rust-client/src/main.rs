@@ -319,9 +319,22 @@ fn compile_audio_studio_route(
                         );
                     }
                     AudioNodeKind::Processing {
+                        processor: AudioProcessor::Gain { gain_db },
+                    } => {
+                        let linear_gain = 10.0_f32.powf(gain_db / 20.0).clamp(0.0, 8.0);
+                        if let Some(mic) = &mut route.microphone {
+                            mic.gain *= linear_gain;
+                        }
+                        if let Some(sys) = &mut route.system_loopback {
+                            sys.gain *= linear_gain;
+                        }
+                        if let Some(tts) = &mut route.tts_gain {
+                            *tts *= linear_gain;
+                        }
+                    }
+                    AudioNodeKind::Processing {
                         processor:
-                            AudioProcessor::Gain { .. }
-                            | AudioProcessor::NoiseGate { .. }
+                            AudioProcessor::NoiseGate { .. }
                             | AudioProcessor::Compressor { .. }
                             | AudioProcessor::Ducker { .. },
                     } => {
@@ -413,6 +426,9 @@ fn compile_audio_studio_route(
                     AudioNodeKind::Media { .. } => {
                         return Err("Direct media-file ASR is not available in Audio Studio yet".into());
                     }
+                    AudioNodeKind::Processing {
+                        processor: AudioProcessor::Gain { .. },
+                    } => {}
                     AudioNodeKind::Processing { .. } => {
                         return Err("DSP nodes on the ASR branch are not executable yet".into());
                     }
@@ -4568,7 +4584,7 @@ mod tests {
         graph
             .links
             .iter_mut()
-            .find(|link| link.id.0 == "recognition-to-asr-mixer")
+            .find(|link| link.id.0 == "gain-rec-sys-to-asr-mixer")
             .expect("complete graph must connect recognition system audio")
             .enabled = false;
 
@@ -4691,12 +4707,12 @@ mod tests {
         let mic_link = graph
             .links
             .iter()
-            .find(|l| l.id.0 == "microphone-to-asr-mixer")
+            .find(|l| l.id.0 == "gain-mic-asr-to-asr-mixer")
             .unwrap();
         let sys_link = graph
             .links
             .iter()
-            .find(|l| l.id.0 == "recognition-to-asr-mixer")
+            .find(|l| l.id.0 == "gain-rec-sys-to-asr-mixer")
             .unwrap();
         let bus_link = graph
             .links
@@ -4716,12 +4732,12 @@ mod tests {
         let mic_link = graph
             .links
             .iter()
-            .find(|l| l.id.0 == "microphone-to-asr-mixer")
+            .find(|l| l.id.0 == "gain-mic-asr-to-asr-mixer")
             .unwrap();
         let sys_link = graph
             .links
             .iter()
-            .find(|l| l.id.0 == "recognition-to-asr-mixer")
+            .find(|l| l.id.0 == "gain-rec-sys-to-asr-mixer")
             .unwrap();
 
         assert!(!mic_link.enabled, "Microphone input should be disabled");

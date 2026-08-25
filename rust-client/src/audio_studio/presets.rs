@@ -67,14 +67,15 @@ fn complete_audio_system() -> AudioGraph {
                 },
             },
         ),
+        gain_node("gain-rec-sys", "Sys Gain", 340.0, 55.0),
         node(
             "asr-input-mixer",
             "Recognition inputs",
-            440.0,
+            480.0,
             120.0,
             AudioNodeKind::Mixer,
         ),
-        node("asr", "ASR", 752.0, 120.0, AudioNodeKind::AsrTap),
+        node("asr", "ASR", 820.0, 120.0, AudioNodeKind::AsrTap),
         node(
             "microphone",
             "Microphone",
@@ -82,6 +83,8 @@ fn complete_audio_system() -> AudioGraph {
             290.0,
             AudioNodeKind::Microphone { device_id: None },
         ),
+        gain_node("gain-mic-asr", "Mic Gain", 340.0, 190.0),
+        gain_node("gain-mic-game", "Mic Gain", 340.0, 310.0),
         node(
             "bgm",
             "BGM / application audio",
@@ -94,18 +97,20 @@ fn complete_audio_system() -> AudioGraph {
                 },
             },
         ),
+        gain_node("gain-bgm-game", "BGM Gain", 340.0, 530.0),
         node("tts", "TTS", 40.0, 790.0, AudioNodeKind::TextToSpeech),
+        gain_node("gain-tts-game", "TTS Gain", 340.0, 710.0),
         node(
             "game-mixer",
             "Voice + BGM + TTS",
-            440.0,
+            480.0,
             360.0,
             AudioNodeKind::Mixer,
         ),
         node(
             "game-limiter",
             "Virtual microphone limiter",
-            832.0,
+            872.0,
             360.0,
             AudioNodeKind::Processing {
                 processor: AudioProcessor::Limiter { ceiling_db: -1.0 },
@@ -114,7 +119,7 @@ fn complete_audio_system() -> AudioGraph {
         node(
             "game-microphone",
             "App microphone output",
-            1224.0,
+            1264.0,
             330.0,
             AudioNodeKind::GameMicrophoneOutput {
                 device_id: None,
@@ -124,28 +129,48 @@ fn complete_audio_system() -> AudioGraph {
         node(
             "tts-monitor",
             "TTS monitor output",
-            440.0,
+            480.0,
             790.0,
             AudioNodeKind::MonitorOutput { device_id: None },
         ),
     ];
     graph.links = vec![
+        AudioLink::new("recognition-to-gain", "recognition-system-audio", "gain-rec-sys"),
         AudioLink::to_mixer_input(
-            "recognition-to-asr-mixer",
-            "recognition-system-audio",
+            "gain-rec-sys-to-asr-mixer",
+            "gain-rec-sys",
             "asr-input-mixer",
             0,
         ),
+        AudioLink::new("mic-to-gain-asr", "microphone", "gain-mic-asr"),
         AudioLink::to_mixer_input(
-            "microphone-to-asr-mixer",
-            "microphone",
+            "gain-mic-asr-to-asr-mixer",
+            "gain-mic-asr",
             "asr-input-mixer",
             1,
         ),
         AudioLink::new_with_enabled("asr-mixer-to-asr", "asr-input-mixer", "asr", false),
-        AudioLink::to_mixer_input("microphone-to-game-mixer", "microphone", "game-mixer", 0),
-        AudioLink::to_mixer_input("bgm-to-game-mixer", "bgm", "game-mixer", 1),
-        AudioLink::to_mixer_input("tts-to-game-mixer", "tts", "game-mixer", 2),
+        AudioLink::new("mic-to-gain-game", "microphone", "gain-mic-game"),
+        AudioLink::to_mixer_input(
+            "gain-mic-game-to-game-mixer",
+            "gain-mic-game",
+            "game-mixer",
+            0,
+        ),
+        AudioLink::new("bgm-to-gain", "bgm", "gain-bgm-game"),
+        AudioLink::to_mixer_input(
+            "gain-bgm-to-game-mixer",
+            "gain-bgm-game",
+            "game-mixer",
+            1,
+        ),
+        AudioLink::new("tts-to-gain", "tts", "gain-tts-game"),
+        AudioLink::to_mixer_input(
+            "gain-tts-to-game-mixer",
+            "gain-tts-game",
+            "game-mixer",
+            2,
+        ),
         AudioLink::new("game-mixer-to-limiter", "game-mixer", "game-limiter"),
         AudioLink::new(
             "limiter-to-game-microphone",
@@ -162,6 +187,18 @@ fn node(id: &str, label: &str, x: f32, y: f32, kind: AudioNodeKind) -> AudioNode
         position: GraphPosition { x, y },
         ..AudioNode::new(id, label, kind)
     }
+}
+
+fn gain_node(id: &str, label: &str, x: f32, y: f32) -> AudioNode {
+    node(
+        id,
+        label,
+        x,
+        y,
+        AudioNodeKind::Processing {
+            processor: AudioProcessor::Gain { gain_db: 0.0 },
+        },
+    )
 }
 
 fn translation_safe() -> AudioGraph {
@@ -182,25 +219,32 @@ fn translation_safe() -> AudioGraph {
                 },
             },
         ),
+        gain_node("gain-system-asr", "Sys Gain", 340.0, 75.0),
         node(
             "asr-input-mixer",
             "Recognition inputs",
-            430.0,
+            480.0,
             60.0,
             AudioNodeKind::Mixer,
         ),
-        node("asr", "ASR", 730.0, 60.0, AudioNodeKind::AsrTap),
+        node("asr", "ASR", 820.0, 60.0, AudioNodeKind::AsrTap),
         node("tts", "TTS", 40.0, 330.0, AudioNodeKind::TextToSpeech),
         node(
             "monitor",
             "Monitor output",
-            430.0,
+            480.0,
             330.0,
             AudioNodeKind::MonitorOutput { device_id: None },
         ),
     ];
     graph.links = vec![
-        AudioLink::to_mixer_input("system-to-asr-mixer", "system-audio", "asr-input-mixer", 0),
+        AudioLink::new("system-to-gain", "system-audio", "gain-system-asr"),
+        AudioLink::to_mixer_input(
+            "gain-system-to-asr-mixer",
+            "gain-system-asr",
+            "asr-input-mixer",
+            0,
+        ),
         AudioLink::new_with_enabled("asr-mixer-to-asr", "asr-input-mixer", "asr", false),
         AudioLink::new("tts-to-monitor", "tts", "monitor"),
     ];
@@ -220,6 +264,7 @@ fn vrchat_karaoke() -> AudioGraph {
             40.0,
             AudioNodeKind::Microphone { device_id: None },
         ),
+        gain_node("gain-mic", "Mic Gain", 340.0, 55.0),
         node(
             "bgm",
             "BGM / system audio",
@@ -232,11 +277,12 @@ fn vrchat_karaoke() -> AudioGraph {
                 },
             },
         ),
-        node("mixer", "Voice + BGM", 440.0, 90.0, AudioNodeKind::Mixer),
+        gain_node("gain-bgm", "BGM Gain", 340.0, 285.0),
+        node("mixer", "Voice + BGM", 480.0, 90.0, AudioNodeKind::Mixer),
         node(
             "limiter",
             "Output limiter",
-            832.0,
+            872.0,
             90.0,
             AudioNodeKind::Processing {
                 processor: AudioProcessor::Limiter { ceiling_db: -1.0 },
@@ -245,7 +291,7 @@ fn vrchat_karaoke() -> AudioGraph {
         node(
             "game-microphone",
             "App microphone output",
-            1224.0,
+            1264.0,
             60.0,
             AudioNodeKind::GameMicrophoneOutput {
                 device_id: None,
@@ -254,8 +300,10 @@ fn vrchat_karaoke() -> AudioGraph {
         ),
     ];
     graph.links = vec![
-        AudioLink::to_mixer_input("mic-to-mixer", "microphone", "mixer", 0),
-        AudioLink::to_mixer_input("bgm-to-mixer", "bgm", "mixer", 1),
+        AudioLink::new("mic-to-gain", "microphone", "gain-mic"),
+        AudioLink::to_mixer_input("gain-mic-to-mixer", "gain-mic", "mixer", 0),
+        AudioLink::new("bgm-to-gain", "bgm", "gain-bgm"),
+        AudioLink::to_mixer_input("gain-bgm-to-mixer", "gain-bgm", "mixer", 1),
         AudioLink::new("mixer-to-limiter", "mixer", "limiter"),
         AudioLink::new("limiter-to-game", "limiter", "game-microphone"),
     ];
@@ -275,20 +323,23 @@ fn tts_to_game_microphone() -> AudioGraph {
             40.0,
             AudioNodeKind::Microphone { device_id: None },
         ),
+        gain_node("gain-mic-mixer", "Mic Gain", 340.0, 55.0),
+        gain_node("gain-mic-asr", "Mic Gain", 340.0, 190.0),
         node("tts", "TTS", 40.0, 270.0, AudioNodeKind::TextToSpeech),
-        node("mixer", "Voice + TTS", 440.0, 90.0, AudioNodeKind::Mixer),
+        gain_node("gain-tts-mixer", "TTS Gain", 340.0, 285.0),
+        node("mixer", "Voice + TTS", 480.0, 90.0, AudioNodeKind::Mixer),
         node(
             "asr-input-mixer",
             "Recognition inputs",
-            440.0,
+            480.0,
             300.0,
             AudioNodeKind::Mixer,
         ),
-        node("asr", "ASR", 752.0, 300.0, AudioNodeKind::AsrTap),
+        node("asr", "ASR", 820.0, 300.0, AudioNodeKind::AsrTap),
         node(
             "limiter",
             "Output limiter",
-            832.0,
+            872.0,
             90.0,
             AudioNodeKind::Processing {
                 processor: AudioProcessor::Limiter { ceiling_db: -1.0 },
@@ -297,7 +348,7 @@ fn tts_to_game_microphone() -> AudioGraph {
         node(
             "game-microphone",
             "App microphone output",
-            1224.0,
+            1264.0,
             60.0,
             AudioNodeKind::GameMicrophoneOutput {
                 device_id: None,
@@ -306,10 +357,18 @@ fn tts_to_game_microphone() -> AudioGraph {
         ),
     ];
     graph.links = vec![
-        AudioLink::to_mixer_input("mic-to-mixer", "microphone", "mixer", 0),
-        AudioLink::to_mixer_input("mic-to-asr-mixer", "microphone", "asr-input-mixer", 0),
+        AudioLink::new("mic-to-gain-mixer", "microphone", "gain-mic-mixer"),
+        AudioLink::to_mixer_input("gain-mic-to-mixer", "gain-mic-mixer", "mixer", 0),
+        AudioLink::new("mic-to-gain-asr", "microphone", "gain-mic-asr"),
+        AudioLink::to_mixer_input(
+            "gain-mic-to-asr-mixer",
+            "gain-mic-asr",
+            "asr-input-mixer",
+            0,
+        ),
         AudioLink::new_with_enabled("asr-mixer-to-asr", "asr-input-mixer", "asr", false),
-        AudioLink::to_mixer_input("tts-to-mixer", "tts", "mixer", 1),
+        AudioLink::new("tts-to-gain-mixer", "tts", "gain-tts-mixer"),
+        AudioLink::to_mixer_input("gain-tts-to-mixer", "gain-tts-mixer", "mixer", 1),
         AudioLink::new("mixer-to-limiter", "mixer", "limiter"),
         AudioLink::new("limiter-to-game", "limiter", "game-microphone"),
     ];
@@ -346,11 +405,16 @@ mod tests {
         let graph = graph_for_preset(AudioStudioPreset::CompleteAudioSystem);
 
         assert!(graph.links.iter().any(|link| {
-            link.from.node_id.0 == "recognition-system-audio"
-                && link.to.node_id.0 == "asr-input-mixer"
+            link.from.node_id.0 == "recognition-system-audio" && link.to.node_id.0 == "gain-rec-sys"
         }));
         assert!(graph.links.iter().any(|link| {
-            link.from.node_id.0 == "microphone" && link.to.node_id.0 == "asr-input-mixer"
+            link.from.node_id.0 == "gain-rec-sys" && link.to.node_id.0 == "asr-input-mixer"
+        }));
+        assert!(graph.links.iter().any(|link| {
+            link.from.node_id.0 == "microphone" && link.to.node_id.0 == "gain-mic-asr"
+        }));
+        assert!(graph.links.iter().any(|link| {
+            link.from.node_id.0 == "gain-mic-asr" && link.to.node_id.0 == "asr-input-mixer"
         }));
         assert!(graph.links.iter().any(|link| {
             link.from.node_id.0 == "asr-input-mixer" && link.to.node_id.0 == "asr"
@@ -387,6 +451,9 @@ mod tests {
                 .iter()
                 .any(|link| { link.from.node_id.0 == "tts" && link.to.node_id.0 == "asr" })
         );
+        assert!(graph.links.iter().any(|link| {
+            link.from.node_id.0 == "system-audio" && link.to.node_id.0 == "gain-system-asr"
+        }));
         assert!(graph.nodes.iter().any(|node| {
             matches!(
                 node.kind,
@@ -407,7 +474,13 @@ mod tests {
             graph
                 .links
                 .iter()
-                .any(|link| link.from.node_id.0 == "bgm" && link.to.node_id.0 == "mixer")
+                .any(|link| link.from.node_id.0 == "bgm" && link.to.node_id.0 == "gain-bgm")
+        );
+        assert!(
+            graph
+                .links
+                .iter()
+                .any(|link| link.from.node_id.0 == "gain-bgm" && link.to.node_id.0 == "mixer")
         );
         assert!(graph.nodes.iter().any(|node| {
             node.id.0 == "bgm"
@@ -435,7 +508,10 @@ mod tests {
     fn tts_conversation_preset_keeps_a_live_asr_session_for_direct_text_turns() {
         let graph = graph_for_preset(AudioStudioPreset::TtsToGameMicrophone);
         assert!(graph.links.iter().any(|link| {
-            link.from.node_id.0 == "microphone"
+            link.from.node_id.0 == "microphone" && link.to.node_id.0 == "gain-mic-asr"
+        }));
+        assert!(graph.links.iter().any(|link| {
+            link.from.node_id.0 == "gain-mic-asr"
                 && link.to.node_id.0 == "asr-input-mixer"
                 && link.enabled
         }));

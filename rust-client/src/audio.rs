@@ -1429,9 +1429,9 @@ impl AudioSystem {
 }
 
 fn validate_route_gain(gain: f32) -> Result<(), AudioRouteError> {
-    if !gain.is_finite() || !(0.0..=4.0).contains(&gain) {
+    if !gain.is_finite() || !(0.0..=8.0).contains(&gain) {
         return Err(AudioRouteError::InvalidConfiguration(
-            "source gains must be finite values between 0.0 and 4.0".into(),
+            "source gains must be finite values between 0.0 and 8.0".into(),
         ));
     }
     Ok(())
