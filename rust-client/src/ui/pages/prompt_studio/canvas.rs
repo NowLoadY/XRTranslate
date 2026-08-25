@@ -361,20 +361,30 @@ pub(super) fn render_graph_editor(
                         actions.push(PromptStudioAction::ActivateProfile(draft.clone()));
                         controller.dirty = false;
                     }
-                } else if small_outline_button(
-                    ui,
-                    crate::i18n::tr(language, "EDIT COPY"),
-                    crate::i18n::tr(language, "Create an editable graph copy"),
-                )
-                .clicked()
-                {
-                    let mut copy = PromptTemplateLibrary::editable_copy_of(
-                        &draft,
-                        format!("custom-{}", uuid::Uuid::new_v4()),
-                    );
-                    copy.name = format!("{} copy", draft.name);
-                    actions.push(PromptStudioAction::CloneProfile(copy.clone()));
-                    controller.set_draft(copy);
+                } else {
+                    if validation_error.is_none()
+                        && draft.id != snapshot.active_id
+                        && style::command_button(ui, crate::i18n::tr(language, "ACTIVATE"), true)
+                            .clicked()
+                    {
+                        actions.push(PromptStudioAction::ActivateProfile(draft.clone()));
+                        controller.dirty = false;
+                    }
+                    if small_outline_button(
+                        ui,
+                        crate::i18n::tr(language, "EDIT COPY"),
+                        crate::i18n::tr(language, "Create an editable graph copy"),
+                    )
+                    .clicked()
+                    {
+                        let mut copy = PromptTemplateLibrary::editable_copy_of(
+                            &draft,
+                            format!("custom-{}", uuid::Uuid::new_v4()),
+                        );
+                        copy.name = format!("{} copy", draft.name);
+                        actions.push(PromptStudioAction::CloneProfile(copy.clone()));
+                        controller.set_draft(copy);
+                    }
                 }
                 if small_outline_button(
                     ui,

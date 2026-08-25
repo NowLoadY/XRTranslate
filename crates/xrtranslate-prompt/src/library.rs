@@ -752,6 +752,65 @@ mod tests {
     }
 
     #[test]
+    fn normalization_adds_missing_asr_pages_without_replacing_custom_graph_nodes() {
+        let canonical = PromptNodeGraph::builtin_default();
+        let mut graph = canonical.clone();
+        let custom_node_id = graph
+            .nodes
+            .iter()
+            .find(|node| node.page == crate::PromptNodePage::OpenAiCompatible)
+            .map(|node| node.id.clone())
+            .expect("built-in graph has a translation node");
+        let retained_ids = graph
+            .nodes
+            .iter()
+            .filter(|node| {
+                !matches!(
+                    node.page,
+                    crate::PromptNodePage::AsrInstruction | crate::PromptNodePage::AsrContextBias
+                )
+            })
+            .map(|node| node.id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        graph.nodes.retain(|node| retained_ids.contains(&node.id));
+        graph
+            .links
+            .retain(|link| retained_ids.contains(&link.from) && retained_ids.contains(&link.to));
+
+        let profile = PromptTemplateProfile {
+            id: "legacy-asr-profile".into(),
+            name: "Legacy ASR profile".into(),
+            description: String::new(),
+            graph,
+            read_only: false,
+        };
+        let mut library = PromptTemplateLibrary {
+            active_id: profile.id.clone(),
+            profiles: vec![profile],
+        };
+
+        library.normalize();
+
+        let migrated = library.active_profile().unwrap();
+        assert!(migrated.graph.nodes.iter().any(|node| {
+            node.id == custom_node_id && node.page == crate::PromptNodePage::OpenAiCompatible
+        }));
+        for target in [
+            crate::PromptProviderTarget::AsrInstruction,
+            crate::PromptProviderTarget::AsrContextBias,
+        ] {
+            assert!(migrated.graph.nodes.iter().any(|node| {
+                matches!(
+                    node.kind,
+                    crate::PromptNodeKind::Request { target: request_target, .. }
+                        if request_target == target
+                )
+            }));
+        }
+        migrated.graph.validate_for_activation().unwrap();
+    }
+
+    #[test]
     fn template_profiles_do_not_serialize_visual_color_configuration() {
         let value = serde_json::to_value(PromptTemplateLibrary::default()).unwrap();
         assert!(value.get("ordinary").is_none());
