@@ -104,10 +104,18 @@ pub fn render(
 
                 // Bilingual Toggle
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(crate::i18n::tr(lang, "Bilingual Subtitles"))
-                            .color(theme::text_normal())
-                            .size(13.5),
+                    let label_w = 120.0;
+                    ui.allocate_ui_with_layout(
+                        egui::Vec2::new(label_w, 20.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.label(
+                                egui::RichText::new(crate::i18n::tr(lang, "Bilingual Subtitles"))
+                                    .color(theme::text_strong())
+                                    .size(13.0)
+                                    .strong(),
+                            );
+                        },
                     );
                     if ui
                         .checkbox(&mut settings.bilingual, crate::i18n::tr(lang, "Source + Target"))
@@ -322,15 +330,25 @@ fn slider_with_reset_f32(
 ) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(label)
-                .color(theme::text_normal())
-                .size(13.5),
+        let label_w = 120.0;
+        ui.allocate_ui_with_layout(
+            egui::Vec2::new(label_w, 20.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.label(
+                    egui::RichText::new(label)
+                        .color(theme::text_strong())
+                        .size(13.0)
+                        .strong(),
+                );
+            },
         );
-        let slider_w = (ui.available_width() - 110.0).max(60.0);
+
+        let slider_w = (ui.available_width() - 95.0).max(60.0);
         let slider = egui::Slider::new(value, range)
             .show_value(false)
-            .step_by(step);
+            .step_by(step)
+            .trailing_fill(true);
         if ui.add_sized(egui::vec2(slider_w, 20.0), slider).changed() {
             changed = true;
         }
@@ -358,13 +376,24 @@ fn slider_with_reset_usize(
 ) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(label)
-                .color(theme::text_normal())
-                .size(13.5),
+        let label_w = 120.0;
+        ui.allocate_ui_with_layout(
+            egui::Vec2::new(label_w, 20.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.label(
+                    egui::RichText::new(label)
+                        .color(theme::text_strong())
+                        .size(13.0)
+                        .strong(),
+                );
+            },
         );
-        let slider_w = (ui.available_width() - 110.0).max(60.0);
-        let slider = egui::Slider::new(value, range).show_value(false);
+
+        let slider_w = (ui.available_width() - 95.0).max(60.0);
+        let slider = egui::Slider::new(value, range)
+            .show_value(false)
+            .trailing_fill(true);
         if ui.add_sized(egui::vec2(slider_w, 20.0), slider).changed() {
             changed = true;
         }
@@ -391,13 +420,24 @@ fn slider_opacity_with_reset(
     let mut changed = false;
     let mut percent = (*opacity * 100.0).round() as u32;
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(label)
-                .color(theme::text_normal())
-                .size(13.5),
+        let label_w = 120.0;
+        ui.allocate_ui_with_layout(
+            egui::Vec2::new(label_w, 20.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.label(
+                    egui::RichText::new(label)
+                        .color(theme::text_strong())
+                        .size(13.0)
+                        .strong(),
+                );
+            },
         );
-        let slider_w = (ui.available_width() - 110.0).max(60.0);
-        let slider = egui::Slider::new(&mut percent, 20..=100).show_value(false);
+
+        let slider_w = (ui.available_width() - 95.0).max(60.0);
+        let slider = egui::Slider::new(&mut percent, 20..=100)
+            .show_value(false)
+            .trailing_fill(true);
         if ui.add_sized(egui::vec2(slider_w, 20.0), slider).changed() {
             *opacity = (percent as f32) / 100.0;
             changed = true;

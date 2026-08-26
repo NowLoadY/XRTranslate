@@ -378,7 +378,7 @@ fn run_vr_worker(
             }
         }
 
-        // 1. Maintain SteamVR Connection
+        // 1. Maintain SteamVR Connection (Passive only: never wake up or auto-launch SteamVR)
         if settings.enabled {
             if openvr_api.is_none() && last_reconnect_attempt.elapsed() >= STEAMVR_RECONNECT_INTERVAL {
                 last_reconnect_attempt = Instant::now();
@@ -387,13 +387,27 @@ fn run_vr_worker(
 
             if let Some(api) = &openvr_api {
                 let installed = api.is_runtime_installed();
+                let running = super::openvr::is_steamvr_running();
                 {
                     let mut st = status.lock();
                     st.steamvr_installed = installed;
+                    if !running {
+                        st.steamvr_connected = false;
+                    }
                 }
 
+                // If SteamVR was closed by user, gracefully release overlay session
+                if !running && vr_session.is_some() {
+                    vr_overlay = None;
+                    vr_session = None;
+                    let mut st = status.lock();
+                    st.steamvr_connected = false;
+                }
+
+                // Only connect if SteamVR process is ALREADY actively running!
                 if vr_session.is_none()
                     && installed
+                    && running
                     && last_reconnect_attempt.elapsed() >= STEAMVR_RECONNECT_INTERVAL
                 {
                     last_reconnect_attempt = Instant::now();

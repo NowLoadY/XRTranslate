@@ -190,6 +190,67 @@ impl OpenVrApi {
     pub fn is_runtime_installed(&self) -> bool {
         unsafe { (self.vr_is_runtime_installed)() }
     }
+}
+
+/// Passively checks if the SteamVR runtime processes are actively running on the system.
+/// This prevents XRTranslate from ever waking up or auto-launching SteamVR when the user
+/// has not started it.
+pub fn is_steamvr_running() -> bool {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+
+        unsafe {
+            let snapshot = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
+                Ok(h) => h,
+                Err(_) => return false,
+            };
+            if snapshot == INVALID_HANDLE_VALUE {
+                return false;
+            }
+
+            let mut entry = PROCESSENTRY32W {
+                dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+
+            let mut found = false;
+            if Process32FirstW(snapshot, &mut entry).is_ok() {
+                loop {
+                    let len = entry
+                        .szExeFile
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(entry.szExeFile.len());
+                    let exe_name = String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase();
+                    if exe_name == "vrserver.exe"
+                        || exe_name == "vrmonitor.exe"
+                        || exe_name == "vrcompositor.exe"
+                    {
+                        found = true;
+                        break;
+                    }
+                    if Process32NextW(snapshot, &mut entry).is_err() {
+                        break;
+                    }
+                }
+            }
+
+            let _ = windows::Win32::Foundation::CloseHandle(snapshot);
+            found
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+impl OpenVrApi {
 
     pub fn init_overlay(self: &Arc<Self>) -> Result<OpenVrSession, String> {
         let mut err = 0;
