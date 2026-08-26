@@ -34,6 +34,7 @@ mod service_config;
 pub mod session_coordinator;
 mod streaming;
 mod ui;
+pub(crate) mod usage_guidelines;
 pub mod version;
 mod voicemeeter;
 mod window_backdrop;
@@ -93,6 +94,7 @@ pub const LANGUAGE_OPTIONS: &[(&str, &str)] = &[
     ("pl", "Polish"),
     ("cs", "Czech"),
     ("nl", "Dutch"),
+    ("bg", "Bulgarian"),
 ];
 
 /// Capture callbacks never block. A bounded handoff prevents an overloaded
@@ -587,6 +589,7 @@ struct XRTranslateApp {
     pub modal_dialog: ui::modal::ModalDialog,
     pending_resource_deletion: Option<PendingResourceDeletion>,
     pub first_run: bool,
+    pub usage_guidelines_accepted: bool,
     pub onboarding_page: usize,
     pub ui_language: UiLanguage,
     pub ui_theme: ui::theme::UiTheme,
@@ -1234,8 +1237,7 @@ impl Default for XRTranslateApp {
                             CaptureSource::Microphone => {
                                 state.microphone_clone_state = Some(status)
                             }
-                            CaptureSource::SystemAudio => state.loopback_clone_state = Some(status),
-                            CaptureSource::Both => {}
+                            CaptureSource::SystemAudio | CaptureSource::Both => {}
                         },
                         SessionEvent::BackendError {
                             message,
@@ -1377,6 +1379,7 @@ impl Default for XRTranslateApp {
             modal_dialog: ui::modal::ModalDialog::default(),
             pending_resource_deletion: None,
             first_run,
+            usage_guidelines_accepted: false,
             onboarding_page,
             ui_language: settings.ui_language,
             ui_theme: settings.ui_theme,
@@ -2654,6 +2657,12 @@ impl XRTranslateApp {
         ) {
             return;
         }
+        if self.first_run
+            && self.service_config.tts_is_configured()
+            && !self.usage_guidelines_accepted
+        {
+            return;
+        }
         self.first_run = false;
         self.save_settings();
     }
@@ -2733,6 +2742,8 @@ impl XRTranslateApp {
                 return;
             }
         };
+        self.first_run = true;
+        let _ = self.save_settings();
         self.stop();
         self.backend_start_deadline = None;
         self.backend_manager.shutdown();
@@ -3672,30 +3683,23 @@ impl XRTranslateApp {
         }
     }
 
-    fn begin_voice_clone(&mut self, source: CaptureSource) {
+    fn begin_voice_clone(&mut self) {
         if let Some(index) = self
             .capture_source
             .routes()
             .iter()
-            .position(|route| *route == source)
+            .position(|route| *route == CaptureSource::Microphone)
             && let Some(session) = self.sessions.get(index)
         {
             session.begin_voice_clone();
         } else {
             self.last_error =
-                Some("Start translation on this audio source before cloning its voice.".into());
+                Some("Start microphone translation to clone your voice.".into());
         }
     }
 
-    fn voice_clone_state(
-        &self,
-        source: CaptureSource,
-    ) -> Option<&xrtranslate_protocol::VoiceCloneState> {
-        match source {
-            CaptureSource::Microphone => self.microphone_clone_state.as_ref(),
-            CaptureSource::SystemAudio => self.loopback_clone_state.as_ref(),
-            CaptureSource::Both => None,
-        }
+    fn voice_clone_state(&self) -> Option<&xrtranslate_protocol::VoiceCloneState> {
+        self.microphone_clone_state.as_ref()
     }
 
     /// Controls only whether OSC presentation includes the infrastructure-provided ID.

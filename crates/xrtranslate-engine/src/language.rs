@@ -274,6 +274,7 @@ fn static_code(code: &str) -> &'static str {
         "pl" => "pl",
         "cs" => "cs",
         "nl" => "nl",
+        "bg" => "bg",
         "af" => "af",
         _ => "en",
     }
@@ -301,6 +302,7 @@ mod tests {
     fn test_auto_route_language_pair() {
         assert_eq!(static_code("vi-VN"), "vi");
         assert_eq!(static_code("hi_IN"), "hi");
+        assert_eq!(static_code("bg-BG"), "bg");
 
         // When typing English on a zh -> en pair, it should flip to en -> zh
         assert_eq!(

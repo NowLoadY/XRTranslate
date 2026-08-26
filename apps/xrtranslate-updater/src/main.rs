@@ -96,7 +96,45 @@ fn apply_update(source: &Path, target: &Path) -> Result<(), Box<dyn Error>> {
         let _ = restore_backup(target, &backup);
         return Err(error.into());
     }
+    reset_app_state_first_run(target)?;
     let _ = fs::remove_dir_all(&backup);
+    Ok(())
+}
+
+fn reset_app_state_first_run(target: &Path) -> Result<(), Box<dyn Error>> {
+    let runtime_dir = target.join("runtime");
+    if !runtime_dir.exists() {
+        fs::create_dir_all(&runtime_dir)?;
+    }
+
+    let app_state_path = runtime_dir.join("app_state.json");
+    let mut app_state: serde_json::Map<String, serde_json::Value> = if app_state_path.is_file() {
+        fs::read_to_string(&app_state_path)
+            .ok()
+            .and_then(|contents| serde_json::from_str(&contents).ok())
+            .unwrap_or_default()
+    } else {
+        serde_json::Map::new()
+    };
+    app_state.insert("first_run".to_string(), serde_json::Value::Bool(true));
+    if let Ok(serialized) = serde_json::to_string_pretty(&app_state) {
+        let _ = fs::write(&app_state_path, serialized);
+    }
+
+    let settings_path = runtime_dir.join("rust-client-settings.json");
+    if settings_path.is_file() {
+        if let Ok(contents) = fs::read_to_string(&settings_path) {
+            if let Ok(mut settings_val) = serde_json::from_str::<serde_json::Value>(&contents) {
+                if let Some(obj) = settings_val.as_object_mut() {
+                    obj.insert("first_run".to_string(), serde_json::Value::Bool(true));
+                    if let Ok(serialized) = serde_json::to_string_pretty(&settings_val) {
+                        let _ = fs::write(&settings_path, serialized);
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -556,6 +594,45 @@ mod tests {
             br#"{"models":{"new-model":{}}}"#
         );
         assert!(backup.join("config.json").is_file());
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn update_resets_first_run_state_to_true_for_onboarding_and_notices() {
+        let temp =
+            std::env::temp_dir().join(format!("xrt_updater_first_run_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let source = temp.join("source");
+        let target = temp.join("target");
+
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(target.join("runtime")).unwrap();
+        fs::write(
+            target.join("runtime/app_state.json"),
+            br#"{"first_run":false,"ui_language":"japanese"}"#,
+        )
+        .unwrap();
+        fs::write(
+            target.join("runtime/rust-client-settings.json"),
+            br#"{"first_run":false,"ui_language":"japanese"}"#,
+        )
+        .unwrap();
+
+        apply_update(&source, &target).unwrap();
+
+        let app_state: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(target.join("runtime/app_state.json")).unwrap())
+                .unwrap();
+        assert_eq!(app_state["first_run"], true);
+        assert_eq!(app_state["ui_language"], "japanese");
+
+        let settings: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(target.join("runtime/rust-client-settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(settings["first_run"], true);
+        assert_eq!(settings["ui_language"], "japanese");
+
         let _ = fs::remove_dir_all(&temp);
     }
 }

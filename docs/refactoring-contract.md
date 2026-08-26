@@ -91,7 +91,7 @@ shared domain/runtime/UI capability
   serialized compatibility alias while accepting `model_assets` where plural
   selection is meaningful.
 - Downloadable managed models must not silently change execution class. They
-  require an eligible NVIDIA CUDA host with at least 8 GiB VRAM; only explicitly
+  require an eligible NVIDIA CUDA host with at least 7 GiB VRAM; only explicitly
   classified small bundled ONNX components may execute on CPU.
 
 ## When to extract or split

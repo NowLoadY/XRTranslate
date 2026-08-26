@@ -145,11 +145,7 @@ impl ModalDialog {
     }
 
     pub fn usage_guidelines(language: crate::i18n::UiLanguage) -> Self {
-        let content = crate::i18n::usage_notice_items(language)
-            .into_iter()
-            .map(|item| format!("• {item}"))
-            .collect::<Vec<_>>()
-            .join("\n\n");
+        let content = crate::usage_guidelines::full_guidelines_text(language);
         Self {
             open: true,
             pages: vec![ModalPage::new(
@@ -504,9 +500,9 @@ mod tests {
         let modal = ModalDialog::usage_guidelines(crate::i18n::UiLanguage::Chinese);
 
         assert_eq!(modal.pages[0].title, "使用规范");
-        assert!(modal.pages[0].content.contains("仅限克隆您本人的声音"));
+        assert!(modal.pages[0].content.contains("声音克隆与声纹权专属限制"));
         assert!(modal.pages[0].content.contains("所在国家或地区"));
-        assert!(modal.pages[0].content.contains("重要内容请在使用前核对"));
+        assert!(modal.pages[0].content.contains("用户独立责任与开发者免责"));
         assert_eq!(modal.ok_label, "关闭");
         assert!(!modal.show_cancel_button);
     }

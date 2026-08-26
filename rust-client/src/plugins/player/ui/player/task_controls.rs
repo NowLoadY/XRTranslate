@@ -241,6 +241,7 @@ pub(super) fn render_task_control_card(
                         "ja" => tr(language, "Japanese").to_owned(),
                         "en" => tr(language, "English").to_owned(),
                         "ko" => tr(language, "Korean").to_owned(),
+                        "bg" => tr(language, "Bulgarian").to_owned(),
                         _ => task.source_language.clone(),
                     };
                     crate::ui::components::combobox_ui(
@@ -254,6 +255,7 @@ pub(super) fn render_task_control_card(
                                 ("ja", tr(language, "Japanese")),
                                 ("en", tr(language, "English")),
                                 ("ko", tr(language, "Korean")),
+                                ("bg", tr(language, "Bulgarian")),
                             ];
                             for (val, label) in options {
                                 if ui.selectable_value(&mut task.source_language, val.into(), label).changed() {
@@ -278,6 +280,7 @@ pub(super) fn render_task_control_card(
                         "ja" => tr(language, "Japanese").to_owned(),
                         "en" => tr(language, "English").to_owned(),
                         "ko" => tr(language, "Korean").to_owned(),
+                        "bg" => tr(language, "Bulgarian").to_owned(),
                         _ => task.target_language.clone(),
                     };
                     crate::ui::components::combobox_ui(
@@ -291,6 +294,7 @@ pub(super) fn render_task_control_card(
                                 ("ja", tr(language, "Japanese")),
                                 ("en", tr(language, "English")),
                                 ("ko", tr(language, "Korean")),
+                                ("bg", tr(language, "Bulgarian")),
                             ];
                             for (val, label) in options {
                                 if ui.selectable_value(&mut task.target_language, val.into(), label).changed() {

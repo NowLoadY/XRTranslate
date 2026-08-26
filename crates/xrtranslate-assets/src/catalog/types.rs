@@ -89,7 +89,11 @@ pub enum ModelAccelerator {
     NvidiaCuda,
 }
 
-pub const MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+/// Minimum reported VRAM for managed local model packages.
+///
+/// An 8 GB product may report slightly less than 8 GiB to the driver, so the
+/// eligibility threshold intentionally uses 7 GiB.
+pub const MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES: u64 = 7 * 1024 * 1024 * 1024;
 pub const MANAGED_LOCAL_MODEL_HARDWARE: ModelHardwareRequirements = ModelHardwareRequirements {
     accelerator: ModelAccelerator::NvidiaCuda,
     minimum_memory_bytes: MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES,

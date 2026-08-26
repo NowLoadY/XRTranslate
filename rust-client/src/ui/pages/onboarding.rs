@@ -51,13 +51,27 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if app.onboarding_page + 1 == total_pages {
+                        let tts_requires_agreement =
+                            app.first_run && app.service_config.tts_is_configured();
+                        let agreement_satisfied =
+                            !tts_requires_agreement || app.usage_guidelines_accepted;
+                        let can_open = requirement.is_none() && agreement_satisfied;
+
                         let open_translation = components::primary_button_enabled(
                             ui,
                             i18n::tr(app.ui_language, "Open Translation"),
-                            requirement.is_none(),
+                            can_open,
                         )
                         .clicked();
                         ui.add_space(8.0);
+                        if tts_requires_agreement {
+                            components::checkbox(
+                                ui,
+                                &mut app.usage_guidelines_accepted,
+                                i18n::tr(app.ui_language, "I have read and agree"),
+                            );
+                            ui.add_space(6.0);
+                        }
                         if ui
                             .link(
                                 RichText::new(i18n::tr(app.ui_language, "Usage Guidelines"))
@@ -85,6 +99,19 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
                             RichText::new(i18n::tr(app.ui_language, hint))
                                 .size(12.0)
                                 .color(theme::text_weak()),
+                        );
+                    } else if app.onboarding_page + 1 == total_pages
+                        && app.first_run
+                        && app.service_config.tts_is_configured()
+                        && !app.usage_guidelines_accepted
+                    {
+                        ui.label(
+                            RichText::new(i18n::tr(
+                                app.ui_language,
+                                "Please agree to the Usage Guidelines to continue.",
+                            ))
+                            .size(12.0)
+                            .color(theme::text_weak()),
                         );
                     }
                 });
@@ -506,7 +533,7 @@ fn local_model_warning_icon(
             "{}\n\n{gpu}: {:.1} GiB / {:.0} GiB",
             i18n::tr(
                 language,
-                "Your GPU has less than 8 GiB of VRAM. Local models require at least 8 GiB, so this option is disabled."
+                "Your GPU has less than 7 GiB of VRAM. Local models require at least 7 GiB, so this option is disabled."
             ),
             *memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
             *required_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
@@ -1498,6 +1525,7 @@ fn render_runtime_installation_section(
 ) {
     let state = app.runtime_installer.state().clone();
     let download_size = app.runtime_installer.download_size_bytes();
+    let planned_downloads = app.runtime_installer.planned_downloads().to_vec();
     let backend_name = app
         .runtime_installer
         .backend_label()
@@ -1623,6 +1651,11 @@ fn render_runtime_installation_section(
                 app.request_runtime_resource_deletion();
             }
 
+            if !planned_downloads.is_empty() {
+                ui.add_space(8.0);
+                render_runtime_download_plan(ui, language, &planned_downloads);
+            }
+
             components::render_runtime_fallback_notice(ui, language, &app.runtime_installer);
 
             components::render_runtime_task_state(
@@ -1706,6 +1739,63 @@ fn render_runtime_installation_section(
                     .size(12.0)
                     .color(theme::text_weak()),
                 );
+            }
+        });
+}
+
+fn render_runtime_download_plan(
+    ui: &mut egui::Ui,
+    language: i18n::UiLanguage,
+    downloads: &[crate::runtime_install::RuntimeDownload],
+) {
+    let total_bytes = downloads.iter().map(|download| download.bytes).sum::<u64>();
+    Frame::new()
+        .fill(theme::surface_subtle())
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::symmetric(10, 7))
+        .stroke(Stroke::new(1.0, theme::border()))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{} ({})",
+                        i18n::tr(language, "Required runtime downloads"),
+                        downloads.len()
+                    ))
+                    .size(12.0)
+                    .strong()
+                    .color(theme::text_normal()),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} {}",
+                            i18n::tr(language, "Total"),
+                            components::format_file_size(total_bytes)
+                        ))
+                        .size(11.5)
+                        .color(theme::text_weak()),
+                    );
+                });
+            });
+            ui.add_space(2.0);
+            for download in downloads {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(&download.label)
+                            .size(12.0)
+                            .color(theme::text_strong()),
+                    )
+                    .on_hover_text(&download.archive_name);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(components::format_file_size(download.bytes))
+                                .size(11.5)
+                                .color(theme::text_weak()),
+                        );
+                    });
+                });
             }
         });
 }

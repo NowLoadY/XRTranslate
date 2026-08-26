@@ -89,7 +89,7 @@ pub struct ClientSettings {
     pub loopback_clone_state: Option<xrtranslate_protocol::VoiceCloneState>,
     #[serde(default)]
     pub mute_self_pauses_translation: bool,
-    #[serde(default)]
+    #[serde(default = "default_ui_language")]
     pub ui_language: UiLanguage,
     #[serde(default)]
     pub ui_theme: UiTheme,
@@ -142,6 +142,10 @@ fn default_server_url() -> String {
     "ws://127.0.0.1:7654/ws".into()
 }
 
+fn default_ui_language() -> UiLanguage {
+    UiLanguage::detect_system_language()
+}
+
 fn default_floating_max_count() -> usize {
     5
 }
@@ -169,7 +173,7 @@ impl Default for ClientSettings {
             microphone_clone_state: None,
             loopback_clone_state: None,
             mute_self_pauses_translation: false,
-            ui_language: UiLanguage::default(),
+            ui_language: default_ui_language(),
             ui_theme: UiTheme::default(),
             first_run: true,
             server_url: default_server_url(),
@@ -222,7 +226,11 @@ impl ClientSettings {
         if let Some(first_run) = state.first_run {
             self.first_run = first_run;
         }
-        if let Some(ui_language) = state.ui_language {
+        if self.first_run {
+            self.ui_language = state
+                .ui_language
+                .unwrap_or_else(UiLanguage::detect_system_language);
+        } else if let Some(ui_language) = state.ui_language {
             self.ui_language = ui_language;
         }
     }
@@ -593,6 +601,37 @@ mod tests {
         let loaded = ClientSettings::load(&root);
         assert_eq!(loaded.microphone_clone_state, Some(mic_state));
         assert_eq!(loaded.loopback_clone_state, None);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn first_run_defaults_to_system_language_and_subsequent_runs_preserve_user_choice() {
+        let root = std::env::temp_dir().join("xrtranslate_test_first_run_language");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("runtime")).unwrap();
+
+        // 1. Fresh start with first_run: true and no language specified in app_state.json
+        std::fs::write(
+            root.join("runtime/app_state.json"),
+            r#"{"first_run":true}"#,
+        )
+        .unwrap();
+
+        let initial = ClientSettings::load(&root);
+        assert!(initial.first_run);
+        assert_eq!(initial.ui_language, UiLanguage::detect_system_language());
+
+        // 2. User manually selects Japanese during onboarding/settings and finishes first run
+        let mut user_settings = initial;
+        user_settings.ui_language = UiLanguage::Japanese;
+        user_settings.first_run = false;
+        user_settings.save(&root).unwrap();
+
+        // 3. Subsequent runs with first_run: false must preserve Japanese regardless of system language
+        let reloaded = ClientSettings::load(&root);
+        assert!(!reloaded.first_run);
+        assert_eq!(reloaded.ui_language, UiLanguage::Japanese);
 
         let _ = std::fs::remove_dir_all(root);
     }

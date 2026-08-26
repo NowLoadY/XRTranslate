@@ -40,7 +40,7 @@ use xrtranslate_engine::{
 use xrtranslate_inference::{AsyncHttpClient, HttpRequest, ReqwestClient, pcm16_mono_16khz_to_wav};
 use xrtranslate_prompt::{AsrPromptContext, PromptMode, PromptNodeGraph};
 use xrtranslate_protocol::{
-    ActionControl, ClientControl, DrainReason, ErrorEvent, EventControl, Feature,
+    ActionControl, AudioSource, ClientControl, DrainReason, ErrorEvent, EventControl, Feature,
     InferenceWorkload, LatencyMetrics, PcmFormat, PcmFrame, PipelineDrained, PromptGraphSet,
     RecognitionStreamEnded, RouteChanged, SegmentBoundary, SegmentTiming, ServerEvent,
     SessionReady, VadActivity, VoiceClonePhase, VoiceCloneState,
@@ -545,6 +545,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                 }
                 if let InferenceEvent::Recognized { recognized, reference_samples: Some(samples), .. } = &result
                     && clone_capture.armed
+                    && audio_source == AudioSource::Microphone
                 {
                     let remaining = clone_capture.maximum_samples.saturating_sub(clone_capture.samples.len());
                     clone_capture.samples.extend_from_slice(&samples[..samples.len().min(remaining)]);
@@ -818,8 +819,10 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                             workload = configured_workload;
                             audio_source = configured_audio_source;
                             clone_capture.ready = match &tts {
-                                Some(tts) => tts.has_voice(clone_voice_name(audio_source)).await,
-                                None => false,
+                                Some(tts) if audio_source == AudioSource::Microphone => {
+                                    tts.has_voice(clone_voice_name(AudioSource::Microphone)).await
+                                }
+                                _ => false,
                             };
                             generation.route_epoch = session.route_epoch();
                             generation.audio_epoch.advance();
@@ -957,19 +960,21 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                             info!(%session_id, ?feature, enabled, "session feature configured");
                         }
                         Ok(ClientControl::Action(ActionControl::BeginVoiceClone)) => {
-                            clone_capture.arm();
-                            info!(
-                                %session_id,
-                                voice = clone_voice_name(audio_source),
-                                required_seconds = clone_capture.minimum_samples as f32 / SAMPLE_RATE_HZ as f32,
-                                "TTS voice clone capture armed"
-                            );
-                            if send_event(&outbound_sender, Some(generation), ServerEvent::VoiceCloneState(VoiceCloneState {
-                                state: VoiceClonePhase::Collecting,
-                                collected_seconds: 0.0,
-                                required_seconds: clone_capture.minimum_samples as f32 / SAMPLE_RATE_HZ as f32,
-                                message: None,
-                            })).await.is_err() { break; }
+                            if audio_source == AudioSource::Microphone {
+                                clone_capture.arm();
+                                info!(
+                                    %session_id,
+                                    voice = clone_voice_name(audio_source),
+                                    required_seconds = clone_capture.minimum_samples as f32 / SAMPLE_RATE_HZ as f32,
+                                    "TTS voice clone capture armed"
+                                );
+                                if send_event(&outbound_sender, Some(generation), ServerEvent::VoiceCloneState(VoiceCloneState {
+                                    state: VoiceClonePhase::Collecting,
+                                    collected_seconds: 0.0,
+                                    required_seconds: clone_capture.minimum_samples as f32 / SAMPLE_RATE_HZ as f32,
+                                    message: None,
+                                })).await.is_err() { break; }
+                            }
                         }
                         Ok(ClientControl::Action(ActionControl::TranslateText {
                             text,

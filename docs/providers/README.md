@@ -173,7 +173,7 @@ a future, separately specified TTS semantic capability requires them.
    complete formatting, compile, and test gates in the refactoring contract.
 
 Downloadable model packages are managed-GPU resources: NVIDIA CUDA and at
-least 8 GiB VRAM are mandatory. A small ONNX model is CPU-exempt only when it
+least 7 GiB VRAM are mandatory. A small ONNX model is CPU-exempt only when it
 is bundled and explicitly owned as an application component, not because a
 provider happens to use ONNX files.
 

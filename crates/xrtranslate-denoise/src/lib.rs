@@ -9,7 +9,10 @@
 use std::{error::Error, f32::consts::PI, fmt, path::Path};
 
 use ndarray::{Array4, Array5};
-use ort::{session::Session, value::Value};
+use ort::{
+    session::{Session, builder::GraphOptimizationLevel},
+    value::Value,
+};
 
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
 pub const FFT_SIZE: usize = 512;
@@ -291,9 +294,15 @@ impl GtcrnDenoiser {
         intra_threads: usize,
     ) -> Result<Self, DenoiseError> {
         let session = Session::builder()?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|error| DenoiseError::Ort(ort::Error::new(error.to_string())))?
             .with_intra_threads(intra_threads.max(1))
             .map_err(|error| DenoiseError::Ort(ort::Error::new(error.to_string())))?
             .with_inter_threads(1)
+            .map_err(|error| DenoiseError::Ort(ort::Error::new(error.to_string())))?
+            .with_intra_op_spinning(false)
+            .map_err(|error| DenoiseError::Ort(ort::Error::new(error.to_string())))?
+            .with_inter_op_spinning(false)
             .map_err(|error| DenoiseError::Ort(ort::Error::new(error.to_string())))?
             .commit_from_file(model_path)?;
 

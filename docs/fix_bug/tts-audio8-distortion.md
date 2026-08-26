@@ -1,7 +1,7 @@
 # Audio8 TTS 音频失真修复
 
 > 本文保留当时的故障复现和性能证据。当前运行策略已收紧为 NVIDIA GPU
-> 至少 8 GiB 且完整 CUDA/cuDNN 闭包；托管 Audio8 模型不再回退 CPU。
+> 至少 7 GiB 且完整 CUDA/cuDNN 闭包；托管 Audio8 模型不再回退 CPU。
 
 ## 现象
 

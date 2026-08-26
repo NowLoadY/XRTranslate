@@ -153,10 +153,11 @@ pub(crate) async fn run_tts_worker(
     }
 }
 
+pub(crate) const MICROPHONE_VOICE_NAME: &str = "xrtranslate_microphone";
+
 pub(crate) fn clone_voice_name(source: AudioSource) -> &'static str {
     match source {
-        AudioSource::Microphone => "xrtranslate_microphone",
-        AudioSource::SystemAudio => "xrtranslate_system_audio",
+        AudioSource::Microphone | AudioSource::SystemAudio => MICROPHONE_VOICE_NAME,
     }
 }
 
@@ -233,6 +234,9 @@ pub(crate) fn load_persisted_voice_clones(voice_clones_dir: &Path) -> Vec<Persis
             let Ok(metadata) = serde_json::from_str::<PersistedVoiceMetadata>(&content) else {
                 continue;
             };
+            if metadata.voice_name != MICROPHONE_VOICE_NAME {
+                continue;
+            }
             let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             let wav_path = voice_clones_dir.join(format!("{file_stem}.wav"));
             if !wav_path.is_file() {

@@ -2,7 +2,7 @@
 //!
 //! The configured `model_manager.llama_cpp.downloads` list is the contract:
 //! we select CUDA when the installed NVIDIA driver reports a compatible
-//! runtime, adequate compute capability, and at least 8 GiB of VRAM. Managed
+//! runtime, adequate compute capability, and at least 7 GiB of VRAM. Managed
 //! model packages never fall back to CPU; bundled small ONNX components are a
 //! separate application resource class and do not use this installer.
 
@@ -56,7 +56,7 @@ struct OnnxRuntimeSelection {
 struct RuntimePlan {
     llama_cpp: Option<RuntimeSelection>,
     onnx: Option<OnnxRuntimeSelection>,
-    download_bytes: u64,
+    downloads: Vec<RuntimeDownload>,
     marker_ready: bool,
     requirements: RuntimeRequirements,
     local_models: LocalModelAvailability,
@@ -65,7 +65,7 @@ struct RuntimePlan {
 
 impl RuntimePlan {
     fn total_bytes(&self) -> u64 {
-        self.download_bytes
+        self.downloads.iter().map(|download| download.bytes).sum()
     }
 
     fn backend(&self) -> RuntimeBackend {
@@ -77,11 +77,11 @@ impl RuntimePlan {
     }
 
     fn is_ready(&self) -> bool {
-        self.blocking_error.is_none() && self.download_bytes == 0 && self.marker_ready
+        self.blocking_error.is_none() && self.downloads.is_empty() && self.marker_ready
     }
 
     fn requires_marker_repair(&self) -> bool {
-        self.blocking_error.is_none() && self.download_bytes == 0 && !self.marker_ready
+        self.blocking_error.is_none() && self.downloads.is_empty() && !self.marker_ready
     }
 }
 
@@ -130,6 +130,14 @@ pub enum RuntimeInstallState {
     Extracting,
     Installed,
     Failed(String),
+}
+
+/// One missing archive selected for this computer's managed runtime closure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeDownload {
+    pub label: String,
+    pub archive_name: String,
+    pub bytes: u64,
 }
 
 impl RuntimeInstallState {
@@ -226,6 +234,13 @@ impl RuntimeInstaller {
     #[must_use]
     pub fn download_size_bytes(&self) -> Option<u64> {
         self.selection.as_ref().map(RuntimePlan::total_bytes)
+    }
+
+    #[must_use]
+    pub fn planned_downloads(&self) -> &[RuntimeDownload] {
+        self.selection
+            .as_ref()
+            .map_or(&[], |selection| selection.downloads.as_slice())
     }
 
     #[must_use]
@@ -525,7 +540,7 @@ impl RuntimeInstaller {
                     if result.is_ok()
                         && let Some(selection) = self.selection.as_mut()
                     {
-                        selection.download_bytes = 0;
+                        selection.downloads.clear();
                         selection.marker_ready = true;
                     }
                     self.state = match result {
@@ -1706,12 +1721,12 @@ fn configured_runtime_plan(
     } else {
         None
     };
-    let download_bytes = missing_runtime_bytes(project_root, llama_cpp.as_ref(), onnx.as_ref());
+    let downloads = missing_runtime_downloads(project_root, llama_cpp.as_ref(), onnx.as_ref());
     let marker_ready = runtime_marker_matches_plan(project_root, llama_cpp.as_ref(), onnx.as_ref());
     Ok(RuntimePlan {
         llama_cpp,
         onnx,
-        download_bytes,
+        downloads,
         marker_ready,
         requirements,
         local_models,
@@ -1824,7 +1839,7 @@ fn runtime_marker_matches_plan(
 fn local_model_availability(nvidia: Option<&NvidiaCuda>) -> LocalModelAvailability {
     let Some(nvidia) = nvidia else {
         return LocalModelAvailability::Unavailable(
-            "Managed local models require an NVIDIA GPU with at least 8 GiB of VRAM. Small bundled ONNX components remain available.".to_owned(),
+            "Managed local models require an NVIDIA GPU with at least 7 GiB of VRAM. Small bundled ONNX components remain available.".to_owned(),
         );
     };
     if nvidia.compute_capability < MIN_CUDA_COMPUTE_CAPABILITY {
@@ -1848,17 +1863,21 @@ fn local_model_availability(nvidia: Option<&NvidiaCuda>) -> LocalModelAvailabili
     }
 }
 
-fn missing_runtime_bytes(
+fn missing_runtime_downloads(
     project_root: &Path,
     llama: Option<&RuntimeSelection>,
     onnx: Option<&OnnxRuntimeSelection>,
-) -> u64 {
+) -> Vec<RuntimeDownload> {
     let layout = load_runtime_layout(project_root);
     let mut missing = HashSet::new();
-    let mut total = 0_u64;
-    let mut add = |name: &str, size: u64| {
+    let mut downloads = Vec::new();
+    let mut add = |label: String, name: &str, size: u64| {
         if missing.insert(name.to_owned()) {
-            total = total.saturating_add(size);
+            downloads.push(RuntimeDownload {
+                label,
+                archive_name: name.to_owned(),
+                bytes: size,
+            });
         }
     };
     if let Some(selection) = llama {
@@ -1894,7 +1913,18 @@ fn missing_runtime_bytes(
                 server_ready
             };
             if !ready {
-                add(&asset.name, asset.size);
+                let label = match asset.kind {
+                    LlamaCppAssetKind::ServerCpu => "llama.cpp (CPU)".to_owned(),
+                    LlamaCppAssetKind::ServerCuda => format!(
+                        "llama.cpp (CUDA {})",
+                        asset.cuda_version.as_deref().unwrap_or_default()
+                    ),
+                    LlamaCppAssetKind::CudaRuntime => format!(
+                        "CUDA {} runtime",
+                        asset.cuda_version.as_deref().unwrap_or_default()
+                    ),
+                };
+                add(label, &asset.name, asset.size);
             }
         }
     }
@@ -1908,7 +1938,14 @@ fn missing_runtime_bytes(
                 .is_ok()
             });
             if !ready {
-                add(&asset.name, asset.size);
+                add(
+                    format!(
+                        "CUDA {} runtime",
+                        asset.cuda_version.as_deref().unwrap_or_default()
+                    ),
+                    &asset.name,
+                    asset.size,
+                );
             }
         }
         if let Some(asset) = &selection.cuda_dependency {
@@ -1920,7 +1957,26 @@ fn missing_runtime_bytes(
                 .is_ok()
             });
             if !ready {
-                add(&asset.name, asset.size);
+                let component = if asset
+                    .required_files
+                    .iter()
+                    .any(|file| file.starts_with("cufft"))
+                {
+                    "cuFFT"
+                } else if asset
+                    .required_files
+                    .iter()
+                    .any(|file| file.starts_with("nvrtc"))
+                {
+                    "NVRTC"
+                } else {
+                    "CUDA dependency"
+                };
+                add(
+                    format!("{component} (CUDA {})", asset.cuda_version),
+                    &asset.name,
+                    asset.size,
+                );
             }
         }
         if let Some(asset) = &selection.cudnn {
@@ -1930,7 +1986,11 @@ fn missing_runtime_bytes(
             )
             .is_ok();
             if !ready {
-                add(&asset.name, asset.size);
+                add(
+                    format!("cuDNN (CUDA {})", asset.cuda_version),
+                    &asset.name,
+                    asset.size,
+                );
             }
         }
         if let Some(asset) = &selection.provider {
@@ -1940,11 +2000,26 @@ fn missing_runtime_bytes(
             )
             .is_ok();
             if !ready {
-                add(&asset.name, asset.size);
+                add(
+                    format!("ONNX Runtime (CUDA {})", asset.cuda_version),
+                    &asset.name,
+                    asset.size,
+                );
             }
         }
     }
-    total
+    downloads
+}
+
+fn missing_runtime_bytes(
+    project_root: &Path,
+    llama: Option<&RuntimeSelection>,
+    onnx: Option<&OnnxRuntimeSelection>,
+) -> u64 {
+    missing_runtime_downloads(project_root, llama, onnx)
+        .iter()
+        .map(|download| download.bytes)
+        .sum()
 }
 
 fn load_runtime_layout(project_root: &Path) -> RuntimeLayout {
@@ -3138,7 +3213,7 @@ mod tests {
         let plan = RuntimePlan {
             llama_cpp: None,
             onnx: Some(selection.clone()),
-            download_bytes: 0,
+            downloads: Vec::new(),
             marker_ready: false,
             requirements: RuntimeRequirements {
                 onnx_tts: true,
@@ -3477,12 +3552,12 @@ mod tests {
     }
 
     #[test]
-    fn managed_local_models_require_eight_gib_of_vram() {
+    fn managed_local_models_require_seven_gib_of_vram() {
         let low_memory = NvidiaCuda {
             gpu: "NVIDIA GeForce RTX test".into(),
             compute_capability: (8, 9),
             driver_cuda: "13.0".into(),
-            memory_bytes: 7 * 1024 * 1024 * 1024,
+            memory_bytes: 6 * 1024 * 1024 * 1024,
         };
         assert!(matches!(
             local_model_availability(Some(&low_memory)),
@@ -3490,8 +3565,16 @@ mod tests {
                 memory_bytes,
                 required_bytes,
                 ..
-            } if memory_bytes == 7 * 1024 * 1024 * 1024
-                && required_bytes == 8 * 1024 * 1024 * 1024
+            } if memory_bytes == 6 * 1024 * 1024 * 1024
+                && required_bytes == 7 * 1024 * 1024 * 1024
+        ));
+        let minimum_memory = NvidiaCuda {
+            memory_bytes: 7 * 1024 * 1024 * 1024,
+            ..low_memory.clone()
+        };
+        assert!(matches!(
+            local_model_availability(Some(&minimum_memory)),
+            LocalModelAvailability::Available { .. }
         ));
         assert!(matches!(
             local_model_availability(None),

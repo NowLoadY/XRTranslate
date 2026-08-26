@@ -34,13 +34,51 @@ impl UiLanguage {
             Self::Russian => "Русский",
         }
     }
-}
 
-const USAGE_NOTICE_KEYS: [&str; 3] = [
-    "Voice cloning is for your own voice only. Do not clone, imitate, or impersonate another person's voice.",
-    "Do not use XRTranslate for unlawful purposes. Comply with the laws and regulations applicable in your country or region, and respect privacy, personality rights, and intellectual property rights.",
-    "Speech recognition, translation, and synthesized speech may contain errors. Verify important content before use.",
-];
+    /// Parses a standard locale string (e.g. "zh-CN", "zh_Hans", "ja-JP", "ko_KR", "ru-RU", "en-US")
+    /// into a supported `UiLanguage`. Returns `None` if the language prefix is not supported.
+    pub fn from_locale_str(locale: &str) -> Option<Self> {
+        let trimmed = locale.trim().to_ascii_lowercase().replace('_', "-");
+        let prefix = trimmed.split(['-', '.']).next().unwrap_or("");
+        match prefix {
+            "zh" => Some(Self::Chinese),
+            "ja" => Some(Self::Japanese),
+            "ko" => Some(Self::Korean),
+            "ru" => Some(Self::Russian),
+            "en" => Some(Self::English),
+            _ => None,
+        }
+    }
+
+    /// Detects the host operating system language. If the system language is not supported
+    /// by the UI, falls back to `UiLanguage::English`.
+    pub fn detect_system_language() -> Self {
+        #[cfg(windows)]
+        {
+            unsafe extern "system" {
+                fn GetUserDefaultLocaleName(lpLocaleName: *mut u16, cchLocaleName: i32) -> i32;
+            }
+            let mut buffer = [0u16; 85];
+            let len = unsafe { GetUserDefaultLocaleName(buffer.as_mut_ptr(), buffer.len() as i32) };
+            if len > 1 {
+                let name = String::from_utf16_lossy(&buffer[..(len as usize - 1)]);
+                if let Some(lang) = Self::from_locale_str(&name) {
+                    return lang;
+                }
+            }
+        }
+
+        for var in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+            if let Ok(val) = std::env::var(var) {
+                if let Some(lang) = Self::from_locale_str(&val) {
+                    return lang;
+                }
+            }
+        }
+
+        Self::English
+    }
+}
 
 /// Looks up a fixed UI string from the consolidated multi-language dictionary.
 /// Missing translations intentionally fall back to the English source key.
@@ -66,8 +104,8 @@ pub fn tr(language: UiLanguage, english: &'static str) -> &'static str {
     }
 }
 
-pub fn usage_notice_items(language: UiLanguage) -> [&'static str; 3] {
-    USAGE_NOTICE_KEYS.map(|item| tr(language, item))
+pub fn usage_notice_items(language: UiLanguage) -> &'static [&'static str] {
+    crate::usage_guidelines::notice_summary_items(language)
 }
 
 /// Dynamic counterpart for status text that originates outside the UI layer.
@@ -334,13 +372,21 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Локальные модели недоступны на этом устройстве. Можно продолжить с онлайн-API или обновить драйвер NVIDIA либо GPU и повторить попытку.",
     ),
     (
-        "Your GPU has less than 8 GiB of VRAM. Local models require at least 8 GiB, so this option is disabled.",
-        "你的 GPU 显存不足 8 GiB。本地模型至少需要 8 GiB 显存，因此该选项已禁用。",
-        "GPU の VRAM が 8 GiB 未満です。ローカルモデルには 8 GiB 以上が必要なため、この項目は無効です。",
-        "GPU VRAM이 8 GiB 미만입니다. 로컬 모델에는 최소 8 GiB가 필요하므로 이 옵션이 비활성화되었습니다.",
-        "Объём видеопамяти GPU меньше 8 ГиБ. Для локальных моделей требуется не менее 8 ГиБ, поэтому этот вариант отключён.",
+        "Your GPU has less than 7 GiB of VRAM. Local models require at least 7 GiB, so this option is disabled.",
+        "你的 GPU 显存不足 7 GiB。本地模型至少需要 7 GiB 显存，因此该选项已禁用。",
+        "GPU の VRAM が 7 GiB 未満です。ローカルモデルには 7 GiB 以上が必要なため、この項目は無効です。",
+        "GPU VRAM이 7 GiB 미만입니다. 로컬 모델에는 최소 7 GiB가 필요하므로 이 옵션이 비활성화되었습니다.",
+        "Объём видеопамяти GPU меньше 7 ГиБ. Для локальных моделей требуется не менее 7 ГиБ, поэтому этот вариант отключён.",
     ),
     ("Device", "设备", "デバイス", "장치", "Устройство"),
+    (
+        "Required runtime downloads",
+        "需要下载的运行时资源",
+        "必要なランタイムリソース",
+        "필요한 런타임 리소스",
+        "Необходимые компоненты среды",
+    ),
+    ("Total", "总计", "合計", "합계", "Всего"),
     (
         "Auto selects the newest compatible managed CUDA and cuDNN runtime. Managed local models never fall back to CPU.",
         "自动模式会选择兼容的 CUDA 运行库；托管本地模型不会回退到 CPU。",
@@ -414,11 +460,11 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Клонировать голос микрофона",
     ),
     (
-        "Clone system voice",
-        "克隆系统音源声色",
-        "システム音声をクローン",
-        "시스템 음성 복제",
-        "Клонировать системный голос",
+        "Start microphone translation to clone your voice.",
+        "请先开启麦克风翻译以克隆声色。",
+        "音声をクローンするにはマイク翻訳を開始してください。",
+        "음성을 복제하려면 마이크 번역을 시작하세요.",
+        "Включите перевод с микрофона, чтобы клонировать голос.",
     ),
     (
         "Creating voice…",
@@ -651,25 +697,18 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Правила использования",
     ),
     (
-        "Voice cloning is for your own voice only. Do not clone, imitate, or impersonate another person's voice.",
-        "声音克隆功能仅限克隆您本人的声音。禁止克隆、模仿或冒充他人的声音。",
-        "音声クローン機能は、ご自身の声にのみ使用できます。他人の声をクローン、模倣、またはなりすましに使用することは禁止されています。",
-        "음성 복제 기능은 본인의 목소리에만 사용할 수 있습니다. 다른 사람의 목소리를 복제, 모방하거나 사칭하는 행위는 금지됩니다.",
-        "Клонирование голоса разрешено только для вашего собственного голоса. Запрещено клонировать или имитировать голос другого человека либо выдавать себя за него.",
+        "I have read and agree",
+        "我已阅读并同意",
+        "同意する",
+        "동의합니다",
+        "Я согласен(на)",
     ),
     (
-        "Do not use XRTranslate for unlawful purposes. Comply with the laws and regulations applicable in your country or region, and respect privacy, personality rights, and intellectual property rights.",
-        "禁止将 XRTranslate 用于任何非法用途。请遵守所在国家或地区适用的法律法规，并尊重隐私、人格权与知识产权。",
-        "XRTranslateを違法な目的で使用しないでください。お住まいの国または地域で適用される法令を遵守し、プライバシー、人格権、知的財産権を尊重してください。",
-        "XRTranslate를 불법적인 목적으로 사용하지 마세요. 거주 국가 또는 지역에 적용되는 법률과 규정을 준수하고 개인정보, 인격권 및 지식재산권을 존중하세요.",
-        "Не используйте XRTranslate в незаконных целях. Соблюдайте законы и правила, действующие в вашей стране или регионе, и уважайте частную жизнь, личные неимущественные права и интеллектуальную собственность.",
-    ),
-    (
-        "Speech recognition, translation, and synthesized speech may contain errors. Verify important content before use.",
-        "语音识别、翻译及合成语音可能存在错误；重要内容请在使用前核对。",
-        "音声認識、翻訳、合成音声には誤りが含まれる場合があります。重要な内容は使用前に確認してください。",
-        "음성 인식, 번역 및 합성 음성에는 오류가 있을 수 있습니다. 중요한 내용은 사용 전에 확인하세요.",
-        "Распознавание речи, перевод и синтезированная речь могут содержать ошибки. Проверяйте важную информацию перед использованием.",
+        "Please agree to the Usage Guidelines to continue.",
+        "请先勾选同意使用规范以继续。",
+        "続行するには利用規範に同意してください。",
+        "계속하려면 이용 수칙에 동의해 주세요.",
+        "Пожалуйста, примите правила использования для продолжения.",
     ),
     ("About", "关于", "情報", "정보", "О программе"),
     (
@@ -1561,6 +1600,13 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "オランダ語",
         "네덜란드어",
         "Нидерландский",
+    ),
+    (
+        "Bulgarian",
+        "保加利亚语",
+        "ブルガリア語",
+        "불가리아어",
+        "Болгарский",
     ),
     (
         "Chinese <-> English",
@@ -3440,3 +3486,35 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Ошибка подключения",
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn locale_parsing_matches_supported_languages() {
+        assert_eq!(UiLanguage::from_locale_str("zh-CN"), Some(UiLanguage::Chinese));
+        assert_eq!(UiLanguage::from_locale_str("zh_Hans"), Some(UiLanguage::Chinese));
+        assert_eq!(UiLanguage::from_locale_str("zh-TW"), Some(UiLanguage::Chinese));
+        assert_eq!(UiLanguage::from_locale_str("ja-JP"), Some(UiLanguage::Japanese));
+        assert_eq!(UiLanguage::from_locale_str("ja"), Some(UiLanguage::Japanese));
+        assert_eq!(UiLanguage::from_locale_str("ko-KR"), Some(UiLanguage::Korean));
+        assert_eq!(UiLanguage::from_locale_str("ko"), Some(UiLanguage::Korean));
+        assert_eq!(UiLanguage::from_locale_str("ru-RU"), Some(UiLanguage::Russian));
+        assert_eq!(UiLanguage::from_locale_str("ru"), Some(UiLanguage::Russian));
+        assert_eq!(UiLanguage::from_locale_str("en-US"), Some(UiLanguage::English));
+        assert_eq!(UiLanguage::from_locale_str("en-GB"), Some(UiLanguage::English));
+        assert_eq!(UiLanguage::from_locale_str("en"), Some(UiLanguage::English));
+    }
+
+    #[test]
+    fn unsupported_locale_returns_none_and_detect_falls_back_to_english() {
+        assert_eq!(UiLanguage::from_locale_str("fr-FR"), None);
+        assert_eq!(UiLanguage::from_locale_str("de-DE"), None);
+        assert_eq!(UiLanguage::from_locale_str("es-ES"), None);
+        assert_eq!(UiLanguage::from_locale_str(""), None);
+
+        let detected = UiLanguage::detect_system_language();
+        assert!(UiLanguage::ALL.contains(&detected));
+    }
+}

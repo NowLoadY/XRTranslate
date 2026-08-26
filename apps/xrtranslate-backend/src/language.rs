@@ -42,6 +42,7 @@ const LANGUAGES: &[LanguageSpec] = &[
     language!("pl", "Polish", Latin),
     language!("cs", "Czech", Latin),
     language!("nl", "Dutch", Latin),
+    language!("bg", "Bulgarian", Cyrillic),
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

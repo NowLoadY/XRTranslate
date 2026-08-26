@@ -59,7 +59,7 @@ unless a future graph and typed provider setting implement them explicitly.
 | Voice reference | mono PCM16 WAV; decoded and resampled to 22,050 Hz |
 | Reference transcript | accepted by the shared clone API but not consumed by OpenVoice |
 | User synthesis options | `speed`, validated in `0.5..=2.0`; language-to-preset entries in `voices` |
-| Execution device | managed NVIDIA CUDA with at least 8 GiB VRAM; no managed-model CPU fallback |
+| Execution device | managed NVIDIA CUDA with at least 7 GiB VRAM; no managed-model CPU fallback |
 
 The 22,050 Hz value is the final provider wire contract. MeloTTS Chinese and
 English base graphs may emit 44,100 Hz internally, but the base waveform is

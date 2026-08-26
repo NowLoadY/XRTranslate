@@ -3,7 +3,7 @@
 ## Goal
 
 Downloadable local ONNX TTS providers require a complete compatible NVIDIA
-runtime and at least 8 GiB VRAM. They never execute on CPU; Vulkan and DirectML
+runtime and at least 7 GiB VRAM. They never execute on CPU; Vulkan and DirectML
 are not selectable execution providers. The application supplies a matched local ONNX
 Runtime, CUDA, and cuDNN closure, so users do not install a CUDA Toolkit or
 modify the machine-wide `PATH`.
@@ -78,7 +78,7 @@ whole closure is present; otherwise planning fails. Blackwell/RTX 50-series hard
 llama.cpp bundle; CUDA 13.3-capable drivers prefer 13.3. The UI retains the
 NVIDIA App upgrade notice when it uses 13.1 for a driver that cannot load 13.3.
 
-A host without an NVIDIA GPU, with less than 8 GiB VRAM, or without a complete
+A host without an NVIDIA GPU, with less than 7 GiB VRAM, or without a complete
 compatible closure receives an actionable unsupported plan. Model choices are
 disabled, no model starts, and no CPU fallback is created. Small bundled ONNX
 components such as VAD, denoise, and speaker helpers remain CPU-capable because
@@ -236,7 +236,7 @@ backend as the current one.
 
 Required automated coverage includes:
 
-- no NVIDIA device and NVIDIA devices below 8 GiB disable and reject managed
+- no NVIDIA device and NVIDIA devices below 7 GiB disable and reject managed
   model plans without GPU downloads;
 - CUDA 12/13 and Blackwell selection require a complete ORT, CUDA, and cuDNN
   closure and never mix majors;

@@ -17,7 +17,7 @@ use std::path::Path;
 
 use ndarray::{Array1, Array2, ArrayD};
 use ort::session::Session;
-use ort::value::Value;
+use ort::value::{DynValue, Value};
 
 /// The only sample rate supported by the streaming Silero interface here.
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
@@ -191,7 +191,7 @@ pub fn decode_pcm16le_frame(bytes: &[u8]) -> Result<[i16; FRAME_SAMPLES], VadErr
 #[derive(Debug)]
 pub struct SileroVad {
     session: Session,
-    sample_rate: Array1<i64>,
+    sample_rate: DynValue,
     state: ArrayD<f32>,
     context: Array1<f32>,
 }
@@ -202,7 +202,8 @@ impl SileroVad {
         let session = Session::builder()?.commit_from_file(model_path)?;
         Ok(Self {
             session,
-            sample_rate: Array1::from_vec(vec![i64::from(SAMPLE_RATE_HZ)]),
+            sample_rate: Value::from_array(Array1::from_vec(vec![i64::from(SAMPLE_RATE_HZ)]))?
+                .into_dyn(),
             state: initial_state(),
             context: Array1::zeros(CONTEXT_SAMPLES),
         })
@@ -232,8 +233,6 @@ impl SileroVad {
         let frame = Array2::from_shape_vec((1, input_with_context.len()), input_with_context)
             .expect("context and validated frame lengths always form a valid 2D array");
         let frame_value = Value::from_array(frame)?;
-        let sample_rate_value = Value::from_array(self.sample_rate.clone())?;
-
         // `Value` takes ownership of the tensor.  Replace first so a failed
         // invocation cannot leave an invalid/partly-consumed state behind.
         let state_value = Value::from_array(mem::replace(&mut self.state, initial_state()))?;
@@ -244,7 +243,7 @@ impl SileroVad {
             let outputs = self.session.run([
                 (&frame_value).into(),
                 (&state_value).into(),
-                (&sample_rate_value).into(),
+                (&self.sample_rate).into(),
             ])?;
             let state_output = outputs
                 .get("stateN")
