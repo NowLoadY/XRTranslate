@@ -65,6 +65,7 @@ use plugins::meeting::{
     MeetingAction, MeetingAudioSource, MeetingInputRequest, MeetingPlugin, MeetingUiSnapshot,
 };
 use plugins::osc::{OscPageContext, OscPlugin, OscUiAction};
+use plugins::vr_overlay::{VrOverlayPageContext, VrOverlayPlugin, VrOverlayUiAction};
 use plugins::{PluginId, PluginPreferences, PluginRegistry, PluginScrollPolicy};
 pub(crate) use presentation::speaker::compact_speaker_label;
 use session_coordinator::{
@@ -561,6 +562,7 @@ struct XRTranslateApp {
     tts_runtime_backend: Option<String>,
     tts_runtime_cuda_version: Option<String>,
     osc_plugin: OscPlugin,
+    vr_overlay_plugin: VrOverlayPlugin,
     audio_studio: AudioStudioController,
     voicemeeter_remote: Option<voicemeeter::VoiceMeeterRemote>,
     voicemeeter_route: Option<voicemeeter::VoiceMeeterStripRouteGuard>,
@@ -673,6 +675,10 @@ impl Default for XRTranslateApp {
             settings.osc_settings.clone(),
             settings.plugin_preferences.is_enabled(PluginId::OSC),
         );
+        let vr_overlay_plugin = VrOverlayPlugin::new(
+            settings.vr_overlay_settings.clone(),
+            settings.plugin_preferences.is_enabled(PluginId::VR_OVERLAY),
+        );
         let meeting_plugin = MeetingPlugin::open(&backend_manager.project_root());
         let audio_studio = AudioStudioController::open(&backend_manager.project_root());
         let voicemeeter_remote = match voicemeeter::VoiceMeeterRemote::discover() {
@@ -730,7 +736,10 @@ impl Default for XRTranslateApp {
         let session_event_subscribers: Vec<Box<dyn SessionEventSubscriber>> =
             vec![Box::new(meeting_plugin.event_sink.clone())];
         let host_output_subscribers: Vec<Box<dyn HostOutputSubscriber>> =
-            vec![Box::new(osc_plugin.publisher())];
+            vec![
+                Box::new(osc_plugin.publisher()),
+                Box::new(vr_overlay_plugin.handle()),
+            ];
 
         std::thread::Builder::new()
             .name("session-event-pump".into())
@@ -1354,6 +1363,7 @@ impl Default for XRTranslateApp {
             tts_runtime_backend: None,
             tts_runtime_cuda_version: None,
             osc_plugin,
+            vr_overlay_plugin,
             audio_studio,
             voicemeeter_remote,
             voicemeeter_route: None,
@@ -2245,6 +2255,10 @@ impl XRTranslateApp {
         let lifecycle = match id {
             PluginId::OSC if enabled => self.osc_plugin.activate(),
             PluginId::OSC => self.osc_plugin.deactivate(),
+            PluginId::VR_OVERLAY => {
+                self.vr_overlay_plugin.set_host_enabled(enabled);
+                Ok(())
+            }
             PluginId::MEETING => Ok(()),
             _ => Ok(()),
         };
@@ -2260,6 +2274,17 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn render_plugin_settings(&mut self, id: PluginId, ui: &mut egui::Ui) {
+        if id == PluginId::VR_OVERLAY {
+            if plugins::vr_overlay::ui::render_settings_contribution(
+                self.vr_overlay_plugin.draft_mut(),
+                ui,
+                self.ui_language,
+            ) {
+                self.vr_overlay_plugin.sync_settings();
+                self.save_settings();
+            }
+            return;
+        }
         if id != PluginId::OSC {
             return;
         }
@@ -2504,8 +2529,33 @@ impl XRTranslateApp {
         match id {
             PluginId::MEETING => self.render_meeting_plugin_page(ui),
             PluginId::VIDEO_PLAYER => self.render_player_plugin_page(ui),
+            PluginId::VR_OVERLAY => self.render_vr_overlay_plugin_page(ui),
             PluginId::OSC => self.render_osc_plugin_page(ui),
             _ => self.navigation.page = Page::Translation,
+        }
+    }
+
+    fn render_vr_overlay_plugin_page(&mut self, ui: &mut egui::Ui) {
+        let status = self.vr_overlay_plugin.manager().status();
+        let context = VrOverlayPageContext {
+            language: self.ui_language,
+            status: &status,
+        };
+        let actions = plugins::vr_overlay::ui::render(
+            self.vr_overlay_plugin.draft_mut(),
+            ui,
+            context,
+        );
+        for action in actions {
+            match action {
+                VrOverlayUiAction::SettingsChanged => {
+                    self.vr_overlay_plugin.sync_settings();
+                    self.save_settings();
+                }
+                VrOverlayUiAction::ClearSubtitles => {
+                    self.vr_overlay_plugin.handle().clear();
+                }
+            }
         }
     }
 
@@ -2614,6 +2664,7 @@ impl XRTranslateApp {
             download_proxy_url: self.download_proxy_url.clone(),
             update_channel: self.update_channel,
             osc_settings: self.osc_plugin.draft().clone(),
+            vr_overlay_settings: self.vr_overlay_plugin.draft().clone(),
             plugin_preferences: self.plugin_preferences.clone(),
             active_page: self.navigation.page,
             sidebar_collapsed: self.navigation.collapsed,

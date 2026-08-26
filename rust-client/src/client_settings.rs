@@ -3,6 +3,7 @@ use crate::i18n::UiLanguage;
 #[cfg(test)]
 use crate::plugins::PluginId;
 use crate::plugins::osc::runtime::OscSettings;
+use crate::plugins::vr_overlay::VrOverlaySettings;
 use crate::plugins::{PluginPreferences, PluginRegistry};
 use crate::ui::{Page, theme::UiTheme};
 use serde::{Deserialize, Serialize};
@@ -103,6 +104,8 @@ pub struct ClientSettings {
     pub update_channel: UpdateChannel,
     #[serde(default = "OscSettings::from_project_config")]
     pub osc_settings: OscSettings,
+    #[serde(default)]
+    pub vr_overlay_settings: VrOverlaySettings,
     #[serde(default, rename = "plugins", alias = "plugin_preferences")]
     pub plugin_preferences: PluginPreferences,
     #[serde(default)]
@@ -180,6 +183,7 @@ impl Default for ClientSettings {
             download_proxy_url: String::new(),
             update_channel: UpdateChannel::Stable,
             osc_settings: OscSettings::from_project_config(),
+            vr_overlay_settings: VrOverlaySettings::default(),
             plugin_preferences: PluginPreferences::default(),
             active_page: Page::default(),
             sidebar_collapsed: false,

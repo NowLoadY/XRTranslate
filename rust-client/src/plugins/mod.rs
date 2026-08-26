@@ -8,6 +8,7 @@
 pub mod meeting;
 pub mod osc;
 pub mod player;
+pub mod vr_overlay;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{collections::BTreeMap, fmt};
@@ -20,6 +21,7 @@ impl PluginId {
     pub const OSC: Self = Self("osc");
     pub const MEETING: Self = Self("meeting");
     pub const VIDEO_PLAYER: Self = Self("video_player");
+    pub const VR_OVERLAY: Self = Self("vr_overlay");
 
     pub const fn as_str(self) -> &'static str {
         self.0
@@ -30,6 +32,7 @@ impl PluginId {
             "osc" => Some(Self::OSC),
             "meeting" => Some(Self::MEETING),
             "video_player" => Some(Self::VIDEO_PLAYER),
+            "vr_overlay" => Some(Self::VR_OVERLAY),
             _ => None,
         }
     }
@@ -105,7 +108,7 @@ pub struct PluginDescriptor {
     pub default_enabled: bool,
 }
 
-const PLUGIN_DESCRIPTORS: [PluginDescriptor; 3] = [
+const PLUGIN_DESCRIPTORS: [PluginDescriptor; 4] = [
     PluginDescriptor {
         id: PluginId::MEETING,
         title_key: "Meeting notes",
@@ -131,6 +134,19 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 3] = [
         scroll_policy: PluginScrollPolicy::Plugin,
         settings_contribution: PluginSettingsContribution::EnablementOnly,
         default_enabled: false,
+    },
+    PluginDescriptor {
+        id: PluginId::VR_OVERLAY,
+        title_key: "SteamVR Overlay",
+        description_key: "Display private real-time bilingual subtitles in SteamVR (HMD-locked HUD).",
+        navigation_order: 180,
+        icon: PluginIcon {
+            uri: "bytes://plugins/vr_overlay/icon.svg",
+            bytes: include_bytes!("../../resources/plugins/vr_overlay/icon.svg"),
+        },
+        scroll_policy: PluginScrollPolicy::Plugin,
+        settings_contribution: PluginSettingsContribution::Plugin,
+        default_enabled: true,
     },
     PluginDescriptor {
         id: PluginId::OSC,
@@ -238,6 +254,7 @@ mod tests {
     fn builtin_preferences_enable_default_plugins() {
         let preferences = PluginPreferences::default();
         assert!(preferences.is_enabled(PluginId::OSC));
+        assert!(preferences.is_enabled(PluginId::VR_OVERLAY));
         assert!(!preferences.is_enabled(PluginId::MEETING));
         assert!(!preferences.is_enabled(PluginId::VIDEO_PLAYER));
     }
@@ -246,8 +263,16 @@ mod tests {
     fn plugin_ids_have_stable_string_serialization() {
         assert_eq!(serde_json::to_string(&PluginId::OSC).unwrap(), r#""osc""#);
         assert_eq!(
+            serde_json::to_string(&PluginId::VR_OVERLAY).unwrap(),
+            r#""vr_overlay""#
+        );
+        assert_eq!(
             serde_json::from_str::<PluginId>(r#""meeting""#).unwrap(),
             PluginId::MEETING
+        );
+        assert_eq!(
+            serde_json::from_str::<PluginId>(r#""vr_overlay""#).unwrap(),
+            PluginId::VR_OVERLAY
         );
     }
 

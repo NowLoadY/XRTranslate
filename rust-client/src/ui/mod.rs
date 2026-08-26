@@ -55,6 +55,7 @@ impl<'de> Deserialize<'de> for Page {
             // Compatibility with the former derived enum representation.
             "Osc" | "osc" => Ok(Self::Plugin(crate::plugins::PluginId::OSC)),
             "Meeting" | "meeting" => Ok(Self::Plugin(crate::plugins::PluginId::MEETING)),
+            "VrOverlay" | "vr_overlay" => Ok(Self::Plugin(crate::plugins::PluginId::VR_OVERLAY)),
             _ if value.starts_with("plugin:") => Ok(value
                 .strip_prefix("plugin:")
                 .and_then(crate::plugins::PluginId::parse)
