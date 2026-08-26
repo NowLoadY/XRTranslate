@@ -1389,7 +1389,7 @@ impl Default for XRTranslateApp {
             modal_dialog: ui::modal::ModalDialog::default(),
             pending_resource_deletion: None,
             first_run,
-            usage_guidelines_accepted: false,
+            usage_guidelines_accepted: settings.usage_guidelines_accepted,
             onboarding_page,
             ui_language: settings.ui_language,
             ui_theme: settings.ui_theme,
@@ -2668,6 +2668,7 @@ impl XRTranslateApp {
             plugin_preferences: self.plugin_preferences.clone(),
             active_page: self.navigation.page,
             sidebar_collapsed: self.navigation.collapsed,
+            usage_guidelines_accepted: self.usage_guidelines_accepted,
             floating_subtitles_enabled: self.floating_subtitles_enabled,
             floating_subtitles_max_count: self.floating_subtitles_max_count,
             floating_subtitles_font_size: self.floating_subtitles_font_size,
@@ -2708,8 +2709,7 @@ impl XRTranslateApp {
         ) {
             return;
         }
-        if self.first_run
-            && self.service_config.tts_is_configured()
+        if self.service_config.tts_is_configured()
             && !self.usage_guidelines_accepted
         {
             return;

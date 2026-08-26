@@ -113,6 +113,8 @@ pub struct ClientSettings {
     #[serde(default)]
     pub sidebar_collapsed: bool,
     #[serde(default)]
+    pub usage_guidelines_accepted: bool,
+    #[serde(default)]
     pub floating_subtitles_enabled: bool,
     #[serde(default = "default_floating_max_count")]
     pub floating_subtitles_max_count: usize,
@@ -187,6 +189,7 @@ impl Default for ClientSettings {
             plugin_preferences: PluginPreferences::default(),
             active_page: Page::default(),
             sidebar_collapsed: false,
+            usage_guidelines_accepted: false,
             floating_subtitles_enabled: false,
             floating_subtitles_max_count: default_floating_max_count(),
             floating_subtitles_font_size: default_floating_font_size(),
@@ -219,6 +222,8 @@ impl ClientSettings {
         struct AppState {
             first_run: Option<bool>,
             ui_language: Option<UiLanguage>,
+            usage_guidelines_accepted: Option<bool>,
+            usage_guidelines_agreed: Option<bool>,
         }
         let path = project_root.join("runtime").join("app_state.json");
         let Ok(contents) = std::fs::read_to_string(path) else {
@@ -236,6 +241,12 @@ impl ClientSettings {
                 .unwrap_or_else(UiLanguage::detect_system_language);
         } else if let Some(ui_language) = state.ui_language {
             self.ui_language = ui_language;
+        }
+        if let Some(accepted) = state
+            .usage_guidelines_accepted
+            .or(state.usage_guidelines_agreed)
+        {
+            self.usage_guidelines_accepted = accepted;
         }
     }
 
@@ -363,6 +374,10 @@ impl ClientSettings {
         app_state.insert(
             "ui_language".into(),
             serde_json::to_value(self.ui_language).map_err(|e| e.to_string())?,
+        );
+        app_state.insert(
+            "usage_guidelines_accepted".into(),
+            serde_json::Value::Bool(self.usage_guidelines_accepted),
         );
         let contents = serde_json::to_string_pretty(&app_state).map_err(|e| e.to_string())?;
         std::fs::write(app_state_path, format!("{contents}\n")).map_err(|e| e.to_string())
@@ -636,6 +651,30 @@ mod tests {
         let reloaded = ClientSettings::load(&root);
         assert!(!reloaded.first_run);
         assert_eq!(reloaded.ui_language, UiLanguage::Japanese);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn usage_guidelines_accepted_is_persisted_in_app_state() {
+        let root = std::env::temp_dir().join("xrtranslate_test_usage_guidelines");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("runtime")).unwrap();
+
+        let mut settings = ClientSettings::load(&root);
+        assert!(!settings.usage_guidelines_accepted);
+
+        settings.usage_guidelines_accepted = true;
+        settings.save(&root).unwrap();
+
+        let state: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("runtime/app_state.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(state["usage_guidelines_accepted"], true);
+
+        let reloaded = ClientSettings::load(&root);
+        assert!(reloaded.usage_guidelines_accepted);
 
         let _ = std::fs::remove_dir_all(root);
     }

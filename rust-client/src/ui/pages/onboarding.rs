@@ -51,10 +51,8 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if app.onboarding_page + 1 == total_pages {
-                        let tts_requires_agreement =
-                            app.first_run && app.service_config.tts_is_configured();
-                        let agreement_satisfied =
-                            !tts_requires_agreement || app.usage_guidelines_accepted;
+                        let tts_configured = app.service_config.tts_is_configured();
+                        let agreement_satisfied = !tts_configured || app.usage_guidelines_accepted;
                         let can_open = requirement.is_none() && agreement_satisfied;
 
                         let open_translation = components::primary_button_enabled(
@@ -64,12 +62,16 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
                         )
                         .clicked();
                         ui.add_space(8.0);
-                        if tts_requires_agreement {
-                            components::checkbox(
+                        if tts_configured {
+                            if components::checkbox(
                                 ui,
                                 &mut app.usage_guidelines_accepted,
                                 i18n::tr(app.ui_language, "I have read and agree"),
-                            );
+                            )
+                            .changed()
+                            {
+                                app.save_settings();
+                            }
                             ui.add_space(6.0);
                         }
                         if ui
@@ -101,7 +103,6 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
                                 .color(theme::text_weak()),
                         );
                     } else if app.onboarding_page + 1 == total_pages
-                        && app.first_run
                         && app.service_config.tts_is_configured()
                         && !app.usage_guidelines_accepted
                     {
