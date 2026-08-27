@@ -11,7 +11,6 @@ use super::renderer::{VrOverlayRenderer, VrSubtitleCard};
 
 const RENDER_WIDTH: u32 = 1024;
 const RENDER_HEIGHT: u32 = 512;
-const STEAMVR_RECONNECT_INTERVAL: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VrOverlaySettings {
@@ -131,6 +130,8 @@ pub enum VrCommand {
     },
     EndStream(u64),
     Clear,
+    Connect,
+    Disconnect,
     UpdateSettings(VrOverlaySettings),
     Shutdown,
 }
@@ -176,6 +177,14 @@ impl VrOverlayManager {
 
     pub fn update_settings(&self, settings: VrOverlaySettings) {
         let _ = self.command_tx.send(VrCommand::UpdateSettings(settings));
+    }
+
+    pub fn connect(&self) {
+        let _ = self.command_tx.send(VrCommand::Connect);
+    }
+
+    pub fn disconnect(&self) {
+        let _ = self.command_tx.send(VrCommand::Disconnect);
     }
 }
 
@@ -243,13 +252,87 @@ fn run_vr_worker(
     let mut vr_overlay: Option<OpenVrOverlay> = None;
 
     let mut entries: Vec<StreamEntry> = Vec::new();
-    let mut last_reconnect_attempt = Instant::now() - STEAMVR_RECONNECT_INTERVAL;
     let mut needs_redraw = false;
     let mut is_overlay_visible = false;
+
+    if let Some(api) = &openvr_api {
+        status.lock().steamvr_installed = api.is_runtime_installed();
+    }
 
     loop {
         let timeout = Duration::from_millis(100);
         match command_rx.recv_timeout(timeout) {
+            Ok(VrCommand::Connect) => {
+                if openvr_api.is_none() {
+                    openvr_api = OpenVrApi::try_load();
+                }
+                match &openvr_api {
+                    Some(api) => {
+                        let installed = api.is_runtime_installed();
+                        let running = super::openvr::is_steamvr_running();
+                        {
+                            let mut st = status.lock();
+                            st.steamvr_installed = installed;
+                        }
+                        if !installed {
+                            let mut st = status.lock();
+                            st.steamvr_connected = false;
+                            st.last_error =
+                                Some("SteamVR runtime is not installed on this system.".into());
+                        } else if !running {
+                            let mut st = status.lock();
+                            st.steamvr_connected = false;
+                            st.last_error =
+                                Some("SteamVR is not running. Please launch SteamVR first.".into());
+                        } else if vr_session.is_none() {
+                            match api.init_overlay() {
+                                Ok(session) => match session
+                                    .create_overlay("xrtranslate.vr_overlay", "XRTranslate Subtitles")
+                                {
+                                    Ok(overlay) => {
+                                        overlay.set_auto_hmd_hud_transform(
+                                            settings.distance_meters,
+                                            settings.vertical_offset_meters,
+                                        );
+                                        overlay.set_width(settings.overlay_width_meters);
+                                        overlay.set_alpha(settings.opacity);
+                                        vr_overlay = Some(overlay);
+                                        vr_session = Some(session);
+                                        needs_redraw = true;
+                                        let mut st = status.lock();
+                                        st.steamvr_connected = true;
+                                        st.last_error = None;
+                                    }
+                                    Err(e) => {
+                                        let mut st = status.lock();
+                                        st.steamvr_connected = false;
+                                        st.last_error = Some(e);
+                                    }
+                                },
+                                Err(e) => {
+                                    let mut st = status.lock();
+                                    st.steamvr_connected = false;
+                                    st.last_error = Some(e);
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        let mut st = status.lock();
+                        st.steamvr_installed = false;
+                        st.steamvr_connected = false;
+                        st.last_error =
+                            Some("OpenVR library (openvr_api.dll) not found.".into());
+                    }
+                }
+            }
+            Ok(VrCommand::Disconnect) => {
+                vr_overlay = None;
+                vr_session = None;
+                let mut st = status.lock();
+                st.steamvr_connected = false;
+                st.last_error = None;
+            }
             Ok(VrCommand::Caption {
                 stream_id,
                 source,
@@ -378,73 +461,15 @@ fn run_vr_worker(
             }
         }
 
-        // 1. Maintain SteamVR Connection (Passive only: never wake up or auto-launch SteamVR)
-        if settings.enabled {
-            if openvr_api.is_none() && last_reconnect_attempt.elapsed() >= STEAMVR_RECONNECT_INTERVAL {
-                last_reconnect_attempt = Instant::now();
-                openvr_api = OpenVrApi::try_load();
+        // Passive session monitor: detect if SteamVR was closed by user or if disabled
+        if vr_session.is_some() {
+            let running = super::openvr::is_steamvr_running();
+            if !running || !settings.enabled {
+                vr_overlay = None;
+                vr_session = None;
+                let mut st = status.lock();
+                st.steamvr_connected = false;
             }
-
-            if let Some(api) = &openvr_api {
-                let installed = api.is_runtime_installed();
-                let running = super::openvr::is_steamvr_running();
-                {
-                    let mut st = status.lock();
-                    st.steamvr_installed = installed;
-                    if !running {
-                        st.steamvr_connected = false;
-                    }
-                }
-
-                // If SteamVR was closed by user, gracefully release overlay session
-                if !running && vr_session.is_some() {
-                    vr_overlay = None;
-                    vr_session = None;
-                    let mut st = status.lock();
-                    st.steamvr_connected = false;
-                }
-
-                // Only connect if SteamVR process is ALREADY actively running!
-                if vr_session.is_none()
-                    && installed
-                    && running
-                    && last_reconnect_attempt.elapsed() >= STEAMVR_RECONNECT_INTERVAL
-                {
-                    last_reconnect_attempt = Instant::now();
-                    match api.init_overlay() {
-                        Ok(session) => match session.create_overlay("xrtranslate.vr_overlay", "XRTranslate Subtitles") {
-                            Ok(overlay) => {
-                                overlay.set_auto_hmd_hud_transform(
-                                    settings.distance_meters,
-                                    settings.vertical_offset_meters,
-                                );
-                                overlay.set_width(settings.overlay_width_meters);
-                                overlay.set_alpha(settings.opacity);
-                                vr_overlay = Some(overlay);
-                                vr_session = Some(session);
-                                needs_redraw = true;
-                                let mut st = status.lock();
-                                st.steamvr_connected = true;
-                                st.last_error = None;
-                            }
-                            Err(e) => {
-                                let mut st = status.lock();
-                                st.last_error = Some(e);
-                            }
-                        },
-                        Err(e) => {
-                            let mut st = status.lock();
-                            st.steamvr_connected = false;
-                            st.last_error = Some(e);
-                        }
-                    }
-                }
-            }
-        } else {
-            vr_overlay = None;
-            vr_session = None;
-            let mut st = status.lock();
-            st.steamvr_connected = false;
         }
 
         // 2. Redraw and submit overlay frame
@@ -569,5 +594,19 @@ mod tests {
         ];
         let buf = renderer.render(&cards, true, 20.0, 0.85);
         assert_eq!(buf.len(), 1024 * 512 * 4);
+    }
+
+    #[test]
+    fn manager_connect_and_disconnect_lifecycle() {
+        let manager = VrOverlayManager::new(VrOverlaySettings::default());
+
+        // Connect request via manager
+        manager.connect();
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Disconnect request via manager
+        manager.disconnect();
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!manager.status().steamvr_connected);
     }
 }

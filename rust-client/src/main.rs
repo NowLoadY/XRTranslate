@@ -2555,6 +2555,12 @@ impl XRTranslateApp {
                 VrOverlayUiAction::ClearSubtitles => {
                     self.vr_overlay_plugin.handle().clear();
                 }
+                VrOverlayUiAction::ConnectSteamVr => {
+                    self.vr_overlay_plugin.connect();
+                }
+                VrOverlayUiAction::DisconnectSteamVr => {
+                    self.vr_overlay_plugin.disconnect();
+                }
             }
         }
     }

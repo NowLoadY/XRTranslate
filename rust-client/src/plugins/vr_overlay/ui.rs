@@ -15,6 +15,8 @@ pub struct VrOverlayPageContext<'a> {
 pub enum VrOverlayUiAction {
     SettingsChanged,
     ClearSubtitles,
+    ConnectSteamVr,
+    DisconnectSteamVr,
 }
 
 pub fn render(
@@ -41,14 +43,37 @@ pub fn render(
                 );
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (status_text, is_active, is_error) = if context.status.steamvr_connected {
-                        (crate::i18n::tr(lang, "SteamVR Connected"), true, false)
-                    } else if context.status.steamvr_installed {
-                        (crate::i18n::tr(lang, "Waiting for SteamVR..."), false, false)
+                    if context.status.steamvr_connected {
+                        if crate::ui::components::animated_button(
+                            ui,
+                            crate::i18n::tr(lang, "Disconnect"),
+                        )
+                        .clicked()
+                        {
+                            actions.push(VrOverlayUiAction::DisconnectSteamVr);
+                        }
+                        crate::ui::components::status_badge(
+                            ui,
+                            &crate::i18n::tr(lang, "SteamVR Connected"),
+                            true,
+                            false,
+                        );
                     } else {
-                        (crate::i18n::tr(lang, "SteamVR not detected"), false, true)
-                    };
-                    crate::ui::components::status_badge(ui, &status_text, is_active, is_error);
+                        if crate::ui::components::animated_button(
+                            ui,
+                            crate::i18n::tr(lang, "Connect SteamVR"),
+                        )
+                        .clicked()
+                        {
+                            actions.push(VrOverlayUiAction::ConnectSteamVr);
+                        }
+                        let (status_text, is_active, is_error) = if context.status.steamvr_installed {
+                            (crate::i18n::tr(lang, "Not Connected"), false, false)
+                        } else {
+                            (crate::i18n::tr(lang, "SteamVR not detected"), false, true)
+                        };
+                        crate::ui::components::status_badge(ui, &status_text, is_active, is_error);
+                    }
                 });
             });
 
@@ -61,7 +86,23 @@ pub fn render(
                 .color(theme::text_weak()),
             );
 
-            ui.add_space(16.0);
+            ui.add_space(10.0);
+
+            if let Some(error) = &context.status.last_error {
+                card(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("⚠").color(egui::Color32::from_rgb(220, 38, 38)),
+                        );
+                        ui.label(
+                            egui::RichText::new(error).color(egui::Color32::from_rgb(220, 38, 38)),
+                        );
+                    });
+                });
+                ui.add_space(6.0);
+            }
+
+            ui.add_space(6.0);
 
             // 1. Controls & Settings Card
             card(ui, |ui| {

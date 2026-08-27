@@ -3653,6 +3653,41 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "줄",
         "строк",
     ),
+    (
+        "Connect SteamVR",
+        "连接 SteamVR",
+        "SteamVRに接続",
+        "SteamVR 연결",
+        "Подключить SteamVR",
+    ),
+    (
+        "Disconnect",
+        "断开连接",
+        "切断",
+        "연결 끊기",
+        "Отключить",
+    ),
+    (
+        "Not Connected",
+        "未连接",
+        "未接続",
+        "연결되지 않음",
+        "Не подключено",
+    ),
+    (
+        "SteamVR Connected",
+        "SteamVR 已连接",
+        "SteamVR 接続済み",
+        "SteamVR 연결됨",
+        "SteamVR подключен",
+    ),
+    (
+        "SteamVR not detected",
+        "未检测到 SteamVR",
+        "SteamVRが検出されません",
+        "SteamVR을 감지할 수 없음",
+        "SteamVR не обнаружен",
+    ),
 ];
 
 #[cfg(test)]

@@ -89,6 +89,14 @@ impl VrOverlayPlugin {
         }
         self.manager.update_settings(effective);
     }
+
+    pub fn connect(&self) {
+        self.manager.connect();
+    }
+
+    pub fn disconnect(&self) {
+        self.manager.disconnect();
+    }
 }
 
 #[cfg(test)]
