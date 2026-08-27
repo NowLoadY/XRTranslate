@@ -4177,6 +4177,24 @@ impl XRTranslateApp {
             }
         }
     }
+
+    fn current_page_name(&self) -> String {
+        if self.first_run {
+            format!("Onboarding:{}", self.onboarding_page)
+        } else {
+            match self.navigation.page {
+                Page::Translation => "Translation".to_string(),
+                Page::Settings => "Settings".to_string(),
+                Page::AudioStudio => "AudioStudio".to_string(),
+                Page::PromptStudio => "PromptStudio".to_string(),
+                Page::Plugin(PluginId::OSC) => "Plugin:OSC".to_string(),
+                Page::Plugin(PluginId::MEETING) => "Plugin:Meeting".to_string(),
+                Page::Plugin(PluginId::VR_OVERLAY) => "Plugin:VROverlay".to_string(),
+                Page::Plugin(PluginId::VIDEO_PLAYER) => "Plugin:VideoPlayer".to_string(),
+                Page::Plugin(_) => "Plugin".to_string(),
+            }
+        }
+    }
 }
 
 impl Drop for XRTranslateApp {
@@ -4192,6 +4210,18 @@ impl eframe::App for XRTranslateApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui::theme::install_context(ui.ctx(), self.ui_theme);
         ui::layout::begin_frame(ui.ctx());
+
+        let page_name = self.current_page_name();
+        ui::automation::begin_frame(&page_name);
+        if let Some(page) = ui::automation::take_pending_page() {
+            self.navigation.page = page;
+            self.first_run = false;
+        }
+        if let Some(step) = ui::automation::take_pending_onboarding_step() {
+            self.onboarding_page = step;
+            self.first_run = true;
+        }
+
         self.model_task_manager.poll();
         if let Some(path) = self.runtime_installer.poll() {
             self.backend_manager.use_installed_llama_server(&path);
@@ -4227,6 +4257,7 @@ impl eframe::App for XRTranslateApp {
             ui::render_onboarding_fullscreen(self, ui);
             self.render_modal_layer(ui.ctx());
             ui::layout::finish_frame(ui.ctx());
+            ui::automation::finish_frame();
             return;
         }
 
@@ -4388,6 +4419,7 @@ impl eframe::App for XRTranslateApp {
 
         self.render_modal_layer(ui.ctx());
         ui::layout::finish_frame(ui.ctx());
+        ui::automation::finish_frame();
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -4484,6 +4516,12 @@ fn main() -> eframe::Result<()> {
             if let Err(error) = window_backdrop::apply(cc, window_backdrop) {
                 log::warn!("Unable to configure {window_backdrop:?} window backdrop: {error}");
             }
+            let director_port = std::env::args()
+                .position(|a| a == "--director" || a == "--director-port")
+                .and_then(|idx| std::env::args().nth(idx + 1))
+                .and_then(|p| p.parse::<u16>().ok());
+            ui::automation::init(cc.egui_ctx.clone(), director_port);
+
             let mut app = XRTranslateApp::default();
             app.window_backdrop = window_backdrop;
             Ok(Box::new(app))

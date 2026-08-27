@@ -579,7 +579,32 @@ pub fn animated_button_enabled_with_id(
     if resp.hovered() && enabled {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    let simulated_click = crate::ui::automation::record_button(ui, id, text, enabled, resp.rect);
+    if simulated_click {
+        ui.memory_mut(|m| {
+            m.data.insert_temp(id.with("click_time"), current_time);
+        });
+        simulate_click_on(ui, resp.rect);
+        ui.ctx().request_repaint();
+    }
     resp
+}
+
+fn simulate_click_on(ui: &mut egui::Ui, rect: egui::Rect) {
+    ui.ctx().input_mut(|i| {
+        i.events.push(egui::Event::PointerButton {
+            pos: rect.center(),
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        });
+        i.events.push(egui::Event::PointerButton {
+            pos: rect.center(),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        });
+    });
 }
 
 pub fn primary_button(ui: &mut Ui, text: &str) -> egui::Response {
@@ -726,6 +751,26 @@ pub fn primary_button_enabled_with_id(
     if resp.hovered() && enabled {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    let simulated_click = crate::ui::automation::record_button(ui, id, text, enabled, resp.rect);
+    if simulated_click {
+        ui.ctx().memory_mut(|m| {
+            m.data.insert_temp(id.with("click_time"), ui.ctx().input(|i| i.time));
+        });
+        ui.ctx().input_mut(|i| {
+            i.events.push(egui::Event::PointerButton {
+                pos: resp.rect.center(),
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            });
+            i.events.push(egui::Event::PointerButton {
+                pos: resp.rect.center(),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            });
+        });
+    }
     resp
 }
 
@@ -851,6 +896,11 @@ pub fn secondary_button_enabled(ui: &mut Ui, text: &str, enabled: bool) -> egui:
     });
     if resp.hovered() && enabled {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let simulated_click = crate::ui::automation::record_button(ui, id, text, enabled, resp.rect);
+    if simulated_click {
+        simulate_click_on(ui, resp.rect);
+        ui.ctx().request_repaint();
     }
     resp
 }
@@ -1036,7 +1086,7 @@ pub fn searchable_combobox_with_options<T: PartialEq + Clone>(
 
         let combo = egui::ComboBox::from_id_salt(&id)
             .selected_text(
-                egui::RichText::new(selected_text)
+                egui::RichText::new(&selected_text)
                     .size(12.0)
                     .color(crate::ui::theme::text_strong()),
             )
@@ -1099,6 +1149,24 @@ pub fn searchable_combobox_with_options<T: PartialEq + Clone>(
     });
 
     let resp = inner_resp.inner;
+    if let Some(target_text) = crate::ui::automation::record_combobox(
+        ui,
+        combo_id,
+        &selected_text,
+        &selected_text,
+        true,
+        resp.response.rect,
+    ) {
+        for (val, label) in options {
+            if label.eq_ignore_ascii_case(&target_text)
+                || label.to_lowercase().contains(&target_text.to_lowercase())
+            {
+                *selected = val.clone();
+                changed = true;
+                break;
+            }
+        }
+    }
     let hovered = resp.response.hovered() || resp.response.is_pointer_button_down_on();
     ui.memory_mut(|m| {
         m.data.insert_temp(combo_id.with("hover_state"), hovered);
@@ -1214,6 +1282,18 @@ pub fn search_bar(ui: &mut Ui, query: &mut String, hint: &str) -> bool {
         );
     }
 
+    if let Some(new_query) = crate::ui::automation::record_text_input(
+        ui,
+        id,
+        if hint.is_empty() { "search" } else { hint },
+        query,
+        true,
+        rect,
+    ) {
+        *query = new_query;
+        changed = true;
+    }
+
     changed
 }
 
@@ -1223,7 +1303,20 @@ pub fn input_field(ui: &mut Ui, text: &mut String, hint: &str) -> egui::Response
         .margin(egui::vec2(8.0, 6.0))
         .desired_width(ui.available_width());
     let id_salt = ui.next_auto_id().with("input_field");
-    text_edit_ui(ui, id_salt, edit)
+    let id = ui.make_persistent_id(&id_salt);
+    let mut resp = text_edit_ui(ui, id_salt, edit);
+    if let Some(new_text) = crate::ui::automation::record_text_input(
+        ui,
+        id,
+        if hint.is_empty() { "input" } else { hint },
+        text,
+        true,
+        resp.rect,
+    ) {
+        *text = new_text;
+        resp.mark_changed();
+    }
+    resp
 }
 
 pub fn danger_alert(ui: &mut Ui, text: &str) {
@@ -1515,6 +1608,11 @@ pub fn danger_button_enabled_with_id(
     if resp.hovered() && enabled {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    let simulated_click = crate::ui::automation::record_button(ui, id, text, enabled, resp.rect);
+    if simulated_click {
+        simulate_click_on(ui, resp.rect);
+        ui.ctx().request_repaint();
+    }
     resp
 }
 
@@ -1541,6 +1639,12 @@ pub fn pill_toggle(ui: &mut Ui, checked: &mut bool) -> egui::Response {
     let (rect, mut response) = ui.allocate_exact_size(Vec2::new(36.0, 20.0), egui::Sense::click());
     if response.clicked() {
         *checked = !*checked;
+        response.mark_changed();
+    }
+    if let Some(new_val) =
+        crate::ui::automation::record_toggle(ui, id, "toggle", *checked, true, rect)
+    {
+        *checked = new_val;
         response.mark_changed();
     }
 
@@ -1651,7 +1755,20 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, text: impl Into<egui::WidgetTex
     let is_hand_drawn = theme::is_hand_drawn(ui.ctx());
 
     if !is_hand_drawn {
-        return ui.checkbox(checked, text);
+        let label_text = text.text().to_string();
+        let mut resp = ui.checkbox(checked, text);
+        if let Some(new_val) = crate::ui::automation::record_checkbox(
+            ui,
+            resp.id,
+            &label_text,
+            *checked,
+            true,
+            resp.rect,
+        ) {
+            *checked = new_val;
+            resp.mark_changed();
+        }
+        return resp;
     }
 
     let is_hovered = ui.memory(|m| {
@@ -1675,6 +1792,17 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, text: impl Into<egui::WidgetTex
     let (rect, mut response) = ui.allocate_exact_size(Vec2::new(total_width, total_height), egui::Sense::click());
     if response.clicked() {
         *checked = !*checked;
+        response.mark_changed();
+    }
+    if let Some(new_val) = crate::ui::automation::record_checkbox(
+        ui,
+        id,
+        &galley.text().to_string(),
+        *checked,
+        true,
+        rect,
+    ) {
+        *checked = new_val;
         response.mark_changed();
     }
 
@@ -2179,6 +2307,18 @@ pub fn sub_sidebar<T: Copy + PartialEq>(
                     if resp.clicked() {
                         *selected = item.id;
                     }
+                    let simulated_click = crate::ui::automation::record_button(
+                        ui,
+                        id,
+                        &item.label,
+                        true,
+                        resp.rect,
+                    );
+                    if simulated_click {
+                        *selected = item.id;
+                        simulate_click_on(ui, resp.rect);
+                        ui.ctx().request_repaint();
+                    }
                     if resp.hovered() && !is_selected {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
@@ -2216,13 +2356,13 @@ pub fn modern_slider_f64(
             );
         }
 
-        let slider = egui::Slider::new(value, range)
+        let slider = egui::Slider::new(value, range.clone())
             .show_value(false)
             .step_by(0.5)
             .trailing_fill(true);
 
         let slider_w = (ui.available_width() - 82.0).max(50.0);
-        let response = ui
+        let mut response = ui
             .scope(|ui| {
                 let style = ui.style_mut();
                 style.spacing.slider_rail_height = 8.0;
@@ -2239,6 +2379,19 @@ pub fn modern_slider_f64(
                 ui.add_sized(Vec2::new(slider_w, 20.0), slider)
             })
             .inner;
+
+        let slider_id = ui.make_persistent_id(label);
+        if let Some(new_val) = crate::ui::automation::record_slider(
+            ui,
+            slider_id,
+            label,
+            *value,
+            true,
+            response.rect,
+        ) {
+            *value = new_val.clamp(*range.start(), *range.end());
+            response.mark_changed();
+        }
 
         let value_text = format!("{:.1}{}", *value, suffix);
         ui.add_space(4.0);
@@ -2281,7 +2434,7 @@ pub fn modern_slider_f32(
             },
         );
         let slider_w = (ui.available_width() - 82.0).max(50.0);
-        let response = ui
+        let mut response = ui
             .scope(|ui| {
                 let style = ui.style_mut();
                 style.spacing.slider_rail_height = 8.0;
@@ -2304,13 +2457,27 @@ pub fn modern_slider_f32(
                 )
             })
             .inner;
+
+        let slider_id = ui.make_persistent_id(label);
+        if let Some(new_val) = crate::ui::automation::record_slider(
+            ui,
+            slider_id,
+            label,
+            *value as f64,
+            true,
+            response.rect,
+        ) {
+            *value = (new_val as f32).clamp(*range.start(), *range.end());
+            response.mark_changed();
+        }
+
         ui.add_space(4.0);
-        let label = slider_state_label(*value, &range, states)
+        let badge_label = slider_state_label(*value, &range, states)
             .map(str::to_owned)
             .unwrap_or_else(|| format!("{value:.2}"));
-        tech_numeric_badge(ui, &label);
+        tech_numeric_badge(ui, &badge_label);
 
-        let mut reset = reset_button(ui, label.as_str());
+        let mut reset = reset_button(ui, badge_label.as_str());
         if reset.clicked() && *value != default {
             *value = default;
             reset.mark_changed();

@@ -1,0 +1,29 @@
+# XRTranslate UI Director Demo Screenplay
+# This script demonstrates automated director navigation and widget interactions for demo creation.
+
+# 1. Inspect initial status
+status
+get_page
+
+# 2. Navigate to Settings page
+page Settings
+wait 1.0
+list
+
+# 3. Toggle settings or inspect components
+# inspect "Receive beta updates"
+# set "Receive beta updates" true
+# wait 1.0
+
+# 4. Navigate to Audio Studio
+page AudioStudio
+wait 1.0
+list
+
+# 5. Navigate to Prompt Studio
+page PromptStudio
+wait 1.0
+
+# 6. Navigate back to Translation page
+page Translation
+wait 0.5
