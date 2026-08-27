@@ -162,11 +162,14 @@ impl AutomationDriver {
                 }
             }
             DirectorCommand::List { filter } => {
+                let current_elements = if !state.last_snapshot.elements.is_empty() {
+                    &state.last_snapshot.elements
+                } else {
+                    &state.elements
+                };
                 let elements: Vec<_> = if let Some(f) = filter {
                     let f_lower = f.to_lowercase();
-                    state
-                        .last_snapshot
-                        .elements
+                    current_elements
                         .iter()
                         .filter(|e| {
                             e.label.to_lowercase().contains(&f_lower)
@@ -175,15 +178,31 @@ impl AutomationDriver {
                         .cloned()
                         .collect()
                 } else {
-                    state.last_snapshot.elements.clone()
+                    current_elements.clone()
+                };
+                let page_name = if !state.last_snapshot.page.is_empty() {
+                    &state.last_snapshot.page
+                } else {
+                    &state.active_page_name
                 };
                 let _ = responder.send(DirectorResponse::ok(
-                    format!("Found {} elements on page {}", elements.len(), state.last_snapshot.page),
+                    format!("Found {} elements on page {}", elements.len(), page_name),
                     Some(serde_json::to_value(&elements).unwrap_or_default()),
                 ));
             }
             DirectorCommand::Inspect(target) => {
-                if let Some(elem) = state.last_snapshot.find_element(&target) {
+                let elem = state
+                    .last_snapshot
+                    .find_element(&target)
+                    .cloned()
+                    .or_else(|| {
+                        let snap = FrameSnapshot {
+                            page: state.active_page_name.clone(),
+                            elements: state.elements.clone(),
+                        };
+                        snap.find_element(&target).cloned()
+                    });
+                if let Some(elem) = elem {
                     let _ = responder.send(DirectorResponse::ok(
                         format!("Element inspected: {}", elem.label),
                         Some(serde_json::to_value(elem).unwrap_or_default()),
@@ -209,7 +228,18 @@ impl AutomationDriver {
                 ));
             }
             DirectorCommand::Get(target) => {
-                if let Some(elem) = state.last_snapshot.find_element(&target) {
+                let elem = state
+                    .last_snapshot
+                    .find_element(&target)
+                    .cloned()
+                    .or_else(|| {
+                        let snap = FrameSnapshot {
+                            page: state.active_page_name.clone(),
+                            elements: state.elements.clone(),
+                        };
+                        snap.find_element(&target).cloned()
+                    });
+                if let Some(elem) = elem {
                     let _ = responder.send(DirectorResponse::ok(
                         format!("Value for '{}'", elem.label),
                         Some(serde_json::json!({

@@ -76,38 +76,39 @@ fn handle_client(mut stream: TcpStream, driver: Arc<AutomationDriver>, egui_ctx:
     let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
 
-    let reader = BufReader::new(stream.try_clone().expect("clone tcp stream"));
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
-        let line = line.trim();
-        if line.is_empty() {
+    let mut reader = BufReader::new(stream.try_clone().expect("clone tcp stream"));
+    let mut line = String::new();
+    while reader.read_line(&mut line).unwrap_or(0) > 0 {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            line.clear();
             continue;
         }
 
         // Check if this is an HTTP request
-        if line.starts_with("GET ") || line.starts_with("POST ") || line.starts_with("OPTIONS ") {
-            handle_http_request(&mut stream, line, &driver, &egui_ctx);
+        if trimmed.starts_with("GET ") || trimmed.starts_with("POST ") || trimmed.starts_with("OPTIONS ") {
+            handle_http_request(&mut stream, &mut reader, trimmed, &driver, &egui_ctx);
             break;
         }
 
         // Otherwise, process as plain line-based CLI/TCP command
-        let response = process_line_command(line, &driver, &egui_ctx);
+        let response = process_line_command(trimmed, &driver, &egui_ctx);
         let serialized = serde_json::to_string(&response).unwrap_or_else(|_| "{}".into());
         if writeln!(stream, "{serialized}").is_err() {
             break;
         }
         let _ = stream.flush();
+        line.clear();
     }
 }
 
 fn handle_http_request(
     stream: &mut TcpStream,
+    reader: &mut BufReader<TcpStream>,
     initial_line: &str,
     driver: &Arc<AutomationDriver>,
     egui_ctx: &egui::Context,
 ) {
-    let mut headers = Vec::new();
-    let mut reader = BufReader::new(stream.try_clone().expect("clone tcp stream"));
     let mut content_length: usize = 0;
 
     let parts: Vec<&str> = initial_line.split_whitespace().collect();
@@ -125,7 +126,6 @@ fn handle_http_request(
                 content_length = val_str.trim().parse().unwrap_or(0);
             }
         }
-        headers.push(trimmed.to_string());
         line.clear();
     }
 
@@ -137,7 +137,7 @@ fn handle_http_request(
 
     let mut body = vec![0u8; content_length];
     if content_length > 0 {
-        let _ = std::io::Read::read_exact(&mut reader, &mut body);
+        let _ = std::io::Read::read_exact(reader, &mut body);
     }
     let body_str = String::from_utf8_lossy(&body);
 
@@ -147,7 +147,7 @@ fn handle_http_request(
         } else if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&body_str) {
             parse_json_value_command(json_val, driver, egui_ctx)
         } else {
-            DirectorResponse::err("Invalid JSON body")
+            DirectorResponse::err(format!("Invalid JSON body: '{body_str}'"))
         }
     } else if path == "/list" {
         execute_driver_command(DirectorCommand::List { filter: None }, driver, egui_ctx)
