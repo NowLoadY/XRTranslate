@@ -356,6 +356,7 @@ fn render_social_link_chip(ui: &mut egui::Ui, label: &str, url: &str) {
 pub(crate) fn render_update_action_button(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     use crate::app_update::AppUpdateState;
 
+    let language = app.ui_language;
     let state = app.app_update_state().clone();
     let busy = app.app_update_manager.is_busy();
     let is_actionable = matches!(
@@ -363,20 +364,46 @@ pub(crate) fn render_update_action_button(app: &mut crate::XRTranslateApp, ui: &
         AppUpdateState::Ready(_) | AppUpdateState::Available(_)
     );
     let label = match &state {
-        AppUpdateState::Ready(_) => "Install and Restart",
-        AppUpdateState::Available(_) => "Download Update",
-        AppUpdateState::Checking => "Checking...",
-        AppUpdateState::Downloading { .. } => "Downloading...",
-        AppUpdateState::Installing => "Installing...",
-        AppUpdateState::Current | AppUpdateState::Idle => "Check for Updates",
-        AppUpdateState::Failed(_) => "Try Again",
+        AppUpdateState::Ready(_) => crate::i18n::tr(language, "Install and Restart").to_string(),
+        AppUpdateState::Available(_) => crate::i18n::tr(language, "Download Update").to_string(),
+        AppUpdateState::Checking => crate::i18n::tr(language, "Checking...").to_string(),
+        AppUpdateState::Downloading {
+            downloaded, total, ..
+        } => {
+            if *total > 0 {
+                let percent = (*downloaded as f64 / *total as f64 * 100.0).clamp(0.0, 100.0);
+                format!("{} {:.0}%", crate::i18n::tr(language, "Downloading..."), percent)
+            } else {
+                crate::i18n::tr(language, "Downloading...").to_string()
+            }
+        }
+        AppUpdateState::Installing => crate::i18n::tr(language, "Installing...").to_string(),
+        AppUpdateState::Current | AppUpdateState::Idle => {
+            crate::i18n::tr(language, "Check for Updates").to_string()
+        }
+        AppUpdateState::Failed(_) => crate::i18n::tr(language, "Try Again").to_string(),
     };
-    let clicked = if is_actionable {
-        components::primary_button_enabled(ui, label, !busy).clicked()
+    let button_resp = if is_actionable {
+        components::primary_button_enabled(ui, &label, !busy)
     } else {
-        components::animated_button_enabled(ui, label, !busy).clicked()
+        components::animated_button_enabled(ui, &label, !busy)
     };
-    if clicked {
+    let button_resp = if let AppUpdateState::Downloading {
+        downloaded, total, ..
+    } = &state
+    {
+        button_resp.on_hover_text(format!(
+            "{}\n{} / {}",
+            crate::i18n::tr(language, "Downloading..."),
+            components::format_file_size(*downloaded),
+            components::format_file_size(*total)
+        ))
+    } else if let AppUpdateState::Current = &state {
+        button_resp.on_hover_text(crate::i18n::tr(language, "You're up to date"))
+    } else {
+        button_resp
+    };
+    if button_resp.clicked() {
         match &state {
             AppUpdateState::Ready(_) => app.install_update_and_restart(),
             AppUpdateState::Available(_) => app.download_update(),
@@ -394,6 +421,7 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     use crate::app_update::AppUpdateState;
     use crate::client_settings::UpdateChannel;
 
+    let language = app.ui_language;
     let mut beta_enabled = app.update_channel == UpdateChannel::Beta;
     if ui
         .checkbox(&mut beta_enabled, "Receive beta updates")
@@ -418,14 +446,14 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         let state = app.app_update_state().clone();
         let status = match &state {
-            AppUpdateState::Idle => "Ready",
-            AppUpdateState::Checking => "Checking for updates...",
-            AppUpdateState::Current => "You're up to date",
-            AppUpdateState::Available(_) => "Update available",
-            AppUpdateState::Downloading { .. } => "Downloading",
-            AppUpdateState::Ready(_) => "Ready to install",
-            AppUpdateState::Installing => "Installing...",
-            AppUpdateState::Failed(_) => "Check failed",
+            AppUpdateState::Idle => crate::i18n::tr(language, "Ready"),
+            AppUpdateState::Checking => crate::i18n::tr(language, "Checking..."),
+            AppUpdateState::Current => crate::i18n::tr(language, "You're up to date"),
+            AppUpdateState::Available(_) => crate::i18n::tr(language, "Update available"),
+            AppUpdateState::Downloading { .. } => crate::i18n::tr(language, "Downloading..."),
+            AppUpdateState::Ready(_) => crate::i18n::tr(language, "Ready to install"),
+            AppUpdateState::Installing => crate::i18n::tr(language, "Installing..."),
+            AppUpdateState::Failed(_) => crate::i18n::tr(language, "Check failed"),
         };
         ui.label(egui::RichText::new(status).color(crate::ui::theme::text_weak()));
         match &state {
@@ -448,14 +476,28 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 downloaded, total, ..
             } => {
                 ui.add_space(10.0);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} / {}",
-                        components::format_file_size(*downloaded),
-                        components::format_file_size(*total)
-                    ))
-                    .color(crate::ui::theme::text_strong()),
-                );
+                let percent = if *total > 0 {
+                    (*downloaded as f32 / *total as f32).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} / {} ({:.0}%)",
+                            components::format_file_size(*downloaded),
+                            components::format_file_size(*total),
+                            percent * 100.0
+                        ))
+                        .color(crate::ui::theme::text_strong()),
+                    );
+                    ui.add_space(4.0);
+                    ui.add(
+                        egui::ProgressBar::new(percent)
+                            .desired_width(180.0)
+                            .animate(true),
+                    );
+                });
             }
             _ => {}
         }
