@@ -1,6 +1,7 @@
 mod hunyuan;
 mod openai_compatible;
 mod output;
+mod qwen;
 
 use serde_json::{Value, json};
 use xrtranslate_prompt::{
@@ -47,6 +48,7 @@ pub(super) fn registered(provider: TranslationProvider) -> &'static TranslationP
     match provider {
         TranslationProvider::Hunyuan => &hunyuan::PROFILE,
         TranslationProvider::OpenAiCompatible => &openai_compatible::PROFILE,
+        TranslationProvider::Qwen => &qwen::PROFILE,
     }
 }
 

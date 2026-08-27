@@ -7,7 +7,7 @@ use super::{
     profile::{registered, translation_output_rejection},
 };
 
-/// Reusable MT adapter for Hy-MT2 GGUF and remote OpenAI-compatible services.
+/// Reusable MT adapter for Hy-MT2 GGUF, Qwen-MT, and remote OpenAI-compatible services.
 ///
 /// This type owns endpoint transport and authentication. Prompt construction,
 /// sampling parameters, and output cleanup are selected by the registered
@@ -246,5 +246,41 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn qwen_translation_request_merges_system_into_single_user_message() {
+        let http = RecordingHttpClient::default();
+        http.respond_with(HttpResponse {
+            status: 200,
+            body: r#"{"choices":[{"message":{"content":"你好世界"}}]}"#.into(),
+        });
+        let adapter = TranslationAdapter::with_bearer_token(
+            http,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            "qwen-mt-flash",
+            TranslationProvider::Qwen,
+            "test-dashscope-key",
+        )
+        .unwrap();
+        let mut options = TranslationOptions::new("English", "Chinese");
+        options.prompt_context.terminology_rows = vec!["world,世界".into()];
+        let result = adapter.translate("hello world", options).await.unwrap();
+        assert_eq!(result.text, "你好世界");
+
+        let http = adapter.chat.into_inner();
+        let request = http.requests.lock().unwrap().pop().unwrap();
+        assert!(
+            request
+                .headers
+                .contains(&("authorization".into(), "Bearer test-dashscope-key".into()))
+        );
+        assert_eq!(request.body["model"], "qwen-mt-flash");
+        let messages = request.body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        let content = messages[0]["content"].as_str().unwrap();
+        assert!(content.contains("world,世界"));
+        assert!(content.contains("hello world"));
     }
 }

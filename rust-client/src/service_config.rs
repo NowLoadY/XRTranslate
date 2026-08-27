@@ -45,6 +45,7 @@ pub(crate) struct OnboardingProviderState {
 pub(crate) struct OnboardingProviderChoice {
     pub name: String,
     pub remote: bool,
+    pub guide_url: Option<String>,
     pub model_asset: Option<String>,
     pub model_assets: Vec<String>,
     pub supported_languages: Vec<String>,
@@ -199,6 +200,12 @@ impl ServiceConfigEditor {
                 .map(|provider| OnboardingProviderChoice {
                     name: provider.name.clone(),
                     remote: provider_is_remote(provider),
+                    guide_url: provider
+                        .fields
+                        .iter()
+                        .find(|field| field.name == "guide_url")
+                        .map(|field| field.value.clone())
+                        .filter(|url| !url.trim().is_empty()),
                     model_asset: provider_model_asset(provider),
                     model_assets: provider_model_assets(provider),
                     supported_languages: provider_model_languages(provider),
@@ -449,10 +456,10 @@ impl ServiceConfigEditor {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(crate::i18n::tr(language, "Provider:")).strong());
                     let previous = self.categories[cat_idx].selected_provider.clone();
-                    let selected_label = if previous.is_empty() {
+                    let selected_label = if eligible_indices.is_empty() {
                         crate::i18n::tr(language, "No providers configured").to_owned()
                     } else {
-                        previous.clone()
+                        provider_display_label(&previous, language)
                     };
 
                     let provider_names: Vec<String> = eligible_indices
@@ -466,10 +473,11 @@ impl ServiceConfigEditor {
                         selected_label,
                         |ui| {
                             for name in &provider_names {
+                                let label = provider_display_label(name, language);
                                 ui.selectable_value(
                                     &mut self.categories[cat_idx].selected_provider,
                                     name.clone(),
-                                    name,
+                                    label,
                                 );
                             }
                         },
@@ -503,6 +511,7 @@ impl ServiceConfigEditor {
 
                 if let Some(idx) = active_idx {
                     let provider_name = self.categories[cat_idx].providers[idx].name.clone();
+                    let provider_title = provider_display_label(&provider_name, language);
                     let model_assets =
                         provider_model_assets(&self.categories[cat_idx].providers[idx]);
                     let supported_languages =
@@ -510,12 +519,37 @@ impl ServiceConfigEditor {
 
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
-                            egui::RichText::new(&provider_name)
+                            egui::RichText::new(provider_title)
                                 .size(13.5)
                                 .color(crate::ui::theme::text_strong())
                                 .strong(),
                         );
-                        ui.add_space(8.0);
+                        if let Some(guide_url) = self.categories[cat_idx].providers[idx]
+                            .fields
+                            .iter()
+                            .find(|field| field.name == "guide_url")
+                            .map(|field| field.value.trim())
+                            .filter(|url| !url.is_empty())
+                        {
+                            ui.add_space(8.0);
+                            let guide_btn = ui.hyperlink_to(
+                                egui::RichText::new(format!(
+                                    "{} ↗",
+                                    crate::i18n::tr(language, "API Key Guide")
+                                ))
+                                .size(12.0)
+                                .color(crate::ui::theme::primary()),
+                                guide_url,
+                            );
+                            guide_btn.on_hover_text(format!(
+                                "{}\n{}",
+                                crate::i18n::tr(
+                                    language,
+                                    "Open official documentation to get an API key"
+                                ),
+                                guide_url
+                            ));
+                        }
                     });
                     ui.add_space(10.0);
                     render_provider_capabilities(ui, language, category_key, &supported_languages);
@@ -712,6 +746,14 @@ fn sort_providers(category: &str, providers: &mut [ProviderCard]) {
             .cmp(&provider_sort_rank(category, &b.name))
             .then_with(|| a.name.cmp(&b.name))
     });
+}
+
+pub fn provider_display_label(name: &str, language: crate::i18n::UiLanguage) -> String {
+    match name {
+        "qwen" => crate::i18n::tr(language, "qwen (China Mainland)").to_owned(),
+        "qwen-intl" => crate::i18n::tr(language, "qwen (International)").to_owned(),
+        other => other.to_owned(),
+    }
 }
 
 fn prompt_target_for_translation_provider(provider: &str, transport: &str) -> PromptProviderTarget {
@@ -1762,7 +1804,7 @@ mod tests {
             onboarding_save_error: None,
         };
 
-        editor.select_onboarding_provider("asr", "qwen-audio-streaming");
+        editor.select_onboarding_provider("asr", "qwen");
         assert!(editor.has_incomplete_remote_provider());
 
         editor.select_onboarding_provider("asr", "qwen3-gguf");

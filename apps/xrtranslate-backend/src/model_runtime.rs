@@ -602,11 +602,11 @@ mod tests {
     }
 
     #[test]
-    fn qwen_audio_streaming_registers_as_a_remote_context_bias_profile() {
+    fn qwen_registers_as_a_remote_context_bias_profile() {
         let mut document: serde_json::Value =
             serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["asr"]["provider"] = serde_json::Value::from("qwen-audio-streaming");
-        document["asr"]["providers"]["qwen-audio-streaming"]["api_key"] =
+        document["asr"]["provider"] = serde_json::Value::from("qwen");
+        document["asr"]["providers"]["qwen"]["api_key"] =
             serde_json::Value::from("dashscope-key");
         let config = AppConfig::from_value(document).unwrap();
 
@@ -614,16 +614,37 @@ mod tests {
         attach_test_cuda_runtime(&mut plan);
 
         assert!(!plan.asr_uses_local_runtime());
-        assert_eq!(plan.asr_model_alias(), "qwen-audio-3.0-asr-flash-streaming");
+        assert_eq!(plan.asr_model_alias(), "qwen3-asr-flash");
         assert_eq!(plan.asr_prompt_mode(), AsrPromptMode::ContextBias);
-        assert_eq!(plan.asr_context_max_chars(), Some(400));
-        assert!(plan.asr_supports_vocabulary_bias());
-        assert_eq!(plan.asr_vocabulary_weight(), 4);
         assert!(plan.managed_server_specs(8101, 8102).unwrap().0.is_none());
         assert!(matches!(
             plan.asr_adapter(plan.asr_http_client().unwrap()).unwrap(),
-            NativeAsrAdapter::QwenAudioStreaming(_)
+            NativeAsrAdapter::Qwen3(_)
         ));
+    }
+
+    #[test]
+    fn qwen_registers_as_a_remote_translation_profile() {
+        let mut document: serde_json::Value =
+            serde_json::from_str(include_str!("../../../config.json")).unwrap();
+        document["translation"]["provider"] = serde_json::Value::from("qwen");
+        document["translation"]["providers"]["qwen"]["api_key"] =
+            serde_json::Value::from("dashscope-key");
+        let config = AppConfig::from_value(document).unwrap();
+
+        let mut plan = NativeProviderPlan::resolve(&config, Path::new("release-root")).unwrap();
+        attach_test_cuda_runtime(&mut plan);
+
+        assert!(!plan.translation_uses_local_runtime());
+        assert_eq!(plan.translation_model_alias(), "qwen-mt-flash");
+        assert!(plan.managed_server_specs(8101, 8102).unwrap().1.is_none());
+        let adapter = plan
+            .translation_adapter(plan.translation_http_client().unwrap())
+            .unwrap();
+        assert_eq!(
+            adapter.provider(),
+            xrtranslate_inference::TranslationProvider::Qwen
+        );
     }
 
     #[test]

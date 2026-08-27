@@ -196,6 +196,13 @@ const PROVIDER_FIELDS: &[ProviderFieldDescriptor] = &[
         visibility: ProviderFieldVisibility::Default,
     },
     ProviderFieldDescriptor {
+        name: "guide_url",
+        label: "API Key Guide",
+        help: Some("Official documentation or API key registration link for this online service provider."),
+        editor: ProviderFieldEditor::Default,
+        visibility: ProviderFieldVisibility::Hidden,
+    },
+    ProviderFieldDescriptor {
         name: "device",
         label: "Device",
         help: Some(

@@ -10,6 +10,7 @@ use xrtranslate_inference::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum AsrProfile {
     Qwen3Local,
+    Qwen3Remote,
     OpenAiAudio,
     QwenAudioStreaming,
 }
@@ -38,6 +39,9 @@ impl AsrProfile {
         if provider == "qwen-audio-streaming" && transport == "websocket" {
             return Some(Self::QwenAudioStreaming);
         }
+        if provider == "qwen" || provider == "qwen-intl" {
+            return Some(Self::Qwen3Remote);
+        }
         if transport == "openai" {
             return Some(Self::OpenAiAudio);
         }
@@ -50,14 +54,16 @@ impl AsrProfile {
     pub(super) const fn default_asset(self) -> ModelAssetId {
         match self {
             Self::Qwen3Local => ModelAssetId::Qwen3AsrGguf,
-            Self::OpenAiAudio | Self::QwenAudioStreaming => ModelAssetId::Qwen3AsrGguf,
+            Self::Qwen3Remote | Self::OpenAiAudio | Self::QwenAudioStreaming => {
+                ModelAssetId::Qwen3AsrGguf
+            }
         }
     }
 
     pub(super) fn model_alias<'a>(self, configured: &'a str) -> &'a str {
         match self {
             Self::Qwen3Local => "qwen3-asr",
-            Self::OpenAiAudio | Self::QwenAudioStreaming => configured,
+            Self::Qwen3Remote | Self::OpenAiAudio | Self::QwenAudioStreaming => configured,
         }
     }
 
@@ -72,6 +78,13 @@ impl AsrProfile {
             Self::Qwen3Local => {
                 Qwen3AsrAdapter::new(http, endpoint, model).map(NativeAsrAdapter::Qwen3)
             }
+            Self::Qwen3Remote => Qwen3AsrAdapter::with_bearer_token(
+                http,
+                endpoint,
+                model,
+                api_key.unwrap_or_default(),
+            )
+            .map(NativeAsrAdapter::Qwen3),
             Self::OpenAiAudio => OpenAiAsrAdapter::with_bearer_token(
                 http,
                 endpoint,

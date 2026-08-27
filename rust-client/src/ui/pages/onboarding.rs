@@ -585,12 +585,40 @@ fn onboarding_model_config_card(
         stroke_color,
         |ui| {
             ui.set_width(ui.available_width());
-            ui.label(
-                RichText::new(i18n::tr(language, title))
-                    .size(16.0)
-                    .color(theme::text_strong())
-                    .strong(),
-            );
+            let guide_url = provider.as_ref().and_then(|p| {
+                if p.remote {
+                    p.choices
+                        .iter()
+                        .find(|c| c.name == p.selected)
+                        .and_then(|c| c.guide_url.as_deref())
+                } else {
+                    None
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(i18n::tr(language, title))
+                        .size(16.0)
+                        .color(theme::text_strong())
+                        .strong(),
+                );
+                if let Some(guide_url) = guide_url {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let guide_btn = ui.hyperlink_to(
+                            RichText::new(format!("{} ↗", i18n::tr(language, "API Key Guide")))
+                                .size(12.5)
+                                .color(theme::primary()),
+                            guide_url,
+                        );
+                        guide_btn.on_hover_text(format!(
+                            "{}\n{}",
+                            i18n::tr(language, "Open official documentation to get an API key"),
+                            guide_url
+                        ));
+                    });
+                }
+            });
             ui.add_space(10.0);
             let Some(provider) = provider.as_mut() else {
                 ui.label(i18n::tr(language, "No providers configured"));
@@ -605,19 +633,19 @@ fn onboarding_model_config_card(
                     if remote { "Online API" } else { "Local model" },
                 );
                 components::combobox_ui(ui, (category, "provider_mode"), mode_text, |ui| {
-                        let local_available = matches!(
-                            local_availability,
-                            crate::runtime_install::LocalModelAvailability::Available { .. }
+                    let local_available = matches!(
+                        local_availability,
+                        crate::runtime_install::LocalModelAvailability::Available { .. }
+                    );
+                    ui.add_enabled_ui(local_available, |ui| {
+                        ui.selectable_value(
+                            &mut remote,
+                            false,
+                            i18n::tr(language, "Local model"),
                         );
-                        ui.add_enabled_ui(local_available, |ui| {
-                            ui.selectable_value(
-                                &mut remote,
-                                false,
-                                i18n::tr(language, "Local model"),
-                            );
-                        });
-                        ui.selectable_value(&mut remote, true, i18n::tr(language, "Online API"));
                     });
+                    ui.selectable_value(&mut remote, true, i18n::tr(language, "Online API"));
+                });
                 local_model_warning_icon(ui, language, local_availability);
                 if remote != provider.remote
                     && let Some(choice) = provider
@@ -655,59 +683,60 @@ fn onboarding_model_config_card(
                     );
                     ui.add_enabled_ui(local_available, |ui| {
                         components::combobox_ui(ui, (category, "model_level"), selected_label, |ui| {
-                                for package in levels {
-                                    let present = model_asset_is_present(project_root, package.id)
-                                        .unwrap_or(false);
-                                    ui.horizontal(|ui| {
-                                        let label = if present {
-                                            format!(
-                                                "{} · {}",
-                                                i18n::tr(language, package.level.as_str()),
-                                                i18n::tr(language, "Installed")
-                                            )
-                                        } else {
-                                            i18n::tr(language, package.level.as_str()).to_owned()
-                                        };
-                                        ui.selectable_value(&mut level, package.level, label);
-                                        if present
-                                            && ui
-                                                .add_enabled_ui(delete_enabled, |ui| {
-                                                    components::resource_delete_button(
-                                                        ui,
-                                                        package.id,
-                                                        language,
-                                                    )
-                                                })
-                                                .inner
-                                                .clicked()
-                                        {
-                                            result.delete_asset = Some(package.id);
-                                            ui.close();
-                                        }
-                                    });
-                                }
-                            });
+                            for package in levels {
+                                let present = model_asset_is_present(project_root, package.id)
+                                    .unwrap_or(false);
+                                ui.horizontal(|ui| {
+                                    let label = if present {
+                                        format!(
+                                            "{} · {}",
+                                            i18n::tr(language, package.level.as_str()),
+                                            i18n::tr(language, "Installed")
+                                        )
+                                    } else {
+                                        i18n::tr(language, package.level.as_str()).to_owned()
+                                    };
+                                    ui.selectable_value(&mut level, package.level, label);
+                                    if present
+                                        && ui
+                                            .add_enabled_ui(delete_enabled, |ui| {
+                                                components::resource_delete_button(
+                                                    ui,
+                                                    package.id,
+                                                    language,
+                                                )
+                                            })
+                                            .inner
+                                            .clicked()
+                                    {
+                                        result.delete_asset = Some(package.id);
+                                        ui.close();
+                                    }
+                                });
+                            }
+                        });
                     });
                     if Some(level) != selected_level {
                         result.selected_level = Some(level);
                     }
                 } else {
                     ui.add_space(12.0);
-                    ui.label(i18n::tr(language, "Provider:"));
-                    components::combobox_ui(ui, (category, "online_provider"), &provider.selected, |ui| {
-                            for choice in &provider.choices {
-                                if choice.remote
-                                    && ui
-                                        .selectable_label(
-                                            provider.selected == choice.name,
-                                            &choice.name,
-                                        )
-                                        .clicked()
+                    let selected_label =
+                        crate::service_config::provider_display_label(&provider.selected, language);
+                    components::combobox_ui(ui, (category, "online_provider"), selected_label, |ui| {
+                        for choice in &provider.choices {
+                            if choice.remote {
+                                let label =
+                                    crate::service_config::provider_display_label(&choice.name, language);
+                                if ui
+                                    .selectable_label(provider.selected == choice.name, label)
+                                    .clicked()
                                 {
                                     result.selected_provider = Some(choice.name.clone());
                                 }
                             }
-                        });
+                        }
+                    });
                 }
             });
 
@@ -825,26 +854,26 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     .map(|choice| provider_choice_resource(choice, &project_root, language).0)
                     .unwrap_or_else(|| provider.selected.clone());
                 components::combobox_ui(ui, ("tts", "provider"), selected_label, |ui| {
-                        for choice in &provider.choices {
-                            let (label, _asset_id, _present) =
-                                provider_choice_resource(choice, &project_root, language);
-                            let local_available = matches!(
-                                &local_availability,
-                                crate::runtime_install::LocalModelAvailability::Available { .. }
-                            );
-                            ui.add_enabled_ui(
-                                choice.name == "none" || choice.remote || local_available,
-                                |ui| {
-                                    if ui
-                                        .selectable_label(provider.selected == choice.name, label)
-                                        .clicked()
-                                    {
-                                        selected_provider = Some(choice.name.clone());
-                                    }
-                                },
-                            );
-                        }
-                    });
+                    for choice in &provider.choices {
+                        let (label, _asset_id, _present) =
+                            provider_choice_resource(choice, &project_root, language);
+                        let local_available = matches!(
+                            &local_availability,
+                            crate::runtime_install::LocalModelAvailability::Available { .. }
+                        );
+                        ui.add_enabled_ui(
+                            choice.name == "none" || choice.remote || local_available,
+                            |ui| {
+                                if ui
+                                    .selectable_label(provider.selected == choice.name, label)
+                                    .clicked()
+                                {
+                                    selected_provider = Some(choice.name.clone());
+                                }
+                            },
+                        );
+                    }
+                });
                 local_model_warning_icon(ui, language, &local_availability);
             });
             ui.add_space(10.0);

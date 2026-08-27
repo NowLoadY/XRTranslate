@@ -38,7 +38,7 @@ impl Default for Qwen3AsrOptions {
     }
 }
 
-/// Qwen3-ASR GGUF adapter backed by llama.cpp's OpenAI-compatible endpoint.
+/// Qwen3-ASR adapter backed by a local llama-server or remote DashScope endpoint.
 #[derive(Debug, Clone)]
 pub struct Qwen3AsrAdapter<C> {
     chat: OpenAiCompatibleClient<C>,

@@ -7,6 +7,8 @@ pub enum TranslationProvider {
     Hunyuan,
     /// Generic OpenAI-compatible instruction/messages format (including Groq).
     OpenAiCompatible,
+    /// Qwen-MT translation format over DashScope OpenAI-compatible endpoint.
+    Qwen,
 }
 
 /// Options that accompany a single source segment.

@@ -65,15 +65,9 @@ using a generic `supports_prompt` assumption.
 | No text input | `asr_prompt_mode: none` | none | neither text field | Provider receives no composed ASR text |
 | Weighted vocabulary | `supports_vocabulary_bias: true` plus provider weight settings | bypasses the text graph | structured `AsrVocabularyBias` entries | Provider-native term-to-weight bias |
 
-`asr_context_max_chars` applies only to lexical context. Weighted vocabulary
-must remain structured data, including for local models added in the future;
-never serialize weights into an instruction string merely to reuse Prompt
-Studio.
+`asr_context_max_chars` applies only to lexical context.
 
-Current local Qwen3-ASR and OpenAI-compatible audio-chat profiles use semantic
-instruction mode. Their request format is unchanged by this organization.
-Qwen Audio streaming uses lexical context plus a separate structured weighted
-vocabulary payload; see [Qwen Audio streaming ASR](qwen-audio-streaming-asr.md).
+The cloud `qwen` provider uses `qwen3-asr-flash` with lexical context bias over an OpenAI-compatible endpoint; see [Qwen ASR](qwen-asr.md).
 
 ## Adding an ASR provider
 
@@ -187,6 +181,7 @@ runtime and resource lifecycle, consult
 
 ## Provider-specific notes
 
-- [Qwen Audio streaming ASR](qwen-audio-streaming-asr.md)
+- [Qwen ASR](qwen-asr.md)
+- [Qwen Translation](qwen-translation.md)
 - [OpenVoice TTS](openvoice-tts.md)
 - [OpenVoice language-pack recipe](openvoice-language-packs.md)

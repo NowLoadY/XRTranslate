@@ -1889,23 +1889,24 @@ mod tests {
     }
 
     #[test]
-    fn qwen_audio_streaming_keeps_text_and_weighted_bias_capabilities_distinct() {
+    fn qwen_remote_asr_route_configuration() {
         let mut document: Value =
             serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["asr"]["provider"] = Value::from("qwen-audio-streaming");
-        document["asr"]["providers"]["qwen-audio-streaming"]["api_key"] =
+        document["asr"]["provider"] = Value::from("qwen");
+        document["asr"]["providers"]["qwen"]["api_key"] =
             Value::from("dashscope-key");
 
         let config = AppConfig::from_value(document).unwrap();
         let route = config.native_model_route().unwrap();
 
         assert!(!route.asr.uses_local_runtime());
-        assert_eq!(route.asr.transport, "websocket");
+        assert_eq!(route.asr.transport, "openai");
         assert_eq!(route.asr.asr_prompt_mode, AsrPromptMode::ContextBias);
-        assert_eq!(route.asr.asr_context_max_chars, Some(400));
-        assert!(route.asr.supports_vocabulary_bias);
-        assert_eq!(route.asr.vocabulary_weight, 4);
-        assert_eq!(route.asr.model, "qwen-audio-3.0-asr-flash-streaming");
+        assert_eq!(route.asr.model, "qwen3-asr-flash");
+        assert_eq!(
+            route.asr.url,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        );
     }
 
     #[test]
@@ -1913,9 +1914,14 @@ mod tests {
         let mut document: Value =
             serde_json::from_str(include_str!("../../../config.json")).unwrap();
         document["asr"]["provider"] = Value::from("qwen-audio-streaming");
-        document["asr"]["providers"]["qwen-audio-streaming"]["api_key"] =
-            Value::from("dashscope-key");
-        document["asr"]["providers"]["qwen-audio-streaming"]["vocabulary_weight"] = Value::from(6);
+        document["asr"]["providers"]["qwen-audio-streaming"] = serde_json::json!({
+            "api_key": "dashscope-key",
+            "model": "qwen-audio-3.0-asr-flash-streaming",
+            "transport": "websocket",
+            "url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+            "supports_vocabulary_bias": true,
+            "vocabulary_weight": 6
+        });
 
         let error = AppConfig::from_value(document)
             .unwrap()
@@ -1930,10 +1936,12 @@ mod tests {
         let mut document: Value =
             serde_json::from_str(include_str!("../../../config.json")).unwrap();
         document["asr"]["provider"] = Value::from("qwen-audio-streaming");
-        document["asr"]["providers"]["qwen-audio-streaming"]["api_key"] =
-            Value::from("dashscope-key");
-        document["asr"]["providers"]["qwen-audio-streaming"]["url"] =
-            Value::from("ws://example.com/api-ws/v1/inference");
+        document["asr"]["providers"]["qwen-audio-streaming"] = serde_json::json!({
+            "api_key": "dashscope-key",
+            "model": "qwen-audio-3.0-asr-flash-streaming",
+            "transport": "websocket",
+            "url": "ws://example.com/api-ws/v1/inference"
+        });
 
         let error = AppConfig::from_value(document)
             .unwrap()
@@ -1948,10 +1956,13 @@ mod tests {
         let mut document: Value =
             serde_json::from_str(include_str!("../../../config.json")).unwrap();
         document["asr"]["provider"] = Value::from("qwen-audio-streaming");
-        document["asr"]["providers"]["qwen-audio-streaming"]["api_key"] =
-            Value::from("dashscope-key");
-        document["asr"]["providers"]["qwen-audio-streaming"]["asr_context_max_chars"] =
-            Value::from(0);
+        document["asr"]["providers"]["qwen-audio-streaming"] = serde_json::json!({
+            "api_key": "dashscope-key",
+            "model": "qwen-audio-3.0-asr-flash-streaming",
+            "transport": "websocket",
+            "url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+            "asr_context_max_chars": 0
+        });
 
         let error = AppConfig::from_value(document)
             .unwrap()
