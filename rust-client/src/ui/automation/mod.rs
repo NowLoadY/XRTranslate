@@ -5,7 +5,9 @@ pub mod server;
 use std::sync::{Arc, OnceLock};
 use eframe::egui::{self, Rect};
 
+#[allow(unused_imports)]
 pub use driver::{AutomationDriver, DirectorCommand, DirectorResponse};
+#[allow(unused_imports)]
 pub use registry::{ElementDescriptor, ElementKind, ElementValue, FrameSnapshot};
 pub use server::{DEFAULT_DIRECTOR_PORT, DirectorServer};
 

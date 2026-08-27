@@ -99,6 +99,7 @@ impl AutomationDriver {
         self.has_active_client.store(active, Ordering::Relaxed);
     }
 
+    #[allow(dead_code)]
     #[must_use]
     pub fn has_client(&self) -> bool {
         self.has_active_client.load(Ordering::Relaxed)
