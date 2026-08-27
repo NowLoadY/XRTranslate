@@ -423,8 +423,7 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 
     let language = app.ui_language;
     let mut beta_enabled = app.update_channel == UpdateChannel::Beta;
-    if ui
-        .checkbox(&mut beta_enabled, "Receive beta updates")
+    if components::checkbox(ui, &mut beta_enabled, "Receive beta updates")
         .on_hover_text(
             "Include prerelease builds. Beta builds can still update to stable releases.",
         )

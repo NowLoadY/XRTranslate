@@ -58,6 +58,7 @@ pub struct AutomationFrameState {
     pub pending_set: Option<(String, ElementValue)>,
     pub pending_page: Option<Page>,
     pub pending_onboarding_step: Option<usize>,
+    pub pending_queries: Vec<CommandEnvelope>,
     pub last_snapshot: FrameSnapshot,
     pub action_performed_this_frame: bool,
 }
@@ -90,7 +91,7 @@ impl AutomationDriver {
         self.command_tx.clone()
     }
 
-    /// Called at the start of each egui frame to process incoming director commands.
+    /// Called at the start of each egui frame to process incoming director action commands.
     pub fn begin_frame(&self, current_page: &str) {
         let mut state = self.frame_state.lock().unwrap();
         state.active_page_name = current_page.to_string();
@@ -99,21 +100,41 @@ impl AutomationDriver {
 
         // Process any pending commands from external clients
         while let Ok(envelope) = self.command_rx.try_recv() {
-            self.execute_command(&mut state, envelope);
+            match envelope.command {
+                DirectorCommand::Page(_)
+                | DirectorCommand::Click(_)
+                | DirectorCommand::Set { .. }
+                | DirectorCommand::Wait(_) => {
+                    self.execute_action_command(&mut state, envelope);
+                }
+                DirectorCommand::GetPage
+                | DirectorCommand::List { .. }
+                | DirectorCommand::Inspect(_)
+                | DirectorCommand::Get(_)
+                | DirectorCommand::Status => {
+                    state.pending_queries.push(envelope);
+                }
+            }
         }
     }
 
-    fn execute_command(&self, state: &mut AutomationFrameState, envelope: CommandEnvelope) {
+    /// Called at the end of each egui frame to save snapshot and fulfill pending query commands.
+    pub fn finish_frame(&self) {
+        let mut state = self.frame_state.lock().unwrap();
+        state.last_snapshot = FrameSnapshot {
+            page: state.active_page_name.clone(),
+            elements: state.elements.clone(),
+        };
+
+        let queries = std::mem::take(&mut state.pending_queries);
+        for envelope in queries {
+            self.execute_query_command(&state, envelope);
+        }
+    }
+
+    fn execute_action_command(&self, state: &mut AutomationFrameState, envelope: CommandEnvelope) {
         let CommandEnvelope { command, responder } = envelope;
         match command {
-            DirectorCommand::GetPage => {
-                let _ = responder.send(DirectorResponse::ok(
-                    "Current page",
-                    Some(serde_json::json!({
-                        "page": state.active_page_name,
-                    })),
-                ));
-            }
             DirectorCommand::Page(page_name) => {
                 let target = page_name.trim().to_lowercase();
                 if let Some(step_str) = target.strip_prefix("onboarding:") {
@@ -161,58 +182,6 @@ impl AutomationDriver {
                     )));
                 }
             }
-            DirectorCommand::List { filter } => {
-                let current_elements = if !state.last_snapshot.elements.is_empty() {
-                    &state.last_snapshot.elements
-                } else {
-                    &state.elements
-                };
-                let elements: Vec<_> = if let Some(f) = filter {
-                    let f_lower = f.to_lowercase();
-                    current_elements
-                        .iter()
-                        .filter(|e| {
-                            e.label.to_lowercase().contains(&f_lower)
-                                || format!("{:?}", e.kind).to_lowercase().contains(&f_lower)
-                        })
-                        .cloned()
-                        .collect()
-                } else {
-                    current_elements.clone()
-                };
-                let page_name = if !state.last_snapshot.page.is_empty() {
-                    &state.last_snapshot.page
-                } else {
-                    &state.active_page_name
-                };
-                let _ = responder.send(DirectorResponse::ok(
-                    format!("Found {} elements on page {}", elements.len(), page_name),
-                    Some(serde_json::to_value(&elements).unwrap_or_default()),
-                ));
-            }
-            DirectorCommand::Inspect(target) => {
-                let elem = state
-                    .last_snapshot
-                    .find_element(&target)
-                    .cloned()
-                    .or_else(|| {
-                        let snap = FrameSnapshot {
-                            page: state.active_page_name.clone(),
-                            elements: state.elements.clone(),
-                        };
-                        snap.find_element(&target).cloned()
-                    });
-                if let Some(elem) = elem {
-                    let _ = responder.send(DirectorResponse::ok(
-                        format!("Element inspected: {}", elem.label),
-                        Some(serde_json::to_value(elem).unwrap_or_default()),
-                    ));
-                } else {
-                    let _ = responder.send(DirectorResponse::err(format!(
-                        "Element '{target}' not found in current frame"
-                    )));
-                }
-            }
             DirectorCommand::Click(target) => {
                 state.pending_click = Some(target.clone());
                 let _ = responder.send(DirectorResponse::ok(
@@ -227,19 +196,63 @@ impl AutomationDriver {
                     None,
                 ));
             }
+            DirectorCommand::Wait(ms) => {
+                let _ = responder.send(DirectorResponse::ok(
+                    format!("Waited {ms}ms"),
+                    None,
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    fn execute_query_command(&self, state: &AutomationFrameState, envelope: CommandEnvelope) {
+        let CommandEnvelope { command, responder } = envelope;
+        let snapshot = &state.last_snapshot;
+        match command {
+            DirectorCommand::GetPage => {
+                let _ = responder.send(DirectorResponse::ok(
+                    "Current page",
+                    Some(serde_json::json!({
+                        "page": snapshot.page,
+                    })),
+                ));
+            }
+            DirectorCommand::List { filter } => {
+                let elements: Vec<_> = if let Some(f) = filter {
+                    let f_lower = f.to_lowercase();
+                    snapshot
+                        .elements
+                        .iter()
+                        .filter(|e| {
+                            e.label.to_lowercase().contains(&f_lower)
+                                || format!("{:?}", e.kind).to_lowercase().contains(&f_lower)
+                        })
+                        .cloned()
+                        .collect()
+                } else {
+                    snapshot.elements.clone()
+                };
+                let _ = responder.send(DirectorResponse::ok(
+                    format!("Found {} elements on page {}", elements.len(), snapshot.page),
+                    Some(serde_json::to_value(&elements).unwrap_or_default()),
+                ));
+            }
+            DirectorCommand::Inspect(target) => {
+                if let Some(elem) = snapshot.find_element(&target) {
+                    let _ = responder.send(DirectorResponse::ok(
+                        format!("Element inspected: {}", elem.label),
+                        Some(serde_json::to_value(elem).unwrap_or_default()),
+                    ));
+                } else {
+                    let _ = responder.send(DirectorResponse::err(format!(
+                        "Element '{target}' not found on page '{}'",
+                        snapshot.page
+                    )));
+                }
+            }
             DirectorCommand::Get(target) => {
-                let elem = state
-                    .last_snapshot
-                    .find_element(&target)
-                    .cloned()
-                    .or_else(|| {
-                        let snap = FrameSnapshot {
-                            page: state.active_page_name.clone(),
-                            elements: state.elements.clone(),
-                        };
-                        snap.find_element(&target).cloned()
-                    });
-                if let Some(elem) = elem {
+                if let Some(elem) = snapshot.find_element(&target) {
                     let _ = responder.send(DirectorResponse::ok(
                         format!("Value for '{}'", elem.label),
                         Some(serde_json::json!({
@@ -251,31 +264,21 @@ impl AutomationDriver {
                     ));
                 } else {
                     let _ = responder.send(DirectorResponse::err(format!(
-                        "Element '{target}' not found in current frame"
+                        "Element '{target}' not found on page '{}'",
+                        snapshot.page
                     )));
                 }
             }
             DirectorCommand::Status => {
                 let _ = responder.send(DirectorResponse::ok(
-                    "Application ready",
+                    "UI Director is active",
                     Some(serde_json::json!({
-                        "page": state.active_page_name,
-                        "elements_count": state.last_snapshot.elements.len(),
+                        "active_page": snapshot.page,
+                        "element_count": snapshot.elements.len(),
                     })),
                 ));
             }
-            DirectorCommand::Wait(ms) => {
-                let _ = responder.send(DirectorResponse::ok(format!("Waited {ms} ms"), None));
-            }
+            _ => {}
         }
-    }
-
-    /// Called at the end of each egui frame to finalize snapshot.
-    pub fn finish_frame(&self) {
-        let mut state = self.frame_state.lock().unwrap();
-        state.last_snapshot = FrameSnapshot {
-            page: state.active_page_name.clone(),
-            elements: state.elements.clone(),
-        };
     }
 }

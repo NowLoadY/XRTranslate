@@ -924,6 +924,7 @@ pub fn combobox_ui_with_width<R>(
     let is_hand_drawn = crate::ui::theme::is_hand_drawn(ui.ctx());
     let combo_id = ui.make_persistent_id(&id_salt);
     let selected_text = selected_text.into();
+    let selected_str = selected_text.clone();
     let control_width = crate::ui::layout::control_width(ui, &selected_text, width, 96.0, 240.0);
 
     let is_hovered = ui.memory(|m| {
@@ -969,6 +970,14 @@ pub fn combobox_ui_with_width<R>(
     });
 
     let resp = inner_resp.inner;
+    crate::ui::automation::record_combobox(
+        ui,
+        combo_id,
+        &selected_str,
+        &selected_str,
+        true,
+        resp.response.rect,
+    );
     let hovered = resp.response.hovered() || resp.response.is_pointer_button_down_on();
     ui.memory_mut(|m| {
         m.data.insert_temp(combo_id.with("hover_state"), hovered);
@@ -1876,8 +1885,15 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, text: impl Into<egui::WidgetTex
 }
 
 pub fn toggle_with_label(ui: &mut Ui, checked: &mut bool, label: &str) -> egui::Response {
+    let id = ui.make_persistent_id(label);
     ui.horizontal(|ui| {
         let mut resp = pill_toggle(ui, checked);
+        if let Some(new_val) =
+            crate::ui::automation::record_toggle(ui, id, label, *checked, true, resp.rect)
+        {
+            *checked = new_val;
+            resp.mark_changed();
+        }
         ui.add_space(4.0);
         let text_resp = ui.label(
             egui::RichText::new(label)
