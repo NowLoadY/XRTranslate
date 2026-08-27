@@ -1,7 +1,4 @@
-use std::sync::{
-    Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Mutex;
 use crossbeam_channel::{Receiver, Sender, bounded};
 use serde::{Deserialize, Serialize};
 
@@ -69,7 +66,6 @@ pub struct AutomationDriver {
     pub(crate) frame_state: Mutex<AutomationFrameState>,
     command_tx: Sender<CommandEnvelope>,
     command_rx: Receiver<CommandEnvelope>,
-    has_active_client: AtomicBool,
 }
 
 impl Default for AutomationDriver {
@@ -86,23 +82,12 @@ impl AutomationDriver {
             frame_state: Mutex::new(AutomationFrameState::default()),
             command_tx,
             command_rx,
-            has_active_client: AtomicBool::new(false),
         }
     }
 
     #[must_use]
     pub fn channel(&self) -> Sender<CommandEnvelope> {
         self.command_tx.clone()
-    }
-
-    pub fn mark_client_active(&self, active: bool) {
-        self.has_active_client.store(active, Ordering::Relaxed);
-    }
-
-    #[allow(dead_code)]
-    #[must_use]
-    pub fn has_client(&self) -> bool {
-        self.has_active_client.load(Ordering::Relaxed)
     }
 
     /// Called at the start of each egui frame to process incoming director commands.

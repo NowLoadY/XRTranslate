@@ -70,17 +70,11 @@ impl DirectorServer {
 
         Ok(())
     }
-
-    #[allow(dead_code)]
-    pub fn stop(&self) {
-        self.running.store(false, std::sync::atomic::Ordering::Relaxed);
-    }
 }
 
 fn handle_client(mut stream: TcpStream, driver: Arc<AutomationDriver>, egui_ctx: egui::Context) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
-    driver.mark_client_active(true);
 
     let reader = BufReader::new(stream.try_clone().expect("clone tcp stream"));
     for line in reader.lines() {
