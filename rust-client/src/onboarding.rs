@@ -34,10 +34,10 @@ pub fn has_unmet_prerequisites(
 
     // 2. Every selected provider-declared local model package.
     let packages = model_install::configured_model_packages(project_root).unwrap_or_default();
-    if !packages
-        .iter()
-        .all(|package| model_task_manager.is_model_present(package.id))
-    {
+    if !packages.iter().all(|package| {
+        model_task_manager.is_model_present(package.id)
+            || model_install::model_asset_is_present(project_root, package.id).unwrap_or(false)
+    }) {
         return true;
     }
 
@@ -87,10 +87,11 @@ pub fn evaluate_step_requirement(
                 Ok(packages) => packages,
                 Err(_) => return Some("Download every required model package to continue."),
             };
-            if !packages
-                .iter()
-                .all(|package| model_task_manager.is_model_present(package.id))
-            {
+            if !packages.iter().all(|package| {
+                model_task_manager.is_model_present(package.id)
+                    || model_install::model_asset_is_present(project_root, package.id)
+                        .unwrap_or(false)
+            }) {
                 return Some("Download every required model package to continue.");
             }
 

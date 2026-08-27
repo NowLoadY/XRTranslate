@@ -558,22 +558,18 @@ fn run_task(
 }
 
 fn discover_models(project_root: PathBuf) -> NativeModelTaskResult {
-    match configured_model_packages(&project_root).and_then(|packages| {
-        let assets = load_assets(&project_root)?;
-        let presence = assets.check();
-        let present = packages
-            .iter()
-            .filter(|package| {
-                !presence
-                    .diagnostics()
-                    .iter()
-                    .any(|diagnostic| diagnostic.asset_id == package.id)
-            })
-            .map(|package| package.id)
-            .collect::<Vec<_>>();
-        Ok((present, Vec::new()))
-    }) {
-        Ok((present, ready)) => NativeModelTaskResult::Detected { present, ready },
+    match load_assets(&project_root) {
+        Ok(assets) => {
+            let present = assets
+                .catalog_assets()
+                .filter(|asset| asset.check().is_empty())
+                .map(|asset| asset.manifest().id)
+                .collect::<Vec<_>>();
+            NativeModelTaskResult::Detected {
+                present,
+                ready: Vec::new(),
+            }
+        }
         Err(error) => NativeModelTaskResult::Failed(error),
     }
 }

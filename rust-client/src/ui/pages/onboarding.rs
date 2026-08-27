@@ -1107,6 +1107,7 @@ fn handle_onboarding_save(
 
     match result {
         Ok(OnboardingSaveOutcome::Saved { resolved_error }) => {
+            app.model_task_manager.invalidate_discovery();
             if resolved_error.as_ref() == app.last_error.as_ref() {
                 app.last_error = None;
             }

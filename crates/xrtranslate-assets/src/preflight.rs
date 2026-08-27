@@ -35,7 +35,8 @@ impl ResolvedModelAssets {
 }
 
 impl ResolvedModelAsset {
-    pub(crate) fn check(&self) -> Vec<ModelAssetDiagnostic> {
+    #[must_use]
+    pub fn check(&self) -> Vec<ModelAssetDiagnostic> {
         self.manifest
             .required_files
             .iter()
@@ -43,7 +44,8 @@ impl ResolvedModelAsset {
             .collect()
     }
 
-    pub(crate) fn verify_integrity(&self) -> Vec<ModelAssetDiagnostic> {
+    #[must_use]
+    pub fn verify_integrity(&self) -> Vec<ModelAssetDiagnostic> {
         self.manifest
             .required_files
             .iter()
