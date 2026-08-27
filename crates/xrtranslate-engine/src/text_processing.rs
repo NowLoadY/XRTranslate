@@ -250,7 +250,10 @@ fn split_translation_segments_internal(text: &str, emit_unterminated: bool) -> V
             let soft_break = buffer
                 .iter()
                 .rposition(|character| SOFT_TRANSLATION_BOUNDARIES.contains(character));
-            let cutoff = soft_break.map_or(TRANSLATION_SOFT_SEGMENT_LIMIT, |index| index + 1);
+            let Some(cutoff_idx) = soft_break else {
+                break;
+            };
+            let cutoff = cutoff_idx + 1;
             push_translation_segment(&mut segments, &buffer[..cutoff], emit_unterminated);
             buffer = trim_start_chars(&buffer[cutoff..]).to_vec();
         }
@@ -261,34 +264,78 @@ fn split_translation_segments_internal(text: &str, emit_unterminated: bool) -> V
 }
 
 fn merge_adjacent_ultra_short_segments(segments: Vec<String>) -> Vec<String> {
-    let mut merged = Vec::with_capacity(segments.len());
+    let mut merged: Vec<String> = Vec::with_capacity(segments.len());
     let mut index = 0;
     while index < segments.len() {
-        if !is_ultra_short_translation_segment(&segments[index]) {
-            merged.push(segments[index].clone());
+        let segment = &segments[index];
+        if is_filler_segment(segment) {
+            merged.push(segment.clone());
             index += 1;
             continue;
         }
 
-        let run_start = index;
-        while index < segments.len() && is_ultra_short_translation_segment(&segments[index]) {
-            index += 1;
-        }
-        if index - run_start == 1 {
-            merged.push(segments[run_start].clone());
-            continue;
-        }
-
-        let mut combined = String::new();
-        for segment in &segments[run_start..index] {
-            if !combined.is_empty() && needs_segment_space(&combined, segment) {
-                combined.push(' ');
+        if is_single_token_interjection(segment) {
+            let mut combined = segment.clone();
+            if index + 1 < segments.len() && !is_filler_segment(&segments[index + 1]) {
+                index += 1;
+                while index < segments.len() && is_single_token_interjection(&segments[index]) {
+                    if needs_segment_space(&combined, &segments[index]) {
+                        combined.push(' ');
+                    }
+                    combined.push_str(&segments[index]);
+                    index += 1;
+                }
+                if index < segments.len() && !is_filler_segment(&segments[index]) {
+                    if needs_segment_space(&combined, &segments[index]) {
+                        combined.push(' ');
+                    }
+                    combined.push_str(&segments[index]);
+                    index += 1;
+                }
+                merged.push(combined);
+                continue;
             }
-            combined.push_str(segment);
         }
-        merged.push(combined);
+
+        if is_ultra_short_translation_segment(segment) {
+            let run_start = index;
+            while index < segments.len()
+                && is_ultra_short_translation_segment(&segments[index])
+                && !is_filler_segment(&segments[index])
+            {
+                index += 1;
+            }
+            if index - run_start > 1 {
+                let mut combined = String::new();
+                for seg in &segments[run_start..index] {
+                    if !combined.is_empty() && needs_segment_space(&combined, seg) {
+                        combined.push(' ');
+                    }
+                    combined.push_str(seg);
+                }
+                merged.push(combined);
+                continue;
+            } else {
+                index = run_start;
+            }
+        }
+
+        merged.push(segments[index].clone());
+        index += 1;
     }
     merged
+}
+
+fn is_single_token_interjection(segment: &str) -> bool {
+    if is_filler_segment(segment) {
+        return false;
+    }
+    let tokens = content_token_count(segment);
+    let characters = segment
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .count();
+    tokens == 1 && characters <= 6
 }
 
 fn is_ultra_short_translation_segment(segment: &str) -> bool {
@@ -1443,10 +1490,29 @@ mod tests {
                 format!("{}。", "b".repeat(50))
             ]
         );
+
+        assert_eq!(
+            split_translation_segments(
+                "We train a generative prior to model temporal dependencies between the F SQ codes."
+            ),
+            vec!["We train a generative prior to model temporal dependencies between the F SQ codes."]
+        );
     }
 
     #[test]
-    fn merges_only_consecutive_ultra_short_sentences() {
+    fn merges_ultra_short_segments_within_turn() {
+        assert_eq!(
+            split_translation_segments("hello. my name is danny."),
+            vec!["hello. my name is danny."]
+        );
+        assert_eq!(
+            split_translation_segments("Hello! My name is Danny."),
+            vec!["Hello! My name is Danny."]
+        );
+        assert_eq!(
+            translation_segment_pairs_for_final_text("hello. my name is danny")[0].source_text,
+            "hello. my name is danny"
+        );
         assert_eq!(
             split_translation_segments("Twenty-two years old. Okay. Fine."),
             vec!["Twenty-two years old.", "Okay. Fine."]
@@ -1458,6 +1524,15 @@ mod tests {
         assert_eq!(
             split_translation_segments("好。可以。今天的天气非常不错。"),
             vec!["好。可以。", "今天的天气非常不错。"]
+        );
+        assert_eq!(
+            split_translation_segments(
+                "We should go for a walk in the park today. The weather is very nice outside."
+            ),
+            vec![
+                "We should go for a walk in the park today.",
+                "The weather is very nice outside."
+            ]
         );
         assert_eq!(
             translation_segment_pairs_for_final_text("Okay. fine")[0].source_text,
