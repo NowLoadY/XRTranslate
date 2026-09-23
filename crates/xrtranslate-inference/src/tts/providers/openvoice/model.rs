@@ -28,7 +28,7 @@ const REFERENCE_HOP_SIZE: usize = 256;
 const REFERENCE_PAD: usize = (REFERENCE_FFT_SIZE - REFERENCE_HOP_SIZE) / 2;
 const SPEAKER_EMBEDDING_SIZE: usize = 256;
 const PINNED_MELO_GRAPH_TOKENS: usize = 512;
-const PINNED_MELO_SAFE_PHONES: usize = 28;
+const PINNED_MELO_SAFE_PHONES: usize = 160;
 const BASE_SEGMENT_PAUSE_SAMPLES: usize = (BASE_SAMPLE_RATE as usize * 60) / 1_000;
 
 #[derive(Deserialize)]

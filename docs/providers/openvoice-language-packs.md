@@ -118,10 +118,9 @@ output:           float16[1,1,samples]
 The historical `x_tst_lenghts` spelling is part of the graph ABI and must not
 be silently corrected in only one consumer. The tensor width is a fixed graph
 execution shape; `x_tst_lenghts` retains the real unpadded phone count. The
-Chinese provider splits text at provider-private phoneme boundaries before a
-segment exceeds the CUDA-validated 28-phone execution window, then joins the
-base segments before tone conversion. This graph safety rule does not belong
-in the shared model downloader or UI.
+Chinese provider splits longer text before a segment exceeds the
+CUDA-validated 160-phone execution window, then joins the base segments before
+tone conversion. This graph safety rule belongs in the provider.
 
 The packaged graph uses MeloTTS's supported deterministic duration-predictor
 path (`sdp_ratio=0`) and the acoustic latent distribution mean. An unseeded
