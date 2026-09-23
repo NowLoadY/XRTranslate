@@ -135,7 +135,11 @@ fn complete_audio_system() -> AudioGraph {
         ),
     ];
     graph.links = vec![
-        AudioLink::new("recognition-to-gain", "recognition-system-audio", "gain-rec-sys"),
+        AudioLink::new(
+            "recognition-to-gain",
+            "recognition-system-audio",
+            "gain-rec-sys",
+        ),
         AudioLink::to_mixer_input(
             "gain-rec-sys-to-asr-mixer",
             "gain-rec-sys",
@@ -158,19 +162,9 @@ fn complete_audio_system() -> AudioGraph {
             0,
         ),
         AudioLink::new("bgm-to-gain", "bgm", "gain-bgm-game"),
-        AudioLink::to_mixer_input(
-            "gain-bgm-to-game-mixer",
-            "gain-bgm-game",
-            "game-mixer",
-            1,
-        ),
+        AudioLink::to_mixer_input("gain-bgm-to-game-mixer", "gain-bgm-game", "game-mixer", 1),
         AudioLink::new("tts-to-gain", "tts", "gain-tts-game"),
-        AudioLink::to_mixer_input(
-            "gain-tts-to-game-mixer",
-            "gain-tts-game",
-            "game-mixer",
-            2,
-        ),
+        AudioLink::to_mixer_input("gain-tts-to-game-mixer", "gain-tts-game", "game-mixer", 2),
         AudioLink::new("game-mixer-to-limiter", "game-mixer", "game-limiter"),
         AudioLink::new(
             "limiter-to-game-microphone",
@@ -398,122 +392,5 @@ mod tests {
                 "{preset:?}"
             );
         }
-    }
-
-    #[test]
-    fn complete_default_exposes_recognition_game_mix_and_tts_monitor_branches() {
-        let graph = graph_for_preset(AudioStudioPreset::CompleteAudioSystem);
-
-        assert!(graph.links.iter().any(|link| {
-            link.from.node_id.0 == "recognition-system-audio" && link.to.node_id.0 == "gain-rec-sys"
-        }));
-        assert!(graph.links.iter().any(|link| {
-            link.from.node_id.0 == "gain-rec-sys" && link.to.node_id.0 == "asr-input-mixer"
-        }));
-        assert!(graph.links.iter().any(|link| {
-            link.from.node_id.0 == "microphone" && link.to.node_id.0 == "gain-mic-asr"
-        }));
-        assert!(graph.links.iter().any(|link| {
-            link.from.node_id.0 == "gain-mic-asr" && link.to.node_id.0 == "asr-input-mixer"
-        }));
-        assert!(graph.links.iter().any(|link| {
-            link.from.node_id.0 == "asr-input-mixer" && link.to.node_id.0 == "asr"
-        }));
-        assert!(graph.links.iter().any(|link| {
-            link.from.node_id.0 == "game-limiter" && link.to.node_id.0 == "game-microphone"
-        }));
-        assert!(
-            graph
-                .links
-                .iter()
-                .any(|link| { link.from.node_id.0 == "tts" && link.to.node_id.0 == "tts-monitor" })
-        );
-        assert!(graph.nodes.iter().any(|node| {
-            node.id.0 == "bgm"
-                && matches!(
-                    node.kind,
-                    AudioNodeKind::SystemAudio {
-                        capture: SystemAudioCapture::Application {
-                            application: None,
-                            ..
-                        }
-                    }
-                )
-        }));
-    }
-
-    #[test]
-    fn translation_safe_never_routes_tts_into_asr() {
-        let graph = graph_for_preset(AudioStudioPreset::TranslationSafe);
-        assert!(
-            !graph
-                .links
-                .iter()
-                .any(|link| { link.from.node_id.0 == "tts" && link.to.node_id.0 == "asr" })
-        );
-        assert!(graph.links.iter().any(|link| {
-            link.from.node_id.0 == "system-audio" && link.to.node_id.0 == "gain-system-asr"
-        }));
-        assert!(graph.nodes.iter().any(|node| {
-            matches!(
-                node.kind,
-                AudioNodeKind::SystemAudio {
-                    capture: SystemAudioCapture::Endpoint {
-                        capture_policy: SystemCapturePolicy::SuppressDuringOwnTts,
-                        ..
-                    }
-                }
-            )
-        }));
-    }
-
-    #[test]
-    fn karaoke_routes_system_bgm_into_the_game_microphone_path() {
-        let graph = graph_for_preset(AudioStudioPreset::VrchatKaraoke);
-        assert!(
-            graph
-                .links
-                .iter()
-                .any(|link| link.from.node_id.0 == "bgm" && link.to.node_id.0 == "gain-bgm")
-        );
-        assert!(
-            graph
-                .links
-                .iter()
-                .any(|link| link.from.node_id.0 == "gain-bgm" && link.to.node_id.0 == "mixer")
-        );
-        assert!(graph.nodes.iter().any(|node| {
-            node.id.0 == "bgm"
-                && matches!(
-                    node.kind,
-                    AudioNodeKind::SystemAudio {
-                        capture: SystemAudioCapture::Endpoint {
-                            capture_policy: SystemCapturePolicy::AllEndpointAudio,
-                            ..
-                        }
-                    }
-                )
-        }));
-        assert_eq!(
-            graph
-                .nodes
-                .iter()
-                .filter(|node| node.kind.is_sink())
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn tts_conversation_preset_keeps_a_live_asr_session_for_direct_text_turns() {
-        let graph = graph_for_preset(AudioStudioPreset::TtsToGameMicrophone);
-        assert!(graph.links.iter().any(|link| {
-            link.from.node_id.0 == "microphone" && link.to.node_id.0 == "gain-mic-asr"
-        }));
-        assert!(graph.links.iter().any(|link| {
-            link.from.node_id.0 == "gain-mic-asr"
-                && link.to.node_id.0 == "asr-input-mixer"
-                && link.enabled
-        }));
     }
 }

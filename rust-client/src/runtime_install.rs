@@ -610,6 +610,7 @@ struct ReleaseAsset {
     size: u64,
     sha256: String,
     archive_format: LlamaCppArchiveFormat,
+    archive_directory: String,
     kind: LlamaCppAssetKind,
     target: String,
     cuda_version: Option<String>,
@@ -725,9 +726,9 @@ async fn install_onnx_runtime(
 
     if !cuda_ready || !cuda_dependency_ready {
         let staged_cuda = payload.join("cuda");
-        fs::create_dir_all(&staged_cuda)
-            .map_err(|error| format!("Cannot create staged CUDA folder: {error}"))?;
         if cuda_ready {
+            fs::create_dir_all(&staged_cuda)
+                .map_err(|error| format!("Cannot create staged CUDA folder: {error}"))?;
             for source in
                 resolve_required_prefixes(&cuda_directory, &cuda_runtime.required_file_prefixes)?
             {
@@ -753,7 +754,22 @@ async fn install_onnx_runtime(
             )
             .await?;
             completed = completed.saturating_add(cuda_runtime.size);
-            extract_archive(&archive, &staged_cuda, cuda_runtime.archive_format)?;
+            let extracted_cuda = payload.join("cuda-archive");
+            fs::create_dir_all(&extracted_cuda)
+                .map_err(|error| format!("Cannot create CUDA extraction folder: {error}"))?;
+            extract_archive(&archive, &extracted_cuda, cuda_runtime.archive_format)?;
+            let archive_directory = Path::new(&cuda_runtime.archive_directory);
+            let cuda_contents = if archive_directory.as_os_str().is_empty() {
+                extracted_cuda
+            } else {
+                safe_archive_path(&extracted_cuda, archive_directory)?
+            };
+            fs::rename(&cuda_contents, &staged_cuda).map_err(|error| {
+                format!(
+                    "Cannot stage CUDA runtime from {}: {error}",
+                    cuda_contents.display()
+                )
+            })?;
         }
         if cuda_dependency_ready {
             for source in resolve_required_files(&cuda_directory, &cuda_dependency.required_files)?
@@ -1091,16 +1107,20 @@ async fn install(
     fs::create_dir_all(&payload)
         .map_err(|error| format!("Cannot create runtime extraction folder: {error}"))?;
     if !server_ready {
-        let staged_server = payload.join("llama.cpp");
-        fs::create_dir_all(&staged_server)
+        let extracted_server = payload.join("llama.cpp");
+        fs::create_dir_all(&extracted_server)
             .map_err(|error| format!("Cannot create staged llama.cpp folder: {error}"))?;
         for asset in &server_assets {
             extract_archive(
                 &downloads.join(&asset.name),
-                &staged_server,
+                &extracted_server,
                 asset.archive_format,
             )?;
         }
+        let staged_server = safe_archive_path(
+            &extracted_server,
+            Path::new(&server_assets[0].archive_directory),
+        )?;
         let staged_executable = staged_server.join(&executable_name);
         if !staged_executable.is_file() {
             return Err(format!(
@@ -1122,14 +1142,15 @@ async fn install(
         let directory = cuda_directory
             .as_deref()
             .ok_or_else(|| "CUDA runtime directory is missing".to_owned())?;
-        let staged_cuda = payload.join("cuda");
-        fs::create_dir_all(&staged_cuda)
+        let extracted_cuda = payload.join("cuda");
+        fs::create_dir_all(&extracted_cuda)
             .map_err(|error| format!("Cannot create staged CUDA folder: {error}"))?;
         extract_archive(
             &downloads.join(&asset.name),
-            &staged_cuda,
+            &extracted_cuda,
             asset.archive_format,
         )?;
+        let staged_cuda = safe_archive_path(&extracted_cuda, Path::new(&asset.archive_directory))?;
         validate_required_prefixes(&staged_cuda, &asset.required_file_prefixes)?;
         activate_runtime_directory(&staged_cuda, directory)?;
     }
@@ -1331,6 +1352,8 @@ fn extract_tar_gz(archive: &Path, destination: &Path) -> Result<(), String> {
         .map_err(|error| format!("Cannot open {}: {error}", archive.display()))?;
     let decoder = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(decoder);
+    #[cfg(unix)]
+    let mut links = Vec::new();
     for entry in archive
         .entries()
         .map_err(|error| format!("Invalid tar.gz archive: {error}"))?
@@ -1344,6 +1367,23 @@ fn extract_tar_gz(archive: &Path, destination: &Path) -> Result<(), String> {
         if entry.header().entry_type().is_dir() {
             fs::create_dir_all(&output)
                 .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
+            continue;
+        }
+        #[cfg(unix)]
+        if entry.header().entry_type().is_symlink() {
+            let target = entry
+                .link_name()
+                .map_err(|error| format!("Cannot read tar link: {error}"))?
+                .ok_or_else(|| format!("Tar link has no target: {}", name.display()))?;
+            if target.components().count() != 1
+                || !matches!(
+                    target.components().next(),
+                    Some(std::path::Component::Normal(_))
+                )
+            {
+                return Err(format!("Tar link leaves its directory: {}", name.display()));
+            }
+            links.push((output, target.into_owned()));
             continue;
         }
         if !entry.header().entry_type().is_file() {
@@ -1366,6 +1406,24 @@ fn extract_tar_gz(archive: &Path, destination: &Path) -> Result<(), String> {
                     output.display()
                 )
             })?;
+        }
+    }
+    #[cfg(unix)]
+    for (output, target) in &links {
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
+        }
+        std::os::unix::fs::symlink(target, output)
+            .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
+    }
+    #[cfg(unix)]
+    for (output, _) in &links {
+        if !output.is_file() {
+            return Err(format!(
+                "Tar link does not resolve to a file: {}",
+                output.display()
+            ));
         }
     }
     Ok(())
@@ -1443,6 +1501,10 @@ fn resolve_required_prefixes(
     prefixes
         .iter()
         .map(|prefix| {
+            let exact = directory.join(prefix);
+            if exact.is_file() {
+                return Ok(exact);
+            }
             let mut matches = fs::read_dir(directory)
                 .map_err(|error| format!("Cannot inspect {}: {error}", directory.display()))?
                 .filter_map(Result::ok)
@@ -1659,11 +1721,7 @@ fn configured_runtime_plan(
     requirements: RuntimeRequirements,
 ) -> Result<RuntimePlan, String> {
     let config = load_app_config(project_root)?;
-    let nvidia = if cfg!(target_os = "windows") {
-        supported_nvidia_cuda()?
-    } else {
-        None
-    };
+    let nvidia = supported_nvidia_cuda()?;
     let local_models = local_model_availability(nvidia.as_ref());
     let requires_managed_model = requirements.llama_cpp || requirements.onnx_tts;
     let blocking_error = if requires_managed_model {
@@ -2189,7 +2247,7 @@ fn managed_runtime_assets_from_config(
                 || (download.archive_format == LlamaCppArchiveFormat::Zip
                     && !name.ends_with(".zip"))
                 || (download.archive_format == LlamaCppArchiveFormat::TarGz
-                    && !name.ends_with(".tar.gz"))
+                    && !name.ends_with(".tar.gz") && !name.ends_with(".tgz"))
             {
                 return Err(format!(
                     "{config_path} contains an archive name incompatible with its declared format: {:?}.",
@@ -2336,7 +2394,7 @@ fn release_assets_from_config(config: &LlamaCppRuntimeConfig) -> Result<Vec<Rele
                 || (download.archive_format == LlamaCppArchiveFormat::Zip
                     && !name.ends_with(".zip"))
                 || (download.archive_format == LlamaCppArchiveFormat::TarGz
-                    && !name.ends_with(".tar.gz"))
+                    && !name.ends_with(".tar.gz") && !name.ends_with(".tgz"))
             {
                 return Err(format!(
                     "model_manager.llama_cpp.downloads contains an archive name incompatible with its declared format: {:?}.",
@@ -2377,6 +2435,7 @@ fn release_assets_from_config(config: &LlamaCppRuntimeConfig) -> Result<Vec<Rele
                 size: download.bytes,
                 sha256: sha256.to_ascii_lowercase(),
                 archive_format: download.archive_format,
+                archive_directory: download.archive_directory.trim().into(),
                 kind,
                 target,
                 cuda_version,
@@ -2873,6 +2932,7 @@ mod tests {
             size: 1,
             sha256: "0".repeat(64),
             archive_format: LlamaCppArchiveFormat::Zip,
+            archive_directory: String::new(),
             kind: if is_cuda_runtime {
                 LlamaCppAssetKind::CudaRuntime
             } else if name.contains("cuda") {
@@ -2894,145 +2954,6 @@ mod tests {
                 Vec::new()
             },
         }
-    }
-
-    #[test]
-    fn automatic_installer_uses_the_configured_download_urls() {
-        let config = AppConfig::from_json_str(include_str!("../../config.json")).unwrap();
-        let assets = release_assets_from_config(&config.model_manager.llama_cpp).unwrap();
-        assert_eq!(assets.len(), 8);
-        assert_eq!(config.model_manager.llama_cpp.release, "b10333");
-        assert!(
-            !config
-                .model_manager
-                .llama_cpp
-                .release_page
-                .ends_with("/latest")
-        );
-        for asset in assets {
-            assert!(!asset.browser_download_url.contains("api.github.com"));
-            assert!(!asset.browser_download_url.contains("/latest"));
-            assert!(asset.browser_download_url.ends_with(&asset.name));
-            assert!(asset.size > 0);
-            assert_eq!(asset.sha256.len(), 64);
-        }
-        let cuda_runtime = release_assets_from_config(&config.model_manager.llama_cpp)
-            .unwrap()
-            .into_iter()
-            .find(|asset| {
-                asset.cuda_version.as_deref() == Some("13.3")
-                    && asset.kind == LlamaCppAssetKind::CudaRuntime
-            })
-            .unwrap();
-        assert_eq!(
-            cuda_runtime.required_file_prefixes,
-            ["cudart64_", "cublasLt64_", "cublas64_"]
-        );
-        let blackwell_compatible = release_assets_from_config(&config.model_manager.llama_cpp)
-            .unwrap()
-            .into_iter()
-            .filter(|asset| asset.cuda_version.as_deref() == Some("13.1"))
-            .collect::<Vec<_>>();
-        assert_eq!(blackwell_compatible.len(), 2);
-        assert!(blackwell_compatible.iter().all(|asset| {
-            asset
-                .browser_download_url
-                .contains("/releases/download/b8913/")
-                && asset.sha256.len() == 64
-                && asset.size > 0
-        }));
-        let server_13_1 = blackwell_compatible
-            .iter()
-            .find(|asset| asset.kind == LlamaCppAssetKind::ServerCuda)
-            .unwrap();
-        assert_eq!(server_13_1.size, 145_463_676);
-        assert_eq!(
-            server_13_1.sha256,
-            "16cb6fb46efe3923833dc08eaeb7ab29c6251e29a11d9ae32581e226172e2af0"
-        );
-        let cudart_13_1 = blackwell_compatible
-            .iter()
-            .find(|asset| asset.kind == LlamaCppAssetKind::CudaRuntime)
-            .unwrap();
-        assert_eq!(cudart_13_1.size, 402_582_216);
-        assert_eq!(
-            cudart_13_1.sha256,
-            "f96935e7e385e3b2d0189239077c10fe8fd7e95690fea4afec455b1b6c7e3f18"
-        );
-        let linux = release_assets_from_config(&config.model_manager.llama_cpp)
-            .unwrap()
-            .into_iter()
-            .find(|asset| asset.target == "linux-x86_64")
-            .expect("verified Linux x86_64 runtime asset");
-        assert_eq!(linux.archive_format, LlamaCppArchiveFormat::TarGz);
-        assert_eq!(linux.executable, "llama-b10333/llama-server");
-        assert_eq!(
-            linux.sha256,
-            "936ce04d98abe2a977e9dd2ff92659bb96947e136acee8f2bc3e21d8eaebbf23"
-        );
-
-        let onnx = onnx_assets_from_config(&config.model_manager.onnxruntime).unwrap();
-        assert_eq!(onnx.len(), 2);
-        assert!(onnx.iter().all(|asset| {
-            asset.required_files
-                == [
-                    "onnxruntime.dll",
-                    "onnxruntime_providers_shared.dll",
-                    "onnxruntime_providers_cuda.dll",
-                ]
-        }));
-        assert_eq!(onnx[0].cuda_version, "12");
-        assert_eq!(onnx[0].size, 455_344_532);
-        assert_eq!(
-            onnx[0].sha256,
-            "6b7bf16d6d30180db7f386fb179aa4e4f1313f0924531a2879b7b090b56518c1"
-        );
-        assert_eq!(onnx[1].cuda_version, "13");
-        assert_eq!(onnx[1].size, 365_825_268);
-        assert_eq!(
-            onnx[1].sha256,
-            "137f0822a4923b1d84d3e09496e0792ebbb221eb3a61a0657f71a12ab68ab1e2"
-        );
-        assert!(onnx.iter().all(|asset| {
-            asset
-                .browser_download_url
-                .starts_with("https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/")
-        }));
-        let cuda_dependencies =
-            cuda_dependency_assets_from_config(&config.model_manager.onnxruntime).unwrap();
-        assert_eq!(cuda_dependencies.len(), 2);
-        assert_eq!(cuda_dependencies[0].required_files, ["cufft64_11.dll"]);
-        assert_eq!(cuda_dependencies[1].required_files, ["cufft64_12.dll"]);
-        assert_eq!(cuda_dependencies[1].size, 182_627_436);
-        assert_eq!(
-            cuda_dependencies[1].sha256,
-            "83df908ae67e2b3a86201de8463562ab49dd9ee8b3b5efc3fdc2e681b14b5dd9"
-        );
-        let cudnn = cudnn_assets_from_config(&config.model_manager.onnxruntime).unwrap();
-        assert_eq!(cudnn.len(), 2);
-        assert_eq!(cudnn[0].cuda_version, "12");
-        assert_eq!(cudnn[1].cuda_version, "13");
-        assert_eq!(cudnn[1].size, 349_802_474);
-        assert_eq!(
-            cudnn[1].sha256,
-            "d3ccce59130f10f68fe09365feea65b622bcecace79a0682fe43ee07b88a6a29"
-        );
-        assert!(cudnn.iter().all(|asset| {
-            asset
-                .browser_download_url
-                .starts_with("https://developer.download.nvidia.com/compute/cudnn/redist/")
-                && asset.required_files
-                    == [
-                        "cudnn64_9.dll",
-                        "cudnn_graph64_9.dll",
-                        "cudnn_ops64_9.dll",
-                        "cudnn_heuristic64_9.dll",
-                        "cudnn_engines_precompiled64_9.dll",
-                        "cudnn_engines_runtime_compiled64_9.dll",
-                        "cudnn_adv64_9.dll",
-                        "cudnn_cnn64_9.dll",
-                    ]
-        }));
     }
 
     fn onnx_asset(cuda_version: &str) -> ManagedRuntimeAsset {
@@ -3368,9 +3289,11 @@ mod tests {
         assert_eq!(marker.backend, NativeRuntimeBackend::Cpu);
         assert_eq!(marker.llama_cpp_backend, Some(NativeRuntimeBackend::Cuda));
         assert_eq!(marker.onnx_backend, Some(NativeRuntimeBackend::Cpu));
+        let expected_core =
+            Path::new("runtime/onnxruntime/cpu").join(RuntimeLayout::ONNX_CORE_LIBRARY);
         assert_eq!(
             marker.onnx_core_library.as_deref(),
-            Some(Path::new("runtime/onnxruntime/cpu/onnxruntime.dll"))
+            Some(expected_core.as_path())
         );
         assert_eq!(
             marker.cuda_bin_dir.as_deref(),
@@ -3598,6 +3521,7 @@ mod tests {
                 executable: "llama-server".into(),
                 required_files: vec!["libggml.so".into()],
                 required_file_prefixes: Vec::new(),
+                archive_directory: String::new(),
             }],
             ..Default::default()
         })

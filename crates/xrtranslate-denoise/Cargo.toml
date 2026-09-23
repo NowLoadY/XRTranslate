@@ -12,7 +12,7 @@ managed-ort = ["ort/load-dynamic"]
 
 [dependencies]
 ndarray = "0.17"
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "tls-native", "api-27"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "tls-rustls", "api-27"] }
 tracing = "0.1"
 
 [dev-dependencies]

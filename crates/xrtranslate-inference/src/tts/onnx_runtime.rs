@@ -94,6 +94,16 @@ pub fn initialize_onnx_runtime(core_library: &Path) -> Result<(), InferenceError
                 "ONNX Runtime was initialized before the managed runtime was selected",
             ));
         }
+        #[cfg(target_os = "linux")]
+        {
+            // Releasing ORT's environment after CUDA sessions can corrupt its Linux teardown.
+            static ENVIRONMENT: std::sync::OnceLock<std::sync::Arc<ort::environment::Environment>> =
+                std::sync::OnceLock::new();
+            let environment = ort::environment::Environment::current().map_err(|error| {
+                native_error(format!("cannot retain ONNX Runtime environment: {error}"))
+            })?;
+            let _ = ENVIRONMENT.set(environment);
+        }
     }
     #[cfg(not(feature = "managed-ort"))]
     let _ = core_library;

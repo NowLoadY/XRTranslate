@@ -4,11 +4,13 @@
 //! egui's normal proportional/monospace families and do not need to know which
 //! operating-system font supplies a particular script.
 
+#[cfg(windows)]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use eframe::egui;
 
+#[cfg(windows)]
 struct SystemFont {
     name: &'static str,
     file_name: &'static str,
@@ -18,6 +20,7 @@ struct SystemFont {
 // Preserve the existing CJK fallback order so adding script coverage does not
 // change the established UI appearance. Segoe UI supplies Vietnamese Latin
 // Extended glyphs and Nirmala UI supplies Devanagari/Hindi glyphs on Windows.
+#[cfg(windows)]
 const WINDOWS_FONTS: &[SystemFont] = &[
     SystemFont {
         name: "microsoft_yahei",
@@ -56,24 +59,30 @@ const WINDOWS_FONTS: &[SystemFont] = &[
     },
 ];
 
+#[cfg(not(windows))]
+const FONTCONFIG_FONTS: &[(&str, &str)] = &[
+    ("noto_sans", "Noto Sans"),
+    ("noto_cjk_sc", "Noto Sans CJK SC"),
+    ("noto_cjk_kr", "Noto Sans CJK KR"),
+    ("noto_devanagari", "Noto Sans Devanagari"),
+    ("noto_symbols", "Noto Sans Symbols 2"),
+    ("noto_monospace", "DejaVu Sans Mono"),
+];
+
 pub fn configure_multilingual_fonts(ctx: &egui::Context) {
     let mut definitions = egui::FontDefinitions::default();
-    let mut loaded = Vec::with_capacity(WINDOWS_FONTS.len());
-    let font_directory = windows_font_directory();
-
-    for font in WINDOWS_FONTS {
-        let path = font_directory.join(font.file_name);
+    let mut loaded = Vec::new();
+    for (name, path, index, purpose) in system_fonts() {
         match std::fs::read(&path) {
             Ok(bytes) => {
-                definitions.font_data.insert(
-                    font.name.into(),
-                    Arc::new(egui::FontData::from_owned(bytes)),
-                );
-                loaded.push(font.name);
+                let mut data = egui::FontData::from_owned(bytes);
+                data.index = index;
+                definitions.font_data.insert(name.into(), Arc::new(data));
+                loaded.push(name);
             }
             Err(error) => log::warn!(
                 "{} UI font not found at {}: {error}",
-                font.purpose,
+                purpose,
                 path.display()
             ),
         }
@@ -88,6 +97,32 @@ pub fn configure_multilingual_fonts(ctx: &egui::Context) {
     ctx.set_fonts(definitions);
 }
 
+#[cfg(windows)]
+fn system_fonts() -> Vec<(&'static str, PathBuf, u32, &'static str)> {
+    let directory = windows_font_directory();
+    WINDOWS_FONTS
+        .iter()
+        .map(|font| (font.name, directory.join(font.file_name), 0, font.purpose))
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn system_fonts() -> Vec<(&'static str, std::path::PathBuf, u32, &'static str)> {
+    FONTCONFIG_FONTS
+        .iter()
+        .filter_map(|&(name, family)| {
+            let output = std::process::Command::new("fc-match")
+                .args(["-f", "%{file}\t%{index}", family])
+                .output()
+                .ok()?;
+            let match_text = String::from_utf8(output.stdout).ok()?;
+            let (path, index) = match_text.trim().split_once('\t')?;
+            Some((name, path.into(), index.parse().ok()?, family))
+        })
+        .collect()
+}
+
+#[cfg(windows)]
 fn windows_font_directory() -> PathBuf {
     std::env::var_os("WINDIR")
         .map(PathBuf::from)
@@ -95,7 +130,7 @@ fn windows_font_directory() -> PathBuf {
         .join("Fonts")
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 
@@ -118,7 +153,6 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
     fn windows_fallbacks_cover_vietnamese_and_hindi_text() {
         let ctx = egui::Context::default();

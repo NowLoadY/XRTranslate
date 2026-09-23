@@ -327,13 +327,17 @@ fn apply_managed_runtime_environment(
     let Some(cuda_directory) = runtime.cuda_bin_dir.as_ref() else {
         return Ok(());
     };
+    #[cfg(windows)]
+    let variable = "PATH";
+    #[cfg(not(windows))]
+    let variable = "LD_LIBRARY_PATH";
     let mut paths = vec![cuda_directory.clone()];
-    if let Some(existing) = std::env::var_os("PATH") {
+    if let Some(existing) = std::env::var_os(variable) {
         paths.extend(std::env::split_paths(&existing));
     }
     let joined = std::env::join_paths(paths)
-        .map_err(|error| format!("cannot build managed CUDA PATH: {error}"))?;
-    spec.environment.push((OsString::from("PATH"), joined));
+        .map_err(|error| format!("cannot build managed CUDA {variable}: {error}"))?;
+    spec.environment.push((OsString::from(variable), joined));
     Ok(())
 }
 
@@ -447,7 +451,13 @@ mod tests {
         let path = spec
             .environment
             .iter()
-            .find(|(name, _)| name == "PATH")
+            .find(|(name, _)| {
+                name == if cfg!(windows) {
+                    "PATH"
+                } else {
+                    "LD_LIBRARY_PATH"
+                }
+            })
             .map(|(_, value)| value)
             .unwrap();
         assert_eq!(std::env::split_paths(path).next().as_ref(), Some(&cuda));

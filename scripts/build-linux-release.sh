@@ -22,16 +22,51 @@ if [[ ! -f "XR-Corpus/crates/core/Cargo.toml" ]]; then
   exit 2
 fi
 
-cargo_args=(build -p rust-client --release)
+if [[ -e "${TARGET_DIR}" ]]; then
+  printf 'Release directory already exists: %s\n' "${TARGET_DIR}" >&2
+  exit 2
+fi
+
+required_resources=(
+  models/silero-vad/src/silero_vad/data/silero_vad.onnx
+  models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx
+  models/gtcrn/gtcrn_simple.onnx
+  runtime/onnxruntime/cpu/libonnxruntime.so.1.28.0
+)
+for resource in "${required_resources[@]}"; do
+  if [[ ! -f "${resource}" ]]; then
+    printf 'Required release resource is missing: %s\n' "${resource}" >&2
+    exit 2
+  fi
+done
+
+cargo_args=(build --locked --target-dir "${ROOT_DIR}/target" -p rust-client --release)
 if [[ -n "${FEATURES}" ]]; then
   cargo_args+=(--features "${FEATURES}")
 fi
 cargo "${cargo_args[@]}"
+cargo build --locked --target-dir "${ROOT_DIR}/target" -p xrtranslate-backend --features managed-ort --release
+cargo build --locked --manifest-path XR-Corpus/Cargo.toml \
+  --target-dir "${ROOT_DIR}/target" -p xr-corpus-server --release
 
-rm -rf "${TARGET_DIR}"
-mkdir -p "${TARGET_DIR}/resources"
-install -m 0755 "target/release/rust-client" "${TARGET_DIR}/xrtranslate"
-install -m 0644 config.json "${TARGET_DIR}/config.json"
-cp -a rust-client/resources/. "${TARGET_DIR}/resources/"
+mkdir -p "$(dirname "${TARGET_DIR}")"
+STAGE_DIR="$(mktemp -d "${TARGET_DIR}.tmp.XXXXXX")"
+trap 'rm -r -- "${STAGE_DIR}"' EXIT
+mkdir -p "${STAGE_DIR}/bin" "${STAGE_DIR}/resources" "${STAGE_DIR}/XR-Corpus" "${STAGE_DIR}/runtime"
+install -m 0755 target/release/rust-client "${STAGE_DIR}/xrtranslate"
+install -m 0755 target/release/xrtranslate-backend target/release/xr-corpus-server "${STAGE_DIR}/bin/"
+install -m 0644 config.json "${STAGE_DIR}/config.json"
+install -m 0644 LICENSE LICENSE-MIT "${STAGE_DIR}/"
+install -m 0644 XR-Corpus/LICENSE "${STAGE_DIR}/XR-Corpus/"
+cp -a rust-client/resources/{branding,icons,plugins} "${STAGE_DIR}/resources/"
+cp -a XR-Corpus/corpora "${STAGE_DIR}/XR-Corpus/"
+cp -a models "${STAGE_DIR}/"
+for runtime_item in llama.cpp onnxruntime cuda cudnn native-runtime.json; do
+  if [[ -e "runtime/${runtime_item}" ]]; then
+    cp -a "runtime/${runtime_item}" "${STAGE_DIR}/runtime/"
+  fi
+done
+mv -- "${STAGE_DIR}" "${TARGET_DIR}"
+trap - EXIT
 
 printf 'Linux release staged at %s\n' "${TARGET_DIR}"

@@ -8,16 +8,16 @@
 
 | 类型 | 所有者 | 存储位置 | 交付方式 | 更新与校验 |
 | --- | --- | --- | --- | --- |
-| 模型包 | `xrtranslate-assets` | `models/<package>` | 欢迎页或设置页按 provider 下载，不进入 release | 每文件固定 revision、大小、SHA-256；支持 `models_directory` 自定义 |
-| 推理引擎核心 | `xrtranslate-config` / release packager | `<runtime_root>/<engine>` | CPU ONNX 核心随原生程序；llama.cpp 与 CUDA ONNX provider 按需下载 | 固定版本、归档大小、SHA-256、必需文件集合；支持 `runtime_directory` 自定义 |
+| 模型包 | `xrtranslate-assets` | `models/<package>` | Windows 默认发布包按需下载；Linux 本地打包复制已安装的 `models/` | 每文件固定 revision、大小、SHA-256；支持 `models_directory` 自定义 |
+| 推理引擎核心 | `xrtranslate-config` / release packager | `<runtime_root>/<engine>` | Windows 发布包内置 CPU ONNX 核心；Linux 本地打包复制已安装核心；llama.cpp 与 CUDA ONNX provider 按需下载 | 固定版本、归档大小、SHA-256、必需文件集合；支持 `runtime_directory` 自定义 |
 | 设备加速包 | `xrtranslate-config` | `<runtime_root>/cuda/<version>` 与 `<runtime_root>/cudnn/<major>` | 仅兼容 NVIDIA 设备按需下载 | CUDA ABI 与驱动能力匹配；llama.cpp 与 ONNX 复用 CUDA，ONNX 另消费匹配 major 的 cuDNN |
 
 所有网络传输统一经过 `xrtranslate-download`，因此模型和运行时共用断点续传、
 代理、重试、进度、大小与 SHA-256 校验。模型与 runtime installer 只传递中立的
 `DownloadSource`；GitHub/Hugging Face 官方地址到镜像地址的转换由下载 crate 的
-单一镜像路由负责。后端不下载资源；默认 release 不包含
-TTS、ASR 或翻译大模型，也没有 Python 环境。兼容的离线打包选项只能显式加入
-已校验的 ASR/翻译 GGUF；Audio8 与 OpenVoice TTS 都始终由用户按需下载。
+单一镜像路由负责。后端不下载资源，也不需要 Python 解释器。Windows 默认发布包
+不包含 TTS、ASR 或翻译大模型；其离线打包选项可显式加入已校验的 ASR/翻译
+GGUF。Linux 本地打包则复制已有的 `models/`，缺少的模型仍由客户端按需下载。
 
 模型包的传输上方只有一个桌面任务管理器。用户快速点击多个下载按钮或选择
 “下载全部”时，请求按 `ModelAssetId` 去重并串行排队；同一时刻只有一个模型包或
@@ -30,7 +30,7 @@ runtime installer 持有传输任务。任务快照同时保存当前包/文件�
 
 | 功能 / provider | 模型资源 | 推理资源 | GPU 策略 | 缺失时行为 |
 | --- | --- | --- | --- | --- |
-| ASR `qwen3-gguf` | Qwen3-ASR Q4 GGUF + mmproj，合计 1,924,209,664 B | llama.cpp server | NVIDIA >= 7 GiB；匹配 CUDA 13.3、13.1 或 12.4，否则拒绝 | 欢迎页下载/修复；未就绪不启动本地 ASR |
+| ASR `qwen3-gguf` | Qwen3-ASR Q4 GGUF + mmproj，合计 1,924,209,664 B | llama.cpp server | NVIDIA >= 7 GiB；按平台匹配 CUDA（Windows 13.3/13.1/12.4，Linux 12.8），否则拒绝 | 欢迎页下载/修复；未就绪不启动本地 ASR |
 | 翻译 `hunyuan` 普通 | Hy-MT2 1.8B Q4 GGUF，1,133,080,448 B | 与 ASR 共用 llama.cpp | 与 ASR 共用同一 server/runtime 选择 | 欢迎页下载/修复 |
 | 翻译 `hunyuan` 大 | Hy-MT2 7B Q4 GGUF，4,624,648,896 B | 与 ASR 共用 llama.cpp | 同上 | 欢迎页下载/修复 |
 | TTS `audio8` | Audio8 FP16 ONNX 完整包，2,171,728,005 B | ONNX Runtime 1.28 | NVIDIA >= 7 GiB；Auto/CUDA，失败即拒绝，不回退 CPU | TTS 是可选功能，可跳过；启用时下载/修复 |
@@ -42,6 +42,9 @@ runtime installer 持有传输任务。任务快照同时保存当前包/文件�
 
 ## 设备到下载计划
 
+下表及下文的 CUDA 版本和归档大小适用于 Windows。Linux x86_64 的 NVIDIA 计划使用
+llama.cpp CUDA 12.8、ONNX Runtime 1.28 CUDA 12 及匹配的 cuDNN 9。
+
 | 用户设备 | ONNX 计划 | llama.cpp 计划 | 额外下载 |
 | --- | --- | --- | --- |
 | 无 NVIDIA GPU 或显存 < 7 GiB | release 内小型 ONNX 组件仍可使用 compact CPU core | 大型本地 ASR/翻译/TTS 选项禁用且运行时拒绝 | 不下载模型或 CUDA/provider/cuDNN，不存在大型模型 CPU fallback |
@@ -50,10 +53,10 @@ runtime installer 持有传输任务。任务快照同时保存当前包/文件�
 | NVIDIA Blackwell (50 系, CC 12.0+) | ORT 1.28 CUDA13 同源核心/provider + cuDNN 9 CUDA13 | 驱动 13.1/13.2 选择 b8913 CUDA 13.1；驱动 >= 13.3 优先 CUDA 13.3 | 最低 CUDA 12.8，绝不选 12.4；使用 13.1 时仍提示通过 NVIDIA App 升级驱动 |
 | NVIDIA 存在但无完整兼容归档 | 小型内置 ONNX 仍使用 CPU core | 大型本地模型不可用 | 计划失败并显示明确的驱动/归档修复原因 |
 
-CPU ONNX 核心为 16,277,856 B，取自官方
+Windows CPU ONNX 核心为 16,277,856 B，取自官方
 `onnxruntime-win-x64-gpu_cuda13-1.28.0.zip` 的 `onnxruntime.dll`；该核心本身可独立
 执行 CPU session，随 release 提供并由 packager 校验 SHA-256。
-CUDA12 provider 归档为 455,344,532 B，CUDA13 为 365,825,268 B；cuDNN
+Windows CUDA12 provider 归档为 455,344,532 B，CUDA13 为 365,825,268 B；cuDNN
 9.20.0.48 CUDA12 归档为 634,960,681 B，CUDA13 为 349,802,474 B。它们只在
 TTS 请求 CUDA 时下载。共享 CUDA 12.4/13.1/13.3 归档按所选版本使用资源并集去重，
 不会因同时启用 llama.cpp 与 TTS 下载两次；cuDNN 是 ONNX 独立依赖，不放入共享

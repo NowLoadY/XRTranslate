@@ -198,6 +198,44 @@
           "sha256": "1462a050eb4c684921ba51dcc4cc488a036674c3e73e9945ee705b854808d03e",
           "target": "windows-x86_64",
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10333/cudart-llama-bin-win-cuda-13.3-x64.zip"
+        },
+        {
+          "archive_directory": "llama-b10978",
+          "archive_format": "tar-gz",
+          "bytes": 168844112,
+          "cuda_version": "12.8",
+          "executable": "llama-server",
+          "kind": "server-cuda",
+          "name": "llama-b10978-bin-ubuntu-cuda-12.8-x64.tar.gz",
+          "required_files": [
+            "libllama-server-impl.so",
+            "libggml-cuda.so",
+            "libllama-common.so.0",
+            "libmtmd.so.0",
+            "libllama.so.0",
+            "libggml.so.0",
+            "libggml-base.so.0",
+            "libggml-cpu-x64.so"
+          ],
+          "sha256": "af4e9ebf4be46f6daf78f83d63266d12b1591b1147d8f08e297c1bda9bac7eb1",
+          "target": "linux-x86_64",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10978/llama-b10978-bin-ubuntu-cuda-12.8-x64.tar.gz"
+        },
+        {
+          "archive_directory": "cudart-llama-b10978-bin-ubuntu-cuda-12.8-x64",
+          "archive_format": "tar-gz",
+          "bytes": 594373752,
+          "cuda_version": "12.8",
+          "kind": "cuda-runtime",
+          "name": "cudart-llama-b10978-bin-ubuntu-cuda-12.8-x64.tar.gz",
+          "required_file_prefixes": [
+            "libcudart.so.12",
+            "libcublasLt.so.12",
+            "libcublas.so.12"
+          ],
+          "sha256": "37465cf805289a93e1ee4df027d59df6c11209956ca38a77bf847cfcefe74767",
+          "target": "linux-x86_64",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10978/cudart-llama-b10978-bin-ubuntu-cuda-12.8-x64.tar.gz"
         }
       ],
       "release": "b10333",
@@ -233,6 +271,21 @@
           "sha256": "137f0822a4923b1d84d3e09496e0792ebbb221eb3a61a0657f71a12ab68ab1e2",
           "target": "windows-x86_64",
           "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-win-x64-gpu_cuda13-1.28.0.zip"
+        },
+        {
+          "archive_directory": "onnxruntime-linux-x64-gpu_cuda12-1.28.0/lib",
+          "archive_format": "tar-gz",
+          "bytes": 423724908,
+          "cuda_version": "12",
+          "name": "onnxruntime-linux-x64-gpu_cuda12-1.28.0.tgz",
+          "required_files": [
+            "libonnxruntime.so.1.28.0",
+            "libonnxruntime_providers_shared.so",
+            "libonnxruntime_providers_cuda.so"
+          ],
+          "sha256": "ea6bd2b65d7dfabbeb92c4af5dd8f12e5aed8601e544ad378d2f872275438b1a",
+          "target": "linux-x86_64",
+          "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-gpu_cuda12-1.28.0.tgz"
         }
       ],
       "cuda_dependency_downloads": [
@@ -261,6 +314,19 @@
           "bytes": 182627436,
           "target": "windows-x86_64",
           "url": "https://developer.download.nvidia.com/compute/cuda/redist/libcufft/windows-x86_64/libcufft-windows-x86_64-12.3.0.29-archive.zip"
+        },
+        {
+          "archive_directory": "nvidia/curand/lib",
+          "archive_format": "zip",
+          "bytes": 68295626,
+          "cuda_version": "12",
+          "name": "nvidia-curand-cu12-10.3.10.19.zip",
+          "required_files": [
+            "libcurand.so.10"
+          ],
+          "sha256": "49b274db4780d421bd2ccd362e1415c13887c53c214f0d4b761752b8f9f6aa1e",
+          "target": "linux-x86_64",
+          "url": "https://files.pythonhosted.org/packages/31/44/193a0e171750ca9f8320626e8a1f2381e4077a65e69e2fb9708bd479e34a/nvidia_curand_cu12-10.3.10.19-py3-none-manylinux_2_27_x86_64.whl"
         }
       ],
       "cudnn_downloads": [
@@ -301,6 +367,26 @@
           "sha256": "d3ccce59130f10f68fe09365feea65b622bcecace79a0682fe43ee07b88a6a29",
           "target": "windows-x86_64",
           "url": "https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.20.0.48_cuda13-archive.zip"
+        },
+        {
+          "archive_directory": "nvidia/cudnn/lib",
+          "archive_format": "zip",
+          "bytes": 647833391,
+          "cuda_version": "12",
+          "name": "nvidia-cudnn-cu12-9.17.0.29.zip",
+          "required_files": [
+            "libcudnn.so.9",
+            "libcudnn_graph.so.9",
+            "libcudnn_ops.so.9",
+            "libcudnn_heuristic.so.9",
+            "libcudnn_engines_precompiled.so.9",
+            "libcudnn_engines_runtime_compiled.so.9",
+            "libcudnn_adv.so.9",
+            "libcudnn_cnn.so.9"
+          ],
+          "sha256": "55e49fca81d6873c585eb724a47dfdf17faeceae501e9428bb1c527a085ab4d6",
+          "target": "linux-x86_64",
+          "url": "https://files.pythonhosted.org/packages/b1/b1/6b944dd4cf0a1d1e70d659f35a2202c735916cbd47cb93beccc4f2e8e696/nvidia_cudnn_cu12-9.17.0.29-py3-none-manylinux_2_27_x86_64.whl"
         }
       ]
     },

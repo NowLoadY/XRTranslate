@@ -496,6 +496,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
     ));
     let mut job_sender = Some(job_sender);
     let mut input_state = SessionInputState::Running;
+    let mut result_open = true;
     let mut graceful_shutdown = false;
     let mut next_utterance_sequence = 1_u64;
     let mut workload = InferenceWorkload::Realtime;
@@ -532,9 +533,13 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
 
     'session: loop {
         tokio::select! {
-            result = result_receiver.recv() => {
+            result = result_receiver.recv(), if result_open => {
                 let Some(result) = result else {
-                    break;
+                    result_open = false;
+                    if pending_tts_jobs == 0 {
+                        break;
+                    }
+                    continue;
                 };
                 let drained = match &result {
                     InferenceEvent::Drained { reason, .. } => Some(*reason),
@@ -655,27 +660,27 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                     tts_result_open = false;
                     continue;
                 };
-                pending_tts_jobs = pending_tts_jobs.saturating_sub(1);
+                if tts_result.finished {
+                    pending_tts_jobs = pending_tts_jobs.saturating_sub(1);
+                }
                 if tts_result.generation == generation
                     && tts_result.tts_epoch == session.tts_epoch()
                 {
                     match tts_result.output {
-                        Ok(chunks) => {
-                            for audio in chunks {
-                                if session
-                                    .submit_tts_audio(
-                                        tts_result.generation.route_epoch,
-                                        tts_result.tts_epoch,
-                                        audio.bytes,
-                                    )
-                                    .unwrap_or(false)
+                        Ok(audio) => {
+                            if session
+                                .submit_tts_audio(
+                                    tts_result.generation.route_epoch,
+                                    tts_result.tts_epoch,
+                                    audio.bytes,
+                                )
+                                .unwrap_or(false)
+                            {
+                                if send_session_output(&outbound_sender, &mut session, generation)
+                                    .await
+                                    .is_err()
                                 {
-                                    if send_session_output(&outbound_sender, &mut session, generation)
-                                        .await
-                                        .is_err()
-                                    {
-                                        break 'session;
-                                    }
+                                    break 'session;
                                 }
                             }
                         }

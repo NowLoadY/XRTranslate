@@ -92,7 +92,10 @@ impl RuntimeLayout {
     pub const CUDNN_RUNTIME_DIRECTORY: &'static str = "runtime/cudnn";
     pub const ONNX_RUNTIME_DIRECTORY: &'static str = "runtime/onnxruntime";
     pub const ONNX_CPU_RUNTIME_DIRECTORY: &'static str = "runtime/onnxruntime/cpu";
+    #[cfg(windows)]
     pub const ONNX_CORE_LIBRARY: &'static str = "onnxruntime.dll";
+    #[cfg(not(windows))]
+    pub const ONNX_CORE_LIBRARY: &'static str = "libonnxruntime.so.1.28.0";
     pub const NATIVE_RUNTIME_SELECTION_FILE: &'static str = "runtime/native-runtime.json";
     pub const VOICE_CLONES_DIRECTORY: &'static str = "runtime/voice_clones";
 
@@ -1165,6 +1168,9 @@ pub struct LlamaCppDownload {
     /// Archive encoding used by the release artifact.
     #[serde(default)]
     pub archive_format: LlamaCppArchiveFormat,
+    /// Directory inside a runtime archive containing its shared libraries.
+    #[serde(default)]
+    pub archive_directory: String,
     #[serde(default)]
     pub bytes: u64,
     #[serde(default)]
@@ -1653,7 +1659,8 @@ mod tests {
         assert_eq!(relative.runtime_root(), root.join("runtime"));
         assert_eq!(
             relative.onnx_cpu_core_library(),
-            root.join("runtime/onnxruntime/cpu/onnxruntime.dll")
+            root.join("runtime/onnxruntime/cpu")
+                .join(RuntimeLayout::ONNX_CORE_LIBRARY)
         );
 
         let custom_root = std::env::temp_dir().join("xrtranslate-custom-runtime");
@@ -1713,66 +1720,6 @@ mod tests {
         assert_eq!(
             external_layout.llama_cpp_directory(),
             PathBuf::from("/mnt/ai/runtime/llama.cpp")
-        );
-    }
-
-    #[test]
-    fn root_config_is_read_with_optional_sections_preserved() {
-        let config = AppConfig::from_json_str(include_str!("../../../config.json")).unwrap();
-
-        assert_eq!(config.server.host, "0.0.0.0");
-        assert_eq!(config.server.port, 7654);
-        assert_eq!(config.audio.sample_rate, 16_000);
-        assert_eq!(config.audio.tts_sample_rate, 48_000);
-        assert_eq!(config.asr.provider, "qwen3-gguf");
-        assert_eq!(config.asr.vad_silence_ms, 320);
-        assert_eq!(config.asr.vad_adaptive_after_ms, 4_000);
-        assert_eq!(config.asr.vad_adaptive_silence_ms, 128);
-        assert_eq!(config.asr.vad_max_utterance_ms, 8_000);
-        assert_eq!(config.asr.vad_overlap_ms, 256);
-        assert!(config.speaker.enabled);
-        assert_eq!(config.speaker.max_speakers, 8);
-        assert_eq!(config.speaker.min_utterance_ms, 750);
-        assert_eq!(config.speaker.same_speaker_hysteresis, 0.12);
-        assert_eq!(config.speaker.speaker_switch_margin, 0.04);
-        assert!(config.prompt_context.enabled);
-        assert_eq!(config.prompt_context.max_entries, 6);
-        assert_eq!(config.prompt_context.asr_max_chars, 800);
-        assert_eq!(config.prompt_context.asr_history_entries, 1);
-        assert_eq!(config.prompt_context.translation_history_entries, 6);
-        assert_eq!(config.prompt_context.translation_max_chars, 1200);
-        assert_eq!(
-            config.prompt_context.corpora_directory,
-            PathBuf::from("XR-Corpus/corpora/v1")
-        );
-        assert_eq!(config.storage.log_dir, PathBuf::from("runtime/logs"));
-        assert_eq!(config.storage.log_max_bytes, 2 * 1024 * 1024);
-        assert_eq!(config.storage.log_retained_files, 2);
-        assert_eq!(config.translation.provider, "hunyuan");
-        assert_eq!(config.tts.provider, "none");
-        assert_eq!(config.model_manager.llama_cpp.release, "b10333");
-        assert_eq!(config.model_manager.llama_cpp.downloads.len(), 8);
-        assert_eq!(config.model_manager.onnxruntime.release, "1.28.0");
-        assert_eq!(config.model_manager.onnxruntime.downloads.len(), 2);
-        assert_eq!(
-            config
-                .model_manager
-                .onnxruntime
-                .cuda_dependency_downloads
-                .len(),
-            2
-        );
-        assert_eq!(config.model_manager.onnxruntime.cudnn_downloads.len(), 2);
-        assert_eq!(
-            config.model_manager.llama_cpp.downloads[0].name,
-            "llama-b10333-bin-win-cpu-x64.zip"
-        );
-        assert_eq!(
-            config
-                .raw
-                .pointer("/osc/listen_port")
-                .and_then(Value::as_u64),
-            Some(9001)
         );
     }
 

@@ -78,7 +78,8 @@ pub(crate) struct TtsSynthesisJob {
 pub(crate) struct TtsSynthesisResult {
     pub(crate) generation: PipelineGeneration,
     pub(crate) tts_epoch: TtsEpoch,
-    pub(crate) output: Result<Vec<SynthesizedPcm>, InferenceError>,
+    pub(crate) output: Result<SynthesizedPcm, InferenceError>,
+    pub(crate) finished: bool,
 }
 
 pub(crate) async fn run_tts_worker(
@@ -102,53 +103,52 @@ pub(crate) async fn run_tts_worker(
             input_chars,
             "TTS synthesis started"
         );
-        let mut audio = Vec::with_capacity(job.text_chunks.len());
-        let mut failure = None;
-        for chunk in job.text_chunks {
-            match adapter
-                .synthesize(&chunk, &job.voice_name, &job.target_language)
+        let mut output_bytes = 0;
+        for (index, chunk) in job.text_chunks.iter().enumerate() {
+            let output = adapter
+                .synthesize(chunk, &job.voice_name, &job.target_language)
                 .await
-            {
-                Ok(chunk) => audio.push(chunk),
-                Err(error) => {
-                    failure = Some(error);
-                    break;
+                .map(|audio| {
+                    output_bytes += audio.bytes.len();
+                    audio
+                });
+            let finished = output.is_err() || index + 1 == chunk_count;
+            if finished {
+                match &output {
+                    Ok(audio) => info!(
+                        generation = ?job.generation,
+                        voice = %job.voice_name,
+                        chunk_count,
+                        output_bytes,
+                        sample_rate = audio.sample_rate,
+                        elapsed_ms = millis(started_at.elapsed()),
+                        "TTS synthesis completed"
+                    ),
+                    Err(error) => warn!(
+                        generation = ?job.generation,
+                        voice = %job.voice_name,
+                        completed_chunks = index,
+                        elapsed_ms = millis(started_at.elapsed()),
+                        %error,
+                        "TTS synthesis failed"
+                    ),
                 }
             }
-        }
-        let output = failure.map_or_else(|| Ok(audio), Err);
-        match &output {
-            Ok(chunks) => {
-                let output_bytes = chunks.iter().map(|chunk| chunk.bytes.len()).sum::<usize>();
-                let sample_rate = chunks.first().map_or(0, |chunk| chunk.sample_rate);
-                info!(
-                    generation = ?job.generation,
-                    voice = %job.voice_name,
-                    chunk_count = chunks.len(),
-                    output_bytes,
-                    sample_rate,
-                    elapsed_ms = millis(started_at.elapsed()),
-                    "TTS synthesis completed"
-                );
+            if results
+                .send(TtsSynthesisResult {
+                    generation: job.generation,
+                    tts_epoch: job.tts_epoch,
+                    output,
+                    finished,
+                })
+                .await
+                .is_err()
+            {
+                return;
             }
-            Err(error) => warn!(
-                generation = ?job.generation,
-                voice = %job.voice_name,
-                elapsed_ms = millis(started_at.elapsed()),
-                %error,
-                "TTS synthesis failed"
-            ),
-        }
-        if results
-            .send(TtsSynthesisResult {
-                generation: job.generation,
-                tts_epoch: job.tts_epoch,
-                output,
-            })
-            .await
-            .is_err()
-        {
-            break;
+            if finished {
+                break;
+            }
         }
     }
 }

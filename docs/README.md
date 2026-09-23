@@ -38,4 +38,5 @@ notes live under `providers/`.
 
 - [Speaker diarization](speaker-diarization.md)
 - [Linux build](linux-build.md)
+- [Recorded speech check](speech-check.md)
 - [Contributors](contributors.md)
