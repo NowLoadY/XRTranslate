@@ -27,26 +27,24 @@ if [[ -e "${TARGET_DIR}" ]]; then
   exit 2
 fi
 
-required_resources=(
-  XR-Corpus/corpora/default.sqlite
+bundled_resources=(
   models/silero-vad/src/silero_vad/data/silero_vad.onnx
   models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx
   models/gtcrn/gtcrn_simple.onnx
   runtime/onnxruntime/cpu/libonnxruntime.so.1.28.0
 )
-for resource in "${required_resources[@]}"; do
+for resource in XR-Corpus/corpora/default.sqlite "${bundled_resources[@]}"; do
   if [[ ! -f "${resource}" ]]; then
     printf 'Required release resource is missing: %s\n' "${resource}" >&2
     exit 2
   fi
 done
 
-cargo_args=(build --locked --target-dir "${ROOT_DIR}/target" -p rust-client --release)
+cargo_args=(build --locked --target-dir "${ROOT_DIR}/target" -p rust-client -p xrtranslate-backend --features xrtranslate-backend/managed-ort --release)
 if [[ -n "${FEATURES}" ]]; then
   cargo_args+=(--features "${FEATURES}")
 fi
 cargo "${cargo_args[@]}"
-cargo build --locked --target-dir "${ROOT_DIR}/target" -p xrtranslate-backend --features managed-ort --release
 cargo build --locked --manifest-path XR-Corpus/Cargo.toml \
   --target-dir "${ROOT_DIR}/target" -p xr-corpus-server --release
 
@@ -61,11 +59,8 @@ install -m 0644 LICENSE LICENSE-MIT "${STAGE_DIR}/"
 install -m 0644 XR-Corpus/LICENSE "${STAGE_DIR}/XR-Corpus/"
 cp -a rust-client/resources/{branding,icons,plugins} "${STAGE_DIR}/resources/"
 install -m 0644 XR-Corpus/corpora/default.sqlite "${STAGE_DIR}/corpora/default.sqlite"
-cp -a models "${STAGE_DIR}/"
-for runtime_item in llama.cpp onnxruntime cuda cudnn native-runtime.json; do
-  if [[ -e "runtime/${runtime_item}" ]]; then
-    cp -a "runtime/${runtime_item}" "${STAGE_DIR}/runtime/"
-  fi
+for resource in "${bundled_resources[@]}"; do
+  install -D -m 0644 "${resource}" "${STAGE_DIR}/${resource}"
 done
 mv -- "${STAGE_DIR}" "${TARGET_DIR}"
 trap - EXIT

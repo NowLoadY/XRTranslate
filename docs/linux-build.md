@@ -23,9 +23,10 @@ git submodule update --init XR-Corpus
 ```
 
 The script builds the backend with `managed-ort` and the XR-Corpus server,
-then runs the client. When `dist/linux-x86_64/xrtranslate` exists, it runs that
-package instead. Set `WINIT_UNIX_BACKEND=x11` or `wayland` if the window
-backend needs to be selected explicitly.
+then builds and runs the client from the source tree. Repeated launches reuse
+Cargo's build output and the same `runtime/` data without creating a release
+directory. Set `WINIT_UNIX_BACKEND=x11` or `wayland` if the window backend
+needs to be selected explicitly.
 
 For optional MPV support, install `libmpv-dev` and run with
 `XRTRANSLATE_FEATURES=mpv ./scripts/run-linux.sh` while using the source tree.
@@ -37,13 +38,17 @@ For optional MPV support, install `libmpv-dev` and run with
 ./dist/linux-x86_64/xrtranslate
 ```
 
-The release script requires the three small ONNX models at their configured
+The output directory must not already exist. Set `XRTRANSLATE_RELEASE_DIR` to
+another path when keeping an earlier package and its runtime data.
+
+The release script requires the three basic ONNX models at their configured
 paths under `models/` and the CPU core at
-`runtime/onnxruntime/cpu/libonnxruntime.so.1.28.0`. It packages the locally
-installed `models/` and managed runtime directories, so a prepared machine
-can reuse its model files without downloading them again. Model and runtime
-archives installed later are verified by the shared installer. The application
-does not require a Python interpreter, virtual environment, or PyTorch.
+`runtime/onnxruntime/cpu/libonnxruntime.so.1.28.0`. It packages only those
+fixed resources, the application binaries, and the default XR Corpus seed.
+Locally downloaded models, managed GPU runtimes, settings, and editable
+databases are excluded. Additional models and runtimes can be installed from
+the application. The application does not require a Python interpreter,
+virtual environment, or PyTorch.
 
 The release includes a default XR Corpus seed at `corpora/default.sqlite`.
 On first launch, the editable terminology database is created at

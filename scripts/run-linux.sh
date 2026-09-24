@@ -2,13 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BINARY="${XRTRANSLATE_BINARY:-${ROOT_DIR}/dist/linux-x86_64/xrtranslate}"
 FEATURES="${XRTRANSLATE_FEATURES:-}"
-
-if [[ -x "${BINARY}" ]]; then
-  cd "$(dirname "${BINARY}")"
-  exec "./$(basename "${BINARY}")" "$@"
-fi
 
 cd "${ROOT_DIR}"
 
@@ -22,12 +16,12 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 127
 fi
 
-cargo build --locked --target-dir "${ROOT_DIR}/target" -p xrtranslate-backend --features managed-ort --release
-cargo build --locked --manifest-path XR-Corpus/Cargo.toml \
-  --target-dir "${ROOT_DIR}/target" -p xr-corpus-server --release
-
-cargo_args=(run --locked --target-dir "${ROOT_DIR}/target" -p rust-client --release)
+cargo_args=(build --locked --target-dir "${ROOT_DIR}/target" -p rust-client -p xrtranslate-backend --features xrtranslate-backend/managed-ort --release)
 if [[ -n "${FEATURES}" ]]; then
   cargo_args+=(--features "${FEATURES}")
 fi
-exec cargo "${cargo_args[@]}" -- "$@"
+cargo "${cargo_args[@]}"
+cargo build --locked --manifest-path XR-Corpus/Cargo.toml \
+  --target-dir "${ROOT_DIR}/target" -p xr-corpus-server --release
+
+exec "${ROOT_DIR}/target/release/rust-client" "$@"
