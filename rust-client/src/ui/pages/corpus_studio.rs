@@ -1516,7 +1516,7 @@ fn render_workspace(
             canvas_ui.painter().add(mesh);
             for (a, b, e, color, highlighted, enabled) in detail_edges {
                 let edge = &snapshot.edges[e];
-                let mut points = graph_canvas::node_connection(rects[a], rects[b]);
+                let mut points = graph_canvas::capsule_connection(rects[a], rects[b]);
                 let delta = points[3] - points[0];
                 let bend = Vec2::new(-delta.y, delta.x).normalized()
                     * if edge.kind == GraphEdgeKind::Context {

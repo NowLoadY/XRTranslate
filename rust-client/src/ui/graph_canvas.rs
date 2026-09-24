@@ -214,8 +214,8 @@ pub(crate) fn bezier_points(from: Pos2, to: Pos2) -> [Pos2; 4] {
     ]
 }
 
-/// Connects the facing edges of freely positioned nodes.
-pub(crate) fn node_connection(from: Rect, to: Rect) -> [Pos2; 4] {
+/// Connects the facing capsule outlines, including their rounded ends.
+pub(crate) fn capsule_connection(from: Rect, to: Rect) -> [Pos2; 4] {
     let delta = to.center() - from.center();
     let reach = (delta.length() * 0.3).clamp(24.0, 120.0);
     if delta.length_sq() < 1.0 {
@@ -228,19 +228,19 @@ pub(crate) fn node_connection(from: Rect, to: Rect) -> [Pos2; 4] {
         ];
     }
     let edge = |rect: Rect, direction: Vec2| {
+        let direction = direction.normalized();
         let half = rect.size() * 0.5;
-        let horizontal = direction.x.abs() * half.y >= direction.y.abs() * half.x;
-        let normal = if horizontal {
-            Vec2::new(direction.x.signum(), 0.0)
-        } else {
-            Vec2::new(0.0, direction.y.signum())
-        };
-        let scale = if horizontal {
-            half.x / direction.x.abs().max(f32::EPSILON)
-        } else {
-            half.y / direction.y.abs().max(f32::EPSILON)
-        };
-        (rect.center() + direction * scale, normal)
+        let radius = half.y;
+        let straight = (half.x - radius).max(0.0);
+        if direction.x.abs() * radius <= direction.y.abs() * straight {
+            let offset = direction * (radius / direction.y.abs());
+            return (rect.center() + offset, Vec2::new(0.0, direction.y.signum()));
+        }
+        let cap = Vec2::new(direction.x.signum() * straight, 0.0);
+        let distance = straight * direction.x.abs()
+            + (radius * radius - (straight * direction.y).powi(2)).max(0.0).sqrt();
+        let offset = direction * distance;
+        (rect.center() + offset, (offset - cap).normalized())
     };
     let (start, outward) = edge(from, delta);
     let (end, inward) = edge(to, -delta);
