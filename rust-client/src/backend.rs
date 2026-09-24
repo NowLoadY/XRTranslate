@@ -523,49 +523,7 @@ impl BackendManager {
     }
 
     fn resolve_native_backend_executable(&self) -> Result<PathBuf, String> {
-        let executable = if cfg!(windows) {
-            "xrtranslate-backend.exe"
-        } else {
-            "xrtranslate-backend"
-        };
-        let debug_binary = self
-            .project_root
-            .join("target")
-            .join("debug")
-            .join(executable);
-        let release_binary = self
-            .project_root
-            .join("target")
-            .join("release")
-            .join(executable);
-        let packaged_binary = self.project_root.join("bin").join(executable);
-        let candidates = if cfg!(debug_assertions) {
-            [
-                self.project_root.join(executable),
-                packaged_binary.clone(),
-                self.project_root.join("backend").join(executable),
-                debug_binary,
-                release_binary,
-            ]
-        } else {
-            [
-                self.project_root.join(executable),
-                packaged_binary,
-                self.project_root.join("backend").join(executable),
-                release_binary,
-                debug_binary,
-            ]
-        };
-        candidates.iter().find(|path| path.is_file()).cloned().ok_or_else(|| {
-            format!(
-                "Native backend executable was not found. Build xrtranslate-backend or use the packaged application. Looked for:\n{}",
-                candidates
-                    .iter()
-                    .map(|path| format!("- {}", path.display()))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            )
-        })
+        self.resolve_managed_executable("xrtranslate-backend")
     }
 
     fn resolve_corpus_executable(&self) -> Result<PathBuf, String> {
@@ -578,18 +536,16 @@ impl BackendManager {
         } else {
             name.to_owned()
         };
+        let profile = if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        };
         let candidates = [
+            self.project_root.join("target").join(profile).join(&executable),
             self.project_root.join(&executable),
             self.project_root.join("bin").join(&executable),
             self.project_root.join("backend").join(&executable),
-            self.project_root
-                .join("target")
-                .join("debug")
-                .join(&executable),
-            self.project_root
-                .join("target")
-                .join("release")
-                .join(&executable),
         ];
         candidates
             .iter()

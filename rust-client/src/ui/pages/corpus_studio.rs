@@ -120,7 +120,7 @@ fn start_worker(ctx: egui::Context) -> (Sender<Command>, Receiver<Result<GraphSn
                     return;
                 }
             };
-            let client = match CorpusClient::new(CORPUS_URL) {
+            let client = match runtime.block_on(CorpusClient::connect(CORPUS_URL)) {
                 Ok(client) => client,
                 Err(error) => {
                     let _ = results_tx.send(Err(error.to_string()));
