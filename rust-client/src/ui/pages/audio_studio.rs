@@ -2169,15 +2169,20 @@ fn finish_wire_drag(
 pub(crate) fn render(
     snapshot: &AudioStudioUiSnapshot,
     ui: &mut egui::Ui,
+    language: crate::i18n::UiLanguage,
 ) -> Vec<AudioStudioUiAction> {
     ui.scope(|ui| {
         graph_style::apply(ui);
-        render_scoped(snapshot, ui)
+        render_scoped(snapshot, ui, language)
     })
     .inner
 }
 
-fn render_scoped(snapshot: &AudioStudioUiSnapshot, ui: &mut egui::Ui) -> Vec<AudioStudioUiAction> {
+fn render_scoped(
+    snapshot: &AudioStudioUiSnapshot,
+    ui: &mut egui::Ui,
+    language: crate::i18n::UiLanguage,
+) -> Vec<AudioStudioUiAction> {
     let id = state_id(ui);
     let mut state = ui.ctx().data_mut(|data| {
         data.get_temp::<AudioStudioCanvasState>(id)
@@ -2187,7 +2192,7 @@ fn render_scoped(snapshot: &AudioStudioUiSnapshot, ui: &mut egui::Ui) -> Vec<Aud
 
     render_header(snapshot, ui, &mut state, &mut actions);
     ui.add_space(7.0);
-    render_status(snapshot, ui);
+    render_status(snapshot, ui, language);
     ui.add_space(7.0);
 
     let mut commands = Vec::new();
@@ -2466,7 +2471,11 @@ fn asr_path_is_ready(snapshot: &AudioStudioUiSnapshot) -> bool {
     })
 }
 
-fn render_status(snapshot: &AudioStudioUiSnapshot, ui: &mut egui::Ui) {
+fn render_status(
+    snapshot: &AudioStudioUiSnapshot,
+    ui: &mut egui::Ui,
+    language: crate::i18n::UiLanguage,
+) {
     Frame::new()
         .fill(Color32::from_rgb(249, 250, 248))
         .stroke(Stroke::new(1.0, CANVAS_BORDER))
@@ -2605,7 +2614,7 @@ fn render_status(snapshot: &AudioStudioUiSnapshot, ui: &mut egui::Ui) {
                     })
             {
                 ui.add_space(4.0);
-                ui.label(RichText::new(error).size(11.0).color(ERROR));
+                crate::ui::components::error_notice(ui, language, error);
             }
             for issue in snapshot.validation.issues.iter().take(3) {
                 ui.add_space(2.0);

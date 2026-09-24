@@ -136,39 +136,21 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     });
 
     if let Some(error) = &app.last_error {
-        let error_summary = error.lines().next().unwrap_or(error);
+        let error = error.clone();
         ui.add_space(8.0);
-        components::card(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("!")
-                        .color(egui::Color32::from_rgb(220, 38, 38))
-                        .strong(),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if components::animated_button(
-                        ui,
-                        crate::i18n::tr(app.ui_language, "View Detailed Log"),
-                    )
-                    .clicked()
-                    {
-                        let log = app.backend_manager.get_latest_log();
-                        app.modal_dialog = crate::ui::modal::ModalDialog::error(
-                            crate::i18n::tr(app.ui_language, "Detailed Error Traceback"),
-                            error,
-                            Some(&log),
-                        );
-                    }
-                });
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(error_summary)
-                            .color(egui::Color32::from_rgb(220, 38, 38)),
-                    )
-                    .truncate(),
-                );
-            });
-        });
+        if components::dismissible_error_notice(ui, app.ui_language, &error) {
+            app.last_error = None;
+        }
+        if components::animated_button(
+            ui,
+            crate::i18n::tr(app.ui_language, "View Detailed Log"),
+        )
+        .clicked()
+        {
+            let log = app.backend_manager.get_latest_log();
+            app.modal_dialog =
+                crate::ui::modal::ModalDialog::error(app.ui_language, &error, Some(&log));
+        }
     }
 
     ui.add_space(14.0);
@@ -559,19 +541,6 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     ui.label(
                         egui::RichText::new("OK").color(egui::Color32::from_rgb(5, 150, 105)),
                     );
-                } else if let Some(message) = status.as_ref().and_then(|status| {
-                    (status.state == xrtranslate_protocol::VoiceClonePhase::Failed)
-                        .then_some(status.message.as_deref())
-                        .flatten()
-                }) {
-                    ui.label(
-                        egui::RichText::new(crate::i18n::tr(
-                            app.ui_language,
-                            "Voice cloning failed",
-                        ))
-                        .color(egui::Color32::from_rgb(220, 38, 38)),
-                    )
-                    .on_hover_text(message);
                 }
 
                 ui.add_space(12.0);
@@ -588,6 +557,14 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     app.set_floating_subtitles_enabled(floating_enabled);
                 }
             });
+            if let Some(message) = app.voice_clone_state().and_then(|status| {
+                (status.state == xrtranslate_protocol::VoiceClonePhase::Failed)
+                    .then_some(status.message.as_deref())
+                    .flatten()
+            }) {
+                ui.add_space(8.0);
+                components::error_notice(ui, app.ui_language, message);
+            }
         });
     });
 

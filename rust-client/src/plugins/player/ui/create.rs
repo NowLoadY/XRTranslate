@@ -35,7 +35,7 @@ pub(super) fn render_create(
     render_runtime_install_banner(controller, language, ui);
 
     if let Some(error) = &controller.error {
-        components::danger_alert(ui, error);
+        components::error_notice(ui, language, error);
         ui.add_space(10.0);
     }
 

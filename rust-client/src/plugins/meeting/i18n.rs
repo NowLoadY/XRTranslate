@@ -25,6 +25,55 @@ pub fn tr<'a>(language: UiLanguage, english: &'a str) -> &'a str {
 
 const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     (
+        "Meeting storage is unavailable; recording is disabled",
+        "会议存储不可用，暂时无法录音",
+        "会議の保存先を利用できないため、録音できません",
+        "회의 저장소를 사용할 수 없어 녹음할 수 없습니다",
+        "Хранилище встреч недоступно, запись отключена",
+    ),
+    (
+        "Enter a meeting name",
+        "请输入会议名称",
+        "会議名を入力してください",
+        "회의 이름을 입력하세요",
+        "Введите название встречи",
+    ),
+    (
+        "Finish the active meeting before starting another one",
+        "请先结束当前会议",
+        "現在の会議を終了してから次の会議を始めてください",
+        "새 회의를 시작하기 전에 현재 회의를 종료하세요",
+        "Завершите текущую встречу перед началом новой",
+    ),
+    (
+        "Stop the current translation session before starting a meeting",
+        "请先停止当前翻译",
+        "会議を始める前に現在の翻訳を停止してください",
+        "회의를 시작하기 전에 현재 번역을 중지하세요",
+        "Остановите текущий перевод перед началом встречи",
+    ),
+    (
+        "Spoken language and translation language cannot be the same",
+        "原语言和翻译语言不能相同",
+        "話す言語と翻訳先の言語は別にしてください",
+        "음성 언어와 번역 언어는 달라야 합니다",
+        "Язык речи и язык перевода должны различаться",
+    ),
+    (
+        "Choose an audio file",
+        "请选择音频文件",
+        "音声ファイルを選択してください",
+        "오디오 파일을 선택하세요",
+        "Выберите аудиофайл",
+    ),
+    (
+        "The selected audio file is not available",
+        "所选音频文件不可用",
+        "選択した音声ファイルを利用できません",
+        "선택한 오디오 파일을 사용할 수 없습니다",
+        "Выбранный аудиофайл недоступен",
+    ),
+    (
         "Meeting notes",
         "会议记录",
         "会議記録",

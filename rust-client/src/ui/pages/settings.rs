@@ -503,11 +503,7 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     });
     if let AppUpdateState::Failed(error) = app.app_update_state() {
         ui.add_space(6.0);
-        ui.label(
-            egui::RichText::new(error)
-                .size(12.0)
-                .color(egui::Color32::from_rgb(220, 38, 38)),
-        );
+        components::error_notice(ui, language, error);
     }
     ui.add_space(10.0);
     crate::ui::layout::flow_row(ui, |ui| {

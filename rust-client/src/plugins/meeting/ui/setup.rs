@@ -192,7 +192,7 @@ pub(super) fn render_setup(
             ui.add_space(14.0);
 
             if let Some(error) = validation_error.as_deref() {
-                components::danger_alert(ui, error);
+                components::validation_notice(ui, language, tr(language, error));
                 ui.add_space(12.0);
             }
 

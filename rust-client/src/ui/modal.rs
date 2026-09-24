@@ -5,7 +5,7 @@ pub struct ModalPage {
     pub title: String,
     pub content: String,
     pub footnote: Option<String>,
-    pub is_code: bool,
+    pub error_details: Option<String>,
 }
 
 impl ModalPage {
@@ -14,17 +14,12 @@ impl ModalPage {
             title: title.into(),
             content: content.into(),
             footnote: None,
-            is_code: false,
+            error_details: None,
         }
     }
 
     pub fn footnote(mut self, footnote: impl Into<String>) -> Self {
         self.footnote = Some(footnote.into());
-        self
-    }
-
-    pub fn code(mut self) -> Self {
-        self.is_code = true;
         self
     }
 }
@@ -78,14 +73,11 @@ impl ModalDialog {
                     version
                 ),
             )],
-            current_page: 0,
-            show_ok_button: true,
             ok_label: crate::i18n::tr(language, "Update").into(),
             show_cancel_button: true,
             cancel_label: crate::i18n::tr(language, "Later").into(),
-            action: None,
             ok_action: Some(ModalAction::DownloadUpdate),
-            destructive_ok: false,
+            ..Self::default()
         }
     }
 
@@ -106,14 +98,11 @@ impl ModalDialog {
                     "You can install it later from Settings > General.",
                 )),
             ],
-            current_page: 0,
-            show_ok_button: true,
             ok_label: crate::i18n::tr(language, "Install").into(),
             show_cancel_button: true,
             cancel_label: crate::i18n::tr(language, "Later").into(),
-            action: None,
             ok_action: Some(ModalAction::InstallUpdate),
-            destructive_ok: false,
+            ..Self::default()
         }
     }
 
@@ -133,14 +122,12 @@ impl ModalDialog {
                     )
                 ),
             )],
-            current_page: 0,
-            show_ok_button: true,
             ok_label: crate::i18n::tr(language, "Delete").into(),
             show_cancel_button: true,
             cancel_label: crate::i18n::tr(language, "Cancel").into(),
-            action: None,
             ok_action: Some(ModalAction::ConfirmResourceDeletion),
             destructive_ok: true,
+            ..Self::default()
         }
     }
 
@@ -152,14 +139,8 @@ impl ModalDialog {
                 crate::i18n::tr(language, "Usage Guidelines"),
                 content,
             )],
-            current_page: 0,
-            show_ok_button: true,
             ok_label: crate::i18n::tr(language, "Close").into(),
-            show_cancel_button: false,
-            cancel_label: crate::i18n::tr(language, "Close").into(),
-            action: None,
-            ok_action: None,
-            destructive_ok: false,
+            ..Self::default()
         }
     }
 
@@ -167,30 +148,25 @@ impl ModalDialog {
         self.action.take()
     }
 
-    pub fn error(
-        title: impl Into<String>,
-        message: impl Into<String>,
-        details: Option<&str>,
-    ) -> Self {
-        let mut content = message.into();
-        if let Some(details) = details
-            && !details.trim().is_empty()
-        {
-            content.push_str("\n\n--- Detailed Log Output ---\n");
-            content.push_str(details.trim());
+    pub fn error(language: crate::i18n::UiLanguage, error: &str, log: Option<&str>) -> Self {
+        let mut details = error.trim().to_owned();
+        if let Some(log) = log.filter(|log| !log.trim().is_empty()) {
+            details.push_str("\n\n--- Backend log ---\n");
+            details.push_str(log.trim());
         }
-        let page = ModalPage::new(title, content).code();
+        let mut page = ModalPage::new(
+            crate::i18n::tr(language, "Something went wrong"),
+            crate::i18n::tr(
+                language,
+                "You can copy the details and report this on GitHub Issues or in QQ group 1009732148.",
+            ),
+        );
+        page.error_details = Some(details);
         Self {
             open: true,
             pages: vec![page],
-            current_page: 0,
-            show_ok_button: true,
-            ok_label: "OK".into(),
-            show_cancel_button: false,
-            cancel_label: "Close".into(),
-            action: None,
-            ok_action: None,
-            destructive_ok: false,
+            ok_label: crate::i18n::tr(language, "Close").into(),
+            ..Self::default()
         }
     }
 
@@ -198,14 +174,8 @@ impl ModalDialog {
         Self {
             open: true,
             pages,
-            current_page: 0,
-            show_ok_button: true,
             ok_label: "Finish".into(),
-            show_cancel_button: false,
-            cancel_label: "Close".into(),
-            action: None,
-            ok_action: None,
-            destructive_ok: false,
+            ..Self::default()
         }
     }
 
@@ -323,34 +293,22 @@ impl ModalDialog {
                         .max_height(body_height)
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            if page.is_code {
+                            ui.label(
+                                RichText::new(&page.content)
+                                    .size(13.5)
+                                    .color(crate::ui::theme::text_normal()),
+                            );
+                            if let Some(details) = &page.error_details {
+                                ui.add_space(10.0);
                                 crate::ui::components::dark_container_frame(ui, |ui| {
                                     ui.set_width(ui.available_width());
                                     ui.label(
-                                        RichText::new(&page.content)
+                                        RichText::new(details)
                                             .family(egui::FontFamily::Monospace)
                                             .color(Color32::from_rgb(240, 244, 255))
                                             .size(12.0),
                                     );
                                 });
-
-                                ui.add_space(6.0);
-                                ui.horizontal(|ui| {
-                                    if crate::ui::components::secondary_button(
-                                        ui,
-                                        crate::i18n::tr(language, "Copy Log"),
-                                    )
-                                    .clicked()
-                                    {
-                                        ctx.copy_text(page.content.clone());
-                                    }
-                                });
-                            } else {
-                                ui.label(
-                                    RichText::new(&page.content)
-                                        .size(13.5)
-                                        .color(crate::ui::theme::text_normal()),
-                                );
                             }
                             if let Some(footnote) = &page.footnote {
                                 ui.add_space(10.0);
@@ -365,6 +323,9 @@ impl ModalDialog {
                     ui.add_space(14.0);
 
                     ui.horizontal(|ui| {
+                        if let Some(details) = &page.error_details {
+                            crate::ui::components::error_actions(ui, language, details);
+                        }
                         if is_multi_page {
                             ui.label(
                                 RichText::new(format!(

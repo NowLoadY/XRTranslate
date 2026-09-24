@@ -89,16 +89,7 @@ pub fn render(
             ui.add_space(10.0);
 
             if let Some(error) = &context.status.last_error {
-                card(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("⚠").color(egui::Color32::from_rgb(220, 38, 38)),
-                        );
-                        ui.label(
-                            egui::RichText::new(error).color(egui::Color32::from_rgb(220, 38, 38)),
-                        );
-                    });
-                });
+                crate::ui::components::error_notice(ui, lang, error);
                 ui.add_space(6.0);
             }
 

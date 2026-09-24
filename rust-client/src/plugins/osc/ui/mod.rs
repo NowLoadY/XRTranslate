@@ -2,7 +2,6 @@ pub mod canvas;
 mod settings;
 pub mod toolbar;
 
-use crate::ui::components::card;
 use eframe::egui;
 
 #[derive(Clone, Copy)]
@@ -51,16 +50,7 @@ pub fn render(
             ui.add_space(12.0);
 
             if let Some(error) = context.last_error {
-                card(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("⚠").color(egui::Color32::from_rgb(220, 38, 38)),
-                        );
-                        ui.label(
-                            egui::RichText::new(error).color(egui::Color32::from_rgb(220, 38, 38)),
-                        );
-                    });
-                });
+                crate::ui::components::error_notice(ui, context.language, error);
                 ui.add_space(10.0);
             }
 

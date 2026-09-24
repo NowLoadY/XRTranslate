@@ -2359,7 +2359,7 @@ impl XRTranslateApp {
             tts: routed.tts,
             output: routed.output,
         };
-        let actions = ui::pages::audio_studio::render(&snapshot, ui);
+        let actions = ui::pages::audio_studio::render(&snapshot, ui, self.ui_language);
         self.apply_audio_studio_ui_actions(actions);
     }
 
@@ -3176,11 +3176,8 @@ impl XRTranslateApp {
             backend::BackendStatus::Failed(error) => {
                 self.backend_start_deadline = None;
                 self.set_startup_error("Startup failed", error.clone());
-                self.modal_dialog = ui::modal::ModalDialog::error(
-                    "Backend Startup Failure",
-                    "The native backend process failed to initialize or exited prematurely.",
-                    Some(&error),
-                );
+                self.modal_dialog =
+                    ui::modal::ModalDialog::error(self.ui_language, &error, None);
             }
         }
     }
@@ -4341,6 +4338,18 @@ impl eframe::App for XRTranslateApp {
         egui::CentralPanel::default()
             .frame(central_frame)
             .show(ui, |ui| {
+                if !is_player_fullscreen
+                    && !matches!(
+                        self.navigation.page,
+                        Page::Translation | Page::Plugin(PluginId::OSC)
+                    )
+                    && let Some(error) = self.last_error.as_deref()
+                {
+                    if ui::components::dismissible_error_notice(ui, self.ui_language, error) {
+                        self.last_error = None;
+                    }
+                    ui.add_space(10.0);
+                }
                 let plugin_owned_scroll = match self.navigation.page {
                     Page::Plugin(id) => {
                         PluginRegistry::builtin()

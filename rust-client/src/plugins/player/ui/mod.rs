@@ -113,11 +113,7 @@ fn render_runtime_install_banner(
                     });
                 }
                 super::installer::MpvInstallState::Failed(ref err) => {
-                    ui.label(
-                        egui::RichText::new(format!("{}: {err}", tr(language, "Download failed")))
-                            .size(12.5)
-                            .color(crate::ui::theme::danger()),
-                    );
+                    components::error_notice(ui, language, err);
                     ui.add_space(6.0);
                     if components::primary_button(ui, tr(language, "Retry Download")).clicked() {
                         let _ = controller.mpv_installer.start_download();

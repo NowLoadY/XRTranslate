@@ -1328,24 +1328,101 @@ pub fn input_field(ui: &mut Ui, text: &mut String, hint: &str) -> egui::Response
     resp
 }
 
-pub fn danger_alert(ui: &mut Ui, text: &str) {
+pub fn error_notice(ui: &mut Ui, language: crate::i18n::UiLanguage, details: &str) {
+    render_error_notice(ui, language, details, false);
+}
+
+pub fn dismissible_error_notice(
+    ui: &mut Ui,
+    language: crate::i18n::UiLanguage,
+    details: &str,
+) -> bool {
+    render_error_notice(ui, language, details, true)
+}
+
+fn render_error_notice(
+    ui: &mut Ui,
+    language: crate::i18n::UiLanguage,
+    details: &str,
+    dismissible: bool,
+) -> bool {
+    let mut dismissed = false;
     Frame::new()
-        .fill(Color32::from_rgb(254, 242, 242))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(254, 202, 202)))
+        .fill(crate::ui::theme::modal_backdrop())
+        .stroke(Stroke::new(1.0, crate::ui::theme::danger()))
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr(language, "Something went wrong"))
+                        .strong()
+                        .color(crate::ui::theme::text_strong()),
+                );
+                if dismissible {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        dismissed = ui
+                            .small_button("×")
+                            .on_hover_text(crate::i18n::tr(language, "Close"))
+                            .clicked();
+                    });
+                }
+            });
+            ui.label(
+                egui::RichText::new(crate::i18n::tr(
+                    language,
+                    "You can copy the details and report this on GitHub Issues or in QQ group 1009732148.",
+                ))
+                .size(12.5)
+                .color(crate::ui::theme::text_normal()),
+            );
+            ui.horizontal_wrapped(|ui| {
+                error_actions(ui, language, details);
+            });
+            egui::CollapsingHeader::new(crate::i18n::tr(language, "Error details"))
+                .id_salt(details)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(160.0)
+                        .show(ui, |ui| {
+                            dark_container_frame(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(details)
+                                        .family(egui::FontFamily::Monospace)
+                                        .color(Color32::from_rgb(240, 244, 255))
+                                        .size(12.0),
+                                );
+                            });
+                        });
+                });
+        });
+    dismissed
+}
+
+pub fn error_actions(ui: &mut Ui, language: crate::i18n::UiLanguage, details: &str) {
+    if secondary_button(ui, crate::i18n::tr(language, "Copy details")).clicked() {
+        ui.ctx().copy_text(details.to_owned());
+    }
+    ui.hyperlink_to(
+        crate::i18n::tr(language, "GitHub Issues"),
+        "https://github.com/NowLoadY/XRTranslate/issues/new",
+    );
+}
+
+pub fn validation_notice(ui: &mut Ui, language: crate::i18n::UiLanguage, details: &str) {
+    Frame::new()
+        .fill(crate::ui::theme::surface_subtle())
+        .stroke(Stroke::new(1.0, crate::ui::theme::danger()))
         .corner_radius(CornerRadius::same(10))
         .inner_margin(Margin::symmetric(12, 8))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("!")
-                        .strong()
-                        .color(Color32::from_rgb(220, 38, 38)),
-                );
-                ui.label(
-                    egui::RichText::new(text)
-                        .color(Color32::from_rgb(185, 28, 28))
-                        .size(12.5),
-                );
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(details).color(crate::ui::theme::danger()));
+                if secondary_button(ui, crate::i18n::tr(language, "Copy details")).clicked() {
+                    ui.ctx().copy_text(details.to_owned());
+                }
             });
         });
 }
@@ -2682,11 +2759,7 @@ pub fn render_runtime_task_state(
         }
         RuntimeInstallState::Failed(error) => {
             ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new(error)
-                    .size(12.0)
-                    .color(Color32::from_rgb(220, 38, 38)),
-            );
+            error_notice(ui, language, error);
         }
     }
 }

@@ -66,6 +66,7 @@ pub struct ServiceConfigEditor {
     categories: Vec<ServiceCategory>,
     dirty: bool,
     message: Option<String>,
+    message_is_error: bool,
     onboarding_save_error: Option<String>,
 }
 
@@ -78,10 +79,12 @@ impl ServiceConfigEditor {
             categories: Vec::new(),
             dirty: false,
             message: None,
+            message_is_error: false,
             onboarding_save_error: None,
         };
         if let Err(error) = editor.reload() {
             editor.message = Some(error);
+            editor.message_is_error = true;
         }
         editor
     }
@@ -99,6 +102,7 @@ impl ServiceConfigEditor {
         .collect();
         self.dirty = false;
         self.message = None;
+        self.message_is_error = false;
         self.onboarding_save_error = None;
         Ok(())
     }
@@ -328,6 +332,7 @@ impl ServiceConfigEditor {
             }
             Err(error) => {
                 self.message = Some(error.clone());
+                self.message_is_error = true;
                 self.onboarding_save_error = Some(error.clone());
                 Err(error)
             }
@@ -639,14 +644,19 @@ impl ServiceConfigEditor {
                     Ok(()) => {
                         apply_configuration = true;
                         self.message = Some(crate::i18n::tr(language, "Saved.").to_owned());
+                        self.message_is_error = false;
                     }
-                    Err(error) => self.message = Some(error),
+                    Err(error) => {
+                        self.message = Some(error);
+                        self.message_is_error = true;
+                    }
                 }
             }
             if components::animated_button(ui, crate::i18n::tr(language, "Reload")).clicked()
                 && let Err(error) = self.reload()
             {
                 self.message = Some(error);
+                self.message_is_error = true;
             }
             if self.dirty {
                 ui.label(
@@ -658,11 +668,15 @@ impl ServiceConfigEditor {
         });
         if let Some(message) = &self.message {
             ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new(message)
-                    .color(crate::ui::theme::text_weak())
-                    .size(12.0),
-            );
+            if self.message_is_error {
+                components::error_notice(ui, language, message);
+            } else {
+                ui.label(
+                    egui::RichText::new(message)
+                        .color(crate::ui::theme::text_weak())
+                        .size(12.0),
+                );
+            }
         }
         apply_configuration
     }

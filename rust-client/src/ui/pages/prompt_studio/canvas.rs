@@ -408,13 +408,10 @@ pub(super) fn render_graph_editor(
         });
     });
     if let Some(error) = &validation_error {
-        ui.label(
-            RichText::new(format!(
-                "{} / {error}",
-                crate::i18n::tr(language, "INVALID GRAPH")
-            ))
-            .font(egui::FontId::monospace(10.0))
-            .color(style::ERROR_BORDER),
+        crate::ui::components::validation_notice(
+            ui,
+            language,
+            &format!("{}: {error}", crate::i18n::tr(language, "Please check the graph")),
         );
     }
     ui.add_space(4.0);

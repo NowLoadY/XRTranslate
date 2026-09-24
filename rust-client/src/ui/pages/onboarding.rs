@@ -17,6 +17,7 @@ use crate::{
 };
 
 const STEPS: [&'static str; 4] = ["Welcome", "Configure models", "Optional TTS", "Download"];
+const QQ_GROUP_NUMBER: &str = "1009732148";
 
 pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     let total_pages = STEPS.len();
@@ -136,36 +137,31 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
                             .strong(),
                     );
                     ui.add_space(6.0);
-                    let github_icon = egui::Image::new(egui::include_image!(
-                        "../../../resources/icons/github.svg"
-                    ))
-                    .fit_to_exact_size(egui::vec2(20.0, 20.0))
-                    .tint(theme::text_weak());
-
-                    let github_btn = ui
-                        .add(egui::Button::image(github_icon).frame(false))
-                        .on_hover_text("GitHub: NowLoadY/XRTranslate")
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    if github_btn.clicked() {
-                        ui.ctx().open_url(egui::OpenUrl::new_tab(
+                    for (icon, tooltip, url) in [
+                        (
+                            egui::include_image!("../../../resources/icons/github.svg"),
+                            "GitHub: NowLoadY/XRTranslate",
                             "https://github.com/NowLoadY/XRTranslate",
-                        ));
-                    }
-                    ui.add_space(4.0);
-                    let website_icon = egui::Image::new(egui::include_image!(
-                        "../../../resources/icons/globe.svg"
-                    ))
-                    .fit_to_exact_size(egui::vec2(20.0, 20.0))
-                    .tint(theme::text_weak());
-
-                    let website_btn = ui
-                        .add(egui::Button::image(website_icon).frame(false))
-                        .on_hover_text("chatgpt.site: https://xrtranslate.nowloady.chatgpt.site")
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    if website_btn.clicked() {
-                        ui.ctx().open_url(egui::OpenUrl::new_tab(
+                        ),
+                        (
+                            egui::include_image!("../../../resources/icons/globe.svg"),
+                            "chatgpt.site: https://xrtranslate.nowloady.chatgpt.site",
                             "https://xrtranslate.nowloady.chatgpt.site",
-                        ));
+                        ),
+                    ] {
+                        if onboarding_icon_button(ui, egui::Image::new(icon), tooltip) {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                        }
+                        ui.add_space(4.0);
+                    }
+                    if onboarding_icon_button(
+                        ui,
+                        egui::Image::new(egui::include_image!("../../../resources/icons/qq.svg")),
+                        i18n::tr(app.ui_language, "QQ group"),
+                    ) {
+                        ui.ctx().data_mut(|data| {
+                            data.insert_temp(egui::Id::new("onboarding_qq_group"), true)
+                        });
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
@@ -211,6 +207,12 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
                     });
                 });
                 ui.add_space(8.0);
+                if let Some(error) = app.last_error.as_deref() {
+                    if components::dismissible_error_notice(ui, app.ui_language, error) {
+                        app.last_error = None;
+                    }
+                    ui.add_space(10.0);
+                }
                 ui.label(
                     RichText::new(i18n::tr(
                         app.ui_language,
@@ -245,6 +247,67 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
                     });
             });
         });
+
+    render_qq_group_dialog(ui.ctx(), app.ui_language);
+}
+
+fn onboarding_icon_button(ui: &mut egui::Ui, icon: egui::Image<'_>, tooltip: &str) -> bool {
+    let icon = icon
+        .fit_to_exact_size(egui::vec2(20.0, 20.0))
+        .tint(theme::text_weak());
+    ui.add(egui::Button::image(icon).frame(false))
+        .on_hover_text(tooltip)
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+}
+
+fn render_qq_group_dialog(ctx: &egui::Context, language: i18n::UiLanguage) {
+    let id = egui::Id::new("onboarding_qq_group");
+    if !ctx.data(|data| data.get_temp::<bool>(id).unwrap_or(false)) {
+        return;
+    }
+
+    let response = egui::Modal::new(id)
+        .frame(
+            Frame::new()
+                .fill(theme::modal_backdrop())
+                .corner_radius(CornerRadius::same(20))
+                .inner_margin(Margin::same(20)),
+        )
+        .show(ctx, |ui| {
+            ui.set_min_width(300.0);
+            ui.label(
+                RichText::new(i18n::tr(language, "QQ group"))
+                    .size(17.0)
+                    .color(theme::text_strong())
+                    .strong(),
+            );
+            ui.add_space(16.0);
+            ui.label(
+                RichText::new(i18n::tr(language, "Group number"))
+                    .size(12.0)
+                    .color(theme::text_weak()),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(QQ_GROUP_NUMBER)
+                    .size(20.0)
+                    .color(theme::text_strong())
+                    .strong(),
+            );
+            ui.add_space(18.0);
+            ui.horizontal(|ui| {
+                if components::primary_button(ui, i18n::tr(language, "Copy number")).clicked() {
+                    ctx.copy_text(QQ_GROUP_NUMBER.to_owned());
+                }
+                if components::secondary_button(ui, i18n::tr(language, "Close")).clicked() {
+                    ui.close();
+                }
+            });
+        });
+    if response.should_close() {
+        ctx.data_mut(|data| data.insert_temp(id, false));
+    }
 }
 
 fn render_onboarding_steps(
@@ -488,11 +551,7 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
     }
     if let Some(message) = app.service_config.onboarding_message() {
         ui.add_space(10.0);
-        ui.label(
-            RichText::new(message)
-                .size(12.0)
-                .color(Color32::from_rgb(220, 38, 38)),
-        );
+        components::error_notice(ui, language, message);
     }
     if let Some((capability, level)) = level_change {
         match set_model_level(&project_root, capability, level) {
@@ -1893,11 +1952,7 @@ fn render_model_task_state(
         }
         NativeModelTaskState::Failed(error) => {
             ui.add_space(6.0);
-            ui.label(
-                RichText::new(error)
-                    .size(12.0)
-                    .color(Color32::from_rgb(220, 38, 38)),
-            );
+            components::error_notice(ui, language, error);
         }
     }
 }
