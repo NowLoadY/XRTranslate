@@ -15,6 +15,8 @@ const MAX_ZOOM: f32 = 1.6;
 pub(crate) struct GraphCanvasState {
     pub pan: Vec2,
     pub zoom: f32,
+    pub min_zoom: f32,
+    pub max_zoom: f32,
     pub fit_pending: bool,
     pub canvas_size: Vec2,
     wire_base_zoom: Option<f32>,
@@ -25,6 +27,8 @@ impl Default for GraphCanvasState {
         Self {
             pan: Vec2::ZERO,
             zoom: 1.0,
+            min_zoom: MIN_ZOOM,
+            max_zoom: MAX_ZOOM,
             fit_pending: true,
             canvas_size: Vec2::new(960.0, 540.0),
             wire_base_zoom: None,
@@ -53,7 +57,7 @@ impl GraphCanvasState {
         let viewport = (available - Vec2::splat(48.0)).max(Vec2::splat(1.0));
         self.zoom = (viewport.x / graph_size.x)
             .min(viewport.y / graph_size.y)
-            .clamp(MIN_ZOOM, 1.0);
+            .clamp(self.min_zoom, self.max_zoom.min(1.0));
         self.pan = Vec2::new(
             (available.x - graph_size.x * self.zoom) * 0.5 - bounds.min.x * self.zoom,
             (available.y - graph_size.y * self.zoom) * 0.5 - bounds.min.y * self.zoom,
@@ -63,7 +67,7 @@ impl GraphCanvasState {
     pub fn zoom_at_pointer(&mut self, canvas: Rect, pointer: Pos2, scroll: f32) {
         let old_zoom = self.zoom;
         let factor = (scroll * 0.0015).exp();
-        let new_zoom = (old_zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        let new_zoom = (old_zoom * factor).clamp(self.min_zoom, self.max_zoom);
         if (new_zoom - old_zoom).abs() <= f32::EPSILON {
             return;
         }
@@ -125,7 +129,8 @@ impl GraphCanvasState {
 
             let base_zoom = *self.wire_base_zoom.get_or_insert(self.zoom);
             let zoom_out_ratio = (max_edge_intensity / 1.5).clamp(0.0, 1.0);
-            let target_zoom = (base_zoom * (1.0 - zoom_out_ratio * 0.22)).clamp(0.20, MAX_ZOOM);
+            let target_zoom = (base_zoom * (1.0 - zoom_out_ratio * 0.22))
+                .clamp(self.min_zoom * 0.8, self.max_zoom);
             let zoom_change_rate = if target_zoom < self.zoom { 7.0 } else { 5.0 };
             let zoom_step = 1.0 - (-dt * zoom_change_rate).exp();
             let new_zoom = self.zoom + (target_zoom - self.zoom) * zoom_step;
@@ -242,6 +247,60 @@ pub(crate) fn node_connection(from: Rect, to: Rect) -> [Pos2; 4] {
     [start, start + outward * reach, end + inward * reach, end]
 }
 
+/// Appends a gradient line with a one-point antialiasing fringe to a shared mesh.
+pub(crate) fn mesh_line(
+    mesh: &mut egui::Mesh,
+    from: Pos2,
+    to: Pos2,
+    width: f32,
+    colors: [Color32; 2],
+) {
+    let delta = to - from;
+    if width <= 0.0 || delta.length_sq() <= f32::EPSILON {
+        return;
+    }
+    let normal = Vec2::new(-delta.y, delta.x).normalized();
+    let inner = ((width - 1.0) * 0.5).max(0.0);
+    let outer = width * 0.5 + 0.5;
+    let base = mesh.vertices.len() as u32;
+    for (point, color) in [(from, colors[0]), (to, colors[1])] {
+        for (offset, color) in [
+            (-outer, Color32::TRANSPARENT),
+            (-inner, color.gamma_multiply(width.min(1.0))),
+            (inner, color.gamma_multiply(width.min(1.0))),
+            (outer, Color32::TRANSPARENT),
+        ] {
+            mesh.colored_vertex(point + normal * offset, color);
+        }
+    }
+    for i in 0..3 {
+        mesh.add_triangle(base + i, base + i + 4, base + i + 1);
+        mesh.add_triangle(base + i + 1, base + i + 4, base + i + 5);
+    }
+}
+
+/// Appends a small antialiased node dot to the same mesh as its overview edges.
+pub(crate) fn mesh_circle(mesh: &mut egui::Mesh, center: Pos2, radius: f32, color: Color32) {
+    if radius <= 0.0 {
+        return;
+    }
+    let steps = (radius * 2.0).ceil().clamp(12.0, 32.0) as u32;
+    let base = mesh.vertices.len() as u32;
+    mesh.colored_vertex(center, color);
+    for i in 0..steps {
+        let direction = Vec2::angled(i as f32 * std::f32::consts::TAU / steps as f32);
+        mesh.colored_vertex(center + direction * (radius - 0.5).max(0.0), color);
+        mesh.colored_vertex(center + direction * (radius + 0.5), Color32::TRANSPARENT);
+    }
+    for i in 0..steps {
+        let current = base + 1 + i * 2;
+        let next = base + 1 + ((i + 1) % steps) * 2;
+        mesh.add_triangle(base, current, next);
+        mesh.add_triangle(current, current + 1, next);
+        mesh.add_triangle(next, current + 1, next + 1);
+    }
+}
+
 pub(crate) fn paint_directed_wire(
     ui: &egui::Ui,
     points: [Pos2; 4],
@@ -249,19 +308,42 @@ pub(crate) fn paint_directed_wire(
     colors: [Color32; 2],
     dashed: bool,
 ) {
-    const STEPS: usize = 48;
-    for step in 0..STEPS {
+    if !ui
+        .clip_rect()
+        .intersects(Rect::from_points(&points).expand(10.0))
+    {
+        return;
+    }
+    let length: f32 = points
+        .windows(2)
+        .map(|pair| pair[0].distance(pair[1]))
+        .sum();
+    let steps = (length / if dashed { 3.0 } else { 12.0 })
+        .ceil()
+        .clamp(8.0, 96.0) as usize;
+    let mut mesh = egui::Mesh::default();
+    mesh.vertices.reserve(steps * 8 + 3);
+    mesh.indices.reserve(steps * 18 + 3);
+    let mut previous = points[0];
+    for step in 0..steps {
+        let t = step as f32 / steps as f32;
+        let next_t = (step + 1) as f32 / steps as f32;
+        let next = cubic_point(points, next_t);
         if dashed && step % 5 >= 3 {
+            previous = next;
             continue;
         }
-        let t = step as f32 / STEPS as f32;
-        ui.painter().line_segment(
+        mesh_line(
+            &mut mesh,
+            previous,
+            next,
+            width,
             [
-                cubic_point(points, t),
-                cubic_point(points, (step + 1) as f32 / STEPS as f32),
+                colors[0].lerp_to_gamma(colors[1], t),
+                colors[0].lerp_to_gamma(colors[1], next_t),
             ],
-            Stroke::new(width, colors[0].lerp_to_gamma(colors[1], t)),
         );
+        previous = next;
     }
     let tangent = points[3] - points[2];
     if tangent.length_sq() > f32::EPSILON {
@@ -269,12 +351,13 @@ pub(crate) fn paint_directed_wire(
         let length = (width * 4.0).clamp(5.0, 10.0);
         let base = points[3] - direction * length;
         let side = Vec2::new(-direction.y, direction.x) * length * 0.45;
-        ui.painter().add(egui::Shape::convex_polygon(
-            vec![points[3], base + side, base - side],
-            colors[1],
-            Stroke::NONE,
-        ));
+        let index = mesh.vertices.len() as u32;
+        for point in [points[3], base + side, base - side] {
+            mesh.colored_vertex(point, colors[1]);
+        }
+        mesh.add_triangle(index, index + 1, index + 2);
     }
+    ui.painter().add(mesh);
 }
 
 pub(crate) fn paint_wire(ui: &egui::Ui, points: [Pos2; 4], stroke: Stroke) {

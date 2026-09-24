@@ -21,7 +21,7 @@ pub(crate) struct ForceNode<N> {
     pub group: usize,
 }
 
-/// Animated, domain-neutral layout for small graphs, including cyclic graphs.
+/// Animated, domain-neutral layout, including cyclic graphs.
 /// Positions are node origins; all simulation state stays in memory.
 #[derive(Clone, Debug)]
 pub(crate) struct ForceLayout<N> {
@@ -30,6 +30,8 @@ pub(crate) struct ForceLayout<N> {
     edges: Vec<(usize, usize, f32)>,
     anchors: Vec<Vec2>,
     velocities: Vec<Vec2>,
+    grid: LayoutGrid,
+    cell_size: Vec2,
     steps_left: u16,
     settled: u8,
 }
@@ -42,8 +44,68 @@ impl<N> Default for ForceLayout<N> {
             edges: Vec::new(),
             anchors: Vec::new(),
             velocities: Vec::new(),
+            grid: LayoutGrid::default(),
+            cell_size: Vec2::splat(1.0),
             steps_left: 0,
             settled: 0,
+        }
+    }
+}
+
+/// Reuses one linked bucket entry per node; iteration order stays deterministic.
+#[derive(Clone, Debug, Default)]
+struct LayoutGrid {
+    heads: HashMap<(i32, i32), usize>,
+    next: Vec<usize>,
+    cells: Vec<(i32, i32)>,
+}
+
+impl LayoutGrid {
+    fn cell(center: Vec2, size: Vec2) -> (i32, i32) {
+        (
+            (center.x / size.x).floor() as i32,
+            (center.y / size.y).floor() as i32,
+        )
+    }
+
+    fn insert(&mut self, index: usize, center: Vec2, size: Vec2) {
+        let cell = Self::cell(center, size);
+        self.next[index] = self.heads.insert(cell, index).unwrap_or(usize::MAX);
+        self.cells[index] = cell;
+    }
+
+    fn rebuild(&mut self, centers: &[Vec2], cell_size: Vec2) {
+        self.heads.clear();
+        self.next.resize(centers.len(), usize::MAX);
+        self.cells.resize(centers.len(), (0, 0));
+        for (index, center) in centers.iter().enumerate() {
+            self.insert(index, *center, cell_size);
+        }
+    }
+
+    fn neighbors(&self, (x, y): (i32, i32), mut visit: impl FnMut(usize)) {
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let mut next = self.heads.get(&(x + dx, y + dy)).copied();
+                while let Some(j) = next {
+                    visit(j);
+                    next = (self.next[j] != usize::MAX).then_some(self.next[j]);
+                }
+            }
+        }
+    }
+
+    fn pairs(&self, mut visit: impl FnMut(usize, usize)) {
+        for (i, &(x, y)) in self.cells.iter().enumerate() {
+            for (dx, dy) in [(0, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+                let mut next = self.heads.get(&(x + dx, y + dy)).copied();
+                while let Some(j) = next {
+                    if dx != 0 || dy != 0 || j > i {
+                        visit(i, j);
+                    }
+                    next = (self.next[j] != usize::MAX).then_some(self.next[j]);
+                }
+            }
         }
     }
 }
@@ -81,21 +143,41 @@ impl<N: Clone + Eq + Hash> ForceLayout<N> {
             max_size = max_size.max(node.size);
             counts[group] += 1;
         }
-        let group_radii = counts
+        self.cell_size = max_size + Vec2::splat(18.0);
+        let footprints = counts
             .iter()
-            .map(|&count| (count as f32 * (max_size.x + 20.0) * (max_size.y + 20.0)).sqrt() * 0.4)
-            .collect::<Vec<_>>();
-        let radius = if counts.len() > 1 {
-            group_radii.iter().sum::<f32>() / std::f32::consts::PI
-                + group_radii.iter().copied().fold(0.0, f32::max) * 0.5
-        } else {
-            0.0
-        };
-        self.anchors = (0..counts.len())
-            .map(|index| {
-                Vec2::angled(index as f32 * std::f32::consts::TAU / counts.len() as f32) * radius
+            .map(|&count| {
+                (max_size + Vec2::new(0.0, 64.0)) * (count as f32).sqrt() + Vec2::splat(80.0)
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let row_width = (footprints.iter().map(|size| size.x * size.y).sum::<f32>() * 1.6)
+            .sqrt()
+            .max(footprints.iter().map(|size| size.x).fold(0.0, f32::max));
+        let mut order = (0..counts.len()).collect::<Vec<_>>();
+        order.sort_by_key(|&group| std::cmp::Reverse(counts[group]));
+        let mut rows = Vec::<(f32, f32, f32)>::new();
+        self.anchors = vec![Vec2::ZERO; counts.len()];
+        for group in order {
+            let size = footprints[group];
+            let row = rows
+                .iter()
+                .position(|&(width, _, _)| width + size.x <= row_width)
+                .unwrap_or_else(|| {
+                    let y = rows.last().map_or(0.0, |&(_, y, height)| y + height);
+                    rows.push((0.0, y, size.y));
+                    rows.len() - 1
+                });
+            let (width, y, height) = &mut rows[row];
+            self.anchors[group] = Vec2::new(*width + size.x * 0.5, *y + *height * 0.5);
+            *width += size.x;
+        }
+        let center = Vec2::new(
+            rows.iter().map(|&(width, _, _)| width).fold(0.0, f32::max),
+            rows.last().map_or(0.0, |&(_, y, height)| y + height),
+        ) * 0.5;
+        for anchor in &mut self.anchors {
+            *anchor -= center;
+        }
         self.positions.clear();
         counts.fill(0);
         for node in &self.nodes {
@@ -130,16 +212,8 @@ impl<N: Clone + Eq + Hash> ForceLayout<N> {
             .map(|(i, j)| (i, j, 0.07 / degree[i].max(degree[j]) as f32))
             .collect();
         self.velocities = vec![Vec2::ZERO; self.nodes.len()];
-        self.steps_left = 360;
+        self.steps_left = 240;
         self.settled = 0;
-    }
-
-    pub fn set_position(&mut self, id: &N, position: [f32; 2]) {
-        if let Some(stored) = self.positions.get_mut(id) {
-            *stored = position;
-            self.steps_left = 240;
-            self.settled = 0;
-        }
     }
 
     /// Returns whether another animation frame is needed.
@@ -160,24 +234,23 @@ impl<N: Clone + Eq + Hash> ForceLayout<N> {
             .zip(&centers)
             .map(|(node, center)| (self.anchors[node.group] - *center) * 0.024)
             .collect::<Vec<_>>();
-        for i in 0..self.nodes.len() {
-            for j in i + 1..self.nodes.len() {
-                let delta = centers[j] - centers[i];
-                let distance = delta.length().max(1.0);
-                let direction = if delta.length_sq() < 1.0 {
-                    Vec2::angled((i + j) as f32 * 2.399_963_1)
-                } else {
-                    delta / distance
-                };
-                let spacing = direction
-                    .abs()
-                    .dot((self.nodes[i].size + self.nodes[j].size) * 0.5)
-                    + 40.0;
-                let force = direction * (spacing / distance).powi(2).min(16.0);
-                forces[i] -= force;
-                forces[j] += force;
-            }
-        }
+        self.grid.rebuild(&centers, self.cell_size * 2.0);
+        self.grid.pairs(|i, j| {
+            let delta = centers[j] - centers[i];
+            let distance = delta.length().max(1.0);
+            let direction = if delta.length_sq() < 1.0 {
+                Vec2::angled((i + j) as f32 * 2.399_963_1)
+            } else {
+                delta / distance
+            };
+            let spacing = direction
+                .abs()
+                .dot((self.nodes[i].size + self.nodes[j].size) * 0.5)
+                + 40.0;
+            let force = direction * (spacing / distance).powi(2).min(16.0);
+            forces[i] -= force;
+            forces[j] += force;
+        });
         for &(i, j, strength) in &self.edges {
             let delta = centers[j] - centers[i];
             let direction = delta.normalized();
@@ -190,46 +263,73 @@ impl<N: Clone + Eq + Hash> ForceLayout<N> {
             forces[j] -= force;
         }
         for i in 0..self.nodes.len() {
-            let velocity = (self.velocities[i] + forces[i] * dt) * 0.72_f32.powf(dt);
+            let cooling = (self.steps_left as f32 / 60.0).min(1.0);
+            let velocity = (self.velocities[i] + forces[i] * dt) * 0.72_f32.powf(dt) * cooling;
             self.velocities[i] = velocity / (velocity.length() / 14.0).max(1.0);
             centers[i] += self.velocities[i] * dt;
         }
         // Separate rectangles directly so long labels cannot overlap at equilibrium.
-        for _ in 0..32 {
+        for _ in 0..if self.steps_left > 60 { 6 } else { 24 } {
             let mut penetration = 0.0_f32;
-            for i in 0..self.nodes.len() {
-                for j in i + 1..self.nodes.len() {
-                    let delta = centers[j] - centers[i];
-                    let overlap = (self.nodes[i].size + self.nodes[j].size) * 0.5
-                        + Vec2::splat(18.0)
-                        - delta.abs();
-                    if overlap.x <= 0.0 || overlap.y <= 0.0 {
-                        continue;
-                    }
-                    penetration = penetration.max(overlap.x.min(overlap.y));
-                    let shift = if overlap.x < overlap.y {
-                        Vec2::new(overlap.x * if delta.x < 0.0 { -1.0 } else { 1.0 }, 0.0)
-                    } else {
-                        Vec2::new(0.0, overlap.y * if delta.y < 0.0 { -1.0 } else { 1.0 })
-                    };
-                    centers[i] -= shift * 0.5;
-                    centers[j] += shift * 0.5;
+            self.grid.rebuild(&centers, self.cell_size);
+            self.grid.pairs(|i, j| {
+                let delta = centers[j] - centers[i];
+                let overlap = (self.nodes[i].size + self.nodes[j].size) * 0.5 + Vec2::splat(18.0)
+                    - delta.abs();
+                if overlap.x <= 0.0 || overlap.y <= 0.0 {
+                    return;
                 }
-            }
+                penetration = penetration.max(overlap.x.min(overlap.y));
+                let shift = if overlap.x < overlap.y {
+                    Vec2::new(overlap.x * if delta.x < 0.0 { -1.0 } else { 1.0 }, 0.0)
+                } else {
+                    Vec2::new(0.0, overlap.y * if delta.y < 0.0 { -1.0 } else { 1.0 })
+                };
+                centers[i] -= shift * 0.5;
+                centers[j] += shift * 0.5;
+            });
             if penetration < 0.1 {
                 break;
             }
         }
-        let mut movement = 0.0_f32;
-        for (i, node) in self.nodes.iter().enumerate() {
-            movement = movement.max((centers[i] - before[i]).length());
-            self.positions
-                .insert(node.id.clone(), (centers[i] - node.size * 0.5).into());
-        }
+        let movement = centers
+            .iter()
+            .zip(&before)
+            .map(|(after, before)| (*after - *before).length())
+            .fold(0.0_f32, f32::max);
         self.settled = if movement < 0.12 { self.settled + 1 } else { 0 };
         self.steps_left -= 1;
         if self.settled >= 12 {
             self.steps_left = 0;
+        }
+        if self.steps_left == 0 {
+            // Resolve residual contacts once at rest without repeated global collision passes.
+            let mut order = (0..self.nodes.len()).collect::<Vec<_>>();
+            order.sort_by(|&i, &j| centers[i].y.total_cmp(&centers[j].y));
+            self.grid.heads.clear();
+            for i in order {
+                loop {
+                    let mut y = centers[i].y;
+                    self.grid
+                        .neighbors(LayoutGrid::cell(centers[i], self.cell_size), |j| {
+                            let spacing =
+                                (self.nodes[i].size + self.nodes[j].size) * 0.5 + Vec2::splat(2.0);
+                            let delta = (centers[j] - centers[i]).abs();
+                            if delta.x < spacing.x && delta.y < spacing.y {
+                                y = y.max(centers[j].y + spacing.y);
+                            }
+                        });
+                    if y == centers[i].y {
+                        break;
+                    }
+                    centers[i].y = y;
+                }
+                self.grid.insert(i, centers[i], self.cell_size);
+            }
+        }
+        for (i, node) in self.nodes.iter().enumerate() {
+            self.positions
+                .insert(node.id.clone(), (centers[i] - node.size * 0.5).into());
         }
         self.steps_left > 0
     }
