@@ -30,7 +30,7 @@ use crate::{
     },
 };
 
-const NODE_SIZE: Vec2 = Vec2::new(160.0, 36.0);
+const MAX_NODE_SIZE: Vec2 = Vec2::new(218.0, 34.0);
 const CORPUS_URL: &str = "http://127.0.0.1:7766";
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -59,6 +59,7 @@ fn edge_key(edge: &GraphEdge) -> EdgeKey {
 #[derive(Default)]
 struct GraphScene {
     nodes: Vec<usize>,
+    sizes: Vec<Vec2>,
     edges: Vec<(usize, usize, usize)>,
     connected: Vec<bool>,
     domains: Vec<Option<usize>>,
@@ -864,6 +865,24 @@ fn node_label(node: &GraphNode, language: UiLanguage) -> &str {
         .map_or(node.title.as_str(), String::as_str)
 }
 
+fn node_size(node: &GraphNode, language: UiLanguage) -> Vec2 {
+    let text_width = node_label(node, language)
+        .chars()
+        .fold(0.0_f32, |width, ch| {
+            width
+                + match ch {
+                    ' ' | 'i' | 'l' | 'I' | '.' | ',' | '!' | '\'' | ':' | ';' => 4.0,
+                    'm' | 'w' | 'M' | 'W' | '@' => 10.0,
+                    ch if ch.is_ascii() => 7.0,
+                    _ => 13.0,
+                }
+        });
+    Vec2::new(
+        (text_width + if node.promptable { 28.0 } else { 40.0 }).clamp(72.0, MAX_NODE_SIZE.x),
+        MAX_NODE_SIZE.y,
+    )
+}
+
 fn language_value(ui: &mut egui::Ui, code: &str, value: &mut String) -> bool {
     ui.horizontal(|ui| {
         ui.label(RichText::new(code).monospace());
@@ -1010,13 +1029,18 @@ fn domain_color(id: &str) -> Color32 {
     COLORS[hash as usize % COLORS.len()]
 }
 
-fn sync_layout(controller: &mut CorpusStudioController, snapshot: &GraphSnapshot) {
+fn sync_layout(
+    controller: &mut CorpusStudioController,
+    snapshot: &GraphSnapshot,
+    language: UiLanguage,
+) {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     (
         controller.view,
         &controller.selected_domain,
         &controller.node_search,
         controller.focus_connections,
+        preferred_language_index(language),
         controller
             .selected_node
             .as_ref()
@@ -1029,6 +1053,10 @@ fn sync_layout(controller: &mut CorpusStudioController, snapshot: &GraphSnapshot
     }
     let mut nodes = visible_nodes(controller, snapshot);
     nodes.sort_by(|a, b| a.id.cmp(&b.id));
+    let sizes = nodes
+        .iter()
+        .map(|node| node_size(node, language))
+        .collect::<Vec<_>>();
     let indexes = nodes
         .iter()
         .enumerate()
@@ -1065,8 +1093,8 @@ fn sync_layout(controller: &mut CorpusStudioController, snapshot: &GraphSnapshot
         .collect::<Vec<_>>();
     let mut topology = std::collections::hash_map::DefaultHasher::new();
     controller.view.hash(&mut topology);
-    for node in &nodes {
-        (&node.id, &node.domain_id).hash(&mut topology);
+    for (node, size) in nodes.iter().zip(&sizes) {
+        (&node.id, &node.domain_id, size.x.to_bits()).hash(&mut topology);
     }
     edges.hash(&mut topology);
     let signature = topology.finish();
@@ -1079,7 +1107,7 @@ fn sync_layout(controller: &mut CorpusStudioController, snapshot: &GraphSnapshot
         controller.layout.reset(
             nodes.iter().enumerate().map(|(i, node)| ForceNode {
                 id: node.id.clone(),
-                size: NODE_SIZE,
+                size: sizes[i],
                 group: domains[i].unwrap_or(snapshot.domains.len()),
             }),
             links.iter().cloned(),
@@ -1108,9 +1136,9 @@ fn sync_layout(controller: &mut CorpusStudioController, snapshot: &GraphSnapshot
                 }
             }
             controller.layout.positions = layered_layout(
-                nodes.iter().map(|node| LayoutNode {
+                nodes.iter().enumerate().map(|(i, node)| LayoutNode {
                     id: node.id.clone(),
-                    size: NODE_SIZE,
+                    size: sizes[i],
                 }),
                 tree,
                 LayeredLayoutOptions {
@@ -1143,6 +1171,7 @@ fn sync_layout(controller: &mut CorpusStudioController, snapshot: &GraphSnapshot
             .iter()
             .map(|n| snapshot_indexes[n.id.as_str()])
             .collect(),
+        sizes,
         edges,
         connected,
         domains,
@@ -1252,7 +1281,7 @@ fn render_workspace(
         );
         return;
     }
-    sync_layout(controller, snapshot);
+    sync_layout(controller, snapshot, language);
     let scene = controller.scene.clone();
     let nodes = scene
         .nodes
@@ -1274,7 +1303,10 @@ fn render_workspace(
             controller.editor.canvas.max_zoom = 3.0;
             let navigating = response.dragged()
                 || zoom_step != 0.0
-                || (response.hovered() && ui.input(|i| i.smooth_scroll_delta != Vec2::ZERO));
+                || ui.input(|i| {
+                    i.pointer.hover_pos().is_some_and(|p| canvas.contains(p))
+                        && i.smooth_scroll_delta != Vec2::ZERO
+                });
             if navigating {
                 controller.fit_layout = false;
             }
@@ -1300,26 +1332,33 @@ fn render_workspace(
             if old_size != canvas.size()
                 && let Some(id) = &controller.selected_node
                 && let Some(p) = controller.layout.positions.get(id)
+                && let Some(index) = nodes.iter().position(|node| &node.id == id)
             {
                 let zoom = controller.editor.canvas.zoom;
+                let size = scene.sizes[index];
                 let center =
-                    controller.editor.canvas.pan + (Vec2::new(p[0], p[1]) + NODE_SIZE * 0.5) * zoom;
-                let padding = (NODE_SIZE * zoom * 0.5 + Vec2::splat(16.0)).min(canvas.size() * 0.5);
+                    controller.editor.canvas.pan + (Vec2::new(p[0], p[1]) + size * 0.5) * zoom;
+                let padding = (size * zoom * 0.5 + Vec2::splat(16.0)).min(canvas.size() * 0.5);
                 controller.editor.canvas.pan +=
                     center.clamp(padding, canvas.size() - padding) - center;
             }
             if controller.editor.canvas.fit_pending {
-                if let Some(bounds) = controller
-                    .layout
-                    .positions
-                    .values()
-                    .map(|p| Rect::from_min_size(Pos2::new(p[0], p[1]), NODE_SIZE))
+                if let Some(bounds) = nodes
+                    .iter()
+                    .zip(&scene.sizes)
+                    .filter_map(|(node, size)| {
+                        controller
+                            .layout
+                            .positions
+                            .get(&node.id)
+                            .map(|p| Rect::from_min_size(Pos2::new(p[0], p[1]), *size))
+                    })
                     .reduce(|a, b| a.union(b))
                 {
                     controller
                         .editor
                         .canvas
-                        .fit_to_bounds(bounds, canvas.size(), NODE_SIZE);
+                        .fit_to_bounds(bounds, canvas.size(), MAX_NODE_SIZE);
                 }
                 controller.editor.canvas.fit_pending = false;
             }
@@ -1340,19 +1379,21 @@ fn render_workspace(
                 controller.editor.canvas.pan += ui.input(|i| i.pointer.delta());
             }
             let zoom = controller.editor.canvas.zoom;
-            let t = ((zoom - 0.55) / 0.4).clamp(0.0, 1.0);
+            let t = ((zoom - 0.68) / 0.27).clamp(0.0, 1.0);
             let expansion = t * t * (3.0 - 2.0 * t);
             let dot_size = (24.0 * zoom).clamp(4.4, 16.0);
-            let size = Vec2::splat(dot_size) * (1.0 - expansion) + NODE_SIZE * zoom * expansion;
             let rects = nodes
                 .iter()
-                .map(|node| {
+                .zip(&scene.sizes)
+                .map(|(node, node_size)| {
                     let p = controller.layout.positions[&node.id];
                     let center = controller
                         .editor
                         .canvas
-                        .graph_rect(canvas, p, NODE_SIZE)
+                        .graph_rect(canvas, p, *node_size)
                         .center();
+                    let size =
+                        Vec2::splat(dot_size) * (1.0 - expansion) + *node_size * zoom * expansion;
                     Rect::from_center_size(center, size)
                 })
                 .collect::<Vec<_>>();
@@ -1524,21 +1565,21 @@ fn render_workspace(
                         graph_canvas::mesh_circle(
                             &mut dots,
                             rect.center(),
-                            size.x * 0.5 + 2.0,
+                            rect.width() * 0.5 + 2.0,
                             accent.gamma_multiply(0.25),
                         );
                     }
                     graph_canvas::mesh_circle(
                         &mut dots,
                         rect.center(),
-                        size.x * 0.5,
+                        rect.width() * 0.5,
                         accent.gamma_multiply(if active[i] { 1.0 } else { 0.45 }),
                     );
                     if !node.promptable || !scene.connected[i] {
                         graph_canvas::mesh_circle(
                             &mut dots,
                             rect.center(),
-                            (size.x * 0.5 - 1.3).max(0.8),
+                            (rect.width() * 0.5 - 1.3).max(0.8),
                             graph_style::CANVAS_FILL,
                         );
                     }
@@ -1559,8 +1600,19 @@ fn render_workspace(
                         ),
                         egui::StrokeKind::Inside,
                     );
+                    if !node.promptable && expansion > 0.7 {
+                        canvas_ui.painter().circle_stroke(
+                            rect.left_center() + Vec2::new((10.0 * zoom).max(8.0), 0.0),
+                            (3.0 * zoom).clamp(2.5, 6.0),
+                            Stroke::new(1.3, accent.gamma_multiply(0.75)),
+                        );
+                    }
                     if expansion > 0.7 {
-                        let text_rect = rect.shrink2(Vec2::new(10.0 * zoom, 2.0));
+                        let left_padding = if node.promptable { 10.0 } else { 22.0 } * zoom;
+                        let text_rect = Rect::from_min_max(
+                            rect.min + Vec2::new(left_padding, 2.0),
+                            rect.max - Vec2::new(10.0 * zoom, 2.0),
+                        );
                         let mut job = egui::text::LayoutJob::simple(
                             node_label(node, language).to_owned(),
                             egui::FontId::proportional((13.0 * zoom).clamp(11.0, 32.0)),
@@ -1572,7 +1624,7 @@ fn render_workspace(
                         let painter = canvas_ui.painter().with_clip_rect(text_rect);
                         let galley = painter.layout_job(job);
                         painter.galley(
-                            rect.center() - galley.size() * 0.5,
+                            text_rect.center() - galley.size() * 0.5,
                             galley,
                             graph_style::NODE_TEXT,
                         );
@@ -2281,22 +2333,19 @@ fn render_inspector(
                     }));
                     controller.edge_target.clear();
                 }
-                egui::ScrollArea::vertical().id_salt("corpus_term_edges").max_height(180.0)
-                    .show(ui, |ui| {
-                        for edge in snapshot.edges.iter()
-                            .filter(|edge| edge.source_id == draft.id || edge.target_id == draft.id) {
-                            let source_exists = snapshot.nodes.iter().any(|node| node.id == edge.source_id);
-                            let target_exists = snapshot.nodes.iter().any(|node| node.id == edge.target_id);
-                            ui.label(format!("{} → {} · {}",
-                                endpoint_label(snapshot, &edge.source_id, language),
-                                endpoint_label(snapshot, &edge.target_id, language),
-                                if source_exists && target_exists {
-                                    if edge.kind == GraphEdgeKind::Context { tr(language, "Context condition") }
-                                    else { tr(language, "Trigger") }
-                                } else { tr(language, "Waiting for missing term") }));
-                            edge_controls(controller, edge, snapshot, ui, language);
-                        }
-                    });
+                for edge in snapshot.edges.iter()
+                    .filter(|edge| edge.source_id == draft.id || edge.target_id == draft.id) {
+                    let source_exists = snapshot.nodes.iter().any(|node| node.id == edge.source_id);
+                    let target_exists = snapshot.nodes.iter().any(|node| node.id == edge.target_id);
+                    ui.label(format!("{} → {} · {}",
+                        endpoint_label(snapshot, &edge.source_id, language),
+                        endpoint_label(snapshot, &edge.target_id, language),
+                        if source_exists && target_exists {
+                            if edge.kind == GraphEdgeKind::Context { tr(language, "Context condition") }
+                            else { tr(language, "Trigger") }
+                        } else { tr(language, "Waiting for missing term") }));
+                    edge_controls(controller, edge, snapshot, ui, language);
+                }
             }
         });
 }

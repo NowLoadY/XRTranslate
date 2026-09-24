@@ -28,7 +28,7 @@ pub(crate) struct ForceLayout<N> {
     pub positions: HashMap<N, [f32; 2]>,
     nodes: Vec<ForceNode<N>>,
     edges: Vec<(usize, usize, f32)>,
-    anchors: Vec<Vec2>,
+    homes: Vec<Vec2>,
     velocities: Vec<Vec2>,
     grid: LayoutGrid,
     cell_size: Vec2,
@@ -42,7 +42,7 @@ impl<N> Default for ForceLayout<N> {
             positions: HashMap::new(),
             nodes: Vec::new(),
             edges: Vec::new(),
-            anchors: Vec::new(),
+            homes: Vec::new(),
             velocities: Vec::new(),
             grid: LayoutGrid::default(),
             cell_size: Vec2::splat(1.0),
@@ -58,6 +58,15 @@ struct LayoutGrid {
     heads: HashMap<(i32, i32), usize>,
     next: Vec<usize>,
     cells: Vec<(i32, i32)>,
+}
+
+fn layout_noise(mut seed: u32) -> f32 {
+    seed ^= seed >> 16;
+    seed = seed.wrapping_mul(0x7feb_352d);
+    seed ^= seed >> 15;
+    seed = seed.wrapping_mul(0x846c_a68b);
+    seed ^= seed >> 16;
+    seed as f32 / u32::MAX as f32
 }
 
 impl LayoutGrid {
@@ -80,18 +89,6 @@ impl LayoutGrid {
         self.cells.resize(centers.len(), (0, 0));
         for (index, center) in centers.iter().enumerate() {
             self.insert(index, *center, cell_size);
-        }
-    }
-
-    fn neighbors(&self, (x, y): (i32, i32), mut visit: impl FnMut(usize)) {
-        for dy in -1..=1 {
-            for dx in -1..=1 {
-                let mut next = self.heads.get(&(x + dx, y + dy)).copied();
-                while let Some(j) = next {
-                    visit(j);
-                    next = (self.next[j] != usize::MAX).then_some(self.next[j]);
-                }
-            }
         }
     }
 
@@ -131,65 +128,68 @@ impl<N: Clone + Eq + Hash> ForceLayout<N> {
             .collect();
         let mut groups = HashMap::new();
         let mut counts = Vec::<usize>::new();
+        let mut group_sizes = Vec::<Vec2>::new();
         let mut max_size = Vec2::splat(1.0);
         for node in &mut self.nodes {
             let next = groups.len();
             let group = *groups.entry(node.group).or_insert_with(|| {
                 counts.push(0);
+                group_sizes.push(Vec2::ZERO);
                 next
             });
             node.group = group;
             node.size = node.size.max(Vec2::splat(1.0));
             max_size = max_size.max(node.size);
             counts[group] += 1;
+            group_sizes[group] += node.size;
         }
-        self.cell_size = max_size + Vec2::splat(18.0);
-        let footprints = counts
+        self.cell_size = max_size + Vec2::splat(56.0);
+        let pitches = counts
             .iter()
-            .map(|&count| {
-                (max_size + Vec2::new(0.0, 64.0)) * (count as f32).sqrt() + Vec2::splat(80.0)
+            .enumerate()
+            .map(|(group, &count)| {
+                group_sizes[group] / count as f32 + Vec2::new(76.0, 100.0)
             })
             .collect::<Vec<_>>();
-        let row_width = (footprints.iter().map(|size| size.x * size.y).sum::<f32>() * 1.6)
-            .sqrt()
-            .max(footprints.iter().map(|size| size.x).fold(0.0, f32::max));
+        let radii = pitches
+            .iter()
+            .zip(&counts)
+            .map(|(pitch, &count)| *pitch * ((count as f32).sqrt() * 0.6) + Vec2::splat(70.0))
+            .collect::<Vec<_>>();
         let mut order = (0..counts.len()).collect::<Vec<_>>();
         order.sort_by_key(|&group| std::cmp::Reverse(counts[group]));
-        let mut rows = Vec::<(f32, f32, f32)>::new();
-        self.anchors = vec![Vec2::ZERO; counts.len()];
-        for group in order {
-            let size = footprints[group];
-            let row = rows
-                .iter()
-                .position(|&(width, _, _)| width + size.x <= row_width)
-                .unwrap_or_else(|| {
-                    let y = rows.last().map_or(0.0, |&(_, y, height)| y + height);
-                    rows.push((0.0, y, size.y));
-                    rows.len() - 1
-                });
-            let (width, y, height) = &mut rows[row];
-            self.anchors[group] = Vec2::new(*width + size.x * 0.5, *y + *height * 0.5);
-            *width += size.x;
-        }
-        let center = Vec2::new(
-            rows.iter().map(|&(width, _, _)| width).fold(0.0, f32::max),
-            rows.last().map_or(0.0, |&(_, y, height)| y + height),
-        ) * 0.5;
-        for anchor in &mut self.anchors {
-            *anchor -= center;
+        let mut anchors = vec![Vec2::ZERO; counts.len()];
+        for (rank, &group) in order.iter().enumerate().skip(1) {
+            let direction = Vec2::angled(rank as f32 * 2.399_963_1) * Vec2::new(1.25, 0.58);
+            let mut distance = 0.0;
+            loop {
+                let candidate = direction * distance;
+                if order[..rank].iter().all(|&other| {
+                    let delta = (candidate - anchors[other]).abs();
+                    let clearance = radii[group] + radii[other];
+                    delta.x >= clearance.x || delta.y >= clearance.y
+                }) {
+                    anchors[group] = candidate;
+                    break;
+                }
+                distance += 48.0;
+            }
         }
         self.positions.clear();
+        self.homes.clear();
         counts.fill(0);
         for node in &self.nodes {
             let index = counts[node.group];
             counts[node.group] += 1;
-            let offset = Vec2::angled(index as f32 * 2.399_963_1)
-                * (index as f32).sqrt()
-                * (max_size + Vec2::splat(40.0))
-                * 0.4;
+            let seed = (index as u32) ^ (node.group as u32).wrapping_mul(0x9e37_79b9);
+            let angle = layout_noise(seed) * std::f32::consts::TAU;
+            let radius = (index as f32 + layout_noise(seed ^ 0xa511_e9b3)).sqrt();
+            let offset = Vec2::angled(angle) * pitches[node.group] * radius * 0.68;
+            let center = anchors[node.group] + offset;
+            self.homes.push(center);
             self.positions.insert(
                 node.id.clone(),
-                (self.anchors[node.group] + offset - node.size * 0.5).into(),
+                (center - node.size * 0.5).into(),
             );
         }
         let mut seen = HashSet::new();
@@ -209,7 +209,7 @@ impl<N: Clone + Eq + Hash> ForceLayout<N> {
         self.edges = edges
             .into_iter()
             // Keep dense graphs from compressing all nodes into the same cluster.
-            .map(|(i, j)| (i, j, 0.07 / degree[i].max(degree[j]) as f32))
+            .map(|(i, j)| (i, j, 0.015 / degree[i].max(degree[j]) as f32))
             .collect();
         self.velocities = vec![Vec2::ZERO; self.nodes.len()];
         self.steps_left = 240;
@@ -229,10 +229,10 @@ impl<N: Clone + Eq + Hash> ForceLayout<N> {
             .collect::<Vec<_>>();
         let before = centers.clone();
         let mut forces = self
-            .nodes
+            .homes
             .iter()
             .zip(&centers)
-            .map(|(node, center)| (self.anchors[node.group] - *center) * 0.024)
+            .map(|(home, center)| (*home - *center) * 0.02)
             .collect::<Vec<_>>();
         self.grid.rebuild(&centers, self.cell_size * 2.0);
         self.grid.pairs(|i, j| {
@@ -246,7 +246,7 @@ impl<N: Clone + Eq + Hash> ForceLayout<N> {
             let spacing = direction
                 .abs()
                 .dot((self.nodes[i].size + self.nodes[j].size) * 0.5)
-                + 40.0;
+                + 76.0;
             let force = direction * (spacing / distance).powi(2).min(16.0);
             forces[i] -= force;
             forces[j] += force;
@@ -257,7 +257,7 @@ impl<N: Clone + Eq + Hash> ForceLayout<N> {
             let spacing = direction
                 .abs()
                 .dot((self.nodes[i].size + self.nodes[j].size) * 0.5)
-                + 64.0;
+                + 112.0;
             let force = direction * (delta.length() - spacing) * strength;
             forces[i] += force;
             forces[j] -= force;
@@ -268,27 +268,31 @@ impl<N: Clone + Eq + Hash> ForceLayout<N> {
             self.velocities[i] = velocity / (velocity.length() / 14.0).max(1.0);
             centers[i] += self.velocities[i] * dt;
         }
-        // Separate rectangles directly so long labels cannot overlap at equilibrium.
+        // Push overlapping capsules apart along their center line, preserving the
+        // irregular angular arrangement rather than snapping them into rows.
         for _ in 0..if self.steps_left > 60 { 6 } else { 24 } {
-            let mut penetration = 0.0_f32;
+            let mut contacts = 0;
             self.grid.rebuild(&centers, self.cell_size);
             self.grid.pairs(|i, j| {
                 let delta = centers[j] - centers[i];
-                let overlap = (self.nodes[i].size + self.nodes[j].size) * 0.5 + Vec2::splat(18.0)
+                let overlap = (self.nodes[i].size + self.nodes[j].size) * 0.5 + Vec2::splat(48.0)
                     - delta.abs();
                 if overlap.x <= 0.0 || overlap.y <= 0.0 {
                     return;
                 }
-                penetration = penetration.max(overlap.x.min(overlap.y));
-                let shift = if overlap.x < overlap.y {
-                    Vec2::new(overlap.x * if delta.x < 0.0 { -1.0 } else { 1.0 }, 0.0)
+                contacts += 1;
+                let direction = if delta.length_sq() < 0.01 {
+                    Vec2::angled((i + j) as f32 * 2.399_963_1)
                 } else {
-                    Vec2::new(0.0, overlap.y * if delta.y < 0.0 { -1.0 } else { 1.0 })
+                    delta.normalized()
                 };
+                let distance = (overlap.x / direction.x.abs().max(0.0001))
+                    .min(overlap.y / direction.y.abs().max(0.0001));
+                let shift = direction * (distance + 0.5);
                 centers[i] -= shift * 0.5;
                 centers[j] += shift * 0.5;
             });
-            if penetration < 0.1 {
+            if contacts == 0 {
                 break;
             }
         }
@@ -301,31 +305,6 @@ impl<N: Clone + Eq + Hash> ForceLayout<N> {
         self.steps_left -= 1;
         if self.settled >= 12 {
             self.steps_left = 0;
-        }
-        if self.steps_left == 0 {
-            // Resolve residual contacts once at rest without repeated global collision passes.
-            let mut order = (0..self.nodes.len()).collect::<Vec<_>>();
-            order.sort_by(|&i, &j| centers[i].y.total_cmp(&centers[j].y));
-            self.grid.heads.clear();
-            for i in order {
-                loop {
-                    let mut y = centers[i].y;
-                    self.grid
-                        .neighbors(LayoutGrid::cell(centers[i], self.cell_size), |j| {
-                            let spacing =
-                                (self.nodes[i].size + self.nodes[j].size) * 0.5 + Vec2::splat(2.0);
-                            let delta = (centers[j] - centers[i]).abs();
-                            if delta.x < spacing.x && delta.y < spacing.y {
-                                y = y.max(centers[j].y + spacing.y);
-                            }
-                        });
-                    if y == centers[i].y {
-                        break;
-                    }
-                    centers[i].y = y;
-                }
-                self.grid.insert(i, centers[i], self.cell_size);
-            }
         }
         for (i, node) in self.nodes.iter().enumerate() {
             self.positions
@@ -821,7 +800,9 @@ where
         {
             self.canvas.pan += ui.input(|input| input.pointer.delta());
         }
-        if allow_zoom && response.hovered() {
+        if allow_zoom
+            && ui.input(|input| input.pointer.hover_pos().is_some_and(|p| canvas.contains(p)))
+        {
             let scroll = ui.input(|input| input.smooth_scroll_delta.y);
             if scroll.abs() > f32::EPSILON {
                 let pointer = ui
