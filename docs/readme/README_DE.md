@@ -102,7 +102,7 @@ Laden Sie die neueste Windows-Version von [GitHub Releases](https://github.com/N
 | Element | Standardpfad | Beschreibung |
 | :--- | :--- | :--- |
 | **Modelldateien** | `models/` | Speicherort für Spracherkennungs- und Übersetzungsmodell-Pakete |
-| **Terminologie-Korpora** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | Unabhängig gepflegter Markdown-Terminologie- und Kontextdienst |
+| **Terminologie-Korpora** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | Bearbeitbarer SQLite-Begriffsgraph unter `runtime/xr-corpus.sqlite` |
 | **Ausführungsprotokolle** | `runtime/logs/` | Protokolle für Backend-Dienste und Client |
 | **Lokale Konfiguration** | `config.json` | Portnummern, Modellkonfigurationen und Rendering-Parameter |
 

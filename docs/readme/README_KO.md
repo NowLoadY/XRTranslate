@@ -102,7 +102,7 @@ Audio Studio에서 마이크, 시스템 오디오, 번역 경로를 한눈에 �
 | 항목 | 기본 경로 | 설명 |
 | :--- | :--- | :--- |
 | **모델 파일** | `models/` | 음성 인식 및 번역 모델 패키지 저장 위치 |
-| **전문 용어 코퍼스** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | 독립적으로 유지 관리되는 Markdown 용어 및 컨텍스트 서비스 |
+| **전문 용어 코퍼스** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | `runtime/xr-corpus.sqlite`에 저장되는 편집 가능한 SQLite 용어 그래프 |
 | **실행 로그** | `runtime/logs/` | 백엔드 서비스 및 클라이언트 실행 로그 확인 |
 | **로컬 설정** | `config.json` | 포트 번호, 모델 설정 및 렌더링 매개변수 구성 |
 

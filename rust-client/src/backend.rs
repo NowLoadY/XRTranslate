@@ -274,11 +274,8 @@ impl BackendManager {
                 "Backend at {server_url} is unavailable. Automatic startup is only available for localhost."
             ));
         }
-        if !server_reachable(CORPUS_SERVER_URL) {
-            if self.corpus_child.is_none() {
-                self.start_corpus()?;
-            }
-            return Ok(BackendStart::Starting(BackendStartupStage::Corpus));
+        if let BackendStart::Starting(stage) = self.prepare_corpus()? {
+            return Ok(BackendStart::Starting(stage));
         }
         if self.child.is_some() {
             return Ok(BackendStart::Starting(BackendStartupStage::Inference));
@@ -287,34 +284,49 @@ impl BackendManager {
         Ok(BackendStart::Starting(BackendStartupStage::Inference))
     }
 
+    /// Starts only the local terminology service for Corpus Studio.
+    pub fn prepare_corpus(&mut self) -> Result<BackendStart, String> {
+        if let Some(state) = self.corpus_state()? {
+            return Ok(state);
+        }
+        self.start_corpus()?;
+        Ok(BackendStart::Starting(BackendStartupStage::Corpus))
+    }
+
+    fn corpus_state(&mut self) -> Result<Option<BackendStart>, String> {
+        if server_reachable(CORPUS_SERVER_URL) {
+            return Ok(Some(BackendStart::Ready));
+        }
+        if let Some(child) = &mut self.corpus_child {
+            match child.try_wait() {
+                Ok(None) => {
+                    return Ok(Some(BackendStart::Starting(BackendStartupStage::Corpus)));
+                }
+                Ok(Some(status)) => {
+                    self.corpus_child = None;
+                    self.finish_corpus_log_capture();
+                    return Err(format!(
+                        "XR Corpus exited before it became ready ({status})\n\nLog Traceback:\n{}",
+                        self.corpus_log_policy
+                            .read_current(DIAGNOSTIC_READ_BYTES)
+                            .trim()
+                    ));
+                }
+                Err(error) => return Err(format!("Cannot inspect XR Corpus process: {error}")),
+            }
+        }
+        Ok(None)
+    }
+
     pub fn status(&mut self, server_url: &str) -> BackendStatus {
         if server_reachable(server_url) {
             return BackendStatus::Ready;
         }
-        if !server_reachable(CORPUS_SERVER_URL) {
-            if let Some(child) = &mut self.corpus_child {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        self.corpus_child = None;
-                        self.finish_corpus_log_capture();
-                        return BackendStatus::Failed(format!(
-                            "XR Corpus exited before it became ready ({status})\n\nLog Traceback:\n{}",
-                            self.corpus_log_policy
-                                .read_current(DIAGNOSTIC_READ_BYTES)
-                                .trim()
-                        ));
-                    }
-                    Ok(None) => {
-                        return BackendStatus::Starting(BackendStartupStage::Corpus);
-                    }
-                    Err(error) => {
-                        return BackendStatus::Failed(format!(
-                            "Cannot inspect XR Corpus process: {error}"
-                        ));
-                    }
-                }
-            }
-            return BackendStatus::Failed("XR Corpus is unavailable".into());
+        match self.corpus_state() {
+            Ok(Some(BackendStart::Ready)) => {}
+            Ok(Some(BackendStart::Starting(stage))) => return BackendStatus::Starting(stage),
+            Ok(None) => return BackendStatus::Failed("XR Corpus is unavailable".into()),
+            Err(error) => return BackendStatus::Failed(error),
         }
         if self.child.is_none() {
             if let Err(error) = self.start_backend() {

@@ -102,7 +102,7 @@ Téléchargez la dernière version Windows depuis [GitHub Releases](https://gith
 | Élément | Chemin par défaut | Description |
 | :--- | :--- | :--- |
 | **Fichiers de modèles** | `models/` | Stocke les paquets de modèles de reconnaissance vocale et de traduction |
-| **Corpus terminologiques** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | Service de terminologie et de contexte Markdown géré indépendamment |
+| **Corpus terminologiques** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | Graphe terminologique SQLite modifiable dans `runtime/xr-corpus.sqlite` |
 | **Journaux d'exécution** | `runtime/logs/` | Journaux d'exécution des services d'arrière-plan et du client |
 | **Configuration locale** | `config.json` | Numéros de port, configurations des modèles et paramètres de rendu |
 

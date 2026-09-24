@@ -17,7 +17,7 @@ $configPath = Join-Path $projectRoot 'config.json'
 $vadModel = Join-Path $projectRoot 'models\silero-vad\src\silero_vad\data\silero_vad.onnx'
 $speakerModel = Join-Path $projectRoot 'models\3D-Speaker-ERes2NetV2\speaker_embedding.onnx'
 $denoiseModel = Join-Path $projectRoot 'models\gtcrn\gtcrn_simple.onnx'
-$corporaDirectory = Join-Path $projectRoot 'XR-Corpus\corpora'
+$seedDatabase = Join-Path $projectRoot 'XR-Corpus\corpora\default.sqlite'
 $cargoPath = Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe'
 
 $expectedOnnxSha256 = '2462fe2d64ce063babefda3d9b1998380ffa74e99acf5d24d520ee67daa9e0f1'
@@ -265,8 +265,8 @@ if (-not (Test-Path -LiteralPath $speakerModel)) {
 if (-not (Test-Path -LiteralPath $denoiseModel)) {
     throw "GTCRN denoise ONNX model was not found: $denoiseModel"
 }
-if (-not (Test-Path -LiteralPath $corporaDirectory)) {
-    throw "Versioned Markdown corpora were not found: $corporaDirectory"
+if (-not (Test-Path -LiteralPath $seedDatabase -PathType Leaf)) {
+    throw "Default terminology database was not found: $seedDatabase"
 }
 
 if (Test-Path -LiteralPath $cargoPath) {
@@ -325,7 +325,7 @@ $packageArguments = @(
     '--updater-bin', (Join-Path $projectRoot 'target\release\xrtranslate-updater.exe'),
     '--config', $configPath,
     '--resources-dir', (Join-Path $projectRoot 'rust-client\resources'),
-    '--corpora-dir', $corporaDirectory,
+    '--seed-database', $seedDatabase,
     '--vad-model', $vadModel,
     '--speaker-model', $speakerModel,
     '--denoise-model', $denoiseModel,

@@ -403,7 +403,8 @@
   "prompt_context": {
     "asr_history_entries": 1,
     "asr_max_chars": 800,
-    "corpora_directory": "XR-Corpus/corpora/v1",
+    "database_path": "runtime/xr-corpus.sqlite",
+    "seed_database_path": "XR-Corpus/corpora/default.sqlite",
     "enabled": true,
     "max_entries": 6,
     "translation_history_entries": 6,

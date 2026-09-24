@@ -154,6 +154,331 @@ pub fn tr_dynamic<'a>(language: UiLanguage, english: &'a str) -> Cow<'a, str> {
 /// Consolidated single-source-of-truth dictionary: `(English Key, Chinese (zh), Japanese (ja), Korean (ko), Russian (ru))`
 const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     (
+        "Vocabulary Graph",
+        "词汇图谱",
+        "語彙グラフ",
+        "어휘 그래프",
+        "Словарный граф",
+    ),
+    ("terms", "词条", "語句", "용어", "терминов"),
+    (
+        "Waiting for XR Corpus. Use Refresh to retry startup.",
+        "正在启动 XR Corpus。如需重试，请点击刷新。",
+        "XR Corpus の起動を待っています。再試行するには更新してください。",
+        "XR Corpus 시작을 기다리는 중입니다. 다시 시도하려면 새로고침하세요.",
+        "Ожидание запуска XR Corpus. Для повтора нажмите «Обновить».",
+    ),
+    (
+        "Domains and terms",
+        "领域与词条",
+        "分野と語句",
+        "분야와 용어",
+        "Области и термины",
+    ),
+    (
+        "Term details",
+        "词条详情",
+        "語句の詳細",
+        "용어 세부 정보",
+        "Сведения о термине",
+    ),
+    ("Domains", "领域", "分野", "분야", "Области"),
+    (
+        "Search domains",
+        "搜索领域",
+        "分野を検索",
+        "분야 검색",
+        "Поиск областей",
+    ),
+    (
+        "All domains",
+        "全部领域",
+        "すべての分野",
+        "모든 분야",
+        "Все области",
+    ),
+    ("+ Domain", "+ 领域", "+ 分野", "+ 분야", "+ Область"),
+    (
+        "Domain name",
+        "领域名称",
+        "分野名",
+        "분야 이름",
+        "Название области",
+    ),
+    ("Create", "创建", "作成", "만들기", "Создать"),
+    (
+        "Rename",
+        "改名",
+        "名前を変更",
+        "이름 바꾸기",
+        "Переименовать",
+    ),
+    (
+        "Delete empty domain",
+        "删除空领域",
+        "空の分野を削除",
+        "빈 분야 삭제",
+        "Удалить пустую область",
+    ),
+    ("Terms", "词条", "語句", "용어", "Термины"),
+    (
+        "New term",
+        "新建词条",
+        "新しい語句",
+        "새 용어",
+        "Новый термин",
+    ),
+    ("Term ID", "词条 ID", "語句 ID", "용어 ID", "ID термина"),
+    (
+        "Use a missing term ID to activate its waiting connections.",
+        "输入缺失词条的 ID，可激活等待中的关联。",
+        "未登録の語句 ID を入力すると、待機中の接続が有効になります。",
+        "없는 용어 ID를 입력하면 대기 중인 연결이 활성화됩니다.",
+        "Введите ID отсутствующего термина, чтобы активировать ожидающие связи.",
+    ),
+    (
+        "Term ID already exists",
+        "词条 ID 已存在",
+        "語句 ID は既に存在します",
+        "용어 ID가 이미 있습니다",
+        "ID термина уже существует",
+    ),
+    (
+        "Save or discard term changes before switching.",
+        "切换前请保存或放弃词条修改。",
+        "切り替える前に語句の変更を保存するか破棄してください。",
+        "전환하기 전에 용어 변경을 저장하거나 버리세요.",
+        "Сохраните или отмените изменения термина перед переключением.",
+    ),
+    (
+        "Search terms",
+        "搜索词条",
+        "語句を検索",
+        "용어 검색",
+        "Поиск терминов",
+    ),
+    ("off", "停用", "無効", "꺼짐", "выкл."),
+    (
+        "Select a target node",
+        "选择目标词节点",
+        "対象ノードを選択",
+        "대상 노드를 선택하세요",
+        "Выберите целевой узел",
+    ),
+    (
+        "Select a term or create a new one.",
+        "选择一个词条，或新建词条。",
+        "語句を選ぶか、新しく作成してください。",
+        "용어를 선택하거나 새로 만드세요.",
+        "Выберите или создайте термин.",
+    ),
+    ("Connection", "关联", "接続", "연결", "Связь"),
+    ("Context", "上下文", "文脈", "문맥", "Контекст"),
+    ("Trigger", "触发", "トリガー", "트리거", "Триггер"),
+    (
+        "Fit graph",
+        "适应画布",
+        "全体表示",
+        "화면 맞춤",
+        "Вписать граф",
+    ),
+    ("Name", "名称", "名前", "이름", "Название"),
+    (
+        "Source title / note",
+        "来源标题 / 备注",
+        "出典タイトル / メモ",
+        "출처 제목 / 메모",
+        "Источник / примечание",
+    ),
+    ("Domain", "所属领域", "分野", "분야", "Область"),
+    ("Subdomain", "子领域", "サブ分野", "하위 분야", "Подобласть"),
+    ("Enabled", "启用", "有効", "사용", "Включено"),
+    (
+        "Include in prompts",
+        "注入提示词",
+        "プロンプトに含める",
+        "프롬프트에 포함",
+        "Включать в запросы",
+    ),
+    (
+        "Activation",
+        "激活方式",
+        "有効化方法",
+        "활성화 방식",
+        "Активация",
+    ),
+    (
+        "Always active",
+        "默认生效",
+        "常に有効",
+        "항상 활성",
+        "Всегда активен",
+    ),
+    (
+        "Activated by trigger",
+        "由触发词激活",
+        "トリガーで有効",
+        "트리거로 활성화",
+        "По триггеру",
+    ),
+    (
+        "Incoming triggers do not gate this term",
+        "当前词条默认生效，入边触发不限制它",
+        "この語句は常に有効で、入力トリガーでは制限されません",
+        "이 용어는 항상 활성화되며 들어오는 트리거로 제한되지 않습니다",
+        "Термин всегда активен; входящие триггеры его не ограничивают",
+    ),
+    (
+        "This term is waiting for an enabled trigger connection.",
+        "此词条正在等待已启用的触发关联。",
+        "この語句は有効なトリガー接続を待っています。",
+        "이 용어는 활성화된 트리거 연결을 기다리고 있습니다.",
+        "Этот термин ожидает включённую триггерную связь.",
+    ),
+    ("Priority", "优先级", "優先度", "우선순위", "Приоритет"),
+    (
+        "Translations",
+        "各语言词形",
+        "各言語の表記",
+        "언어별 표기",
+        "Языковые формы",
+    ),
+    (
+        "Other languages",
+        "其他语言",
+        "その他の言語",
+        "다른 언어",
+        "Другие языки",
+    ),
+    (
+        "Advanced settings",
+        "高级设置",
+        "詳細設定",
+        "고급 설정",
+        "Дополнительные настройки",
+    ),
+    (
+        "Save term",
+        "保存词条",
+        "語句を保存",
+        "용어 저장",
+        "Сохранить термин",
+    ),
+    (
+        "Language values cannot contain commas or newlines, or exceed 512 characters.",
+        "各语言词形不能包含逗号、换行，也不能超过 512 字符。",
+        "各言語の表記にはカンマや改行を含めず、512 文字以内にしてください。",
+        "언어별 표기에는 쉼표나 줄바꿈을 넣을 수 없으며 512자를 넘을 수 없습니다.",
+        "Языковые формы не должны содержать запятые или переносы строк и превышать 512 символов.",
+    ),
+    (
+        "Check title and subdomain length and characters.",
+        "请检查标题与子领域的长度和字符。",
+        "タイトルとサブ分野の長さ・文字を確認してください。",
+        "제목과 하위 분야의 길이 및 문자를 확인하세요.",
+        "Проверьте длину и символы заголовка и подобласти.",
+    ),
+    (
+        "Discard",
+        "放弃修改",
+        "変更を破棄",
+        "변경 취소",
+        "Отменить изменения",
+    ),
+    (
+        "Delete term",
+        "删除词条",
+        "語句を削除",
+        "용어 삭제",
+        "Удалить термин",
+    ),
+    (
+        "Delete this term? Connections will remain idle until a matching term is added.",
+        "删除此词条？关联会保留，直到添加匹配的词条才会生效。",
+        "この語句を削除しますか？接続は残り、対応する語句が追加されるまで無効になります。",
+        "이 용어를 삭제할까요? 연결은 유지되며 일치하는 용어가 추가될 때까지 비활성 상태입니다.",
+        "Удалить термин? Связи сохранятся и будут неактивны до добавления подходящего термина.",
+    ),
+    (
+        "Confirm delete",
+        "确认删除",
+        "削除を確認",
+        "삭제 확인",
+        "Подтвердить удаление",
+    ),
+    ("Connections", "关联", "接続", "연결", "Связи"),
+    (
+        "Idle connections",
+        "闲置关联",
+        "待機中の接続",
+        "유휴 연결",
+        "Неактивные связи",
+    ),
+    (
+        "Create source term",
+        "补建起点词条",
+        "起点の語句を作成",
+        "시작 용어 만들기",
+        "Создать исходный термин",
+    ),
+    (
+        "Create target term",
+        "补建终点词条",
+        "終点の語句を作成",
+        "대상 용어 만들기",
+        "Создать целевой термин",
+    ),
+    (
+        "Search term or enter ID",
+        "搜索词条或输入 ID",
+        "語句を検索、または ID を入力",
+        "용어 검색 또는 ID 입력",
+        "Поиск термина или ввод ID",
+    ),
+    (
+        "This term → other term",
+        "此词 → 另一词",
+        "この語句 → 別の語句",
+        "이 용어 → 다른 용어",
+        "Этот термин → другой",
+    ),
+    (
+        "Other term → this term",
+        "另一词 → 此词",
+        "別の語句 → この語句",
+        "다른 용어 → 이 용어",
+        "Другой термин → этот",
+    ),
+    (
+        "Add connection",
+        "添加关联",
+        "接続を追加",
+        "연결 추가",
+        "Добавить связь",
+    ),
+    (
+        "Add idle connection",
+        "添加闲置关联",
+        "待機中の接続を追加",
+        "대기 연결 추가",
+        "Добавить ожидающую связь",
+    ),
+    (
+        "Waiting for missing term",
+        "等待缺失词条",
+        "未登録の語句を待機中",
+        "없는 용어 대기 중",
+        "Ожидание отсутствующего термина",
+    ),
+    (
+        "Idle until both terms exist",
+        "两端词条都存在后才生效",
+        "両方の語句が揃うまで無効",
+        "두 용어가 모두 있어야 활성화됩니다",
+        "Неактивно, пока нет обоих терминов",
+    ),
+    ("Remove", "移除", "削除", "제거", "Удалить"),
+    (
         "Audio Studio",
         "音频工作室",
         "オーディオスタジオ",
@@ -237,13 +562,7 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "설치 중...",
         "Установка...",
     ),
-    (
-        "Try Again",
-        "重试",
-        "再試行",
-        "다시 시도",
-        "Повторить",
-    ),
+    ("Try Again", "重试", "再試行", "다시 시도", "Повторить"),
     (
         "You're up to date",
         "当前已是最新版本",
@@ -1912,7 +2231,13 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "세부 정보를 복사해 GitHub Issue 또는 QQ 그룹 1009732148에 알릴 수 있습니다.",
         "Вы можете скопировать подробности и сообщить о проблеме в GitHub Issues или группе QQ 1009732148.",
     ),
-    ("Copy details", "复制详情", "詳細をコピー", "세부 정보 복사", "Скопировать подробности"),
+    (
+        "Copy details",
+        "复制详情",
+        "詳細をコピー",
+        "세부 정보 복사",
+        "Скопировать подробности",
+    ),
     (
         "Please check the graph",
         "请检查流程图",
@@ -1920,11 +2245,35 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "그래프를 확인하세요",
         "Проверьте схему",
     ),
-    ("Error details", "错误详情", "エラーの詳細", "오류 세부 정보", "Подробности ошибки"),
-    ("GitHub Issues", "GitHub Issue", "GitHub Issue", "GitHub Issue", "GitHub Issues"),
+    (
+        "Error details",
+        "错误详情",
+        "エラーの詳細",
+        "오류 세부 정보",
+        "Подробности ошибки",
+    ),
+    (
+        "GitHub Issues",
+        "GitHub Issue",
+        "GitHub Issue",
+        "GitHub Issue",
+        "GitHub Issues",
+    ),
     ("QQ group", "QQ 群", "QQ グループ", "QQ 그룹", "Группа QQ"),
-    ("Group number", "群号", "グループ番号", "그룹 번호", "Номер группы"),
-    ("Copy number", "复制群号", "番号をコピー", "번호 복사", "Скопировать номер"),
+    (
+        "Group number",
+        "群号",
+        "グループ番号",
+        "그룹 번호",
+        "Номер группы",
+    ),
+    (
+        "Copy number",
+        "复制群号",
+        "番号をコピー",
+        "번호 복사",
+        "Скопировать номер",
+    ),
     (
         "All Sections",
         "全部设置",
@@ -3666,13 +4015,7 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "글꼴 크기",
         "Размер шрифта",
     ),
-    (
-        "Opacity",
-        "透明度",
-        "不透明度",
-        "불투명도",
-        "Прозрачность",
-    ),
+    ("Opacity", "透明度", "不透明度", "불투명도", "Прозрачность"),
     (
         "Bilingual Subtitles",
         "双语字幕",
@@ -3750,13 +4093,7 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "최대 줄 수:",
         "Макс. строк:",
     ),
-    (
-        "lines",
-        "行",
-        "行",
-        "줄",
-        "строк",
-    ),
+    ("lines", "行", "行", "줄", "строк"),
     (
         "Connect SteamVR",
         "连接 SteamVR",
@@ -3764,13 +4101,7 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "SteamVR 연결",
         "Подключить SteamVR",
     ),
-    (
-        "Disconnect",
-        "断开连接",
-        "切断",
-        "연결 끊기",
-        "Отключить",
-    ),
+    ("Disconnect", "断开连接", "切断", "연결 끊기", "Отключить"),
     (
         "Not Connected",
         "未连接",
@@ -3800,17 +4131,44 @@ mod tests {
 
     #[test]
     fn locale_parsing_matches_supported_languages() {
-        assert_eq!(UiLanguage::from_locale_str("zh-CN"), Some(UiLanguage::Chinese));
-        assert_eq!(UiLanguage::from_locale_str("zh_Hans"), Some(UiLanguage::Chinese));
-        assert_eq!(UiLanguage::from_locale_str("zh-TW"), Some(UiLanguage::Chinese));
-        assert_eq!(UiLanguage::from_locale_str("ja-JP"), Some(UiLanguage::Japanese));
-        assert_eq!(UiLanguage::from_locale_str("ja"), Some(UiLanguage::Japanese));
-        assert_eq!(UiLanguage::from_locale_str("ko-KR"), Some(UiLanguage::Korean));
+        assert_eq!(
+            UiLanguage::from_locale_str("zh-CN"),
+            Some(UiLanguage::Chinese)
+        );
+        assert_eq!(
+            UiLanguage::from_locale_str("zh_Hans"),
+            Some(UiLanguage::Chinese)
+        );
+        assert_eq!(
+            UiLanguage::from_locale_str("zh-TW"),
+            Some(UiLanguage::Chinese)
+        );
+        assert_eq!(
+            UiLanguage::from_locale_str("ja-JP"),
+            Some(UiLanguage::Japanese)
+        );
+        assert_eq!(
+            UiLanguage::from_locale_str("ja"),
+            Some(UiLanguage::Japanese)
+        );
+        assert_eq!(
+            UiLanguage::from_locale_str("ko-KR"),
+            Some(UiLanguage::Korean)
+        );
         assert_eq!(UiLanguage::from_locale_str("ko"), Some(UiLanguage::Korean));
-        assert_eq!(UiLanguage::from_locale_str("ru-RU"), Some(UiLanguage::Russian));
+        assert_eq!(
+            UiLanguage::from_locale_str("ru-RU"),
+            Some(UiLanguage::Russian)
+        );
         assert_eq!(UiLanguage::from_locale_str("ru"), Some(UiLanguage::Russian));
-        assert_eq!(UiLanguage::from_locale_str("en-US"), Some(UiLanguage::English));
-        assert_eq!(UiLanguage::from_locale_str("en-GB"), Some(UiLanguage::English));
+        assert_eq!(
+            UiLanguage::from_locale_str("en-US"),
+            Some(UiLanguage::English)
+        );
+        assert_eq!(
+            UiLanguage::from_locale_str("en-GB"),
+            Some(UiLanguage::English)
+        );
         assert_eq!(UiLanguage::from_locale_str("en"), Some(UiLanguage::English));
     }
 

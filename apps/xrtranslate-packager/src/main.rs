@@ -16,13 +16,13 @@ use std::{
 use clap::Parser;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use xr_corpus_core::load_markdown_directory;
+use xr_corpus_core::validate_seed_database;
 use xrtranslate_assets::{
     ModelAssetId, ModelAssetManifest, ModelAssetsConfig, ResolvedModelAssets,
 };
 use xrtranslate_config::{AppConfig, RuntimeLayout};
 
-const RELEASE_LAYOUT_VERSION: u32 = 3;
+const RELEASE_LAYOUT_VERSION: u32 = 4;
 const VAD_RELATIVE_PATH: &str = "models/silero-vad/src/silero_vad/data/silero_vad.onnx";
 const VAD_MODEL_VERSION: &str = "v6.2.1";
 const VAD_MODEL_BYTES: u64 = 2_327_524;
@@ -48,8 +48,8 @@ const ONNX_NOTICES_RELATIVE_PATH: &str = "licenses/onnxruntime/ThirdPartyNotices
 const ONNX_NOTICES_BYTES: u64 = 331_175;
 const ONNX_NOTICES_SHA256: &str =
     "fb0af774b4d7cffc5b9d046f2aaeade2f37df2f80abf8033c95dfffcc77a8866";
-const CORPORA_RELEASE_ROOT: &str = "corpora";
-const CORPORA_CONFIG_ROOT: &str = "corpora/v1";
+const CORPUS_DATABASE_PATH: &str = "runtime/xr-corpus.sqlite";
+const CORPUS_SEED_PATH: &str = "corpora/default.sqlite";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -78,8 +78,9 @@ struct Arguments {
     /// Desktop resources copied into `resources/`.
     #[arg(long, default_value = "rust-client/resources")]
     resources_dir: PathBuf,
-    #[arg(long, default_value = "corpora")]
-    corpora_dir: PathBuf,
+    /// Default terminology database copied into the user's runtime on first launch.
+    #[arg(long, default_value = "XR-Corpus/corpora/default.sqlite")]
+    seed_database: PathBuf,
     #[arg(long, default_value = "LICENSE")]
     license: PathBuf,
     /// Standard Silero VAD 16 kHz ONNX file.
@@ -170,7 +171,7 @@ struct ReleasePlan {
     installer_bin: PathBuf,
     updater_bin: PathBuf,
     resources_dir: PathBuf,
-    corpora_dir: PathBuf,
+    seed_database: PathBuf,
     license: PathBuf,
     vad_model: PathBuf,
     speaker_model: PathBuf,
@@ -274,7 +275,7 @@ impl ReleasePlan {
         require_regular_file("--onnx-runtime-notices", &arguments.onnx_runtime_notices)?;
         require_regular_file("--config", &arguments.config)?;
         require_directory("--resources-dir", &arguments.resources_dir)?;
-        require_directory("--corpora-dir", &arguments.corpora_dir)?;
+        require_regular_file("--seed-database", &arguments.seed_database)?;
         require_regular_file("--license", &arguments.license)?;
 
         let project_root = arguments
@@ -297,9 +298,9 @@ impl ReleasePlan {
         require_regular_file("--denoise-model", &denoise_model)?;
 
         ensure_directory_is_native("--resources-dir", &arguments.resources_dir)?;
-        ensure_directory_is_native("--corpora-dir", &arguments.corpora_dir)?;
-        load_markdown_directory(&arguments.corpora_dir.join("v1")).map_err(|error| {
-            PackageError::InvalidInput(format!("invalid --corpora-dir: {error}"))
+        ensure_native_file("--seed-database", &arguments.seed_database)?;
+        validate_seed_database(&arguments.seed_database).map_err(|error| {
+            PackageError::InvalidInput(format!("invalid --seed-database: {error}"))
         })?;
         ensure_native_file("--vad-model", &vad_model)?;
         ensure_native_file("--speaker-model", &speaker_model)?;
@@ -336,7 +337,7 @@ impl ReleasePlan {
             installer_bin: arguments.installer_bin,
             updater_bin: arguments.updater_bin,
             resources_dir: arguments.resources_dir,
-            corpora_dir: arguments.corpora_dir,
+            seed_database: arguments.seed_database,
             license: arguments.license,
             vad_model,
             speaker_model,
@@ -402,7 +403,7 @@ fn package(plan: &ReleasePlan) -> Result<PathBuf, PackageError> {
                 )?),
         )?;
         copy_native_directory(&plan.resources_dir, &staging.join("resources"))?;
-        copy_native_directory(&plan.corpora_dir, &staging.join(CORPORA_RELEASE_ROOT))?;
+        copy_file_to(&plan.seed_database, &staging.join(CORPUS_SEED_PATH))?;
         copy_file_to(&plan.license, &staging.join("LICENSE"))?;
         copy_file_to(&plan.vad_model, &staging.join(VAD_RELATIVE_PATH))?;
         copy_file_to(&plan.speaker_model, &staging.join(SPEAKER_RELATIVE_PATH))?;
@@ -512,8 +513,12 @@ fn rewrite_config(config_path: &Path) -> Result<String, PackageError> {
             PackageError::InvalidInput("config.prompt_context must be a JSON object".into())
         })?;
     prompt_context.insert(
-        "corpora_directory".into(),
-        Value::String(CORPORA_CONFIG_ROOT.into()),
+        "database_path".into(),
+        Value::String(CORPUS_DATABASE_PATH.into()),
+    );
+    prompt_context.insert(
+        "seed_database_path".into(),
+        Value::String(CORPUS_SEED_PATH.into()),
     );
     if let Some(tts) = root_object.get_mut("tts").and_then(Value::as_object_mut) {
         tts.insert("provider".into(), Value::String("none".into()));
@@ -609,8 +614,9 @@ fn release_manifest(
         },
         "resources": "resources",
         "corpora": {
-            "root": CORPORA_CONFIG_ROOT,
-            "format": "xrtranslate-corpus/v1",
+            "database_path": CORPUS_DATABASE_PATH,
+            "seed_database_path": CORPUS_SEED_PATH,
+            "format": "sqlite",
             "dynamic_sources_supported": true,
         },
         "models": {
@@ -696,12 +702,7 @@ fn verify_staged_release(staging: &Path) -> Result<(), PackageError> {
         }
     }
     ensure_directory_is_native("staged release", staging)?;
-    for required in [
-        "LICENSE",
-        "corpora/README.md",
-        "corpora/v1/SCHEMA.md",
-        "corpora/v1/domains",
-    ] {
+    for required in ["LICENSE", CORPUS_SEED_PATH] {
         if !staging.join(required).exists() {
             return Err(PackageError::InvalidInput(format!(
                 "staged release is missing required corpus asset {required}"
@@ -1039,8 +1040,12 @@ mod tests {
         assert_eq!(rewritten["speaker"]["enabled"], true);
         assert_eq!(rewritten["speaker"]["model_path"], SPEAKER_RELATIVE_PATH);
         assert_eq!(
-            rewritten["prompt_context"]["corpora_directory"],
-            CORPORA_CONFIG_ROOT
+            rewritten["prompt_context"]["database_path"],
+            CORPUS_DATABASE_PATH
+        );
+        assert_eq!(
+            rewritten["prompt_context"]["seed_database_path"],
+            CORPUS_SEED_PATH
         );
         assert!(
             rewritten["model_manager"]
@@ -1078,7 +1083,7 @@ mod tests {
         let installer = source.join(format!("custom-installer{extension}"));
         let updater = source.join(format!("custom-updater{extension}"));
         let resources = source.join("resources");
-        let corpora = source.join("corpora");
+        let seed_database = source.join("default.sqlite");
         let vad = source.join("silero_vad.onnx");
         let speaker = source.join("speaker_embedding.onnx");
         let denoise = source.join("gtcrn_simple.onnx");
@@ -1098,40 +1103,11 @@ mod tests {
             &resources.join("bin/future-runtime.dll"),
             b"future runtime download",
         );
-        write(&corpora.join("README.md"), b"corpus root");
-        write(&corpora.join("v1/SCHEMA.md"), b"corpus schema");
-        write(
-            &corpora.join("v1/domains/example/domain.md"),
-            b"example domain",
-        );
-        write(
-            &corpora.join("v1/domains/example/subdomains/example/subdomain.md"),
-            b"example subdomain",
-        );
-        write(
-            &corpora.join("v1/domains/example/subdomains/example/corpora/example.md"),
-            br#"# Example
-
-> Fixed-order multilingual fixture.
-
-## Metadata
-
-schema: xrtranslate-corpus/v1
-priority: 0
-
-## Language Order
-
-zh,en,fr,pt,es,ja,ru,ko,th,it,de,vi,id,pl,cs,nl
-
-## Triggers
-
-,example,,,,,,,,,,,,,,
-
-## Terms
-
-,Example,,,,,,,,,,,,,,
-"#,
-        );
+        fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../XR-Corpus/corpora/default.sqlite"),
+            &seed_database,
+        )
+        .unwrap();
         write(&vad, b"onnx");
         write(&speaker, b"onnx");
         write(&denoise, b"onnx");
@@ -1149,7 +1125,7 @@ zh,en,fr,pt,es,ja,ru,ko,th,it,de,vi,id,pl,cs,nl
             updater_bin: updater,
             config,
             resources_dir: resources,
-            corpora_dir: corpora,
+            seed_database,
             license,
             vad_model: Some(vad),
             speaker_model: Some(speaker),
@@ -1199,12 +1175,8 @@ zh,en,fr,pt,es,ja,ru,ko,th,it,de,vi,id,pl,cs,nl
         assert!(output.join("resources/docs/welcome.md").is_file());
         assert!(!output.join("resources/bin/mpv-2.dll").exists());
         assert!(!output.join("resources/bin/future-runtime.dll").exists());
-        assert!(output.join("corpora/v1/SCHEMA.md").is_file());
-        assert!(
-            output
-                .join("corpora/v1/domains/example/subdomains/example/corpora/example.md")
-                .is_file()
-        );
+        assert!(output.join(CORPUS_SEED_PATH).is_file());
+        assert!(!output.join(CORPUS_DATABASE_PATH).exists());
         assert!(output.join(VAD_RELATIVE_PATH).is_file());
         assert!(output.join(SPEAKER_RELATIVE_PATH).is_file());
         assert!(output.join(DENOISE_RELATIVE_PATH).is_file());
@@ -1246,7 +1218,8 @@ zh,en,fr,pt,es,ja,ru,ko,th,it,de,vi,id,pl,cs,nl
             format!("XRTranslate-v{version}{extension}")
         );
         assert_eq!(manifest["models"]["included"], false);
-        assert_eq!(manifest["corpora"]["root"], CORPORA_CONFIG_ROOT);
+        assert_eq!(manifest["corpora"]["database_path"], CORPUS_DATABASE_PATH);
+        assert_eq!(manifest["corpora"]["seed_database_path"], CORPUS_SEED_PATH);
         assert_eq!(
             manifest["entrypoints"]["updater"],
             format!("{INTERNAL_BIN_DIRECTORY}/xrtranslate-updater{extension}")

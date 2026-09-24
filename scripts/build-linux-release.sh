@@ -28,6 +28,7 @@ if [[ -e "${TARGET_DIR}" ]]; then
 fi
 
 required_resources=(
+  XR-Corpus/corpora/default.sqlite
   models/silero-vad/src/silero_vad/data/silero_vad.onnx
   models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx
   models/gtcrn/gtcrn_simple.onnx
@@ -52,14 +53,14 @@ cargo build --locked --manifest-path XR-Corpus/Cargo.toml \
 mkdir -p "$(dirname "${TARGET_DIR}")"
 STAGE_DIR="$(mktemp -d "${TARGET_DIR}.tmp.XXXXXX")"
 trap 'rm -r -- "${STAGE_DIR}"' EXIT
-mkdir -p "${STAGE_DIR}/bin" "${STAGE_DIR}/resources" "${STAGE_DIR}/XR-Corpus" "${STAGE_DIR}/runtime"
+mkdir -p "${STAGE_DIR}/bin" "${STAGE_DIR}/resources" "${STAGE_DIR}/XR-Corpus" "${STAGE_DIR}/corpora" "${STAGE_DIR}/runtime"
 install -m 0755 target/release/rust-client "${STAGE_DIR}/xrtranslate"
 install -m 0755 target/release/xrtranslate-backend target/release/xr-corpus-server "${STAGE_DIR}/bin/"
-install -m 0644 config.json "${STAGE_DIR}/config.json"
+sed 's|XR-Corpus/corpora/default.sqlite|corpora/default.sqlite|' config.json > "${STAGE_DIR}/config.json"
 install -m 0644 LICENSE LICENSE-MIT "${STAGE_DIR}/"
 install -m 0644 XR-Corpus/LICENSE "${STAGE_DIR}/XR-Corpus/"
 cp -a rust-client/resources/{branding,icons,plugins} "${STAGE_DIR}/resources/"
-cp -a XR-Corpus/corpora "${STAGE_DIR}/XR-Corpus/"
+install -m 0644 XR-Corpus/corpora/default.sqlite "${STAGE_DIR}/corpora/default.sqlite"
 cp -a models "${STAGE_DIR}/"
 for runtime_item in llama.cpp onnxruntime cuda cudnn native-runtime.json; do
   if [[ -e "runtime/${runtime_item}" ]]; then

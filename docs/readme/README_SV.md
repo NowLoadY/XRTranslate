@@ -102,7 +102,7 @@ Ladda ner den senaste Windows-versionen från [GitHub Releases](https://github.c
 | Objekt | Standardkatalog | Beskrivning |
 | :--- | :--- | :--- |
 | **Modellfiler** | `models/` | Lagrar paket för taligenkännings- och översättningsmodeller |
-| **Terminologikorpus** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | Självständigt underhållen Markdown-terminologi och kontexttjänst |
+| **Terminologikorpus** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | Redigerbar SQLite-termgraf i `runtime/xr-corpus.sqlite` |
 | **Körningsloggar** | `runtime/logs/` | Loggar för backend-tjänster och klient |
 | **Lokal konfiguration** | `config.json` | Portnummer, modellinställningar och renderingsparametrar |
 

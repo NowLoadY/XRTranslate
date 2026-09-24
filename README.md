@@ -104,7 +104,7 @@ Linux build instructions are available in [docs/linux-build.md](docs/linux-build
 | Item | Default Path | Description |
 | :--- | :--- | :--- |
 | **Model Assets** | `models/` | Stores speech recognition and translation model packages |
-| **Terminology Corpora** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | Independently maintained Markdown terminology and context service |
+| **Terminology Corpora** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | SQLite terminology graph stored in `runtime/xr-corpus.sqlite` |
 | **Execution Logs** | `runtime/logs/` | Service & client execution logs |
 | **Local Config** | `config.json` | Port numbers, model configurations, and rendering parameters |
 

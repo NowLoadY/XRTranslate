@@ -45,6 +45,10 @@ can reuse its model files without downloading them again. Model and runtime
 archives installed later are verified by the shared installer. The application
 does not require a Python interpreter, virtual environment, or PyTorch.
 
+The release includes a default XR Corpus seed at `corpora/default.sqlite`.
+On first launch, the editable terminology database is created at
+`runtime/xr-corpus.sqlite`; application updates preserve that runtime file.
+
 Local ASR, translation, and TTS models require a compatible NVIDIA GPU with at
 least 7 GiB of reported VRAM. The Linux managed runtime catalogue includes
 llama.cpp CUDA 12.8 and ONNX Runtime 1.28 CUDA 12 with matching CUDA and cuDNN

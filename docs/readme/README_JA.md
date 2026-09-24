@@ -102,7 +102,7 @@ Audio Studio なら、マイク・システム音声・翻訳ルートをすっ�
 | 項目 | デフォルトパス | 説明 |
 | :--- | :--- | :--- |
 | **モデルファイル** | `models/` | 音声認識モデルや翻訳モデルなどのモデルパッケージを格納 |
-| **専門用語コーパス** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | 独立して管理される Markdown 用語辞書・コンテキストサービス |
+| **専門用語コーパス** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | `runtime/xr-corpus.sqlite` に保存される編集可能な SQLite 用語グラフ |
 | **実行ログ** | `runtime/logs/` | バックエンドサービスおよびクライアントの実行ログ |
 | **ローカル設定** | `config.json` | ポート番号、モデル設定、レンダリングパラメータ |
 

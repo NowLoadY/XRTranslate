@@ -102,7 +102,7 @@ Audio Studio 让麦克风、系统音频和翻译路由一目了然。
 | 项目 | 默认路径 | 说明 |
 | :--- | :--- | :--- |
 | **模型文件** | `models/` | 放置语音识别模型与翻译模型等模型包 |
-| **专业语料库** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | 独立维护的 Markdown 术语与上下文服务 |
+| **专业语料库** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | 存储在 `runtime/xr-corpus.sqlite` 中的可编辑 SQLite 词汇图 |
 | **运行日志** | `runtime/logs/` | 查看后台服务与客户端日志 |
 | **本地服务设置** | `config.json` | 端口、模型及渲染参数配置 |
 

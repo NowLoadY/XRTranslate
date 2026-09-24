@@ -25,6 +25,7 @@ pub enum Page {
     Settings,
     AudioStudio,
     PromptStudio,
+    CorpusStudio,
 }
 
 impl Serialize for Page {
@@ -37,6 +38,7 @@ impl Serialize for Page {
             Self::Settings => serializer.serialize_str("Settings"),
             Self::AudioStudio => serializer.serialize_str("AudioStudio"),
             Self::PromptStudio => serializer.serialize_str("PromptStudio"),
+            Self::CorpusStudio => serializer.serialize_str("CorpusStudio"),
             Self::Plugin(id) => serializer.serialize_str(&format!("plugin:{}", id.as_str())),
         }
     }
@@ -53,6 +55,7 @@ impl<'de> Deserialize<'de> for Page {
             "Settings" | "settings" => Ok(Self::Settings),
             "AudioStudio" => Ok(Self::AudioStudio),
             "PromptStudio" | "prompt_studio" | "prompt-studio" => Ok(Self::PromptStudio),
+            "CorpusStudio" => Ok(Self::CorpusStudio),
             // Compatibility with the former derived enum representation.
             "Osc" | "osc" => Ok(Self::Plugin(crate::plugins::PluginId::OSC)),
             "Meeting" | "meeting" => Ok(Self::Plugin(crate::plugins::PluginId::MEETING)),
@@ -142,6 +145,7 @@ pub fn render_sidebar(
     let icon_settings = include_image!("../../resources/icons/settings.svg");
     let icon_guide = include_image!("../../resources/icons/guide.svg");
     let icon_prompt = include_image!("../../resources/icons/prompt-studio.svg");
+    let icon_corpus = include_image!("../../resources/icons/corpus-studio.svg");
     let icon_audio = include_image!("../../resources/icons/audio-studio.svg");
     let icon_expand = include_image!("../../resources/icons/chevron-right.svg");
     let icon_collapse = include_image!("../../resources/icons/chevron-left.svg");
@@ -239,6 +243,15 @@ pub fn render_sidebar(
             Page::PromptStudio,
             icon_prompt,
             crate::i18n::tr(language, "Prompt Studio"),
+            expand_factor,
+        );
+        ui.add_space(4.0);
+        nav_item_animated(
+            ui,
+            navigation,
+            Page::CorpusStudio,
+            icon_corpus,
+            crate::i18n::tr(language, "Vocabulary Graph"),
             expand_factor,
         );
         ui.add_space(4.0);

@@ -588,6 +588,7 @@ struct XRTranslateApp {
     pub settings_section: ui::pages::settings::SettingsSection,
     pub prompt_library: PromptTemplateLibrary,
     pub prompt_studio: ui::pages::prompt_studio::PromptStudioController,
+    corpus_studio: ui::pages::corpus_studio::CorpusStudioController,
     pub modal_dialog: ui::modal::ModalDialog,
     pending_resource_deletion: Option<PendingResourceDeletion>,
     pub first_run: bool,
@@ -1386,6 +1387,7 @@ impl Default for XRTranslateApp {
             prompt_studio: ui::pages::prompt_studio::PromptStudioController::for_provider(
                 prompt_provider,
             ),
+            corpus_studio: ui::pages::corpus_studio::CorpusStudioController::default(),
             modal_dialog: ui::modal::ModalDialog::default(),
             pending_resource_deletion: None,
             first_run,
@@ -4184,6 +4186,7 @@ impl XRTranslateApp {
                 Page::Settings => "Settings".to_string(),
                 Page::AudioStudio => "AudioStudio".to_string(),
                 Page::PromptStudio => "PromptStudio".to_string(),
+                Page::CorpusStudio => "CorpusStudio".to_string(),
                 Page::Plugin(PluginId::OSC) => "Plugin:OSC".to_string(),
                 Page::Plugin(PluginId::MEETING) => "Plugin:Meeting".to_string(),
                 Page::Plugin(PluginId::VR_OVERLAY) => "Plugin:VROverlay".to_string(),
@@ -4396,6 +4399,21 @@ impl eframe::App for XRTranslateApp {
                     );
                     return;
                 }
+                if self.navigation.page == Page::CorpusStudio {
+                    ui::animation::AnimationSystem::render_animated_page(
+                        ui,
+                        Page::CorpusStudio,
+                        |ui| {
+                            ui::pages::corpus_studio::render(
+                                &mut self.corpus_studio,
+                                &mut self.backend_manager,
+                                ui,
+                                self.ui_language,
+                            )
+                        },
+                    );
+                    return;
+                }
                 egui::ScrollArea::vertical()
                     .id_salt("main_scroll_area")
                     .auto_shrink([false, false])
@@ -4423,6 +4441,7 @@ impl eframe::App for XRTranslateApp {
                         }
                         Page::AudioStudio => unreachable!(),
                         Page::PromptStudio => unreachable!(),
+                        Page::CorpusStudio => unreachable!(),
                     });
             });
 

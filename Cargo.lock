@@ -7191,7 +7191,11 @@ dependencies = [
 name = "xr-corpus-core"
 version = "0.1.0"
 dependencies = [
+ "rusqlite",
+ "rustix 1.1.4",
  "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

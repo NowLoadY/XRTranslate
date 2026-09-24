@@ -102,7 +102,7 @@ Descargue la versión más reciente para Windows desde [GitHub Releases](https:/
 | Elemento | Ruta predeterminada | Descripción |
 | :--- | :--- | :--- |
 | **Archivos de modelos** | `models/` | Almacena los paquetes de modelos de reconocimiento de voz y traducción |
-| **Corpus terminológicos** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | Servicio independiente de terminología y contexto en Markdown |
+| **Corpus terminológicos** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | Grafo de términos SQLite editable en `runtime/xr-corpus.sqlite` |
 | **Registros de ejecución** | `runtime/logs/` | Registros del servicio en segundo plano y del cliente |
 | **Configuración local** | `config.json` | Números de puerto, configuración de modelos y parámetros de renderizado |
 
