@@ -85,27 +85,6 @@ pub fn flow_row<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -
     ui.horizontal_wrapped(add_contents).inner
 }
 
-/// Keeps a related control group together when the current flow line is too
-/// short, while still allowing the group to wrap internally on narrow screens.
-pub fn flow_group<R>(
-    ui: &mut egui::Ui,
-    preferred_min_width: f32,
-    add_contents: impl FnOnce(&mut egui::Ui) -> R,
-) -> R {
-    if should_start_new_flow_line(
-        ui.available_width(),
-        ui.max_rect().width(),
-        preferred_min_width,
-    ) {
-        ui.end_row();
-    }
-    flow_row(ui, add_contents)
-}
-
-fn should_start_new_flow_line(remaining: f32, line_width: f32, group_min_width: f32) -> bool {
-    remaining + SIZE_EPSILON < group_min_width && line_width + SIZE_EPSILON >= group_min_width
-}
-
 /// Constrains a page to the current content width and reports any remaining
 /// horizontal overflow to the root coordinator.
 pub fn contain_width<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
@@ -321,13 +300,6 @@ mod tests {
         assert!(!should_stack(628.0, 2, 300.0));
         assert!(should_stack(607.0, 2, 300.0));
         assert!(!should_stack(200.0, 1, 300.0));
-    }
-
-    #[test]
-    fn grouped_controls_move_only_when_a_fresh_line_can_fit_them() {
-        assert!(should_start_new_flow_line(80.0, 600.0, 240.0));
-        assert!(!should_start_new_flow_line(300.0, 600.0, 240.0));
-        assert!(!should_start_new_flow_line(80.0, 180.0, 240.0));
     }
 
     #[test]

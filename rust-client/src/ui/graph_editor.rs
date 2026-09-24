@@ -860,27 +860,6 @@ where
     }
 }
 
-pub(crate) fn paint_navigation_hint(
-    ui: &egui::Ui,
-    canvas: Rect,
-    items: &[String],
-    color: egui::Color32,
-) {
-    let font_id = egui::FontId::monospace(9.5);
-    let line_height = 16.0;
-    let base_y = canvas.bottom() - 12.0;
-    let right_x = canvas.right() - 16.0;
-    for (index, item) in items.iter().rev().enumerate() {
-        ui.painter().text(
-            Pos2::new(right_x, base_y - index as f32 * line_height),
-            egui::Align2::RIGHT_BOTTOM,
-            item,
-            font_id.clone(),
-            color,
-        );
-    }
-}
-
 /// Produces a left-to-right layered layout without depending on a graph domain.
 ///
 /// Nodes are assigned to the layer after their deepest predecessor. Cyclic remnants stay in a

@@ -57,11 +57,10 @@ width from the rendered label through `layout::control_width`. Pages must not
 use viewport-width guesses or fixed widths that can push siblings beyond their
 container.
 
-Related toolbar actions use `layout::flow_group`: the group starts a fresh row
-when the remaining line is too short, then remains free to wrap internally if
-the complete viewport is narrower than its preferred minimum. Canvas/world
-coordinates stay clipped to their own viewport and never contribute to root
-window sizing.
+Graph editors share `graph_style` buttons and canvas frames. Toolbars wrap via
+`layout::flow_row`; secondary actions and guidance live in menus and tooltips.
+Canvas/world coordinates stay clipped to their own viewport and never
+contribute to root window sizing.
 
 Dynamic text lists measure wrapped content at the current container width and
 pass those measurements to `layout::show_variable_virtual_rows`. Virtualized

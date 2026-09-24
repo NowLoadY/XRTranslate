@@ -964,12 +964,14 @@ pub fn combobox_ui_with_width<R>(
                     .color(crate::ui::theme::text_strong()),
             )
             .width(control_width)
+            .truncate()
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
 
         combo.show_ui(ui, add_contents)
     });
 
-    let resp = inner_resp.inner;
+    let mut resp = inner_resp.inner;
+    resp.response = resp.response.on_hover_text(&selected_str);
     crate::ui::automation::record_combobox(
         ui,
         combo_id,
@@ -1100,6 +1102,7 @@ pub fn searchable_combobox_with_options<T: PartialEq + Clone>(
                     .color(crate::ui::theme::text_strong()),
             )
             .width(control_width)
+            .truncate()
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
 
         combo.show_ui(ui, |ui| {

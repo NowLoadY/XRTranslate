@@ -288,7 +288,13 @@ pub struct AudioStudioSignalLevels {
     pub microphone: f32,
     pub system_audio: f32,
     pub tts: f32,
+    pub media: f32,
     pub output: f32,
+    /// Peak levels before the source gate, sampled only while Audio Studio is open.
+    pub microphone_input: Option<f32>,
+    pub system_audio_input: Option<f32>,
+    pub tts_input: Option<f32>,
+    pub media_input: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -339,6 +345,10 @@ pub enum AudioStudioUiAction {
     SetNodeGain {
         node_id: NodeId,
         gain_db: f32,
+    },
+    SetNoiseGateThreshold {
+        node_id: NodeId,
+        threshold_db: f32,
     },
     EnqueueTts {
         node_id: NodeId,
@@ -493,6 +503,7 @@ impl AudioStudioController {
                 | AudioStudioUiAction::SetSystemAudioCapture { .. }
                 | AudioStudioUiAction::SetNodeVoiceMeeterBus { .. }
                 | AudioStudioUiAction::SetNodeGain { .. }
+                | AudioStudioUiAction::SetNoiseGateThreshold { .. }
                 | AudioStudioUiAction::Connect { .. }
                 | AudioStudioUiAction::Rewire { .. }
                 | AudioStudioUiAction::DeleteLink(_)
@@ -510,6 +521,7 @@ impl AudioStudioController {
                 | AudioStudioUiAction::SetNodeDevice { .. }
                 | AudioStudioUiAction::SetSystemAudioCapture { .. }
                 | AudioStudioUiAction::SetNodeGain { .. }
+                | AudioStudioUiAction::SetNoiseGateThreshold { .. }
                 | AudioStudioUiAction::SetDeviceDefaults(_)
                 | AudioStudioUiAction::Connect { .. }
                 | AudioStudioUiAction::Rewire { .. }
@@ -551,6 +563,7 @@ impl AudioStudioController {
                     )));
                 }
                 graph.nodes.push(node);
+                graph.initialize_source_gates();
                 self.dirty = true;
             }
             AudioStudioUiAction::UpdateNode(node) => {
@@ -641,7 +654,10 @@ impl AudioStudioController {
                     .find(|node| node.id == node_id)
                     .ok_or_else(|| AudioStudioControllerError::NodeNotFound(node_id.clone()))?;
                 let AudioNodeKind::Processing {
-                    processor: AudioProcessor::Gain { gain_db: current_db },
+                    processor:
+                        AudioProcessor::Gain {
+                            gain_db: current_db,
+                        },
                 } = &mut node.kind
                 else {
                     return Err(AudioStudioControllerError::InvalidEdit(
@@ -649,6 +665,35 @@ impl AudioStudioController {
                     ));
                 };
                 *current_db = gain_db;
+                self.dirty = true;
+            }
+            AudioStudioUiAction::SetNoiseGateThreshold {
+                node_id,
+                threshold_db,
+            } => {
+                if !threshold_db.is_finite() || !(-80.0..=0.0).contains(&threshold_db) {
+                    return Err(AudioStudioControllerError::InvalidEdit(
+                        "Noise gate threshold must be between -80 and 0 dBFS".into(),
+                    ));
+                }
+                let node = self
+                    .selected_graph_mut()
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == node_id)
+                    .ok_or_else(|| AudioStudioControllerError::NodeNotFound(node_id.clone()))?;
+                let AudioNodeKind::Processing {
+                    processor:
+                        AudioProcessor::NoiseGate {
+                            threshold_db: current,
+                        },
+                } = &mut node.kind
+                else {
+                    return Err(AudioStudioControllerError::InvalidEdit(
+                        "Select a noise gate to adjust its threshold".into(),
+                    ));
+                };
+                *current = threshold_db;
                 self.dirty = true;
             }
             AudioStudioUiAction::MoveNode { node_id, position } => {
@@ -819,6 +864,8 @@ impl AudioStudioController {
                 {
                     *value = Some(source);
                     self.dirty = true;
+                    self.graph_revision = self.graph_revision.saturating_add(1);
+                    self.failed_graph_revision = None;
                 }
             }
         }
@@ -2401,12 +2448,16 @@ mod tests {
             .iter()
             .find(|l| l.id.0 == "asr-mixer-to-asr")
             .unwrap();
-        assert!(!asr_link.enabled, "ASR link should be disabled when not running");
+        assert!(
+            !asr_link.enabled,
+            "ASR link should be disabled when not running"
+        );
     }
 
     #[test]
     fn toggling_asr_link_starts_and_stops_translation_workflow() {
-        let mut controller = AudioStudioController::from_repository(repository("asr-toggle-action"));
+        let mut controller =
+            AudioStudioController::from_repository(repository("asr-toggle-action"));
         let host = complete_host();
         let actions = controller
             .handle_ui_action(
@@ -2441,7 +2492,8 @@ mod tests {
 
     #[test]
     fn locked_translation_pipeline_rejects_modifications_to_asr_routes() {
-        let mut controller = AudioStudioController::from_repository(repository("asr-locked-action"));
+        let mut controller =
+            AudioStudioController::from_repository(repository("asr-locked-action"));
         let mut host = complete_host();
         host.translation_workflow_locked_by = Some("Meeting".into());
 

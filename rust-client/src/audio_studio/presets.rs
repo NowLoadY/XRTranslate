@@ -41,12 +41,14 @@ impl AudioStudioPreset {
 }
 
 pub fn graph_for_preset(preset: AudioStudioPreset) -> AudioGraph {
-    match preset {
+    let mut graph = match preset {
         AudioStudioPreset::CompleteAudioSystem => complete_audio_system(),
         AudioStudioPreset::TranslationSafe => translation_safe(),
         AudioStudioPreset::VrchatKaraoke => vrchat_karaoke(),
         AudioStudioPreset::TtsToGameMicrophone => tts_to_game_microphone(),
-    }
+    };
+    graph.initialize_source_gates();
+    graph
 }
 
 fn complete_audio_system() -> AudioGraph {

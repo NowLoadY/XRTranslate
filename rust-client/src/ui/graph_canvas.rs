@@ -8,7 +8,7 @@ use eframe::egui::{
     self, Align, Color32, CornerRadius, Layout, Pos2, Rect, Stroke, UiBuilder, Vec2,
 };
 
-const MIN_ZOOM: f32 = 0.25;
+const MIN_ZOOM: f32 = 0.05;
 const MAX_ZOOM: f32 = 1.6;
 
 #[derive(Clone, Debug)]
@@ -20,6 +20,7 @@ pub(crate) struct GraphCanvasState {
     pub fit_pending: bool,
     pub canvas_size: Vec2,
     wire_base_zoom: Option<f32>,
+    fitted_view: Option<(Vec2, f32)>,
 }
 
 impl Default for GraphCanvasState {
@@ -32,11 +33,30 @@ impl Default for GraphCanvasState {
             fit_pending: true,
             canvas_size: Vec2::new(960.0, 540.0),
             wire_base_zoom: None,
+            fitted_view: None,
         }
     }
 }
 
 impl GraphCanvasState {
+    /// Refit an overview after resizing; keep a manually positioned view centered.
+    pub fn resize_viewport(&mut self, size: Vec2) {
+        if size == self.canvas_size {
+            return;
+        }
+        if self.fitted_view == Some((self.pan, self.zoom)) {
+            self.fit_pending = true;
+        } else if !self.fit_pending {
+            self.pan += (size - self.canvas_size) * 0.5;
+        }
+        self.canvas_size = size;
+    }
+
+    pub fn zoom_from_center(&mut self, scroll: f32) {
+        let viewport = Rect::from_min_size(Pos2::ZERO, self.canvas_size);
+        self.zoom_at_pointer(viewport, viewport.center(), scroll);
+    }
+
     pub fn graph_rect(&self, canvas: Rect, position: [f32; 2], size: Vec2) -> Rect {
         Rect::from_min_size(
             Pos2::new(
@@ -62,6 +82,7 @@ impl GraphCanvasState {
             (available.x - graph_size.x * self.zoom) * 0.5 - bounds.min.x * self.zoom,
             (available.y - graph_size.y * self.zoom) * 0.5 - bounds.min.y * self.zoom,
         );
+        self.fitted_view = Some((self.pan, self.zoom));
     }
 
     pub fn zoom_at_pointer(&mut self, canvas: Rect, pointer: Pos2, scroll: f32) {
@@ -185,22 +206,19 @@ pub(crate) fn canvas_viewport(parent: &mut egui::Ui, canvas: Rect) -> egui::Ui {
 
 pub(crate) fn paint_grid(ui: &egui::Ui, canvas: Rect, state: &GraphCanvasState, color: Color32) {
     let painter = ui.painter();
-    let grid = (32.0 * state.zoom).max(8.0);
+    // Keep orientation cues quiet and sparse as the graph zooms out.
+    let mut grid = 32.0 * state.zoom;
+    while grid < 24.0 {
+        grid *= 2.0;
+    }
     let mut x = canvas.left() + state.pan.x.rem_euclid(grid);
     while x <= canvas.right() {
-        painter.line_segment(
-            [Pos2::new(x, canvas.top()), Pos2::new(x, canvas.bottom())],
-            Stroke::new(1.0, color),
-        );
+        let mut y = canvas.top() + state.pan.y.rem_euclid(grid);
+        while y <= canvas.bottom() {
+            painter.circle_filled(Pos2::new(x, y), 0.65, color);
+            y += grid;
+        }
         x += grid;
-    }
-    let mut y = canvas.top() + state.pan.y.rem_euclid(grid);
-    while y <= canvas.bottom() {
-        painter.line_segment(
-            [Pos2::new(canvas.left(), y), Pos2::new(canvas.right(), y)],
-            Stroke::new(1.0, color),
-        );
-        y += grid;
     }
 }
 
@@ -451,6 +469,28 @@ mod tests {
         let transformed = state.graph_rect(canvas, [100.0, 100.0], bounds.size());
         assert!(canvas.contains(transformed.min));
         assert!(canvas.contains(transformed.max));
+    }
+
+    #[test]
+    fn large_graph_fits_and_resize_preserves_manual_navigation() {
+        let available = Vec2::new(1000.0, 600.0);
+        let mut state = GraphCanvasState::default();
+        state.resize_viewport(available);
+        let bounds = Rect::from_min_size(Pos2::new(-100.0, -200.0), Vec2::new(3000.0, 4000.0));
+        state.fit_to_bounds(bounds, available, Vec2::new(220.0, 84.0));
+        state.fit_pending = false;
+        let canvas = Rect::from_min_size(Pos2::ZERO, available);
+        let transformed = state.graph_rect(canvas, [-100.0, -200.0], bounds.size());
+        assert!(canvas.contains_rect(transformed));
+        state.resize_viewport(Vec2::new(1200.0, 800.0));
+        assert!(state.fit_pending);
+
+        state.fit_pending = false;
+        state.zoom_from_center(120.0);
+        let center = (state.canvas_size * 0.5 - state.pan) / state.zoom;
+        state.resize_viewport(Vec2::new(800.0, 500.0));
+        assert!(!state.fit_pending);
+        assert!(((state.canvas_size * 0.5 - state.pan) / state.zoom - center).length() < 0.001);
     }
 
     #[test]

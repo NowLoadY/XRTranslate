@@ -11,6 +11,7 @@ use std::sync::{
 
 mod app_update;
 mod audio;
+mod audio_processing;
 mod audio_studio;
 mod backend;
 mod child_process;
@@ -41,7 +42,7 @@ mod window_backdrop;
 
 use audio::{
     AudioApplication, AudioRouteConfig, AudioRouteLoopbackConfig, AudioRouteLoopbackTarget,
-    AudioRouteSourceConfig, AudioSystem, InputConfigInfo, InputDevice,
+    AudioRouteMediaConfig, AudioRouteSourceConfig, AudioSystem, InputConfigInfo, InputDevice,
 };
 use audio_studio::{
     ApplicationSelection, AudioDeviceRole, AudioGraph, AudioNodeKind, AudioStudioController,
@@ -151,11 +152,13 @@ fn meeting_source_name_to_capture(source: &str) -> CaptureSource {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 struct AudioStudioAsrPlan {
     capture_source: CaptureSource,
     microphone_device_id: Option<String>,
     system_audio_input: Option<SystemAudioInputSelection>,
+    microphone_effects: Vec<audio_processing::SourceEffect>,
+    system_audio_effects: Vec<audio_processing::SourceEffect>,
 }
 
 impl AudioStudioAsrPlan {
@@ -192,6 +195,92 @@ struct CompiledAudioStudioGraph {
     asr: Option<AudioStudioAsrPlan>,
 }
 
+/// Resolve a source's processing in wire order, independently of node storage
+/// order. Gains after a mixer distribute over its inputs; a gate must precede
+/// mixing so unrelated sources cannot open one another's gate.
+fn audio_source_effects(
+    graph: &audio_studio::AudioGraph,
+    source: &audio_studio::NodeId,
+    sink: &audio_studio::NodeId,
+) -> Result<Vec<audio_processing::SourceEffect>, String> {
+    use audio_processing::SourceEffect;
+    use audio_studio::{AudioNodeKind, AudioProcessor, NodeId};
+    fn paths(
+        graph: &audio_studio::AudioGraph,
+        current: &NodeId,
+        sink: &NodeId,
+        path: &mut Vec<NodeId>,
+        found: &mut Vec<Vec<NodeId>>,
+    ) {
+        if path.contains(current) || found.len() > 1 {
+            return;
+        }
+        let Some(node) = graph.node(current).filter(|node| !node.bypassed) else {
+            return;
+        };
+        path.push(node.id.clone());
+        if current == sink {
+            found.push(path.clone());
+        } else {
+            for link in graph
+                .links
+                .iter()
+                .filter(|link| link.enabled && link.from.node_id == *current)
+            {
+                paths(graph, &link.to.node_id, sink, path, found);
+            }
+        }
+        path.pop();
+    }
+    let mut found = Vec::new();
+    paths(graph, source, sink, &mut Vec::new(), &mut found);
+    if found.len() > 1 {
+        return Err(
+            "A source reaches the same output more than once; keep one path per source and output"
+                .into(),
+        );
+    }
+    let mut effects = Vec::new();
+    for id in found.first().into_iter().flatten() {
+        match &graph.node(id).unwrap().kind {
+            AudioNodeKind::Processing {
+                processor: AudioProcessor::Gain { gain_db },
+            } => {
+                if !gain_db.is_finite() {
+                    return Err("Gain must be finite".into());
+                }
+                effects.push(SourceEffect::Gain(
+                    10.0_f32.powf(gain_db / 20.0).clamp(0.0, 8.0),
+                ));
+            }
+            AudioNodeKind::Processing {
+                processor: AudioProcessor::NoiseGate { threshold_db },
+            } => {
+                if !threshold_db.is_finite() || !(-80.0..=0.0).contains(threshold_db) {
+                    return Err("Noise gate threshold must be between -80 and 0 dBFS".into());
+                }
+                let other_sources = graph
+                    .nodes
+                    .iter()
+                    .filter(|node| node.kind.is_source() && node.id != *source)
+                    .any(|node| {
+                        let mut upstream_paths = Vec::new();
+                        paths(graph, &node.id, id, &mut Vec::new(), &mut upstream_paths);
+                        !upstream_paths.is_empty()
+                    });
+                if other_sources {
+                    return Err(
+                        "Place each noise gate before the mixer, directly after its source".into(),
+                    );
+                }
+                effects.push(SourceEffect::NoiseGate(*threshold_db));
+            }
+            _ => {}
+        }
+    }
+    Ok(effects)
+}
+
 /// Compiles plugin-owned graph semantics into the host's existing neutral
 /// capabilities. Render branches become independent real-time audio routes;
 /// one ASR branch becomes the ordinary translation capture lifecycle.
@@ -226,6 +315,10 @@ fn compile_audio_studio_route(
             if !upstream.insert(node_id.clone()) {
                 continue;
             }
+            if graph.node(&node_id).is_some_and(|node| node.bypassed) {
+                upstream.remove(&node_id);
+                continue;
+            }
             if let Some(inputs) = reverse.get(&node_id) {
                 pending.extend(inputs.iter().cloned());
             }
@@ -249,125 +342,129 @@ fn compile_audio_studio_route(
                 && graph.has_enabled_source_path(&node.id)
         })
         .collect::<Vec<_>>();
-    let routes = render_sinks
-        .into_iter()
-        .map(|render_sink| -> Result<AudioRouteConfig, String> {
-            let upstream = upstream_of(&render_sink.id);
-            let mut route = AudioRouteConfig {
-                output_device_id: render_sink
-                    .kind
-                    .selected_device()
-                    .map(|device| device.0.clone())
-                    .unwrap_or_default(),
-                tts_gain: None,
-                ..AudioRouteConfig::default()
-            };
-            for node in graph
-                .nodes
-                .iter()
-                .filter(|node| upstream.contains(&node.id) && !node.bypassed)
-            {
-                match &node.kind {
-                    AudioNodeKind::Microphone { device_id } => {
-                        if route.microphone.is_some() {
-                            return Err("The current executor supports one microphone source".into());
+    let routes =
+        render_sinks
+            .into_iter()
+            .map(|render_sink| -> Result<AudioRouteConfig, String> {
+                let upstream = upstream_of(&render_sink.id);
+                let mut route = AudioRouteConfig {
+                    output_device_id: render_sink
+                        .kind
+                        .selected_device()
+                        .map(|device| device.0.clone())
+                        .unwrap_or_default(),
+                    tts_gain: None,
+                    ..AudioRouteConfig::default()
+                };
+                for node in graph
+                    .nodes
+                    .iter()
+                    .filter(|node| upstream.contains(&node.id) && !node.bypassed)
+                {
+                    match &node.kind {
+                        AudioNodeKind::Microphone { device_id } => {
+                            if route.microphone.is_some() {
+                                return Err(
+                                    "The current executor supports one microphone source".into()
+                                );
+                            }
+                            route.microphone = Some(AudioRouteSourceConfig {
+                                device_id: device_id
+                                    .as_ref()
+                                    .map(|device| device.0.clone())
+                                    .unwrap_or_default(),
+                                gain: 1.0,
+                                effects: audio_source_effects(graph, &node.id, &render_sink.id)?,
+                            });
                         }
-                        route.microphone = Some(AudioRouteSourceConfig {
-                            device_id: device_id
-                                .as_ref()
-                                .map(|device| device.0.clone())
-                                .unwrap_or_default(),
-                            gain: 1.0,
-                        });
-                    }
-                    AudioNodeKind::SystemAudio { capture } => {
-                        if route.system_loopback.is_some() {
+                        AudioNodeKind::SystemAudio { capture } => {
+                            if route.system_loopback.is_some() {
+                                return Err(
+                                    "The current executor supports one system-audio source".into(),
+                                );
+                            }
+                            let target = match capture {
+                                SystemAudioCapture::Endpoint { device_id, .. } => {
+                                    AudioRouteLoopbackTarget::Endpoint {
+                                        device_id: device_id
+                                            .as_ref()
+                                            .map(|device| device.0.clone())
+                                            .unwrap_or_default(),
+                                    }
+                                }
+                                SystemAudioCapture::Application {
+                                    application,
+                                    resolved_process_id,
+                                } => AudioRouteLoopbackTarget::Application {
+                                    process_id: resolved_process_id.ok_or_else(|| {
+                                        "The selected application's audio session is unavailable"
+                                            .to_owned()
+                                    })?,
+                                    application_name: application
+                                        .as_ref()
+                                        .map(|application| application.display_name.clone())
+                                        .unwrap_or_else(|| "selected application".into()),
+                                },
+                            };
+                            route.system_loopback = Some(AudioRouteLoopbackConfig {
+                                target,
+                                gain: 1.0,
+                                effects: audio_source_effects(graph, &node.id, &render_sink.id)?,
+                            });
+                        }
+                        AudioNodeKind::TextToSpeech => {
+                            route.tts_gain = Some(1.0);
+                            route.tts_effects =
+                                audio_source_effects(graph, &node.id, &render_sink.id)?;
+                        }
+                        AudioNodeKind::Media {
+                            source,
+                            loop_playback,
+                        } => {
+                            route.media.push(AudioRouteMediaConfig {
+                                path: source
+                                    .clone()
+                                    .filter(|source| !source.trim().is_empty())
+                                    .ok_or("Select a media file")?,
+                                loop_playback: *loop_playback,
+                                effects: audio_source_effects(graph, &node.id, &render_sink.id)?,
+                            });
+                        }
+                        AudioNodeKind::Processing {
+                            processor:
+                                AudioProcessor::Gain { .. } | AudioProcessor::NoiseGate { .. },
+                        } => {}
+                        AudioNodeKind::Processing {
+                            processor:
+                                AudioProcessor::Compressor { .. } | AudioProcessor::Ducker { .. },
+                        } => {
                             return Err(
-                                "The current executor supports one system-audio source".into()
+                                "This processor is not available in the real-time executor".into()
                             );
                         }
-                        let target = match capture {
-                            SystemAudioCapture::Endpoint { device_id, .. } => {
-                                AudioRouteLoopbackTarget::Endpoint {
-                                    device_id: device_id
-                                        .as_ref()
-                                        .map(|device| device.0.clone())
-                                        .unwrap_or_default(),
-                                }
-                            }
-                            SystemAudioCapture::Application {
-                                application,
-                                resolved_process_id,
-                            } => AudioRouteLoopbackTarget::Application {
-                                process_id: resolved_process_id.ok_or_else(|| {
-                                    "The selected application's audio session is unavailable"
-                                        .to_owned()
-                                })?,
-                                application_name: application
-                                    .as_ref()
-                                    .map(|application| application.display_name.clone())
-                                    .unwrap_or_else(|| "selected application".into()),
-                            },
-                        };
-                        route.system_loopback = Some(AudioRouteLoopbackConfig {
-                            target,
-                            gain: 1.0,
-                        });
-                    }
-                    AudioNodeKind::TextToSpeech => route.tts_gain = Some(1.0),
-                    AudioNodeKind::Media { .. } => {
-                        return Err(
-                            "Direct media-file nodes are not executable yet; use a System Audio node and play BGM through the selected endpoint"
-                                .into(),
-                        );
-                    }
-                    AudioNodeKind::Processing {
-                        processor: AudioProcessor::Gain { gain_db },
-                    } => {
-                        let linear_gain = 10.0_f32.powf(gain_db / 20.0).clamp(0.0, 8.0);
-                        if let Some(mic) = &mut route.microphone {
-                            mic.gain *= linear_gain;
+                        AudioNodeKind::Processing {
+                            processor: AudioProcessor::Limiter { ceiling_db },
+                        } => {
+                            route.output_ceiling = route
+                                .output_ceiling
+                                .min(10.0_f32.powf(ceiling_db / 20.0).clamp(0.01, 1.0));
                         }
-                        if let Some(sys) = &mut route.system_loopback {
-                            sys.gain *= linear_gain;
-                        }
-                        if let Some(tts) = &mut route.tts_gain {
-                            *tts *= linear_gain;
-                        }
+                        AudioNodeKind::Mixer
+                        | AudioNodeKind::AsrTap
+                        | AudioNodeKind::MonitorOutput { .. }
+                        | AudioNodeKind::GameMicrophoneOutput { .. } => {}
                     }
-                    AudioNodeKind::Processing {
-                        processor:
-                            AudioProcessor::NoiseGate { .. }
-                            | AudioProcessor::Compressor { .. }
-                            | AudioProcessor::Ducker { .. },
-                    } => {
-                        return Err(
-                            "This processor is saved in the graph but is not available in the first real-time executor"
-                                .into(),
-                        );
-                    }
-                    AudioNodeKind::Processing {
-                        processor: AudioProcessor::Limiter { ceiling_db },
-                    } => {
-                        route.output_ceiling = route
-                            .output_ceiling
-                            .min(10.0_f32.powf(ceiling_db / 20.0).clamp(0.01, 1.0));
-                    }
-                    AudioNodeKind::Mixer
-                    | AudioNodeKind::AsrTap
-                    | AudioNodeKind::MonitorOutput { .. }
-                    | AudioNodeKind::GameMicrophoneOutput { .. } => {}
                 }
-            }
-            if route.microphone.is_none()
-                && route.system_loopback.is_none()
-                && route.tts_gain.is_none()
-            {
-                return Err("The selected output has no executable audio source".into());
-            }
-            Ok(route)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+                if route.microphone.is_none()
+                    && route.system_loopback.is_none()
+                    && route.tts_gain.is_none()
+                    && route.media.is_empty()
+                {
+                    return Err("The selected output has no executable audio source".into());
+                }
+                Ok(route)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
     let asr_sinks = graph
         .nodes
@@ -384,6 +481,8 @@ fn compile_audio_studio_route(
             let upstream = upstream_of(&sink.id);
             let mut microphone_device_id = None;
             let mut system_audio_input = None;
+            let mut microphone_effects = Vec::new();
+            let mut system_audio_effects = Vec::new();
             for node in graph
                 .nodes
                 .iter()
@@ -394,6 +493,7 @@ fn compile_audio_studio_route(
                         if microphone_device_id.is_some() {
                             return Err("The ASR branch supports one microphone source".into());
                         }
+                        microphone_effects = audio_source_effects(graph, &node.id, &sink.id)?;
                         microphone_device_id = Some(
                             device_id
                                 .as_ref()
@@ -405,6 +505,7 @@ fn compile_audio_studio_route(
                         if system_audio_input.is_some() {
                             return Err("The ASR branch supports one system-audio source".into());
                         }
+                        system_audio_effects = audio_source_effects(graph, &node.id, &sink.id)?;
                         system_audio_input = Some(match capture {
                             SystemAudioCapture::Endpoint { device_id, .. } => {
                                 SystemAudioInputSelection::Endpoint {
@@ -430,7 +531,7 @@ fn compile_audio_studio_route(
                         return Err("Direct media-file ASR is not available in Audio Studio yet".into());
                     }
                     AudioNodeKind::Processing {
-                        processor: AudioProcessor::Gain { .. },
+                        processor: AudioProcessor::Gain { .. } | AudioProcessor::NoiseGate { .. },
                     } => {}
                     AudioNodeKind::Processing { .. } => {
                         return Err("DSP nodes on the ASR branch are not executable yet".into());
@@ -454,6 +555,8 @@ fn compile_audio_studio_route(
                 capture_source,
                 microphone_device_id,
                 system_audio_input,
+                microphone_effects,
+                system_audio_effects,
             })
         })
         .transpose()?;
@@ -736,11 +839,10 @@ impl Default for XRTranslateApp {
         let rx = event_rx.clone();
         let session_event_subscribers: Vec<Box<dyn SessionEventSubscriber>> =
             vec![Box::new(meeting_plugin.event_sink.clone())];
-        let host_output_subscribers: Vec<Box<dyn HostOutputSubscriber>> =
-            vec![
-                Box::new(osc_plugin.publisher()),
-                Box::new(vr_overlay_plugin.handle()),
-            ];
+        let host_output_subscribers: Vec<Box<dyn HostOutputSubscriber>> = vec![
+            Box::new(osc_plugin.publisher()),
+            Box::new(vr_overlay_plugin.handle()),
+        ];
 
         std::thread::Builder::new()
             .name("session-event-pump".into())
@@ -1902,7 +2004,7 @@ impl XRTranslateApp {
                 exclude_own_process_audio: false,
                 tts_feedback_suppression: cfg!(windows) && !self.loopback_devices.is_empty(),
                 tts_source: self.service_config.tts_is_configured(),
-                media_source: false,
+                media_source: true,
                 monitor_output: !self.tts_output_devices.is_empty(),
                 game_microphone_output,
                 game_microphone_without_external_driver: false,
@@ -2039,6 +2141,10 @@ impl XRTranslateApp {
         &mut self,
         plan: &AudioStudioAsrPlan,
     ) -> Result<(), String> {
+        self.audio_system.set_capture_effects(
+            plan.microphone_effects.clone(),
+            plan.system_audio_effects.clone(),
+        );
         if plan.matches_current_settings(
             self.capture_source,
             &self.selected_device_id,
@@ -2338,12 +2444,17 @@ impl XRTranslateApp {
         let host_audio = self.audio_studio_host_snapshot();
         let mut snapshot = self.audio_studio.snapshot(&host_audio);
         let route_levels = self.audio_system.active_audio_route_levels();
+        let routed_input = |select: fn(&audio::AudioRouteLevels) -> Option<f32>| {
+            route_levels.iter().filter_map(select).reduce(f32::max)
+        };
+        let (capture_mic_input, capture_system_input) = self.audio_system.capture_input_levels();
         let routed = route_levels.iter().copied().fold(
             audio::AudioRouteLevels::default(),
             |mut aggregate, levels| {
                 aggregate.microphone = aggregate.microphone.max(levels.microphone);
                 aggregate.system_loopback = aggregate.system_loopback.max(levels.system_loopback);
                 aggregate.tts = aggregate.tts.max(levels.tts);
+                aggregate.media = aggregate.media.max(levels.media);
                 aggregate.output = aggregate.output.max(levels.output);
                 aggregate
             },
@@ -2360,7 +2471,22 @@ impl XRTranslateApp {
                 0.0
             }),
             tts: routed.tts,
+            media: routed.media,
             output: routed.output,
+            microphone_input: routed_input(|level| level.microphone_input)
+                .into_iter()
+                .chain((self.is_translating
+                    && self.capture_source.routes().contains(&CaptureSource::Microphone))
+                .then_some(capture_mic_input))
+                .reduce(f32::max),
+            system_audio_input: routed_input(|level| level.system_loopback_input)
+                .into_iter()
+                .chain((self.is_translating
+                    && self.capture_source.routes().contains(&CaptureSource::SystemAudio))
+                .then_some(capture_system_input))
+                .reduce(f32::max),
+            tts_input: routed_input(|level| level.tts_input),
+            media_input: routed_input(|level| level.media_input),
         };
         let actions = ui::pages::audio_studio::render(&snapshot, ui, self.ui_language);
         self.apply_audio_studio_ui_actions(actions);
@@ -2503,6 +2629,7 @@ impl XRTranslateApp {
                 chunk_frames: 1_600,
                 pacing,
                 recognition_channels,
+                ..media_import::AudioImportOptions::default()
             },
         ) {
             Ok(import) => {
@@ -2544,11 +2671,8 @@ impl XRTranslateApp {
             language: self.ui_language,
             status: &status,
         };
-        let actions = plugins::vr_overlay::ui::render(
-            self.vr_overlay_plugin.draft_mut(),
-            ui,
-            context,
-        );
+        let actions =
+            plugins::vr_overlay::ui::render(self.vr_overlay_plugin.draft_mut(), ui, context);
         for action in actions {
             match action {
                 VrOverlayUiAction::SettingsChanged => {
@@ -2718,9 +2842,7 @@ impl XRTranslateApp {
         ) {
             return;
         }
-        if self.service_config.tts_is_configured()
-            && !self.usage_guidelines_accepted
-        {
+        if self.service_config.tts_is_configured() && !self.usage_guidelines_accepted {
             return;
         }
         self.first_run = false;
@@ -3179,8 +3301,7 @@ impl XRTranslateApp {
             backend::BackendStatus::Failed(error) => {
                 self.backend_start_deadline = None;
                 self.set_startup_error("Startup failed", error.clone());
-                self.modal_dialog =
-                    ui::modal::ModalDialog::error(self.ui_language, &error, None);
+                self.modal_dialog = ui::modal::ModalDialog::error(self.ui_language, &error, None);
             }
         }
     }
@@ -3267,6 +3388,30 @@ impl XRTranslateApp {
                 self.devices = snapshot.devices;
                 self.loopback_devices = snapshot.loopback_devices;
                 self.tts_output_devices = snapshot.output_devices;
+                let refreshed_device_id = (!self.selected_device_id.is_empty()).then(|| {
+                    audio::matching_available_input_id(&self.selected_device_id, &self.devices)
+                        .unwrap_or_default()
+                        .to_owned()
+                });
+                if let Some(refreshed_device_id) = refreshed_device_id
+                    && refreshed_device_id != self.selected_device_id
+                {
+                    log::info!(
+                        "Selected microphone '{}' changed to '{}'.",
+                        self.selected_device_id,
+                        if refreshed_device_id.is_empty() {
+                            "default"
+                        } else {
+                            &refreshed_device_id
+                        }
+                    );
+                    self.selected_device_id = refreshed_device_id;
+                    if let Err(error) = self.sync_translation_input_to_audio_studio() {
+                        log::warn!("Could not update Audio Studio after device refresh: {error}");
+                    }
+                    self.save_settings();
+                    self.refresh_selected_input_config();
+                }
             }
             Err(crossbeam_channel::TryRecvError::Empty) => {}
             Err(crossbeam_channel::TryRecvError::Disconnected) => {
@@ -3474,6 +3619,24 @@ impl XRTranslateApp {
         routes: &[CaptureSource],
         audio_txs: &[Sender<Vec<f32>>],
     ) -> Result<(), String> {
+        // The ASR sink switch mirrors the session lifecycle and is still off
+        // while a new session starts. Read its configured source processing now.
+        let mut input_graph = self.audio_studio.settings().graph.clone();
+        let asr_ids = input_graph
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.kind, audio_studio::AudioNodeKind::AsrTap))
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        for link in &mut input_graph.links {
+            if asr_ids.contains(&link.to.node_id) {
+                link.enabled = true;
+            }
+        }
+        if let Some(plan) = compile_audio_studio_asr(&input_graph)? {
+            self.audio_system
+                .set_capture_effects(plan.microphone_effects, plan.system_audio_effects);
+        }
         self.input_level.store(0.0_f32.to_bits(), Ordering::Relaxed);
         self.loopback_level
             .store(0.0_f32.to_bits(), Ordering::Relaxed);
@@ -3750,8 +3913,7 @@ impl XRTranslateApp {
         {
             session.begin_voice_clone();
         } else {
-            self.last_error =
-                Some("Start microphone translation to clone your voice.".into());
+            self.last_error = Some("Start microphone translation to clone your voice.".into());
         }
     }
 
@@ -4255,6 +4417,7 @@ impl eframe::App for XRTranslateApp {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
         if self.first_run {
+            self.audio_system.set_audio_studio_metering(false);
             ui::render_onboarding_fullscreen(self, ui);
             self.render_modal_layer(ui.ctx());
             ui::layout::finish_frame(ui.ctx());
@@ -4321,6 +4484,9 @@ impl eframe::App for XRTranslateApp {
                 );
             }
         }
+
+        self.audio_system
+            .set_audio_studio_metering(!self.first_run && self.navigation.page == Page::AudioStudio);
 
         // 2. Native Central Content Panel (Takes 100% of remaining width and height)
         let central_frame = if is_player_fullscreen {
@@ -4593,6 +4759,80 @@ mod tests {
     };
 
     #[test]
+    fn audio_source_gates_compile_in_wire_order_for_capture_media_and_tts() {
+        use crate::audio_processing::SourceEffect;
+        use crate::audio_studio::{
+            AudioGraph, AudioLink, AudioNode, AudioNodeKind, AudioProcessor,
+        };
+        let mut graph = AudioGraph::new("test", "Ordered processors");
+        graph.nodes = vec![
+            AudioNode::new(
+                "monitor",
+                "Monitor",
+                AudioNodeKind::MonitorOutput { device_id: None },
+            ),
+            AudioNode::new("tts", "TTS", AudioNodeKind::TextToSpeech),
+            AudioNode::new(
+                "gain",
+                "Gain",
+                AudioNodeKind::Processing {
+                    processor: AudioProcessor::Gain { gain_db: -6.0 },
+                },
+            ),
+            AudioNode::new(
+                "media",
+                "Media",
+                AudioNodeKind::Media {
+                    source: Some("track.wav".into()),
+                    loop_playback: true,
+                },
+            ),
+            AudioNode::new("mixer", "Mix", AudioNodeKind::Mixer),
+            AudioNode::new("mic", "Mic", AudioNodeKind::Microphone { device_id: None }),
+            AudioNode::new("asr", "ASR", AudioNodeKind::AsrTap),
+        ];
+        graph.links = vec![
+            AudioLink::new("mic-gain", "mic", "gain"),
+            AudioLink::to_mixer_input("gain-mix", "gain", "mixer", 0),
+            AudioLink::to_mixer_input("tts-mix", "tts", "mixer", 1),
+            AudioLink::to_mixer_input("media-mix", "media", "mixer", 2),
+            AudioLink::new("mix-monitor", "mixer", "monitor"),
+            AudioLink::new("gain-asr", "gain", "asr"),
+        ];
+        graph.initialize_source_gates();
+        let gate = graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id.0 == "mic-gate")
+            .unwrap();
+        gate.kind = AudioNodeKind::Processing {
+            processor: AudioProcessor::NoiseGate {
+                threshold_db: -30.0,
+            },
+        };
+        let first = compile_audio_studio_route(&graph).unwrap();
+        let route = &first.routes[0];
+        assert_eq!(
+            route.microphone.as_ref().unwrap().effects,
+            vec![
+                SourceEffect::NoiseGate(-30.0),
+                SourceEffect::Gain(10.0f32.powf(-6.0 / 20.0))
+            ]
+        );
+        assert_eq!(route.tts_effects, vec![SourceEffect::NoiseGate(-45.0)]);
+        assert_eq!(route.media[0].effects, vec![SourceEffect::NoiseGate(-45.0)]);
+        assert_eq!(
+            first.asr.as_ref().unwrap().microphone_effects,
+            route.microphone.as_ref().unwrap().effects
+        );
+        graph.nodes.reverse();
+        assert_eq!(
+            compile_audio_studio_route(&graph).unwrap().routes,
+            first.routes
+        );
+    }
+
+    #[test]
     fn unchanged_audio_studio_asr_plan_matches_running_translation_settings() {
         let system_audio_input = SystemAudioInputSelection::Endpoint {
             device_id: "loopback".into(),
@@ -4601,6 +4841,8 @@ mod tests {
             capture_source: CaptureSource::Both,
             microphone_device_id: Some("microphone".into()),
             system_audio_input: Some(system_audio_input.clone()),
+            microphone_effects: crate::audio_processing::default_source_effects(),
+            system_audio_effects: crate::audio_processing::default_source_effects(),
         };
 
         assert!(plan.matches_current_settings(
@@ -4861,7 +5103,10 @@ mod tests {
 
         assert!(mic_link.enabled, "Microphone input should be enabled");
         assert!(!sys_link.enabled, "System audio input should be disabled");
-        assert!(!bus_link.enabled, "Translation bus should be disabled when not translating");
+        assert!(
+            !bus_link.enabled,
+            "Translation bus should be disabled when not translating"
+        );
 
         // Test system audio
         app.capture_source = CaptureSource::SystemAudio;

@@ -1,19 +1,19 @@
+use crate::audio_processing::{SourceEffect, SourcePipeline, default_source_effects};
 use audioadapter_buffers::direct::InterleavedSlice;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, Stream};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use parking_lot::Mutex;
 use rubato::{Fft, FixedSync, Indexing, Resampler};
-use std::collections::{HashMap, VecDeque};
 #[cfg(windows)]
 use std::collections::BTreeMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::sync::atomic::AtomicBool;
 use std::sync::{
     Arc, Weak,
     atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering},
 };
-#[cfg(windows)]
-use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::Duration;
 
@@ -27,6 +27,89 @@ pub struct InputDevice {
     /// Stable endpoint ID. Do not use the display name as an identifier.
     pub id: String,
     pub name: String,
+}
+
+/// ALSA exposes several PCM entry points for the same physical capture endpoint.
+/// Keep the card and device number in the key so two identical USB microphones
+/// remain separate choices.
+fn alsa_capture_endpoint(id: &str) -> Option<String> {
+    let pcm = id.strip_prefix("alsa:")?;
+    let (kind, parameters) = pcm.split_once(':')?;
+    if !matches!(kind, "hw" | "plughw" | "front" | "dsnoop") {
+        return None;
+    }
+    let mut card = None;
+    let mut device = None;
+    for parameter in parameters.split(',') {
+        card = card.or_else(|| parameter.strip_prefix("CARD="));
+        device = device.or_else(|| parameter.strip_prefix("DEV="));
+    }
+    Some(format!("{}:{}", card?, device.unwrap_or("0")))
+}
+
+fn alsa_capture_preference(id: &str) -> u8 {
+    match id.strip_prefix("alsa:").and_then(|pcm| pcm.split_once(':')) {
+        Some(("plughw", _)) => 0,
+        Some(("dsnoop", _)) => 1,
+        Some(("front", _)) => 2,
+        Some(("hw", _)) => 3,
+        _ => 4,
+    }
+}
+
+fn deduplicate_input_devices(devices: Vec<InputDevice>) -> Vec<InputDevice> {
+    let mut unique = Vec::<InputDevice>::new();
+    let mut seen = HashMap::<String, usize>::new();
+    for device in devices {
+        let key = alsa_capture_endpoint(&device.id)
+            .map(|endpoint| format!("alsa:{endpoint}"))
+            .unwrap_or_else(|| device.id.clone());
+        if let Some(&index) = seen.get(&key) {
+            if alsa_capture_preference(&device.id) < alsa_capture_preference(&unique[index].id) {
+                unique[index] = device;
+            }
+        } else {
+            seen.insert(key, unique.len());
+            unique.push(device);
+        }
+    }
+    let mut name_counts = HashMap::<String, usize>::new();
+    for device in &unique {
+        *name_counts.entry(device.name.clone()).or_default() += 1;
+    }
+    let mut name_ordinals = HashMap::<String, usize>::new();
+    for device in &mut unique {
+        if name_counts.get(&device.name).copied().unwrap_or_default() <= 1 {
+            continue;
+        }
+        let suffix = alsa_capture_endpoint(&device.id)
+            .and_then(|endpoint| {
+                endpoint
+                    .split_once(':')
+                    .map(|(card, number)| format!("CARD={card}, DEV={number}"))
+            })
+            .unwrap_or_else(|| {
+                let ordinal = name_ordinals.entry(device.name.clone()).or_default();
+                *ordinal += 1;
+                ordinal.to_string()
+            });
+        device.name = format!("{} ({suffix})", device.name);
+    }
+    unique
+}
+
+pub(crate) fn matching_available_input_id<'a>(
+    selected_id: &str,
+    devices: &'a [InputDevice],
+) -> Option<&'a str> {
+    if let Some(device) = devices.iter().find(|device| device.id == selected_id) {
+        return Some(&device.id);
+    }
+    let endpoint = alsa_capture_endpoint(selected_id)?;
+    devices
+        .iter()
+        .find(|device| alsa_capture_endpoint(&device.id).as_deref() == Some(endpoint.as_str()))
+        .map(|device| device.id.as_str())
 }
 
 /// One application that currently owns a Windows render-audio session.
@@ -57,6 +140,7 @@ const MICROPHONE_SUBSCRIBER_QUEUE_CAPACITY: usize = 64;
 pub struct AudioRouteSourceConfig {
     pub device_id: String,
     pub gain: f32,
+    pub effects: Vec<SourceEffect>,
 }
 
 /// Selects whether a system-audio source captures an entire render endpoint or
@@ -77,6 +161,7 @@ pub enum AudioRouteLoopbackTarget {
 pub struct AudioRouteLoopbackConfig {
     pub target: AudioRouteLoopbackTarget,
     pub gain: f32,
+    pub effects: Vec<SourceEffect>,
 }
 
 impl Default for AudioRouteSourceConfig {
@@ -84,8 +169,16 @@ impl Default for AudioRouteSourceConfig {
         Self {
             device_id: String::new(),
             gain: 1.0,
+            effects: default_source_effects(),
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioRouteMediaConfig {
+    pub path: String,
+    pub loop_playback: bool,
+    pub effects: Vec<SourceEffect>,
 }
 
 /// Neutral host composition for a low-latency route. `tts_gain: None` means
@@ -95,6 +188,8 @@ pub struct AudioRouteConfig {
     pub microphone: Option<AudioRouteSourceConfig>,
     pub system_loopback: Option<AudioRouteLoopbackConfig>,
     pub tts_gain: Option<f32>,
+    pub tts_effects: Vec<SourceEffect>,
+    pub media: Vec<AudioRouteMediaConfig>,
     pub output_device_id: String,
     /// Symmetric linear peak ceiling applied after mixing.
     pub output_ceiling: f32,
@@ -107,6 +202,8 @@ impl Default for AudioRouteConfig {
             microphone: None,
             system_loopback: None,
             tts_gain: Some(1.0),
+            tts_effects: default_source_effects(),
+            media: Vec::new(),
             output_device_id: String::new(),
             output_ceiling: 1.0,
             queue_capacity_ms: DEFAULT_ROUTE_QUEUE_MS,
@@ -135,7 +232,12 @@ pub struct AudioRouteLevels {
     pub microphone: f32,
     pub system_loopback: f32,
     pub tts: f32,
+    pub media: f32,
     pub output: f32,
+    pub microphone_input: Option<f32>,
+    pub system_loopback_input: Option<f32>,
+    pub tts_input: Option<f32>,
+    pub media_input: Option<f32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -162,28 +264,91 @@ impl fmt::Display for AudioRouteError {
 
 impl std::error::Error for AudioRouteError {}
 
+/// A 10 Hz pre-gate peak meter. Audio processing never waits for its UI reader.
+#[derive(Default)]
+struct InputPeakMeter {
+    level: AtomicU32,
+    pending_peak: AtomicU32,
+    pending_frames: AtomicU32,
+}
+
+impl InputPeakMeter {
+    fn observe(&self, samples: &[f32], sample_rate: u32) {
+        let peak = samples
+            .iter()
+            .filter(|sample| sample.is_finite())
+            .map(|sample| sample.abs())
+            .fold(0.0_f32, f32::max)
+            .clamp(0.0, 1.0);
+        self.pending_peak
+            .fetch_max(peak.to_bits(), Ordering::Relaxed);
+        if self
+            .pending_frames
+            .fetch_add(samples.len() as u32, Ordering::Relaxed)
+            + samples.len() as u32
+            >= (sample_rate / 10).max(1)
+        {
+            self.level.store(
+                self.pending_peak.swap(0, Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
+            self.pending_frames.store(0, Ordering::Relaxed);
+        }
+    }
+
+    fn value(&self) -> f32 {
+        f32::from_bits(self.level.load(Ordering::Relaxed))
+    }
+
+    fn clear(&self) {
+        self.level.store(0, Ordering::Relaxed);
+        self.pending_peak.store(0, Ordering::Relaxed);
+        self.pending_frames.store(0, Ordering::Relaxed);
+    }
+}
+
 struct AudioRouteSourceBuffer {
     queue: Arc<Mutex<VecDeque<f32>>>,
     capacity: usize,
     gain: AtomicU32,
     level: Arc<AtomicU32>,
+    input_meter: Arc<InputPeakMeter>,
+    metering_enabled: Arc<AtomicBool>,
     playback_tail_samples: Arc<AtomicU64>,
     dropped_samples: Arc<AtomicU64>,
+    processing: Mutex<SourcePipeline>,
 }
 
 impl AudioRouteSourceBuffer {
-    fn new(capacity: usize, gain: f32, dropped_samples: Arc<AtomicU64>) -> Self {
+    fn new(
+        capacity: usize,
+        gain: f32,
+        effects: &[SourceEffect],
+        dropped_samples: Arc<AtomicU64>,
+        metering_enabled: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             queue: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
             capacity,
             gain: AtomicU32::new(gain.to_bits()),
             level: Arc::new(AtomicU32::new(0.0f32.to_bits())),
+            input_meter: Arc::new(InputPeakMeter::default()),
+            metering_enabled,
             playback_tail_samples: Arc::new(AtomicU64::new(0)),
             dropped_samples,
+            processing: Mutex::new(SourcePipeline::new(effects, AUDIO_ROUTE_SAMPLE_RATE)),
         }
     }
 
     fn push(&self, mut samples: Vec<f32>) {
+        let metering = self.metering_enabled.load(Ordering::Relaxed);
+        if metering {
+            self.input_meter.observe(&samples, AUDIO_ROUTE_SAMPLE_RATE);
+        }
+        self.processing.lock().process(&mut samples);
+        if metering {
+            update_input_level(&samples, &self.level);
+        }
         for sample in &mut samples {
             *sample = sample.clamp(-1.0, 1.0);
         }
@@ -218,10 +383,12 @@ struct AudioRouteControl {
     last_error: Mutex<Option<String>>,
     dropped_samples: Arc<AtomicU64>,
     output_level: Arc<AtomicU32>,
+    studio_metering: Arc<AtomicBool>,
     output_sample_rate: u32,
     microphone: Option<Arc<AudioRouteSourceBuffer>>,
     system_loopback: Option<Arc<AudioRouteSourceBuffer>>,
     tts: Option<Arc<AudioRouteSourceBuffer>>,
+    media: Vec<Arc<AudioRouteSourceBuffer>>,
     routed_tts_targets: Arc<Mutex<Vec<RoutedTtsTarget>>>,
     resources: Mutex<Option<AudioRouteResources>>,
 }
@@ -241,7 +408,11 @@ impl RoutedTtsTarget {
     }
 
     fn enqueue_samples(&self, samples: &[f32]) {
-        update_input_level(samples, &self.source.level);
+        if self.source.playback_tail_samples.load(Ordering::Acquire) == 0
+            && self.source.queue.lock().is_empty()
+        {
+            self.source.processing.lock().reset();
+        }
         self.source.push(samples.to_vec());
         let queued_samples = self.source.queue.lock().len();
         self.source.playback_tail_samples.store(
@@ -278,8 +449,57 @@ impl AudioRouteHandle {
                     .then(|| source.level())
                     .unwrap_or(0.0)
             }),
+            media: self
+                .control
+                .media
+                .iter()
+                .map(|source| {
+                    if source.queue.lock().is_empty() {
+                        0.0
+                    } else {
+                        source.level()
+                    }
+                })
+                .fold(0.0, f32::max),
             output: f32::from_bits(self.control.output_level.load(Ordering::Relaxed)),
+            microphone_input: self
+                .control
+                .microphone
+                .as_ref()
+                .map(|source| source.input_meter.value()),
+            system_loopback_input: self
+                .control
+                .system_loopback
+                .as_ref()
+                .map(|source| source.input_meter.value()),
+            tts_input: self
+                .control
+                .tts
+                .as_ref()
+                .map(|source| source.input_meter.value()),
+            media_input: self
+                .control
+                .media
+                .iter()
+                .map(|source| source.input_meter.value())
+                .reduce(f32::max),
         }
+    }
+
+    fn clear_levels(&self) {
+        for source in [
+            &self.control.microphone,
+            &self.control.system_loopback,
+            &self.control.tts,
+        ]
+        .into_iter()
+        .flatten()
+        .chain(self.control.media.iter())
+        {
+            source.level.store(0, Ordering::Relaxed);
+            source.input_meter.clear();
+        }
+        self.control.output_level.store(0, Ordering::Relaxed);
     }
 
     /// Requests a clean stop independently of translation capture/playback.
@@ -304,6 +524,7 @@ impl AudioRouteHandle {
         {
             source.queue.lock().clear();
             source.level.store(0.0f32.to_bits(), Ordering::Relaxed);
+            source.input_meter.clear();
             source.playback_tail_samples.store(0, Ordering::Release);
         }
         self.control
@@ -340,6 +561,11 @@ pub struct AudioSystem {
     audio_routes: Vec<AudioRouteHandle>,
     routed_tts_targets: Arc<Mutex<Vec<RoutedTtsTarget>>>,
     microphone_fanout: Option<(String, Arc<MicrophoneFanout>)>,
+    microphone_effects: Arc<Mutex<Vec<SourceEffect>>>,
+    loopback_effects: Arc<Mutex<Vec<SourceEffect>>>,
+    studio_metering: Arc<AtomicBool>,
+    microphone_input_meter: Arc<InputPeakMeter>,
+    loopback_input_meter: Arc<InputPeakMeter>,
 }
 
 #[derive(Clone)]
@@ -354,6 +580,7 @@ pub struct TtsPlayerHandle {
     level: Option<Arc<AudioRouteSourceBuffer>>,
     routed_tts_targets: Arc<Mutex<Vec<RoutedTtsTarget>>>,
     legacy_available: bool,
+    processing: Arc<Mutex<SourcePipeline>>,
 }
 
 impl TtsPlayerHandle {
@@ -394,7 +621,13 @@ impl TtsPlayerHandle {
             return Err("the audio route used by this TTS handle is no longer running".into());
         }
         let samples = pcm16_mono_samples(pcm);
-        let samples = resample_mono(samples, self.source_sample_rate, self.sample_rate)?;
+        let mut samples = resample_mono(samples, self.source_sample_rate, self.sample_rate)?;
+        let mut processing = self.processing.lock();
+        if self.playback_tail_samples.load(Ordering::Acquire) == 0 && self.queue.lock().is_empty() {
+            processing.reset();
+        }
+        processing.process(&mut samples);
+        drop(processing);
         if let Some(level) = &self.level {
             update_input_level(&samples, &level.level);
         }
@@ -458,6 +691,7 @@ struct TtsPlayer {
     device_id: String,
     playback_tail_samples: Arc<AtomicU64>,
     _stream: Stream,
+    processing: Arc<Mutex<SourcePipeline>>,
 }
 
 enum ActiveCapture {
@@ -579,6 +813,9 @@ fn start_route_loopback_capture(
                 &ready_tx,
                 AUDIO_ROUTE_SAMPLE_RATE,
                 Some(Arc::clone(&source.dropped_samples)),
+                None,
+                None,
+                Arc::clone(&control.studio_metering),
             ) {
                 let _ = ready_tx.send(Err(error.clone()));
                 log::error!("Audio route WASAPI loopback stopped: {error}");
@@ -625,6 +862,31 @@ impl AudioSystem {
     /// Returns the latest lock-free RMS envelopes for the currently installed
     /// real-time routes. The audio callbacks already maintain these meters, so
     /// graph visualizations never need to inspect or copy PCM samples.
+    pub fn set_capture_effects(&self, microphone: Vec<SourceEffect>, loopback: Vec<SourceEffect>) {
+        *self.microphone_effects.lock() = microphone;
+        *self.loopback_effects.lock() = loopback;
+    }
+
+    pub fn set_audio_studio_metering(&self, enabled: bool) {
+        if self.studio_metering.swap(enabled, Ordering::Relaxed) == enabled {
+            return;
+        }
+        if !enabled {
+            self.microphone_input_meter.clear();
+            self.loopback_input_meter.clear();
+            for route in &self.audio_routes {
+                route.clear_levels();
+            }
+        }
+    }
+
+    pub fn capture_input_levels(&self) -> (f32, f32) {
+        (
+            self.microphone_input_meter.value(),
+            self.loopback_input_meter.value(),
+        )
+    }
+
     pub fn active_audio_route_levels(&self) -> Vec<AudioRouteLevels> {
         self.audio_routes
             .iter()
@@ -640,26 +902,40 @@ impl AudioSystem {
             audio_routes: Vec::new(),
             routed_tts_targets: Arc::new(Mutex::new(Vec::new())),
             microphone_fanout: None,
+            microphone_effects: Arc::new(Mutex::new(default_source_effects())),
+            loopback_effects: Arc::new(Mutex::new(default_source_effects())),
+            studio_metering: Arc::new(AtomicBool::new(false)),
+            microphone_input_meter: Arc::new(InputPeakMeter::default()),
+            loopback_input_meter: Arc::new(InputPeakMeter::default()),
         }
     }
 
-    /// List all available input devices
+    /// List input devices that can still be resolved by the ID used for capture.
     pub fn available_devices(&self) -> Vec<InputDevice> {
         let mut devices = Vec::new();
         if let Ok(input_devices) = self.host.input_devices() {
             for device in input_devices {
                 match (device.id(), device.description()) {
-                    (Ok(id), Ok(description)) => devices.push(InputDevice {
-                        id: id.to_string(),
-                        name: description.name().to_owned(),
-                    }),
+                    (Ok(id), Ok(description)) => {
+                        // Some ALSA hints enumerate successfully but cannot be
+                        // found again by ID. Capture uses device_by_id, so such
+                        // entries must not be offered as selectable microphones.
+                        if self.host.device_by_id(&id).is_some() {
+                            devices.push(InputDevice {
+                                id: id.to_string(),
+                                name: description.name().to_owned(),
+                            });
+                        } else {
+                            log::debug!("Skipping input device that cannot be resolved: {id}");
+                        }
+                    }
                     (Err(error), _) | (_, Err(error)) => {
                         log::warn!("Skipping input device that cannot be described: {error}");
                     }
                 }
             }
         }
-        devices
+        deduplicate_input_devices(devices)
     }
 
     /// Lists render endpoints. Virtual microphone cables appear here as an
@@ -791,6 +1067,10 @@ impl AudioSystem {
                 level: Some(Arc::clone(&target.source)),
                 routed_tts_targets: Arc::clone(&self.routed_tts_targets),
                 legacy_available: false,
+                processing: Arc::new(Mutex::new(SourcePipeline::new(
+                    &[],
+                    AUDIO_ROUTE_SAMPLE_RATE,
+                ))),
             });
         }
         self.ensure_tts_player(device_id)?;
@@ -807,6 +1087,7 @@ impl AudioSystem {
                 level: None,
                 routed_tts_targets: Arc::clone(&self.routed_tts_targets),
                 legacy_available: true,
+                processing: Arc::clone(&p.processing),
             })
             .ok_or_else(|| "TTS output stream was not initialized".into())
     }
@@ -937,33 +1218,54 @@ impl AudioSystem {
             Arc::new(AudioRouteSourceBuffer::new(
                 capacity,
                 source.gain,
+                &source.effects,
                 Arc::clone(&dropped_samples),
+                Arc::clone(&self.studio_metering),
             ))
         });
         let system_loopback = config.system_loopback.as_ref().map(|source| {
             Arc::new(AudioRouteSourceBuffer::new(
                 capacity,
                 source.gain,
+                &source.effects,
                 Arc::clone(&dropped_samples),
+                Arc::clone(&self.studio_metering),
             ))
         });
         let tts = config.tts_gain.map(|gain| {
             Arc::new(AudioRouteSourceBuffer::new(
                 capacity,
                 gain,
+                &config.tts_effects,
                 Arc::clone(&dropped_samples),
+                Arc::clone(&self.studio_metering),
             ))
         });
+        let media = config
+            .media
+            .iter()
+            .map(|source| {
+                Arc::new(AudioRouteSourceBuffer::new(
+                    capacity,
+                    1.0,
+                    &source.effects,
+                    Arc::clone(&dropped_samples),
+                    Arc::clone(&self.studio_metering),
+                ))
+            })
+            .collect::<Vec<_>>();
         let output_level = Arc::new(AtomicU32::new(0.0f32.to_bits()));
         let control = Arc::new(AudioRouteControl {
             state: AtomicU8::new(encode_route_state(AudioRouteState::Starting)),
             last_error: Mutex::new(None),
             dropped_samples,
             output_level: Arc::clone(&output_level),
+            studio_metering: Arc::clone(&self.studio_metering),
             output_sample_rate: output_rate,
             microphone: microphone.clone(),
             system_loopback: system_loopback.clone(),
             tts: tts.clone(),
+            media: media.clone(),
             routed_tts_targets: Arc::clone(&self.routed_tts_targets),
             resources: Mutex::new(None),
         });
@@ -978,6 +1280,7 @@ impl AudioSystem {
                     microphone,
                     system_loopback,
                     tts,
+                    media,
                     config.output_ceiling,
                     output_level,
                     Arc::clone(&control),
@@ -1019,6 +1322,14 @@ impl AudioSystem {
                 shared_microphones.push(fanout);
             }
             source_workers.push(worker);
+        }
+
+        for (source, buffer) in config.media.into_iter().zip(&control.media) {
+            source_workers.push(spawn_route_media_worker(
+                source,
+                Arc::clone(buffer),
+                Arc::downgrade(&control),
+            )?);
         }
 
         #[cfg(windows)]
@@ -1233,73 +1544,13 @@ impl AudioSystem {
             16_000,
             tx,
             Some(level),
+            Arc::clone(&self.microphone_effects),
+            Arc::clone(&self.microphone_input_meter),
+            Arc::clone(&self.studio_metering),
         )
         .map_err(|error| format!("Failed to start microphone processing: {error}"))?;
         self.add_active_capture(ActiveCapture::MicrophoneSubscription(worker));
         Ok(())
-    }
-
-    #[allow(dead_code)]
-    fn build_stream<T: Sample + cpal::SizedSample>(
-        &self,
-        device: &cpal::Device,
-        input: (cpal::StreamConfig, usize, u32, u32),
-        tx: Sender<Vec<f32>>,
-        level: Arc<AtomicU32>,
-    ) -> Result<Stream, String>
-    where
-        f32: cpal::FromSample<T>,
-    {
-        let (config, channels, src_rate, target_rate) = input;
-        // 1. Resampler setup (if rates don't match)
-        let (raw_tx, raw_rx) = bounded::<Vec<f32>>(32);
-        Self::spawn_processing_worker(raw_rx, src_rate, target_rate, tx)?;
-
-        let err_fn = |err| log::error!("An error occurred on the input audio stream: {}", err);
-
-        let stream = device
-            .build_input_stream(
-                config,
-                move |data: &[T], _: &cpal::InputCallbackInfo| {
-                    // Keep the high-priority CPAL callback small: format conversion and mixdown only.
-                    let mono: Vec<f32> = data
-                        .chunks(channels)
-                        .map(|frame| {
-                            if frame.len() >= 6 {
-                                // 5.1 / 7.1 Multi-channel Dialogue Isolation (Physical Noise Cancellation):
-                                // Layout: [0: Left, 1: Right, 2: Center, 3: LFE(Subwoofer), 4: Surround L, 5: Surround R]
-                                // - Center (frame[2]) contains 95%+ of actor dialogue.
-                                // - LFE (frame[3]) is pure low-frequency rumble/explosions (0% dialogue), completely discarded.
-                                // - Surround (frame[4], frame[5]) contains ambient/reverb (0% dialogue), heavily attenuated.
-                                // - Left & Right contain music & panning sound effects, kept at low ratio for rare off-center lines.
-                                let l = f32::from_sample(frame[0]);
-                                let r = f32::from_sample(frame[1]);
-                                let c = f32::from_sample(frame[2]);
-                                let ls = f32::from_sample(frame[4]);
-                                let rs = f32::from_sample(frame[5]);
-                                c * 0.85 + (l + r) * 0.12 + (ls + rs) * 0.03
-                            } else if frame.len() == 2 {
-                                let l = f32::from_sample(frame[0]);
-                                let r = f32::from_sample(frame[1]);
-                                (l + r) * 0.5
-                            } else {
-                                frame
-                                    .iter()
-                                    .map(|sample| f32::from_sample(*sample))
-                                    .sum::<f32>()
-                                    / frame.len() as f32
-                            }
-                        })
-                        .collect();
-                    update_input_level(&mono, &level);
-                    let _ = raw_tx.try_send(mono);
-                },
-                err_fn,
-                None,
-            )
-            .map_err(|e| format!("Failed to build input stream: {}", e))?;
-
-        Ok(stream)
     }
 
     fn build_route_microphone(
@@ -1378,22 +1629,15 @@ impl AudioSystem {
         Ok((Some(stream), worker))
     }
 
-    fn spawn_processing_worker(
-        raw_rx: Receiver<Vec<f32>>,
-        src_rate: u32,
-        target_rate: u32,
-        output_tx: Sender<Vec<f32>>,
-    ) -> Result<(), String> {
-        Self::spawn_processing_worker_with_level(raw_rx, src_rate, target_rate, output_tx, None)
-            .map(|_| ())
-    }
-
     fn spawn_processing_worker_with_level(
         raw_rx: Receiver<Vec<f32>>,
         src_rate: u32,
         target_rate: u32,
         output_tx: Sender<Vec<f32>>,
         level: Option<Arc<AtomicU32>>,
+        effects: Arc<Mutex<Vec<SourceEffect>>>,
+        input_meter: Arc<InputPeakMeter>,
+        studio_metering: Arc<AtomicBool>,
     ) -> Result<thread::JoinHandle<()>, String> {
         let mut resampler = if src_rate != target_rate {
             Some(
@@ -1413,9 +1657,24 @@ impl AudioSystem {
         thread::Builder::new()
             .name("audio-resampler".into())
             .spawn(move || {
+                let mut config = effects.lock().clone();
+                let mut processing = SourcePipeline::new(&config, src_rate);
                 let mut pending = VecDeque::new();
-                'worker: while let Ok(samples) = raw_rx.recv() {
-                    if let Some(level) = &level {
+                'worker: while let Ok(mut samples) = raw_rx.recv() {
+                    let current = effects.lock();
+                    if *current != config {
+                        config.clone_from(&current);
+                        processing = SourcePipeline::new(&config, src_rate);
+                    }
+                    drop(current);
+                    let metering = studio_metering.load(Ordering::Relaxed);
+                    if metering {
+                        input_meter.observe(&samples, src_rate);
+                    }
+                    processing.process(&mut samples);
+                    if let Some(level) = &level
+                        && metering
+                    {
                         update_input_level(&samples, level);
                     }
                     if let Some(resampler) = &mut resampler {
@@ -1596,6 +1855,10 @@ impl AudioSystem {
             device_id: device_id.to_owned(),
             playback_tail_samples,
             _stream: stream,
+            processing: Arc::new(Mutex::new(SourcePipeline::new(
+                &default_source_effects(),
+                sample_rate,
+            ))),
         });
         Ok(())
     }
@@ -1611,7 +1874,10 @@ fn validate_route_gain(gain: f32) -> Result<(), AudioRouteError> {
 }
 
 fn validate_audio_route_config(config: &AudioRouteConfig) -> Result<(), AudioRouteError> {
-    if config.microphone.is_none() && config.system_loopback.is_none() && config.tts_gain.is_none()
+    if config.microphone.is_none()
+        && config.system_loopback.is_none()
+        && config.tts_gain.is_none()
+        && config.media.is_empty()
     {
         return Err(AudioRouteError::InvalidConfiguration(
             "connect at least one microphone, system-loopback, or TTS source".into(),
@@ -1714,7 +1980,6 @@ where
                     .chunks(channels)
                     .map(microphone_frame_to_mono::<T>)
                     .collect::<Vec<_>>();
-                update_input_level(&mono, &source.level);
                 if let Err(error) = raw_tx.try_send(mono) {
                     source
                         .dropped_samples
@@ -1794,6 +2059,91 @@ where
     }
 }
 
+fn spawn_route_media_worker(
+    config: AudioRouteMediaConfig,
+    buffer: Arc<AudioRouteSourceBuffer>,
+    control: Weak<AudioRouteControl>,
+) -> Result<thread::JoinHandle<()>, AudioRouteError> {
+    use crate::media_import::{AudioImportEvent, AudioImportOptions, import_audio_file};
+    if !std::path::Path::new(&config.path).is_file() {
+        return Err(AudioRouteError::InvalidConfiguration(
+            "Select an available media file".into(),
+        ));
+    }
+    thread::Builder::new()
+        .name("audio-route-media".into())
+        .spawn(move || {
+            let active = || {
+                control.upgrade().is_some_and(|control| {
+                    matches!(
+                        decode_route_state(control.state.load(Ordering::Acquire)),
+                        AudioRouteState::Starting | AudioRouteState::Running
+                    )
+                })
+            };
+            let fail = |error: String| {
+                if let Some(control) = control.upgrade() {
+                    *control.last_error.lock() = Some(error);
+                    control.state.store(
+                        encode_route_state(AudioRouteState::Faulted),
+                        Ordering::Release,
+                    );
+                }
+            };
+            while active() {
+                let (tx, rx) = bounded(16);
+                let result = import_audio_file(
+                    &config.path,
+                    tx,
+                    AudioImportOptions {
+                        chunk_frames: 960,
+                        output_sample_rate: AUDIO_ROUTE_SAMPLE_RATE,
+                        gate_threshold_db: None, // The visible source gate is applied by the route buffer.
+                        ..AudioImportOptions::default()
+                    },
+                );
+                let import = match result {
+                    Ok(import) => import,
+                    Err(error) => {
+                        fail(error.to_string());
+                        break;
+                    }
+                };
+                let mut received = false;
+                let mut failed = false;
+                while active() {
+                    match rx.recv_timeout(Duration::from_millis(50)) {
+                        Ok(samples) => {
+                            received = true;
+                            buffer.push(samples);
+                        }
+                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                    }
+                    for event in import.events().try_iter() {
+                        if let AudioImportEvent::Error(error) = event {
+                            fail(error);
+                            failed = true;
+                        }
+                    }
+                }
+                for event in import.events().try_iter() {
+                    if let AudioImportEvent::Error(error) = event {
+                        fail(error);
+                        failed = true;
+                    }
+                }
+                import.stop();
+                if !config.loop_playback || !received || failed {
+                    break;
+                }
+            }
+        })
+        .map_err(|error| {
+            AudioRouteError::StreamStart(format!("cannot start media source: {error}"))
+        })
+}
+
 fn spawn_route_source_worker(
     raw_rx: Receiver<Vec<f32>>,
     source_rate: u32,
@@ -1822,7 +2172,6 @@ fn spawn_route_source_worker(
         .spawn(move || {
             let mut pending = VecDeque::new();
             while let Ok(samples) = raw_rx.recv() {
-                update_input_level(&samples, &sink.level);
                 let Some(resampler) = &mut resampler else {
                     sink.push(samples);
                     continue;
@@ -1891,6 +2240,7 @@ fn build_route_output_stream<T>(
     microphone: Option<Arc<AudioRouteSourceBuffer>>,
     system_loopback: Option<Arc<AudioRouteSourceBuffer>>,
     tts: Option<Arc<AudioRouteSourceBuffer>>,
+    media: Vec<Arc<AudioRouteSourceBuffer>>,
     output_ceiling: f32,
     output_level: Arc<AtomicU32>,
     control: Arc<AudioRouteControl>,
@@ -1902,6 +2252,10 @@ where
     let mut microphone_reader = RouteRateReader::default();
     let mut loopback_reader = RouteRateReader::default();
     let mut tts_reader = RouteRateReader::default();
+    let mut media_readers = media
+        .iter()
+        .map(|_| RouteRateReader::default())
+        .collect::<Vec<_>>();
     device
         .build_output_stream(
             config,
@@ -1909,9 +2263,14 @@ where
                 let mut microphone_queue = microphone.as_ref().map(|source| source.queue.lock());
                 let mut loopback_queue = system_loopback.as_ref().map(|source| source.queue.lock());
                 let mut tts_queue = tts.as_ref().map(|source| source.queue.lock());
+                let mut media_queues = media
+                    .iter()
+                    .map(|source| source.queue.lock())
+                    .collect::<Vec<_>>();
                 let microphone_gain = microphone.as_ref().map_or(0.0, |source| source.gain());
                 let loopback_gain = system_loopback.as_ref().map_or(0.0, |source| source.gain());
                 let tts_gain = tts.as_ref().map_or(0.0, |source| source.gain());
+                let metering = control.studio_metering.load(Ordering::Relaxed);
                 let mut energy = 0.0;
                 let mut frames = 0;
                 for frame in output.chunks_mut(channels) {
@@ -1927,17 +2286,27 @@ where
                     if let Some(tts) = &tts {
                         decrement_playback_tail(&tts.playback_tail_samples);
                     }
-                    let mixed = (microphone_sample * microphone_gain
+                    let media_sample: f32 = media_readers
+                        .iter_mut()
+                        .zip(&mut media_queues)
+                        .map(|(reader, queue)| reader.read(queue, output_rate))
+                        .sum();
+                    let mixed = (media_sample
+                        + microphone_sample * microphone_gain
                         + loopback_sample * loopback_gain
                         + tts_sample * tts_gain)
                         .clamp(-output_ceiling, output_ceiling);
-                    energy += mixed * mixed;
-                    frames += 1;
+                    if metering {
+                        energy += mixed * mixed;
+                        frames += 1;
+                    }
                     for channel in frame {
                         *channel = T::from_sample(mixed);
                     }
                 }
-                update_input_level_from_energy(energy, frames, &output_level);
+                if metering {
+                    update_input_level_from_energy(energy, frames, &output_level);
+                }
             },
             move |error| {
                 let message = format!("route output stream failed: {error}");
@@ -2143,6 +2512,9 @@ impl AudioSystem {
     ) -> Result<(), String> {
         let stop_requested = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop_requested);
+        let effects = Arc::clone(&self.loopback_effects);
+        let input_meter = Arc::clone(&self.loopback_input_meter);
+        let studio_metering = Arc::clone(&self.studio_metering);
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let worker = thread::Builder::new()
             .name(worker_name.into())
@@ -2155,6 +2527,9 @@ impl AudioSystem {
                     &ready_tx,
                     16_000,
                     None,
+                    Some(effects),
+                    Some(input_meter),
+                    studio_metering,
                 ) {
                     let _ = ready_tx.send(Err(error.clone()));
                     log::error!("WASAPI loopback capture stopped: {error}");
@@ -2331,6 +2706,9 @@ fn run_loopback_capture(
     ready_tx: &std::sync::mpsc::SyncSender<Result<(), String>>,
     target_rate: u32,
     dropped_samples: Option<Arc<AtomicU64>>,
+    effects: Option<Arc<Mutex<Vec<SourceEffect>>>>,
+    input_meter: Option<Arc<InputPeakMeter>>,
+    studio_metering: Arc<AtomicBool>,
 ) -> Result<(), String> {
     initialize_mta()
         .ok()
@@ -2354,11 +2732,15 @@ fn run_loopback_capture(
         Some(output_tx) if target_rate == AUDIO_ROUTE_SAMPLE_RATE => Some(output_tx),
         Some(output_tx) => {
             let (raw_tx, raw_rx) = bounded::<Vec<f32>>(32);
-            AudioSystem::spawn_processing_worker(
+            AudioSystem::spawn_processing_worker_with_level(
                 raw_rx,
                 AUDIO_ROUTE_SAMPLE_RATE,
                 target_rate,
                 output_tx,
+                Some(Arc::clone(&level)),
+                effects.unwrap_or_else(|| Arc::new(Mutex::new(default_source_effects()))),
+                input_meter.unwrap_or_else(|| Arc::new(InputPeakMeter::default())),
+                studio_metering,
             )?;
             Some(raw_tx)
         }
@@ -2391,7 +2773,6 @@ fn run_loopback_capture(
         }
         while pending.len() >= bytes_per_frame * 960 {
             let samples = take_loopback_mono(&mut pending, 960);
-            update_input_level(&samples, &level);
             if let Some(raw_tx) = &raw_tx {
                 if let Err(error) = raw_tx.try_send(samples)
                     && let Some(dropped_samples) = &dropped_samples
@@ -2423,6 +2804,10 @@ fn update_input_level(samples: &[f32], level: &AtomicU32) {
 
 fn update_input_level_from_energy(sum: f32, sample_count: usize, level: &AtomicU32) {
     if sample_count == 0 {
+        return;
+    }
+    if sum == 0.0 {
+        level.store(0.0f32.to_bits(), Ordering::Relaxed);
         return;
     }
     let rms = (sum / sample_count as f32).sqrt().clamp(0.0, 1.0);
@@ -2535,9 +2920,126 @@ fn take_loopback_mono(pending: &mut VecDeque<u8>, frames: usize) -> Vec<f32> {
 mod tests {
     use super::{
         AudioRouteConfig, AudioRouteError, AudioRouteLoopbackConfig, AudioRouteLoopbackTarget,
-        AudioRouteSourceBuffer, AudioRouteSourceConfig, resample_mono, validate_audio_route_config,
+        AudioRouteSourceBuffer, AudioRouteSourceConfig, InputDevice, deduplicate_input_devices,
+        matching_available_input_id, resample_mono, validate_audio_route_config,
     };
     use std::sync::{Arc, atomic::AtomicU64};
+
+    #[test]
+    fn capture_worker_applies_gate_and_accepts_live_threshold_changes() {
+        use super::{AudioSystem, Mutex, SourceEffect};
+        use crossbeam_channel::bounded;
+        use std::time::Duration;
+        let effects = Arc::new(Mutex::new(vec![SourceEffect::NoiseGate(-20.0)]));
+        let (tx, rx) = bounded(4);
+        let (output_tx, output_rx) = bounded(4);
+        let worker = AudioSystem::spawn_processing_worker_with_level(
+            rx,
+            16_000,
+            16_000,
+            output_tx,
+            None,
+            Arc::clone(&effects),
+            Arc::new(super::InputPeakMeter::default()),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .unwrap();
+        tx.send(vec![0.05; 1600]).unwrap();
+        assert!(
+            output_rx
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+        *effects.lock() = vec![SourceEffect::NoiseGate(-45.0)];
+        tx.send(vec![0.05; 1600]).unwrap();
+        assert_eq!(
+            *output_rx
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .last()
+                .unwrap(),
+            0.05
+        );
+        drop(tx);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn route_source_buffer_gates_before_queueing_audio() {
+        let source = AudioRouteSourceBuffer::new(
+            4800,
+            1.0,
+            &super::default_source_effects(),
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        source.push(vec![0.001; 480]);
+        assert!(source.queue.lock().iter().all(|sample| *sample == 0.0));
+        source.push(vec![0.1; 480]);
+        assert_eq!(*source.queue.lock().back().unwrap(), 0.1);
+    }
+
+    #[test]
+    fn input_meter_samples_before_the_gate_only_when_studio_is_visible() {
+        let visible = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let source = AudioRouteSourceBuffer::new(
+            9600,
+            1.0,
+            &super::default_source_effects(),
+            Arc::new(AtomicU64::new(0)),
+            Arc::clone(&visible),
+        );
+        source.push(vec![0.001; 4800]);
+        assert_eq!(source.input_meter.value(), 0.0);
+        visible.store(true, std::sync::atomic::Ordering::Relaxed);
+        source.push(vec![0.001; 2400]);
+        assert_eq!(source.input_meter.value(), 0.0, "meter publishes at 10 Hz");
+        source.push(vec![0.001; 2400]);
+        assert!((source.input_meter.value() - 0.001).abs() < 0.00001);
+        assert_eq!(source.level(), 0.0, "post-gate meter stays silent");
+        visible.store(false, std::sync::atomic::Ordering::Relaxed);
+        source.input_meter.clear();
+        source.push(vec![0.1; 4800]);
+        assert_eq!(source.input_meter.value(), 0.0);
+    }
+
+    #[test]
+    fn alsa_aliases_share_one_input_choice_per_physical_endpoint() {
+        let input = |id: &str, name: &str| InputDevice {
+            id: id.into(),
+            name: name.into(),
+        };
+        let devices = deduplicate_input_devices(vec![
+            input("alsa:hw:CARD=Device,DEV=0", "USB Audio Device"),
+            input("alsa:front:CARD=Device,DEV=0", "USB Audio Device"),
+            input("alsa:plughw:CARD=Device,DEV=0", "USB Audio Device"),
+            input("alsa:dsnoop:CARD=Device,DEV=0", "USB Audio Device"),
+            input("alsa:plughw:CARD=Device,DEV=1", "USB Audio Device"),
+            input("alsa:plughw:CARD=Other,DEV=0", "USB Audio Device"),
+            input("wasapi:microphone-1", "USB Audio Device"),
+            input("wasapi:microphone-2", "USB Audio Device"),
+        ]);
+
+        assert_eq!(devices.len(), 5);
+        assert_eq!(devices[0].id, "alsa:plughw:CARD=Device,DEV=0");
+        assert_eq!(devices[1].id, "alsa:plughw:CARD=Device,DEV=1");
+        assert_eq!(devices[2].id, "alsa:plughw:CARD=Other,DEV=0");
+        assert_eq!(devices[0].name, "USB Audio Device (CARD=Device, DEV=0)");
+        assert_eq!(devices[1].name, "USB Audio Device (CARD=Device, DEV=1)");
+        assert_eq!(devices[2].name, "USB Audio Device (CARD=Other, DEV=0)");
+        assert_eq!(devices[3].name, "USB Audio Device (1)");
+        assert_eq!(devices[4].name, "USB Audio Device (2)");
+        assert_eq!(
+            matching_available_input_id("alsa:hw:CARD=Device,DEV=0", &devices),
+            Some("alsa:plughw:CARD=Device,DEV=0")
+        );
+        assert_eq!(
+            matching_available_input_id("alsa:usbstream:CARD=Device", &devices),
+            None
+        );
+    }
 
     #[test]
     fn tts_resampling_preserves_duration_and_signal() {
@@ -2558,6 +3060,7 @@ mod tests {
                     device_id: String::new(),
                 },
                 gain: 1.0,
+                effects: super::default_source_effects(),
             }),
             tts_gain: None,
             ..AudioRouteConfig::default()
@@ -2570,7 +3073,13 @@ mod tests {
     #[test]
     fn route_source_queue_is_bounded_and_keeps_recent_audio() {
         let dropped = Arc::new(AtomicU64::new(0));
-        let source = AudioRouteSourceBuffer::new(3, 1.0, Arc::clone(&dropped));
+        let source = AudioRouteSourceBuffer::new(
+            3,
+            1.0,
+            &[],
+            Arc::clone(&dropped),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
         source.push(vec![0.1, 0.2, 0.3, 0.4, 0.5]);
         assert_eq!(
             source.queue.lock().iter().copied().collect::<Vec<_>>(),

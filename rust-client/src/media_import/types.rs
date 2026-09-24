@@ -17,16 +17,20 @@ pub enum AudioImportPacing {
 pub struct AudioImportOptions {
     /// Number of mono 16 kHz frames per emitted message. 1600 is 100 ms.
     pub chunk_frames: usize,
+    pub output_sample_rate: u32,
     pub pacing: AudioImportPacing,
     pub recognition_channels: Vec<usize>,
+    pub gate_threshold_db: Option<f32>,
 }
 
 impl Default for AudioImportOptions {
     fn default() -> Self {
         Self {
             chunk_frames: 1_600,
+            output_sample_rate: IMPORT_SAMPLE_RATE,
             pacing: AudioImportPacing::Realtime,
             recognition_channels: Vec::new(),
+            gate_threshold_db: Some(crate::audio_processing::DEFAULT_GATE_THRESHOLD_DB),
         }
     }
 }

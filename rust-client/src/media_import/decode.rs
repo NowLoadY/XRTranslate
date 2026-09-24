@@ -122,10 +122,12 @@ fn run_symphonia_import(
     let total_source_frames = codec_params.n_frames;
 
     let mut source_format = None;
+    let mut input_gate = None;
     let mut resampler = None;
     let mut sink = ChunkSink::new(
         audio_tx.clone(),
         options.chunk_frames,
+        options.output_sample_rate,
         options.pacing,
         stop_requested,
         sent_frames,
@@ -172,7 +174,13 @@ fn run_symphonia_import(
         match source_format {
             None => {
                 source_format = Some((source_rate, channels));
-                resampler = Some(StreamingResampler::new(source_rate)?);
+                input_gate = options
+                    .gate_threshold_db
+                    .map(|db| crate::audio_processing::NoiseGate::new(db, source_rate));
+                resampler = Some(StreamingResampler::new(
+                    source_rate,
+                    options.output_sample_rate,
+                )?);
                 let duration = duration_from_frames(total_source_frames, source_rate);
                 let _ = event_tx.send(AudioImportEvent::Started(AudioFileInfo {
                     path: original_path.to_path_buf(),
@@ -181,7 +189,7 @@ fn run_symphonia_import(
                     source_channels: channels,
                     total_source_frames,
                     duration,
-                    output_sample_rate: IMPORT_SAMPLE_RATE,
+                    output_sample_rate: options.output_sample_rate,
                 }));
             }
             Some((expected_rate, expected_channels))
@@ -196,8 +204,11 @@ fn run_symphonia_import(
 
         let mut converted = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
         converted.copy_interleaved_ref(decoded);
-        let mono =
+        let mut mono =
             downmix_interleaved(converted.samples(), channels, &options.recognition_channels);
+        if let Some(gate) = &mut input_gate {
+            gate.process(&mut mono);
+        }
         decoded_source_frames += mono.len() as u64;
         resampler
             .as_mut()
@@ -338,6 +349,64 @@ fn map_decode_error(error: SymphoniaError) -> AudioImportError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_import_gates_noise_and_preserves_48khz_playback_duration() {
+        use super::super::types::AudioImportPacing;
+        use super::*;
+        let path =
+            std::env::temp_dir().join(format!("xrtranslate-gate-{}.wav", uuid::Uuid::new_v4()));
+        let samples = (0..36_000)
+            .map(|i| {
+                if (4800..9600).contains(&i) {
+                    3200_i16
+                } else {
+                    32_i16
+                }
+            })
+            .collect::<Vec<_>>();
+        let data_len = samples.len() as u32 * 2;
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&48_000_u32.to_le_bytes());
+        wav.extend_from_slice(&96_000_u32.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        std::fs::write(&path, wav).unwrap();
+        let (tx, rx) = crossbeam_channel::bounded(128);
+        let (events, _) = crossbeam_channel::unbounded();
+        let result = run_import(
+            &path,
+            tx,
+            AudioImportOptions {
+                output_sample_rate: 48_000,
+                chunk_frames: 480,
+                pacing: AudioImportPacing::AsFastAsPossible,
+                ..AudioImportOptions::default()
+            },
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+            &events,
+        );
+        let _ = std::fs::remove_file(path);
+        assert_eq!(result.unwrap(), 36_000);
+        let output = rx.into_iter().flatten().collect::<Vec<_>>();
+        assert_eq!(output.len(), 36_000);
+        assert!(output[..4800].iter().all(|sample| *sample == 0.0));
+        assert!(output[6000..9600].iter().all(|sample| *sample > 0.09));
+        assert!(output[12_000..20_000].iter().all(|sample| *sample > 0.0009));
+        assert!(output[33_000..].iter().all(|sample| *sample == 0.0));
+    }
 
     #[test]
     fn downmixes_interleaved_stereo() {

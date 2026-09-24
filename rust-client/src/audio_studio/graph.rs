@@ -264,9 +264,9 @@ impl AudioNodeKind {
     pub fn accepts_input(&self, port: &PortId) -> bool {
         match self {
             Self::Mixer => port.is_mixer_input(),
-            Self::AsrTap
-            | Self::MonitorOutput { .. }
-            | Self::GameMicrophoneOutput { .. } => port.0 == PortId::INPUT,
+            Self::AsrTap | Self::MonitorOutput { .. } | Self::GameMicrophoneOutput { .. } => {
+                port.0 == PortId::INPUT
+            }
             Self::Processing { processor } => {
                 port.0 == PortId::INPUT
                     || (port.0 == PortId::SIDECHAIN && processor.accepts_sidechain())
@@ -293,15 +293,6 @@ impl AudioNodeKind {
             _ => None,
         }
     }
-
-    pub fn selected_application(&self) -> Option<&ApplicationSelection> {
-        match self {
-            Self::SystemAudio {
-                capture: SystemAudioCapture::Application { application, .. },
-            } => application.as_ref(),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -312,6 +303,9 @@ pub struct AudioNode {
     pub position: GraphPosition,
     #[serde(default)]
     pub bypassed: bool,
+    /// Records the one-time source gate setup, including an intentional later removal.
+    #[serde(default)]
+    pub input_gate_initialized: bool,
     #[serde(flatten)]
     pub kind: AudioNodeKind,
 }
@@ -323,6 +317,7 @@ impl AudioNode {
             label: label.into(),
             position: GraphPosition::default(),
             bypassed: false,
+            input_gate_initialized: false,
             kind,
         }
     }
@@ -452,6 +447,74 @@ const fn default_graph_format_version() -> u32 {
 }
 
 impl AudioGraph {
+    /// Insert one source gate before fan-out, preserving all existing link IDs,
+    /// port assignments and switches. Existing gates and user adjustments win.
+    pub fn initialize_source_gates(&mut self) {
+        let sources = self
+            .nodes
+            .iter()
+            .filter(|node| node.kind.is_source() && !node.input_gate_initialized)
+            .map(|node| (node.id.clone(), node.position))
+            .collect::<Vec<_>>();
+        for (source_id, position) in sources {
+            let outgoing = self
+                .links
+                .iter()
+                .filter(|link| link.from.node_id == source_id)
+                .collect::<Vec<_>>();
+            let already_gated = !outgoing.is_empty()
+                && outgoing.iter().all(|link| {
+                    self.node(&link.to.node_id).is_some_and(|node| {
+                        matches!(
+                            node.kind,
+                            AudioNodeKind::Processing {
+                                processor: AudioProcessor::NoiseGate { .. }
+                            }
+                        )
+                    })
+                });
+            if !already_gated {
+                let mut gate_id = format!("{}-gate", source_id.0);
+                while self.nodes.iter().any(|node| node.id.0 == gate_id) {
+                    gate_id.push('-');
+                }
+                let mut gate = AudioNode::new(
+                    &gate_id,
+                    "Noise gate",
+                    AudioNodeKind::Processing {
+                        processor: AudioProcessor::NoiseGate {
+                            threshold_db: crate::audio_processing::DEFAULT_GATE_THRESHOLD_DB,
+                        },
+                    },
+                );
+                gate.position = position;
+                self.nodes
+                    .iter_mut()
+                    .find(|node| node.id == source_id)
+                    .unwrap()
+                    .position
+                    .x -= 280.0;
+                for link in &mut self.links {
+                    if link.from.node_id == source_id {
+                        link.from.node_id = gate.id.clone();
+                    }
+                }
+                let mut link_id = format!("{}-input", gate_id);
+                while self.links.iter().any(|link| link.id.0 == link_id) {
+                    link_id.push('-');
+                }
+                self.links
+                    .push(AudioLink::new(link_id, &source_id.0, &gate_id));
+                self.nodes.push(gate);
+            }
+            self.nodes
+                .iter_mut()
+                .find(|node| node.id == source_id)
+                .unwrap()
+                .input_gate_initialized = true;
+        }
+    }
+
     /// Returns true when an enabled, non-bypassed path reaches `node_id` from
     /// at least one audio source.
     pub fn has_enabled_source_path(&self, node_id: &NodeId) -> bool {
@@ -923,6 +986,141 @@ mod tests {
             .push(AudioNode::new("asr", "ASR", AudioNodeKind::AsrTap));
         graph.links.push(AudioLink::new("mic-asr", "mic", "asr"));
         graph
+    }
+
+    #[test]
+    fn source_gate_migration_preserves_fanout_switches_and_user_edits() {
+        let mut graph = AudioGraph::new("test", "Source gates");
+        graph.nodes = vec![
+            AudioNode::new("mic", "Mic", AudioNodeKind::Microphone { device_id: None }),
+            AudioNode::new("asr", "ASR", AudioNodeKind::AsrTap),
+            AudioNode::new(
+                "monitor",
+                "Monitor",
+                AudioNodeKind::MonitorOutput { device_id: None },
+            ),
+        ];
+        graph.links = vec![
+            AudioLink::new("a", "mic", "asr"),
+            AudioLink::new_with_enabled("b", "mic", "monitor", false),
+        ];
+        graph.initialize_source_gates();
+        assert_eq!(graph.nodes.len(), 4);
+        assert_eq!(
+            graph
+                .links
+                .iter()
+                .filter(|link| link.from.node_id.0 == "mic")
+                .count(),
+            1
+        );
+        assert_eq!(
+            graph
+                .links
+                .iter()
+                .find(|link| link.id.0 == "a")
+                .unwrap()
+                .from
+                .node_id
+                .0,
+            "mic-gate"
+        );
+        assert!(
+            !graph
+                .links
+                .iter()
+                .find(|link| link.id.0 == "b")
+                .unwrap()
+                .enabled
+        );
+        assert!(graph.validate().is_valid());
+        let snapshot = graph.clone();
+        graph.initialize_source_gates();
+        assert_eq!(graph, snapshot);
+        graph.nodes.retain(|node| node.id.0 != "mic-gate");
+        graph.links.retain(|link| link.to.node_id.0 != "mic-gate");
+        for link in &mut graph.links {
+            link.from.node_id = NodeId::new("mic");
+        }
+        let user_edit = graph.clone();
+        graph.initialize_source_gates();
+        assert_eq!(
+            graph, user_edit,
+            "intentional gate removal must survive saving"
+        );
+    }
+
+    #[test]
+    fn all_source_kinds_receive_one_gate_and_existing_thresholds_survive() {
+        let mut graph = AudioGraph::new("test", "All sources");
+        graph.nodes = vec![
+            AudioNode::new("mic", "Mic", AudioNodeKind::Microphone { device_id: None }),
+            AudioNode::new(
+                "system",
+                "System",
+                AudioNodeKind::SystemAudio {
+                    capture: SystemAudioCapture::Endpoint {
+                        device_id: None,
+                        capture_policy: SystemCapturePolicy::AllEndpointAudio,
+                    },
+                },
+            ),
+            AudioNode::new(
+                "app",
+                "App",
+                AudioNodeKind::SystemAudio {
+                    capture: SystemAudioCapture::Application {
+                        application: None,
+                        resolved_process_id: None,
+                    },
+                },
+            ),
+            AudioNode::new("tts", "TTS", AudioNodeKind::TextToSpeech),
+            AudioNode::new(
+                "media",
+                "Media",
+                AudioNodeKind::Media {
+                    source: None,
+                    loop_playback: false,
+                },
+            ),
+            AudioNode::new(
+                "custom",
+                "Gate",
+                AudioNodeKind::Processing {
+                    processor: AudioProcessor::NoiseGate {
+                        threshold_db: -32.0,
+                    },
+                },
+            ),
+        ];
+        graph
+            .links
+            .push(AudioLink::new("custom-link", "mic", "custom"));
+        graph.initialize_source_gates();
+        assert_eq!(graph.nodes.len(), 10);
+        for source in graph.nodes.iter().filter(|node| node.kind.is_source()) {
+            let outputs = graph
+                .links
+                .iter()
+                .filter(|link| link.from.node_id == source.id)
+                .collect::<Vec<_>>();
+            assert_eq!(outputs.len(), 1);
+            assert!(matches!(
+                graph.node(&outputs[0].to.node_id).unwrap().kind,
+                AudioNodeKind::Processing {
+                    processor: AudioProcessor::NoiseGate { .. }
+                }
+            ));
+        }
+        assert!(matches!(
+            graph.node(&NodeId::new("custom")).unwrap().kind,
+            AudioNodeKind::Processing {
+                processor: AudioProcessor::NoiseGate {
+                    threshold_db: -32.0
+                }
+            }
+        ));
     }
 
     #[test]

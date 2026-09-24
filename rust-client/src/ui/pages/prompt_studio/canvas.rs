@@ -206,6 +206,129 @@ pub(super) fn render_graph_editor(
         return;
     };
     controller.sync_branch_filters(&draft.graph);
+    use crate::{i18n::tr, ui::graph_style};
+    ui.horizontal_wrapped(|ui| {
+        render_profile_picker(snapshot, controller, ui, language, actions);
+        if let Some(current) = &controller.draft {
+            if current.id != draft.id {
+                draft = current.clone();
+            }
+        }
+        render_provider_tabs(controller, ui, language);
+        ui.separator();
+        if !draft.read_only {
+            render_node_toolbar(&mut draft, controller, ui, language);
+        }
+        for (label, tooltip, change) in [("−", "Zoom out", -120.0), ("+", "Zoom in", 120.0)] {
+            if graph_style::toolbar_button(ui, label, true)
+                .on_hover_text(tr(language, tooltip))
+                .clicked()
+            {
+                controller.canvas.zoom_from_center(change);
+            }
+        }
+        if graph_style::toolbar_button(ui, tr(language, "Fit graph"), true).clicked() {
+            controller.canvas.fit_pending = true;
+        }
+        ui.menu_button("⋯", |ui| {
+            ui.set_min_width(210.0);
+            if !draft.read_only {
+                ui.weak(tr(language, "Rename"));
+                if ui.text_edit_singleline(&mut draft.name).changed() {
+                    controller.mark_dirty();
+                }
+                ui.separator();
+                if ui.button(tr(language, "Auto layout")).clicked() {
+                    let before = draft.clone();
+                    draft.graph.auto_layout();
+                    compact_graph(&mut draft.graph);
+                    controller.canvas.fit_pending = true;
+                    controller.push_history(before);
+                    ui.close();
+                }
+                for (label, enabled, undo) in [
+                    ("Undo", controller.can_undo(), true),
+                    ("Redo", controller.can_redo(), false),
+                ] {
+                    if ui
+                        .add_enabled(enabled, egui::Button::new(tr(language, label)))
+                        .clicked()
+                    {
+                        if undo {
+                            controller.undo();
+                        } else {
+                            controller.redo();
+                        }
+                        if let Some(current) = &controller.draft {
+                            draft = current.clone();
+                        }
+                        ui.close();
+                    }
+                }
+                ui.separator();
+            }
+            ui.menu_button(tr(language, "Branches"), |ui| {
+                render_branch_filters(&draft.graph, controller, ui, language);
+            });
+            ui.separator();
+            if ui.button(tr(language, "New graph")).clicked() {
+                save_before_switch(snapshot, controller, actions);
+                draft = new_profile();
+                actions.push(PromptStudioAction::CreateProfile(draft.clone()));
+                controller.set_draft(draft.clone());
+                ui.close();
+            }
+            if ui.button(tr(language, "Import")).clicked() {
+                actions.push(PromptStudioAction::ImportProfile);
+                ui.close();
+            }
+            if ui.button(tr(language, "Export")).clicked() {
+                actions.push(PromptStudioAction::ExportProfile(draft.clone()));
+                ui.close();
+            }
+            if !draft.read_only && ui.button(tr(language, "Delete")).clicked() {
+                actions.push(PromptStudioAction::DeleteProfile(draft.id.clone()));
+                ui.close();
+            }
+        });
+        if draft.read_only {
+            if graph_style::command_button(ui, tr(language, "Edit copy"), false).clicked() {
+                draft = PromptTemplateLibrary::editable_copy_of(
+                    &draft,
+                    format!("custom-{}", uuid::Uuid::new_v4()),
+                );
+                compact_graph(&mut draft.graph);
+                actions.push(PromptStudioAction::CloneProfile(draft.clone()));
+                controller.set_draft(draft.clone());
+            }
+        } else if controller.is_dirty()
+            && graph_style::command_button(ui, tr(language, "Save"), true).clicked()
+        {
+            actions.push(if draft.id == snapshot.active_id {
+                PromptStudioAction::ActivateProfile(draft.clone())
+            } else {
+                PromptStudioAction::SaveProfile(draft.clone())
+            });
+            controller.dirty = false;
+        }
+        if let Err(error) = draft.graph.validate_for_activation() {
+            ui.menu_button(RichText::new("⚠").color(style::ERROR_BORDER), |ui| {
+                ui.set_max_width(360.0);
+                ui.label(error.to_string());
+            })
+            .response
+            .on_hover_text(tr(language, "Please check the graph"));
+        } else if draft.id != snapshot.active_id {
+            if graph_style::command_button(ui, tr(language, "Activate"), true).clicked() {
+                actions.push(PromptStudioAction::ActivateProfile(draft.clone()));
+                controller.dirty = false;
+            }
+        } else {
+            ui.weak(tr(language, "Active"));
+        }
+        ui.label("?")
+            .on_hover_text(navigation::navigation_help(language));
+    });
     let runtime_trace = (snapshot.selected_id == snapshot.active_id && !controller.dirty)
         .then(|| controller.runtime_trace.clone())
         .flatten()
@@ -213,429 +336,247 @@ pub(super) fn render_graph_editor(
             trace.target == controller.active_provider
                 && trace.graph_fingerprint == draft.graph.fingerprint()
         });
+    controller.overview_positions = if draft.read_only {
+        compact_positions(&draft.graph, |node| controller.node_is_visible(node))
+    } else {
+        HashMap::new()
+    };
     let validation_error = draft.graph.validate_for_activation().err();
     let error_target = parse_validation_error_target(validation_error.as_ref());
     let editable = !draft.read_only;
-    crate::ui::layout::flow_row(ui, |ui| {
-        ui.label(
-            RichText::new(crate::i18n::tr(language, "GRAPH /"))
-                .font(egui::FontId::monospace(10.0))
-                .color(style::MUTED)
-                .strong(),
+    ui.add_space(6.0);
+    graph_style::canvas_frame().show(ui, |ui| {
+        let canvas_height = ui.available_height().max(1.0);
+        let (canvas, response) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width(), canvas_height),
+            Sense::click_and_drag(),
         );
-        ui.add_space(5.0);
-        if editable {
-            if crate::ui::components::text_edit_ui(
-                ui,
-                "prompt_graph_name",
-                egui::TextEdit::singleline(&mut draft.name)
-                    .font(egui::FontId::monospace(12.0))
-                    .desired_width(260.0),
-            )
-            .changed()
-            {
-                controller.mark_dirty();
-            }
-        } else {
-            ui.label(
-                RichText::new(crate::i18n::tr_dynamic(language, &draft.name))
-                    .font(egui::FontId::monospace(12.0))
-                    .color(style::INK)
-                    .strong(),
-            );
-        }
-        ui.add_space(10.0);
-        if !editable {
-            status_chip(ui, crate::i18n::tr(language, "LOCKED"));
-        }
-        ui.separator();
-        render_provider_tabs(controller, ui);
-    });
-    ui.add_space(2.0);
-    crate::ui::layout::flow_row(ui, |ui| {
-        render_branch_filters(&draft.graph, controller, ui, language);
-    });
-    ui.add_space(2.0);
-    crate::ui::layout::flow_row(ui, |ui| {
-        if editable {
-            render_node_toolbar(&mut draft, controller, ui, language);
-            if small_outline_button(
-                ui,
-                crate::i18n::tr(language, "AUTO LAYOUT"),
-                crate::i18n::tr(language, "Automatically arrange nodes"),
-            )
-            .clicked()
-            {
-                let before = draft.clone();
-                draft.graph.auto_layout();
-                controller.canvas.fit_pending = true;
-                controller.push_history(before);
-            }
-            if small_outline_button(
-                ui,
-                crate::i18n::tr(language, "FIT"),
-                crate::i18n::tr(language, "Fit graph to canvas"),
-            )
-            .clicked()
-            {
-                controller.canvas.fit_pending = true;
-            }
-            if small_icon_button(ui, "-", crate::i18n::tr(language, "Zoom out")).clicked() {
-                controller.canvas.zoom = (controller.canvas.zoom - 0.1).clamp(0.25, 1.6);
-            }
-            if small_icon_button(ui, "+", crate::i18n::tr(language, "Zoom in")).clicked() {
-                controller.canvas.zoom = (controller.canvas.zoom + 0.1).clamp(0.25, 1.6);
-            }
-            ui.separator();
-            let undo_enabled = controller.can_undo();
-            let undo_btn = ui
-                .add_enabled(
-                    undo_enabled,
-                    egui::Button::new(
-                        RichText::new(crate::i18n::tr(language, "UNDO"))
-                            .font(egui::FontId::monospace(9.5))
-                            .color(if undo_enabled {
-                                style::INK
-                            } else {
-                                style::MUTED
-                            }),
-                    )
-                    .fill(Color32::TRANSPARENT)
-                    .stroke(Stroke::new(1.0, style::BAR_BORDER))
-                    .corner_radius(CornerRadius::same(1))
-                    .min_size(Vec2::new(52.0, 25.0)),
-                )
-                .on_hover_text(crate::i18n::tr(language, "Undo last action (Ctrl+Z)"));
-            if undo_btn.clicked() {
-                controller.undo();
-                if let Some(d) = &controller.draft {
-                    draft = d.clone();
-                }
-            }
-            let redo_enabled = controller.can_redo();
-            let redo_btn = ui
-                .add_enabled(
-                    redo_enabled,
-                    egui::Button::new(
-                        RichText::new(crate::i18n::tr(language, "REDO"))
-                            .font(egui::FontId::monospace(9.5))
-                            .color(if redo_enabled {
-                                style::INK
-                            } else {
-                                style::MUTED
-                            }),
-                    )
-                    .fill(Color32::TRANSPARENT)
-                    .stroke(Stroke::new(1.0, style::BAR_BORDER))
-                    .corner_radius(CornerRadius::same(1))
-                    .min_size(Vec2::new(52.0, 25.0)),
-                )
-                .on_hover_text(crate::i18n::tr(
-                    language,
-                    "Redo last action (Ctrl+Y / Ctrl+Shift+Z)",
-                ));
-            if redo_btn.clicked() {
-                controller.redo();
-                if let Some(d) = &controller.draft {
-                    draft = d.clone();
-                }
-            }
-        }
-        crate::ui::layout::flow_group(ui, 260.0, |ui| {
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if editable {
-                    if small_outline_button(
-                        ui,
-                        crate::i18n::tr(language, "DELETE"),
-                        crate::i18n::tr(language, "Delete prompt design"),
-                    )
-                    .clicked()
-                    {
-                        actions.push(PromptStudioAction::DeleteProfile(draft.id.clone()));
-                    }
-                    if validation_error.is_none()
-                        && draft.id != snapshot.active_id
-                        && style::command_button(ui, crate::i18n::tr(language, "ACTIVATE"), true)
-                            .clicked()
-                    {
-                        actions.push(PromptStudioAction::ActivateProfile(draft.clone()));
-                        controller.dirty = false;
-                    }
-                } else {
-                    if validation_error.is_none()
-                        && draft.id != snapshot.active_id
-                        && style::command_button(ui, crate::i18n::tr(language, "ACTIVATE"), true)
-                            .clicked()
-                    {
-                        actions.push(PromptStudioAction::ActivateProfile(draft.clone()));
-                        controller.dirty = false;
-                    }
-                    if small_outline_button(
-                        ui,
-                        crate::i18n::tr(language, "EDIT COPY"),
-                        crate::i18n::tr(language, "Create an editable graph copy"),
-                    )
-                    .clicked()
-                    {
-                        let mut copy = PromptTemplateLibrary::editable_copy_of(
-                            &draft,
-                            format!("custom-{}", uuid::Uuid::new_v4()),
-                        );
-                        copy.name = format!("{} copy", draft.name);
-                        actions.push(PromptStudioAction::CloneProfile(copy.clone()));
-                        controller.set_draft(copy);
-                    }
-                }
-                if small_outline_button(
-                    ui,
-                    crate::i18n::tr(language, "EXPORT"),
-                    crate::i18n::tr(language, "Export graph project file"),
-                )
-                .clicked()
-                {
-                    actions.push(PromptStudioAction::ExportProfile(draft.clone()));
-                }
-                if small_outline_button(
-                    ui,
-                    crate::i18n::tr(language, "IMPORT"),
-                    crate::i18n::tr(language, "Import graph project file"),
-                )
-                .clicked()
-                {
-                    actions.push(PromptStudioAction::ImportProfile);
-                }
-            });
-        });
-    });
-    if let Some(error) = &validation_error {
-        crate::ui::components::validation_notice(
-            ui,
-            language,
-            &format!("{}: {error}", crate::i18n::tr(language, "Please check the graph")),
-        );
-    }
-    ui.add_space(4.0);
+        controller.canvas.resize_viewport(canvas.size());
 
-    Frame::new()
-        .fill(style::CANVAS_FILL)
-        .stroke(Stroke::new(1.0, style::CANVAS_BORDER))
-        .corner_radius(CornerRadius::same(2))
-        .inner_margin(Margin::same(5))
-        .show(ui, |ui| {
-            let canvas_height = ui.available_height().max(1.0);
-            let (canvas, response) = ui.allocate_exact_size(
-                Vec2::new(ui.available_width(), canvas_height),
-                Sense::click_and_drag(),
-            );
-            controller.canvas.canvas_size = canvas.size();
-
-            let pointer_over_node_or_link =
-                response.interact_pointer_pos().is_some_and(|pointer| {
-                    let over_node = draft
-                        .graph
-                        .nodes
-                        .iter()
-                        .filter(|node| controller.node_is_visible(node))
-                        .any(|node| {
-                            controller
-                                .canvas
-                                .graph_rect(canvas, node.position, node_size(&draft.graph, node))
-                                .contains(pointer)
-                        });
-                    let over_link = draft.graph.links.iter().any(|link| {
-                        let endpoints_visible = draft
-                            .graph
-                            .nodes
-                            .iter()
-                            .filter(|node| node.id == link.from || node.id == link.to)
-                            .all(|node| controller.node_is_visible(node));
-                        if !endpoints_visible {
-                            return false;
-                        }
-                        if let Some((from, to)) =
-                            link_points(canvas, controller, &draft.graph, link)
-                        {
-                            graph_canvas::distance_to_curve(
-                                pointer,
-                                graph_canvas::bezier_points(from, to),
-                            ) <= 12.0
-                        } else {
-                            false
-                        }
-                    });
-                    over_node || over_link
-                });
-
-            let wire_cancelled = editable && controller.handle_secondary_wire_cancel(canvas, ui);
-            let is_pulling_wire = controller.wire_active();
-
-            if editable
-                && response.secondary_clicked()
-                && !wire_cancelled
-                && !pointer_over_node_or_link
-            {
-                controller.add_node_center = response
-                    .interact_pointer_pos()
-                    .map(|pointer| controller.canvas.graph_position(canvas, pointer));
-            }
-            if editable && !wire_cancelled && !pointer_over_node_or_link && !is_pulling_wire {
-                let preferred_center = controller.add_node_center;
-                response.context_menu(|ui| {
-                    render_node_menu(&mut draft, controller, ui, language, preferred_center);
-                });
-            }
-            if controller.canvas.fit_pending {
-                navigation::fit_graph_to_canvas(&draft.graph, controller, canvas.size());
-                controller.canvas.fit_pending = false;
-            }
-            let mut canvas_ui = graph_canvas::canvas_viewport(ui, canvas);
-            controller.handle_navigation(canvas, &response, &canvas_ui, true, false);
-            let pointer_over_node = response.interact_pointer_pos().is_some_and(|pointer| {
-                draft
-                    .graph
-                    .nodes
-                    .iter()
-                    .filter(|node| controller.node_is_visible(node))
-                    .any(|node| {
-                        controller
-                            .canvas
-                            .graph_rect(canvas, node.position, node_size(&draft.graph, node))
-                            .contains(pointer)
-                    })
-            });
-            let pointer_over_link = pointer_over_node_or_link && !pointer_over_node;
-            let selectable_nodes = draft
+        let pointer_over_node_or_link = response.interact_pointer_pos().is_some_and(|pointer| {
+            let over_node = draft
                 .graph
                 .nodes
                 .iter()
                 .filter(|node| controller.node_is_visible(node))
-                .map(|node| {
-                    (
-                        node.id.clone(),
-                        controller.canvas.graph_rect(
+                .any(|node| {
+                    controller
+                        .canvas
+                        .graph_rect(
                             canvas,
-                            node.position,
+                            controller.node_position(node),
                             node_size(&draft.graph, node),
-                        ),
-                    )
+                        )
+                        .contains(pointer)
+                });
+            let over_link = draft.graph.links.iter().any(|link| {
+                let endpoints_visible = draft
+                    .graph
+                    .nodes
+                    .iter()
+                    .filter(|node| node.id == link.from || node.id == link.to)
+                    .all(|node| controller.node_is_visible(node));
+                if !endpoints_visible {
+                    return false;
+                }
+                if let Some((from, to)) = link_points(canvas, controller, &draft.graph, link) {
+                    graph_canvas::distance_to_curve(pointer, graph_canvas::bezier_points(from, to))
+                        <= 12.0
+                } else {
+                    false
+                }
+            });
+            over_node || over_link
+        });
+
+        let wire_cancelled = editable && controller.handle_secondary_wire_cancel(canvas, ui);
+        let is_pulling_wire = controller.wire_active();
+
+        if editable && response.secondary_clicked() && !wire_cancelled && !pointer_over_node_or_link
+        {
+            controller.add_node_center = response
+                .interact_pointer_pos()
+                .map(|pointer| controller.canvas.graph_position(canvas, pointer));
+        }
+        if editable && !wire_cancelled && !pointer_over_node_or_link && !is_pulling_wire {
+            let preferred_center = controller.add_node_center;
+            response.context_menu(|ui| {
+                render_node_menu(&mut draft, controller, ui, language, preferred_center);
+            });
+        }
+        if controller.canvas.fit_pending {
+            navigation::fit_graph_to_canvas(&draft.graph, controller, canvas.size());
+            controller.canvas.fit_pending = false;
+        }
+        let mut canvas_ui = graph_canvas::canvas_viewport(ui, canvas);
+        controller.handle_navigation(canvas, &response, &canvas_ui, true, false);
+        let pointer_over_node = response.interact_pointer_pos().is_some_and(|pointer| {
+            draft
+                .graph
+                .nodes
+                .iter()
+                .filter(|node| controller.node_is_visible(node))
+                .any(|node| {
+                    controller
+                        .canvas
+                        .graph_rect(
+                            canvas,
+                            controller.node_position(node),
+                            node_size(&draft.graph, node),
+                        )
+                        .contains(pointer)
                 })
-                .collect::<Vec<_>>();
-            controller.handle_canvas_selection(
-                &response,
-                &canvas_ui,
-                editable,
-                pointer_over_node,
-                pointer_over_link,
-                selectable_nodes,
-            );
-            if response.hovered() {
-                let scroll = canvas_ui.input(|input| input.smooth_scroll_delta.y);
-                if scroll.abs() > f32::EPSILON {
-                    let pointer = canvas_ui
-                        .input(|input| input.pointer.hover_pos())
-                        .unwrap_or(canvas.center());
-                    let over_runtime_preview = draft
+        });
+        let pointer_over_link = pointer_over_node_or_link && !pointer_over_node;
+        let selectable_nodes = draft
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| controller.node_is_visible(node))
+            .map(|node| {
+                (
+                    node.id.clone(),
+                    controller.canvas.graph_rect(
+                        canvas,
+                        controller.node_position(node),
+                        node_size(&draft.graph, node),
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        controller.handle_canvas_selection(
+            &response,
+            &canvas_ui,
+            editable,
+            pointer_over_node,
+            pointer_over_link,
+            selectable_nodes,
+        );
+        if response.hovered() {
+            let scroll = canvas_ui.input(|input| input.smooth_scroll_delta.y);
+            if scroll.abs() > f32::EPSILON {
+                let pointer = canvas_ui
+                    .input(|input| input.pointer.hover_pos())
+                    .unwrap_or(canvas.center());
+                let over_text = controller.canvas.zoom >= 0.58
+                    && draft
                         .graph
                         .nodes
                         .iter()
                         .filter(|node| controller.node_is_visible(node))
                         .any(|node| {
-                            let rect = controller.canvas.graph_rect(
-                                canvas,
-                                node.position,
-                                node_size(&draft.graph, node),
-                            );
-                            node_scale(rect, node) >= 0.58
-                                && runtime_preview::pane_rect(rect, node_scale(rect, node))
-                                    .contains(pointer)
+                            matches!(
+                                node.kind,
+                                PromptNodeKind::Compose { .. }
+                                    | PromptNodeKind::Input {
+                                        block: TranslationPromptBlock::CustomText { .. }
+                                    }
+                            ) && controller
+                                .canvas
+                                .graph_rect(
+                                    canvas,
+                                    controller.node_position(node),
+                                    node_size(&draft.graph, node),
+                                )
+                                .shrink(8.0)
+                                .contains(pointer)
                         });
-                    if !over_runtime_preview {
-                        controller.canvas.zoom_at_pointer(canvas, pointer, scroll);
-                    }
+                if !over_text {
+                    controller.canvas.zoom_at_pointer(canvas, pointer, scroll);
                 }
             }
-            if editable {
-                match crate::ui::graph_editor::shortcut(&canvas_ui) {
-                    Some(crate::ui::graph_editor::GraphShortcut::Undo) => {
-                        controller.undo();
-                        if let Some(d) = &controller.draft {
-                            draft = d.clone();
-                        }
+        }
+        if editable {
+            match crate::ui::graph_editor::shortcut(&canvas_ui) {
+                Some(crate::ui::graph_editor::GraphShortcut::Undo) => {
+                    controller.undo();
+                    if let Some(d) = &controller.draft {
+                        draft = d.clone();
                     }
-                    Some(crate::ui::graph_editor::GraphShortcut::Redo) => {
-                        controller.redo();
-                        if let Some(d) = &controller.draft {
-                            draft = d.clone();
-                        }
-                    }
-                    Some(crate::ui::graph_editor::GraphShortcut::Delete) => {
-                        let before = draft.clone();
-                        let mut modified = false;
-                        let (selected, selected_links) = controller.take_selection();
-                        for id in &selected {
-                            draft.graph.remove_node(&id);
-                            modified = true;
-                        }
-                        for link_key in &selected_links {
-                            draft.graph.links.retain(|link| {
-                                !(link.from == link_key.from
-                                    && link.to == link_key.to
-                                    && link.input == link_key.input)
-                            });
-                            modified = true;
-                        }
-                        if modified {
-                            controller.push_history(before);
-                        }
-                    }
-                    Some(crate::ui::graph_editor::GraphShortcut::Cancel) => {
-                        controller.cancel_current_operation();
-                        controller.cancel_editing_title();
-                    }
-                    None => {}
                 }
+                Some(crate::ui::graph_editor::GraphShortcut::Redo) => {
+                    controller.redo();
+                    if let Some(d) = &controller.draft {
+                        draft = d.clone();
+                    }
+                }
+                Some(crate::ui::graph_editor::GraphShortcut::Delete) => {
+                    let before = draft.clone();
+                    let mut modified = false;
+                    let (selected, selected_links) = controller.take_selection();
+                    for id in &selected {
+                        draft.graph.remove_node(&id);
+                        modified = true;
+                    }
+                    for link_key in &selected_links {
+                        draft.graph.links.retain(|link| {
+                            !(link.from == link_key.from
+                                && link.to == link_key.to
+                                && link.input == link_key.input)
+                        });
+                        modified = true;
+                    }
+                    if modified {
+                        controller.push_history(before);
+                    }
+                }
+                Some(crate::ui::graph_editor::GraphShortcut::Cancel) => {
+                    controller.cancel_current_operation();
+                    controller.cancel_editing_title();
+                }
+                None => {}
             }
-            graph_canvas::paint_grid(&canvas_ui, canvas, &controller.canvas, style::GRID);
-            render_links(&mut canvas_ui, canvas, &mut draft, controller, editable);
-            render_nodes(
-                &mut canvas_ui,
-                canvas,
-                &mut draft,
-                controller,
-                editable,
-                runtime_trace.as_ref(),
-                &error_target,
-                language,
-            );
-            if editable
-                && controller.rewire_link.is_some()
-                && controller.wire_from.is_some()
-                && canvas_ui.input(|input| input.pointer.any_released())
-                && let Some(commit) = controller.finish_wire(None)
-            {
-                commit_prompt_wire(&mut draft, controller, commit);
-            }
-            render_wire_preview(&mut canvas_ui, canvas, &draft, controller);
-            render_selection_box(&mut canvas_ui, controller);
-            navigation::render_canvas_navigation_hint(&canvas_ui, canvas, language);
-        });
+        }
+        graph_canvas::paint_grid(&canvas_ui, canvas, &controller.canvas, style::GRID);
+        render_links(&mut canvas_ui, canvas, &mut draft, controller, editable);
+        render_nodes(
+            &mut canvas_ui,
+            canvas,
+            &mut draft,
+            controller,
+            editable,
+            runtime_trace.as_ref(),
+            &error_target,
+            language,
+        );
+        if editable
+            && controller.rewire_link.is_some()
+            && controller.wire_from.is_some()
+            && canvas_ui.input(|input| input.pointer.any_released())
+            && let Some(commit) = controller.finish_wire(None)
+        {
+            commit_prompt_wire(&mut draft, controller, commit);
+        }
+        render_wire_preview(&mut canvas_ui, canvas, &draft, controller);
+        render_selection_box(&mut canvas_ui, controller);
+    });
     controller.sync_branch_filters(&draft.graph);
     controller.draft = Some(draft);
 }
 
-fn render_provider_tabs(controller: &mut PromptStudioController, ui: &mut egui::Ui) {
+fn render_provider_tabs(
+    controller: &mut PromptStudioController,
+    ui: &mut egui::Ui,
+    language: crate::i18n::UiLanguage,
+) {
     let tabs: &[(PromptProviderTarget, &str)] = match controller.domain() {
-        xrtranslate_prompt::PromptGraphDomain::Translation => &[
-            (PromptProviderTarget::OpenAiCompatible, "OPENAI"),
-            (PromptProviderTarget::Hunyuan, "HUNYUAN"),
+        PromptGraphDomain::Translation => &[
+            (PromptProviderTarget::OpenAiCompatible, "OpenAI"),
+            (PromptProviderTarget::Hunyuan, "Hunyuan"),
         ],
-        xrtranslate_prompt::PromptGraphDomain::Asr => &[
+        PromptGraphDomain::Asr => &[
             (PromptProviderTarget::AsrInstruction, "ASR INSTRUCTION"),
             (PromptProviderTarget::AsrContextBias, "ASR CONTEXT BIAS"),
         ],
     };
     for &(target, label) in tabs {
-        if style::provider_tab(ui, label, controller.active_provider == target).clicked() {
+        if crate::ui::graph_style::tab(
+            ui,
+            crate::i18n::tr(language, label),
+            controller.active_provider == target,
+        )
+        .clicked()
+        {
             controller.select_provider(target);
         }
     }
@@ -652,11 +593,6 @@ fn render_branch_filters(
     if conditions.is_empty() && text_filters.is_empty() {
         return;
     }
-    ui.label(
-        RichText::new(crate::i18n::tr(language, "VIEW /"))
-            .font(egui::FontId::monospace(9.5))
-            .color(style::MUTED),
-    );
     for condition in conditions {
         let selected = controller.branch_filter(condition);
         let (label, options) = branch_filter_definition(condition);
@@ -684,7 +620,10 @@ fn render_branch_filters(
             |ui| {
                 for (option_label, value) in options {
                     if ui
-                        .selectable_label(selected == value, crate::i18n::tr(language, option_label))
+                        .selectable_label(
+                            selected == value,
+                            crate::i18n::tr(language, option_label),
+                        )
                         .clicked()
                     {
                         controller.set_branch_filter(graph, condition, value);
@@ -795,7 +734,7 @@ fn render_node_toolbar(
     ui: &mut egui::Ui,
     language: crate::i18n::UiLanguage,
 ) {
-    ui.menu_button(crate::i18n::tr(language, "+ ADD NODE"), |ui| {
+    ui.menu_button(crate::i18n::tr(language, "+ Node"), |ui| {
         render_node_menu(draft, controller, ui, language, None);
     });
 }
@@ -1175,7 +1114,7 @@ fn render_nodes(
         .collect::<Vec<_>>();
     let mut remove_id = None;
     for node in nodes {
-        let display_position = controller.display_position(&node.id, node.position);
+        let display_position = controller.node_position(&node);
         let rect = controller.canvas.graph_rect(
             canvas,
             display_position,
@@ -1194,23 +1133,28 @@ fn render_nodes(
                 Sense::hover()
             },
         );
-        let response = if matches!(node.kind, PromptNodeKind::Request { .. }) {
-            let preview = profile
-                .graph
-                .compose_request_preview(&node.id)
-                .unwrap_or_else(|| "(no connected messages)".into());
-            response.on_hover_text(format!(
-                "API REQUEST PREVIEW\n\n{}",
-                truncate_preview(&preview, 1200)
-            ))
-        } else if editable {
-            response.on_hover_text(crate::i18n::tr(
+        let response = response.on_hover_ui(|ui| {
+            ui.set_max_width(360.0);
+            ui.strong(crate::i18n::tr_dynamic(
                 language,
-                "Drag header to move · Double-click to rename",
-            ))
-        } else {
-            response
-        };
+                &node_display_label(&node),
+            ));
+            ui.weak(crate::i18n::tr_dynamic(
+                language,
+                &node_kind_tag(&profile.graph, &node),
+            ));
+            let description = input_description(&node.kind);
+            if !description.is_empty() {
+                ui.label(description);
+            }
+            if editable {
+                ui.small(crate::i18n::tr(
+                    language,
+                    "Drag header to move · Double-click to rename",
+                ));
+            }
+            runtime_preview::render(ui, &profile.graph, &node, runtime_trace, language);
+        });
         if editable && response.double_clicked() {
             let initial = if node.label.trim().is_empty() || node.label == "COMPOSE TEXT" {
                 node_display_label(&node)
@@ -1297,18 +1241,20 @@ fn render_nodes(
             remove_id = Some(node.id.clone());
         }
         let selected = controller.selected_nodes.contains(&node.id);
-        draw_node(
-            ui,
-            rect,
-            &node,
-            profile,
-            controller,
-            editable,
-            selected,
-            runtime_trace,
-            error_target,
-            language,
-        );
+        ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(rect));
+            draw_node(
+                ui,
+                rect,
+                &node,
+                profile,
+                controller,
+                editable,
+                selected,
+                error_target,
+                language,
+            );
+        });
         render_node_sockets(
             ui,
             rect,
@@ -1336,18 +1282,20 @@ fn draw_node(
     controller: &mut PromptStudioController,
     editable: bool,
     selected: bool,
-    runtime_trace: Option<&PromptExecutionTrace>,
     error_target: &GraphErrorTarget,
     language: crate::i18n::UiLanguage,
 ) {
     let scale = node_scale(rect, node);
     let header_height = NODE_HEADER_HEIGHT * scale;
     let palette = node_palette(&node.kind);
-    let title = crate::i18n::tr_dynamic(language, &node_display_label(node)).into_owned();
+    let title = presentation_label(&crate::i18n::tr_dynamic(
+        language,
+        &node_display_label(node),
+    ));
     let is_error = error_target.node_id.as_deref() == Some(node.id.as_str());
 
     ui.painter()
-        .rect_filled(rect, CornerRadius::same(2), palette.fill);
+        .rect_filled(rect, CornerRadius::same(8), palette.fill);
     let (border_stroke, border_color) = if selected {
         (2.0, GRAPH_ACCENT)
     } else if is_error {
@@ -1357,32 +1305,38 @@ fn draw_node(
     };
     ui.painter().rect_stroke(
         rect,
-        CornerRadius::same(2),
+        CornerRadius::same(8),
         Stroke::new(border_stroke, border_color),
         egui::epaint::StrokeKind::Inside,
     );
+    if scale < 0.58 {
+        let mut title_job = egui::text::LayoutJob::simple(
+            title,
+            egui::FontId::proportional((12.0 * scale).max(9.0)),
+            style::NODE_TEXT,
+            (rect.width() - 12.0).max(1.0),
+        );
+        title_job.wrap.max_rows = 2;
+        let galley = ui.painter().layout_job(title_job);
+        ui.painter().galley(
+            Pos2::new(rect.left() + 6.0, rect.center().y - galley.size().y * 0.5),
+            galley,
+            style::NODE_TEXT,
+        );
+        return;
+    }
     ui.painter().rect_filled(
         Rect::from_min_size(rect.min, Vec2::new(rect.width(), header_height)),
-        CornerRadius::same(2),
+        CornerRadius::same(8),
         if is_error {
             style::ERROR_FILL
         } else {
-            palette.header
+            palette.header.gamma_multiply(0.38)
         },
     );
-    let show_kind = scale >= 0.72;
-    let kind_tag =
-        crate::i18n::tr_dynamic(language, &node_kind_tag(&profile.graph, node)).into_owned();
-    let title_font_size = (9.5 * scale).max(7.0);
-    let kind_font_size = 7.5 * scale;
-    let kind_width = if show_kind {
-        kind_tag.chars().count() as f32 * kind_font_size * 0.62 + 10.0 * scale
-    } else {
-        0.0
-    };
+    let title_font_size = (12.0 * scale).max(8.0);
     let close_width = if editable { 22.0 * scale } else { 0.0 };
-    let title_width =
-        (rect.width() - 18.0 * scale - kind_width - close_width).max(title_font_size * 8.0);
+    let title_width = (rect.width() - 18.0 * scale - close_width).max(title_font_size * 8.0);
     let title_chars = (title_width / (title_font_size * 0.62)).floor() as usize;
 
     let is_renaming = editable
@@ -1413,7 +1367,7 @@ fn draw_node(
             let edit_response = ui.put(
                 title_rect,
                 egui::TextEdit::singleline(&mut edit.text)
-                    .font(egui::FontId::monospace(title_font_size))
+                    .font(egui::FontId::proportional(title_font_size))
                     .text_color(style::NODE_TEXT)
                     .desired_width(title_width)
                     .frame(egui::Frame::NONE),
@@ -1454,24 +1408,12 @@ fn draw_node(
             Pos2::new(rect.left() + 10.0 * scale, rect.top() + 8.0 * scale),
             egui::Align2::LEFT_TOP,
             truncate_preview(&title, title_chars),
-            egui::FontId::monospace(title_font_size),
+            egui::FontId::proportional(title_font_size),
             if is_error {
                 style::ERROR_BORDER
             } else {
                 style::NODE_TEXT
             },
-        );
-    }
-    if show_kind {
-        ui.painter().text(
-            Pos2::new(
-                rect.right() - (if editable { 28.0 } else { 8.0 }) * scale,
-                rect.top() + 9.0 * scale,
-            ),
-            egui::Align2::RIGHT_TOP,
-            kind_tag,
-            egui::FontId::monospace(kind_font_size),
-            style::NODE_MUTED,
         );
     }
     if editable {
@@ -1482,9 +1424,6 @@ fn draw_node(
             egui::FontId::monospace(12.0 * scale),
             style::NODE_TEXT,
         );
-    }
-    if scale < 0.58 {
-        return;
     }
     match &node.kind {
         PromptNodeKind::Input {
@@ -1504,10 +1443,7 @@ fn draw_node(
                 {
                     let body = Rect::from_min_max(
                         Pos2::new(rect.left() + 9.0 * scale, rect.top() + 34.0 * scale),
-                        Pos2::new(
-                            runtime_preview::configuration_right(rect, scale),
-                            rect.bottom() - 6.0 * scale,
-                        ),
+                        Pos2::new(rect.right() - 10.0 * scale, rect.bottom() - 6.0 * scale),
                     );
                     ui.scope_builder(
                         UiBuilder::new()
@@ -1515,18 +1451,20 @@ fn draw_node(
                             .layout(Layout::top_down(Align::Min)),
                         |ui| {
                             ui.set_clip_rect(ui.clip_rect().intersect(body));
-                            if ui
-                                .add(
-                                    egui::TextEdit::multiline(text)
-                                        .font(egui::FontId::monospace(10.0 * scale))
-                                        .text_color(style::NODE_TEXT)
-                                        .desired_rows(
-                                            ((node.layout_height() - 54.0) / 13.0).floor().max(3.0)
-                                                as usize,
-                                        )
-                                        .frame(egui::Frame::NONE),
-                                )
-                                .changed()
+                            if egui::ScrollArea::vertical()
+                                .id_salt(("prompt_text", &node.id))
+                                .max_height(body.height())
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        egui::TextEdit::multiline(text)
+                                            .font(egui::FontId::monospace(10.0 * scale))
+                                            .text_color(style::NODE_TEXT)
+                                            .desired_rows(3)
+                                            .frame(egui::Frame::NONE),
+                                    )
+                                    .changed()
+                                })
+                                .inner
                             {
                                 text_changed = true;
                             }
@@ -1595,10 +1533,7 @@ fn draw_node(
             {
                 let body = Rect::from_min_max(
                     Pos2::new(rect.left() + 10.0 * scale, rect.top() + 42.0 * scale),
-                    Pos2::new(
-                        runtime_preview::configuration_right(rect, scale),
-                        rect.bottom(),
-                    ),
+                    Pos2::new(rect.right() - 10.0 * scale, rect.bottom()),
                 );
                 changed = ui
                     .put(
@@ -1638,7 +1573,7 @@ fn draw_node(
             else {
                 return;
             };
-            let content_right = runtime_preview::configuration_right(rect, scale);
+            let content_right = rect.right() - 10.0 * scale;
             let operator_rect = Rect::from_min_size(
                 Pos2::new(rect.left() + 22.0 * scale, rect.top() + 39.0 * scale),
                 Vec2::new(
@@ -1674,15 +1609,17 @@ fn draw_node(
                     24.0 * scale,
                 ),
             );
-            let response = ui.scope_builder(UiBuilder::new().max_rect(expected_rect), |ui| {
-                crate::ui::components::text_edit_ui(
-                    ui,
-                    ("prompt_node_expected", &node.id),
-                    egui::TextEdit::singleline(expected)
-                        .hint_text("Expected text")
-                        .font(egui::FontId::monospace(9.0 * scale)),
-                )
-            }).inner;
+            let response = ui
+                .scope_builder(UiBuilder::new().max_rect(expected_rect), |ui| {
+                    crate::ui::components::text_edit_ui(
+                        ui,
+                        ("prompt_node_expected", &node.id),
+                        egui::TextEdit::singleline(expected)
+                            .hint_text("Expected text")
+                            .font(egui::FontId::monospace(9.0 * scale)),
+                    )
+                })
+                .inner;
             if response.gained_focus() && controller.text_edit_start_profile.is_none() {
                 controller.text_edit_start_profile = Some(before.clone());
             }
@@ -1742,10 +1679,7 @@ fn draw_node(
                 if let PromptNodeKind::Compose { text } = &mut actual.kind {
                     let body = Rect::from_min_max(
                         Pos2::new(rect.left() + 30.0 * scale, rect.top() + 34.0 * scale),
-                        Pos2::new(
-                            runtime_preview::configuration_right(rect, scale),
-                            rect.bottom() - 6.0 * scale,
-                        ),
+                        Pos2::new(rect.right() - 10.0 * scale, rect.bottom() - 6.0 * scale),
                     );
                     ui.scope_builder(
                         UiBuilder::new()
@@ -1753,18 +1687,20 @@ fn draw_node(
                             .layout(Layout::top_down(Align::Min)),
                         |ui| {
                             ui.set_clip_rect(ui.clip_rect().intersect(body));
-                            if ui
-                                .add(
-                                    egui::TextEdit::multiline(text)
-                                        .font(egui::FontId::monospace(10.0 * scale))
-                                        .text_color(style::NODE_TEXT)
-                                        .desired_rows(
-                                            ((node.layout_height() - 54.0) / 13.0).floor().max(5.0)
-                                                as usize,
-                                        )
-                                        .frame(egui::Frame::NONE),
-                                )
-                                .changed()
+                            if egui::ScrollArea::vertical()
+                                .id_salt(("prompt_text", &node.id))
+                                .max_height(body.height())
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        egui::TextEdit::multiline(text)
+                                            .font(egui::FontId::monospace(10.0 * scale))
+                                            .text_color(style::NODE_TEXT)
+                                            .desired_rows(3)
+                                            .frame(egui::Frame::NONE),
+                                    )
+                                    .changed()
+                                })
+                                .inner
                             {
                                 changed = true;
                             }
@@ -1794,10 +1730,7 @@ fn draw_node(
         PromptNodeKind::Compose { text } => {
             let body = Rect::from_min_max(
                 Pos2::new(rect.left() + 30.0 * scale, rect.top() + 35.0 * scale),
-                Pos2::new(
-                    runtime_preview::configuration_right(rect, scale),
-                    rect.bottom() - 6.0 * scale,
-                ),
+                Pos2::new(rect.right() - 10.0 * scale, rect.bottom() - 6.0 * scale),
             );
             ui.scope_builder(
                 UiBuilder::new()
@@ -1805,11 +1738,16 @@ fn draw_node(
                     .layout(Layout::top_down(Align::Min)),
                 |ui| {
                     ui.set_clip_rect(ui.clip_rect().intersect(body));
-                    ui.label(
-                        RichText::new(text.as_str())
-                            .font(egui::FontId::monospace(10.0 * scale))
-                            .color(style::NODE_TEXT),
-                    );
+                    egui::ScrollArea::vertical()
+                        .id_salt(("prompt_text", &node.id))
+                        .max_height(body.height())
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(text.as_str())
+                                    .font(egui::FontId::monospace(10.0 * scale))
+                                    .color(style::NODE_TEXT),
+                            );
+                        });
                 },
             );
         }
@@ -1845,15 +1783,6 @@ fn draw_node(
             );
         }
     }
-    runtime_preview::render(
-        ui,
-        rect,
-        &profile.graph,
-        node,
-        runtime_trace,
-        scale,
-        language,
-    );
 }
 
 fn commit_prompt_wire(
@@ -2018,14 +1947,16 @@ fn render_node_sockets(
                 );
             }
 
-            if matches!(
-                node.kind,
-                PromptNodeKind::Compose { .. }
-                    | PromptNodeKind::Switch { .. }
-                    | PromptNodeKind::TextSwitch
-                    | PromptNodeKind::TextComparison { .. }
-                    | PromptNodeKind::Request { .. }
-            ) {
+            if scale >= 0.58
+                && matches!(
+                    node.kind,
+                    PromptNodeKind::Compose { .. }
+                        | PromptNodeKind::Switch { .. }
+                        | PromptNodeKind::TextSwitch
+                        | PromptNodeKind::TextComparison { .. }
+                        | PromptNodeKind::Request { .. }
+                )
+            {
                 let label_color = if is_error_socket {
                     style::ERROR_BORDER
                 } else {
@@ -2060,7 +1991,7 @@ fn render_wire_preview(
             &profile.graph,
             controller.canvas.graph_rect(
                 canvas,
-                controller.display_position(&node.id, node.position),
+                controller.node_position(&node),
                 node_size(&profile.graph, node),
             ),
             node,
@@ -2082,7 +2013,7 @@ fn render_wire_preview(
             &profile.graph,
             controller.canvas.graph_rect(
                 canvas,
-                controller.display_position(&node.id, node.position),
+                controller.node_position(&node),
                 node_size(&profile.graph, node),
             ),
             node,
@@ -2112,7 +2043,7 @@ fn link_points(
             graph,
             controller.canvas.graph_rect(
                 canvas,
-                controller.display_position(&from.id, from.position),
+                controller.node_position(from),
                 node_size(graph, from),
             ),
             from,
@@ -2123,7 +2054,7 @@ fn link_points(
             graph,
             controller.canvas.graph_rect(
                 canvas,
-                controller.display_position(&to.id, to.position),
+                controller.node_position(to),
                 node_size(graph, to),
             ),
             to,
@@ -2171,7 +2102,7 @@ fn socket_position(
 }
 
 fn node_scale(rect: Rect, node: &PromptNode) -> f32 {
-    rect.width() / (runtime_preview::base_width(&node.kind) + runtime_preview::WIDTH)
+    rect.width() / (runtime_preview::base_width(&node.kind))
 }
 
 fn input_socket_indexes(graph: &PromptNodeGraph, node: &PromptNode) -> Vec<u8> {
@@ -2262,6 +2193,94 @@ mod tests {
                 .graph_rect(canvas, node.position, node_size(&graph, node));
             assert!(canvas.contains(rect.min));
             assert!(canvas.contains(rect.max));
+        }
+    }
+
+    #[test]
+    fn complete_builtin_overviews_fit_without_changing_the_saved_graph() {
+        let graph = PromptNodeGraph::builtin_default();
+        let original = graph.clone();
+        for target in [
+            PromptProviderTarget::OpenAiCompatible,
+            PromptProviderTarget::Hunyuan,
+        ] {
+            let mut controller = PromptStudioController::for_provider(target);
+            controller.overview_positions =
+                compact_positions(&graph, |node| controller.node_is_visible(node));
+            for size in [Vec2::new(1350.0, 770.0), Vec2::new(740.0, 420.0)] {
+                navigation::fit_graph_to_canvas(&graph, &mut controller, size);
+                let canvas = Rect::from_min_size(Pos2::ZERO, size);
+                for node in graph
+                    .nodes
+                    .iter()
+                    .filter(|node| controller.node_is_visible(node))
+                {
+                    let rect = controller.canvas.graph_rect(
+                        canvas,
+                        controller.node_position(node),
+                        node_size(&graph, node),
+                    );
+                    assert!(
+                        canvas.contains(rect.min) && canvas.contains(rect.max),
+                        "{} at {:?}",
+                        node.id,
+                        rect
+                    );
+                    assert!(node_size(&graph, node).y <= 330.0);
+                }
+            }
+        }
+        assert_eq!(graph, original);
+    }
+
+    #[test]
+    fn prompt_overview_refits_through_real_render_and_resize_frames() {
+        let context = egui::Context::default();
+        let library = PromptTemplateLibrary::default();
+        let mut controller = PromptStudioController::for_provider(PromptProviderTarget::Hunyuan);
+        for size in [
+            Vec2::new(1600.0, 900.0),
+            Vec2::new(1600.0, 900.0),
+            Vec2::new(1080.0, 720.0),
+            Vec2::new(1080.0, 720.0),
+        ] {
+            let snapshot = controller.snapshot(&library);
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                    events: vec![egui::Event::PointerMoved(Pos2::new(450.0, 300.0))],
+                    ..Default::default()
+                },
+                |ui| {
+                    super::super::render(
+                        &snapshot,
+                        &mut controller,
+                        ui,
+                        crate::i18n::UiLanguage::English,
+                    );
+                },
+            );
+            output.textures_delta.clear();
+            let canvas = Rect::from_min_size(Pos2::ZERO, controller.canvas.canvas_size);
+            let graph = &controller.draft.as_ref().unwrap().graph;
+            for node in graph
+                .nodes
+                .iter()
+                .filter(|node| controller.node_is_visible(node))
+            {
+                let rect = controller.canvas.graph_rect(
+                    canvas,
+                    controller.node_position(node),
+                    node_size(graph, node),
+                );
+                assert!(
+                    canvas.contains_rect(rect),
+                    "{} size={size:?}, zoom={}, pan={:?}, node={rect:?}",
+                    node.id,
+                    controller.canvas.zoom,
+                    controller.canvas.pan
+                );
+            }
         }
     }
 

@@ -7,8 +7,8 @@ mod style;
 pub use history::PromptStudioHistory;
 
 use eframe::egui::{
-    self, Align, Color32, CornerRadius, Frame, Layout, Margin, Pos2, Rect, RichText, Sense, Stroke,
-    UiBuilder, Vec2,
+    self, Align, Color32, CornerRadius, Layout, Pos2, Rect, RichText, Sense, Stroke, UiBuilder,
+    Vec2,
 };
 use std::collections::{HashMap, HashSet};
 use xrtranslate_prompt::{
@@ -57,6 +57,7 @@ pub(crate) struct PromptStudioController {
     text_branch_filters: HashMap<String, Option<String>>,
     branch_hidden_nodes: HashSet<String>,
     runtime_trace: Option<PromptExecutionTrace>,
+    overview_positions: HashMap<String, [f32; 2]>,
 }
 
 impl Default for PromptStudioController {
@@ -83,6 +84,7 @@ impl PromptStudioController {
             text_branch_filters: HashMap::new(),
             branch_hidden_nodes: HashSet::new(),
             runtime_trace: None,
+            overview_positions: HashMap::new(),
         }
     }
 
@@ -291,6 +293,16 @@ impl PromptStudioController {
         } else {
             self.editor.clear_selection();
         }
+    }
+
+    fn node_position(&self, node: &PromptNode) -> [f32; 2] {
+        self.display_position(
+            &node.id,
+            self.overview_positions
+                .get(&node.id)
+                .copied()
+                .unwrap_or(node.position),
+        )
     }
 
     fn mark_dirty(&mut self) {
@@ -674,9 +686,7 @@ pub fn render(
     ui.scope(|ui| {
         style::apply(ui);
         let mut actions = Vec::new();
-        render_domain_tabs(snapshot, ui, language, &mut actions);
-        ui.add_space(5.0);
-        render_header(snapshot, controller, ui, language, &mut actions);
+        render_heading(snapshot, controller, ui, language, &mut actions);
         ui.add_space(6.0);
         canvas::render_graph_editor(snapshot, controller, ui, language, &mut actions);
         actions
@@ -684,158 +694,69 @@ pub fn render(
     .inner
 }
 
-fn render_domain_tabs(
+fn render_heading(
     snapshot: &PromptStudioSnapshot,
+    controller: &PromptStudioController,
     ui: &mut egui::Ui,
     language: crate::i18n::UiLanguage,
     actions: &mut Vec<PromptStudioAction>,
 ) {
-    Frame::new()
-        .fill(style::BAR_FILL)
-        .stroke(Stroke::new(1.0, style::BAR_BORDER))
-        .corner_radius(CornerRadius::same(1))
-        .inner_margin(Margin::symmetric(6, 4))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(crate::i18n::tr(language, "PROMPT STUDIO"))
-                        .font(egui::FontId::monospace(10.0))
-                        .color(style::INK)
-                        .strong(),
-                );
-                ui.separator();
-                for (domain, label, description) in [
-                    (
-                        PromptGraphDomain::Translation,
-                        "TRANSLATION PROMPTS",
-                        "Translation provider pages for every recognition mode",
-                    ),
-                    (
-                        PromptGraphDomain::Asr,
-                        "ASR PROMPTS",
-                        "Recognition instruction and context-bias pages",
-                    ),
-                ] {
-                    if ui
-                        .selectable_label(
-                            snapshot.domain == domain,
-                            crate::i18n::tr(language, label),
-                        )
-                        .on_hover_text(description)
-                        .clicked()
-                    {
-                        actions.push(PromptStudioAction::SwitchDomain(domain));
-                    }
-                }
-            });
-        });
+    use crate::i18n::tr;
+    ui.horizontal_wrapped(|ui| {
+        ui.heading(tr(language, "Prompt Studio"));
+        ui.separator();
+        for (domain, label) in [
+            (PromptGraphDomain::Translation, "Translation"),
+            (PromptGraphDomain::Asr, "ASR prompts"),
+        ] {
+            if crate::ui::graph_style::tab(ui, tr(language, label), snapshot.domain == domain)
+                .clicked()
+            {
+                actions.push(PromptStudioAction::SwitchDomain(domain));
+            }
+        }
+        if !controller.is_dirty() {
+            ui.weak(tr(language, "Saved"));
+        }
+    });
 }
 
-fn render_header(
+fn render_profile_picker(
     snapshot: &PromptStudioSnapshot,
     controller: &mut PromptStudioController,
     ui: &mut egui::Ui,
     language: crate::i18n::UiLanguage,
     actions: &mut Vec<PromptStudioAction>,
 ) {
-    Frame::new()
-        .fill(style::BAR_FILL)
-        .stroke(Stroke::new(1.0, style::BAR_BORDER))
-        .corner_radius(CornerRadius::same(1))
-        .inner_margin(Margin::symmetric(9, 5))
-        .show(ui, |ui| {
-            crate::ui::layout::flow_row(ui, |ui| {
-                ui.label(
-                    RichText::new(crate::i18n::tr(
-                        language,
-                        match snapshot.domain {
-                            PromptGraphDomain::Translation => "TRANSLATION PAGES",
-                            PromptGraphDomain::Asr => "ASR PAGES",
-                        },
-                    ))
-                    .font(egui::FontId::monospace(10.0))
-                    .color(style::MUTED),
-                );
-                ui.add_space(5.0);
-                crate::ui::components::combobox_ui_with_width(
-                    ui,
-                    "prompt_design_select",
-                    crate::i18n::tr_dynamic(language, &snapshot.draft.name),
-                    Some(180.0),
-                    |ui| {
-                        for profile in &snapshot.profiles {
-                            let name = crate::i18n::tr_dynamic(language, &profile.name);
-                            let label = if profile.id == snapshot.active_id {
-                                format!("{}  {}", name, crate::i18n::tr(language, "ACTIVE"))
-                            } else {
-                                name.into_owned()
-                            };
-                            if ui
-                                .selectable_label(profile.id == snapshot.selected_id, label)
-                                .clicked()
-                            {
-                                save_before_switch(snapshot, controller, actions);
-                                controller.select_profile_from_snapshot(
-                                    profile.id.clone(),
-                                    &snapshot.profiles,
-                                );
-                                actions.push(PromptStudioAction::SelectProfile(profile.id.clone()));
-                            }
-                        }
-                    });
-                if small_outline_button(
-                    ui,
-                    crate::i18n::tr(language, "NEW GRAPH"),
-                    crate::i18n::tr(language, "Create complete provider graph"),
-                )
-                .clicked()
+    let name = controller
+        .draft
+        .as_ref()
+        .map_or(&snapshot.draft.name, |draft| &draft.name)
+        .clone();
+    crate::ui::components::combobox_ui_with_width(
+        ui,
+        "prompt_design_select",
+        crate::i18n::tr_dynamic(language, &name),
+        Some(180.0),
+        |ui| {
+            for profile in &snapshot.profiles {
+                let name = crate::i18n::tr_dynamic(language, &profile.name);
+                let label = if profile.id == snapshot.active_id {
+                    format!("{name}  ✓")
+                } else {
+                    name.into_owned()
+                };
+                if ui
+                    .selectable_label(profile.id == snapshot.selected_id, label)
+                    .clicked()
                 {
-                    let profile = new_profile();
-                    actions.push(PromptStudioAction::CreateProfile(profile.clone()));
-                    controller.set_draft(profile);
+                    save_before_switch(snapshot, controller, actions);
+                    controller.select_profile_from_snapshot(profile.id.clone(), &snapshot.profiles);
+                    actions.push(PromptStudioAction::SelectProfile(profile.id.clone()));
                 }
-                if small_outline_button(
-                    ui,
-                    crate::i18n::tr(language, "IMPORT"),
-                    crate::i18n::tr(language, "Import graph project file"),
-                )
-                .clicked()
-                {
-                    actions.push(PromptStudioAction::ImportProfile);
-                }
-                if small_outline_button(
-                    ui,
-                    crate::i18n::tr(language, "EXPORT"),
-                    crate::i18n::tr(language, "Export graph project file"),
-                )
-                .clicked()
-                {
-                    if let Some(profile) = controller.draft.clone() {
-                        actions.push(PromptStudioAction::ExportProfile(profile));
-                    }
-                }
-                crate::ui::layout::flow_group(ui, 72.0, |ui| {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if controller.is_dirty() {
-                            if style::command_button(ui, crate::i18n::tr(language, "SAVE *"), true)
-                                .clicked()
-                            {
-                                if let Some(profile) = controller.draft.clone() {
-                                    actions.push(if profile.id == snapshot.active_id {
-                                        PromptStudioAction::ActivateProfile(profile)
-                                    } else {
-                                        PromptStudioAction::SaveProfile(profile)
-                                    });
-                                    controller.dirty = false;
-                                }
-                            }
-                        } else {
-                            status_chip(ui, crate::i18n::tr(language, "SAVED"));
-                        }
-                    });
-                });
-            })
-        });
+            }
+        },
+    );
 }
 
 fn save_before_switch(
@@ -882,12 +803,96 @@ fn available_blocks() -> Vec<(&'static str, TranslationPromptBlock)> {
 }
 
 fn node_size(graph: &PromptNodeGraph, node: &PromptNode) -> Vec2 {
-    Vec2::new(
-        runtime_preview::base_width(&node.kind) + runtime_preview::WIDTH,
-        graph
+    let height = match &node.kind {
+        PromptNodeKind::Input {
+            block: TranslationPromptBlock::CustomText { .. },
+        }
+        | PromptNodeKind::Compose { .. } => {
+            // Text scrolls inside its card; socket rows determine the required height.
+            let inputs = graph.compose_input_socket_indexes(&node.id).len();
+            128.0_f32.max(72.0 + inputs as f32 * 25.0)
+        }
+        PromptNodeKind::Switch { .. }
+        | PromptNodeKind::TextSwitch
+        | PromptNodeKind::Request { .. }
+        | PromptNodeKind::TextComparison { .. } => graph
             .node_layout_height(&node.id)
             .unwrap_or_else(|| node.layout_height()),
-    )
+        PromptNodeKind::SystemValue { .. } | PromptNodeKind::ConditionValue { .. } => 112.0,
+        _ => 84.0,
+    };
+    Vec2::new(runtime_preview::base_width(&node.kind), height)
+}
+
+/// Compact the read-only overview without changing the saved graph or execution fingerprint.
+fn compact_positions(
+    graph: &PromptNodeGraph,
+    visible: impl Fn(&PromptNode) -> bool,
+) -> HashMap<String, [f32; 2]> {
+    let mut columns = std::collections::BTreeMap::<i32, Vec<&PromptNode>>::new();
+    for node in graph.nodes.iter().filter(|node| visible(node)) {
+        columns
+            .entry(node.position[0].round() as i32)
+            .or_default()
+            .push(node);
+    }
+    for nodes in columns.values_mut() {
+        nodes.sort_by(|a, b| a.position[1].total_cmp(&b.position[1]));
+    }
+    let column_height = |nodes: &Vec<&PromptNode>| {
+        nodes
+            .iter()
+            .map(|node| node_size(graph, node).y + 24.0)
+            .sum::<f32>()
+            - 24.0
+    };
+    let height = columns.values().map(column_height).fold(0.0_f32, f32::max);
+    let mut positions = HashMap::new();
+    let mut x = 0.0;
+    for nodes in columns.values() {
+        let mut y = (height - column_height(nodes)) * 0.5;
+        let mut width = 0.0_f32;
+        for node in nodes {
+            positions.insert(node.id.clone(), [x, y]);
+            let size = node_size(graph, node);
+            width = width.max(size.x);
+            y += size.y + 24.0;
+        }
+        x += width + 96.0;
+    }
+    positions
+}
+
+fn compact_graph(graph: &mut PromptNodeGraph) {
+    let mut positions = HashMap::new();
+    for target in [
+        PromptProviderTarget::OpenAiCompatible,
+        PromptProviderTarget::Hunyuan,
+        PromptProviderTarget::AsrInstruction,
+        PromptProviderTarget::AsrContextBias,
+    ] {
+        for (id, position) in compact_positions(graph, |node| node.page.is_visible_on(target)) {
+            positions.entry(id).or_insert(position);
+        }
+    }
+    for node in &mut graph.nodes {
+        if let Some(position) = positions.get(&node.id) {
+            node.position = *position;
+        }
+    }
+}
+
+fn presentation_label(label: &str) -> String {
+    if label.chars().any(char::is_lowercase) {
+        return label.to_owned();
+    }
+    let mut text = label.to_lowercase();
+    if let Some(first) = text.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    text.replace("openai", "OpenAI")
+        .replace("asr", "ASR")
+        .replace("tts", "TTS")
 }
 
 fn graph_space_rect(position: [f32; 2], size: Vec2) -> Rect {
@@ -896,7 +901,7 @@ fn graph_space_rect(position: [f32; 2], size: Vec2) -> Rect {
 
 fn node_display_label(node: &PromptNode) -> String {
     if !node.label.trim().is_empty() && node.label != "COMPOSE TEXT" {
-        return node.label.trim().to_uppercase();
+        return node.label.trim().to_owned();
     }
     if let PromptNodeKind::Compose { text } = &node.kind {
         let mut summary = text
@@ -913,13 +918,13 @@ fn node_display_label(node: &PromptNode) -> String {
         });
         let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
         if !summary.is_empty() {
-            return truncate_preview(&summary, 32).to_uppercase();
+            return truncate_preview(&summary, 32);
         }
     }
     if node.label.trim().is_empty() {
         block_or_kind_label(&node.kind).into()
     } else {
-        node.label.trim().to_uppercase()
+        node.label.trim().to_owned()
     }
 }
 
@@ -977,6 +982,7 @@ fn new_profile() -> PromptTemplateProfile {
     );
     profile.name = "Untitled design".into();
     profile.description = String::new();
+    compact_graph(&mut profile.graph);
     profile
 }
 
@@ -1030,40 +1036,6 @@ fn input_socket_label(graph: &PromptNodeGraph, node: &PromptNode, input: u8) -> 
             .map_or_else(|| "MESSAGE".into(), |role| format!("{} {role}", input + 1)),
         _ => String::new(),
     }
-}
-
-fn status_chip(ui: &mut egui::Ui, text: &str) {
-    Frame::new()
-        .fill(Color32::from_gray(224))
-        .stroke(Stroke::new(1.0, style::BAR_BORDER))
-        .corner_radius(CornerRadius::same(1))
-        .inner_margin(Margin::symmetric(7, 3))
-        .show(ui, |ui| {
-            ui.label(
-                RichText::new(text)
-                    .font(egui::FontId::monospace(9.0))
-                    .color(style::INK),
-            );
-        });
-}
-
-fn small_outline_button(ui: &mut egui::Ui, text: &str, tooltip: &str) -> egui::Response {
-    style::command_button(ui, text, false).on_hover_text(tooltip)
-}
-
-fn small_icon_button(ui: &mut egui::Ui, text: &str, tooltip: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(
-            RichText::new(text)
-                .font(egui::FontId::monospace(12.0))
-                .color(style::MUTED),
-        )
-        .fill(Color32::TRANSPARENT)
-        .stroke(Stroke::NONE)
-        .corner_radius(CornerRadius::same(1))
-        .min_size(Vec2::new(20.0, 20.0)),
-    )
-    .on_hover_text(tooltip)
 }
 
 #[cfg(test)]
@@ -1133,12 +1105,12 @@ mod tests {
             [0.0, 0.0],
         );
 
-        assert_eq!(node_display_label(&graph.nodes[0]), "TRANSLATE NATURALLY");
+        assert_eq!(node_display_label(&graph.nodes[0]), "Translate naturally");
 
         graph.nodes[0].label = "Context-aware translation".into();
         assert_eq!(
             node_display_label(&graph.nodes[0]),
-            "CONTEXT-AWARE TRANSLATION"
+            "Context-aware translation"
         );
     }
 

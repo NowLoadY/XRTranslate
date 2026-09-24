@@ -102,6 +102,19 @@ fn validate_options(
     audio_tx: &Sender<Vec<f32>>,
     options: &AudioImportOptions,
 ) -> Result<(), AudioImportError> {
+    if options.output_sample_rate == 0 {
+        return Err(AudioImportError::InvalidOptions(
+            "output sample rate must be greater than zero".into(),
+        ));
+    }
+    if options
+        .gate_threshold_db
+        .is_some_and(|db| !db.is_finite() || !(-80.0..=0.0).contains(&db))
+    {
+        return Err(AudioImportError::InvalidOptions(
+            "noise gate threshold must be between -80 and 0 dBFS".into(),
+        ));
+    }
     if options.chunk_frames == 0 {
         return Err(AudioImportError::InvalidOptions(
             "chunk_frames must be greater than zero".into(),

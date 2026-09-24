@@ -67,6 +67,7 @@ impl AudioStudioSettings {
         }
 
         self.graph.id = GraphId::new(GLOBAL_AUDIO_GRAPH_ID);
+        self.graph.initialize_source_gates();
         clear_empty(&mut self.device_defaults.microphone_device_id);
         clear_empty(&mut self.device_defaults.system_audio_device_id);
         clear_empty(&mut self.device_defaults.monitor_device_id);

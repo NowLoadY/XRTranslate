@@ -9,7 +9,7 @@ use audioadapter_buffers::direct::InterleavedSlice;
 use crossbeam_channel::{SendTimeoutError, Sender};
 use rubato::{Fft, FixedSync, Indexing, Resampler};
 
-use super::types::{AudioImportError, AudioImportPacing, IMPORT_SAMPLE_RATE};
+use super::types::{AudioImportError, AudioImportPacing};
 
 const RESAMPLER_INPUT_FRAMES: usize = 1024;
 const SEND_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -17,6 +17,7 @@ const SEND_POLL_INTERVAL: Duration = Duration::from_millis(50);
 pub(super) struct ChunkSink<'a> {
     sender: Sender<Vec<f32>>,
     chunk_frames: usize,
+    sample_rate: u32,
     pending: VecDeque<f32>,
     pacing: AudioImportPacing,
     pacing_started: Instant,
@@ -29,6 +30,7 @@ impl<'a> ChunkSink<'a> {
     pub(super) fn new(
         sender: Sender<Vec<f32>>,
         chunk_frames: usize,
+        sample_rate: u32,
         pacing: AudioImportPacing,
         stop_requested: &'a AtomicBool,
         sent_frames_counter: &'a AtomicU64,
@@ -36,6 +38,7 @@ impl<'a> ChunkSink<'a> {
         Self {
             sender,
             chunk_frames,
+            sample_rate,
             pending: VecDeque::with_capacity(chunk_frames * 2),
             pacing,
             pacing_started: Instant::now(),
@@ -80,7 +83,7 @@ impl<'a> ChunkSink<'a> {
 
         if self.pacing == AudioImportPacing::Realtime {
             let deadline = self.pacing_started
-                + Duration::from_secs_f64(self.sent_frames as f64 / IMPORT_SAMPLE_RATE as f64);
+                + Duration::from_secs_f64(self.sent_frames as f64 / self.sample_rate as f64);
             while Instant::now() < deadline {
                 check_cancelled(self.stop_requested)?;
                 thread::sleep((deadline - Instant::now()).min(SEND_POLL_INTERVAL));
@@ -107,6 +110,7 @@ pub(super) enum StreamingResampler {
     Fft {
         inner: Box<Fft<f32>>,
         source_rate: u32,
+        target_rate: u32,
         pending: VecDeque<f32>,
         trim_remaining: usize,
         input_frames: u64,
@@ -115,13 +119,13 @@ pub(super) enum StreamingResampler {
 }
 
 impl StreamingResampler {
-    pub(super) fn new(source_rate: u32) -> Result<Self, AudioImportError> {
-        if source_rate == IMPORT_SAMPLE_RATE {
+    pub(super) fn new(source_rate: u32, target_rate: u32) -> Result<Self, AudioImportError> {
+        if source_rate == target_rate {
             return Ok(Self::Passthrough);
         }
         let inner = Fft::<f32>::new(
             source_rate as usize,
-            IMPORT_SAMPLE_RATE as usize,
+            target_rate as usize,
             RESAMPLER_INPUT_FRAMES,
             1,
             FixedSync::Input,
@@ -131,6 +135,7 @@ impl StreamingResampler {
         Ok(Self::Fft {
             inner: Box::new(inner),
             source_rate,
+            target_rate,
             pending: VecDeque::new(),
             trim_remaining,
             input_frames: 0,
@@ -170,6 +175,7 @@ impl StreamingResampler {
         let Self::Fft {
             inner,
             source_rate,
+            target_rate,
             pending,
             trim_remaining,
             input_frames,
@@ -179,8 +185,8 @@ impl StreamingResampler {
             return Ok(());
         };
 
-        let expected_output = ((*input_frames as u128 * IMPORT_SAMPLE_RATE as u128)
-            .div_ceil(*source_rate as u128)) as u64;
+        let expected_output =
+            ((*input_frames as u128 * *target_rate as u128).div_ceil(*source_rate as u128)) as u64;
         if !pending.is_empty() {
             let valid = pending.len();
             let required = inner.input_frames_next();
@@ -271,11 +277,12 @@ mod tests {
         let mut sink = ChunkSink::new(
             tx,
             160,
+            16_000,
             AudioImportPacing::AsFastAsPossible,
             &stop,
             &sent_frames,
         );
-        let mut resampler = StreamingResampler::new(48_000).unwrap();
+        let mut resampler = StreamingResampler::new(48_000, 16_000).unwrap();
         let input: Vec<f32> = (0..4_800)
             .map(|frame| ((frame as f32 / 48_000.0) * 440.0 * std::f32::consts::TAU).sin())
             .collect();

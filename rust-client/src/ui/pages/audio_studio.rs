@@ -4,10 +4,11 @@ use crate::audio_studio::graph::{
     SystemCapturePolicy, VoiceMeeterBus,
 };
 use crate::audio_studio::{
-    AudioDeviceRole, AudioStudioLifecycle, AudioStudioPreset, AudioStudioUiAction,
-    AudioStudioUiSnapshot, HostAudioDevice, HostAudioSnapshot, RouteRiskReport, RouteRiskSeverity,
-    VoiceMeeterEdition, VoiceMeeterSnapshot,
+    AudioDeviceRole, AudioStudioLifecycle, AudioStudioPreset, AudioStudioSignalLevels,
+    AudioStudioUiAction, AudioStudioUiSnapshot, HostAudioDevice, HostAudioSnapshot,
+    RouteRiskReport, RouteRiskSeverity, VoiceMeeterEdition, VoiceMeeterSnapshot,
 };
+use crate::i18n::{tr, tr_dynamic};
 use crate::ui::{
     graph_canvas,
     graph_editor::{
@@ -17,23 +18,21 @@ use crate::ui::{
     graph_style,
 };
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontId, Frame, Id, Margin, Pos2, Rect, RichText, Sense,
-    Stroke, Vec2,
+    self, Align2, Color32, CornerRadius, FontId, Id, Pos2, Rect, RichText, Sense, Stroke, Vec2,
 };
 use std::collections::{HashMap, HashSet};
 
 const NODE_WIDTH: f32 = 232.0;
-const NODE_BASE_HEIGHT: f32 = 130.0;
-const NODE_DEVICE_HEIGHT: f32 = 166.0;
-const NODE_SYSTEM_AUDIO_HEIGHT: f32 = 208.0;
-const NODE_HEADER_HEIGHT: f32 = 50.0;
+const NODE_BASE_HEIGHT: f32 = 112.0;
+const NODE_CONTROL_HEIGHT: f32 = 132.0;
+const NODE_SYSTEM_AUDIO_HEIGHT: f32 = 176.0;
+const CONTROL_MIN_ZOOM: f32 = 0.7;
+const NODE_HEADER_HEIGHT: f32 = 38.0;
 const PORT_RADIUS: f32 = 6.0;
 const VOICEMEETER_GAME_MIC_EXTRA_HEIGHT: f32 = 78.0;
 
 const INK: Color32 = graph_style::INK;
 const MUTED: Color32 = graph_style::MUTED;
-const CANVAS_FILL: Color32 = graph_style::CANVAS_FILL;
-const CANVAS_BORDER: Color32 = graph_style::CANVAS_BORDER;
 const GRID: Color32 = graph_style::GRID;
 const LINK: Color32 = graph_style::LINK;
 const LINK_INACTIVE: Color32 = graph_style::LINK_INACTIVE;
@@ -121,22 +120,25 @@ fn node_size(node: &AudioNode) -> Vec2 {
     if is_gain_node(node) {
         return Vec2::splat(52.0);
     }
-    let device_node = matches!(
+    if matches!(
         node.kind,
-        AudioNodeKind::Microphone { .. }
-            | AudioNodeKind::SystemAudio { .. }
-            | AudioNodeKind::MonitorOutput { .. }
-            | AudioNodeKind::GameMicrophoneOutput { .. }
-    );
+        AudioNodeKind::Processing {
+            processor: AudioProcessor::NoiseGate { .. }
+        }
+    ) {
+        return Vec2::new(240.0, 184.0);
+    }
     let height = if matches!(node.kind, AudioNodeKind::SystemAudio { .. }) {
         NODE_SYSTEM_AUDIO_HEIGHT
-    } else if device_node {
-        NODE_DEVICE_HEIGHT
     } else if matches!(
         node.kind,
-        AudioNodeKind::TextToSpeech | AudioNodeKind::Media { .. }
+        AudioNodeKind::Microphone { .. }
+            | AudioNodeKind::Media { .. }
+            | AudioNodeKind::TextToSpeech
+            | AudioNodeKind::MonitorOutput { .. }
+            | AudioNodeKind::GameMicrophoneOutput { .. }
     ) {
-        166.0
+        NODE_CONTROL_HEIGHT
     } else {
         NODE_BASE_HEIGHT
     };
@@ -279,7 +281,18 @@ fn node_description(graph: &AudioGraph, node: &AudioNode) -> String {
                 )
             },
         ),
-        AudioNodeKind::Processing { processor } => format!("{processor:?}"),
+        AudioNodeKind::Processing { processor } => match processor {
+            AudioProcessor::Gain { gain_db } => format!("{gain_db:+.0} dB"),
+            AudioProcessor::NoiseGate { threshold_db } => {
+                format!("Opens above {threshold_db:.0} dBFS and stays open through short pauses")
+            }
+            AudioProcessor::Compressor {
+                threshold_db,
+                ratio,
+            } => format!("{threshold_db:.0} dB · {ratio:.1}:1"),
+            AudioProcessor::Limiter { ceiling_db } => format!("Ceiling {ceiling_db:.0} dB"),
+            AudioProcessor::Ducker { attenuation_db } => format!("{attenuation_db:.0} dB"),
+        },
         AudioNodeKind::AsrTap => current_asr_input_mode(graph).map_or_else(
             || "No recognition input is switched on".into(),
             |input_mode| format!("Active recognition path · {}", input_mode.label()),
@@ -380,9 +393,9 @@ fn port_label(port: &PortId, output: bool) -> &'static str {
     if port.0 == PortId::SIDECHAIN {
         "Sidechain"
     } else if output {
-        "Audio out"
+        "Out"
     } else {
-        "Audio in"
+        "In"
     }
 }
 
@@ -541,6 +554,10 @@ enum CanvasCommand {
         node_id: NodeId,
         gain_db: f32,
     },
+    SetNoiseGateThreshold {
+        node_id: NodeId,
+        threshold_db: f32,
+    },
     ChooseMedia(NodeId),
     EnqueueTts {
         node_id: NodeId,
@@ -554,171 +571,145 @@ fn render_graph_canvas(
     state: &mut AudioStudioCanvasState,
     commands: &mut Vec<CanvasCommand>,
     actions: &mut Vec<AudioStudioUiAction>,
+    language: crate::i18n::UiLanguage,
 ) {
     let graph = &snapshot.selected_graph;
     if state.editor.reset_for_graph(graph.id.0.clone()) {
         state.history.clear();
     }
 
-    Frame::new()
-        .fill(CANVAS_FILL)
-        .stroke(Stroke::new(1.0, CANVAS_BORDER))
-        .corner_radius(CornerRadius::same(3))
-        .inner_margin(Margin::same(4))
-        .show(ui, |ui| {
-            let size = Vec2::new(ui.available_width(), ui.available_height().max(240.0));
-            let (canvas, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
-            state.canvas.canvas_size = canvas.size();
+    graph_style::canvas_frame().show(ui, |ui| {
+        let size = Vec2::new(ui.available_width(), ui.available_height().max(240.0));
+        let (canvas, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+        state.canvas.resize_viewport(canvas.size());
 
-            if state.canvas.fit_pending {
-                if let Some(bounds) = graph_bounds(graph, &snapshot.host_audio) {
-                    state
-                        .canvas
-                        .fit_to_bounds(bounds, canvas.size(), Vec2::new(NODE_WIDTH, 120.0));
-                } else {
-                    state.canvas.pan = Vec2::new(36.0, 36.0);
-                    state.canvas.zoom = 1.0;
-                }
-                state.canvas.fit_pending = false;
+        if state.canvas.fit_pending {
+            if let Some(bounds) = graph_bounds(graph, &snapshot.host_audio) {
+                state
+                    .canvas
+                    .fit_to_bounds(bounds, canvas.size(), Vec2::new(NODE_WIDTH, 120.0));
+            } else {
+                state.canvas.pan = Vec2::new(36.0, 36.0);
+                state.canvas.zoom = 1.0;
             }
+            state.canvas.fit_pending = false;
+        }
 
-            let pointer = response.interact_pointer_pos();
-            let pointer_over_gain_node = pointer.is_some_and(|pointer| {
-                graph
-                    .nodes
-                    .iter()
-                    .any(|node| {
-                        is_gain_node(node)
-                            && node_rect(graph, canvas, state, node, &snapshot.host_audio)
-                                .contains(pointer)
-                    })
-            });
-
-            let mut canvas_ui = graph_canvas::canvas_viewport(ui, canvas);
-            state.handle_navigation(canvas, &response, &canvas_ui, true, !pointer_over_gain_node);
-            graph_canvas::paint_grid(&canvas_ui, canvas, &state.canvas, GRID);
-
-            let positions = endpoint_positions(graph, canvas, state, &snapshot.host_audio);
-            let pointer_over_node = pointer.is_some_and(|pointer| {
-                graph
-                    .nodes
-                    .iter()
-                    .any(|node| {
-                        node_rect(graph, canvas, state, node, &snapshot.host_audio)
-                            .contains(pointer)
-                    })
-            });
-            let pointer_over_link = pointer.is_some_and(|pointer| {
-                crate::ui::graph_editor::closest_link(
-                    pointer,
-                    graph.links.iter().filter_map(|link| {
-                        let (from, to) = (positions.get(&link.from)?, positions.get(&link.to)?);
-                        Some((link.id.clone(), graph_canvas::bezier_points(*from, *to)))
-                    }),
-                    11.0,
-                )
-                .is_some()
-            });
-            let wire_cancelled = state.handle_secondary_wire_cancel(canvas, &canvas_ui);
-            if response.secondary_clicked()
-                && !wire_cancelled
-                && !pointer_over_node
-                && !pointer_over_link
-            {
-                state.add_node_center = response
-                    .interact_pointer_pos()
-                    .map(|pointer| state.canvas.graph_position(canvas, pointer));
-            }
-            if !wire_cancelled
-                && !pointer_over_node
-                && !pointer_over_link
-                && !state.wire_active()
-            {
-                response.context_menu(|ui| {
-                    render_add_node_menu(snapshot, state, ui, actions);
-                });
-            }
-            let selectable_nodes = graph
-                .nodes
-                .iter()
-                .map(|node| {
-                    (
-                        node.id.clone(),
-                        node_rect(graph, canvas, state, node, &snapshot.host_audio),
-                    )
-                })
-                .collect::<Vec<_>>();
-            state.handle_canvas_selection(
-                &response,
-                &canvas_ui,
-                true,
-                pointer_over_node,
-                pointer_over_link,
-                selectable_nodes,
-            );
-            let animated_signals = update_animated_signals(snapshot, state, &canvas_ui);
-            render_links(
-                graph,
-                &snapshot.risk_report,
-                &canvas_ui,
-                &positions,
-                &animated_signals,
-                state,
-                &response,
-            );
-            for node in &graph.nodes {
-                render_node(
-                    graph,
-                    node,
-                    &snapshot.host_audio,
-                    &snapshot.risk_report,
-                    canvas,
-                    &mut canvas_ui,
-                    state,
-                    commands,
-                );
-            }
-
-            let positions = endpoint_positions(graph, canvas, state, &snapshot.host_audio);
-            render_wire_preview(&canvas_ui, state, &positions);
-            finish_wire_drag(graph, &canvas_ui, state, &positions, commands);
-
-            match crate::ui::graph_editor::shortcut(&canvas_ui) {
-                Some(GraphShortcut::Delete) => {
-                    let (nodes, links) = state.take_selection();
-                    commands.extend(nodes.into_iter().map(CanvasCommand::RemoveNode));
-                    commands.extend(links.into_iter().map(CanvasCommand::DeleteLink));
-                }
-                Some(GraphShortcut::Cancel) => state.cancel_current_operation(),
-                Some(GraphShortcut::Undo) => {
-                    if let Some(previous) = state.history.undo(graph.clone()) {
-                        commands.push(CanvasCommand::ReplaceGraph(previous));
-                    }
-                }
-                Some(GraphShortcut::Redo) => {
-                    if let Some(next) = state.history.redo(graph.clone()) {
-                        commands.push(CanvasCommand::ReplaceGraph(next));
-                    }
-                }
-                None => {}
-            }
-
-            if let Some(selection) = state.selection_rect() {
-                graph_canvas::paint_selection_box(&canvas_ui, selection, LINK_SELECTED);
-            }
-            let hints = vec![
-                format!(
-                    "Navigate · Space + left drag / middle drag to pan · Mouse wheel to zoom · {:.0}%",
-                    state.canvas.zoom * 100.0
-                ),
-                "Select · Left drag on canvas to box select · Shift + click to multi-select"
-                    .to_owned(),
-                "Connect · Drag socket to connect / unplug · Click empty space to cancel wire"
-                    .to_owned(),
-                "Actions · Del to delete · Ctrl+Z: undo · Ctrl+Y: redo".to_owned(),
-            ];
-            crate::ui::graph_editor::paint_navigation_hint(&canvas_ui, canvas, &hints, MUTED);
+        let pointer = response.interact_pointer_pos();
+        let pointer_over_gain_node = pointer.is_some_and(|pointer| {
+            graph.nodes.iter().any(|node| {
+                is_gain_node(node)
+                    && node_rect(graph, canvas, state, node, &snapshot.host_audio).contains(pointer)
+            })
         });
+
+        let mut canvas_ui = graph_canvas::canvas_viewport(ui, canvas);
+        state.handle_navigation(canvas, &response, &canvas_ui, true, !pointer_over_gain_node);
+        graph_canvas::paint_grid(&canvas_ui, canvas, &state.canvas, GRID);
+
+        let positions = endpoint_positions(graph, canvas, state, &snapshot.host_audio);
+        let pointer_over_node = pointer.is_some_and(|pointer| {
+            graph.nodes.iter().any(|node| {
+                node_rect(graph, canvas, state, node, &snapshot.host_audio).contains(pointer)
+            })
+        });
+        let pointer_over_link = pointer.is_some_and(|pointer| {
+            crate::ui::graph_editor::closest_link(
+                pointer,
+                graph.links.iter().filter_map(|link| {
+                    let (from, to) = (positions.get(&link.from)?, positions.get(&link.to)?);
+                    Some((link.id.clone(), graph_canvas::bezier_points(*from, *to)))
+                }),
+                11.0,
+            )
+            .is_some()
+        });
+        let wire_cancelled = state.handle_secondary_wire_cancel(canvas, &canvas_ui);
+        if response.secondary_clicked()
+            && !wire_cancelled
+            && !pointer_over_node
+            && !pointer_over_link
+        {
+            state.add_node_center = response
+                .interact_pointer_pos()
+                .map(|pointer| state.canvas.graph_position(canvas, pointer));
+        }
+        if !wire_cancelled && !pointer_over_node && !pointer_over_link && !state.wire_active() {
+            response.context_menu(|ui| {
+                render_add_node_menu(snapshot, state, ui, actions);
+            });
+        }
+        let selectable_nodes = graph
+            .nodes
+            .iter()
+            .map(|node| {
+                (
+                    node.id.clone(),
+                    node_rect(graph, canvas, state, node, &snapshot.host_audio),
+                )
+            })
+            .collect::<Vec<_>>();
+        state.handle_canvas_selection(
+            &response,
+            &canvas_ui,
+            true,
+            pointer_over_node,
+            pointer_over_link,
+            selectable_nodes,
+        );
+        let animated_signals = update_animated_signals(snapshot, state, &canvas_ui);
+        render_links(
+            graph,
+            &snapshot.risk_report,
+            &canvas_ui,
+            &positions,
+            &animated_signals,
+            state,
+            &response,
+        );
+        for node in &graph.nodes {
+            render_node(
+                graph,
+                node,
+                &snapshot.host_audio,
+                &snapshot.risk_report,
+                &snapshot.signal_levels,
+                canvas,
+                &mut canvas_ui,
+                state,
+                commands,
+                language,
+            );
+        }
+
+        let positions = endpoint_positions(graph, canvas, state, &snapshot.host_audio);
+        render_wire_preview(&canvas_ui, state, &positions);
+        finish_wire_drag(graph, &canvas_ui, state, &positions, commands);
+
+        match crate::ui::graph_editor::shortcut(&canvas_ui) {
+            Some(GraphShortcut::Delete) => {
+                let (nodes, links) = state.take_selection();
+                commands.extend(nodes.into_iter().map(CanvasCommand::RemoveNode));
+                commands.extend(links.into_iter().map(CanvasCommand::DeleteLink));
+            }
+            Some(GraphShortcut::Cancel) => state.cancel_current_operation(),
+            Some(GraphShortcut::Undo) => {
+                if let Some(previous) = state.history.undo(graph.clone()) {
+                    commands.push(CanvasCommand::ReplaceGraph(previous));
+                }
+            }
+            Some(GraphShortcut::Redo) => {
+                if let Some(next) = state.history.redo(graph.clone()) {
+                    commands.push(CanvasCommand::ReplaceGraph(next));
+                }
+            }
+            None => {}
+        }
+
+        if let Some(selection) = state.selection_rect() {
+            graph_canvas::paint_selection_box(&canvas_ui, selection, LINK_SELECTED);
+        }
+    });
 }
 
 fn render_links(
@@ -947,39 +938,32 @@ fn node_output_signal(
         AudioNodeKind::Microphone { .. } => snapshot.signal_levels.microphone,
         AudioNodeKind::SystemAudio { .. } => snapshot.signal_levels.system_audio,
         AudioNodeKind::TextToSpeech => snapshot.signal_levels.tts,
-        AudioNodeKind::Media { .. } => 0.0,
-        AudioNodeKind::Mixer => {
-            graph
-                .links
-                .iter()
-                .filter(|link| {
-                    link.enabled
-                        && link.to.node_id == *node_id
-                        && link.to.port_id.0 != PortId::SIDECHAIN
-                })
-                .map(|link| node_output_signal(graph, &link.from.node_id, snapshot, memo, visiting))
-                .map(|input| input * input)
-                .sum::<f32>()
-                .sqrt()
-                .clamp(0.0, 1.0)
-        }
-        AudioNodeKind::Processing { processor } => {
-            let input_signal = graph
-                .links
-                .iter()
-                .filter(|link| {
-                    link.enabled
-                        && link.to.node_id == *node_id
-                        && link.to.port_id.0 != PortId::SIDECHAIN
-                })
-                .map(|link| node_output_signal(graph, &link.from.node_id, snapshot, memo, visiting))
-                .fold(0.0_f32, |acc, val| acc.max(val));
-            let multiplier = match processor {
-                AudioProcessor::Gain { gain_db } => 10.0_f32.powf(gain_db / 20.0),
-                _ => 1.0,
-            };
-            (input_signal * multiplier).clamp(0.0, 1.0)
-        }
+        AudioNodeKind::Media { .. } => snapshot.signal_levels.media,
+        AudioNodeKind::Mixer => graph
+            .links
+            .iter()
+            .filter(|link| {
+                link.enabled
+                    && link.to.node_id == *node_id
+                    && link.to.port_id.0 != PortId::SIDECHAIN
+            })
+            .map(|link| node_output_signal(graph, &link.from.node_id, snapshot, memo, visiting))
+            .map(|input| input * input)
+            .sum::<f32>()
+            .sqrt()
+            .clamp(0.0, 1.0),
+        // Source meters already include the processing chain. Reapplying gains or
+        // gates here would misrepresent the samples actually reaching the output.
+        AudioNodeKind::Processing { .. } => graph
+            .links
+            .iter()
+            .filter(|link| {
+                link.enabled
+                    && link.to.node_id == *node_id
+                    && link.to.port_id.0 != PortId::SIDECHAIN
+            })
+            .map(|link| node_output_signal(graph, &link.from.node_id, snapshot, memo, visiting))
+            .fold(0.0_f32, f32::max),
         AudioNodeKind::AsrTap
         | AudioNodeKind::MonitorOutput { .. }
         | AudioNodeKind::GameMicrophoneOutput { .. } => 0.0,
@@ -1017,15 +1001,13 @@ fn paint_signal_particles(
     // particles accelerate strictly forward when speaking and smoothly decelerate without rewinding.
     let id = ui.make_persistent_id(("audio_signal_particle_phase", &link_id.0));
     let (last_time, prev_phase) = ui.memory(|m| {
-        m.data
-            .get_temp::<(f64, f32)>(id)
-            .unwrap_or_else(|| {
-                let id_offset = (link_id.0.bytes().fold(0_u32, |hash, byte| {
-                    hash.wrapping_mul(31).wrapping_add(u32::from(byte))
-                }) as f64
-                    / u32::MAX as f64) as f32;
-                (time_seconds, id_offset)
-            })
+        m.data.get_temp::<(f64, f32)>(id).unwrap_or_else(|| {
+            let id_offset = (link_id.0.bytes().fold(0_u32, |hash, byte| {
+                hash.wrapping_mul(31).wrapping_add(u32::from(byte))
+            }) as f64
+                / u32::MAX as f64) as f32;
+            (time_seconds, id_offset)
+        })
     });
 
     let dt = (time_seconds - last_time).clamp(0.0, 0.1) as f32;
@@ -1161,14 +1143,17 @@ fn render_gain_orb_node(
     // Control state tracking:
     let now = ui.input(|i| i.time);
     let last_interact_id = id.with("last_interact");
-    let mut last_interact = ui.data(|d| d.get_temp::<f64>(last_interact_id)).unwrap_or(0.0);
+    let mut last_interact = ui
+        .data(|d| d.get_temp::<f64>(last_interact_id))
+        .unwrap_or(0.0);
     if is_hovered || response.dragged() || changed_by_wheel {
         last_interact = now;
         ui.data_mut(|d| d.insert_temp(last_interact_id, now));
     }
     let is_controlling = is_hovered || (now - last_interact) < 1.2;
     if is_controlling && !is_hovered {
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(50));
     }
 
     let selected = state.selected_nodes.contains(&node.id);
@@ -1180,7 +1165,13 @@ fn render_gain_orb_node(
     } else {
         base_border
     };
-    let stroke_width = if selected { 2.2 } else if is_controlling { 1.4 } else { 1.0 } * zoom;
+    let stroke_width = if selected {
+        2.2
+    } else if is_controlling {
+        1.4
+    } else {
+        1.0
+    } * zoom;
 
     // 1. Unfilled sphere body remains transparent (per user: "球内没有水的部分保持透明")
 
@@ -1205,7 +1196,9 @@ fn render_gain_orb_node(
         if fill_fraction >= 0.995 || dy_from_center <= -radius {
             ui.painter().circle_filled(center, radius, liquid_color);
         } else if dy_from_center < radius {
-            let half_chord = (radius * radius - dy_from_center * dy_from_center).max(0.0).sqrt();
+            let half_chord = (radius * radius - dy_from_center * dy_from_center)
+                .max(0.0)
+                .sqrt();
             let left_intersect = Pos2::new(center.x - half_chord, y_water);
             let right_intersect = Pos2::new(center.x + half_chord, y_water);
 
@@ -1251,11 +1244,8 @@ fn render_gain_orb_node(
     );
 
     // 4. Fine outer circle outline
-    ui.painter().circle_stroke(
-        center,
-        radius,
-        Stroke::new(stroke_width, border_color),
-    );
+    ui.painter()
+        .circle_stroke(center, radius, Stroke::new(stroke_width, border_color));
 
     // 5. Value display floating ABOVE the ball only when controlling (per user: "数值仅在控制时显示在球的上方")
     if is_controlling {
@@ -1279,10 +1269,14 @@ fn render_gain_orb_node(
 
     // 6. Ports (In on left, Out on right)
     for port in input_ports(graph, node) {
-        render_port(graph, node, &port, false, rect, ui, state, host_audio, commands);
+        render_port(
+            graph, node, &port, false, rect, ui, state, host_audio, commands,
+        );
     }
     for port in output_ports(node) {
-        render_port(graph, node, &port, true, rect, ui, state, host_audio, commands);
+        render_port(
+            graph, node, &port, true, rect, ui, state, host_audio, commands,
+        );
     }
 }
 
@@ -1291,10 +1285,12 @@ fn render_node(
     node: &AudioNode,
     host_audio: &HostAudioSnapshot,
     risks: &RouteRiskReport,
+    signal_levels: &AudioStudioSignalLevels,
     canvas: Rect,
     ui: &mut egui::Ui,
     state: &mut AudioStudioCanvasState,
     commands: &mut Vec<CanvasCommand>,
+    language: crate::i18n::UiLanguage,
 ) {
     if is_gain_node(node) {
         render_gain_orb_node(graph, node, host_audio, canvas, ui, state, commands);
@@ -1309,11 +1305,18 @@ fn render_node(
             rect.top() + NODE_HEADER_HEIGHT * state.canvas.zoom,
         ),
     );
-    let response = ui.interact(
-        header,
-        ui.make_persistent_id(("audio_node", &node.id.0)),
-        Sense::click_and_drag(),
-    );
+    let response = ui
+        .interact(
+            header,
+            ui.make_persistent_id(("audio_node", &node.id.0)),
+            Sense::click_and_drag(),
+        )
+        .on_hover_text(format!(
+            "{} · {}\n{}",
+            node.label,
+            node_kind_label(&node.kind),
+            node_description(graph, node)
+        ));
     if response.clicked() {
         let extend = ui.input(|input| input.modifiers.shift || input.modifiers.ctrl);
         state.select_node(node.id.clone(), extend);
@@ -1360,20 +1363,20 @@ fn render_node(
             RouteRiskSeverity::Info => 2,
         });
     let palette = node_palette(&node.kind);
-    let rounding = CornerRadius::same((5.0 * state.canvas.zoom).clamp(2.0, 7.0) as u8);
+    let rounding = CornerRadius::same((8.0 * state.canvas.zoom).clamp(3.0, 10.0) as u8);
     ui.painter().rect_filled(rect, rounding, palette.fill);
     ui.painter().rect_stroke(
         rect,
         rounding,
         Stroke::new(
             if selected {
-                3.0
+                2.0
             } else if strongest_risk.is_some() {
-                2.2
+                1.5
             } else if node.bypassed {
                 1.0
             } else {
-                1.4
+                1.0
             },
             if selected {
                 LINK_SELECTED
@@ -1386,26 +1389,44 @@ fn render_node(
             } else if node.bypassed {
                 MUTED
             } else {
-                palette.accent
+                graph_style::NODE_BORDER
             },
         ),
         egui::epaint::StrokeKind::Inside,
     );
-    ui.painter().rect_filled(header, rounding, palette.header);
+    ui.painter().rect_filled(
+        header,
+        rounding,
+        palette.header.lerp_to_gamma(Color32::WHITE, 0.6),
+    );
     let scale = state.canvas.zoom;
-    ui.painter().text(
-        Pos2::new(rect.left() + 12.0 * scale, rect.top() + 7.0 * scale),
-        Align2::LEFT_TOP,
-        &node.label,
+    ui.painter().circle_filled(
+        Pos2::new(rect.left() + 13.0 * scale, header.center().y),
+        3.0 * scale,
+        palette.accent,
+    );
+    paint_node_line(
+        ui,
+        Rect::from_min_max(
+            Pos2::new(rect.left() + 24.0 * scale, rect.top() + 11.0 * scale),
+            Pos2::new(
+                rect.right() - if node_risks.is_empty() { 10.0 } else { 30.0 } * scale,
+                header.bottom(),
+            ),
+        ),
+        &if matches!(
+            node.kind,
+            AudioNodeKind::Processing {
+                processor: AudioProcessor::NoiseGate { .. }
+            }
+        ) && node.label == "Noise gate"
+        {
+            tr(language, "Volume threshold").to_owned()
+        } else {
+            tr_dynamic(language, &node.label).into_owned()
+        },
         FontId::proportional((13.0 * scale).clamp(8.0, 16.0)),
         INK,
-    );
-    ui.painter().text(
-        Pos2::new(rect.left() + 12.0 * scale, rect.top() + 28.0 * scale),
-        Align2::LEFT_TOP,
-        node_kind_label(&node.kind),
-        FontId::monospace((8.0 * scale).clamp(6.0, 10.0)),
-        palette.accent,
     );
     if !node_risks.is_empty() {
         let badge = Rect::from_center_size(
@@ -1439,38 +1460,174 @@ fn render_node(
                 .join("\n"),
         );
     }
-    if !matches!(node.kind, AudioNodeKind::Mixer) {
-        ui.painter().text(
-            Pos2::new(rect.left() + 13.0 * scale, rect.top() + 91.0 * scale),
-            Align2::LEFT_TOP,
-            node_description(graph, node),
-            FontId::proportional((10.5 * scale).clamp(7.0, 12.5)),
+    let compact_summary = match &node.kind {
+        AudioNodeKind::AsrTap => Some(
+            current_asr_input_mode(graph)
+                .map_or_else(|| "Off".to_owned(), |mode| mode.label().to_owned()),
+        ),
+        AudioNodeKind::Processing {
+            processor: AudioProcessor::NoiseGate { threshold_db },
+        } if scale < CONTROL_MIN_ZOOM => Some(format!("{threshold_db:.0} dBFS")),
+        AudioNodeKind::Processing {
+            processor: AudioProcessor::NoiseGate { .. },
+        } => None,
+        AudioNodeKind::Processing { .. } => Some(node_description(graph, node)),
+        _ if scale < CONTROL_MIN_ZOOM
+            && (device_role(&node.kind).is_some()
+                || matches!(node.kind, AudioNodeKind::SystemAudio { .. })) =>
+        {
+            Some(device_selection_text(&node.kind, devices))
+        }
+        _ => None,
+    };
+    if let Some(summary) = compact_summary {
+        paint_node_line(
+            ui,
+            Rect::from_min_max(
+                Pos2::new(rect.left() + 12.0 * scale, rect.bottom() - 29.0 * scale),
+                Pos2::new(rect.right() - 12.0 * scale, rect.bottom() - 8.0 * scale),
+            ),
+            &summary,
+            FontId::proportional((12.0 * scale).clamp(8.0, 14.0)),
             MUTED,
         );
     }
-    if scale < 0.65 {
-        if device_role(&node.kind).is_some()
-            || matches!(node.kind, AudioNodeKind::SystemAudio { .. })
-        {
-            let selected =
-                node.kind.selected_device().is_some() || node.kind.selected_application().is_some();
-            ui.painter().text(
-                Pos2::new(rect.left() + 13.0 * scale, rect.bottom() - 24.0 * scale),
-                Align2::LEFT_CENTER,
-                format!("Device · {}", device_selection_text(&node.kind, devices)),
-                FontId::monospace((8.5 * scale).clamp(6.0, 10.5)),
-                if selected { INK } else { WARNING },
-            );
-        }
-    }
 
     for port in input_ports(graph, node) {
-        render_port(graph, node, &port, false, rect, ui, state, host_audio, commands);
+        render_port(
+            graph, node, &port, false, rect, ui, state, host_audio, commands,
+        );
     }
     for port in output_ports(node) {
-        render_port(graph, node, &port, true, rect, ui, state, host_audio, commands);
+        render_port(
+            graph, node, &port, true, rect, ui, state, host_audio, commands,
+        );
     }
-    render_node_control(graph, node, host_audio, rect, ui, state, commands);
+    if let AudioNodeKind::Processing {
+        processor: AudioProcessor::NoiseGate { threshold_db },
+    } = node.kind
+    {
+        paint_gate_meter(
+            ui,
+            rect,
+            state.canvas.zoom,
+            gate_input_level(graph, node, signal_levels),
+            threshold_db,
+            language,
+        );
+    }
+    render_node_control(graph, node, host_audio, rect, ui, state, commands, language);
+}
+
+fn gate_input_level(
+    graph: &AudioGraph,
+    gate: &AudioNode,
+    levels: &AudioStudioSignalLevels,
+) -> Option<f32> {
+    graph
+        .links
+        .iter()
+        .filter(|link| link.enabled && link.to.node_id == gate.id)
+        .find_map(|link| graph.node(&link.from.node_id))
+        .and_then(|source| match &source.kind {
+            AudioNodeKind::Microphone { .. } => levels.microphone_input,
+            AudioNodeKind::SystemAudio { .. } => levels.system_audio_input,
+            AudioNodeKind::TextToSpeech => levels.tts_input,
+            AudioNodeKind::Media { .. } => levels.media_input,
+            _ => None,
+        })
+}
+
+fn paint_gate_meter(
+    ui: &egui::Ui,
+    rect: Rect,
+    scale: f32,
+    level: Option<f32>,
+    threshold_db: f32,
+    language: crate::i18n::UiLanguage,
+) {
+    let left = rect.left() + 13.0 * scale;
+    let right = rect.right() - 13.0 * scale;
+    let db = level.map(|level| {
+        if level > 0.0 {
+            20.0 * level.log10()
+        } else {
+            -80.0
+        }
+    });
+    if scale < CONTROL_MIN_ZOOM {
+        let bar = Rect::from_min_max(
+            Pos2::new(left, rect.bottom() - 52.0 * scale),
+            Pos2::new(right, rect.bottom() - 44.0 * scale),
+        );
+        paint_gate_level_bar(ui, bar, db, threshold_db);
+        return;
+    }
+    let label_y = rect.bottom() - 78.0;
+    let bar = Rect::from_min_max(
+        Pos2::new(left, rect.bottom() - 51.0),
+        Pos2::new(right, rect.bottom() - 44.0),
+    );
+    let value = match (level, db) {
+        (None, _) => "—".to_owned(),
+        (Some(0.0), _) => "−∞ dB".to_owned(),
+        (_, Some(db)) => format!("{db:.0} dB"),
+        _ => unreachable!(),
+    };
+    let color = if db.is_some_and(|db| db > threshold_db) {
+        SUCCESS
+    } else {
+        MUTED
+    };
+    ui.painter().text(
+        Pos2::new(left, label_y),
+        Align2::LEFT_CENTER,
+        tr(language, "Input level"),
+        FontId::proportional((12.0 * scale).max(9.0)),
+        MUTED,
+    );
+    ui.painter().text(
+        Pos2::new(right, label_y),
+        Align2::RIGHT_CENTER,
+        value,
+        FontId::proportional((12.0 * scale).max(9.0)),
+        color,
+    );
+    paint_gate_level_bar(ui, bar, db, threshold_db);
+}
+
+fn paint_gate_level_bar(ui: &egui::Ui, bar: Rect, db: Option<f32>, threshold_db: f32) {
+    ui.painter().rect_filled(bar, 3.0, Color32::from_rgb(229, 234, 240));
+    if let Some(db) = db {
+        let x = bar.left() + bar.width() * ((db + 80.0) / 80.0).clamp(0.0, 1.0);
+        ui.painter().rect_filled(
+            Rect::from_min_max(bar.min, Pos2::new(x, bar.bottom())),
+            3.0,
+            if db > threshold_db {
+                Color32::from_rgb(74, 159, 120)
+            } else {
+                Color32::from_rgb(113, 150, 203)
+            },
+        );
+    }
+    let x = bar.left() + bar.width() * ((threshold_db + 80.0) / 80.0).clamp(0.0, 1.0);
+    ui.painter().line_segment(
+        [
+            Pos2::new(x, bar.top() - 3.0),
+            Pos2::new(x, bar.bottom() + 3.0),
+        ],
+        Stroke::new(2.0, Color32::from_rgb(160, 98, 53)),
+    );
+}
+
+fn paint_node_line(ui: &egui::Ui, rect: Rect, text: &str, font: FontId, color: Color32) {
+    let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, color, rect.width());
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    let galley = ui.painter().layout_job(job);
+    ui.painter()
+        .with_clip_rect(rect)
+        .galley(rect.min, galley, color);
 }
 
 fn device_role(kind: &AudioNodeKind) -> Option<AudioDeviceRole> {
@@ -1524,6 +1681,14 @@ fn device_selection_text(kind: &AudioNodeKind, devices: &[HostAudioDevice]) -> S
     "System default".into()
 }
 
+fn node_control_row(rect: Rect, scale: f32, row_from_bottom: usize) -> Rect {
+    let bottom = rect.bottom() - 8.0 - row_from_bottom as f32 * 34.0;
+    Rect::from_min_max(
+        Pos2::new(rect.left() + 10.0 * scale, bottom - 28.0),
+        Pos2::new(rect.right() - 10.0 * scale, bottom),
+    )
+}
+
 fn render_node_control(
     graph: &AudioGraph,
     node: &AudioNode,
@@ -1532,8 +1697,9 @@ fn render_node_control(
     ui: &mut egui::Ui,
     state: &AudioStudioCanvasState,
     commands: &mut Vec<CanvasCommand>,
+    language: crate::i18n::UiLanguage,
 ) {
-    if state.canvas.zoom < 0.65 {
+    if state.canvas.zoom < CONTROL_MIN_ZOOM {
         return;
     }
     let scale = state.canvas.zoom;
@@ -1544,8 +1710,39 @@ fn render_node_control(
     } else {
         None
     };
-    if matches!(node.kind, AudioNodeKind::SystemAudio { .. }) {
-        let mut child = ui.new_child(egui::UiBuilder::new());
+    if let AudioNodeKind::Processing {
+        processor: AudioProcessor::NoiseGate { threshold_db },
+    } = node.kind
+    {
+        let control_rect = node_control_row(rect, scale, 0);
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(("audio_node_control", &node.id.0))
+                .max_rect(control_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        child.spacing_mut().slider_width = (control_rect.width() - 100.0).max(44.0);
+        child.label(RichText::new(tr(language, "Trigger")).small().color(MUTED));
+        let mut threshold = threshold_db;
+        let response = child
+            .add_enabled(
+                locked_by.is_none(),
+                egui::Slider::new(&mut threshold, -80.0..=0.0)
+                    .suffix(" dB")
+                    .fixed_decimals(0),
+            )
+            .on_hover_text(
+                "Audio above the trigger opens the path. Short pauses stay open for 350 ms.",
+            );
+        if response.changed() {
+            commands.push(CanvasCommand::SetNoiseGateThreshold {
+                node_id: node.id.clone(),
+                threshold_db: threshold,
+            });
+        }
+    } else if matches!(node.kind, AudioNodeKind::SystemAudio { .. }) {
+        let mut child =
+            ui.new_child(egui::UiBuilder::new().id_salt(("audio_node_control", &node.id.0)));
         child.add_enabled_ui(locked_by.is_none(), |ui| {
             render_system_audio_control(node, host_audio, rect, ui, scale, commands);
         });
@@ -1560,12 +1757,10 @@ fn render_node_control(
             .cloned()
             .filter(|id| candidates.iter().any(|device| &device.id == id));
         let selected_text = device_selection_text(&node.kind, devices);
-        let control_rect = Rect::from_min_max(
-            Pos2::new(rect.left() + 10.0 * scale, rect.bottom() - 36.0 * scale),
-            Pos2::new(rect.right() - 10.0 * scale, rect.bottom() - 8.0 * scale),
-        );
+        let control_rect = node_control_row(rect, scale, 0);
         let mut child = ui.new_child(
             egui::UiBuilder::new()
+                .id_salt(("audio_node_control", &node.id.0))
                 .max_rect(control_rect)
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
@@ -1632,11 +1827,11 @@ fn render_node_control(
             render_voicemeeter_bus_control(node, target, rect, ui, scale, commands);
         }
     } else if matches!(node.kind, AudioNodeKind::Media { .. }) {
-        let button_rect = Rect::from_min_max(
-            Pos2::new(rect.left() + 12.0 * scale, rect.bottom() - 36.0 * scale),
-            Pos2::new(rect.right() - 12.0 * scale, rect.bottom() - 8.0 * scale),
+        let button_rect = node_control_row(rect, scale, 0);
+        let response = ui.put(
+            button_rect,
+            egui::Button::new(tr(language, "Choose media…")),
         );
-        let response = ui.put(button_rect, egui::Button::new("Choose BGM / media…"));
         if response.clicked() {
             commands.push(CanvasCommand::ChooseMedia(node.id.clone()));
         }
@@ -1645,12 +1840,10 @@ fn render_node_control(
         let mut text = ui
             .ctx()
             .data_mut(|data| data.get_temp::<String>(text_id).unwrap_or_default());
-        let row_rect = Rect::from_min_max(
-            Pos2::new(rect.left() + 10.0 * scale, rect.bottom() - 38.0 * scale),
-            Pos2::new(rect.right() - 10.0 * scale, rect.bottom() - 7.0 * scale),
-        );
+        let row_rect = node_control_row(rect, scale, 0);
         let mut child = ui.new_child(
             egui::UiBuilder::new()
+                .id_salt(("audio_node_control", &node.id.0))
                 .max_rect(row_rect)
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
@@ -1686,14 +1879,8 @@ fn render_system_audio_control(
     let AudioNodeKind::SystemAudio { capture } = &node.kind else {
         return;
     };
-    let mode_rect = Rect::from_min_max(
-        Pos2::new(rect.left() + 10.0 * scale, rect.bottom() - 76.0 * scale),
-        Pos2::new(rect.right() - 10.0 * scale, rect.bottom() - 47.0 * scale),
-    );
-    let source_rect = Rect::from_min_max(
-        Pos2::new(rect.left() + 10.0 * scale, rect.bottom() - 40.0 * scale),
-        Pos2::new(rect.right() - 10.0 * scale, rect.bottom() - 9.0 * scale),
-    );
+    let mode_rect = node_control_row(rect, scale, 1);
+    let source_rect = node_control_row(rect, scale, 0);
     let mut mode_ui = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(mode_rect)
@@ -1739,7 +1926,8 @@ fn render_system_audio_control(
                     },
                 });
             }
-        });
+        },
+    );
 
     let mut source_ui = ui.new_child(
         egui::UiBuilder::new()
@@ -1801,7 +1989,8 @@ fn render_system_audio_control(
                             });
                         }
                     }
-                });
+                },
+            );
         }
         SystemAudioCapture::Application { application, .. } => {
             let selected_text = application
@@ -1848,7 +2037,8 @@ fn render_system_audio_control(
                         ui.separator();
                         ui.label(format!("{} · not running", selection.display_name));
                     }
-                });
+                },
+            );
             if combo.response.clicked() {
                 commands.push(CanvasCommand::DiscoverApplications);
             }
@@ -1994,7 +2184,8 @@ fn render_port(
     if is_gain_node(node) {
         return;
     }
-    let shows_input_toggle = !output && connected_link.is_some() && state.canvas.zoom >= 0.65;
+    let shows_input_toggle =
+        !output && connected_link.is_some() && state.canvas.zoom >= CONTROL_MIN_ZOOM;
     let label_position = if output {
         Pos2::new(center.x - 11.0 * state.canvas.zoom, center.y)
     } else if shows_input_toggle {
@@ -2002,32 +2193,33 @@ fn render_port(
     } else {
         Pos2::new(center.x + 11.0 * state.canvas.zoom, center.y)
     };
-    ui.painter().text(
-        label_position,
-        if output {
-            Align2::RIGHT_CENTER
-        } else {
-            Align2::LEFT_CENTER
-        },
-        if matches!(node.kind, AudioNodeKind::Mixer) && !output {
-            connected_link
-                .and_then(|link| graph.node(&link.from.node_id))
-                .map(|source| source.label.as_str())
-                .unwrap_or("Connect another input")
-        } else if state.canvas.zoom < 0.65 {
-            if port.0 == PortId::SIDECHAIN {
-                "SC"
-            } else if output {
-                "Out"
-            } else {
-                "IN"
-            }
-        } else {
-            port_label(port, output)
-        },
-        FontId::monospace((8.0 * state.canvas.zoom).clamp(6.0, 10.0)),
-        color,
-    );
+    let label = if matches!(node.kind, AudioNodeKind::Mixer) && !output {
+        connected_link
+            .and_then(|link| graph.node(&link.from.node_id))
+            .map(|source| source.label.as_str())
+            .unwrap_or("+ Input")
+    } else {
+        port_label(port, output)
+    };
+    let font = FontId::proportional((10.0 * state.canvas.zoom).clamp(7.0, 12.0));
+    if output {
+        ui.painter()
+            .text(label_position, Align2::RIGHT_CENTER, label, font, color);
+    } else {
+        paint_node_line(
+            ui,
+            Rect::from_min_max(
+                Pos2::new(label_position.x, label_position.y - font.size * 0.5),
+                Pos2::new(
+                    node_rect.right() - 38.0 * state.canvas.zoom,
+                    label_position.y + font.size,
+                ),
+            ),
+            label,
+            font,
+            color,
+        );
+    }
 
     if shows_input_toggle && let Some(link) = connected_link {
         let toggle_rect = Rect::from_min_size(
@@ -2190,13 +2382,18 @@ fn render_scoped(
     });
     let mut actions = Vec::new();
 
-    render_header(snapshot, ui, &mut state, &mut actions);
-    ui.add_space(7.0);
-    render_status(snapshot, ui, language);
-    ui.add_space(7.0);
+    render_header(snapshot, ui, &mut state, &mut actions, language);
+    ui.add_space(8.0);
 
     let mut commands = Vec::new();
-    render_graph_canvas(snapshot, ui, &mut state, &mut commands, &mut actions);
+    render_graph_canvas(
+        snapshot,
+        ui,
+        &mut state,
+        &mut commands,
+        &mut actions,
+        language,
+    );
     for command in commands {
         if matches!(
             command,
@@ -2209,6 +2406,7 @@ fn render_scoped(
                 | CanvasCommand::SetLinkEnabled { .. }
                 | CanvasCommand::SetNodeVoiceMeeterBus { .. }
                 | CanvasCommand::SetNodeGain { .. }
+                | CanvasCommand::SetNoiseGateThreshold { .. }
         ) {
             state.history.push(snapshot.selected_graph.clone());
         }
@@ -2248,6 +2446,13 @@ fn render_scoped(
             CanvasCommand::SetNodeGain { node_id, gain_db } => {
                 AudioStudioUiAction::SetNodeGain { node_id, gain_db }
             }
+            CanvasCommand::SetNoiseGateThreshold {
+                node_id,
+                threshold_db,
+            } => AudioStudioUiAction::SetNoiseGateThreshold {
+                node_id,
+                threshold_db,
+            },
             CanvasCommand::ChooseMedia(node_id) => AudioStudioUiAction::ChooseMedia(node_id),
             CanvasCommand::EnqueueTts { node_id, text } => {
                 AudioStudioUiAction::EnqueueTts { node_id, text }
@@ -2264,41 +2469,29 @@ fn render_header(
     ui: &mut egui::Ui,
     state: &mut AudioStudioCanvasState,
     actions: &mut Vec<AudioStudioUiAction>,
+    language: crate::i18n::UiLanguage,
 ) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(RichText::new("Audio Studio").size(21.0).strong().color(INK));
-            ui.label(
-                RichText::new(
-                    "Connect audio sources, processing and outputs without hidden feedback paths",
-                )
-                .size(11.5)
-                .color(MUTED),
-            );
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            route_lifecycle_chip(ui, &snapshot.lifecycle);
-            workflow_status_chip(ui, snapshot.host_audio.translation_workflow_running);
-        });
-    });
-    ui.add_space(8.0);
-
-    crate::ui::layout::flow_row(ui, |ui| {
-        ui.label(mono_label("System graph /"));
+    ui.horizontal_wrapped(|ui| {
+        ui.heading(tr(language, "Audio Studio"));
         ui.label(
-            RichText::new("One global audio route")
-                .font(FontId::monospace(10.0))
-                .color(SUCCESS),
-        )
-        .on_hover_text(
-            "This canvas is the one audio topology used by XRTranslate. There are no competing graph pages.",
+            RichText::new(format!("{} nodes", snapshot.selected_graph.nodes.len()))
+                .small()
+                .color(MUTED),
         );
-        ui.menu_button("Load preset", |ui| {
-            ui.label(
-                RichText::new("Replaces the current graph")
-                    .font(FontId::monospace(9.5))
-                    .color(WARNING),
-            );
+        route_lifecycle_chip(ui, &snapshot.lifecycle, language);
+        if snapshot.dirty {
+            if graph_style::command_button(ui, tr(language, "Save"), true).clicked() {
+                actions.push(AudioStudioUiAction::Save);
+            }
+        } else {
+            ui.label(RichText::new(tr(language, "Saved")).small().color(MUTED));
+        }
+    });
+    ui.add_space(6.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.menu_button(format!("{} ▾", tr(language, "Presets")), |ui| {
+            ui.label(RichText::new(&snapshot.selected_graph.name).small().color(MUTED));
+            ui.separator();
             for preset in AudioStudioPreset::ALL {
                 if ui.button(preset.display_name()).clicked() {
                     state.pending_preset_load = Some(preset);
@@ -2307,114 +2500,93 @@ fn render_header(
                 }
             }
         });
-        ui.menu_button("+ Node", |ui| {
-            render_add_node_menu(snapshot, state, ui, actions);
-        });
+        ui.menu_button(tr(language, "+ Node"), |ui| render_add_node_menu(snapshot, state, ui, actions));
         ui.separator();
-        if small_button(ui, "Auto layout", true).clicked() {
-            let arranged = auto_layout_graph(&snapshot.selected_graph, &snapshot.host_audio);
-            if arranged != snapshot.selected_graph {
-                state.history.push(snapshot.selected_graph.clone());
-                actions.push(AudioStudioUiAction::ReplaceSelectedGraph(arranged));
-                state.canvas.fit_pending = true;
+        for (label, delta, hint) in [("−", -120.0, "Zoom out"), ("+", 120.0, "Zoom in")] {
+            if graph_style::toolbar_button(ui, label, true).on_hover_text(hint).clicked() {
+                state.canvas.zoom_from_center(delta);
             }
         }
-        if small_button(ui, "Fit", true).clicked() {
+        if graph_style::toolbar_button(ui, tr(language, "Fit graph"), true).clicked() {
             state.canvas.fit_pending = true;
         }
-        if small_button(ui, "−", true).clicked() {
-            state.canvas.zoom = (state.canvas.zoom - 0.1).clamp(0.25, 1.6);
-        }
-        if small_button(ui, "+", true).clicked() {
-            state.canvas.zoom = (state.canvas.zoom + 0.1).clamp(0.25, 1.6);
-        }
-        let can_undo = state.history.can_undo();
-        if small_button(ui, "Undo", can_undo).clicked()
-            && let Some(previous) = state.history.undo(snapshot.selected_graph.clone())
-        {
-            actions.push(AudioStudioUiAction::ReplaceSelectedGraph(previous));
-        }
-        let can_redo = state.history.can_redo();
-        if small_button(ui, "Redo", can_redo).clicked()
-            && let Some(next) = state.history.redo(snapshot.selected_graph.clone())
-        {
-            actions.push(AudioStudioUiAction::ReplaceSelectedGraph(next));
-        }
-        let has_selection = !state.selected_nodes.is_empty() || !state.selected_links.is_empty();
-        if small_button(ui, "Delete selection", has_selection)
-            .on_hover_text("Delete only the selected nodes or links from this route.")
-            .clicked()
-        {
-            state.history.push(snapshot.selected_graph.clone());
-            let (nodes, links) = state.take_selection();
-            actions.extend(nodes.into_iter().map(AudioStudioUiAction::RemoveNode));
-            actions.extend(links.into_iter().map(AudioStudioUiAction::DeleteLink));
-        }
-    });
-    ui.add_space(4.0);
-
-    crate::ui::layout::flow_row(ui, |ui| {
-        ui.label(mono_label("Current /"));
-        ui.label(
-            RichText::new(snapshot.selected_graph.name.as_str())
-                .font(FontId::monospace(10.5))
-                .color(INK),
-        );
-        if snapshot.dirty {
-            status_text(ui, "Unsaved changes", WARNING);
-        } else {
-            status_text(ui, "Saved", SUCCESS);
-        }
-        if small_button(ui, "Save", snapshot.dirty).clicked() {
-            actions.push(AudioStudioUiAction::Save);
-        }
-        if small_button(ui, "Reset audio system", true)
-            .on_hover_text(
-                "Replace the whole graph with the complete default audio system after confirmation.",
-            )
-            .clicked()
-        {
-            state.pending_preset_load = None;
-            state.pending_safe_reset = true;
-        }
-    });
-
-    if let Some(preset) = state.pending_preset_load {
-        ui.add_space(4.0);
-        crate::ui::layout::flow_row(ui, |ui| {
-            status_text(
-                ui,
-                &format!("Replace the global graph with ‘{}’?", preset.display_name()),
-                WARNING,
-            );
-            if small_button(ui, "Replace graph", true)
-                .on_hover_text(
-                    "Replace every current node and connection. Complete enabled output paths update automatically.",
-                )
-                .clicked()
+        ui.menu_button("⋯", |ui| {
+            if graph_style::toolbar_button(ui, tr(language, "Auto layout"), true).clicked() {
+                let arranged = auto_layout_graph(&snapshot.selected_graph, &snapshot.host_audio);
+                if arranged != snapshot.selected_graph {
+                    state.history.push(snapshot.selected_graph.clone());
+                    actions.push(AudioStudioUiAction::ReplaceSelectedGraph(arranged));
+                    state.canvas.fit_pending = true;
+                }
+                ui.close();
+            }
+            if graph_style::toolbar_button(ui, tr(language, "Undo"), state.history.can_undo()).clicked()
+                && let Some(previous) = state.history.undo(snapshot.selected_graph.clone())
             {
-                actions.push(AudioStudioUiAction::LoadPreset(preset));
-                state.history = GraphEditHistory::default();
-                state.clear_selection();
-                state.canvas.fit_pending = true;
-                state.pending_preset_load = None;
+                actions.push(AudioStudioUiAction::ReplaceSelectedGraph(previous));
+                ui.close();
             }
-            if small_button(ui, "Cancel", true).clicked() {
-                state.pending_preset_load = None;
+            if graph_style::toolbar_button(ui, tr(language, "Redo"), state.history.can_redo()).clicked()
+                && let Some(next) = state.history.redo(snapshot.selected_graph.clone())
+            {
+                actions.push(AudioStudioUiAction::ReplaceSelectedGraph(next));
+                ui.close();
             }
+            let has_selection = !state.selected_nodes.is_empty() || !state.selected_links.is_empty();
+            if graph_style::toolbar_button(ui, tr(language, "Delete selection"), has_selection).clicked() {
+                state.history.push(snapshot.selected_graph.clone());
+                let (nodes, links) = state.take_selection();
+                actions.extend(nodes.into_iter().map(AudioStudioUiAction::RemoveNode));
+                actions.extend(links.into_iter().map(AudioStudioUiAction::DeleteLink));
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("Reset audio system").clicked() {
+                state.pending_preset_load = None;
+                state.pending_safe_reset = true;
+                ui.close();
+            }
+            ui.separator();
+            ui.label(RichText::new("Space + drag · Pan\nScroll · Zoom\nDrag ports · Connect\nShift + click · Multi-select\nDel · Delete\nCtrl+Z / Ctrl+Y · Undo / Redo").small().color(MUTED));
         });
-    } else if state.pending_safe_reset {
-        ui.add_space(4.0);
-        crate::ui::layout::flow_row(ui, |ui| {
-            status_text(ui, "Reset to the complete default audio system?", WARNING);
-            if small_button(ui, "Reset to complete default", true).clicked() {
-                actions.push(AudioStudioUiAction::ResetToDefault);
-                state.history = GraphEditHistory::default();
+        let issue_count = snapshot.validation.issues.len()
+            + snapshot.risk_report.blocking_count()
+            + snapshot.risk_report.warning_count();
+        let has_error = snapshot.last_error.is_some()
+            || matches!(snapshot.lifecycle, AudioStudioLifecycle::Error { .. });
+        let label = if issue_count > 0 {
+            format!("⚠ {issue_count} issues")
+        } else if has_error {
+            format!("⚠ {}", tr(language, "Audio error"))
+        } else {
+            tr(language, "Status").to_owned()
+        };
+        ui.menu_button(RichText::new(label).color(if has_error { ERROR } else if issue_count > 0 { WARNING } else { MUTED }), |ui| {
+            ui.set_width(440.0);
+            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| render_status(snapshot, ui, language));
+        });
+    });
+
+    if state.pending_preset_load.is_some() || state.pending_safe_reset {
+        ui.horizontal_wrapped(|ui| {
+            let label = state.pending_preset_load.map_or_else(
+                || "Reset to the default audio system?".to_owned(),
+                |preset| format!("Replace with ‘{}’?", preset.display_name()),
+            );
+            ui.label(RichText::new(label).color(WARNING));
+            if graph_style::command_button(ui, tr(language, "Replace graph"), true).clicked() {
+                actions.push(state.pending_preset_load.map_or(
+                    AudioStudioUiAction::ResetToDefault,
+                    AudioStudioUiAction::LoadPreset,
+                ));
+                state.history.clear();
                 state.clear_selection();
                 state.canvas.fit_pending = true;
+                state.pending_preset_load = None;
                 state.pending_safe_reset = false;
             }
-            if small_button(ui, "Cancel", true).clicked() {
+            if ui.button(tr(language, "Cancel")).clicked() {
+                state.pending_preset_load = None;
                 state.pending_safe_reset = false;
             }
         });
@@ -2476,225 +2648,81 @@ fn render_status(
     ui: &mut egui::Ui,
     language: crate::i18n::UiLanguage,
 ) {
-    Frame::new()
-        .fill(Color32::from_rgb(249, 250, 248))
-        .stroke(Stroke::new(1.0, CANVAS_BORDER))
-        .corner_radius(CornerRadius::same(3))
-        .inner_margin(Margin::symmetric(11, 7))
-        .show(ui, |ui| {
-            crate::ui::layout::flow_row(ui, |ui| {
-                if snapshot.validation.is_valid() {
-                    status_text(ui, "✓ Audio system ready", SUCCESS);
-                } else {
-                    let issue_count = snapshot.validation.issues.len();
-                    status_text(
-                        ui,
-                        &if issue_count == 1 {
-                            "⚠ 1 setup item needs attention".to_owned()
-                        } else {
-                            format!("⚠ {issue_count} setup items need attention")
-                        },
-                        ERROR,
-                    );
-                }
-                ui.separator();
-                if snapshot.host_audio.discovery_complete {
-                    let device_count = snapshot.host_audio.devices.len();
-                    let app_count = snapshot.host_audio.applications.len();
-                    status_text(
-                        ui,
-                        &format!(
-                            "{device_count} {} · {app_count} {} · Lists refresh when opened",
-                            if device_count == 1 {
-                                "device"
-                            } else {
-                                "devices"
-                            },
-                            if app_count == 1 { "app" } else { "apps" },
-                        ),
-                        INK,
-                    );
-                } else {
-                    status_text(ui, "Discovering audio devices…", WARNING);
-                    ui.spinner();
-                }
-                ui.separator();
-                render_feedback_status(snapshot, ui);
-                ui.separator();
-                render_game_microphone_status(snapshot, ui);
-                if let Some(voicemeeter) = snapshot.host_audio.voicemeeter.as_ref() {
-                    ui.separator();
-                    render_voicemeeter_status(snapshot, voicemeeter, ui);
-                }
-            });
-
-            ui.add_space(5.0);
-            crate::ui::layout::flow_row(ui, |ui| {
-                let has_asr = snapshot
-                    .selected_graph
-                    .nodes
-                    .iter()
-                    .any(|node| !node.bypassed && matches!(node.kind, AudioNodeKind::AsrTap));
-                let asr_path_enabled = snapshot.selected_graph.nodes.iter().any(|node| {
-                    !node.bypassed
-                        && matches!(node.kind, AudioNodeKind::AsrTap)
-                        && snapshot.selected_graph.has_enabled_source_path(&node.id)
-                });
-                let asr_mode = current_asr_input_mode(&snapshot.resolved_graph);
-                if has_asr && !asr_path_enabled {
-                    status_text(ui, "ASR input · Off", MUTED);
-                } else if let Some(input_mode) = asr_mode
-                    && asr_path_is_ready(snapshot)
-                {
-                    status_text(
-                        ui,
-                        &format!("ASR input · {} · Ready", input_mode.label()),
-                        SUCCESS,
-                    );
-                } else if has_asr {
-                    status_text(ui, "ASR input · Selected path needs attention", WARNING);
-                } else {
-                    status_text(ui, "ASR input · Not used by this graph", MUTED);
-                }
-
-                let has_game_microphone = snapshot.selected_graph.nodes.iter().any(|node| {
-                    !node.bypassed
-                        && matches!(node.kind, AudioNodeKind::GameMicrophoneOutput { .. })
-                });
-                let has_monitor = snapshot.selected_graph.nodes.iter().any(|node| {
-                    !node.bypassed && matches!(node.kind, AudioNodeKind::MonitorOutput { .. })
-                });
-                if has_game_microphone || has_monitor {
-                    ui.separator();
-                    let selected_is_live =
-                        matches!(snapshot.lifecycle, AudioStudioLifecycle::Active { .. });
-                    let destination = match (has_game_microphone, has_monitor) {
-                        (true, true) => "Monitor + app microphone",
-                        (true, false) => "App microphone",
-                        (false, true) => "Monitor output",
-                        (false, false) => unreachable!(),
-                    };
-                    status_text(
-                        ui,
-                        &format!(
-                            "Output paths · {destination} · {}",
-                            if selected_is_live && snapshot.live_routing_matches_graph {
-                                "Automatic · Running"
-                            } else if selected_is_live {
-                                "Automatic · Updating"
-                            } else {
-                                "Waiting for an enabled path"
-                            }
-                        ),
-                        if selected_is_live && snapshot.live_routing_matches_graph {
-                            SUCCESS
-                        } else {
-                            WARNING
-                        },
-                    );
-                    if !selected_is_live {
-                        ui.label(
-                            RichText::new(
-                                "Connect and switch on a complete path to start it automatically. Moving dots show paths that are actually carrying audio.",
-                            )
-                            .size(10.0)
-                            .color(MUTED),
-                        );
-                    }
-                }
-            });
-
-            if let Some(error) =
-                snapshot
-                    .last_error
-                    .as_deref()
-                    .or_else(|| match &snapshot.lifecycle {
-                        AudioStudioLifecycle::Error { message, .. } => Some(message.as_str()),
-                        _ => None,
-                    })
-            {
-                ui.add_space(4.0);
-                crate::ui::components::error_notice(ui, language, error);
-            }
-            for issue in snapshot.validation.issues.iter().take(3) {
-                ui.add_space(2.0);
-                let target = issue
-                    .node_id
-                    .as_ref()
-                    .map(|node| format!(" [{}]", node.0))
-                    .or_else(|| issue.link_id.as_ref().map(|link| format!(" [{}]", link.0)))
-                    .unwrap_or_default();
-                ui.label(
-                    RichText::new(format!("• {}{target}", issue.message))
-                        .size(10.5)
-                        .color(ERROR),
-                );
-            }
-            if !snapshot.risk_report.risks.is_empty() {
-                ui.add_space(3.0);
-                egui::CollapsingHeader::new(format!(
-                    "Route risk details · {}",
-                    snapshot.risk_report.risks.len()
+    ui.horizontal_wrapped(|ui| {
+        workflow_status_chip(ui, snapshot.host_audio.translation_workflow_running);
+        if snapshot.host_audio.discovery_complete {
+            ui.label(
+                RichText::new(format!(
+                    "{} devices · {} apps",
+                    snapshot.host_audio.devices.len(),
+                    snapshot.host_audio.applications.len()
                 ))
-                .default_open(snapshot.risk_report.blocking_count() > 0)
-                .show(ui, |ui| {
-                    for risk in &snapshot.risk_report.risks {
-                        let color = match risk.severity {
-                            RouteRiskSeverity::Blocking => ERROR,
-                            RouteRiskSeverity::Warning => WARNING,
-                            RouteRiskSeverity::Info => Color32::from_rgb(55, 105, 160),
-                        };
-                        let level = match risk.severity {
-                            RouteRiskSeverity::Blocking => "Blocking",
-                            RouteRiskSeverity::Warning => "Warning",
-                            RouteRiskSeverity::Info => "Info",
-                        };
-                        ui.label(
-                            RichText::new(format!("{level} · {}", risk.summary))
-                                .size(10.5)
-                                .strong()
-                                .color(color),
-                        );
-                        ui.label(RichText::new(&risk.detail).size(10.0).color(INK));
-                        ui.label(
-                            RichText::new(format!("Fix: {}", risk.remediation))
-                                .size(10.0)
-                                .color(MUTED),
-                        );
-                        ui.label(
-                            RichText::new(format!(
-                                "Path: {}",
-                                risk.node_ids
-                                    .iter()
-                                    .map(|node| node.0.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(" → ")
-                            ))
-                            .font(FontId::monospace(9.0))
-                            .color(color),
-                        );
-                        ui.add_space(3.0);
-                    }
-                });
+                .small()
+                .color(MUTED),
+            );
+        } else {
+            ui.spinner();
+            ui.label("Discovering audio devices…");
+        }
+    });
+    if let Some(input_mode) = current_asr_input_mode(&snapshot.resolved_graph) {
+        status_text(
+            ui,
+            &format!("Recognition · {}", input_mode.label()),
+            if asr_path_is_ready(snapshot) {
+                SUCCESS
+            } else {
+                WARNING
+            },
+        );
+    }
+    render_game_microphone_status(snapshot, ui);
+    if let Some(voicemeeter) = snapshot.host_audio.voicemeeter.as_ref() {
+        render_voicemeeter_status(snapshot, voicemeeter, ui);
+        render_voicemeeter_advanced(voicemeeter, ui);
+    }
+    if let Some(error) = snapshot
+        .last_error
+        .as_deref()
+        .or_else(|| match &snapshot.lifecycle {
+            AudioStudioLifecycle::Error { message, .. } => Some(message.as_str()),
+            _ => None,
+        })
+    {
+        ui.separator();
+        crate::ui::components::error_notice(ui, language, error);
+    }
+    if !snapshot.validation.issues.is_empty() {
+        ui.separator();
+        for issue in &snapshot.validation.issues {
+            let target = issue
+                .node_id
+                .as_ref()
+                .and_then(|id| snapshot.selected_graph.node(id))
+                .map(|node| node.label.as_str());
+            if let Some(target) = target {
+                ui.label(RichText::new(target).strong().color(INK));
             }
-            if let Some(voicemeeter) = snapshot.host_audio.voicemeeter.as_ref() {
-                render_voicemeeter_advanced(voicemeeter, ui);
-            }
-            if snapshot
-                .selected_graph
-                .nodes
-                .iter()
-                .any(|node| matches!(node.kind, AudioNodeKind::AsrTap))
-            {
-                ui.add_space(3.0);
-                let message = if snapshot.host_audio.translation_workflow_running {
-                    "ASR input changes apply the next time the Translation workflow starts."
-                } else {
-                    "ASR input is configured here; start recognition from the Translation page."
-                };
-                ui.label(RichText::new(message).size(10.0).color(MUTED));
-            }
-        });
+            ui.label(RichText::new(&issue.message).color(ERROR));
+        }
+    }
+    for risk in &snapshot.risk_report.risks {
+        ui.separator();
+        let color = match risk.severity {
+            RouteRiskSeverity::Blocking => ERROR,
+            RouteRiskSeverity::Warning => WARNING,
+            RouteRiskSeverity::Info => MUTED,
+        };
+        egui::CollapsingHeader::new(RichText::new(&risk.summary).color(color))
+            .id_salt((&risk.summary, &risk.node_ids))
+            .show(ui, |ui| {
+                ui.label(&risk.detail);
+                ui.label(RichText::new(&risk.remediation).color(MUTED));
+            });
+    }
+    if snapshot.validation.is_valid() && snapshot.risk_report.risks.is_empty() {
+        ui.label(RichText::new("Audio system ready").color(SUCCESS));
+    }
 }
 
 fn render_add_node_menu(
@@ -2878,32 +2906,6 @@ fn unique_node_id(graph: &AudioGraph, slug: &str) -> String {
         .expect("an unbounded numeric suffix always has an unused value")
 }
 
-fn render_feedback_status(snapshot: &AudioStudioUiSnapshot, ui: &mut egui::Ui) {
-    let blocking = snapshot.risk_report.blocking_count();
-    let warnings = snapshot.risk_report.warning_count();
-    if blocking > 0 {
-        status_text(
-            ui,
-            &format!(
-                "{blocking} blocking feedback {}",
-                if blocking == 1 { "risk" } else { "risks" }
-            ),
-            ERROR,
-        );
-    } else if warnings > 0 {
-        status_text(
-            ui,
-            &format!(
-                "{warnings} potential route {}",
-                if warnings == 1 { "risk" } else { "risks" }
-            ),
-            WARNING,
-        );
-    } else {
-        status_text(ui, "No blocking or warning risks detected", SUCCESS);
-    }
-}
-
 fn render_game_microphone_status(snapshot: &AudioStudioUiSnapshot, ui: &mut egui::Ui) {
     let game_microphone = snapshot
         .selected_graph
@@ -3012,7 +3014,7 @@ fn render_voicemeeter_advanced(voicemeeter: &VoiceMeeterSnapshot, ui: &mut egui:
             .unwrap_or("version unavailable");
         ui.label(
             RichText::new(format!("{edition} · {version}"))
-                .font(FontId::monospace(9.5))
+                .size(12.0)
                 .color(MUTED),
         );
         let buses = [VoiceMeeterBus::B1, VoiceMeeterBus::B2, VoiceMeeterBus::B3]
@@ -3031,38 +3033,29 @@ fn render_voicemeeter_advanced(voicemeeter: &VoiceMeeterSnapshot, ui: &mut egui:
                     "inputs"
                 }
             ))
-            .font(FontId::monospace(9.5))
+            .size(12.0)
             .color(MUTED),
         );
     });
 }
 
-fn route_lifecycle_chip(ui: &mut egui::Ui, lifecycle: &AudioStudioLifecycle) {
-    let (label, color) = match lifecycle {
-        AudioStudioLifecycle::Inactive => ("Output paths idle", MUTED),
-        AudioStudioLifecycle::Activating { .. } => ("Applying output paths…", WARNING),
-        AudioStudioLifecycle::Active { .. } => ("● Output paths active", SUCCESS),
-        AudioStudioLifecycle::Deactivating { .. } => ("Stopping output paths…", WARNING),
-        AudioStudioLifecycle::Error { .. } => ("Output path error", ERROR),
+fn route_lifecycle_chip(
+    ui: &mut egui::Ui,
+    lifecycle: &AudioStudioLifecycle,
+    language: crate::i18n::UiLanguage,
+) {
+    let (icon, label, color) = match lifecycle {
+        AudioStudioLifecycle::Inactive => ("○", "Idle", MUTED),
+        AudioStudioLifecycle::Activating { .. } => ("", "Applying…", WARNING),
+        AudioStudioLifecycle::Active { .. } => ("●", "Live", SUCCESS),
+        AudioStudioLifecycle::Deactivating { .. } => ("", "Stopping…", WARNING),
+        AudioStudioLifecycle::Error { .. } => ("●", "Error", ERROR),
     };
-    Frame::new()
-        .fill(Color32::from_rgba_unmultiplied(
-            color.r(),
-            color.g(),
-            color.b(),
-            18,
-        ))
-        .stroke(Stroke::new(1.0, color))
-        .corner_radius(CornerRadius::same(10))
-        .inner_margin(Margin::symmetric(9, 4))
-        .show(ui, |ui| {
-            ui.label(
-                RichText::new(label)
-                    .font(FontId::monospace(10.0))
-                    .color(color)
-                    .strong(),
-            );
-        });
+    ui.label(
+        RichText::new(format!("{icon} {}", tr(language, label)))
+            .small()
+            .color(color),
+    );
 }
 
 fn workflow_status_chip(ui: &mut egui::Ui, running: bool) {
@@ -3071,49 +3064,16 @@ fn workflow_status_chip(ui: &mut egui::Ui, running: bool) {
     } else {
         ("Translation stopped", MUTED)
     };
-    Frame::new()
-        .stroke(Stroke::new(1.0, color))
-        .corner_radius(CornerRadius::same(3))
-        .inner_margin(Margin::symmetric(9, 5))
-        .show(ui, |ui| {
-            ui.label(
-                RichText::new(label)
-                    .font(FontId::monospace(9.5))
-                    .color(color),
-            )
-            .on_hover_text("Read-only status; control translation from the Translation page.");
-        });
+    ui.label(RichText::new(label).color(color))
+        .on_hover_text("Start recognition from the Translation page.");
 }
 
 fn status_text(ui: &mut egui::Ui, text: &str, color: Color32) {
-    ui.label(
-        RichText::new(text)
-            .font(FontId::monospace(9.5))
-            .color(color)
-            .strong(),
-    );
+    ui.label(RichText::new(text).size(12.0).color(color).strong());
 }
 
 fn mono_label(text: &str) -> RichText {
-    RichText::new(text)
-        .font(FontId::monospace(9.5))
-        .color(MUTED)
-        .strong()
-}
-
-fn small_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
-    ui.add_enabled(
-        enabled,
-        egui::Button::new(
-            RichText::new(label)
-                .font(FontId::monospace(9.5))
-                .color(if enabled { INK } else { MUTED }),
-        )
-        .fill(Color32::TRANSPARENT)
-        .stroke(Stroke::new(1.0, CANVAS_BORDER))
-        .corner_radius(CornerRadius::same(2))
-        .min_size(Vec2::new(34.0, 25.0)),
-    )
+    RichText::new(text).size(12.0).color(MUTED).strong()
 }
 
 #[cfg(test)]
@@ -3129,6 +3089,77 @@ mod tests {
             is_default: false,
             voicemeeter_strip_index: None,
         }
+    }
+
+    #[test]
+    fn clicking_a_gate_slider_changes_only_that_nodes_threshold() {
+        let context = egui::Context::default();
+        let host = HostAudioSnapshot::default();
+        let state = AudioStudioCanvasState::default();
+        let mut graph = AudioGraph::new("gate-controls", "Gate controls");
+        for id in ["gate-one", "gate-two"] {
+            graph.nodes.push(AudioNode::new(
+                id,
+                "Noise gate",
+                AudioNodeKind::Processing {
+                    processor: AudioProcessor::NoiseGate {
+                        threshold_db: -45.0,
+                    },
+                },
+            ));
+        }
+        let rects = [
+            Rect::from_min_size(Pos2::new(20.0, 20.0), node_size(&graph.nodes[0])),
+            Rect::from_min_size(Pos2::new(260.0, 20.0), node_size(&graph.nodes[1])),
+        ];
+        let row = node_control_row(rects[1], 1.0, 0);
+        let pointer = Pos2::new(row.left() + 80.0, row.center().y);
+        let mut commands = Vec::new();
+        for pressed in [None, Some(true), Some(false)] {
+            let mut events = vec![egui::Event::PointerMoved(pointer)];
+            if let Some(pressed) = pressed {
+                events.push(egui::Event::PointerButton {
+                    pos: pointer,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            let mut output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 300.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    graph_style::apply(ui);
+                    for (node, rect) in graph.nodes.iter().zip(rects) {
+                        render_node_control(
+                            &graph,
+                            node,
+                            &host,
+                            rect,
+                            ui,
+                            &state,
+                            &mut commands,
+                            crate::i18n::UiLanguage::English,
+                        );
+                    }
+                },
+            );
+            output.textures_delta.clear();
+        }
+        assert!(
+            !commands.is_empty(),
+            "slider clicks must emit a threshold update"
+        );
+        assert!(
+            commands.iter().all(|command| matches!(command,
+                CanvasCommand::SetNoiseGateThreshold { node_id, threshold_db }
+                    if node_id.0 == "gate-two" && *threshold_db != -45.0
+            )),
+            "only the clicked gate may change: {commands:?}"
+        );
     }
 
     #[test]

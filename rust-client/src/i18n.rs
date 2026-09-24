@@ -83,25 +83,7 @@ impl UiLanguage {
 /// Looks up a fixed UI string from the consolidated multi-language dictionary.
 /// Missing translations intentionally fall back to the English source key.
 pub fn tr(language: UiLanguage, english: &'static str) -> &'static str {
-    match language {
-        UiLanguage::English => english,
-        UiLanguage::Chinese => DICTIONARY
-            .iter()
-            .find_map(|(key, zh, _ja, _ko, _ru)| (*key == english).then_some(*zh))
-            .unwrap_or(english),
-        UiLanguage::Japanese => DICTIONARY
-            .iter()
-            .find_map(|(key, _zh, ja, _ko, _ru)| (*key == english).then_some(*ja))
-            .unwrap_or(english),
-        UiLanguage::Korean => DICTIONARY
-            .iter()
-            .find_map(|(key, _zh, _ja, ko, _ru)| (*key == english).then_some(*ko))
-            .unwrap_or(english),
-        UiLanguage::Russian => DICTIONARY
-            .iter()
-            .find_map(|(key, _zh, _ja, _ko, ru)| (*key == english).then_some(*ru))
-            .unwrap_or(english),
-    }
+    translation(language, english).unwrap_or(english)
 }
 
 pub fn usage_notice_items(language: UiLanguage) -> &'static [&'static str] {
@@ -110,49 +92,44 @@ pub fn usage_notice_items(language: UiLanguage) -> &'static [&'static str] {
 
 /// Dynamic counterpart for status text that originates outside the UI layer.
 pub fn tr_dynamic<'a>(language: UiLanguage, english: &'a str) -> Cow<'a, str> {
-    match language {
-        UiLanguage::English => Cow::Borrowed(english),
-        UiLanguage::Chinese => {
-            if let Some((_, zh, _, _, _)) =
-                DICTIONARY.iter().find(|(key, _, _, _, _)| *key == english)
-            {
-                Cow::Borrowed(zh)
-            } else {
-                Cow::Borrowed(english)
-            }
-        }
-        UiLanguage::Japanese => {
-            if let Some((_, _, ja, _, _)) =
-                DICTIONARY.iter().find(|(key, _, _, _, _)| *key == english)
-            {
-                Cow::Borrowed(ja)
-            } else {
-                Cow::Borrowed(english)
-            }
-        }
-        UiLanguage::Korean => {
-            if let Some((_, _, _, ko, _)) =
-                DICTIONARY.iter().find(|(key, _, _, _, _)| *key == english)
-            {
-                Cow::Borrowed(ko)
-            } else {
-                Cow::Borrowed(english)
-            }
-        }
-        UiLanguage::Russian => {
-            if let Some((_, _, _, _, ru)) =
-                DICTIONARY.iter().find(|(key, _, _, _, _)| *key == english)
-            {
-                Cow::Borrowed(ru)
-            } else {
-                Cow::Borrowed(english)
-            }
-        }
+    Cow::Borrowed(translation(language, english).unwrap_or(english))
+}
+
+fn translation(language: UiLanguage, english: &str) -> Option<&'static str> {
+    if language == UiLanguage::English {
+        return None;
     }
+    // Natural-case toolbar labels reuse the translations of earlier uppercase
+    // labels. Exact keys still win when copy intentionally differs by context.
+    let (_, zh, ja, ko, ru) = DICTIONARY
+        .iter()
+        .find(|entry| entry.0 == english)
+        .or_else(|| DICTIONARY.iter().find(|entry| entry.0.eq_ignore_ascii_case(english)))?;
+    Some(match language {
+        UiLanguage::Chinese => zh,
+        UiLanguage::Japanese => ja,
+        UiLanguage::Korean => ko,
+        UiLanguage::Russian => ru,
+        UiLanguage::English => unreachable!(),
+    })
 }
 
 /// Consolidated single-source-of-truth dictionary: `(English Key, Chinese (zh), Japanese (ja), Korean (ko), Russian (ru))`
 const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
+    ("Presets", "预设", "プリセット", "프리셋", "Предустановки"),
+    ("Status", "状态", "状態", "상태", "Состояние"),
+    ("Noise gate", "阈值器", "ノイズゲート", "노이즈 게이트", "Шумовой гейт"),
+    ("Volume threshold", "音量阈值", "音量しきい値", "음량 임계값", "Порог громкости"),
+    ("Input level", "输入音量", "入力音量", "입력 음량", "Уровень входа"),
+    ("Trigger", "触发", "作動", "트리거", "Порог"),
+    ("Choose media…", "选择媒体…", "メディアを選択…", "미디어 선택…", "Выбрать медиа…"),
+    ("nodes", "个节点", "ノード", "노드", "узлов"),
+    ("issues", "个问题", "件の問題", "문제", "проблем"),
+    ("Audio error", "音频错误", "オーディオエラー", "오디오 오류", "Ошибка аудио"),
+    ("+ Node", "+ 节点", "+ ノード", "+ 노드", "+ Узел"),
+    ("Branches", "分支", "分岐", "분기", "Ветви"),
+    ("ASR prompts", "识别提示词", "認識プロンプト", "인식 프롬프트", "Промпты распознавания"),
+    ("Preview", "预览", "プレビュー", "미리 보기", "Предпросмотр"),
     ("Graph", "图谱", "グラフ", "그래프", "Граф"),
     ("Hierarchy", "层级", "階層", "계층", "Иерархия"),
     ("List", "列表", "一覧", "목록", "Список"),

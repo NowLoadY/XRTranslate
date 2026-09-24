@@ -308,16 +308,20 @@ impl ClientSettings {
         self.floating_subtitles_max_count = self.floating_subtitles_max_count.clamp(1, 10);
         self.floating_subtitles_font_size = self.floating_subtitles_font_size.clamp(10.0, 24.0);
 
-        if !self.selected_device_id.is_empty()
-            && !available_mics
-                .iter()
-                .any(|d| d.id == self.selected_device_id)
-        {
-            log::warn!(
-                "Saved microphone ID '{}' is no longer available. Falling back to default.",
-                self.selected_device_id
-            );
-            self.selected_device_id.clear();
+        if !self.selected_device_id.is_empty() {
+            match crate::audio::matching_available_input_id(
+                &self.selected_device_id,
+                available_mics,
+            ) {
+                Some(id) => self.selected_device_id = id.to_owned(),
+                None => {
+                    log::warn!(
+                        "Saved microphone ID '{}' is no longer available. Falling back to default.",
+                        self.selected_device_id
+                    );
+                    self.selected_device_id.clear();
+                }
+            }
         }
 
         if !self.selected_loopback_device_id.is_empty()
@@ -451,6 +455,17 @@ mod tests {
         loaded.sanitize_devices(&available_mics, &available_loopbacks);
         assert_eq!(loaded.selected_device_id, ""); // Reset due to mic-1 missing
         assert_eq!(loaded.selected_loopback_device_id, "loopback-1"); // Kept
+
+        loaded.selected_device_id = "alsa:hw:CARD=Device,DEV=0".into();
+        let deduplicated_mics = vec![InputDevice {
+            id: "alsa:plughw:CARD=Device,DEV=0".into(),
+            name: "USB Audio Device".into(),
+        }];
+        loaded.sanitize_devices(&deduplicated_mics, &available_loopbacks);
+        assert_eq!(
+            loaded.selected_device_id,
+            "alsa:plughw:CARD=Device,DEV=0"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

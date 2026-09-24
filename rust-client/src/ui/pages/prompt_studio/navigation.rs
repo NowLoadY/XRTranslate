@@ -1,42 +1,15 @@
 use super::*;
-use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
+use eframe::egui::{Pos2, Rect, Vec2};
 
-/// Renders the keybinding and navigation cheatsheet in the bottom right corner of the canvas.
-pub(super) fn render_canvas_navigation_hint(
-    ui: &egui::Ui,
-    canvas: Rect,
-    language: crate::i18n::UiLanguage,
-) {
-    let items = [
-        (
-            "NAVIGATE",
-            "Space + Left Drag / Middle Drag to pan · Mouse Wheel to zoom",
-        ),
-        (
-            "SELECT",
-            "Left Drag on canvas to box select · Shift + Click to multi-select",
-        ),
-        (
-            "CONNECT",
-            "Drag socket to connect / unplug · Click empty space to cancel wire",
-        ),
-        (
-            "ACTIONS",
-            "Del to delete · Double-Click header to rename · Ctrl+Z: Undo · Ctrl+Y: Redo",
-        ),
-    ];
-
-    let lines = items
-        .into_iter()
-        .map(|(tag, detail)| {
-            format!(
-                "{} · {}",
-                crate::i18n::tr(language, tag),
-                crate::i18n::tr(language, detail)
-            )
-        })
-        .collect::<Vec<_>>();
-    crate::ui::graph_editor::paint_navigation_hint(ui, canvas, &lines, Color32::BLACK);
+pub(super) fn navigation_help(language: crate::i18n::UiLanguage) -> String {
+    [
+        "Space + Left Drag / Middle Drag to pan · Mouse Wheel to zoom",
+        "Left Drag on canvas to box select · Shift + Click to multi-select",
+        "Drag socket to connect / unplug · Click empty space to cancel wire",
+        "Del to delete · Double-Click header to rename · Ctrl+Z: Undo · Ctrl+Y: Redo",
+    ]
+    .map(|text| crate::i18n::tr(language, text))
+    .join("\n")
 }
 
 /// Centers and scales the canvas viewport so all visible graph nodes fit comfortably.
@@ -53,12 +26,11 @@ pub(super) fn fit_graph_to_canvas(
         return;
     };
     let first_size = node_size(graph, first);
-    let mut bounds =
-        Rect::from_min_size(Pos2::new(first.position[0], first.position[1]), first_size);
+    let mut bounds = Rect::from_min_size(Pos2::from(controller.node_position(first)), first_size);
     for node in visible {
         let size = node_size(graph, node);
         bounds = bounds.union(Rect::from_min_size(
-            Pos2::new(node.position[0], node.position[1]),
+            Pos2::from(controller.node_position(node)),
             size,
         ));
     }
