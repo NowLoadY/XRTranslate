@@ -2,83 +2,59 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    hash::{Hash, Hasher},
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use eframe::egui::{self, Color32, CornerRadius, Frame, Pos2, Rect, RichText, Sense, Stroke, Vec2};
-use serde::{Deserialize, Serialize};
+use xr_corpus_client::{
+    CorpusClient,
+    protocol::{
+        CORPUS_LANGUAGE_ORDER as LANGUAGE_CODES, CorpusActivation, GraphDomain, GraphEdge,
+        GraphEdgeKind, GraphNode, GraphNodeStatePatch as NodeState, GraphPosition as NodePosition,
+        GraphSnapshot,
+    },
+};
 
 use crate::{
     backend::{BackendManager, BackendStart},
     i18n::{UiLanguage, tr},
     ui::{
         components, graph_canvas,
-        graph_editor::{GraphEditorState, closest_link, nearest_port},
+        graph_editor::{
+            ForceLayout, ForceNode, GraphEditorState, LayeredLayoutOptions, LayoutNode,
+            closest_link, layered_layout, nearest_port,
+        },
         graph_style,
     },
 };
 
-const LANGUAGE_CODES: [&str; 16] = [
-    "zh", "en", "fr", "pt", "es", "ja", "ru", "ko", "th", "it", "de", "vi", "id", "pl", "cs", "nl",
-];
-const NODE_SIZE: Vec2 = Vec2::new(154.0, 64.0);
+const NODE_SIZE: Vec2 = Vec2::new(168.0, 66.0);
 const MAX_VISIBLE_NODES: usize = 80;
-const MAX_OVERVIEW_EDGES: usize = 90;
-const CORPUS_URL: &str = "http://127.0.0.1:7766/v1/graph";
+const CORPUS_URL: &str = "http://127.0.0.1:7766";
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct GraphSnapshot {
-    domains: Vec<GraphDomain>,
-    nodes: Vec<GraphNode>,
-    edges: Vec<GraphEdge>,
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+enum CorpusView {
+    #[default]
+    Graph,
+    Layered,
+    List,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct GraphDomain {
-    id: String,
-    title: String,
-    enabled: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct GraphNode {
-    id: String,
-    domain_id: String,
-    subdomain: String,
-    title: String,
-    enabled: bool,
-    promptable: bool,
-    activation: String,
-    priority: i32,
-    values: Vec<String>,
-    x: f32,
-    y: f32,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct EdgeKey {
     source_id: String,
     target_id: String,
-    kind: String,
+    kind: GraphEdgeKind,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct GraphEdge {
-    source_id: String,
-    target_id: String,
-    kind: String,
-    enabled: bool,
-}
-
-impl GraphEdge {
-    fn key(&self) -> EdgeKey {
-        EdgeKey {
-            source_id: self.source_id.clone(),
-            target_id: self.target_id.clone(),
-            kind: self.kind.clone(),
-        }
+fn edge_key(edge: &GraphEdge) -> EdgeKey {
+    EdgeKey {
+        source_id: edge.source_id.clone(),
+        target_id: edge.target_id.clone(),
+        kind: edge.kind,
     }
 }
 
@@ -91,12 +67,15 @@ enum Command {
     DeleteNode(String),
     PutEdge(GraphEdge),
     DeleteEdge(GraphEdge),
+    SavePositions(Vec<NodePosition>),
+    SetNodeState(NodeState),
 }
 
 enum PendingEnabled {
     Domain(String, bool),
     Node(String, bool),
     Edge(EdgeKey, bool),
+    Nodes(HashSet<String>, bool),
 }
 
 impl Command {
@@ -105,45 +84,19 @@ impl Command {
     }
 }
 
-#[derive(Deserialize)]
-struct ApiError {
-    code: String,
-    error: String,
-}
-
-fn graph_url(parts: &[&str]) -> reqwest::Url {
-    let mut url = reqwest::Url::parse(CORPUS_URL).expect("constant corpus URL");
-    url.path_segments_mut()
-        .expect("path URL")
-        .extend(parts.iter().copied());
-    url
-}
-
-async fn execute(client: &reqwest::Client, command: &Command) -> Result<GraphSnapshot, String> {
-    let request = match command {
-        Command::Refresh => client.get(graph_url(&[])),
-        Command::PutDomain(domain) => client.put(graph_url(&["domains", &domain.id])).json(domain),
-        Command::DeleteDomain(id) => client.delete(graph_url(&["domains", id])),
-        Command::PutNode(node) | Command::SaveNode(node) => {
-            client.put(graph_url(&["nodes", &node.id])).json(node)
-        }
-        Command::DeleteNode(id) => client.delete(graph_url(&["nodes", id])),
-        Command::PutEdge(edge) => client.put(graph_url(&["edges"])).json(edge),
-        Command::DeleteEdge(edge) => client.delete(graph_url(&["edges"])).json(edge),
-    };
-    let response = request.send().await.map_err(|error| error.to_string())?;
-    if response.status().is_success() {
-        response
-            .json()
-            .await
-            .map_err(|error| format!("Invalid corpus response: {error}"))
-    } else {
-        let status = response.status();
-        match response.json::<ApiError>().await {
-            Ok(error) => Err(format!("{}: {}", error.code, error.error)),
-            Err(_) => Err(format!("XR Corpus returned HTTP {status}")),
-        }
+async fn execute(client: &CorpusClient, command: &Command) -> Result<GraphSnapshot, String> {
+    match command {
+        Command::Refresh => client.graph().await,
+        Command::PutDomain(domain) => client.save_domain(domain).await,
+        Command::DeleteDomain(id) => client.remove_domain(id).await,
+        Command::PutNode(node) | Command::SaveNode(node) => client.save_node(node).await,
+        Command::DeleteNode(id) => client.remove_node(id).await,
+        Command::PutEdge(edge) => client.save_edge(edge).await,
+        Command::DeleteEdge(edge) => client.remove_edge(edge).await,
+        Command::SavePositions(positions) => client.save_positions(positions).await,
+        Command::SetNodeState(state) => client.patch_node_state(state).await,
     }
+    .map_err(|error| error.to_string())
 }
 
 fn start_worker(ctx: egui::Context) -> (Sender<Command>, Receiver<Result<GraphSnapshot, String>>) {
@@ -163,12 +116,7 @@ fn start_worker(ctx: egui::Context) -> (Sender<Command>, Receiver<Result<GraphSn
                     return;
                 }
             };
-            let client = match reqwest::Client::builder()
-                .no_proxy()
-                .connect_timeout(Duration::from_secs(2))
-                .timeout(Duration::from_secs(8))
-                .build()
-            {
+            let client = match CorpusClient::new(CORPUS_URL) {
                 Ok(client) => client,
                 Err(error) => {
                     let _ = results_tx.send(Err(error.to_string()));
@@ -191,6 +139,16 @@ fn start_worker(ctx: egui::Context) -> (Sender<Command>, Receiver<Result<GraphSn
 pub(crate) struct CorpusStudioController {
     snapshot: Option<Arc<GraphSnapshot>>,
     editor: GraphEditorState<String, EdgeKey>,
+    view: CorpusView,
+    layout: ForceLayout<String>,
+    layout_signature: Option<u64>,
+    layout_running: bool,
+    fit_entire_graph: bool,
+    layout_cache: HashMap<CorpusView, HashMap<String, [f32; 2]>>,
+    layout_view: CorpusView,
+    focus_connections: bool,
+    graph_page: usize,
+    row_selection: HashSet<String>,
     selected_domain: Option<String>,
     selected_node: Option<String>,
     selected_edge: Option<EdgeKey>,
@@ -206,12 +164,11 @@ pub(crate) struct CorpusStudioController {
     confirm_delete_domain: bool,
     edge_target: String,
     edge_outgoing: bool,
-    edge_kind: String,
+    edge_kind: GraphEdgeKind,
     confirm_delete: bool,
     pending: bool,
     pending_node_save: bool,
     pending_enabled: Option<PendingEnabled>,
-    pending_position: Option<(String, [f32; 2])>,
     error: Option<String>,
     service_ready: bool,
     service_error: Option<String>,
@@ -225,6 +182,16 @@ impl Default for CorpusStudioController {
         Self {
             snapshot: None,
             editor: GraphEditorState::default(),
+            view: CorpusView::default(),
+            layout: ForceLayout::default(),
+            layout_signature: None,
+            layout_running: false,
+            fit_entire_graph: false,
+            layout_cache: HashMap::new(),
+            layout_view: CorpusView::Graph,
+            focus_connections: false,
+            graph_page: 0,
+            row_selection: HashSet::new(),
             selected_domain: None,
             selected_node: None,
             selected_edge: None,
@@ -240,12 +207,11 @@ impl Default for CorpusStudioController {
             confirm_delete_domain: false,
             edge_target: String::new(),
             edge_outgoing: true,
-            edge_kind: "trigger".into(),
+            edge_kind: GraphEdgeKind::Trigger,
             confirm_delete: false,
             pending: false,
             pending_node_save: false,
             pending_enabled: None,
-            pending_position: None,
             error: None,
             service_ready: false,
             service_error: None,
@@ -300,7 +266,10 @@ impl CorpusStudioController {
                 Some(PendingEnabled::Domain(domain.id.clone(), domain.enabled))
             }
             Command::PutNode(node) => Some(PendingEnabled::Node(node.id.clone(), node.enabled)),
-            Command::PutEdge(edge) => Some(PendingEnabled::Edge(edge.key(), edge.enabled)),
+            Command::PutEdge(edge) => Some(PendingEnabled::Edge(edge_key(edge), edge.enabled)),
+            Command::SetNodeState(state) => state
+                .enabled
+                .map(|enabled| PendingEnabled::Nodes(state.ids.iter().cloned().collect(), enabled)),
             _ => None,
         };
         self.pending_node_save = command.saves_node();
@@ -313,7 +282,6 @@ impl CorpusStudioController {
         {
             self.pending = false;
             self.pending_enabled = None;
-            self.pending_position = None;
             self.revert_immediate_node_fields();
             self.error = Some("XR Corpus worker is unavailable".into());
             self.worker_tx = None;
@@ -326,9 +294,17 @@ impl CorpusStudioController {
         let Some(result) = result else { return };
         self.pending = false;
         self.pending_enabled = None;
-        self.pending_position = None;
         match result {
             Ok(snapshot) => {
+                let ids = snapshot
+                    .nodes
+                    .iter()
+                    .map(|node| node.id.as_str())
+                    .collect::<HashSet<_>>();
+                self.row_selection.retain(|id| ids.contains(id.as_str()));
+                for cache in self.layout_cache.values_mut() {
+                    cache.retain(|id, _| ids.contains(id.as_str()));
+                }
                 if self.snapshot.is_none() && self.selected_domain.is_none() {
                     self.selected_domain = snapshot.domains.first().map(|domain| domain.id.clone());
                     self.domain_title_edit = snapshot
@@ -368,7 +344,7 @@ impl CorpusStudioController {
                 if self
                     .selected_edge
                     .as_ref()
-                    .is_some_and(|key| !snapshot.edges.iter().any(|edge| edge.key() == *key))
+                    .is_some_and(|key| !snapshot.edges.iter().any(|edge| edge_key(edge) == *key))
                 {
                     self.selected_edge = None;
                     self.editor.clear_selection();
@@ -398,8 +374,6 @@ impl CorpusStudioController {
             draft.enabled = saved.enabled;
             draft.activation = saved.activation.clone();
             draft.promptable = saved.promptable;
-            draft.x = saved.x;
-            draft.y = saved.y;
         }
     }
 
@@ -413,13 +387,14 @@ impl CorpusStudioController {
     fn displayed_node_enabled(&self, node: &GraphNode) -> bool {
         match &self.pending_enabled {
             Some(PendingEnabled::Node(id, enabled)) if id == &node.id => *enabled,
+            Some(PendingEnabled::Nodes(ids, enabled)) if ids.contains(&node.id) => *enabled,
             _ => node.enabled,
         }
     }
 
     fn displayed_edge_enabled(&self, edge: &GraphEdge) -> bool {
         match &self.pending_enabled {
-            Some(PendingEnabled::Edge(key, enabled)) if *key == edge.key() => *enabled,
+            Some(PendingEnabled::Edge(key, enabled)) if *key == edge_key(edge) => *enabled,
             _ => edge.enabled,
         }
     }
@@ -436,7 +411,11 @@ impl CorpusStudioController {
         self.confirm_delete = false;
         self.edge_target.clear();
         self.editor.select_node(node.id.clone(), false);
-        self.editor.canvas.fit_pending = true;
+        if self.view != CorpusView::List && !self.layout.positions.contains_key(&node.id) {
+            self.focus_connections = true;
+            self.graph_page = 0;
+            self.editor.canvas.fit_pending = true;
+        }
     }
 
     fn select_domain(&mut self, domain: Option<&GraphDomain>) {
@@ -444,6 +423,10 @@ impl CorpusStudioController {
             return;
         }
         self.selected_domain = domain.map(|domain| domain.id.clone());
+        self.focus_connections = false;
+        self.graph_page = 0;
+        self.layout_signature = None;
+        self.row_selection.clear();
         self.domain_title_edit = domain.map_or(String::new(), |domain| domain.title.clone());
         self.selected_node = None;
         self.selected_edge = None;
@@ -470,15 +453,6 @@ impl CorpusStudioController {
         }) else {
             return;
         };
-        let position = self.editor.new_node_position(
-            self.snapshot
-                .iter()
-                .flat_map(|snapshot| snapshot.nodes.iter())
-                .map(|node| Rect::from_min_size(Pos2::new(node.x, node.y), NODE_SIZE)),
-            NODE_SIZE,
-            None,
-            16.0,
-        );
         self.new_node = true;
         self.selected_node = None;
         self.selected_edge = None;
@@ -490,11 +464,9 @@ impl CorpusStudioController {
             title: String::new(),
             enabled: true,
             promptable: true,
-            activation: "always".into(),
+            activation: CorpusActivation::Always,
             priority: 20,
             values: vec![String::new(); LANGUAGE_CODES.len()],
-            x: position[0],
-            y: position[1],
         });
         self.draft_dirty = true;
     }
@@ -509,6 +481,41 @@ impl CorpusStudioController {
                 draft.domain_id = domain_id.to_owned();
             }
         }
+    }
+
+    fn position_changes(&self, snapshot: &GraphSnapshot) -> Vec<NodePosition> {
+        let saved = snapshot
+            .positions
+            .iter()
+            .map(|p| (p.id.as_str(), [p.x, p.y]))
+            .collect::<HashMap<_, _>>();
+        self.layout_cache
+            .get(&self.view)
+            .into_iter()
+            .flat_map(|cache| cache.iter())
+            .filter(|(id, p)| {
+                saved.get(id.as_str()) != Some(*p)
+                    && snapshot.nodes.iter().any(|node| &node.id == *id)
+            })
+            .map(|(id, p)| NodePosition {
+                id: id.clone(),
+                x: p[0],
+                y: p[1],
+            })
+            .collect()
+    }
+
+    fn set_node_enabled(&mut self, node: &GraphNode, enabled: bool) {
+        if self.selected_node.as_deref() == Some(&node.id)
+            && let Some(draft) = &mut self.node_draft
+        {
+            draft.enabled = enabled;
+        }
+        self.send(Command::SetNodeState(NodeState {
+            ids: vec![node.id.clone()],
+            enabled: Some(enabled),
+            domain_id: None,
+        }));
     }
 }
 
@@ -575,7 +582,7 @@ pub(crate) fn render(
                         .show(ui, |ui| {
                             render_browser(controller, &snapshot, ui, language, 230.0)
                         });
-                    render_canvas(controller, &snapshot, ui, language, height.min(460.0));
+                    render_workspace(controller, &snapshot, ui, language, height.min(460.0));
                     egui::CollapsingHeader::new(tr(language, "Term details"))
                         .default_open(true)
                         .show(ui, |ui| {
@@ -596,17 +603,22 @@ pub(crate) fn render(
                             });
                     },
                 );
-                let canvas_width = (ui.available_width() - 294.0).max(280.0);
+                let show_inspector =
+                    controller.node_draft.is_some() || controller.selected_edge.is_some();
+                let canvas_width =
+                    (ui.available_width() - if show_inspector { 294.0 } else { 0.0 }).max(280.0);
                 ui.allocate_ui_with_layout(
                     Vec2::new(canvas_width, height),
                     egui::Layout::top_down(egui::Align::Min),
-                    |ui| render_canvas(controller, &snapshot, ui, language, height),
+                    |ui| render_workspace(controller, &snapshot, ui, language, height),
                 );
-                ui.allocate_ui_with_layout(
-                    Vec2::new(284.0, height),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| render_inspector(controller, &snapshot, ui, language, height),
-                );
+                if show_inspector {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(284.0, height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| render_inspector(controller, &snapshot, ui, language, height),
+                    );
+                }
             });
         }
     });
@@ -811,10 +823,17 @@ fn render_browser(
             controller.create_node();
         }
     });
-    ui.add(
-        egui::TextEdit::singleline(&mut controller.node_search)
-            .hint_text(tr(language, "Search terms")),
-    );
+    if ui
+        .add(
+            egui::TextEdit::singleline(&mut controller.node_search)
+                .hint_text(tr(language, "Search terms")),
+        )
+        .changed()
+    {
+        controller.graph_page = 0;
+        controller.focus_connections = false;
+        controller.row_selection.clear();
+    }
     let node_ids = snapshot
         .nodes
         .iter()
@@ -842,70 +861,64 @@ fn render_browser(
                     }))
         })
         .collect::<Vec<_>>();
-    egui::ScrollArea::vertical()
-        .id_salt("corpus_terms")
-        .max_height((height * if idle_edges.is_empty() { 0.53 } else { 0.38 }).max(150.0))
-        .show(ui, |ui| {
-            let matching = snapshot
-                .nodes
-                .iter()
-                .filter(|node| {
-                    controller
-                        .selected_domain
-                        .as_ref()
-                        .is_none_or(|id| &node.domain_id == id)
-                })
-                .filter(|node| matches_node(node, &controller.node_search))
-                .collect::<Vec<_>>();
-            for node in matching {
-                let text = if controller.displayed_node_enabled(node) {
-                    node_label(node, language).to_owned()
-                } else {
-                    format!("{} · {}", node_label(node, language), tr(language, "off"))
-                };
-                ui.push_id(&node.id, |ui| {
-                    ui.horizontal(|ui| {
-                        let mut enabled = controller.displayed_node_enabled(node);
-                        if ui
-                            .add_enabled_ui(!controller.pending, |ui| {
-                                components::pill_toggle(ui, &mut enabled)
-                            })
-                            .inner
-                            .on_hover_text(tr(language, "Enabled"))
-                            .changed()
-                        {
-                            if controller.selected_node.as_deref() == Some(&node.id)
-                                && let Some(draft) = &mut controller.node_draft
-                            {
-                                draft.enabled = enabled;
-                            }
-                            controller.send(Command::PutNode(GraphNode {
-                                enabled,
-                                ..node.clone()
-                            }));
-                        }
-                        let domain_title = domain_label(snapshot, &node.domain_id);
-                        if ui
-                            .add_enabled_ui(!controller.draft_dirty, |ui| {
-                                ui.selectable_label(
-                                    controller.selected_node.as_deref() == Some(&node.id),
-                                    text,
-                                )
-                            })
-                            .inner
-                            .on_hover_text(format!(
-                                "{} · {}",
-                                node_label(node, language),
-                                domain_title
-                            ))
-                            .clicked()
-                        {
-                            controller.select_node(node);
-                        }
+    if controller.view != CorpusView::List {
+        egui::ScrollArea::vertical()
+            .id_salt("corpus_terms")
+            .max_height((height * if idle_edges.is_empty() { 0.53 } else { 0.38 }).max(150.0))
+            .show(ui, |ui| {
+                let matching = snapshot
+                    .nodes
+                    .iter()
+                    .filter(|node| {
+                        controller
+                            .selected_domain
+                            .as_ref()
+                            .is_none_or(|id| &node.domain_id == id)
                     })
-                });
-            }
-        });
+                    .filter(|node| matches_node(node, &controller.node_search))
+                    .collect::<Vec<_>>();
+                for node in matching {
+                    let text = if controller.displayed_node_enabled(node) {
+                        node_label(node, language).to_owned()
+                    } else {
+                        format!("{} · {}", node_label(node, language), tr(language, "off"))
+                    };
+                    ui.push_id(&node.id, |ui| {
+                        ui.horizontal(|ui| {
+                            let mut enabled = controller.displayed_node_enabled(node);
+                            if ui
+                                .add_enabled_ui(!controller.pending, |ui| {
+                                    components::pill_toggle(ui, &mut enabled)
+                                })
+                                .inner
+                                .on_hover_text(tr(language, "Enabled"))
+                                .changed()
+                            {
+                                controller.set_node_enabled(node, enabled);
+                            }
+                            let domain_title = domain_label(snapshot, &node.domain_id);
+                            if ui
+                                .add_enabled_ui(!controller.draft_dirty, |ui| {
+                                    ui.selectable_label(
+                                        controller.selected_node.as_deref() == Some(&node.id),
+                                        text,
+                                    )
+                                })
+                                .inner
+                                .on_hover_text(format!(
+                                    "{} · {}",
+                                    node_label(node, language),
+                                    domain_title
+                                ))
+                                .clicked()
+                            {
+                                controller.select_node(node);
+                            }
+                        })
+                    });
+                }
+            });
+    }
     if !idle_edges.is_empty() {
         egui::CollapsingHeader::new(format!(
             "{} ({})",
@@ -1058,11 +1071,11 @@ fn resolve_edge_target(snapshot: &GraphSnapshot, query: &str) -> Option<String> 
     valid_node_id(query).then(|| query.to_owned())
 }
 
-fn visible_nodes<'a>(
+fn matching_nodes<'a>(
     controller: &CorpusStudioController,
     snapshot: &'a GraphSnapshot,
 ) -> Vec<&'a GraphNode> {
-    let mut visible = snapshot
+    let mut nodes = snapshot
         .nodes
         .iter()
         .filter(|node| {
@@ -1070,52 +1083,72 @@ fn visible_nodes<'a>(
                 .selected_domain
                 .as_ref()
                 .is_none_or(|id| &node.domain_id == id)
+                && matches_node(node, &controller.node_search)
         })
-        .filter(|node| matches_node(node, &controller.node_search))
         .collect::<Vec<_>>();
-    visible.sort_by(|a, b| a.title.cmp(&b.title).then(a.id.cmp(&b.id)));
-    if let Some(selected) = &controller.selected_node {
-        let neighbors = snapshot
-            .edges
-            .iter()
-            .filter_map(|edge| {
-                if &edge.source_id == selected {
-                    Some(edge.target_id.as_str())
-                } else if &edge.target_id == selected {
-                    Some(edge.source_id.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect::<HashSet<_>>();
-        visible.retain(|node| &node.id == selected || neighbors.contains(node.id.as_str()));
-        for neighbor in snapshot
-            .nodes
-            .iter()
-            .filter(|node| neighbors.contains(node.id.as_str()))
-        {
-            if !visible.iter().any(|existing| existing.id == neighbor.id) {
-                visible.push(neighbor);
-            }
-        }
-        if let Some(node) = snapshot.nodes.iter().find(|node| &node.id == selected)
-            && !visible.iter().any(|existing| existing.id == node.id)
-        {
-            visible.insert(0, node);
-        }
-        visible.sort_by_key(|node| &node.id != selected);
-    }
-    if controller.selected_node.is_none() {
-        visible.truncate(MAX_VISIBLE_NODES);
-    }
-    visible
+    nodes.sort_by(|a, b| {
+        (&a.domain_id, &a.subdomain, &a.title, &a.id).cmp(&(
+            &b.domain_id,
+            &b.subdomain,
+            &b.title,
+            &b.id,
+        ))
+    });
+    nodes
 }
 
-fn node_positions(nodes: &[&GraphNode]) -> HashMap<String, [f32; 2]> {
-    nodes
+fn visible_nodes<'a>(
+    controller: &CorpusStudioController,
+    snapshot: &'a GraphSnapshot,
+) -> Vec<&'a GraphNode> {
+    if controller.focus_connections
+        && let Some(selected) = &controller.selected_node
+    {
+        let mut ids = HashSet::from([selected.as_str()]);
+        for edge in &snapshot.edges {
+            if &edge.source_id == selected {
+                ids.insert(&edge.target_id);
+            }
+            if &edge.target_id == selected {
+                ids.insert(&edge.source_id);
+            }
+        }
+        let mut nodes = snapshot
+            .nodes
+            .iter()
+            .filter(|node| ids.contains(node.id.as_str()))
+            .collect::<Vec<_>>();
+        nodes.sort_by_key(|node| (&node.id != selected, &node.domain_id, &node.title));
+        nodes
+    } else {
+        matching_nodes(controller, snapshot)
+    }
+}
+
+fn connected_nodes(snapshot: &GraphSnapshot) -> HashSet<&str> {
+    let ids = snapshot
+        .nodes
         .iter()
-        .map(|node| (node.id.clone(), [node.x, node.y]))
+        .map(|node| node.id.as_str())
+        .collect::<HashSet<_>>();
+    snapshot
+        .edges
+        .iter()
+        .filter(|edge| {
+            ids.contains(edge.source_id.as_str()) && ids.contains(edge.target_id.as_str())
+        })
+        .flat_map(|edge| [edge.source_id.as_str(), edge.target_id.as_str()])
         .collect()
+}
+
+fn node_size(node: &GraphNode, connected: &HashSet<&str>) -> Vec2 {
+    if !node.promptable {
+        Vec2::new(132.0, 40.0)
+    } else if !connected.contains(node.id.as_str()) {
+        Vec2::new(148.0, 54.0)
+    } else {
+        NODE_SIZE
+    }
 }
 
 fn domain_color(id: &str) -> Color32 {
@@ -1123,42 +1156,300 @@ fn domain_color(id: &str) -> Color32 {
         hash.wrapping_mul(31).wrapping_add(byte as u32)
     });
     const COLORS: [Color32; 6] = [
-        Color32::from_rgb(215, 231, 242),
-        Color32::from_rgb(230, 222, 243),
-        Color32::from_rgb(218, 238, 225),
-        Color32::from_rgb(244, 230, 209),
-        Color32::from_rgb(238, 218, 223),
-        Color32::from_rgb(221, 235, 235),
+        Color32::from_rgb(67, 126, 160),
+        Color32::from_rgb(139, 104, 171),
+        Color32::from_rgb(66, 140, 112),
+        Color32::from_rgb(176, 128, 63),
+        Color32::from_rgb(173, 100, 120),
+        Color32::from_rgb(69, 140, 149),
     ];
-    COLORS[(hash as usize) % COLORS.len()]
+    COLORS[hash as usize % COLORS.len()]
 }
 
-fn render_canvas(
+fn sync_layout(
+    controller: &mut CorpusStudioController,
+    snapshot: &GraphSnapshot,
+    nodes: &[&GraphNode],
+    connected: &HashSet<&str>,
+    force: bool,
+) {
+    let ids = nodes
+        .iter()
+        .map(|node| node.id.as_str())
+        .collect::<HashSet<_>>();
+    let edges = snapshot
+        .edges
+        .iter()
+        .filter(|edge| {
+            ids.contains(edge.source_id.as_str()) && ids.contains(edge.target_id.as_str())
+        })
+        .map(|edge| (edge.source_id.clone(), edge.target_id.clone()))
+        .collect::<Vec<_>>();
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    controller.view.hash(&mut hash);
+    for node in nodes {
+        (
+            &node.id,
+            &node.domain_id,
+            node.promptable,
+            connected.contains(node.id.as_str()),
+        )
+            .hash(&mut hash);
+    }
+    edges.hash(&mut hash);
+    let signature = hash.finish();
+    if !force && controller.layout_signature == Some(signature) {
+        return;
+    }
+    let topology_changed = controller.layout_signature.is_some()
+        && controller.layout_view == controller.view
+        && controller.layout.positions.len() == nodes.len()
+        && nodes
+            .iter()
+            .all(|node| controller.layout.positions.contains_key(&node.id));
+    let mut known = if controller.view == CorpusView::Graph {
+        snapshot
+            .positions
+            .iter()
+            .map(|p| (p.id.clone(), [p.x, p.y]))
+            .collect::<HashMap<_, _>>()
+    } else {
+        HashMap::new()
+    };
+    if let Some(cache) = controller.layout_cache.get(&controller.view) {
+        known.extend(cache.iter().map(|(id, p)| (id.clone(), *p)));
+    }
+    let known_rects = nodes
+        .iter()
+        .filter_map(|node| {
+            known.get(&node.id).map(|p| {
+                Rect::from_min_size(Pos2::new(p[0], p[1]), node_size(node, connected)).shrink(1.0)
+            })
+        })
+        .collect::<Vec<_>>();
+    let restore = !force
+        && !topology_changed
+        && known_rects.len() == nodes.len()
+        && !known_rects.iter().enumerate().any(|(index, rect)| {
+            known_rects[index + 1..]
+                .iter()
+                .any(|other| rect.intersects(*other))
+        });
+    controller.layout.reset(
+        nodes.iter().map(|node| ForceNode {
+            id: node.id.clone(),
+            size: node_size(node, connected),
+            group: snapshot
+                .domains
+                .iter()
+                .position(|domain| domain.id == node.domain_id)
+                .unwrap_or(snapshot.domains.len()),
+        }),
+        edges.iter().cloned(),
+    );
+    if !force {
+        for node in nodes {
+            if let Some(p) = known.get(&node.id) {
+                controller.layout.positions.insert(node.id.clone(), *p);
+            }
+        }
+    }
+    if controller
+        .editor
+        .wire_from
+        .as_ref()
+        .is_some_and(|id| !ids.contains(id.as_str()))
+        || controller
+            .editor
+            .wire_from_input
+            .as_ref()
+            .is_some_and(|id| !ids.contains(id.as_str()))
+    {
+        controller.editor.cancel_wire();
+    }
+    controller.layout_view = controller.view;
+    controller.layout_running = controller.view == CorpusView::Graph && !restore;
+    if restore {
+        controller.editor.canvas.fit_pending = true;
+    } else if controller.view == CorpusView::Layered {
+        // A discovery forest gives cyclic terminology graphs useful layers; all original edges remain visible.
+        let mut seen = HashSet::new();
+        let mut tree = Vec::new();
+        let mut queue = std::collections::VecDeque::new();
+        for node in nodes.iter().filter(|node| !node.promptable) {
+            seen.insert(node.id.clone());
+            queue.push_back(node.id.clone());
+        }
+        for root in nodes {
+            if queue.is_empty() && seen.insert(root.id.clone()) {
+                queue.push_back(root.id.clone());
+            }
+            while let Some(source) = queue.pop_front() {
+                for (_, target) in edges.iter().filter(|(from, _)| from == &source) {
+                    if seen.insert(target.clone()) {
+                        tree.push((source.clone(), target.clone()));
+                        queue.push_back(target.clone());
+                    }
+                }
+            }
+        }
+        controller.layout.positions = layered_layout(
+            nodes.iter().map(|node| LayoutNode {
+                id: node.id.clone(),
+                size: node_size(node, connected),
+            }),
+            tree,
+            LayeredLayoutOptions {
+                horizontal_gap: 90.0,
+                vertical_gap: 22.0,
+                snap: None,
+                ..Default::default()
+            },
+        )
+        .into_iter()
+        .map(|movement| (movement.node_id, movement.position))
+        .collect();
+    } else {
+        for _ in 0..18 {
+            controller.layout_running = controller.layout.step(1.0 / 60.0);
+        }
+    }
+    controller.layout_signature = Some(signature);
+    controller.editor.canvas.fit_pending = true;
+}
+
+fn render_workspace(
     controller: &mut CorpusStudioController,
     snapshot: &GraphSnapshot,
     ui: &mut egui::Ui,
     language: UiLanguage,
     height: f32,
 ) {
-    let nodes = visible_nodes(controller, snapshot);
-    ui.horizontal(|ui| {
-        ui.label(format!("{} {}", nodes.len(), tr(language, "terms")));
-        if components::secondary_button(ui, tr(language, "Fit graph")).clicked() {
-            controller.editor.canvas.fit_pending = true;
-        }
-        if controller.editor.wire_active() {
-            ui.label(tr(language, "Select a target node"));
-            if ui.button(tr(language, "Cancel")).clicked() {
+    let workspace_top = ui.cursor().top();
+    ui.horizontal_wrapped(|ui| {
+        for (view, title) in [
+            (CorpusView::Graph, "Graph"),
+            (CorpusView::Layered, "Hierarchy"),
+            (CorpusView::List, "List"),
+        ] {
+            if ui
+                .selectable_label(controller.view == view, tr(language, title))
+                .clicked()
+                && controller.view != view
+            {
+                if controller.view == CorpusView::List && controller.selected_node.is_some() {
+                    controller.focus_connections = true;
+                    controller.graph_page = 0;
+                }
+                controller.view = view;
+                controller.layout_signature = None;
                 controller.editor.cancel_wire();
             }
         }
     });
-    let mut positions = node_positions(&nodes);
-    if let Some((id, position)) = &controller.pending_position {
-        if let Some(visible_position) = positions.get_mut(id) {
-            *visible_position = *position;
-        }
+    ui.add_space(4.0);
+    if controller.view == CorpusView::List {
+        render_list(
+            controller,
+            snapshot,
+            ui,
+            language,
+            height - (ui.cursor().top() - workspace_top),
+        );
+        return;
     }
+    let mut candidates = visible_nodes(controller, snapshot);
+    let center = if controller.focus_connections {
+        controller
+            .selected_node
+            .as_ref()
+            .and_then(|id| candidates.iter().position(|node| &node.id == id))
+            .map(|index| candidates.remove(index))
+    } else {
+        None
+    };
+    let page_size = MAX_VISIBLE_NODES - usize::from(center.is_some());
+    let page_count = candidates.len().div_ceil(page_size).max(1);
+    controller.graph_page = controller.graph_page.min(page_count - 1);
+    let nodes = center
+        .into_iter()
+        .chain(
+            candidates
+                .into_iter()
+                .skip(controller.graph_page * page_size)
+                .take(page_size),
+        )
+        .collect::<Vec<_>>();
+    let connected = connected_nodes(snapshot);
+    sync_layout(controller, snapshot, &nodes, &connected, false);
+    ui.horizontal_wrapped(|ui| {
+        if components::secondary_button(ui, tr(language, "Auto layout")).clicked() {
+            sync_layout(controller, snapshot, &nodes, &connected, true);
+        }
+        if components::secondary_button(ui, tr(language, "Fit graph")).clicked() {
+            controller.layout_running = false;
+            controller.fit_entire_graph = true;
+            controller.editor.canvas.fit_pending = true;
+        }
+        let changes = controller.position_changes(snapshot);
+        if components::secondary_button_enabled(
+            ui,
+            tr(language, "Save positions"),
+            !changes.is_empty() && !controller.layout_running && !controller.pending,
+        )
+        .clicked()
+        {
+            controller.send(Command::SavePositions(changes));
+        }
+        ui.menu_button("⋯", |ui| {
+            if ui.button(tr(language, "Restore saved positions")).clicked() {
+                controller.layout_cache.insert(
+                    controller.view,
+                    snapshot
+                        .positions
+                        .iter()
+                        .map(|p| (p.id.clone(), [p.x, p.y]))
+                        .collect(),
+                );
+                controller.layout_signature = None;
+                sync_layout(controller, snapshot, &nodes, &connected, false);
+                ui.close();
+            }
+        });
+        if controller.layout_running {
+            ui.spinner();
+        }
+        if controller.selected_node.is_some()
+            && ui
+                .selectable_label(
+                    controller.focus_connections,
+                    tr(language, "Connections only"),
+                )
+                .clicked()
+        {
+            controller.focus_connections = !controller.focus_connections;
+            controller.graph_page = 0;
+        }
+        if page_count > 1 {
+            if ui
+                .add_enabled(controller.graph_page > 0, egui::Button::new("‹"))
+                .clicked()
+            {
+                controller.graph_page -= 1;
+            }
+            ui.small(format!("{} / {}", controller.graph_page + 1, page_count));
+            if ui
+                .add_enabled(
+                    controller.graph_page + 1 < page_count,
+                    egui::Button::new("›"),
+                )
+                .clicked()
+            {
+                controller.graph_page += 1;
+            }
+        }
+    });
+    let canvas_height = (height - (ui.cursor().top() - workspace_top) - 34.0).max(240.0);
     Frame::new()
         .fill(graph_style::CANVAS_FILL)
         .stroke(Stroke::new(1.0, graph_style::CANVAS_BORDER))
@@ -1166,61 +1457,101 @@ fn render_canvas(
         .inner_margin(egui::Margin::same(4))
         .show(ui, |ui| {
             let (canvas, response) = ui.allocate_exact_size(
-                Vec2::new(ui.available_width(), (height - 34.0).max(260.0)),
+                Vec2::new(ui.available_width(), canvas_height),
                 Sense::click_and_drag(),
             );
+            if controller.editor.wire_active()
+                || response.dragged()
+                || (response.hovered() && ui.input(|input| input.smooth_scroll_delta.y != 0.0))
+            {
+                controller.layout_running = false;
+            }
+            if controller.layout_running {
+                controller.layout_running =
+                    controller.layout.step(ui.input(|input| input.predicted_dt));
+                controller.editor.canvas.fit_pending = true;
+                if controller.layout_running {
+                    ui.ctx().request_repaint();
+                }
+            }
+            let old_size = controller.editor.canvas.canvas_size;
+            controller.editor.canvas.pan += (canvas.size() - old_size) * 0.5;
             controller.editor.canvas.canvas_size = canvas.size();
+            if old_size != canvas.size()
+                && let Some(id) = &controller.selected_node
+                && let Some(node) = nodes.iter().find(|node| &node.id == id)
+                && let Some(p) = controller.layout.positions.get(id)
+            {
+                let center = Vec2::new(p[0], p[1]) + node_size(node, &connected) * 0.5;
+                controller.editor.canvas.pan =
+                    canvas.size() * 0.5 - center * controller.editor.canvas.zoom;
+            }
             if controller.editor.canvas.fit_pending {
-                if !positions.is_empty() {
-                    let left = positions
-                        .values()
-                        .map(|p| p[0])
-                        .fold(f32::INFINITY, f32::min);
-                    let top = positions
-                        .values()
-                        .map(|p| p[1])
-                        .fold(f32::INFINITY, f32::min);
-                    let right = positions
-                        .values()
-                        .map(|p| p[0] + NODE_SIZE.x)
-                        .fold(f32::NEG_INFINITY, f32::max);
-                    let bottom = positions
-                        .values()
-                        .map(|p| p[1] + NODE_SIZE.y)
-                        .fold(f32::NEG_INFINITY, f32::max);
-                    controller.editor.canvas.fit_to_bounds(
-                        Rect::from_min_max(Pos2::new(left, top), Pos2::new(right, bottom)),
-                        canvas.size(),
-                        NODE_SIZE,
-                    );
+                let bounds = nodes
+                    .iter()
+                    .filter_map(|node| {
+                        controller.layout.positions.get(&node.id).map(|p| {
+                            Rect::from_min_size(Pos2::new(p[0], p[1]), node_size(node, &connected))
+                        })
+                    })
+                    .reduce(|a, b| a.union(b));
+                if let Some(bounds) = bounds {
+                    controller
+                        .editor
+                        .canvas
+                        .fit_to_bounds(bounds, canvas.size(), NODE_SIZE);
+                    if !controller.fit_entire_graph {
+                        controller.editor.canvas.zoom = controller.editor.canvas.zoom.max(0.55);
+                    }
+                    controller.editor.canvas.pan = canvas.size() * 0.5
+                        - bounds.center().to_vec2() * controller.editor.canvas.zoom;
                 }
                 controller.editor.canvas.fit_pending = false;
+                controller.fit_entire_graph = false;
             }
             let canvas_ui = graph_canvas::canvas_viewport(ui, canvas);
             controller
                 .editor
                 .handle_navigation(canvas, &response, &canvas_ui, true, true);
-            graph_canvas::paint_grid(
-                &canvas_ui,
-                canvas,
-                &controller.editor.canvas,
-                graph_style::GRID,
-            );
+            if response.dragged_by(egui::PointerButton::Primary)
+                && controller.editor.drag_node.is_none()
+                && !controller.editor.wire_active()
+                && !ui.input(|input| input.key_down(egui::Key::Space))
+            {
+                controller.editor.canvas.pan += ui.input(|input| input.pointer.delta());
+            }
             let rects = nodes
                 .iter()
                 .filter_map(|node| {
-                    let p = positions.get(&node.id)?;
-                    Some((
-                        node.id.clone(),
-                        controller.editor.canvas.graph_rect(
-                            canvas,
-                            controller.editor.display_position(&node.id, *p),
-                            NODE_SIZE,
-                        ),
-                    ))
+                    controller.layout.positions.get(&node.id).map(|p| {
+                        (
+                            node.id.clone(),
+                            controller.editor.canvas.graph_rect(
+                                canvas,
+                                controller.editor.display_position(&node.id, *p),
+                                node_size(node, &connected),
+                            ),
+                        )
+                    })
                 })
                 .collect::<HashMap<_, _>>();
-            let domain_enabled = snapshot
+            let pointer = canvas_ui
+                .ctx()
+                .pointer_hover_pos()
+                .filter(|p| canvas.contains(*p));
+            let hovered_node = pointer.and_then(|p| {
+                rects
+                    .iter()
+                    .find(|(_, rect)| rect.expand(6.0).contains(p))
+                    .map(|(id, _)| id.clone())
+            });
+            let focus = hovered_node.clone().or_else(|| {
+                controller
+                    .selected_node
+                    .clone()
+                    .filter(|id| rects.contains_key(id))
+            });
+            let domains = snapshot
                 .domains
                 .iter()
                 .map(|domain| {
@@ -1230,394 +1561,620 @@ fn render_canvas(
                     )
                 })
                 .collect::<HashMap<_, _>>();
-            let node_lookup = snapshot
-                .nodes
+            let lookup = nodes
                 .iter()
-                .map(|node| (node.id.as_str(), node))
+                .map(|node| (node.id.as_str(), *node))
                 .collect::<HashMap<_, _>>();
-            let focused_node = controller.selected_node.as_deref();
-            let focused_edge = controller.selected_edge.as_ref();
-            let candidates = snapshot
-                .edges
-                .iter()
-                .filter(|edge| {
-                    let source_visible = rects.contains_key(&edge.source_id);
-                    let target_visible = rects.contains_key(&edge.target_id);
-                    (source_visible && target_visible)
-                        || (source_visible && !node_lookup.contains_key(edge.target_id.as_str()))
-                        || (target_visible && !node_lookup.contains_key(edge.source_id.as_str()))
-                })
-                .filter(|edge| {
-                    if let Some(id) = focused_node {
-                        edge.source_id == id || edge.target_id == id
-                    } else if let Some(key) = focused_edge {
-                        edge.source_id == key.source_id
-                            && edge.target_id == key.target_id
-                            && edge.kind == key.kind
-                    } else {
-                        true
-                    }
-                })
-                .collect::<Vec<_>>();
-            let overview = focused_node.is_none() && focused_edge.is_none();
-            let graph_edges = if overview && candidates.len() > MAX_OVERVIEW_EDGES {
-                let trigger_count = candidates
-                    .iter()
-                    .filter(|edge| edge.kind == "trigger")
-                    .count();
-                let context_count = candidates.len() - trigger_count;
-                let context_limit = context_count
-                    .min(MAX_OVERVIEW_EDGES - trigger_count.min(MAX_OVERVIEW_EDGES / 2));
-                let trigger_limit = trigger_count.min(MAX_OVERVIEW_EDGES - context_limit);
-                [("trigger", trigger_limit), ("context", context_limit)]
-                    .into_iter()
-                    .flat_map(|(kind, limit)| {
-                        let pool = candidates
-                            .iter()
-                            .copied()
-                            .filter(|edge| edge.kind == kind)
-                            .collect::<Vec<_>>();
-                        let stride = pool.len().div_ceil(limit.max(1)).max(1);
-                        pool.into_iter().step_by(stride)
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                candidates
+            let active_node = |node: &GraphNode| {
+                controller.displayed_node_enabled(node)
+                    && domains.get(node.domain_id.as_str()) == Some(&true)
             };
-            let pair_kinds = graph_edges
+            let all_edges = snapshot
+                .edges
                 .iter()
                 .filter(|edge| {
                     rects.contains_key(&edge.source_id) && rects.contains_key(&edge.target_id)
                 })
-                .fold(HashMap::<(&str, &str), u8>::new(), |mut pairs, edge| {
-                    let flag = if edge.kind == "context" { 2 } else { 1 };
-                    *pairs
-                        .entry((edge.source_id.as_str(), edge.target_id.as_str()))
-                        .or_default() |= flag;
-                    pairs
-                });
-            let edge_lines = graph_edges
+                .collect::<Vec<_>>();
+            // The overview keeps a nearest incoming/outgoing connection for each term.
+            let mut nearest = HashMap::<(&str, bool, GraphEdgeKind), (usize, f32)>::new();
+            for (index, edge) in all_edges.iter().enumerate() {
+                let distance = rects[&edge.source_id]
+                    .center()
+                    .distance_sq(rects[&edge.target_id].center());
+                for key in [
+                    (edge.source_id.as_str(), true, edge.kind),
+                    (edge.target_id.as_str(), false, edge.kind),
+                ] {
+                    let entry = nearest.entry(key).or_insert((index, distance));
+                    if distance < entry.1 {
+                        *entry = (index, distance);
+                    }
+                }
+            }
+            let overview = nearest
+                .values()
+                .map(|(index, _)| *index)
+                .collect::<HashSet<_>>();
+            let edge_lines = all_edges
                 .iter()
-                .filter_map(|edge| {
-                    let (from, to) = (rects.get(&edge.source_id)?, rects.get(&edge.target_id)?);
-                    let offset = if pair_kinds
-                        .get(&(edge.source_id.as_str(), edge.target_id.as_str()))
-                        == Some(&3)
-                    {
-                        if edge.kind == "context" { 6.0 } else { -6.0 }
-                    } else {
-                        0.0
-                    };
-                    Some((
-                        edge,
-                        graph_canvas::bezier_points(
-                            Pos2::new(from.right(), from.center().y + offset),
-                            Pos2::new(to.left(), to.center().y + offset),
-                        ),
-                    ))
+                .enumerate()
+                .filter(|(index, edge)| {
+                    overview.contains(index)
+                        || focus
+                            .as_ref()
+                            .is_some_and(|id| id == &edge.source_id || id == &edge.target_id)
+                        || controller.selected_edge.as_ref() == Some(&edge_key(edge))
+                })
+                .map(|(_, edge)| {
+                    let mut points = graph_canvas::node_connection(
+                        rects[&edge.source_id],
+                        rects[&edge.target_id],
+                    );
+                    // Separate reciprocal and context connections while keeping endpoints on the node boundary.
+                    let direction = points[3] - points[0];
+                    let bend = Vec2::new(-direction.y, direction.x).normalized()
+                        * if edge.kind == GraphEdgeKind::Context {
+                            14.0
+                        } else {
+                            -7.0
+                        };
+                    points[1] += bend;
+                    points[2] += bend;
+                    (*edge, points)
                 })
                 .collect::<Vec<_>>();
+            let hit_edge = if hovered_node.is_none() {
+                pointer.and_then(|p| {
+                    closest_link(
+                        p,
+                        edge_lines
+                            .iter()
+                            .map(|(edge, points)| (edge_key(edge), *points)),
+                        6.0,
+                    )
+                })
+            } else {
+                None
+            };
+            let highlighted_edge = hit_edge
+                .clone()
+                .or_else(|| controller.selected_edge.clone());
             for (edge, points) in &edge_lines {
+                let selected = highlighted_edge.as_ref() == Some(&edge_key(edge));
+                let incident = focus
+                    .as_ref()
+                    .is_some_and(|id| id == &edge.source_id || id == &edge.target_id);
                 let active = controller.displayed_edge_enabled(edge)
-                    && node_lookup
-                        .get(edge.source_id.as_str())
-                        .is_some_and(|node| {
-                            controller.displayed_node_enabled(node)
-                                && domain_enabled.get(node.domain_id.as_str()) == Some(&true)
-                        })
-                    && node_lookup
-                        .get(edge.target_id.as_str())
-                        .is_some_and(|node| {
-                            controller.displayed_node_enabled(node)
-                                && domain_enabled.get(node.domain_id.as_str()) == Some(&true)
-                        });
-                let selected = controller.selected_edge.as_ref() == Some(&edge.key());
-                let color = if selected {
-                    graph_style::LINK_SELECTED
-                } else if edge.kind == "context" {
-                    if active {
-                        Color32::from_rgb(112, 81, 148)
+                    && active_node(lookup[edge.source_id.as_str()])
+                    && active_node(lookup[edge.target_id.as_str()]);
+                let alpha = if selected {
+                    1.0
+                } else if incident {
+                    0.8
+                } else if focus.is_some() {
+                    0.10
+                } else {
+                    0.34
+                };
+                let colors = [&edge.source_id, &edge.target_id].map(|id| {
+                    (if selected {
+                        graph_style::LINK_SELECTED
+                    } else if active {
+                        domain_color(&lookup[id.as_str()].domain_id)
                     } else {
-                        Color32::from_rgb(180, 163, 193)
-                    }
-                } else if active {
-                    graph_style::LINK
-                } else {
-                    graph_style::LINK_INACTIVE
-                };
-                let stroke = Stroke::new(if selected { 2.5 } else { 1.6 }, color);
-                if active && edge.kind == "trigger" {
-                    graph_canvas::paint_wire(&canvas_ui, *points, stroke);
-                } else {
-                    graph_canvas::paint_dashed_wire(&canvas_ui, *points, stroke);
-                }
-                let tip = points[3] - Vec2::new(7.0, 0.0);
-                canvas_ui.painter().add(egui::Shape::convex_polygon(
-                    vec![tip, tip - Vec2::new(8.0, 4.0), tip - Vec2::new(8.0, -4.0)],
-                    color,
-                    Stroke::NONE,
-                ));
+                        graph_style::LINK_INACTIVE
+                    })
+                    .gamma_multiply(alpha)
+                });
+                graph_canvas::paint_directed_wire(
+                    &canvas_ui,
+                    *points,
+                    if selected {
+                        2.2
+                    } else if edge.kind == GraphEdgeKind::Context {
+                        1.0
+                    } else {
+                        1.4
+                    },
+                    colors,
+                    edge.kind == GraphEdgeKind::Context || !active,
+                );
             }
-            for edge in &graph_edges {
-                let dangling = match (rects.get(&edge.source_id), rects.get(&edge.target_id)) {
-                    (Some(source), None) if !node_lookup.contains_key(edge.target_id.as_str()) => {
-                        let from = Pos2::new(source.right(), source.center().y);
-                        Some((from, from + Vec2::new(70.0, -24.0)))
-                    }
-                    (None, Some(target)) if !node_lookup.contains_key(edge.source_id.as_str()) => {
-                        let to = Pos2::new(target.left(), target.center().y);
-                        Some((to - Vec2::new(70.0, 24.0), to))
-                    }
-                    _ => None,
-                };
-                if let Some((from, to)) = dangling {
-                    graph_canvas::paint_dashed_wire(
-                        &canvas_ui,
-                        graph_canvas::bezier_points(from, to),
-                        Stroke::new(1.4, graph_style::LINK_INACTIVE),
-                    );
+            if response.clicked() && hovered_node.is_none() && !controller.draft_dirty {
+                controller.selected_edge = hit_edge.clone();
+                controller.selected_node = None;
+                controller.node_draft = None;
+                controller.focus_connections = false;
+                controller.editor.clear_selection();
+                if let Some(key) = &hit_edge {
+                    controller.editor.select_link(key.clone(), false);
                 }
+                controller.editor.cancel_wire();
             }
-            let pointer = response.interact_pointer_pos();
-            let pointer_over_node =
-                pointer.is_some_and(|p| rects.values().any(|rect| rect.expand(10.0).contains(p)));
-            let hit_edge = pointer.and_then(|p| {
-                closest_link(
-                    p,
-                    edge_lines
-                        .iter()
-                        .map(|(edge, points)| (edge.key(), *points)),
-                    9.0,
-                )
-            });
-            if response.clicked() && !pointer_over_node && !controller.draft_dirty {
-                if let Some(key) = hit_edge.clone() {
-                    controller.selected_edge = Some(key.clone());
-                    controller.selected_node = None;
-                    controller.node_draft = None;
-                    controller.editor.select_link(key, false);
-                } else if controller.selected_node.is_some() || controller.selected_edge.is_some() {
-                    controller.selected_node = None;
-                    controller.selected_edge = None;
-                    controller.node_draft = None;
-                    controller.editor.clear_selection();
-                    controller.editor.canvas.fit_pending = true;
-                }
-            }
+            let zoom = controller.editor.canvas.zoom;
             for node in &nodes {
                 let Some(rect) = rects.get(&node.id).copied() else {
                     continue;
                 };
-                if !canvas.intersects(rect) {
-                    continue;
-                }
                 let selected = controller.selected_node.as_deref() == Some(&node.id);
+                let hovered = hovered_node.as_deref() == Some(&node.id);
+                let highlighted = selected
+                    || controller.editor.drag_node.as_deref() == Some(&node.id)
+                    || hovered
+                    || highlighted_edge
+                        .as_ref()
+                        .is_some_and(|edge| edge.source_id == node.id || edge.target_id == node.id);
                 let active = controller.displayed_node_enabled(node)
-                    && domain_enabled.get(node.domain_id.as_str()) == Some(&true);
-                let fill = if active {
+                    && domains.get(node.domain_id.as_str()) == Some(&true);
+                let isolated = !connected.contains(node.id.as_str());
+                let accent = if active && !isolated {
                     domain_color(&node.domain_id)
                 } else {
-                    Color32::from_gray(226)
+                    graph_style::NODE_MUTED
                 };
-                canvas_ui
-                    .painter()
-                    .rect_filled(rect, CornerRadius::same(5), fill);
-                canvas_ui.painter().rect_stroke(
-                    rect,
-                    CornerRadius::same(5),
-                    Stroke::new(
-                        if selected { 2.2 } else { 1.0 },
-                        if selected {
-                            graph_style::LINK_SELECTED
-                        } else {
-                            graph_style::NODE_BORDER
-                        },
-                    ),
-                    egui::StrokeKind::Inside,
-                );
-                let text_painter = canvas_ui.painter().with_clip_rect(rect.shrink(8.0));
-                text_painter.text(
-                    rect.min + Vec2::new(9.0, 11.0),
-                    egui::Align2::LEFT_TOP,
-                    node_label(node, language),
-                    egui::FontId::proportional(13.0),
-                    graph_style::NODE_TEXT,
-                );
-                text_painter.text(
-                    rect.min + Vec2::new(9.0, 40.0),
-                    egui::Align2::LEFT_TOP,
-                    domain_label(snapshot, &node.domain_id),
-                    egui::FontId::proportional(11.0),
-                    graph_style::NODE_MUTED,
-                );
-                let body = canvas_ui.interact(
-                    rect.shrink2(Vec2::new(10.0, 0.0)),
-                    canvas_ui.make_persistent_id(("corpus_node", &node.id)),
-                    if controller.draft_dirty {
-                        Sense::hover()
+                let fill = if active {
+                    accent.gamma_multiply(if node.promptable { 0.13 } else { 0.06 })
+                } else {
+                    Color32::from_gray(239)
+                };
+                let rounding = CornerRadius::same(if node.promptable {
+                    8
+                } else {
+                    (rect.height() * 0.5) as u8
+                });
+                canvas_ui.painter().rect_filled(rect, rounding, fill);
+                let stroke = Stroke::new(
+                    if highlighted { 2.0 } else { 1.0 },
+                    if highlighted {
+                        graph_style::LINK_SELECTED
                     } else {
-                        Sense::click_and_drag()
+                        accent.gamma_multiply(0.45)
                     },
                 );
+                if isolated && !highlighted {
+                    let path = [
+                        rect.left_top(),
+                        rect.right_top(),
+                        rect.right_bottom(),
+                        rect.left_bottom(),
+                        rect.left_top(),
+                    ];
+                    canvas_ui
+                        .painter()
+                        .extend(egui::Shape::dashed_line(&path, stroke, 4.0, 4.0));
+                } else {
+                    canvas_ui.painter().rect_stroke(
+                        rect,
+                        rounding,
+                        stroke,
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                let text_rect = rect.shrink(9.0 * zoom);
+                let painter = canvas_ui.painter().with_clip_rect(text_rect);
+                let mut title_job = egui::text::LayoutJob::simple(
+                    node_label(node, language).to_owned(),
+                    egui::FontId::proportional((13.0 * zoom).max(11.0)),
+                    graph_style::NODE_TEXT,
+                    text_rect.width(),
+                );
+                title_job.wrap.max_rows = 1;
+                let title = painter.layout_job(title_job);
+                painter.galley(
+                    if node.promptable {
+                        text_rect.min
+                    } else {
+                        Pos2::new(text_rect.left(), rect.center().y - title.size().y * 0.5)
+                    },
+                    title,
+                    graph_style::NODE_TEXT,
+                );
+                if node.promptable {
+                    painter.text(
+                        Pos2::new(text_rect.left(), text_rect.bottom()),
+                        egui::Align2::LEFT_BOTTOM,
+                        node.values
+                            .get(if preferred_language_index(language) == 1 {
+                                0
+                            } else {
+                                1
+                            })
+                            .filter(|value| {
+                                !value.is_empty() && value.as_str() != node_label(node, language)
+                            })
+                            .map_or(node.subdomain.as_str(), String::as_str),
+                        egui::FontId::proportional((10.0 * zoom).max(8.0)),
+                        graph_style::NODE_MUTED,
+                    );
+                }
+                let body = canvas_ui
+                    .interact(
+                        rect.shrink2(Vec2::new(9.0, 0.0)),
+                        canvas_ui.make_persistent_id(("corpus_node", &node.id)),
+                        if controller.draft_dirty {
+                            Sense::hover()
+                        } else {
+                            Sense::click_and_drag()
+                        },
+                    )
+                    .on_hover_text(format!(
+                        "{}\n{} · {}",
+                        node_label(node, language),
+                        domain_label(snapshot, &node.domain_id),
+                        tr(
+                            language,
+                            if node.promptable {
+                                "Prompt term"
+                            } else {
+                                "Trigger term"
+                            }
+                        )
+                    ));
                 if body.clicked() {
+                    controller.layout_running = false;
                     controller.select_node(node);
                 }
                 if !controller.pending && !controller.draft_dirty && body.drag_started() {
+                    controller.layout_running = false;
                     controller.editor.begin_node_drag(
                         node.id.clone(),
-                        positions
+                        controller
+                            .layout
+                            .positions
                             .iter()
-                            .map(|(id, position)| (id.clone(), *position)),
+                            .map(|(id, p)| (id.clone(), *p)),
                     );
                 }
                 if controller.editor.drag_node.as_deref() == Some(&node.id) {
                     if body.dragged() {
-                        controller.editor.update_node_drag(body.drag_delta());
-                    }
-                    if body.drag_stopped() {
-                        if let Some(movement) = controller
+                        controller
                             .editor
-                            .finish_node_drag(Some(8.0))
-                            .into_iter()
-                            .find(|movement| movement.node_id == node.id)
+                            .update_node_drag(body.total_drag_delta().unwrap_or_default());
+                    }
+                }
+                if highlighted || controller.editor.wire_active() {
+                    let out = rect.right_center();
+                    let input = rect.left_center();
+                    canvas_ui.painter().circle_filled(out, 6.0, accent);
+                    canvas_ui.painter().text(
+                        out,
+                        egui::Align2::CENTER_CENTER,
+                        "+",
+                        egui::FontId::proportional(11.0),
+                        Color32::WHITE,
+                    );
+                    canvas_ui
+                        .painter()
+                        .circle_filled(input, 5.0, graph_style::CANVAS_FILL);
+                    canvas_ui
+                        .painter()
+                        .circle_stroke(input, 5.0, Stroke::new(1.5, accent));
+                    let output = canvas_ui
+                        .interact(
+                            Rect::from_center_size(out, Vec2::splat(18.0)),
+                            canvas_ui.make_persistent_id(("corpus_out", &node.id)),
+                            Sense::click_and_drag(),
+                        )
+                        .on_hover_text(tr(language, "Add trigger connection"));
+                    let input = canvas_ui.interact(
+                        Rect::from_center_size(input, Vec2::splat(18.0)),
+                        canvas_ui.make_persistent_id(("corpus_in", &node.id)),
+                        Sense::click_and_drag(),
+                    );
+                    if !controller.pending && !controller.draft_dirty {
+                        if output.drag_started()
+                            || output.clicked()
+                            || input.drag_started()
+                            || input.clicked()
                         {
-                            let mut changed = (**node).clone();
-                            changed.x = movement.position[0];
-                            changed.y = movement.position[1];
-                            if controller.selected_node.as_deref() == Some(&node.id) {
-                                if let Some(draft) = &mut controller.node_draft {
-                                    draft.x = changed.x;
-                                    draft.y = changed.y;
-                                }
-                            }
-                            controller.pending_position =
-                                Some((node.id.clone(), movement.position));
-                            controller.send(Command::PutNode(changed));
+                            controller.layout_running = false;
+                        }
+                        let commit = controller
+                            .editor
+                            .interact_output_port(&output, node.id.clone())
+                            .or_else(|| {
+                                controller
+                                    .editor
+                                    .interact_input_port(&input, node.id.clone(), None)
+                            });
+                        if let Some(commit) = commit
+                            && let Some(target_id) = commit.to
+                            && commit.from != target_id
+                        {
+                            controller.send(Command::PutEdge(GraphEdge {
+                                source_id: commit.from,
+                                target_id,
+                                kind: GraphEdgeKind::Trigger,
+                                enabled: true,
+                            }));
                         }
                     }
                 }
-                let out = Pos2::new(rect.right(), rect.center().y);
-                let input = Pos2::new(rect.left(), rect.center().y);
-                canvas_ui.painter().add(egui::Shape::convex_polygon(
-                    vec![
-                        out + Vec2::new(6.0, 0.0),
-                        out + Vec2::new(-4.0, -6.0),
-                        out + Vec2::new(-4.0, 6.0),
-                    ],
-                    Color32::from_rgb(62, 108, 145),
-                    Stroke::NONE,
-                ));
-                canvas_ui.painter().circle_filled(input, 5.0, fill);
-                canvas_ui.painter().circle_stroke(
-                    input,
-                    5.0,
-                    Stroke::new(2.0, Color32::from_rgb(106, 131, 113)),
-                );
-                let out_response = canvas_ui.interact(
-                    Rect::from_center_size(out, Vec2::splat(16.0)),
-                    canvas_ui.make_persistent_id(("corpus_out", &node.id)),
-                    Sense::click_and_drag(),
-                );
-                let in_response = canvas_ui.interact(
-                    Rect::from_center_size(input, Vec2::splat(16.0)),
-                    canvas_ui.make_persistent_id(("corpus_in", &node.id)),
-                    Sense::click_and_drag(),
-                );
-                if !controller.pending {
-                    let commit = controller
-                        .editor
-                        .interact_output_port(&out_response, node.id.clone())
-                        .or_else(|| {
-                            controller.editor.interact_input_port(
-                                &in_response,
-                                node.id.clone(),
-                                None,
-                            )
-                        });
-                    if let Some(commit) = commit
-                        && let Some(target_id) = commit.to
-                        && commit.from != target_id
-                    {
-                        controller.send(Command::PutEdge(GraphEdge {
-                            source_id: commit.from,
-                            target_id,
-                            kind: "trigger".into(),
-                            enabled: true,
-                        }));
-                    }
+            }
+            if controller.editor.drag_node.is_some()
+                && canvas_ui.input(|input| input.pointer.any_released())
+            {
+                let dragged = controller.editor.drag_node.clone();
+                for movement in controller.editor.finish_node_drag(None) {
+                    controller
+                        .layout
+                        .set_position(&movement.node_id, movement.position);
+                }
+                if let Some(node) =
+                    dragged.and_then(|id| snapshot.nodes.iter().find(|node| node.id == id))
+                {
+                    controller.select_node(node);
                 }
             }
             if !controller.pending
-                && controller.editor.wire_from.is_some()
                 && canvas_ui.input(|input| input.pointer.any_released())
-                && let Some(pointer) = canvas_ui.ctx().pointer_latest_pos()
-                && let Some(target) = nearest_port(
+                && let Some(pointer) = pointer
+            {
+                let target = nearest_port(
                     pointer,
                     rects
                         .iter()
-                        .map(|(id, rect)| (id.clone(), Pos2::new(rect.left(), rect.center().y))),
-                    12.0,
-                )
-                && controller.editor.wire_from.as_deref() != Some(target.as_str())
-                && let Some(commit) = controller.editor.finish_wire(Some(target.clone()))
-            {
-                controller.send(Command::PutEdge(GraphEdge {
-                    source_id: commit.from,
-                    target_id: target,
-                    kind: "trigger".into(),
-                    enabled: true,
-                }));
-            }
-            if !controller.pending
-                && controller.editor.wire_from_input.is_some()
-                && canvas_ui.input(|input| input.pointer.any_released())
-                && let Some(pointer) = canvas_ui.ctx().pointer_latest_pos()
-                && let Some(source) = nearest_port(
+                        .map(|(id, rect)| (id.clone(), rect.left_center())),
+                    18.0,
+                );
+                if let Some(target) = target
+                    && controller
+                        .editor
+                        .wire_from
+                        .as_ref()
+                        .is_some_and(|id| id != &target)
+                    && let Some(commit) = controller.editor.finish_wire(Some(target.clone()))
+                {
+                    controller.send(Command::PutEdge(GraphEdge {
+                        source_id: commit.from,
+                        target_id: target,
+                        kind: GraphEdgeKind::Trigger,
+                        enabled: true,
+                    }));
+                }
+                let source = nearest_port(
                     pointer,
                     rects
                         .iter()
-                        .map(|(id, rect)| (id.clone(), Pos2::new(rect.right(), rect.center().y))),
-                    12.0,
-                )
-                && controller.editor.wire_from_input.as_deref() != Some(source.as_str())
-                && let Some(commit) = controller.editor.finish_reverse_wire(source)
-                && let Some(target_id) = commit.to
-            {
-                controller.send(Command::PutEdge(GraphEdge {
-                    source_id: commit.from,
-                    target_id,
-                    kind: "trigger".into(),
-                    enabled: true,
+                        .map(|(id, rect)| (id.clone(), rect.right_center())),
+                    18.0,
+                );
+                if let Some(source) = source
+                    && controller
+                        .editor
+                        .wire_from_input
+                        .as_ref()
+                        .is_some_and(|id| id != &source)
+                    && let Some(commit) = controller.editor.finish_reverse_wire(source)
+                    && let Some(target_id) = commit.to
+                {
+                    controller.send(Command::PutEdge(GraphEdge {
+                        source_id: commit.from,
+                        target_id,
+                        kind: GraphEdgeKind::Trigger,
+                        enabled: true,
+                    }));
+                }
+            }
+            if let Some(pointer) = pointer {
+                let wire = controller
+                    .editor
+                    .wire_from
+                    .as_ref()
+                    .and_then(|id| rects.get(id))
+                    .map(|rect| (rect.right_center(), pointer))
+                    .or_else(|| {
+                        controller
+                            .editor
+                            .wire_from_input
+                            .as_ref()
+                            .and_then(|id| rects.get(id))
+                            .map(|rect| (pointer, rect.left_center()))
+                    });
+                if let Some((from, to)) = wire {
+                    graph_canvas::paint_directed_wire(
+                        &canvas_ui,
+                        graph_canvas::bezier_points(from, to),
+                        1.5,
+                        [graph_style::LINK_SELECTED; 2],
+                        true,
+                    );
+                }
+            }
+            if canvas_ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                controller.editor.cancel_wire();
+            }
+            if nodes.is_empty() {
+                canvas_ui.painter().text(
+                    canvas.center(),
+                    egui::Align2::CENTER_CENTER,
+                    tr(language, "No matching terms"),
+                    egui::FontId::proportional(14.0),
+                    graph_style::MUTED,
+                );
+            }
+        });
+    controller
+        .layout_cache
+        .entry(controller.view)
+        .or_default()
+        .extend(
+            controller
+                .layout
+                .positions
+                .iter()
+                .map(|(id, p)| (id.clone(), *p)),
+        );
+    ui.horizontal_wrapped(|ui| {
+        ui.small(format!("{} {}", nodes.len(), tr(language, "terms")));
+        ui.separator();
+        ui.small(format!(
+            "▰ {}  ·  ◯ {}",
+            tr(language, "Prompt term"),
+            tr(language, "Trigger term")
+        ));
+        ui.small(format!(
+            "→ {}  ·  ⇢ {}",
+            tr(language, "Trigger"),
+            tr(language, "Context condition")
+        ));
+    });
+}
+
+fn render_list(
+    controller: &mut CorpusStudioController,
+    snapshot: &GraphSnapshot,
+    ui: &mut egui::Ui,
+    language: UiLanguage,
+    height: f32,
+) {
+    let nodes = matching_nodes(controller, snapshot);
+    ui.horizontal_wrapped(|ui| {
+        let mut all = !nodes.is_empty()
+            && nodes
+                .iter()
+                .all(|node| controller.row_selection.contains(&node.id));
+        if ui.checkbox(&mut all, tr(language, "Select all")).changed() {
+            for node in &nodes {
+                if all {
+                    controller.row_selection.insert(node.id.clone());
+                } else {
+                    controller.row_selection.remove(&node.id);
+                }
+            }
+        }
+        ui.small(format!(
+            "{} / {}",
+            controller.row_selection.len(),
+            nodes.len()
+        ));
+        let can_edit =
+            !controller.row_selection.is_empty() && !controller.pending && !controller.draft_dirty;
+        for (enabled, label) in [(true, "Enable selected"), (false, "Disable selected")] {
+            if components::secondary_button_enabled(ui, tr(language, label), can_edit).clicked() {
+                controller.send(Command::SetNodeState(NodeState {
+                    ids: controller.row_selection.iter().cloned().collect(),
+                    enabled: Some(enabled),
+                    domain_id: None,
                 }));
             }
-            if let Some(from) = &controller.editor.wire_from
-                && let Some(rect) = rects.get(from)
-                && let Some(pointer) = canvas_ui.ctx().pointer_hover_pos()
-            {
-                graph_canvas::paint_dashed_wire(
-                    &canvas_ui,
-                    graph_canvas::bezier_points(Pos2::new(rect.right(), rect.center().y), pointer),
-                    Stroke::new(1.5, graph_style::LINK_SELECTED),
-                );
-            }
-            if let Some(to) = &controller.editor.wire_from_input
-                && let Some(rect) = rects.get(to)
-                && let Some(pointer) = canvas_ui.ctx().pointer_hover_pos()
-            {
-                graph_canvas::paint_dashed_wire(
-                    &canvas_ui,
-                    graph_canvas::bezier_points(pointer, Pos2::new(rect.left(), rect.center().y)),
-                    Stroke::new(1.5, graph_style::LINK_SELECTED),
-                );
-            }
-            controller.editor.handle_canvas_selection(
-                &response,
-                &canvas_ui,
-                true,
-                pointer_over_node,
-                hit_edge.is_some(),
-                rects.into_iter(),
-            );
+        }
+        ui.add_enabled_ui(can_edit, |ui| {
+            ui.menu_button(tr(language, "Move to domain"), |ui| {
+                for domain in &snapshot.domains {
+                    if ui.button(&domain.title).clicked() {
+                        controller.send(Command::SetNodeState(NodeState {
+                            ids: controller.row_selection.iter().cloned().collect(),
+                            enabled: None,
+                            domain_id: Some(domain.id.clone()),
+                        }));
+                        controller.row_selection.clear();
+                        ui.close();
+                    }
+                }
+            });
+        });
+    });
+    let primary = preferred_language_index(language);
+    let secondary = if primary == 1 { 0 } else { 1 };
+    let connections =
+        snapshot
+            .edges
+            .iter()
+            .fold(HashMap::<&str, usize>::new(), |mut counts, edge| {
+                *counts.entry(&edge.source_id).or_default() += 1;
+                *counts.entry(&edge.target_id).or_default() += 1;
+                counts
+            });
+    egui::ScrollArea::horizontal()
+        .id_salt("corpus_list_horizontal")
+        .show(ui, |ui| {
+            ui.set_min_width(600.0);
+            use egui_extras::{Column, TableBuilder};
+            TableBuilder::new(ui)
+                .id_salt("corpus_term_table")
+                .striped(true)
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .column(Column::exact(24.0))
+                .columns(Column::remainder().at_least(120.0), 2)
+                .column(Column::initial(110.0).at_least(90.0))
+                .column(Column::auto().at_least(60.0))
+                .column(Column::auto().at_least(60.0))
+                .max_scroll_height(height - 72.0)
+                .header(28.0, |mut header| {
+                    for label in [
+                        "",
+                        "Terms",
+                        "Translations",
+                        "Domain",
+                        "Connections",
+                        "Enabled",
+                    ] {
+                        header.col(|ui| {
+                            ui.strong(tr(language, label));
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(34.0, nodes.len(), |mut row| {
+                        let node = nodes[row.index()];
+                        row.col(|ui| {
+                            let mut checked = controller.row_selection.contains(&node.id);
+                            if ui.checkbox(&mut checked, "").changed() {
+                                if checked {
+                                    controller.row_selection.insert(node.id.clone());
+                                } else {
+                                    controller.row_selection.remove(&node.id);
+                                }
+                            }
+                        });
+                        row.col(|ui| {
+                            if ui
+                                .add_enabled(
+                                    !controller.draft_dirty,
+                                    egui::Button::selectable(
+                                        controller.selected_node.as_deref() == Some(&node.id),
+                                        node_label(node, language),
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                controller.select_node(node);
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(node.values.get(secondary).map_or("", String::as_str));
+                        });
+                        row.col(|ui| {
+                            ui.colored_label(
+                                domain_color(&node.domain_id),
+                                domain_label(snapshot, &node.domain_id),
+                            );
+                        });
+                        row.col(|ui| {
+                            ui.label(
+                                connections
+                                    .get(node.id.as_str())
+                                    .copied()
+                                    .unwrap_or(0)
+                                    .to_string(),
+                            );
+                        });
+                        row.col(|ui| {
+                            let mut enabled = controller.displayed_node_enabled(node);
+                            if ui
+                                .add_enabled_ui(!controller.pending, |ui| {
+                                    components::pill_toggle(ui, &mut enabled)
+                                })
+                                .inner
+                                .changed()
+                            {
+                                controller.set_node_enabled(node, enabled);
+                            }
+                        });
+                    });
+                });
         });
 }
 
@@ -1631,20 +2188,35 @@ fn render_inspector(
     let focused_edge = controller
         .selected_edge
         .as_ref()
-        .and_then(|key| snapshot.edges.iter().find(|edge| edge.key() == *key));
-    components::section_heading(
-        ui,
-        tr(
-            language,
-            if focused_edge.is_some() {
-                "Connection"
-            } else if controller.new_node {
-                "New term"
-            } else {
-                "Term details"
-            },
-        ),
-    );
+        .and_then(|key| snapshot.edges.iter().find(|edge| edge_key(edge) == *key));
+    let close = ui
+        .horizontal(|ui| {
+            components::section_heading(
+                ui,
+                tr(
+                    language,
+                    if focused_edge.is_some() {
+                        "Connection"
+                    } else if controller.new_node {
+                        "New term"
+                    } else {
+                        "Term details"
+                    },
+                ),
+            );
+            ui.add_enabled(!controller.draft_dirty, egui::Button::new("×"))
+                .on_hover_text(tr(language, "Close"))
+                .clicked()
+        })
+        .inner;
+    if close {
+        controller.selected_node = None;
+        controller.selected_edge = None;
+        controller.node_draft = None;
+        controller.focus_connections = false;
+        controller.editor.clear_selection();
+        return;
+    }
     egui::ScrollArea::vertical()
         .id_salt("corpus_inspector")
         .max_height(height - 28.0)
@@ -1654,8 +2226,8 @@ fn render_inspector(
             }
             if let Some(edge) = focused_edge {
                 ui.label(format!("{} → {}", endpoint_label(snapshot, &edge.source_id, language), endpoint_label(snapshot, &edge.target_id, language)));
-                ui.label(if edge.kind == "context" {
-                    tr(language, "Context")
+                ui.label(if edge.kind == GraphEdgeKind::Context {
+                    tr(language, "Context condition")
                 } else {
                     tr(language, "Trigger")
                 });
@@ -1715,7 +2287,7 @@ fn render_inspector(
             ui.label(tr(language, "Activation"));
             let old_activation = draft.activation.clone();
             egui::ComboBox::from_id_salt("corpus_activation")
-                .selected_text(if draft.activation == "always" {
+                .selected_text(if draft.activation == CorpusActivation::Always {
                     tr(language, "Always active")
                 } else {
                     tr(language, "Activated by trigger")
@@ -1723,12 +2295,12 @@ fn render_inspector(
                 .show_ui(ui, |ui| {
                     ui.selectable_value(
                         &mut draft.activation,
-                        "always".into(),
+                        CorpusActivation::Always,
                         tr(language, "Always active"),
                     );
                     ui.selectable_value(
                         &mut draft.activation,
-                        "on-evidence".into(),
+                        CorpusActivation::OnEvidence,
                         tr(language, "Activated by trigger"),
                     );
                 });
@@ -1750,14 +2322,14 @@ fn render_inspector(
             };
             let target_enabled = node_enabled(&draft);
             let has_incoming_trigger = target_enabled && snapshot.edges.iter().any(|edge| {
-                edge.target_id == draft.id && edge.kind == "trigger"
+                edge.target_id == draft.id && edge.kind == GraphEdgeKind::Trigger
                     && controller.displayed_edge_enabled(edge)
                     && snapshot.nodes.iter().find(|node| node.id == edge.source_id)
                         .is_some_and(node_enabled)
             });
-            if draft.activation == "always" && has_incoming_trigger {
+            if draft.activation == CorpusActivation::Always && has_incoming_trigger {
                 ui.small(tr(language, "Incoming triggers do not gate this term"));
-            } else if draft.activation != "always" && target_enabled && !has_incoming_trigger {
+            } else if draft.activation != CorpusActivation::Always && target_enabled && !has_incoming_trigger {
                 ui.small(tr(language, "This term is waiting for an enabled trigger connection."));
             }
             egui::CollapsingHeader::new(tr(language, "Advanced settings"))
@@ -1895,21 +2467,21 @@ fn render_inspector(
                             tr(language, "Other term → this term"));
                     });
                 egui::ComboBox::from_id_salt("corpus_edge_kind")
-                    .selected_text(if controller.edge_kind == "context" {
-                        tr(language, "Context")
+                    .selected_text(if controller.edge_kind == GraphEdgeKind::Context {
+                        tr(language, "Context condition")
                     } else {
                         tr(language, "Trigger")
                     })
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut controller.edge_kind,
-                            "trigger".into(),
+                            GraphEdgeKind::Trigger,
                             tr(language, "Trigger"),
                         );
                         ui.selectable_value(
                             &mut controller.edge_kind,
-                            "context".into(),
-                            tr(language, "Context"),
+                            GraphEdgeKind::Context,
+                            tr(language, "Context condition"),
                         );
                     });
                 let resolved_target = resolve_edge_target(snapshot, &controller.edge_target)
@@ -1929,7 +2501,7 @@ fn render_inspector(
                     controller.send(Command::PutEdge(GraphEdge {
                         source_id: if controller.edge_outgoing { draft.id.clone() } else { other.clone() },
                         target_id: if controller.edge_outgoing { other } else { draft.id.clone() },
-                        kind: controller.edge_kind.clone(),
+                        kind: controller.edge_kind,
                         enabled: true,
                     }));
                     controller.edge_target.clear();
@@ -1944,7 +2516,7 @@ fn render_inspector(
                                 endpoint_label(snapshot, &edge.source_id, language),
                                 endpoint_label(snapshot, &edge.target_id, language),
                                 if source_exists && target_exists {
-                                    if edge.kind == "context" { tr(language, "Context") }
+                                    if edge.kind == GraphEdgeKind::Context { tr(language, "Context condition") }
                                     else { tr(language, "Trigger") }
                                 } else { tr(language, "Waiting for missing term") }));
                             edge_controls(controller, edge, snapshot, ui, language);

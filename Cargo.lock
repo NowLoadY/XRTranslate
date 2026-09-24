@@ -4500,6 +4500,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "winit",
  "winres",
+ "xr-corpus-client",
  "xrtranslate-assets",
  "xrtranslate-config",
  "xrtranslate-download",

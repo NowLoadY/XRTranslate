@@ -209,6 +209,74 @@ pub(crate) fn bezier_points(from: Pos2, to: Pos2) -> [Pos2; 4] {
     ]
 }
 
+/// Connects the facing edges of freely positioned nodes.
+pub(crate) fn node_connection(from: Rect, to: Rect) -> [Pos2; 4] {
+    let delta = to.center() - from.center();
+    let reach = (delta.length() * 0.3).clamp(24.0, 120.0);
+    if delta.length_sq() < 1.0 {
+        let reach = from.size().max(to.size()).max_elem().max(48.0) * 0.75;
+        return [
+            from.right_center(),
+            from.right_center() + Vec2::new(reach, 0.0),
+            to.center_top() - Vec2::new(0.0, reach),
+            to.center_top(),
+        ];
+    }
+    let edge = |rect: Rect, direction: Vec2| {
+        let half = rect.size() * 0.5;
+        let horizontal = direction.x.abs() * half.y >= direction.y.abs() * half.x;
+        let normal = if horizontal {
+            Vec2::new(direction.x.signum(), 0.0)
+        } else {
+            Vec2::new(0.0, direction.y.signum())
+        };
+        let scale = if horizontal {
+            half.x / direction.x.abs().max(f32::EPSILON)
+        } else {
+            half.y / direction.y.abs().max(f32::EPSILON)
+        };
+        (rect.center() + direction * scale, normal)
+    };
+    let (start, outward) = edge(from, delta);
+    let (end, inward) = edge(to, -delta);
+    [start, start + outward * reach, end + inward * reach, end]
+}
+
+pub(crate) fn paint_directed_wire(
+    ui: &egui::Ui,
+    points: [Pos2; 4],
+    width: f32,
+    colors: [Color32; 2],
+    dashed: bool,
+) {
+    const STEPS: usize = 48;
+    for step in 0..STEPS {
+        if dashed && step % 5 >= 3 {
+            continue;
+        }
+        let t = step as f32 / STEPS as f32;
+        ui.painter().line_segment(
+            [
+                cubic_point(points, t),
+                cubic_point(points, (step + 1) as f32 / STEPS as f32),
+            ],
+            Stroke::new(width, colors[0].lerp_to_gamma(colors[1], t)),
+        );
+    }
+    let tangent = points[3] - points[2];
+    if tangent.length_sq() > f32::EPSILON {
+        let direction = tangent.normalized();
+        let length = (width * 4.0).clamp(5.0, 10.0);
+        let base = points[3] - direction * length;
+        let side = Vec2::new(-direction.y, direction.x) * length * 0.45;
+        ui.painter().add(egui::Shape::convex_polygon(
+            vec![points[3], base + side, base - side],
+            colors[1],
+            Stroke::NONE,
+        ));
+    }
+}
+
 pub(crate) fn paint_wire(ui: &egui::Ui, points: [Pos2; 4], stroke: Stroke) {
     ui.painter().add(egui::Shape::CubicBezier(
         egui::epaint::CubicBezierShape::from_points_stroke(

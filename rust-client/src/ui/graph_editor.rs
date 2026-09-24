@@ -1,9 +1,7 @@
 //! Domain-neutral graph editor interaction state and reducer helpers.
 //!
-//! Prompt Studio and Audio Studio project their own node/link types onto this
-//! state machine. Domain renderers still own node bodies and validation; this
-//! module exclusively owns selection, drag, wire, box-select, navigation, and
-//! keyboard-operation semantics.
+//! Domain renderers own node bodies and validation; this module shares layout,
+//! selection, drag, wire, box-select, navigation, and keyboard-operation semantics.
 
 use super::graph_canvas::{self, GraphCanvasState};
 use eframe::egui::{self, Pos2, Rect, Response, Vec2};
@@ -14,6 +12,227 @@ use std::{collections::HashMap, collections::HashSet, hash::Hash};
 pub(crate) struct LayoutNode<N> {
     pub id: N,
     pub size: Vec2,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ForceNode<N> {
+    pub id: N,
+    pub size: Vec2,
+    pub group: usize,
+}
+
+/// Animated, domain-neutral layout for small graphs, including cyclic graphs.
+/// Positions are node origins; all simulation state stays in memory.
+#[derive(Clone, Debug)]
+pub(crate) struct ForceLayout<N> {
+    pub positions: HashMap<N, [f32; 2]>,
+    nodes: Vec<ForceNode<N>>,
+    edges: Vec<(usize, usize, f32)>,
+    anchors: Vec<Vec2>,
+    velocities: Vec<Vec2>,
+    steps_left: u16,
+    settled: u8,
+}
+
+impl<N> Default for ForceLayout<N> {
+    fn default() -> Self {
+        Self {
+            positions: HashMap::new(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            anchors: Vec::new(),
+            velocities: Vec::new(),
+            steps_left: 0,
+            settled: 0,
+        }
+    }
+}
+
+impl<N: Clone + Eq + Hash> ForceLayout<N> {
+    pub fn reset(
+        &mut self,
+        nodes: impl IntoIterator<Item = ForceNode<N>>,
+        edges: impl IntoIterator<Item = (N, N)>,
+    ) {
+        let mut indexes = HashMap::new();
+        self.nodes = nodes
+            .into_iter()
+            .filter(|node| {
+                let next = indexes.len();
+                if indexes.contains_key(&node.id) {
+                    false
+                } else {
+                    indexes.insert(node.id.clone(), next);
+                    true
+                }
+            })
+            .collect();
+        let mut groups = HashMap::new();
+        let mut counts = Vec::<usize>::new();
+        let mut max_size = Vec2::splat(1.0);
+        for node in &mut self.nodes {
+            let next = groups.len();
+            let group = *groups.entry(node.group).or_insert_with(|| {
+                counts.push(0);
+                next
+            });
+            node.group = group;
+            node.size = node.size.max(Vec2::splat(1.0));
+            max_size = max_size.max(node.size);
+            counts[group] += 1;
+        }
+        let group_radii = counts
+            .iter()
+            .map(|&count| (count as f32 * (max_size.x + 20.0) * (max_size.y + 20.0)).sqrt() * 0.4)
+            .collect::<Vec<_>>();
+        let radius = if counts.len() > 1 {
+            group_radii.iter().sum::<f32>() / std::f32::consts::PI
+                + group_radii.iter().copied().fold(0.0, f32::max) * 0.5
+        } else {
+            0.0
+        };
+        self.anchors = (0..counts.len())
+            .map(|index| {
+                Vec2::angled(index as f32 * std::f32::consts::TAU / counts.len() as f32) * radius
+            })
+            .collect();
+        self.positions.clear();
+        counts.fill(0);
+        for node in &self.nodes {
+            let index = counts[node.group];
+            counts[node.group] += 1;
+            let offset = Vec2::angled(index as f32 * 2.399_963_1)
+                * (index as f32).sqrt()
+                * (max_size + Vec2::splat(40.0))
+                * 0.4;
+            self.positions.insert(
+                node.id.clone(),
+                (self.anchors[node.group] + offset - node.size * 0.5).into(),
+            );
+        }
+        let mut seen = HashSet::new();
+        let edges = edges
+            .into_iter()
+            .filter_map(|(from, to)| {
+                let (&from, &to) = (indexes.get(&from)?, indexes.get(&to)?);
+                let edge = (from.min(to), from.max(to));
+                (from != to && seen.insert(edge)).then_some(edge)
+            })
+            .collect::<Vec<_>>();
+        let mut degree = vec![0_usize; self.nodes.len()];
+        for &(i, j) in &edges {
+            degree[i] += 1;
+            degree[j] += 1;
+        }
+        self.edges = edges
+            .into_iter()
+            // Keep dense graphs from compressing all nodes into the same cluster.
+            .map(|(i, j)| (i, j, 0.07 / degree[i].max(degree[j]) as f32))
+            .collect();
+        self.velocities = vec![Vec2::ZERO; self.nodes.len()];
+        self.steps_left = 360;
+        self.settled = 0;
+    }
+
+    pub fn set_position(&mut self, id: &N, position: [f32; 2]) {
+        if let Some(stored) = self.positions.get_mut(id) {
+            *stored = position;
+            self.steps_left = 240;
+            self.settled = 0;
+        }
+    }
+
+    /// Returns whether another animation frame is needed.
+    pub fn step(&mut self, dt: f32) -> bool {
+        if self.steps_left == 0 || self.nodes.is_empty() {
+            return false;
+        }
+        let dt = dt.clamp(1.0 / 120.0, 1.0 / 30.0) * 60.0;
+        let mut centers = self
+            .nodes
+            .iter()
+            .map(|node| Vec2::from(self.positions[&node.id]) + node.size * 0.5)
+            .collect::<Vec<_>>();
+        let before = centers.clone();
+        let mut forces = self
+            .nodes
+            .iter()
+            .zip(&centers)
+            .map(|(node, center)| (self.anchors[node.group] - *center) * 0.024)
+            .collect::<Vec<_>>();
+        for i in 0..self.nodes.len() {
+            for j in i + 1..self.nodes.len() {
+                let delta = centers[j] - centers[i];
+                let distance = delta.length().max(1.0);
+                let direction = if delta.length_sq() < 1.0 {
+                    Vec2::angled((i + j) as f32 * 2.399_963_1)
+                } else {
+                    delta / distance
+                };
+                let spacing = direction
+                    .abs()
+                    .dot((self.nodes[i].size + self.nodes[j].size) * 0.5)
+                    + 40.0;
+                let force = direction * (spacing / distance).powi(2).min(16.0);
+                forces[i] -= force;
+                forces[j] += force;
+            }
+        }
+        for &(i, j, strength) in &self.edges {
+            let delta = centers[j] - centers[i];
+            let direction = delta.normalized();
+            let spacing = direction
+                .abs()
+                .dot((self.nodes[i].size + self.nodes[j].size) * 0.5)
+                + 64.0;
+            let force = direction * (delta.length() - spacing) * strength;
+            forces[i] += force;
+            forces[j] -= force;
+        }
+        for i in 0..self.nodes.len() {
+            let velocity = (self.velocities[i] + forces[i] * dt) * 0.72_f32.powf(dt);
+            self.velocities[i] = velocity / (velocity.length() / 14.0).max(1.0);
+            centers[i] += self.velocities[i] * dt;
+        }
+        // Separate rectangles directly so long labels cannot overlap at equilibrium.
+        for _ in 0..32 {
+            let mut penetration = 0.0_f32;
+            for i in 0..self.nodes.len() {
+                for j in i + 1..self.nodes.len() {
+                    let delta = centers[j] - centers[i];
+                    let overlap = (self.nodes[i].size + self.nodes[j].size) * 0.5
+                        + Vec2::splat(18.0)
+                        - delta.abs();
+                    if overlap.x <= 0.0 || overlap.y <= 0.0 {
+                        continue;
+                    }
+                    penetration = penetration.max(overlap.x.min(overlap.y));
+                    let shift = if overlap.x < overlap.y {
+                        Vec2::new(overlap.x * if delta.x < 0.0 { -1.0 } else { 1.0 }, 0.0)
+                    } else {
+                        Vec2::new(0.0, overlap.y * if delta.y < 0.0 { -1.0 } else { 1.0 })
+                    };
+                    centers[i] -= shift * 0.5;
+                    centers[j] += shift * 0.5;
+                }
+            }
+            if penetration < 0.1 {
+                break;
+            }
+        }
+        let mut movement = 0.0_f32;
+        for (i, node) in self.nodes.iter().enumerate() {
+            movement = movement.max((centers[i] - before[i]).length());
+            self.positions
+                .insert(node.id.clone(), (centers[i] - node.size * 0.5).into());
+        }
+        self.settled = if movement < 0.12 { self.settled + 1 } else { 0 };
+        self.steps_left -= 1;
+        if self.settled >= 12 {
+            self.steps_left = 0;
+        }
+        self.steps_left > 0
+    }
 }
 
 /// Spacing and origin for [`layered_layout`].
