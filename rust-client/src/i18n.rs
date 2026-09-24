@@ -206,6 +206,13 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Нет подходящих терминов",
     ),
     (
+        "VRCX adds room and player terms while connected",
+        "VRCX 连接后提供房间和玩家词汇",
+        "VRCX 接続中はルームとプレイヤーの語句を追加します",
+        "VRCX 연결 시 방과 플레이어 용어를 추가합니다",
+        "При подключении VRCX добавляет названия комнат и имена игроков",
+    ),
+    (
         "Select all",
         "全选",
         "すべて選択",

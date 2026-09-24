@@ -13,7 +13,7 @@ use xr_corpus_client::{
     CorpusClient,
     protocol::{
         CORPUS_LANGUAGE_ORDER as LANGUAGE_CODES, CorpusActivation, GraphDomain, GraphEdge,
-        GraphEdgeKind, GraphNode, GraphNodeStatePatch as NodeState, GraphSnapshot,
+        GraphEdgeKind, GraphNode, GraphNodeStatePatch as NodeState, GraphSnapshot, VRCX_DOMAIN_ID,
     },
 };
 
@@ -605,7 +605,12 @@ fn render_browser(
                 controller.select_domain(None);
                 ui.close();
             }
-            for domain in &snapshot.domains {
+            for domain in snapshot
+                .domains
+                .iter()
+                .filter(|d| d.id == VRCX_DOMAIN_ID)
+                .chain(snapshot.domains.iter().filter(|d| d.id != VRCX_DOMAIN_ID))
+            {
                 if !contains(&domain.id, &controller.domain_search)
                     && !contains(&domain.title, &controller.domain_search)
                 {
@@ -641,7 +646,8 @@ fn render_browser(
                             controller.select_domain(Some(domain));
                             ui.close();
                         }
-                        if controller.selected_domain.as_deref() == Some(&domain.id)
+                        if domain.id != VRCX_DOMAIN_ID
+                            && controller.selected_domain.as_deref() == Some(&domain.id)
                             && !controller.draft_dirty
                         {
                             ui.menu_button("⋯", |ui| {
@@ -1846,7 +1852,14 @@ fn render_workspace(
                 canvas_ui.painter().text(
                     canvas.center(),
                     egui::Align2::CENTER_CENTER,
-                    tr(language, "No matching terms"),
+                    tr(
+                        language,
+                        if controller.selected_domain.as_deref() == Some(VRCX_DOMAIN_ID) {
+                            "VRCX adds room and player terms while connected"
+                        } else {
+                            "No matching terms"
+                        },
+                    ),
                     egui::FontId::proportional(14.0),
                     graph_style::MUTED,
                 );
