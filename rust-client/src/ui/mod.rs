@@ -1,4 +1,5 @@
 pub mod animation;
+pub mod automation;
 pub mod components;
 pub mod fonts;
 pub(crate) mod graph_canvas;
