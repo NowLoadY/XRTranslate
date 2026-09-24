@@ -4,11 +4,11 @@
 //! registration exists. It loads the architecture-matching Remote DLL from
 //! that installation, logs in once, and logs out before unloading the DLL.
 
-use std::{
-    fmt,
-    path::{Path, PathBuf},
-};
+use std::fmt;
+#[cfg(any(windows, test))]
+use std::path::PathBuf;
 
+#[cfg(windows)]
 const UNINSTALL_KEY: &str =
     r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\VB:Voicemeeter {17359A74-1236-5467}";
 
@@ -17,10 +17,12 @@ pub enum VoiceMeeterEdition {
     Standard,
     Banana,
     Potato,
+    #[cfg(any(windows, test))]
     Unknown(i32),
 }
 
 impl VoiceMeeterEdition {
+    #[cfg(any(windows, test))]
     pub const fn from_raw(value: i32) -> Self {
         match value {
             1 => Self::Standard,
@@ -30,6 +32,7 @@ impl VoiceMeeterEdition {
         }
     }
 
+    #[cfg(windows)]
     const fn run_code(self) -> Option<i32> {
         match self {
             Self::Standard => Some(1),
@@ -40,6 +43,7 @@ impl VoiceMeeterEdition {
         }
     }
 
+    #[cfg(windows)]
     const fn strip_count(self) -> Option<u8> {
         match self {
             Self::Standard => Some(3),
@@ -49,6 +53,7 @@ impl VoiceMeeterEdition {
         }
     }
 
+    #[cfg(any(windows, test))]
     const fn supports_bus(self, bus: VoiceMeeterBus) -> bool {
         match self {
             Self::Standard => matches!(bus, VoiceMeeterBus::B1),
@@ -67,6 +72,7 @@ pub enum VoiceMeeterBus {
 }
 
 impl VoiceMeeterBus {
+    #[cfg(any(windows, test))]
     const fn parameter_suffix(self) -> &'static str {
         match self {
             Self::B1 => "B1",
@@ -85,6 +91,7 @@ pub struct VoiceMeeterVersion {
 }
 
 impl VoiceMeeterVersion {
+    #[cfg(any(windows, test))]
     pub const fn from_packed(value: u32) -> Self {
         Self {
             major: ((value >> 24) & 0xff) as u8,
@@ -112,11 +119,13 @@ pub struct VoiceMeeterStatus {
     pub version: Option<VoiceMeeterVersion>,
 }
 
-pub fn strip_bus_parameter(strip: u8, bus: VoiceMeeterBus) -> String {
+#[cfg(any(windows, test))]
+fn strip_bus_parameter(strip: u8, bus: VoiceMeeterBus) -> String {
     format!("Strip[{strip}].{}", bus.parameter_suffix())
 }
 
-pub fn remote_dll_name() -> &'static str {
+#[cfg(any(windows, test))]
+fn remote_dll_name() -> &'static str {
     if cfg!(target_pointer_width = "64") {
         "VoicemeeterRemote64.dll"
     } else {
@@ -124,6 +133,7 @@ pub fn remote_dll_name() -> &'static str {
     }
 }
 
+#[cfg(any(windows, test))]
 fn installation_dir_from_uninstall_string(value: &str) -> Option<PathBuf> {
     let value = value.trim();
     if value.is_empty() {
@@ -145,54 +155,61 @@ fn installation_dir_from_uninstall_string(value: &str) -> Option<PathBuf> {
     (separator > 0).then(|| PathBuf::from(&executable[..separator]))
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 pub enum VoiceMeeterError {
+    #[cfg(not(windows))]
     UnsupportedPlatform,
-    Registry {
-        operation: &'static str,
-        code: u32,
-    },
+    #[cfg(windows)]
+    Registry { operation: &'static str, code: u32 },
+    #[cfg(windows)]
     InvalidUninstallString(String),
+    #[cfg(windows)]
     MissingRemoteDll(PathBuf),
-    LoadLibrary {
-        path: PathBuf,
-        detail: String,
-    },
+    #[cfg(windows)]
+    LoadLibrary { path: PathBuf, detail: String },
+    #[cfg(windows)]
     MissingSymbol(&'static str),
-    Api {
-        operation: &'static str,
-        code: i32,
-    },
+    #[cfg(windows)]
+    Api { operation: &'static str, code: i32 },
+    #[cfg(windows)]
     InvalidParameterName,
+    #[cfg(windows)]
     NotRunning,
+    #[cfg(windows)]
     UnsupportedEdition(VoiceMeeterEdition),
+    #[cfg(windows)]
     InvalidStrip {
         edition: VoiceMeeterEdition,
         strip: u8,
     },
+    #[cfg(windows)]
     UnsupportedBus {
         edition: VoiceMeeterEdition,
         bus: VoiceMeeterBus,
     },
+    #[cfg(windows)]
     LockPoisoned,
 }
 
 impl fmt::Display for VoiceMeeterError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(not(windows))]
             Self::UnsupportedPlatform => {
                 formatter.write_str("VoiceMeeter is available only on Windows")
             }
+            #[cfg(windows)]
             Self::Registry { operation, code } => {
                 write!(
                     formatter,
                     "VoiceMeeter registry {operation} failed with Windows error {code}"
                 )
             }
+            #[cfg(windows)]
             Self::InvalidUninstallString(value) => {
                 write!(formatter, "VoiceMeeter UninstallString is invalid: {value}")
             }
+            #[cfg(windows)]
             Self::MissingRemoteDll(path) => {
                 write!(
                     formatter,
@@ -200,28 +217,37 @@ impl fmt::Display for VoiceMeeterError {
                     path.display()
                 )
             }
+            #[cfg(windows)]
             Self::LoadLibrary { path, detail } => {
                 write!(formatter, "could not load {}: {detail}", path.display())
             }
+            #[cfg(windows)]
             Self::MissingSymbol(symbol) => {
                 write!(formatter, "VoiceMeeter Remote DLL has no {symbol} export")
             }
+            #[cfg(windows)]
             Self::Api { operation, code } => {
                 write!(formatter, "VoiceMeeter {operation} failed with code {code}")
             }
+            #[cfg(windows)]
             Self::InvalidParameterName => {
                 formatter.write_str("VoiceMeeter parameter contains a NUL byte")
             }
+            #[cfg(windows)]
             Self::NotRunning => formatter.write_str("VoiceMeeter is not running"),
+            #[cfg(windows)]
             Self::UnsupportedEdition(edition) => {
                 write!(formatter, "unsupported VoiceMeeter edition {edition:?}")
             }
+            #[cfg(windows)]
             Self::InvalidStrip { edition, strip } => {
                 write!(formatter, "strip {strip} is invalid for {edition:?}")
             }
+            #[cfg(windows)]
             Self::UnsupportedBus { edition, bus } => {
                 write!(formatter, "bus {bus:?} is unavailable in {edition:?}")
             }
+            #[cfg(windows)]
             Self::LockPoisoned => formatter.write_str("VoiceMeeter Remote API lock is poisoned"),
         }
     }
@@ -312,7 +338,6 @@ mod platform {
         }
     }
 
-    #[allow(dead_code)]
     impl VoiceMeeterRemote {
         pub fn discover() -> VoiceMeeterResult<Option<Self>> {
             let Some(uninstall) = read_uninstall_string()? else {
@@ -365,10 +390,6 @@ mod platform {
             }))
         }
 
-        pub fn installation_dir(&self) -> &Path {
-            &self.inner.installation_dir
-        }
-
         pub fn status(&self) -> VoiceMeeterResult<VoiceMeeterStatus> {
             let _guard = self
                 .inner
@@ -414,18 +435,7 @@ mod platform {
             self.set_parameter_float("Command.Shutdown", 1.0)
         }
 
-        pub fn get_parameter_float(&self, parameter: &str) -> VoiceMeeterResult<f32> {
-            let name =
-                CString::new(parameter).map_err(|_| VoiceMeeterError::InvalidParameterName)?;
-            let _guard = self
-                .inner
-                .calls
-                .lock()
-                .map_err(|_| VoiceMeeterError::LockPoisoned)?;
-            raw_get(&self.inner.api, &name)
-        }
-
-        pub fn set_parameter_float(&self, parameter: &str, value: f32) -> VoiceMeeterResult<()> {
+        fn set_parameter_float(&self, parameter: &str, value: f32) -> VoiceMeeterResult<()> {
             let name =
                 CString::new(parameter).map_err(|_| VoiceMeeterError::InvalidParameterName)?;
             let _guard = self
@@ -489,12 +499,7 @@ mod platform {
         }
     }
 
-    #[allow(dead_code)]
     impl VoiceMeeterStripRouteGuard {
-        pub fn parameter(&self) -> &str {
-            &self.parameter
-        }
-
         pub fn clear(mut self) -> VoiceMeeterResult<()> {
             self.restore()?;
             self.active = false;
@@ -673,9 +678,6 @@ mod platform {
         pub fn discover() -> VoiceMeeterResult<Option<Self>> {
             Ok(None)
         }
-        pub fn installation_dir(&self) -> &Path {
-            Path::new("")
-        }
         pub fn status(&self) -> VoiceMeeterResult<VoiceMeeterStatus> {
             Err(VoiceMeeterError::UnsupportedPlatform)
         }
@@ -684,12 +686,6 @@ mod platform {
         }
 
         pub fn shutdown(&self) -> VoiceMeeterResult<()> {
-            Err(VoiceMeeterError::UnsupportedPlatform)
-        }
-        pub fn get_parameter_float(&self, _parameter: &str) -> VoiceMeeterResult<f32> {
-            Err(VoiceMeeterError::UnsupportedPlatform)
-        }
-        pub fn set_parameter_float(&self, _parameter: &str, _value: f32) -> VoiceMeeterResult<()> {
             Err(VoiceMeeterError::UnsupportedPlatform)
         }
         pub fn configure(
@@ -706,9 +702,6 @@ mod platform {
     pub struct VoiceMeeterStripRouteGuard;
 
     impl VoiceMeeterStripRouteGuard {
-        pub fn parameter(&self) -> &str {
-            ""
-        }
         pub fn clear(self) -> VoiceMeeterResult<()> {
             Err(VoiceMeeterError::UnsupportedPlatform)
         }

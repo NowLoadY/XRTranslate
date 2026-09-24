@@ -1692,6 +1692,7 @@ mod tests {
             categories: Vec::new(),
             dirty: false,
             message: None,
+            message_is_error: false,
             onboarding_save_error: None,
         };
         assert_eq!(editor.tts_sample_rate(), 22_050);
@@ -1776,6 +1777,7 @@ mod tests {
             categories,
             dirty: false,
             message: None,
+            message_is_error: false,
             onboarding_save_error: None,
         };
 
@@ -1815,6 +1817,7 @@ mod tests {
             categories,
             dirty: false,
             message: None,
+            message_is_error: false,
             onboarding_save_error: None,
         };
 
@@ -1843,6 +1846,7 @@ mod tests {
             categories,
             dirty: false,
             message: None,
+            message_is_error: false,
             onboarding_save_error: None,
         };
         let asr = editor

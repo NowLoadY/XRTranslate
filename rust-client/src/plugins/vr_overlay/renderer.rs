@@ -55,9 +55,9 @@ impl VrOverlayRenderer {
     pub fn render(
         &self,
         cards: &[VrSubtitleCard],
-        bilingual: bool,
-        font_size: f32,
-        opacity: f32,
+        _bilingual: bool,
+        _font_size: f32,
+        _opacity: f32,
     ) -> Vec<u8> {
         let buffer_size = (self.width * self.height * 4) as usize;
         let mut buffer = vec![0u8; buffer_size];
@@ -73,9 +73,9 @@ impl VrOverlayRenderer {
                     d2d,
                     dwrite,
                     cards,
-                    bilingual,
-                    font_size,
-                    opacity,
+                    _bilingual,
+                    _font_size,
+                    _opacity,
                     &mut buffer,
                 ) {
                     Ok(()) => return buffer,

@@ -1774,6 +1774,7 @@ impl XRTranslateApp {
                 }
                 voicemeeter::VoiceMeeterEdition::Banana => Some(StudioVoiceMeeterEdition::Banana),
                 voicemeeter::VoiceMeeterEdition::Potato => Some(StudioVoiceMeeterEdition::Potato),
+                #[cfg(any(windows, test))]
                 voicemeeter::VoiceMeeterEdition::Unknown(_) => None,
             })
             .unwrap_or(inferred);

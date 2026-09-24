@@ -4,6 +4,7 @@
 //! managing overlay lifetime and HMD tracking transform without hard dependencies.
 
 use std::ffi::{CString, c_char, c_void};
+#[cfg(windows)]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -434,6 +435,7 @@ impl OpenVrOverlay {
     }
 }
 
+#[cfg(windows)]
 fn candidate_dll_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 

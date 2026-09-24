@@ -366,6 +366,7 @@ fn detect_gpu_name() -> String {
     String::new()
 }
 
+#[cfg(target_os = "windows")]
 fn clean_hardware_name(raw: &str) -> String {
     let name = raw
         .replace("(R)", "")

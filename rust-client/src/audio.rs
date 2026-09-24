@@ -4,12 +4,16 @@ use cpal::{Sample, Stream};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use parking_lot::Mutex;
 use rubato::{Fft, FixedSync, Indexing, Resampler};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
+#[cfg(windows)]
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::{
     Arc, Weak,
-    atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
+    atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering},
 };
+#[cfg(windows)]
+use std::sync::atomic::AtomicBool;
 use std::thread;
 use std::time::Duration;
 
