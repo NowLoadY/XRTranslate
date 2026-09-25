@@ -111,6 +111,7 @@ pub enum ModelRuntime {
         prompt_style: AsrPromptStyle,
         context_bias: bool,
         vocabulary_bias: bool,
+        extra_args: &'static [&'static str],
     },
     SherpaOfflineAsr {
         delivery: AsrDelivery,
@@ -120,10 +121,20 @@ pub enum ModelRuntime {
         prompt_style: TranslationPromptStyle,
         flash_attention: bool,
         allow_reference_context: bool,
+        extra_args: &'static [&'static str],
     },
 }
 
 impl ModelRuntime {
+    #[must_use]
+    pub const fn extra_args(self) -> &'static [&'static str] {
+        match self {
+            Self::LlamaAudioChat { extra_args, .. } | Self::LlamaTextChat { extra_args, .. } => {
+                extra_args
+            }
+            Self::SherpaOfflineAsr { .. } => &[],
+        }
+    }
     #[must_use]
     pub const fn uses_llama_cpp(self) -> bool {
         matches!(

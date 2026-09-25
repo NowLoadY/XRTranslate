@@ -10,7 +10,7 @@ use crate::{i18n, runtime_install::LocalModelAvailability};
 
 const GIB: f64 = (1024 * 1024 * 1024) as f64;
 const BLUE: Color32 = Color32::from_rgb(48, 113, 210);
-const GRID: Color32 = Color32::from_rgb(225, 231, 239);
+const GRID: Color32 = Color32::BLACK;
 const INK: Color32 = Color32::from_rgb(55, 65, 81);
 const MODEL_COLORS: [Color32; 6] = [
     BLUE,

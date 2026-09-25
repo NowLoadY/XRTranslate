@@ -410,26 +410,29 @@ impl NativeProviderPlan {
         settings: LocalModelRuntimeConfig,
     ) -> Result<LlamaServerSpec, String> {
         let asset = self.assets.active_asset(capability);
-        let (role, mmproj, alias, flash_attention) = match asset.manifest().runtime {
-            Some(ModelRuntime::LlamaAudioChat { model_alias, .. })
-                if capability == ModelCapability::Asr =>
-            {
-                (
-                    LlamaServerRole::Asr,
-                    Some(model_file(asset, ModelFileRole::MultimodalProjection)?),
-                    model_alias,
-                    false,
-                )
-            }
+        let (role, mmproj, alias, flash_attention, extra_args) = match asset.manifest().runtime {
+            Some(ModelRuntime::LlamaAudioChat {
+                model_alias,
+                extra_args,
+                ..
+            }) if capability == ModelCapability::Asr => (
+                LlamaServerRole::Asr,
+                Some(model_file(asset, ModelFileRole::MultimodalProjection)?),
+                model_alias,
+                false,
+                extra_args,
+            ),
             Some(ModelRuntime::LlamaTextChat {
                 model_alias,
                 flash_attention,
+                extra_args,
                 ..
             }) if capability == ModelCapability::Translation => (
                 LlamaServerRole::Translation,
                 None,
                 model_alias,
                 flash_attention,
+                extra_args,
             ),
             _ => {
                 return Err(format!(
@@ -451,6 +454,9 @@ impl NativeProviderPlan {
         ));
         if flash_attention {
             spec.flash_attention = Some(FlashAttention::On);
+        }
+        for arg in extra_args {
+            spec.extra_args.push(OsString::from(arg));
         }
         apply_model_runtime(&mut spec, settings)?;
         apply_managed_runtime_environment(&mut spec, self.native_runtime.as_ref())?;
@@ -912,6 +918,29 @@ mod tests {
             .translation_adapter(plan.translation_http_client().unwrap())
             .unwrap();
         assert_eq!(adapter.provider(), TranslationProvider::Bilingual);
+    }
+
+    #[test]
+    fn hy_mt2_q2_k_forwards_override_kv_eos_token_id_to_server_spec() {
+        let mut document: serde_json::Value =
+            serde_json::from_str(include_str!("../../../config.json")).unwrap();
+        document["asr"]["provider"] = serde_json::Value::from("qwen");
+        document["asr"]["providers"]["qwen"]["api_key"] = serde_json::Value::from("test-key");
+        document["translation"]["providers"]["hunyuan"]["model_asset"] =
+            serde_json::Value::from(ModelAssetId::HunyuanMtQ2kGguf.as_str());
+        let config = AppConfig::from_value(document).unwrap();
+        let mut plan = NativeProviderPlan::resolve(&config, Path::new("release-root")).unwrap();
+        attach_test_cuda_runtime(&mut plan);
+        let spec = plan.managed_server_specs(0, 8102).unwrap().1.unwrap();
+        assert_eq!(spec.model_alias, "hy-mt2");
+        assert!(spec.model.ends_with("Hy-MT2-1.8B.i1-Q2_K.gguf"));
+        assert_eq!(
+            spec.extra_args,
+            vec![
+                OsString::from("--override-kv"),
+                OsString::from("tokenizer.ggml.eos_token_id=int:120020")
+            ]
+        );
     }
 
     #[test]

@@ -165,6 +165,10 @@ fn runtime(card: &Value) -> String {
         assert!(!alias.as_str().expect("model alias").trim().is_empty());
         string(alias)
     };
+    let extra_args = match value.get("extra_args") {
+        Some(args) => strings(args),
+        None => "&[]".into(),
+    };
     let variant = match kind {
         "llama-audio-chat" => {
             assert_eq!(capability, "asr");
@@ -177,7 +181,7 @@ fn runtime(card: &Value) -> String {
                 other => panic!("unknown ASR prompt style {other}"),
             };
             format!(
-                "ModelRuntime::LlamaAudioChat {{ model_alias: {}, delivery: {}, prompt_style: {style}, context_bias: {}, vocabulary_bias: {} }}",
+                "ModelRuntime::LlamaAudioChat {{ model_alias: {}, delivery: {}, prompt_style: {style}, context_bias: {}, vocabulary_bias: {}, extra_args: {extra_args} }}",
                 alias(),
                 delivery(),
                 boolean(field(value, "context_bias")),
@@ -199,7 +203,7 @@ fn runtime(card: &Value) -> String {
                 other => panic!("unknown translation prompt style {other}"),
             };
             format!(
-                "ModelRuntime::LlamaTextChat {{ model_alias: {}, prompt_style: {style}, flash_attention: {}, allow_reference_context: {} }}",
+                "ModelRuntime::LlamaTextChat {{ model_alias: {}, prompt_style: {style}, flash_attention: {}, allow_reference_context: {}, extra_args: {extra_args} }}",
                 alias(),
                 boolean(field(value, "flash_attention")),
                 boolean(field(value, "allow_reference_context"))

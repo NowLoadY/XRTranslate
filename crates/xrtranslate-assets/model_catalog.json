@@ -514,7 +514,11 @@
       "model_alias": "hy-mt2",
       "prompt_style": "contextual",
       "flash_attention": true,
-      "allow_reference_context": true
+      "allow_reference_context": true,
+      "extra_args": [
+        "--override-kv",
+        "tokenizer.ggml.eos_token_id=int:120020"
+      ]
     }
   },
   {
