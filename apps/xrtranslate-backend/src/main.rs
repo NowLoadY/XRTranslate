@@ -6,7 +6,7 @@
 
 use std::{
     collections::HashMap,
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
     path::PathBuf,
     sync::{
         Arc,
@@ -281,8 +281,7 @@ struct Arguments {
     config: std::path::PathBuf,
     /// Start and own the two local llama.cpp model servers for this backend.
     ///
-    /// Leave this off only when the Qwen3-ASR and Hy-MT2 endpoints are already
-    /// managed by another native process.
+    /// Leave this off when local model endpoints are managed by another process.
     #[arg(long)]
     manage_llama_servers: bool,
     /// Maximum time to wait for managed llama-server instances to report ready.
@@ -336,7 +335,7 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
     let project_root = std::path::absolute(&configured_root).unwrap_or(configured_root);
     let config = AppConfig::from_path_with_user_config(&args.config, &project_root)?;
     initialize_managed_onnx_runtime(&project_root, &config)?;
-    let model_plan = Arc::new(NativeProviderPlan::resolve(&config, &project_root)?);
+    let mut model_plan = NativeProviderPlan::resolve(&config, &project_root)?;
     validate_native_route(&config, &project_root, &model_plan)?;
     let corpus_client = CorpusClient::new(&args.corpus_url)?;
     let corpus_health = corpus_client.ensure_compatible().await?;
@@ -345,6 +344,10 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
         api_version = corpus_health.api_version,
         "connected to XR Corpus"
     );
+    if args.manage_llama_servers {
+        assign_managed_ports(&mut model_plan)?;
+    }
+    let model_plan = Arc::new(model_plan);
     let _model_processes = if args.manage_llama_servers {
         let mut processes = start_llama_servers(&model_plan)?;
         wait_for_model_servers(
@@ -1147,7 +1150,9 @@ fn validate_native_route(
 }
 
 fn start_llama_servers(model_plan: &NativeProviderPlan) -> Result<Vec<LlamaServerProcess>, String> {
-    if !model_plan.llama_server_path().is_file() {
+    if (model_plan.asr_uses_llama_server() || model_plan.translation_uses_llama_server())
+        && !model_plan.llama_server_path().is_file()
+    {
         return Err(format!(
             "llama-server executable is missing: {}",
             model_plan.llama_server_path().display()
@@ -1156,11 +1161,11 @@ fn start_llama_servers(model_plan: &NativeProviderPlan) -> Result<Vec<LlamaServe
 
     model_plan.check_assets()?;
     let asr_port = model_plan
-        .asr_uses_local_runtime()
+        .asr_uses_llama_server()
         .then(|| local_endpoint_port(model_plan.asr_url()))
         .transpose()?;
     let translation_port = model_plan
-        .translation_uses_local_runtime()
+        .translation_uses_llama_server()
         .then(|| local_endpoint_port(model_plan.translation_url()))
         .transpose()?;
     if let (Some(asr_port), Some(translation_port)) = (asr_port, translation_port)
@@ -1177,17 +1182,19 @@ fn start_llama_servers(model_plan: &NativeProviderPlan) -> Result<Vec<LlamaServe
     let launcher = StdLlamaServerLauncher;
     let mut processes = Vec::new();
     if let Some(spec) = asr_spec {
+        let alias = spec.model_alias.clone();
         processes.push(
             launcher
                 .launch(&spec)
-                .map_err(|error| format!("cannot start Qwen3-ASR llama-server: {error}"))?,
+                .map_err(|error| format!("cannot start {alias} llama-server: {error}"))?,
         );
     }
     if let Some(spec) = translation_spec {
+        let alias = spec.model_alias.clone();
         processes.push(
             launcher
                 .launch(&spec)
-                .map_err(|error| format!("cannot start Hy-MT2 llama-server: {error}"))?,
+                .map_err(|error| format!("cannot start {alias} llama-server: {error}"))?,
         );
     }
     info!(
@@ -1197,25 +1204,70 @@ fn start_llama_servers(model_plan: &NativeProviderPlan) -> Result<Vec<LlamaServe
     Ok(processes)
 }
 
+fn assign_managed_ports(model_plan: &mut NativeProviderPlan) -> Result<(), String> {
+    let asr = model_plan
+        .asr_uses_llama_server()
+        .then(|| reserve_model_port(model_plan.asr_url()))
+        .transpose()?;
+    let translation = model_plan
+        .translation_uses_llama_server()
+        .then(|| reserve_model_port(model_plan.translation_url()))
+        .transpose()?;
+    model_plan.set_managed_ports(
+        asr.as_ref().map(|(_, port)| *port),
+        translation.as_ref().map(|(_, port)| *port),
+    )?;
+    Ok(())
+}
+
+// Keep both reservations alive while choosing ports, so ASR and translation
+// cannot be assigned the same socket. llama-server takes over after this returns.
+fn reserve_model_port(url: &str) -> Result<(StdTcpListener, u16), String> {
+    let preferred = local_endpoint_port(url)?;
+    let address = (Ipv4Addr::LOCALHOST, preferred);
+    let listener = match StdTcpListener::bind(address) {
+        Ok(listener) => listener,
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            let listener = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .map_err(|error| format!("cannot reserve a free model port: {error}"))?;
+            let replacement = listener
+                .local_addr()
+                .map_err(|error| format!("cannot read reserved model port: {error}"))?
+                .port();
+            warn!(
+                preferred,
+                replacement, "managed model port is occupied; using a free port"
+            );
+            listener
+        }
+        Err(error) => return Err(format!("cannot reserve model port {preferred}: {error}")),
+    };
+    let port = listener
+        .local_addr()
+        .map_err(|error| format!("cannot read reserved model port: {error}"))?
+        .port();
+    Ok((listener, port))
+}
+
 async fn wait_for_model_servers(
     model_plan: &NativeProviderPlan,
     timeout_seconds: u64,
     processes: &mut [LlamaServerProcess],
 ) -> Result<(), String> {
     let asr_health = model_plan
-        .asr_uses_local_runtime()
+        .asr_uses_llama_server()
         .then(|| health_url(model_plan.asr_url()))
         .transpose()?;
     let translation_health = model_plan
-        .translation_uses_local_runtime()
+        .translation_uses_llama_server()
         .then(|| health_url(model_plan.translation_url()))
         .transpose()?;
     let asr_models = model_plan
-        .asr_uses_local_runtime()
+        .asr_uses_llama_server()
         .then(|| models_url(model_plan.asr_url()))
         .transpose()?;
     let translation_models = model_plan
-        .translation_uses_local_runtime()
+        .translation_uses_llama_server()
         .then(|| models_url(model_plan.translation_url()))
         .transpose()?;
     let client =
@@ -1224,13 +1276,13 @@ async fn wait_for_model_servers(
 
     loop {
         for process in processes.iter_mut() {
-            let role = process.role().model_alias();
+            let role = process.model_alias().to_owned();
             if let Some(status) = process
                 .try_wait()
                 .map_err(|error| format!("cannot inspect managed {role} process: {error}"))?
             {
                 return Err(format!(
-                    "managed {role} llama-server exited during startup ({status}); check whether its port is already in use and inspect the lines above this error"
+                    "managed {role} llama-server exited during startup ({status}); inspect the lines above this error"
                 ));
             }
         }
@@ -1256,8 +1308,10 @@ async fn wait_for_model_servers(
             return Ok(());
         }
         let last_status = format!(
-            "Qwen3-ASR: {}; Hy-MT2: {}",
+            "{}: {}; {}: {}",
+            model_plan.asr_model_alias(),
             health_status(&asr),
+            model_plan.translation_model_alias(),
             health_status(&translation)
         );
         if Instant::now() >= deadline {
@@ -2857,7 +2911,7 @@ mod tests {
     use super::{
         AudioEpoch, PipelineGeneration, SessionInputState, StreamWindowContext, VoiceCloneCapture,
         align_translation_contexts, health_url, local_endpoint_port, model_alias_is_advertised,
-        models_url, outbound_is_current, segment_contexts, split_tts_text,
+        models_url, outbound_is_current, reserve_model_port, segment_contexts, split_tts_text,
     };
     use xrtranslate_engine::{
         EngineConfig, Language, LanguageRoute, SessionEngine, TranslationSegmentPair,
@@ -2932,6 +2986,18 @@ mod tests {
         );
         assert!(local_endpoint_port("https://example.com:8001/v1/chat/completions").is_err());
         assert!(local_endpoint_port("http://localhost/v1/chat/completions").is_err());
+    }
+
+    #[test]
+    fn occupied_managed_model_port_gets_a_reserved_fallback() {
+        let occupied = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let preferred = occupied.local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{preferred}/v1/chat/completions");
+        let (reservation, selected) = reserve_model_port(&url).unwrap();
+        assert_ne!(selected, preferred);
+        assert!(std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, selected)).is_err());
+        drop(reservation);
+        assert!(std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, selected)).is_ok());
     }
 
     #[test]

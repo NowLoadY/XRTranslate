@@ -62,6 +62,7 @@ pub(crate) enum OnboardingSaveOutcome {
 /// The original JSON document is retained so unrelated project settings are preserved.
 pub struct ServiceConfigEditor {
     path: PathBuf,
+    base_document: Value,
     document: Value,
     categories: Vec<ServiceCategory>,
     dirty: bool,
@@ -75,6 +76,7 @@ impl ServiceConfigEditor {
         let path = project_config_path();
         let mut editor = Self {
             path,
+            base_document: Value::Object(Map::new()),
             document: Value::Object(Map::new()),
             categories: Vec::new(),
             dirty: false,
@@ -90,8 +92,13 @@ impl ServiceConfigEditor {
     }
 
     pub fn reload(&mut self) -> Result<(), String> {
+        let base_contents = std::fs::read_to_string(&self.path)
+            .map_err(|error| format!("Cannot read {}: {error}", self.path.display()))?;
+        let base_document = serde_json::from_str(&base_contents)
+            .map_err(|error| format!("Invalid {}: {error}", self.path.display()))?;
         self.document = xrtranslate_config::load_user_config_document(&self.path, &project_root())
             .map_err(|error| format!("Cannot read {}: {error}", self.path.display()))?;
+        self.base_document = base_document;
         self.categories = [
             ("asr", "ASR / Speech Recognition"),
             ("translation", "Translation"),
@@ -135,6 +142,18 @@ impl ServiceConfigEditor {
         let _ = Self::sync_categories(&mut document, &self.categories);
         xrtranslate_config::AppConfig::from_value(document)
             .map(|config| config.runtime_requirements())
+            .unwrap_or_default()
+    }
+
+    pub fn selected_model_asset_ids(&self) -> Vec<xrtranslate_assets::ModelAssetId> {
+        xrtranslate_config::AppConfig::from_value(self.document.clone())
+            .map(|config| {
+                config
+                    .active_native_model_assets()
+                    .into_iter()
+                    .filter_map(|key| xrtranslate_assets::ModelAssetId::from_config_key(&key))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -412,7 +431,6 @@ impl ServiceConfigEditor {
     pub fn render(
         &mut self,
         ui: &mut eframe::egui::Ui,
-        project_root: &std::path::Path,
         language: crate::i18n::UiLanguage,
     ) -> bool {
         use crate::ui::components::{self, section};
@@ -431,84 +449,14 @@ impl ServiceConfigEditor {
         for cat_idx in 0..self.categories.len() {
             let category_title = crate::i18n::tr(language, self.categories[cat_idx].title);
             let category_key = self.categories[cat_idx].key;
-            let eligible_indices = self.categories[cat_idx]
-                .providers
-                .iter()
-                .enumerate()
-                .filter_map(|(index, provider)| {
-                    provider_is_usable(provider, category_key, project_root).then_some(index)
-                })
-                .collect::<Vec<_>>();
-            let active_index = eligible_indices
-                .iter()
-                .copied()
-                .find(|index| {
-                    self.categories[cat_idx].providers[*index].name
-                        == self.categories[cat_idx].selected_provider
-                })
-                .or_else(|| eligible_indices.first().copied());
-            if let Some(index) = active_index {
-                let selected = self.categories[cat_idx].providers[index].name.clone();
-                if self.categories[cat_idx].selected_provider != selected {
-                    self.categories[cat_idx].selected_provider = selected;
-                    self.dirty = true;
-                }
-            }
+            let default_providers = self
+                .base_document
+                .get(category_key)
+                .and_then(|section| section.get("providers"))
+                .cloned();
 
             section(ui, category_title, |ui| {
-                // Only providers whose remote settings or local model files are usable
-                // are offered here. New services belong in onboarding.
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(crate::i18n::tr(language, "Provider:")).strong());
-                    let previous = self.categories[cat_idx].selected_provider.clone();
-                    let selected_label = if eligible_indices.is_empty() {
-                        crate::i18n::tr(language, "No providers configured").to_owned()
-                    } else {
-                        provider_display_label(&previous, language)
-                    };
-
-                    let provider_names: Vec<String> = eligible_indices
-                        .iter()
-                        .map(|index| self.categories[cat_idx].providers[*index].name.clone())
-                        .collect();
-
-                    let combo_resp = crate::ui::components::combobox_ui(
-                        ui,
-                        (category_key, "provider_combo"),
-                        selected_label,
-                        |ui| {
-                            for name in &provider_names {
-                                let label = provider_display_label(name, language);
-                                ui.selectable_value(
-                                    &mut self.categories[cat_idx].selected_provider,
-                                    name.clone(),
-                                    label,
-                                );
-                            }
-                        },
-                    );
-
-                    if self.categories[cat_idx].selected_provider != previous {
-                        self.dirty = true;
-                    }
-
-                    if combo_resp.response.changed() {
-                        self.dirty = true;
-                    }
-                });
-
-                ui.add_space(12.0);
-
-                if eligible_indices.is_empty() {
-                    ui.label(
-                        egui::RichText::new(crate::i18n::tr(language, "No providers"))
-                            .color(crate::ui::theme::text_weak()),
-                    );
-                    return;
-                }
-
                 let active_name = self.categories[cat_idx].selected_provider.clone();
-                // Render the active usable provider only.
                 let active_idx = self.categories[cat_idx]
                     .providers
                     .iter()
@@ -516,18 +464,31 @@ impl ServiceConfigEditor {
 
                 if let Some(idx) = active_idx {
                     let provider_name = self.categories[cat_idx].providers[idx].name.clone();
+                    let default_provider = default_providers
+                        .as_ref()
+                        .and_then(|providers| providers.get(&provider_name));
                     let provider_title = provider_display_label(&provider_name, language);
                     let model_assets =
                         provider_model_assets(&self.categories[cat_idx].providers[idx]);
+                    let model_names = provider_model_names(
+                        &self.categories[cat_idx].providers[idx],
+                        category_key,
+                    );
+                    let native_model = !model_assets.is_empty()
+                        || (!provider_is_remote(&self.categories[cat_idx].providers[idx])
+                            && !model_names.is_empty());
                     let supported_languages =
                         provider_model_languages(&self.categories[cat_idx].providers[idx]);
 
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
+                            egui::RichText::new(crate::i18n::tr(language, "Provider:"))
+                                .strong(),
+                        );
+                        ui.label(
                             egui::RichText::new(provider_title)
                                 .size(13.5)
-                                .color(crate::ui::theme::text_strong())
-                                .strong(),
+                                .color(crate::ui::theme::text_strong()),
                         );
                         if let Some(guide_url) = self.categories[cat_idx].providers[idx]
                             .fields
@@ -556,14 +517,26 @@ impl ServiceConfigEditor {
                             ));
                         }
                     });
+                    for model_name in model_names {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!(
+                                    "{} {}",
+                                    crate::i18n::tr(language, "Model:"),
+                                    model_name
+                                ))
+                                .color(crate::ui::theme::text_strong()),
+                            )
+                            .wrap(),
+                        );
+                    }
                     ui.add_space(10.0);
                     render_provider_capabilities(ui, language, category_key, &supported_languages);
                     if category_key == "tts"
-                        && render_tts_model_selection(
+                        && render_tts_voice_selection(
                             ui,
                             &mut self.categories[cat_idx].providers[idx],
                             language,
-                            project_root,
                         )
                     {
                         self.dirty = true;
@@ -577,7 +550,7 @@ impl ServiceConfigEditor {
                                 field,
                                 category_key,
                                 &provider_name,
-                                !model_assets.is_empty(),
+                                native_model,
                             )
                         })
                         .count();
@@ -597,7 +570,7 @@ impl ServiceConfigEditor {
                                         field,
                                         category_key,
                                         &provider_name,
-                                        !model_assets.is_empty(),
+                                        native_model,
                                     ) {
                                         continue;
                                     }
@@ -611,21 +584,43 @@ impl ServiceConfigEditor {
                                         label_response.on_hover_text(help);
                                     }
                                     let edit_w = (ui.available_width() - 20.0).clamp(240.0, 360.0);
-                                    if render_field_input(
-                                        ui,
-                                        field,
-                                        edit_w,
-                                        language,
-                                        category_key,
-                                        &provider_name,
-                                        project_root,
-                                    ) {
-                                        self.dirty = true;
-                                    }
+                                    let default_value = (field.kind == JsonFieldKind::Number)
+                                        .then(|| {
+                                            runtime_parameter_default(default_provider, &field.name)
+                                        })
+                                        .flatten();
+                                    ui.horizontal(|ui| {
+                                        if render_field_input(ui, field, edit_w, language) {
+                                            self.dirty = true;
+                                        }
+                                        if let Some(default_value) = default_value {
+                                            let reset = components::reset_button(
+                                                ui,
+                                                &format!(
+                                                    "{category_key}/{provider_name}/{}",
+                                                    field.name
+                                                ),
+                                            )
+                                            .on_hover_text(format!(
+                                                    "{} {}",
+                                                    crate::i18n::tr(language, "Restore default:"),
+                                                    default_value
+                                                ));
+                                            if reset.clicked() && field.value != default_value {
+                                                field.value = default_value;
+                                                self.dirty = true;
+                                            }
+                                        }
+                                    });
                                     ui.end_row();
                                 }
                             });
                     }
+                } else {
+                    ui.label(
+                        egui::RichText::new(crate::i18n::tr(language, "No providers configured"))
+                            .color(crate::ui::theme::text_weak()),
+                    );
                 }
             });
             ui.add_space(12.0);
@@ -794,11 +789,11 @@ fn validate_native_provider_asset(
         })?;
         xrtranslate_assets::manifest_for(id)
     } else {
-        xrtranslate_assets::manifests_for_capability(capability)
-            .find(|manifest| {
-                manifest.provider == provider.provider
-                    && manifest.level == xrtranslate_assets::ModelLevel::Normal
-            })
+        xrtranslate_assets::tier_default_manifest(
+            &provider.provider,
+            capability,
+            xrtranslate_assets::ModelLevel::Normal,
+        )
             .ok_or_else(|| {
                 format!(
                     "Provider {} has no default local model package.",
@@ -900,6 +895,45 @@ fn provider_model_assets(provider: &ProviderCard) -> Vec<String> {
         .and_then(|field| serde_json::from_str::<Vec<String>>(&field.value).ok())
         .filter(|assets| !assets.is_empty())
         .unwrap_or_else(|| provider_model_asset(provider).into_iter().collect())
+}
+
+fn provider_model_names(provider: &ProviderCard, category_key: &str) -> Vec<String> {
+    let assets = provider_model_assets(provider);
+    if !assets.is_empty() {
+        return assets
+            .into_iter()
+            .map(|asset| {
+                xrtranslate_assets::ModelAssetId::from_config_key(&asset)
+                    .map(|id| xrtranslate_assets::manifest_for(id).label.to_owned())
+                    .unwrap_or(asset)
+            })
+            .collect();
+    }
+    if !provider_is_remote(provider) {
+        let capability = match category_key {
+            "asr" => Some(xrtranslate_assets::ModelCapability::Asr),
+            "translation" => Some(xrtranslate_assets::ModelCapability::Translation),
+            _ => None,
+        };
+        if let Some(manifest) = capability.and_then(|capability| {
+            xrtranslate_assets::tier_default_manifest(
+                &provider.name,
+                capability,
+                xrtranslate_assets::ModelLevel::Normal,
+            )
+        }) {
+            return vec![manifest.label.to_owned()];
+        }
+    }
+    provider
+        .fields
+        .iter()
+        .find(|field| field.name == "model")
+        .map(|field| field.value.trim())
+        .filter(|model| !model.is_empty())
+        .map(str::to_owned)
+        .into_iter()
+        .collect()
 }
 
 fn update_provider_model_selection(provider: &mut ProviderCard, model_asset: &str, enabled: bool) {
@@ -1038,38 +1072,6 @@ fn provider_is_remote(provider: &ProviderCard) -> bool {
         })
 }
 
-fn provider_is_usable(
-    provider: &ProviderCard,
-    category_key: &str,
-    project_root: &std::path::Path,
-) -> bool {
-    if provider.name == "none" {
-        return true;
-    }
-    if provider_is_remote(provider) {
-        let field = |name: &str| {
-            provider
-                .fields
-                .iter()
-                .find(|field| field.name == name)
-                .is_some_and(|field| !field.value.trim().is_empty())
-        };
-        return field("model") && field("api_key");
-    }
-    let Some(capability) = model_capability_for_category(category_key) else {
-        return false;
-    };
-    let assets = provider_model_assets(provider);
-    !assets.is_empty()
-        && assets.iter().all(|key| {
-            xrtranslate_assets::ModelAssetId::from_config_key(key).is_some_and(|id| {
-                xrtranslate_assets::manifest_for(id).capability == capability
-                    && crate::model_install::model_asset_is_present(project_root, id)
-                        .unwrap_or(false)
-            })
-        })
-}
-
 fn provider_supported_languages(provider: &ProviderCard) -> Vec<String> {
     provider
         .fields
@@ -1120,53 +1122,12 @@ fn render_provider_capabilities(
     ui.add_space(8.0);
 }
 
-fn render_tts_model_selection(
+fn render_tts_voice_selection(
     ui: &mut eframe::egui::Ui,
     provider: &mut ProviderCard,
     language: crate::i18n::UiLanguage,
-    project_root: &std::path::Path,
 ) -> bool {
-    let packages = crate::model_install::model_packages_for_provider(
-        &provider.name,
-        xrtranslate_assets::ModelCapability::Tts,
-    );
-    if packages.is_empty() {
-        return false;
-    }
-    let selected = provider_model_assets(provider);
-    let mut change = None;
-    ui.horizontal_wrapped(|ui| {
-        ui.label(
-            eframe::egui::RichText::new(crate::i18n::tr(language, "Models:"))
-                .size(12.0)
-                .color(crate::ui::theme::text_weak()),
-        );
-        for package in packages {
-            let checked = selected.iter().any(|asset| asset == package.id.as_str());
-            let available = crate::model_install::model_asset_is_present(project_root, package.id)
-                .unwrap_or(false);
-            let mut next = checked;
-            let label = if package.languages.is_empty() {
-                package.label.to_owned()
-            } else {
-                format!("{} — {}", package.languages.join(", "), package.label)
-            };
-            if ui
-                .add_enabled(
-                    available && (!checked || selected.len() > 1),
-                    eframe::egui::Checkbox::new(&mut next, label),
-                )
-                .changed()
-            {
-                change = Some((package.id.as_str().to_owned(), next));
-            }
-        }
-    });
     let mut changed = false;
-    if let Some((asset, enabled)) = change {
-        update_provider_model_selection(provider, &asset, enabled);
-        changed = true;
-    }
     let voices = provider_voice_presets(provider);
     for asset in provider_model_assets(provider) {
         let Some(id) = xrtranslate_assets::ModelAssetId::from_config_key(&asset) else {
@@ -1239,54 +1200,10 @@ fn render_field_input(
     field: &mut ConfigField,
     width: f32,
     language: crate::i18n::UiLanguage,
-    category_key: &str,
-    provider_name: &str,
-    project_root: &std::path::Path,
 ) -> bool {
     use eframe::egui;
 
     let descriptor = provider_field_descriptor(&field.name);
-    if matches!(
-        descriptor.map(|descriptor| descriptor.editor),
-        Some(ProviderFieldEditor::ModelLevel)
-    ) {
-        let Some(current_id) =
-            xrtranslate_assets::ModelAssetId::from_config_key(field.value.trim())
-        else {
-            return false;
-        };
-        let current = xrtranslate_assets::manifest_for(current_id);
-        let capability = model_capability_for_category(category_key).unwrap_or(current.capability);
-        let mut selected = current_id;
-        let response = crate::ui::components::combobox_ui(
-            ui,
-            ("provider_model_level", provider_name, capability),
-            crate::i18n::tr(language, current.level.as_str()),
-            |ui| {
-                for package in crate::model_install::model_level_packages_for_provider(
-                    provider_name,
-                    capability,
-                ) {
-                    if !crate::model_install::model_asset_is_present(project_root, package.id)
-                        .unwrap_or(false)
-                    {
-                        continue;
-                    }
-                    ui.selectable_value(
-                        &mut selected,
-                        package.id,
-                        crate::i18n::tr(language, package.level.as_str()),
-                    );
-                }
-            },
-        );
-        if response.response.changed() || selected != current_id {
-            field.value = selected.as_str().to_owned();
-            return true;
-        }
-        return false;
-    }
-
     match field.kind {
         JsonFieldKind::Bool => {
             let mut val = field.value.trim().parse::<bool>().unwrap_or(false);
@@ -1377,13 +1294,45 @@ fn provider_field_label(language: crate::i18n::UiLanguage, name: &str) -> String
     )
 }
 
+fn is_resettable_runtime_parameter(name: &str) -> bool {
+    matches!(
+        name,
+        "context_window_tokens"
+            | "max_tokens"
+            | "parallel_slots"
+            | "sample_rate"
+            | "max_input_chars"
+            | "clone_min_seconds"
+            | "clone_max_seconds"
+            | "speed"
+            | "max_new_tokens"
+            | "temperature"
+            | "top_p"
+            | "top_k"
+            | "vocabulary_weight"
+    )
+}
+
+fn runtime_parameter_default(default_provider: Option<&Value>, name: &str) -> Option<String> {
+    if !is_resettable_runtime_parameter(name) {
+        return None;
+    }
+    default_provider?.get(name).map(display_value)
+}
+
 fn provider_field_is_visible(
     field: &ConfigField,
     category_key: &str,
     provider_name: &str,
     native_model: bool,
 ) -> bool {
-    if provider_name == "openai" && matches!(field.name.as_str(), "transport" | "url") {
+    if matches!(
+        field.name.as_str(),
+        "model_asset" | "model_assets" | "model" | "transport"
+    ) {
+        return false;
+    }
+    if provider_name == "openai" && field.name == "url" {
         return false;
     }
     if category_key == "tts"
@@ -1399,13 +1348,7 @@ fn provider_field_is_visible(
         && native_model
         && matches!(
             field.name.as_str(),
-            "transport"
-                | "url"
-                | "model"
-                | "model_asset"
-                | "model_assets"
-                | "supported_languages"
-                | "voices"
+            "url" | "supported_languages" | "voices"
         )
     {
         return false;
@@ -1419,17 +1362,6 @@ fn provider_field_help(language: crate::i18n::UiLanguage, name: &str) -> Option<
     provider_field_descriptor(name)
         .and_then(|descriptor| descriptor.help)
         .map(|help| crate::i18n::tr(language, help))
-}
-
-fn model_capability_for_category(
-    category_key: &str,
-) -> Option<xrtranslate_assets::ModelCapability> {
-    match category_key {
-        "asr" => Some(xrtranslate_assets::ModelCapability::Asr),
-        "translation" => Some(xrtranslate_assets::ModelCapability::Translation),
-        "tts" => Some(xrtranslate_assets::ModelCapability::Tts),
-        _ => None,
-    }
 }
 
 fn project_config_path() -> PathBuf {
@@ -1506,12 +1438,12 @@ fn parse_value(value: &str, kind: JsonFieldKind) -> Result<Value, String> {
 mod tests {
     use super::{
         ConfigField, JsonFieldKind, OnboardingSaveOutcome, ProviderCard, ServiceConfigEditor,
-        prompt_target_for_translation_provider, provider_field_is_visible, provider_is_usable,
-        provider_supported_languages, provider_voice_presets, update_provider_model_selection,
-        validate_native_provider_asset, validate_tts_provider_asset,
+        prompt_target_for_translation_provider, provider_field_is_visible, provider_model_names,
+        provider_supported_languages, provider_voice_presets, runtime_parameter_default,
+        update_provider_model_selection, validate_native_provider_asset, validate_tts_provider_asset,
     };
     use serde_json::Value;
-    use xrtranslate_assets::ModelCapability;
+    use xrtranslate_assets::{ModelAssetId, ModelCapability};
     use xrtranslate_config::{AsrPromptMode, LocalModelRuntimeConfig, NativeProviderConfig};
     use xrtranslate_prompt::PromptProviderTarget;
 
@@ -1551,43 +1483,119 @@ mod tests {
     }
 
     #[test]
-    fn settings_only_offer_configured_remote_providers() {
-        let configured = provider_card(
-            "openai",
-            &[
-                ("transport", "openai"),
-                ("model", "gpt-4o-mini"),
-                ("api_key", "secret"),
-            ],
+    fn settings_display_full_model_names_without_switch_fields() {
+        let local = provider_card(
+            "qwen3-gguf",
+            &[("model_asset", "qwen3-asr-0.6b-q8-gguf")],
         );
-        let missing_key = provider_card(
-            "openai",
-            &[
-                ("transport", "openai"),
-                ("model", "gpt-4o-mini"),
-                ("api_key", ""),
-            ],
+        assert_eq!(
+            provider_model_names(&local, "asr"),
+            vec!["Qwen3-ASR 0.6B · Q8_0"]
         );
 
-        assert!(provider_is_usable(
-            &configured,
-            "translation",
-            std::path::Path::new(".")
-        ));
-        assert!(!provider_is_usable(
-            &missing_key,
-            "translation",
-            std::path::Path::new(".")
-        ));
+        let legacy_local = provider_card("qwen3-gguf", &[]);
+        assert_eq!(
+            provider_model_names(&legacy_local, "asr"),
+            vec!["Qwen3-ASR 1.7B · Q4_K_M"]
+        );
+
+        let remote = provider_card(
+            "openai",
+            &[("transport", "openai"), ("model", "gpt-4o-transcribe")],
+        );
+        assert_eq!(provider_model_names(&remote, "asr"), vec!["gpt-4o-transcribe"]);
+
+        let tts = provider_card(
+            "openvoice",
+            &[(
+                "model_assets",
+                r#"["openvoice-v2-onnx-fp16","openvoice-v2-zh-onnx-fp16"]"#,
+            )],
+        );
+        assert_eq!(
+            provider_model_names(&tts, "tts"),
+            vec![
+                "OpenVoice v2 (English multi-accent, ONNX FP16)",
+                "OpenVoice v2 (Chinese, ONNX FP16)"
+            ]
+        );
     }
 
     #[test]
-    fn settings_keep_the_tts_disabled_option_available() {
-        assert!(provider_is_usable(
-            &provider_card("none", &[]),
-            "tts",
-            std::path::Path::new(".")
-        ));
+    fn settings_render_does_not_replace_an_unconfigured_selected_provider() {
+        let mut document: Value = serde_json::from_str(include_str!("../../config.json")).unwrap();
+        document["asr"]["provider"] = Value::from("openai");
+        let categories = [
+            ("asr", "ASR / Speech Recognition"),
+            ("translation", "Translation"),
+            ("tts", "Text to Speech"),
+        ]
+        .into_iter()
+        .map(|(key, title)| ServiceConfigEditor::make_category(&document, key, title))
+        .collect();
+        let mut editor = ServiceConfigEditor {
+            path: "config.json".into(),
+            base_document: document.clone(),
+            document,
+            categories,
+            dirty: false,
+            message: None,
+            message_is_error: false,
+            onboarding_save_error: None,
+        };
+        let context = eframe::egui::Context::default();
+        let mut output = context.run_ui(eframe::egui::RawInput::default(), |context| {
+            eframe::egui::CentralPanel::default().show(context, |ui| {
+                editor.render(ui, crate::i18n::UiLanguage::English);
+            });
+        });
+        output.textures_delta.clear();
+        assert_eq!(editor.categories[0].selected_provider, "openai");
+        assert!(!editor.dirty);
+    }
+
+    #[test]
+    fn runtime_parameter_reset_uses_shipped_defaults_without_changing_the_model() {
+        let base: Value = serde_json::from_str(include_str!("../../config.json")).unwrap();
+        let asr_defaults = &base["asr"]["providers"]["qwen3-gguf"];
+        assert_eq!(
+            runtime_parameter_default(Some(asr_defaults), "context_window_tokens"),
+            Some("4800".into())
+        );
+        assert_eq!(
+            runtime_parameter_default(Some(asr_defaults), "max_tokens"),
+            Some("128".into())
+        );
+        assert_eq!(runtime_parameter_default(Some(asr_defaults), "url"), None);
+        assert_eq!(
+            runtime_parameter_default(
+                Some(&base["tts"]["providers"]["openvoice"]),
+                "max_input_chars"
+            ),
+            Some("60".into())
+        );
+
+        let mut effective = base.clone();
+        effective["asr"]["providers"]["qwen3-gguf"]["model_asset"] =
+            Value::from("qwen3-asr-0.6b-q8-gguf");
+        effective["asr"]["providers"]["qwen3-gguf"]["context_window_tokens"] =
+            Value::from(2_048);
+        effective["asr"]["providers"]["qwen3-gguf"]["context_window_tokens"] =
+            Value::from(
+                runtime_parameter_default(Some(asr_defaults), "context_window_tokens")
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap(),
+            );
+
+        let override_document = xrtranslate_config::user_config_override(&base, &effective).unwrap();
+        assert_eq!(
+            override_document.pointer("/asr/providers/qwen3-gguf/model_asset"),
+            Some(&Value::from("qwen3-asr-0.6b-q8-gguf"))
+        );
+        assert!(override_document
+            .pointer("/asr/providers/qwen3-gguf/context_window_tokens")
+            .is_none());
     }
 
     #[test]
@@ -1688,6 +1696,7 @@ mod tests {
         document["tts"]["providers"]["openvoice"]["sample_rate"] = Value::from(8_000);
         let editor = ServiceConfigEditor {
             path: "config.json".into(),
+            base_document: document.clone(),
             document,
             categories: Vec::new(),
             dirty: false,
@@ -1762,6 +1771,36 @@ mod tests {
             "openai-compatible",
             false
         ));
+        assert!(!provider_field_is_visible(
+            &field("model_asset"),
+            "asr",
+            "qwen3-gguf",
+            true
+        ));
+        assert!(!provider_field_is_visible(
+            &field("model"),
+            "asr",
+            "openai",
+            false
+        ));
+        assert!(!provider_field_is_visible(
+            &field("transport"),
+            "translation",
+            "hunyuan",
+            false
+        ));
+        assert!(!provider_field_is_visible(
+            &field("model_assets"),
+            "tts",
+            "openvoice",
+            true
+        ));
+        assert!(provider_field_is_visible(
+            &field("context_window_tokens"),
+            "asr",
+            "qwen3-gguf",
+            true
+        ));
     }
 
     #[test]
@@ -1773,6 +1812,7 @@ mod tests {
         ];
         let mut editor = ServiceConfigEditor {
             path: "config.json".into(),
+            base_document: document.clone(),
             document,
             categories,
             dirty: false,
@@ -1813,6 +1853,7 @@ mod tests {
         ];
         let mut editor = ServiceConfigEditor {
             path: "config.json".into(),
+            base_document: document.clone(),
             document,
             categories,
             dirty: false,
@@ -1833,6 +1874,41 @@ mod tests {
     }
 
     #[test]
+    fn selected_model_ids_follow_the_active_provider_and_specific_asset() {
+        let mut document: Value = serde_json::from_str(include_str!("../../config.json")).unwrap();
+        document["asr"]["providers"]["qwen3-gguf"]["model_asset"] =
+            Value::from("qwen3-asr-0.6b-q8-gguf");
+        document["translation"]["providers"]["hunyuan"]["model_asset"] =
+            Value::from("hy-mt2-1.8b-q2-k");
+        let categories = vec![
+            ServiceConfigEditor::make_category(&document, "asr", "ASR / Speech Recognition"),
+            ServiceConfigEditor::make_category(&document, "translation", "Translation"),
+            ServiceConfigEditor::make_category(&document, "tts", "Text to Speech"),
+        ];
+        let mut editor = ServiceConfigEditor {
+            path: "config.json".into(),
+            base_document: document.clone(),
+            document,
+            categories,
+            dirty: false,
+            message: None,
+            message_is_error: false,
+            onboarding_save_error: None,
+        };
+        assert_eq!(
+            editor.selected_model_asset_ids(),
+            vec![ModelAssetId::Qwen3Asr06bQ8Gguf, ModelAssetId::HunyuanMtQ2kGguf]
+        );
+        editor.select_onboarding_provider("asr", "openai");
+        assert_eq!(
+            editor.selected_model_asset_ids(),
+            vec![ModelAssetId::Qwen3Asr06bQ8Gguf, ModelAssetId::HunyuanMtQ2kGguf]
+        );
+        editor.document["asr"]["provider"] = Value::from("openai");
+        assert_eq!(editor.selected_model_asset_ids(), vec![ModelAssetId::HunyuanMtQ2kGguf]);
+    }
+
+    #[test]
     fn onboarding_preserves_errors_from_the_selected_local_provider() {
         let document: Value = serde_json::from_str(include_str!("../../config.json")).unwrap();
         let categories = vec![
@@ -1842,6 +1918,7 @@ mod tests {
         ];
         let mut editor = ServiceConfigEditor {
             path: "config.json".into(),
+            base_document: document.clone(),
             document,
             categories,
             dirty: false,

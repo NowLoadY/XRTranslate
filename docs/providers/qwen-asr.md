@@ -7,11 +7,11 @@ The integration uses the OpenAI-compatible HTTP Chat Completions endpoint with m
 ## Configure
 
 1. Obtain a Model Studio API key from the [Alibaba Cloud Model Studio Console](https://modelstudio.console.alibabacloud.com/).
-2. In **Settings -> Service Providers** (or Onboarding Step 2), select `qwen` for Speech Recognition (ASR).
+2. In the welcome flow, select the online `qwen` service for Speech Recognition (ASR).
 3. Set the endpoint URL:
    - Default (China/Beijing): `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions`
    - International (Singapore): `https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions`
-4. Enter your Model Studio API Key.
+4. Enter your Model Studio API key in the welcome flow or **Settings -> Service Providers**.
 5. Default model: `qwen3-asr-flash`.
 
 ## Prompt and Recognition Semantics

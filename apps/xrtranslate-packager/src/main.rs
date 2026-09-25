@@ -640,6 +640,7 @@ fn manifest_json(manifest: &ModelAssetManifest) -> Value {
             "path": file.relative_path,
             "bytes": file.bytes,
             "sha256": file.sha256,
+            "url": manifest.source.file_url(file.relative_path),
         })).collect::<Vec<_>>(),
     })
 }

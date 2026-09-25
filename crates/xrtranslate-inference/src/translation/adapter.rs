@@ -145,7 +145,7 @@ mod tests {
             http,
             "http://127.0.0.1:8002/v1/chat/completions",
             "hy-mt2",
-            TranslationProvider::Hunyuan,
+            TranslationProvider::Contextual,
         )
         .unwrap();
         let mut options = TranslationOptions::new("English", "Chinese");
@@ -231,7 +231,7 @@ mod tests {
             http,
             "http://127.0.0.1:8002/v1/chat/completions",
             "hy-mt2",
-            TranslationProvider::Hunyuan,
+            TranslationProvider::Contextual,
         )
         .unwrap();
         let mut options = TranslationOptions::new("English", "Chinese");

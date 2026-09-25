@@ -7,12 +7,12 @@ The integration uses the OpenAI-compatible HTTP Chat Completions endpoint, confo
 ## Configure
 
 1. Obtain a Model Studio API key from the [Alibaba Cloud Model Studio Console](https://modelstudio.console.alibabacloud.com/).
-2. In **Settings -> Service Providers** (or Onboarding Step 2), select `qwen` for Machine Translation.
+2. In the welcome flow, select the online `qwen` service for Machine Translation.
 3. Set the endpoint URL:
    - Default (China/Beijing): `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions`
    - International (Singapore): `https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions`
-4. Enter your Model Studio API Key.
-5. Default model: `qwen-mt-flash` (recommended for low latency and high quality). Alternatively, use `qwen-mt-plus` for formal/domain precision or `qwen-mt-lite` for live subtitle scenarios.
+4. Enter your Model Studio API key in the welcome flow or **Settings -> Service Providers**.
+5. Default model: `qwen-mt-flash` (recommended for low latency and high quality). In the welcome flow, you can instead enter `qwen-mt-plus` for formal/domain precision or `qwen-mt-lite` for live subtitle scenarios.
 
 ## Prompt Studio Integration
 

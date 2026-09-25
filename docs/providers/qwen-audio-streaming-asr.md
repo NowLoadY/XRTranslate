@@ -8,8 +8,8 @@ not an OpenAI-compatible HTTP emulation.
 ## Configure
 
 1. Create an Alibaba Model Studio API key in the region that owns the model.
-2. In Service Configuration, select `qwen-audio-streaming` for ASR and enter
-   the API key.
+2. In the welcome flow, select `qwen-audio-streaming` for ASR and enter
+   the API key. The API key can also be updated in Service Configuration.
 3. Keep the endpoint on `wss://`. The shipped Beijing-compatible endpoint is
    `wss://dashscope.aliyuncs.com/api-ws/v1/inference`. A workspace endpoint is
    preferred when available:

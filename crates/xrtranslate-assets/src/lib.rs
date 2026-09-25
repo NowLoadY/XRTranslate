@@ -11,13 +11,16 @@ mod preflight;
 mod resolve;
 
 pub use catalog::{
-    AUDIO8_TTS_ONNX_FP16, DEFAULT_GGUF_MANIFEST, HUNYUAN_MT_7B_GGUF, HUNYUAN_MT_GGUF,
-    MANAGED_LOCAL_MODEL_HARDWARE, MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES, MODEL_ASSET_CATALOG,
+    AUDIO8_TTS_ONNX_FP16, AsrDelivery, AsrPromptStyle, CONFUCIUS4_R2T2_Q8_GGUF, CPU_MODEL_HARDWARE,
+    DEFAULT_GGUF_MANIFEST, HAIDASS_TRANSLATE_143M_Q8_GGUF, HUNYUAN_MT_7B_GGUF, HUNYUAN_MT_GGUF,
+    HUNYUAN_MT_Q2K_GGUF, MANAGED_LOCAL_MODEL_HARDWARE, MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES,
+    MANAGED_SMALL_MODEL_HARDWARE, MANAGED_SMALL_MODEL_MINIMUM_VRAM_BYTES, MODEL_ASSET_CATALOG,
     ModelAccelerator, ModelArchiveEntry, ModelArchiveSource, ModelAssetId, ModelAssetManifest,
-    ModelAudioOutput, ModelAudioSampleFormat, ModelCapability, ModelFileRole, ModelFileSource,
-    ModelHardwareRequirements, ModelLevel, ModelSource, ModelVoicePreset, OPENVOICE_V2_ONNX_FP16,
-    OPENVOICE_V2_ZH_ONNX_FP16, OPENVOICE_V3_ONNX_FP16, QWEN3_ASR_GGUF, RequiredModelFile,
-    manifest_for, manifests_for_capability,
+    ModelAudioOutput, ModelAudioSampleFormat, ModelBenchmark, ModelCapability, ModelFileRole,
+    ModelFileSource, ModelHardwareRequirements, ModelLevel, ModelRuntime, ModelSource,
+    ModelVoicePreset, OPENVOICE_V2_ONNX_FP16, OPENVOICE_V2_ZH_ONNX_FP16, OPENVOICE_V3_ONNX_FP16,
+    QWEN3_ASR_06B_Q8_GGUF, QWEN3_ASR_GGUF, RequiredModelFile, SENSEVOICE_SMALL_INT8_ONNX,
+    TranslationPromptStyle, manifest_for, manifests_for_capability, tier_default_manifest,
 };
 pub use install::{
     AtomicInstallError, DownloadProgress, ModelDownloadError, NativeModelInstaller,

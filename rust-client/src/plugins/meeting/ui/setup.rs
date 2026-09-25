@@ -30,6 +30,12 @@ pub(super) fn render_setup(
         },
     );
 
+    crate::model_language::normalize_route_for_options(
+        &snapshot.source_languages,
+        &snapshot.target_languages,
+        &mut controller.draft.source_language,
+        &mut controller.draft.target_language,
+    );
     let validation_error = draft_validation_error(controller, snapshot);
 
     components::card(ui, |ui| {
@@ -143,7 +149,7 @@ pub(super) fn render_setup(
                         "auto".to_string(),
                         tr(language, "Auto (bidirectional)").to_string(),
                     )];
-                    for (code, label) in crate::LANGUAGE_OPTIONS {
+                    for (code, label) in &snapshot.source_languages {
                         source_options.push((
                             (*code).to_string(),
                             tr(language, label).to_string(),
@@ -182,6 +188,7 @@ pub(super) fn render_setup(
                         &controller.draft.source_language,
                         &mut controller.draft.target_language,
                         language,
+                        if controller.draft.source_language == "auto" { &snapshot.source_languages } else { &snapshot.target_languages },
                         |code, lang| meeting_language_label(code, lang),
                     );
                 });

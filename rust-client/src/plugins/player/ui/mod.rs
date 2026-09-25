@@ -22,7 +22,7 @@ pub(super) fn render(
     match plugin.controller.route {
         VideoPlayerRoute::Library => library::render_library(&mut plugin.controller, language, ui),
         VideoPlayerRoute::Create => create::render_create(&mut plugin.controller, language, ui),
-        VideoPlayerRoute::Player => player::render_player(&mut plugin.controller, language, ui),
+        VideoPlayerRoute::Player => player::render_player(&mut plugin.controller, snapshot, ui),
     }
 }
 

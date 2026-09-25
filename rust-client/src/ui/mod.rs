@@ -7,6 +7,7 @@ pub(crate) mod graph_editor;
 pub(crate) mod graph_style;
 pub mod layout;
 pub mod modal;
+pub(crate) mod model_comparison;
 pub mod organic_border;
 pub mod organic_line;
 pub mod pages;

@@ -12,8 +12,8 @@ use std::{
 };
 use xrtranslate_assets::{
     DownloadProgress, ModelAssetId, ModelAssetsConfig, ModelCapability, ModelHardwareRequirements,
-    ModelLevel, NativeModelInstaller, ResolvedModelAssets, clear_model_staging,
-    manifests_for_capability, remove_model_asset,
+    ModelLevel, NativeModelInstaller, ResolvedModelAssets, clear_model_staging, manifest_for,
+    manifests_for_capability, remove_model_asset, tier_default_manifest,
 };
 use xrtranslate_config::AppConfig;
 use xrtranslate_download::{DownloadCancellation, DownloadSource};
@@ -723,7 +723,7 @@ fn clear_model_staging_for(
     Ok(())
 }
 
-pub fn model_level_packages_for_provider(
+pub fn model_packages_for_provider(
     provider: &str,
     capability: ModelCapability,
 ) -> Vec<NativeModelPackage> {
@@ -733,18 +733,38 @@ pub fn model_level_packages_for_provider(
         .collect()
 }
 
-pub fn model_packages_for_provider(
+/// Select the default model for the best tier supported by the reported GPU.
+/// The tier default is explicit, so adding another choice does not change it.
+pub fn default_model_for_vram(
     provider: &str,
     capability: ModelCapability,
-) -> Vec<NativeModelPackage> {
-    model_level_packages_for_provider(provider, capability)
+    memory_bytes: u64,
+) -> Option<ModelAssetId> {
+    [ModelLevel::Normal, ModelLevel::Small]
+        .into_iter()
+        .filter_map(|level| tier_default_manifest(provider, capability, level))
+        .find(|manifest| memory_bytes >= manifest.hardware.minimum_memory_bytes)
+        .or_else(|| {
+            manifests_for_capability(capability)
+                .filter(|manifest| {
+                    manifest.provider == provider
+                        && memory_bytes >= manifest.hardware.minimum_memory_bytes
+                })
+                .min_by_key(|manifest| manifest.estimated_vram_bytes)
+        })
+        .map(|manifest| manifest.id)
 }
 
-pub fn set_model_level(
+pub fn set_model_asset(
     project_root: &std::path::Path,
     capability: ModelCapability,
-    level: ModelLevel,
+    asset_id: ModelAssetId,
 ) -> Result<(), String> {
+    if capability.allows_multiple_assets() {
+        return Err(
+            "Composable model packages must be selected through the provider asset list.".into(),
+        );
+    }
     let path = project_root.join("config.json");
     let mut document = xrtranslate_config::load_user_config_document(&path, project_root)
         .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
@@ -762,13 +782,13 @@ pub fn set_model_level(
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| format!("Missing {section_name}.provider."))?
         .to_owned();
-    let manifest = manifests_for_capability(capability)
-        .find(|manifest| manifest.provider == provider && manifest.level == level)
-        .ok_or_else(|| {
-            format!(
-                "The selected model level is not available for provider {provider} and {capability:?}."
-            )
-        })?;
+    let manifest = manifest_for(asset_id);
+    if manifest.provider != provider || manifest.capability != capability {
+        return Err(format!(
+            "Model {} does not belong to provider {provider} for {capability:?}.",
+            asset_id
+        ));
+    }
     let provider_config = section
         .get_mut("providers")
         .and_then(serde_json::Value::as_object_mut)
@@ -779,6 +799,18 @@ pub fn set_model_level(
         "model_asset".into(),
         serde_json::Value::String(manifest.id.as_str().into()),
     );
+    if let Some(runtime) = manifest.runtime {
+        provider_config.insert(
+            "transport".into(),
+            serde_json::Value::String(runtime.transport().into()),
+        );
+    }
+    if !capability.allows_multiple_assets() && provider_config.contains_key("model_assets") {
+        provider_config.insert(
+            "model_assets".into(),
+            serde_json::Value::Array(vec![serde_json::Value::String(manifest.id.as_str().into())]),
+        );
+    }
     xrtranslate_config::AppConfig::from_value(document.clone())
         .map_err(|error| format!("Invalid configuration: {error}"))?;
     xrtranslate_config::save_user_config_document(&path, project_root, &document)
@@ -814,15 +846,104 @@ mod tests {
 
     #[test]
     fn model_levels_are_scoped_to_provider_and_capability() {
-        let hunyuan = model_level_packages_for_provider("hunyuan", ModelCapability::Translation);
-        assert_eq!(hunyuan.len(), 2);
+        let hunyuan = model_packages_for_provider("hunyuan", ModelCapability::Translation);
+        assert_eq!(hunyuan.len(), 4);
         assert!(hunyuan.iter().all(|package| package.provider == "hunyuan"
             && package.capability == ModelCapability::Translation));
 
-        assert!(
-            model_level_packages_for_provider("qwen3-gguf", ModelCapability::Translation)
-                .is_empty()
+        assert!(model_packages_for_provider("qwen3-gguf", ModelCapability::Translation).is_empty());
+    }
+
+    #[test]
+    fn hardware_defaults_choose_small_then_normal() {
+        let gib = 1024 * 1024 * 1024;
+        assert_eq!(
+            default_model_for_vram("qwen3-gguf", ModelCapability::Asr, 4 * gib),
+            Some(ModelAssetId::Qwen3Asr06bQ8Gguf)
         );
+        assert_eq!(
+            default_model_for_vram("hunyuan", ModelCapability::Translation, 4 * gib),
+            Some(ModelAssetId::HunyuanMtQ2kGguf)
+        );
+        assert_eq!(
+            default_model_for_vram("qwen3-gguf", ModelCapability::Asr, 8 * gib),
+            Some(ModelAssetId::Qwen3AsrGguf)
+        );
+        assert_eq!(
+            default_model_for_vram("hunyuan", ModelCapability::Translation, 8 * gib),
+            Some(ModelAssetId::HunyuanMtGguf)
+        );
+        assert_eq!(
+            default_model_for_vram("hunyuan", ModelCapability::Translation, 2 * gib),
+            Some(ModelAssetId::HaidassTranslate143mQ8Gguf)
+        );
+        assert_eq!(
+            default_model_for_vram("qwen3-gguf", ModelCapability::Asr, 2 * gib),
+            Some(ModelAssetId::SenseVoiceSmallInt8Onnx)
+        );
+    }
+
+    #[test]
+    fn selecting_a_specific_model_persists_its_asset_key() {
+        let root =
+            std::env::temp_dir().join(format!("xrtranslate-model-choice-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut document: serde_json::Value =
+            serde_json::from_str(include_str!("../../config.json")).unwrap();
+        document["asr"]["providers"]["qwen3-gguf"]["model_assets"] =
+            serde_json::json!(["qwen3-asr-gguf"]);
+        let base = document.to_string();
+        std::fs::write(root.join("config.json"), &base).unwrap();
+        set_model_asset(&root, ModelCapability::Asr, ModelAssetId::Qwen3Asr06bQ8Gguf).unwrap();
+        set_model_asset(
+            &root,
+            ModelCapability::Translation,
+            ModelAssetId::HunyuanMtQ2kGguf,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("config.json")).unwrap(),
+            base
+        );
+        let override_document: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(xrtranslate_config::RuntimeLayout::user_config_path(&root)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            override_document.pointer("/asr/providers/qwen3-gguf/model_asset"),
+            Some(&serde_json::Value::from("qwen3-asr-0.6b-q8-gguf"))
+        );
+        let packages = configured_model_packages(&root).unwrap();
+        assert!(
+            packages
+                .iter()
+                .any(|package| package.id == ModelAssetId::Qwen3Asr06bQ8Gguf)
+        );
+        assert!(
+            packages
+                .iter()
+                .any(|package| package.id == ModelAssetId::HunyuanMtQ2kGguf)
+        );
+        assert!(
+            set_model_asset(
+                &root,
+                ModelCapability::Translation,
+                ModelAssetId::Qwen3AsrGguf
+            )
+            .is_err()
+        );
+        set_model_asset(&root, ModelCapability::Asr, ModelAssetId::SenseVoiceSmallInt8Onnx)
+            .unwrap();
+        let override_document: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(xrtranslate_config::RuntimeLayout::user_config_path(&root)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            override_document.pointer("/asr/providers/qwen3-gguf/transport"),
+            Some(&serde_json::Value::from("onnx-cpu"))
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

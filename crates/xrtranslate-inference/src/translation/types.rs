@@ -3,8 +3,10 @@ use xrtranslate_prompt::{PromptExecutionTrace, PromptNodeGraph, TranslationPromp
 /// Prompt style selected for a translation endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranslationProvider {
-    /// Hy-MT2's direct, single-user-message instruction format.
-    Hunyuan,
+    /// Direct, context-aware single-message translation prompt.
+    Contextual,
+    /// Concise bilingual prompt with deterministic decoding.
+    Bilingual,
     /// Generic OpenAI-compatible instruction/messages format (including Groq).
     OpenAiCompatible,
     /// Qwen-MT translation format over DashScope OpenAI-compatible endpoint.

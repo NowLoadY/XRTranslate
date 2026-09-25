@@ -112,9 +112,9 @@ pub(crate) fn matching_available_input_id<'a>(
         .map(|device| device.id.as_str())
 }
 
-/// One application that currently owns a Windows render-audio session.
-/// `id` is derived from the executable path so a saved selection survives a
-/// process restart; `process_id` is refreshed before route activation.
+/// One application that currently owns a render-audio session.
+/// `id` is derived from a stable application identity so a saved selection
+/// survives a process restart; `process_id` is refreshed before activation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AudioApplication {
     pub id: String,
@@ -144,8 +144,7 @@ pub struct AudioRouteSourceConfig {
 }
 
 /// Selects whether a system-audio source captures an entire render endpoint or
-/// one application's process tree. Application capture is endpoint-independent
-/// on supported Windows builds.
+/// one application's playback streams. Application capture is endpoint-independent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AudioRouteLoopbackTarget {
     Endpoint {
@@ -243,7 +242,7 @@ pub struct AudioRouteLevels {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AudioRouteError {
     InvalidConfiguration(String),
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     UnsupportedCapability(String),
     DeviceUnavailable(String),
     StreamStart(String),
@@ -253,7 +252,7 @@ impl fmt::Display for AudioRouteError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (kind, detail) = match self {
             Self::InvalidConfiguration(detail) => ("invalid audio route", detail),
-            #[cfg(not(windows))]
+            #[cfg(not(any(windows, target_os = "linux")))]
             Self::UnsupportedCapability(detail) => ("unsupported audio capability", detail),
             Self::DeviceUnavailable(detail) => ("audio device unavailable", detail),
             Self::StreamStart(detail) => ("could not start audio route", detail),
@@ -696,7 +695,7 @@ struct TtsPlayer {
 
 enum ActiveCapture {
     MicrophoneSubscription(thread::JoinHandle<()>),
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     Loopback(LoopbackCapture),
 }
 
@@ -725,7 +724,7 @@ struct AudioRouteResources {
     inputs: Vec<Stream>,
     source_workers: Vec<thread::JoinHandle<()>>,
     shared_microphones: Vec<Arc<MicrophoneFanout>>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     loopback: Option<LoopbackCapture>,
 }
 
@@ -736,12 +735,12 @@ impl AudioRouteResources {
             inputs,
             source_workers,
             shared_microphones,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             loopback,
         } = self;
         drop(output);
         drop(inputs);
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         if let Some(loopback) = loopback {
             loopback.stop();
         }
@@ -762,19 +761,19 @@ impl ActiveCapture {
                         let _ = worker.join();
                     });
             }
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             Self::Loopback(capture) => capture.stop(),
         }
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 struct LoopbackCapture {
     stop_requested: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 impl LoopbackCapture {
     fn stop(mut self) {
         self.stop_requested.store(true, Ordering::Release);
@@ -784,7 +783,7 @@ impl LoopbackCapture {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 impl Drop for LoopbackCapture {
     fn drop(&mut self) {
         self.stop_requested.store(true, Ordering::Release);
@@ -849,10 +848,10 @@ fn start_route_loopback_capture(
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn reap_worker(worker: thread::JoinHandle<()>) {
     let _ = thread::Builder::new()
-        .name("wasapi-worker-reaper".into())
+        .name("loopback-worker-reaper".into())
         .spawn(move || {
             let _ = worker.join();
         });
@@ -971,7 +970,7 @@ impl AudioSystem {
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn available_audio_applications(&self) -> Vec<AudioApplication> {
         Vec::new()
     }
@@ -984,7 +983,21 @@ impl AudioSystem {
         enumerate_audio_applications()
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    pub fn available_audio_applications(&self) -> Vec<AudioApplication> {
+        self.try_available_audio_applications()
+            .unwrap_or_else(|error| {
+                log::debug!("Could not enumerate Linux application audio: {error}");
+                Vec::new()
+            })
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn try_available_audio_applications(&self) -> Result<Vec<AudioApplication>, String> {
+        crate::audio_linux::available_applications()
+    }
+
+    #[cfg(not(any(windows, target_os = "linux")))]
     pub fn try_available_audio_applications(&self) -> Result<Vec<AudioApplication>, String> {
         Ok(Vec::new())
     }
@@ -1193,7 +1206,7 @@ impl AudioSystem {
     ) -> Result<AudioRouteHandle, AudioRouteError> {
         validate_audio_route_config(&config)?;
 
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         if config.system_loopback.is_some() {
             return Err(AudioRouteError::UnsupportedCapability(
                 "system loopback routing currently requires the Windows WASAPI host; select a microphone/TTS-only route or install a platform backend"
@@ -1332,7 +1345,7 @@ impl AudioSystem {
             )?);
         }
 
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         let loopback = if let (Some(source), Some(buffer)) =
             (&config.system_loopback, &control.system_loopback)
         {
@@ -1353,7 +1366,7 @@ impl AudioSystem {
         };
 
         if let Err(error) = output.play() {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             if let Some(loopback) = loopback {
                 loopback.stop();
             }
@@ -1367,7 +1380,7 @@ impl AudioSystem {
             inputs,
             source_workers,
             shared_microphones,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             loopback,
         });
         control.state.store(
@@ -2559,36 +2572,192 @@ impl AudioSystem {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 impl AudioSystem {
-    /// Linux capture uses CPAL input devices. System-audio loopback is
-    /// backend-specific (PipeWire/PulseAudio) and is intentionally reported as
-    /// unavailable until a dedicated implementation is selected.
     pub fn available_loopback_devices(&self) -> Vec<InputDevice> {
-        Vec::new()
+        crate::audio_linux::available_devices().unwrap_or_else(|error| {
+            log::debug!("Could not enumerate Linux playback monitors: {error}");
+            Vec::new()
+        })
     }
 
-    pub fn loopback_config(&self, _device_id: &str) -> Result<InputConfigInfo, String> {
-        Err("system-audio loopback is not available on this build".into())
+    pub fn loopback_config(&self, device_id: &str) -> Result<InputConfigInfo, String> {
+        crate::audio_linux::device_config(device_id)?;
+        Ok(InputConfigInfo {
+            sample_rate: AUDIO_ROUTE_SAMPLE_RATE,
+            channels: 2,
+            sample_format: "Float32".into(),
+        })
     }
 
     pub fn start_loopback_capture(
         &mut self,
-        _device_id: &str,
-        _output_tx: Sender<Vec<f32>>,
-        _level: Arc<AtomicU32>,
+        device_id: &str,
+        output_tx: Sender<Vec<f32>>,
+        level: Arc<AtomicU32>,
     ) -> Result<(), String> {
-        Err("system-audio loopback is not available on this build".into())
+        self.start_linux_loopback_target(
+            AudioRouteLoopbackTarget::Endpoint {
+                device_id: device_id.to_owned(),
+            },
+            output_tx,
+            level,
+        )
     }
 
     pub fn start_application_loopback_capture(
         &mut self,
-        _process_id: u32,
-        _application_name: &str,
-        _output_tx: Sender<Vec<f32>>,
-        _level: Arc<AtomicU32>,
+        process_id: u32,
+        application_name: &str,
+        output_tx: Sender<Vec<f32>>,
+        level: Arc<AtomicU32>,
     ) -> Result<(), String> {
-        Err("application-audio loopback is not available on this build".into())
+        self.start_linux_loopback_target(
+            AudioRouteLoopbackTarget::Application {
+                process_id,
+                application_name: application_name.to_owned(),
+            },
+            output_tx,
+            level,
+        )
+    }
+
+    fn start_linux_loopback_target(
+        &mut self,
+        target: AudioRouteLoopbackTarget,
+        output_tx: Sender<Vec<f32>>,
+        level: Arc<AtomicU32>,
+    ) -> Result<(), String> {
+        let (raw_tx, raw_rx) = bounded::<Vec<f32>>(32);
+        let processing = Self::spawn_processing_worker_with_level(
+            raw_rx,
+            AUDIO_ROUTE_SAMPLE_RATE,
+            16_000,
+            output_tx,
+            Some(level),
+            Arc::clone(&self.loopback_effects),
+            Arc::clone(&self.loopback_input_meter),
+            Arc::clone(&self.studio_metering),
+        )?;
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop_requested);
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+        let worker = thread::Builder::new()
+            .name("pulse-loopback".into())
+            .spawn(move || {
+                if let Err(error) =
+                    crate::audio_linux::run_capture(&target, worker_stop, &ready_tx, |samples| {
+                        let _ = raw_tx.try_send(samples);
+                    })
+                {
+                    let _ = ready_tx.send(Err(error.clone()));
+                    log::error!("Linux audio capture stopped: {error}");
+                }
+            })
+            .map_err(|error| format!("cannot start Linux audio capture worker: {error}"))?;
+        match ready_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(())) => {
+                self.add_active_capture(ActiveCapture::Loopback(LoopbackCapture {
+                    stop_requested,
+                    worker: Some(worker),
+                }));
+                reap_worker(processing);
+                Ok(())
+            }
+            Ok(Err(error)) => {
+                stop_requested.store(true, Ordering::Release);
+                reap_worker(worker);
+                reap_worker(processing);
+                Err(error)
+            }
+            Err(_) => {
+                stop_requested.store(true, Ordering::Release);
+                reap_worker(worker);
+                reap_worker(processing);
+                Err("timed out while opening Linux audio capture".into())
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn start_route_loopback_capture(
+    target: &AudioRouteLoopbackTarget,
+    output_tx: Sender<Vec<f32>>,
+    source: Arc<AudioRouteSourceBuffer>,
+    control: Arc<AudioRouteControl>,
+) -> Result<LoopbackCapture, AudioRouteError> {
+    let target = target.clone();
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    let worker_stop = Arc::clone(&stop_requested);
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let worker = thread::Builder::new()
+        .name("audio-route-pulse-loopback".into())
+        .spawn(move || {
+            if let Err(error) =
+                crate::audio_linux::run_capture(&target, worker_stop, &ready_tx, |samples| {
+                    if let Err(error) = output_tx.try_send(samples) {
+                        source
+                            .dropped_samples
+                            .fetch_add(error.into_inner().len() as u64, Ordering::Relaxed);
+                    }
+                })
+            {
+                let _ = ready_tx.send(Err(error.clone()));
+                *control.last_error.lock() = Some(error);
+                control.state.store(
+                    encode_route_state(AudioRouteState::Faulted),
+                    Ordering::Release,
+                );
+            }
+        })
+        .map_err(|error| {
+            AudioRouteError::StreamStart(format!("cannot start Linux audio worker: {error}"))
+        })?;
+    match ready_rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(Ok(())) => Ok(LoopbackCapture {
+            stop_requested,
+            worker: Some(worker),
+        }),
+        Ok(Err(error)) => {
+            stop_requested.store(true, Ordering::Release);
+            reap_worker(worker);
+            Err(AudioRouteError::StreamStart(error))
+        }
+        Err(_) => {
+            stop_requested.store(true, Ordering::Release);
+            reap_worker(worker);
+            Err(AudioRouteError::StreamStart(
+                "timed out while opening Linux audio capture".into(),
+            ))
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+impl AudioSystem {
+    pub fn available_loopback_devices(&self) -> Vec<InputDevice> {
+        Vec::new()
+    }
+    pub fn loopback_config(&self, _: &str) -> Result<InputConfigInfo, String> {
+        Err("system audio capture is unavailable".into())
+    }
+    pub fn start_loopback_capture(
+        &mut self,
+        _: &str,
+        _: Sender<Vec<f32>>,
+        _: Arc<AtomicU32>,
+    ) -> Result<(), String> {
+        Err("system audio capture is unavailable".into())
+    }
+    pub fn start_application_loopback_capture(
+        &mut self,
+        _: u32,
+        _: &str,
+        _: Sender<Vec<f32>>,
+        _: Arc<AtomicU32>,
+    ) -> Result<(), String> {
+        Err("application audio capture is unavailable".into())
     }
 }
 

@@ -26,12 +26,20 @@ runtime installer 持有传输任务。任务快照同时保存当前包/文件�
 显示，因此一个大文件的字节数不会覆盖另一个模型的进度条。provider、欢迎页和
 设置页不得另建下载线程或共享一个无资产身份的进度变量。
 
+欢迎页的 `small`、`normal`、`big`、`ultra` 是显示分组。持久化配置始终写入
+manifest 的稳定 `ModelAssetId`，不写档位；同一档位可列出多个模型。每个 provider、
+功能、档位的默认候选由 manifest 的 `tier_default` 明确标记，新增候选不会因为
+清单排序改变默认值。首次硬件推荐只应用一次，用户之后的手动选择会保留。
+模型切换入口只在欢迎流程；设置页保留 provider 参数和 TTS 声线选择，不切换模型包。
+
 ## Provider 需求
 
 | 功能 / provider | 模型资源 | 推理资源 | GPU 策略 | 缺失时行为 |
 | --- | --- | --- | --- | --- |
-| ASR `qwen3-gguf` | Qwen3-ASR Q4 GGUF + mmproj，合计 1,924,209,664 B | llama.cpp server | NVIDIA >= 7 GiB；按平台匹配 CUDA（Windows 13.3/13.1/12.4，Linux 12.8），否则拒绝 | 欢迎页下载/修复；未就绪不启动本地 ASR |
-| 翻译 `hunyuan` 普通 | Hy-MT2 1.8B Q4 GGUF，1,133,080,448 B | 与 ASR 共用 llama.cpp | 与 ASR 共用同一 server/runtime 选择 | 欢迎页下载/修复 |
+| ASR `qwen3-gguf` small | Qwen3-ASR 0.6B Q8_0 GGUF + mmproj，合计 1,019,141,728 B | llama.cpp server | NVIDIA >= 3 GiB；按平台匹配 CUDA（Windows 13.3/13.1/12.4，Linux 12.8） | 欢迎页下载/修复；未就绪不启动本地 ASR |
+| ASR `qwen3-gguf` normal | Qwen3-ASR 1.7B Q4_K_M GGUF + mmproj，合计 1,924,209,664 B | llama.cpp server | NVIDIA >= 7 GiB | 原有默认包保留；欢迎页下载/修复 |
+| 翻译 `hunyuan` small | Hy-MT2 1.8B imatrix Q2_K GGUF，777,483,264 B | 与 ASR 共用 llama.cpp | NVIDIA >= 3 GiB；使用常规 CUDA 支持的 Q2_K，不使用腾讯 STQ 2-bit 文件 | 欢迎页下载/修复 |
+| 翻译 `hunyuan` normal | Hy-MT2 1.8B Q4_K_M GGUF，1,133,080,448 B | 与 ASR 共用 llama.cpp | NVIDIA >= 7 GiB | 原有默认包保留；欢迎页下载/修复 |
 | 翻译 `hunyuan` 大 | Hy-MT2 7B Q4 GGUF，4,624,648,896 B | 与 ASR 共用 llama.cpp | 同上 | 欢迎页下载/修复 |
 | TTS `audio8` | Audio8 FP16 ONNX 完整包，2,171,728,005 B | ONNX Runtime 1.28 | NVIDIA >= 7 GiB；Auto/CUDA，失败即拒绝，不回退 CPU | TTS 是可选功能，可跳过；启用时下载/修复 |
 | TTS `openvoice` | 可组合语言包：一个 English 变体（v3 EN-Newest，或 v2 五口音）加 Chinese `ZH_MIX_EN` 包；每个包的实时大小来自 manifest | ONNX Runtime 1.28；每个语言包包含 BERT/Melo/converter/reference encoder 四 session | NVIDIA >= 7 GiB；强制 CUDA，任一包/任一 session 失败则 provider 整体未就绪 | TTS 可跳过；最终输出 22,050 Hz；v2 的 US/UK/India/AU/default 是同一包内 preset，不重复下载；只为已激活且支持目标语种的包生成任务 |
@@ -47,7 +55,9 @@ llama.cpp CUDA 12.8、ONNX Runtime 1.28 CUDA 12 及匹配的 cuDNN 9。
 
 | 用户设备 | ONNX 计划 | llama.cpp 计划 | 额外下载 |
 | --- | --- | --- | --- |
-| 无 NVIDIA GPU 或显存 < 7 GiB | release 内小型 ONNX 组件仍可使用 compact CPU core | 大型本地 ASR/翻译/TTS 选项禁用且运行时拒绝 | 不下载模型或 CUDA/provider/cuDNN，不存在大型模型 CPU fallback |
+| 无 NVIDIA GPU 或显存 < 3 GiB | release 内小型 ONNX 组件仍可使用 compact CPU core | 本地 ASR/翻译/TTS 选项禁用且运行时拒绝 | 不下载模型或 CUDA/provider/cuDNN，不存在大型模型 CPU fallback |
+| NVIDIA GPU，报告显存 3 至 < 7 GiB | 按实际启用的功能选择；TTS 仍需 7 GiB | 首次欢迎流程默认 small ASR + small 翻译，normal/big 按各自门槛禁用 | 模型与运行时照常按需下载 |
+| NVIDIA GPU，报告显存 >= 7 GiB | 按实际启用的功能选择 | 首次欢迎流程保持 normal ASR + normal 翻译默认值 | 可手动选择其他满足门槛的模型 |
 | NVIDIA + 驱动支持 CUDA 12 | ORT 1.28 CUDA12 同源核心/provider + cuDNN 9 CUDA12 | CUDA 12.4 server | CUDA 12.4 共享包只下载一次；另下载匹配的 cuDNN12 |
 | NVIDIA + 驱动/GPU 支持 CUDA 13 | ORT 1.28 CUDA13 同源核心/provider + cuDNN 9 CUDA13 | 驱动支持时优先 CUDA 13.3，否则选择 CUDA 13.1 | 匹配版本的共享 CUDA 包只下载一次；另下载匹配的 cuDNN13 |
 | NVIDIA Blackwell (50 系, CC 12.0+) | ORT 1.28 CUDA13 同源核心/provider + cuDNN 9 CUDA13 | 驱动 13.1/13.2 选择 b8913 CUDA 13.1；驱动 >= 13.3 优先 CUDA 13.3 | 最低 CUDA 12.8，绝不选 12.4；使用 13.1 时仍提示通过 NVIDIA App 升级驱动 |
@@ -136,7 +146,8 @@ runtime/cudnn/
 
 1. 配置层把当前 ASR、翻译、TTS provider 转成 `RuntimeRequirements`。
 2. 客户端探测主 NVIDIA 设备、显存、驱动与 compute capability；显存至少
-   7 GiB 后才计算资源并集和缺失字节。
+   当前选中模型的最高显存门槛后才计算资源并集和缺失字节；small 起点为 3 GiB，
+   normal 和现有 TTS 包仍为 7 GiB。
 3. 用户触发统一下载任务；下载完成后校验、只提取声明文件并原子替换目录。
 4. `runtime/native-runtime.json` 发布 llama 与 ONNX 的独立 backend、CUDA ABI、
    ONNX core、provider 目录、CUDA/cuDNN 目录和预加载顺序。

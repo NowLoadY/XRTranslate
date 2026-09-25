@@ -41,6 +41,8 @@ pub struct MeetingUiSnapshot {
     pub default_audio_source: MeetingAudioSource,
     pub default_source_language: String,
     pub default_target_language: String,
+    pub source_languages: Vec<(&'static str, &'static str)>,
+    pub target_languages: Vec<(&'static str, &'static str)>,
     /// True when another host feature owns the exclusive recognition session.
     pub host_session_busy: bool,
     pub language: crate::i18n::UiLanguage,
@@ -52,6 +54,8 @@ impl Default for MeetingUiSnapshot {
             default_audio_source: MeetingAudioSource::Microphone,
             default_source_language: "auto".into(),
             default_target_language: "zh".into(),
+            source_languages: crate::LANGUAGE_OPTIONS.to_vec(),
+            target_languages: crate::LANGUAGE_OPTIONS.to_vec(),
             host_session_busy: false,
             language: crate::i18n::UiLanguage::English,
         }

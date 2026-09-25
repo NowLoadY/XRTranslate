@@ -1,4 +1,5 @@
-mod hunyuan;
+mod bilingual;
+mod contextual;
 mod openai_compatible;
 mod output;
 mod qwen;
@@ -46,7 +47,8 @@ impl TranslationProfile {
 
 pub(super) fn registered(provider: TranslationProvider) -> &'static TranslationProfile {
     match provider {
-        TranslationProvider::Hunyuan => &hunyuan::PROFILE,
+        TranslationProvider::Contextual => &contextual::PROFILE,
+        TranslationProvider::Bilingual => &bilingual::PROFILE,
         TranslationProvider::OpenAiCompatible => &openai_compatible::PROFILE,
         TranslationProvider::Qwen => &qwen::PROFILE,
     }
@@ -117,8 +119,8 @@ mod tests {
     #[test]
     fn rejects_empty_translation_input() {
         let options = TranslationOptions::new("English", "Chinese");
-        let error =
-            build_translation_messages(TranslationProvider::Hunyuan, "  ", &options).unwrap_err();
+        let error = build_translation_messages(TranslationProvider::Contextual, "  ", &options)
+            .unwrap_err();
         assert!(matches!(
             error,
             InferenceError::InvalidConfiguration {
@@ -138,7 +140,7 @@ mod tests {
         )
         .unwrap();
         let hunyuan =
-            build_translation_messages(TranslationProvider::Hunyuan, "Good morning", &options)
+            build_translation_messages(TranslationProvider::Contextual, "Good morning", &options)
                 .unwrap();
         assert_eq!(openai.as_array().unwrap().len(), 2);
         assert_eq!(hunyuan.as_array().unwrap().len(), 1);

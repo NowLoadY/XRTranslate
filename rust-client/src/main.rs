@@ -11,6 +11,8 @@ use std::sync::{
 
 mod app_update;
 mod audio;
+#[cfg(target_os = "linux")]
+mod audio_linux;
 mod audio_processing;
 mod audio_studio;
 mod backend;
@@ -22,6 +24,7 @@ mod history;
 mod i18n;
 pub(crate) mod media_import;
 mod model_install;
+mod model_language;
 mod network;
 mod onboarding;
 mod overlay_ipc;
@@ -97,6 +100,34 @@ pub const LANGUAGE_OPTIONS: &[(&str, &str)] = &[
     ("cs", "Czech"),
     ("nl", "Dutch"),
     ("bg", "Bulgarian"),
+    ("yue", "Cantonese"),
+    ("ar", "Arabic"),
+    ("tr", "Turkish"),
+    ("ms", "Malay"),
+    ("sv", "Swedish"),
+    ("da", "Danish"),
+    ("fi", "Finnish"),
+    ("fil", "Filipino"),
+    ("tl", "Tagalog"),
+    ("fa", "Persian"),
+    ("el", "Greek"),
+    ("hu", "Hungarian"),
+    ("mk", "Macedonian"),
+    ("ro", "Romanian"),
+    ("km", "Khmer"),
+    ("my", "Burmese"),
+    ("gu", "Gujarati"),
+    ("ur", "Urdu"),
+    ("te", "Telugu"),
+    ("mr", "Marathi"),
+    ("he", "Hebrew"),
+    ("bn", "Bengali"),
+    ("ta", "Tamil"),
+    ("uk", "Ukrainian"),
+    ("bo", "Tibetan"),
+    ("kk", "Kazakh"),
+    ("mn", "Mongolian"),
+    ("ug", "Uyghur"),
 ];
 
 /// Capture callbacks never block. A bounded handoff prevents an overloaded
@@ -106,6 +137,9 @@ const LIVE_AUDIO_QUEUE_CAPACITY: usize = 64;
 pub(crate) fn language_label(ui_language: UiLanguage, code: &str) -> &'static str {
     if code == "auto" {
         return i18n::tr(ui_language, "Auto (bidirectional)");
+    }
+    if code == "zh-Hant" {
+        return i18n::tr(ui_language, "Traditional Chinese");
     }
     LANGUAGE_OPTIONS
         .iter()
@@ -695,6 +729,7 @@ struct XRTranslateApp {
     pub modal_dialog: ui::modal::ModalDialog,
     pending_resource_deletion: Option<PendingResourceDeletion>,
     pub first_run: bool,
+    pub model_defaults_initialized: bool,
     pub usage_guidelines_accepted: bool,
     pub onboarding_page: usize,
     pub ui_language: UiLanguage,
@@ -1493,6 +1528,7 @@ impl Default for XRTranslateApp {
             modal_dialog: ui::modal::ModalDialog::default(),
             pending_resource_deletion: None,
             first_run,
+            model_defaults_initialized: settings.model_defaults_initialized || !settings.first_run,
             usage_guidelines_accepted: settings.usage_guidelines_accepted,
             onboarding_page,
             ui_language: settings.ui_language,
@@ -2000,9 +2036,10 @@ impl XRTranslateApp {
             capabilities: HostAudioCapabilities {
                 microphone_capture: !self.devices.is_empty(),
                 system_audio_capture: !self.loopback_devices.is_empty(),
-                application_audio_capture: cfg!(windows),
+                application_audio_capture: cfg!(any(windows, target_os = "linux"))
+                    && !self.loopback_devices.is_empty(),
                 exclude_own_process_audio: false,
-                tts_feedback_suppression: cfg!(windows) && !self.loopback_devices.is_empty(),
+                tts_feedback_suppression: !self.loopback_devices.is_empty(),
                 tts_source: self.service_config.tts_is_configured(),
                 media_source: true,
                 monitor_output: !self.tts_output_devices.is_empty(),
@@ -2429,12 +2466,14 @@ impl XRTranslateApp {
 
     fn render_osc_plugin_page(&mut self, ui: &mut egui::Ui) {
         let mute_gate_enabled = self.mute_self_pauses_translation.load(Ordering::Acquire);
+        let translation_languages = model_language::target_options(&self.service_config);
         let actions = self.osc_plugin.render_page(
             ui,
             OscPageContext {
                 language: self.ui_language,
                 last_error: self.last_error.as_deref(),
                 mute_gate_enabled,
+                translation_languages: &translation_languages,
             },
         );
         self.apply_osc_actions(actions);
@@ -2497,6 +2536,8 @@ impl XRTranslateApp {
             default_audio_source: capture_source_to_meeting(self.capture_source),
             default_source_language: self.source_lang.clone(),
             default_target_language: self.target_lang.clone(),
+            source_languages: model_language::source_options(&self.service_config),
+            target_languages: model_language::target_options(&self.service_config),
             host_session_busy: self.is_translating
                 && self.meeting_plugin.controller.active_meeting_id().is_none(),
             language: self.ui_language,
@@ -2512,6 +2553,8 @@ impl XRTranslateApp {
     fn render_player_plugin_page(&mut self, ui: &mut egui::Ui) {
         let snapshot = plugins::player::VideoPlayerUiSnapshot {
             language: self.ui_language,
+            source_languages: model_language::source_options(&self.service_config),
+            target_languages: model_language::target_options(&self.service_config),
         };
         let action = self.player_plugin.render_page(&snapshot, ui);
         self.apply_video_player_action(action, ui.ctx().clone());
@@ -2793,6 +2836,7 @@ impl XRTranslateApp {
             ui_language: self.ui_language,
             ui_theme: self.ui_theme,
             first_run: self.first_run,
+            model_defaults_initialized: self.model_defaults_initialized,
             server_url: self.server_url.clone(),
             download_proxy_url: self.download_proxy_url.clone(),
             update_channel: self.update_channel,
@@ -3090,8 +3134,9 @@ impl XRTranslateApp {
         self.backend_manager.shutdown();
         self.model_task_manager.invalidate_discovery();
         let requirements = self.service_config.runtime_requirements();
+        let model_assets = self.service_config.selected_model_asset_ids();
         if !self.runtime_installer.is_busy()
-            && !self.runtime_installer.plan_matches(requirements)
+            && !self.runtime_installer.plan_matches(requirements, &model_assets)
             && let Err(error) = self
                 .runtime_installer
                 .prepare_for(self.project_root(), requirements)
@@ -3874,11 +3919,7 @@ impl XRTranslateApp {
     }
 
     fn apply_language_route(&mut self) {
-        if self.source_lang == "auto" && !self.target_lang.contains(',') {
-            self.target_lang = "zh,en".into();
-        } else if self.source_lang != "auto" && self.target_lang.contains(',') {
-            self.target_lang = "en".into();
-        }
+        model_language::normalize_route(&self.service_config, &mut self.source_lang, &mut self.target_lang);
         self.save_settings();
         for session in &self.sessions {
             session.update_language_route(self.source_lang.clone(), self.target_lang.clone());
@@ -4390,12 +4431,14 @@ impl eframe::App for XRTranslateApp {
             self.backend_manager.use_installed_llama_server(&path);
         }
         let runtime_requirements = self.service_config.runtime_requirements();
+        let model_assets = self.service_config.selected_model_asset_ids();
+        let failed_without_plan = matches!(
+            self.runtime_installer.state(),
+            runtime_install::RuntimeInstallState::Failed(_)
+        ) && !self.runtime_installer.has_plan();
         if !self.runtime_installer.is_busy()
-            && !self.runtime_installer.plan_matches(runtime_requirements)
-            && !matches!(
-                self.runtime_installer.state(),
-                runtime_install::RuntimeInstallState::Failed(_)
-            )
+            && !self.runtime_installer.plan_matches(runtime_requirements, &model_assets)
+            && !failed_without_plan
             && let Err(error) = self
                 .runtime_installer
                 .prepare_for(self.project_root(), runtime_requirements)

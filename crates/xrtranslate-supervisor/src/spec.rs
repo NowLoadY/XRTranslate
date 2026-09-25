@@ -6,25 +6,11 @@ use std::{
     time::Duration,
 };
 
-/// The two llama.cpp-backed services supported during the Python migration.
+/// The capability served by one local llama.cpp process.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LlamaServerRole {
-    /// Qwen3-ASR GGUF, which requires a multimodal projection file.
-    Qwen3Asr,
-    /// Hunyuan MT2 GGUF, exposed through llama.cpp's chat-completions API.
-    HunyuanMt,
-}
-
-impl LlamaServerRole {
-    /// Stable model names used by Rust HTTP clients when addressing each
-    /// local OpenAI-compatible endpoint.
-    #[must_use]
-    pub const fn model_alias(self) -> &'static str {
-        match self {
-            Self::Qwen3Asr => "qwen3-asr",
-            Self::HunyuanMt => "hy-mt2",
-        }
-    }
+    Asr,
+    Translation,
 }
 
 /// GPU-layer policy passed to llama.cpp's `--n-gpu-layers` option.
@@ -126,46 +112,33 @@ pub struct LlamaServerSpec {
 }
 
 impl LlamaServerSpec {
-    /// Creates the Qwen3-ASR GGUF profile used by the existing service
-    /// launcher: port 8001, 2048 context tokens, and 99 GPU layers.
+    /// Creates a capability-level server plan. The model card supplies the
+    /// alias, required files and optional launch settings.
     #[must_use]
-    pub fn qwen3_asr_gguf(
+    pub fn new(
+        role: LlamaServerRole,
         executable: impl Into<PathBuf>,
         model: impl Into<PathBuf>,
-        mmproj: impl Into<PathBuf>,
+        mmproj: Option<PathBuf>,
+        model_alias: impl Into<String>,
     ) -> Self {
         Self {
-            role: LlamaServerRole::Qwen3Asr,
+            role,
             executable: executable.into(),
             model: model.into(),
-            mmproj: Some(mmproj.into()),
-            endpoint: LlamaServerEndpoint::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8001),
-            model_alias: LlamaServerRole::Qwen3Asr.model_alias().to_owned(),
+            mmproj,
+            endpoint: LlamaServerEndpoint::new(
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                match role {
+                    LlamaServerRole::Asr => 8001,
+                    LlamaServerRole::Translation => 8002,
+                },
+            ),
+            model_alias: model_alias.into(),
             context_size: 2048,
             gpu_layers: GpuLayers::Count(99),
             parallel_slots: None,
             flash_attention: None,
-            working_directory: None,
-            environment: Vec::new(),
-            extra_args: Vec::new(),
-            startup_timeout: Duration::from_secs(90),
-        }
-    }
-
-    /// Creates the Hunyuan MT2 GGUF profile.
-    #[must_use]
-    pub fn hunyuan_mt_gguf(executable: impl Into<PathBuf>, model: impl Into<PathBuf>) -> Self {
-        Self {
-            role: LlamaServerRole::HunyuanMt,
-            executable: executable.into(),
-            model: model.into(),
-            mmproj: None,
-            endpoint: LlamaServerEndpoint::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8002),
-            model_alias: LlamaServerRole::HunyuanMt.model_alias().to_owned(),
-            context_size: 4096,
-            gpu_layers: GpuLayers::Count(99),
-            parallel_slots: Some(4),
-            flash_attention: Some(FlashAttention::On),
             working_directory: None,
             environment: Vec::new(),
             extra_args: Vec::new(),
@@ -203,10 +176,10 @@ impl LlamaServerSpec {
             return Err(SpecValidationError::MissingModelAlias);
         }
         match self.role {
-            LlamaServerRole::Qwen3Asr if self.mmproj.is_none() => {
+            LlamaServerRole::Asr if self.mmproj.is_none() => {
                 Err(SpecValidationError::MissingMultimodalProjection)
             }
-            LlamaServerRole::HunyuanMt if self.mmproj.is_some() => {
+            LlamaServerRole::Translation if self.mmproj.is_some() => {
                 Err(SpecValidationError::UnexpectedMultimodalProjection)
             }
             _ => Ok(()),
@@ -280,9 +253,9 @@ impl fmt::Display for SpecValidationError {
             Self::InvalidContextSize => "llama-server context size must be non-zero",
             Self::InvalidParallelSlots => "llama-server parallel slots must be non-zero",
             Self::MissingModelAlias => "llama-server model alias is empty",
-            Self::MissingMultimodalProjection => "Qwen3-ASR requires an mmproj GGUF file",
+            Self::MissingMultimodalProjection => "audio chat ASR requires an mmproj GGUF file",
             Self::UnexpectedMultimodalProjection => {
-                "Hunyuan MT does not accept a multimodal projection file"
+                "text translation does not accept a multimodal projection file"
             }
         };
         formatter.write_str(message)

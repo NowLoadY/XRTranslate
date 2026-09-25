@@ -86,8 +86,14 @@ pub fn render_bottom_input_bar(
     plugin: &mut super::super::OscPlugin,
     ui: &mut egui::Ui,
     language: crate::i18n::UiLanguage,
+    translation_languages: &[(&'static str, &'static str)],
     actions: &mut Vec<super::OscUiAction>,
 ) {
+    let mut source = plugin.draft().typing_source_lang.clone();
+    let mut target = plugin.draft().typing_target_lang.clone();
+    crate::model_language::normalize_route_for_options(translation_languages, translation_languages, &mut source, &mut target);
+    plugin.draft_mut().typing_source_lang = source;
+    plugin.draft_mut().typing_target_lang = target;
     let is_enabled = plugin.draft().enabled;
     let mut submit = false;
     let has_text = !plugin.draft_input().trim().is_empty();
@@ -158,7 +164,7 @@ pub fn render_bottom_input_bar(
 
                     let target_label =
                         crate::language_label(language, &plugin.draft().typing_target_lang);
-                    let target_options: Vec<(String, String)> = crate::LANGUAGE_OPTIONS
+                    let target_options: Vec<(String, String)> = translation_languages
                         .iter()
                         .filter(|(code, _)| {
                             !crate::languages_conflict(code, &plugin.draft().typing_source_lang)
@@ -206,7 +212,7 @@ pub fn render_bottom_input_bar(
 
                     let source_label =
                         crate::language_label(language, &plugin.draft().typing_source_lang);
-                    let source_options: Vec<(String, String)> = crate::LANGUAGE_OPTIONS
+                    let source_options: Vec<(String, String)> = translation_languages
                         .iter()
                         .map(|(code, label)| {
                             (

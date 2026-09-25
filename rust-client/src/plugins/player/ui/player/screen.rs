@@ -3,15 +3,16 @@ use super::{
     media::{render_audio_card, render_viewport_card},
     task_controls::render_task_control_card,
 };
-use crate::plugins::player::{VideoPlayerAction, controller::VideoPlayerController, i18n::tr};
+use crate::plugins::player::{VideoPlayerAction, VideoPlayerUiSnapshot, controller::VideoPlayerController, i18n::tr};
 use crate::ui::components;
 use eframe::egui;
 
 pub(in crate::plugins::player::ui) fn render_player(
     controller: &mut VideoPlayerController,
-    language: crate::i18n::UiLanguage,
+    snapshot: &VideoPlayerUiSnapshot,
     ui: &mut egui::Ui,
 ) -> VideoPlayerAction {
+    let language = snapshot.language;
     let mut action = VideoPlayerAction::None;
     let is_audio_only = controller.is_audio_only_task();
 
@@ -122,7 +123,7 @@ pub(in crate::plugins::player::ui) fn render_player(
                 } else {
                     render_viewport_card(controller, language, ui);
                 }
-                let task_action = render_task_control_card(controller, language, ui);
+                let task_action = render_task_control_card(controller, snapshot, ui);
                 if task_action != VideoPlayerAction::None {
                     action = task_action;
                 }

@@ -1,5 +1,5 @@
 use crate::ui::components::{self, danger_button, section, status_badge};
-use crate::{CaptureSource, LANGUAGE_OPTIONS, language_label};
+use crate::{CaptureSource, language_label};
 use eframe::egui;
 use std::hash::{Hash, Hasher};
 
@@ -156,6 +156,9 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     ui.add_space(14.0);
 
     section(ui, crate::i18n::tr(app.ui_language, "Voice Route"), |ui| {
+        let source_languages = crate::model_language::source_options(&app.service_config);
+        let target_languages = crate::model_language::target_options(&app.service_config);
+        crate::model_language::normalize_route(&app.service_config, &mut app.source_lang, &mut app.target_lang);
         let previous_source = app.source_lang.clone();
         let previous_target = app.target_lang.clone();
 
@@ -169,7 +172,7 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 "auto".to_string(),
                 crate::i18n::tr(app.ui_language, "Auto (bidirectional)").to_string(),
             )];
-            for (code, label) in LANGUAGE_OPTIONS {
+            for (code, label) in &source_languages {
                 source_options.push((
                     (*code).to_string(),
                     crate::i18n::tr(app.ui_language, label).to_string(),
@@ -204,6 +207,7 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     &app.source_lang,
                     &mut app.target_lang,
                     app.ui_language,
+                    &source_languages,
                     |code, lang| language_label(lang, code).to_string(),
                 );
             } else {
@@ -226,6 +230,7 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     &app.source_lang,
                     &mut app.target_lang,
                     app.ui_language,
+                    &target_languages,
                     |code, lang| language_label(lang, code).to_string(),
                 );
             }

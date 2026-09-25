@@ -1,6 +1,6 @@
 use super::super::format_time_ms;
 use crate::plugins::player::{
-    PlayerTranslationRequest, VideoPlayerAction, backend::MediaSource,
+    PlayerTranslationRequest, VideoPlayerAction, VideoPlayerUiSnapshot, backend::MediaSource,
     controller::VideoPlayerController, i18n::tr, task::VideoSubtitleMode,
 };
 use crate::ui::components;
@@ -8,9 +8,10 @@ use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Stroke};
 
 pub(super) fn render_task_control_card(
     controller: &mut VideoPlayerController,
-    language: crate::i18n::UiLanguage,
+    snapshot: &VideoPlayerUiSnapshot,
     ui: &mut egui::Ui,
 ) -> VideoPlayerAction {
+    let language = snapshot.language;
     let mut action = VideoPlayerAction::None;
 
     if controller.fullscreen_mode {
@@ -25,8 +26,24 @@ pub(super) fn render_task_control_card(
         return action;
     };
 
+    let mut normalized_language = false;
+    if task.source_language != "auto"
+        && !snapshot.source_languages.iter().any(|(code, _)| *code == task.source_language)
+    {
+        task.source_language = snapshot.source_languages.first().map(|item| item.0).unwrap_or("zh").into();
+        normalized_language = true;
+    }
+    if !snapshot.target_languages.iter().any(|(code, _)| *code == task.target_language)
+        || (task.source_language != "auto" && crate::languages_conflict(&task.source_language, &task.target_language))
+    {
+        task.target_language = snapshot.target_languages.iter()
+            .find(|(code, _)| task.source_language == "auto" || !crate::languages_conflict(code, &task.source_language))
+            .map(|item| item.0).unwrap_or("en").into();
+        normalized_language = true;
+    }
+
     let mut routing_changed = false;
-    let mut task_settings_changed = false;
+    let mut task_settings_changed = normalized_language;
     let mut do_start = false;
     let mut do_pause = false;
     let mut do_restart = false;
@@ -235,30 +252,24 @@ pub(super) fn render_task_control_card(
                             .color(crate::ui::theme::text_weak()),
                     );
                     ui.add_space(3.0);
-                    let source_text = match task.source_language.as_str() {
-                        "auto" => tr(language, "Auto Detect").to_owned(),
-                        "zh" => tr(language, "Chinese").to_owned(),
-                        "ja" => tr(language, "Japanese").to_owned(),
-                        "en" => tr(language, "English").to_owned(),
-                        "ko" => tr(language, "Korean").to_owned(),
-                        "bg" => tr(language, "Bulgarian").to_owned(),
-                        _ => task.source_language.clone(),
+                    let source_text = if task.source_language == "auto" {
+                        tr(language, "Auto Detect").to_owned()
+                    } else {
+                        crate::language_label(language, &task.source_language).to_owned()
                     };
                     crate::ui::components::combobox_ui(
                         ui,
                         "player_source_lang_select",
                         source_text,
                         |ui| {
-                            let options = [
-                                ("auto", tr(language, "Auto Detect")),
-                                ("zh", tr(language, "Chinese")),
-                                ("ja", tr(language, "Japanese")),
-                                ("en", tr(language, "English")),
-                                ("ko", tr(language, "Korean")),
-                                ("bg", tr(language, "Bulgarian")),
-                            ];
-                            for (val, label) in options {
-                                if ui.selectable_value(&mut task.source_language, val.into(), label).changed() {
+                            if ui.selectable_value(&mut task.source_language, "auto".into(), tr(language, "Auto Detect")).changed() {
+                                task_settings_changed = true;
+                            }
+                            for (code, label) in &snapshot.source_languages {
+                                if crate::languages_conflict(code, &task.target_language) {
+                                    continue;
+                                }
+                                if ui.selectable_value(&mut task.source_language, (*code).into(), crate::i18n::tr(language, label)).changed() {
                                     task_settings_changed = true;
                                 }
                             }
@@ -274,30 +285,17 @@ pub(super) fn render_task_control_card(
                             .color(crate::ui::theme::text_weak()),
                     );
                     ui.add_space(3.0);
-                    let target_text = match task.target_language.as_str() {
-                        "zh" => tr(language, "Chinese").to_owned(),
-                        "zh-TW" => tr(language, "Traditional Chinese").to_owned(),
-                        "ja" => tr(language, "Japanese").to_owned(),
-                        "en" => tr(language, "English").to_owned(),
-                        "ko" => tr(language, "Korean").to_owned(),
-                        "bg" => tr(language, "Bulgarian").to_owned(),
-                        _ => task.target_language.clone(),
-                    };
+                    let target_text = crate::language_label(language, &task.target_language).to_owned();
                     crate::ui::components::combobox_ui(
                         ui,
                         "player_target_lang_select",
                         target_text,
                         |ui| {
-                            let options = [
-                                ("zh", tr(language, "Chinese")),
-                                ("zh-TW", tr(language, "Traditional Chinese")),
-                                ("ja", tr(language, "Japanese")),
-                                ("en", tr(language, "English")),
-                                ("ko", tr(language, "Korean")),
-                                ("bg", tr(language, "Bulgarian")),
-                            ];
-                            for (val, label) in options {
-                                if ui.selectable_value(&mut task.target_language, val.into(), label).changed() {
+                            for (code, label) in &snapshot.target_languages {
+                                if task.source_language != "auto" && crate::languages_conflict(code, &task.source_language) {
+                                    continue;
+                                }
+                                if ui.selectable_value(&mut task.target_language, (*code).into(), crate::i18n::tr(language, label)).changed() {
                                     task_settings_changed = true;
                                 }
                             }

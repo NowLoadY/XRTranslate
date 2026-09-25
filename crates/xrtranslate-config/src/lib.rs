@@ -222,6 +222,20 @@ impl RuntimeLayout {
         }
     }
 
+    /// Resolves the one shared managed executable name on Linux and Windows.
+    /// Earlier Windows defaults included `.exe`; both spellings map to the
+    /// platform executable only inside the managed runtime directory.
+    #[must_use]
+    pub fn resolve_llama_server_path(&self, configured: impl AsRef<Path>) -> PathBuf {
+        let resolved = self.resolve_configured_path(configured);
+        let managed = self.managed_llama_server("llama-server");
+        if resolved == managed || resolved == managed.with_extension("exe") {
+            self.managed_llama_server(format!("llama-server{}", std::env::consts::EXE_SUFFIX))
+        } else {
+            resolved
+        }
+    }
+
     #[must_use]
     pub fn managed_llama_server(&self, executable: impl AsRef<Path>) -> PathBuf {
         self.llama_cpp_directory().join(executable)
@@ -238,18 +252,18 @@ impl RuntimeLayout {
     }
 
     /// Returns the writable user override document for model/provider
-    /// settings. Debug builds keep it inside the ignored project runtime;
-    /// packaged builds use the platform user configuration directory so an
-    /// application update never replaces personal settings.
+    /// settings. The updater preserves runtime on every supported platform.
     #[must_use]
     pub fn user_config_path(project_root: impl AsRef<Path>) -> PathBuf {
-        if cfg!(debug_assertions) {
-            return project_root
-                .as_ref()
-                .join("runtime")
-                .join("user-config.json");
-        }
+        project_root
+            .as_ref()
+            .join("runtime")
+            .join("user-config.json")
+    }
 
+    /// Location used by older packaged builds before the runtime directory
+    /// became the single cross-platform owner of mutable model settings.
+    fn legacy_user_config_path(project_root: impl AsRef<Path>) -> PathBuf {
         let directory = if cfg!(windows) {
             std::env::var_os("LOCALAPPDATA")
                 .or_else(|| std::env::var_os("APPDATA"))
@@ -292,22 +306,53 @@ pub fn load_user_config_document(
     base_path: impl AsRef<Path>,
     project_root: impl AsRef<Path>,
 ) -> Result<Value, ConfigError> {
+    let legacy_path =
+        (!cfg!(debug_assertions)).then(|| RuntimeLayout::legacy_user_config_path(&project_root));
+    load_user_config_document_with_legacy(base_path, project_root, legacy_path)
+}
+
+fn load_user_config_document_with_legacy(
+    base_path: impl AsRef<Path>,
+    project_root: impl AsRef<Path>,
+    legacy_path: Option<PathBuf>,
+) -> Result<Value, ConfigError> {
     let base_path = base_path.as_ref();
     let contents = fs::read_to_string(base_path).map_err(|source| ConfigError::Read {
         path: base_path.to_path_buf(),
         source,
     })?;
     let mut document: Value = serde_json::from_str(&contents).map_err(ConfigError::InvalidJson)?;
-    let override_path = RuntimeLayout::user_config_path(project_root);
-    if override_path.is_file() {
-        let contents = fs::read_to_string(&override_path).map_err(|source| ConfigError::Read {
-            path: override_path.clone(),
+    let override_path = RuntimeLayout::user_config_path(&project_root);
+    let migrate_from = legacy_path
+        .as_ref()
+        .filter(|path| path.is_file() && !override_path.is_file());
+    for path in migrate_from
+        .into_iter()
+        .chain(std::iter::once(&override_path))
+    {
+        if path.is_file() {
+            let contents = fs::read_to_string(path).map_err(|source| ConfigError::Read {
+                path: path.clone(),
+                source,
+            })?;
+            let mut overlay: Value =
+                serde_json::from_str(&contents).map_err(ConfigError::InvalidJson)?;
+            migrate_legacy_openai_asr_model(&mut overlay);
+            merge_config_values(&mut document, overlay);
+        }
+    }
+    if let Some(legacy_path) = legacy_path
+        .as_ref()
+        .filter(|path| path.is_file() && *path != &override_path)
+    {
+        if migrate_from.is_some() {
+            save_user_config_document(base_path, &project_root, &document)
+                .map_err(ConfigError::Migration)?;
+        }
+        fs::remove_file(&legacy_path).map_err(|source| ConfigError::Write {
+            path: legacy_path.clone(),
             source,
         })?;
-        let mut overlay: Value =
-            serde_json::from_str(&contents).map_err(ConfigError::InvalidJson)?;
-        migrate_legacy_openai_asr_model(&mut overlay);
-        merge_config_values(&mut document, overlay);
     }
     Ok(document)
 }
@@ -452,6 +497,7 @@ impl AppConfig {
             };
             match provider.get("transport").and_then(Value::as_str) {
                 Some("local") | None => requirements.llama_cpp = true,
+                Some("onnx-cpu") => {}
                 Some("onnx") => {
                     requirements.onnx_tts = true;
                     requirements.onnx_cuda = true;
@@ -1308,6 +1354,8 @@ pub struct LocalModelRuntimeConfig {
 #[derive(Debug)]
 pub enum ConfigError {
     Read { path: PathBuf, source: io::Error },
+    Write { path: PathBuf, source: io::Error },
+    Migration(String),
     InvalidJson(serde_json::Error),
     InvalidStructure(serde_json::Error),
 }
@@ -1322,6 +1370,14 @@ impl fmt::Display for ConfigError {
                     path.display()
                 )
             }
+            Self::Write { path, source } => {
+                write!(
+                    formatter,
+                    "cannot write configuration {}: {source}",
+                    path.display()
+                )
+            }
+            Self::Migration(message) => formatter.write_str(message),
             Self::InvalidJson(source) => {
                 write!(formatter, "config.json is not valid JSON: {source}")
             }
@@ -1338,7 +1394,8 @@ impl fmt::Display for ConfigError {
 impl Error for ConfigError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Read { source, .. } => Some(source),
+            Self::Read { source, .. } | Self::Write { source, .. } => Some(source),
+            Self::Migration(_) => None,
             Self::InvalidJson(source) | Self::InvalidStructure(source) => Some(source),
         }
     }
@@ -1463,9 +1520,12 @@ fn active_native_provider(
         .filter(|value| !value.is_empty())
         .unwrap_or("local")
         .to_owned();
-    if !matches!(transport.as_str(), "local" | "openai" | "websocket") {
+    if !matches!(
+        transport.as_str(),
+        "local" | "onnx-cpu" | "openai" | "websocket"
+    ) {
         issues.push(format!(
-            "{path}.transport must be \"local\", \"openai\", or \"websocket\""
+            "{path}.transport must be \"local\", \"onnx-cpu\", \"openai\", or \"websocket\""
         ));
     }
     if let Some(url) = url.as_deref() {
@@ -1491,7 +1551,7 @@ fn active_native_provider(
         .map(str::trim)
         .unwrap_or_default()
         .to_owned();
-    if transport != "local" && model.is_empty() {
+    if !matches!(transport.as_str(), "local" | "onnx-cpu") && model.is_empty() {
         issues.push(format!(
             "{path}.model must be a non-empty string for remote providers"
         ));
@@ -1502,7 +1562,7 @@ fn active_native_provider(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    if transport != "local" && api_key.is_none() {
+    if !matches!(transport.as_str(), "local" | "onnx-cpu") && api_key.is_none() {
         issues.push(format!(
             "{path}.api_key is required for remote API providers"
         ));
@@ -1602,7 +1662,7 @@ fn active_native_provider(
 impl NativeProviderConfig {
     #[must_use]
     pub fn uses_local_runtime(&self) -> bool {
-        self.transport == "local"
+        matches!(self.transport.as_str(), "local" | "onnx-cpu")
     }
 }
 const fn default_speaker_switch_margin() -> f64 {
@@ -1646,6 +1706,13 @@ mod tests {
         let layout = RuntimeLayout::for_project_root(&root);
         let configured = layout.resolve_configured_path("runtime/llama.cpp/llama-server");
         assert_eq!(configured, layout.managed_llama_server("llama-server"));
+        let portable = layout.resolve_llama_server_path("runtime/llama.cpp/llama-server");
+        let old_windows = layout.resolve_llama_server_path("runtime/llama.cpp/llama-server.exe");
+        assert_eq!(portable, old_windows);
+        assert_eq!(
+            portable,
+            layout.managed_llama_server(format!("llama-server{}", std::env::consts::EXE_SUFFIX))
+        );
         assert_eq!(
             layout.config_path_for(&configured),
             PathBuf::from("runtime/llama.cpp/llama-server")
@@ -1840,8 +1907,7 @@ mod tests {
         let mut document: Value =
             serde_json::from_str(include_str!("../../../config.json")).unwrap();
         document["asr"]["provider"] = Value::from("qwen");
-        document["asr"]["providers"]["qwen"]["api_key"] =
-            Value::from("dashscope-key");
+        document["asr"]["providers"]["qwen"]["api_key"] = Value::from("dashscope-key");
 
         let config = AppConfig::from_value(document).unwrap();
         let route = config.native_model_route().unwrap();
@@ -2083,6 +2149,64 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<Value>(&fs::read(&base_path).unwrap()).unwrap(),
             base
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_user_config_moves_into_runtime_without_losing_newer_choices() {
+        let root =
+            std::env::temp_dir().join(format!("xrtranslate-legacy-config-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("runtime")).unwrap();
+        let base_path = root.join("config.json");
+        fs::write(
+            &base_path,
+            r#"{"asr":{"provider":"qwen3-gguf"},"translation":{"provider":"hunyuan"}}"#,
+        )
+        .unwrap();
+        let legacy_path = root.join("old-user-config.json");
+        fs::write(
+            &legacy_path,
+            r#"{"asr":{"provider":"openai"},"translation":{"provider":"qwen"}}"#,
+        )
+        .unwrap();
+        let runtime_path = RuntimeLayout::user_config_path(&root);
+
+        let loaded =
+            load_user_config_document_with_legacy(&base_path, &root, Some(legacy_path.clone()))
+                .unwrap();
+        assert_eq!(
+            loaded.pointer("/asr/provider"),
+            Some(&Value::from("openai"))
+        );
+        assert_eq!(
+            loaded.pointer("/translation/provider"),
+            Some(&Value::from("qwen"))
+        );
+        assert!(!legacy_path.exists());
+        assert!(runtime_path.exists());
+        assert_eq!(
+            load_user_config_document(&base_path, &root).unwrap(),
+            loaded
+        );
+        fs::write(&runtime_path, r#"{"translation":{"provider":"hunyuan"}}"#).unwrap();
+        fs::write(&legacy_path, r#"{"asr":{"provider":"openai"}}"#).unwrap();
+        let current =
+            load_user_config_document_with_legacy(&base_path, &root, Some(legacy_path.clone()))
+                .unwrap();
+        assert_eq!(
+            current.pointer("/asr/provider"),
+            Some(&Value::from("qwen3-gguf"))
+        );
+        assert_eq!(
+            current.pointer("/translation/provider"),
+            Some(&Value::from("hunyuan"))
+        );
+        assert!(!legacy_path.exists());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&base_path).unwrap()).unwrap(),
+            serde_json::json!({"asr":{"provider":"qwen3-gguf"},"translation":{"provider":"hunyuan"}})
         );
         fs::remove_dir_all(root).unwrap();
     }

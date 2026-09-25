@@ -3,12 +3,18 @@
 For the repository-wide provider boundary and the implementation checklist,
 see [Provider integration](providers/README.md).
 
-The repository `config.json` is the immutable default document. User and
-development changes are stored in a separate `user-config.json` override:
+The repository `config.json` is the default document. Every platform stores
+model selection, providers, and runtime parameters in
+`<project>/runtime/user-config.json`. The updater preserves this runtime
+directory. Older packaged builds stored the override in the platform user
+configuration directory; it is merged into the runtime file on first launch
+and the old copy is removed after a successful migration.
 
-- debug/development builds: `<project>/runtime/user-config.json`;
-- packaged builds: the platform user configuration directory under
-  `XRTranslate/user-config.json`.
+The versioned model cards live together in
+`crates/xrtranslate-assets/model_catalog.json`. They declare package IDs,
+supported language codes, hardware and memory estimates, benchmarks, and
+pinned download files. Runtime settings reference these stable IDs; downloaded
+model weights remain under the managed models directory.
 
 The runtime recursively merges this override over the defaults. Saving a
 setting therefore never edits the tracked default file, and newly shipped
@@ -18,8 +24,8 @@ The native route exposes ASR and translation provider settings through this
 effective configuration.
 Each selected provider object supports the following common fields:
 
-- `transport`: `local` for managed llama.cpp or `openai` for an OpenAI
-  Chat Completions-compatible HTTP endpoint.
+- `transport`: `local` for managed llama.cpp, `onnx-cpu` for a native CPU
+  recognizer, or `openai` for an OpenAI Chat Completions-compatible endpoint.
 - `url`: the complete `/v1/chat/completions` endpoint.
 - `model`: the remote model identifier. It is required for `openai`.
 - `api_key`: optional Bearer credential. The desktop settings editor masks this

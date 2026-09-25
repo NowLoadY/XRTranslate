@@ -60,9 +60,21 @@ llama.cpp CUDA 12.8 and ONNX Runtime 1.28 CUDA 12 with matching CUDA and cuDNN
 libraries. The compact CPU ONNX core runs the bundled VAD, denoise, and speaker
 models; large managed models do not fall back to CPU.
 
-## Audio limits
+## Audio capture
 
-Linux microphone capture and TTS playback use CPAL. System and application
-audio loopback routes currently use Windows APIs and are unavailable on Linux.
-MPV's embedded child window is also Windows-only; Linux MPV support can still
-handle non-embedded playback and audio extraction.
+Linux microphone capture and TTS playback use CPAL. System audio capture uses
+the monitor source of the selected playback device, and application audio
+capture follows that application's playback streams. Both work with PulseAudio
+and PipeWire's `pipewire-pulse` service. The client loads `libpulse.so.0` at run
+time, so the packaged program can start even when that library or a compatible
+sound server is absent; system and application capture become available once
+both are present. For Debian/Ubuntu, the runtime package is `libpulse0`.
+
+Applications using the PulseAudio protocol must have an active playback stream
+to appear in the picker. Their streams are discovered again while capture is
+running, so a stream that is recreated can resume capture. PipeWire-native
+applications that bypass `pipewire-pulse` are not listed as individual capture
+targets; their output is still included in system audio capture. The default
+playback device is selected when no specific device is chosen. MPV's embedded
+child window is Windows-only;
+Linux MPV support can still handle non-embedded playback and audio extraction.

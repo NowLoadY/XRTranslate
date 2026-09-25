@@ -74,8 +74,8 @@ mod tests {
     };
 
     use crate::{
-        FlashAttention, GpuLayers, LlamaServerCommand, LlamaServerEndpoint, LlamaServerSpec,
-        SpecValidationError,
+        FlashAttention, GpuLayers, LlamaServerCommand, LlamaServerEndpoint, LlamaServerRole,
+        LlamaServerSpec, SpecValidationError,
     };
 
     fn strings(arguments: &[OsString]) -> Vec<String> {
@@ -86,15 +86,17 @@ mod tests {
     }
 
     #[test]
-    fn qwen3_asr_command_includes_multimodal_projection_and_alias() {
-        let spec = LlamaServerSpec::qwen3_asr_gguf(
+    fn audio_chat_command_includes_multimodal_projection_and_alias() {
+        let spec = LlamaServerSpec::new(
+            LlamaServerRole::Asr,
             "C:/llama/llama-server.exe",
-            "C:/models/qwen3-asr.gguf",
-            "C:/models/qwen3-asr.mmproj.gguf",
+            "C:/models/audio.gguf",
+            Some(PathBuf::from("C:/models/audio.mmproj.gguf")),
+            "speech-model",
         )
         .with_endpoint(LlamaServerEndpoint::new(Ipv4Addr::LOCALHOST.into(), 8101));
 
-        let command = LlamaServerCommand::from_spec(&spec).expect("valid Qwen3 ASR spec");
+        let command = LlamaServerCommand::from_spec(&spec).expect("valid audio ASR spec");
 
         assert_eq!(
             command.program(),
@@ -108,11 +110,11 @@ mod tests {
                 "--port",
                 "8101",
                 "--model",
-                "C:/models/qwen3-asr.gguf",
+                "C:/models/audio.gguf",
                 "--mmproj",
-                "C:/models/qwen3-asr.mmproj.gguf",
+                "C:/models/audio.mmproj.gguf",
                 "--alias",
-                "qwen3-asr",
+                "speech-model",
                 "--ctx-size",
                 "2048",
                 "--n-gpu-layers",
@@ -122,20 +124,27 @@ mod tests {
     }
 
     #[test]
-    fn hunyuan_command_uses_translation_profile_without_mmproj() {
-        let mut spec =
-            LlamaServerSpec::hunyuan_mt_gguf("C:/llama/llama-server.exe", "C:/models/hy-mt2.gguf");
+    fn text_chat_command_uses_configured_runtime_without_mmproj() {
+        let mut spec = LlamaServerSpec::new(
+            LlamaServerRole::Translation,
+            "C:/llama/llama-server.exe",
+            "C:/models/text.gguf",
+            None,
+            "text-model",
+        );
+        spec.context_size = 4096;
+        spec.parallel_slots = Some(4);
         spec.gpu_layers = GpuLayers::All;
         spec.flash_attention = Some(FlashAttention::Auto);
         spec.extra_args.push(OsString::from("--no-webui"));
 
-        let command = LlamaServerCommand::from_spec(&spec).expect("valid Hunyuan spec");
+        let command = LlamaServerCommand::from_spec(&spec).expect("valid translation spec");
         let arguments = strings(command.arguments());
 
         assert!(
             arguments
                 .windows(2)
-                .any(|pair| pair == ["--alias", "hy-mt2"])
+                .any(|pair| pair == ["--alias", "text-model"])
         );
         assert!(
             arguments
@@ -158,9 +167,14 @@ mod tests {
     }
 
     #[test]
-    fn qwen3_requires_mmproj_before_a_command_is_built() {
-        let mut spec = LlamaServerSpec::qwen3_asr_gguf("llama-server", "qwen.gguf", "mmproj.gguf");
-        spec.mmproj = None;
+    fn audio_chat_requires_mmproj_before_a_command_is_built() {
+        let spec = LlamaServerSpec::new(
+            LlamaServerRole::Asr,
+            "llama-server",
+            "audio.gguf",
+            None,
+            "speech-model",
+        );
 
         assert_eq!(
             LlamaServerCommand::from_spec(&spec),
@@ -170,9 +184,12 @@ mod tests {
 
     #[test]
     fn command_keeps_absolute_runtime_and_model_paths_independent_of_cwd() {
-        let mut spec = LlamaServerSpec::hunyuan_mt_gguf(
+        let mut spec = LlamaServerSpec::new(
+            LlamaServerRole::Translation,
             "/srv/xrtranslate/runtime/llama.cpp/llama-server",
-            "/srv/xrtranslate/models/Hy-MT2.gguf",
+            "/srv/xrtranslate/models/text.gguf",
+            None,
+            "text-model",
         );
         spec.working_directory = Some(PathBuf::from("/srv/xrtranslate"));
 
@@ -187,7 +204,7 @@ mod tests {
         assert!(
             arguments
                 .windows(2)
-                .any(|pair| { pair == ["--model", "/srv/xrtranslate/models/Hy-MT2.gguf"] })
+                .any(|pair| { pair == ["--model", "/srv/xrtranslate/models/text.gguf"] })
         );
     }
 }

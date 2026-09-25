@@ -1,60 +1,8 @@
 //! Shared model-catalog schema.
 
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
 
-use super::MODEL_ASSET_CATALOG;
-
-/// Stable identifier for a model package required by the initial native route.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ModelAssetId {
-    /// Qwen3-ASR GGUF plus its multimodal projection.
-    Qwen3AsrGguf,
-    /// Hunyuan MT2 GGUF used by the local translation server.
-    HunyuanMtGguf,
-    HunyuanMt7bGguf,
-    /// Audio8 multilingual TTS ONNX FP16 package, including voice registration.
-    Audio8TtsOnnxFp16,
-    /// NVIDIA OpenVoice v3 ONNX package with MeloTTS English v3.
-    OpenVoiceV3OnnxFp16,
-    /// NVIDIA OpenVoice v2 ONNX package with five English accents.
-    OpenVoiceV2OnnxFp16,
-    /// XRTranslate reproducible OpenVoice v2 Chinese ONNX language pack.
-    OpenVoiceV2ZhOnnxFp16,
-}
-
-impl ModelAssetId {
-    /// Stable, machine-readable identifier used in diagnostics and packaging.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Qwen3AsrGguf => "qwen3-asr-gguf",
-            Self::HunyuanMtGguf => "hy-mt2",
-            Self::HunyuanMt7bGguf => "hy-mt2-big",
-            Self::Audio8TtsOnnxFp16 => "audio8-tts-onnx-fp16",
-            Self::OpenVoiceV3OnnxFp16 => "openvoice-v3-onnx-fp16",
-            Self::OpenVoiceV2OnnxFp16 => "openvoice-v2-onnx-fp16",
-            Self::OpenVoiceV2ZhOnnxFp16 => "openvoice-v2-zh-onnx-fp16",
-        }
-    }
-
-    /// Resolves a stable `model_asset` key stored in a provider object.
-    #[must_use]
-    pub fn from_config_key(value: &str) -> Option<Self> {
-        MODEL_ASSET_CATALOG
-            .iter()
-            .find(|manifest| manifest.id.as_str() == value)
-            .map(|manifest| manifest.id)
-    }
-}
-
-impl fmt::Display for ModelAssetId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
+use super::ModelAssetId;
 
 /// Native backend capability provided by a model asset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -78,15 +26,16 @@ impl ModelCapability {
 /// Hardware contract for a downloadable native model package. Small ONNX
 /// components bundled with the application (VAD, denoise and speaker helpers)
 /// are intentionally outside this catalogue and therefore outside this gate.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct ModelHardwareRequirements {
     pub accelerator: ModelAccelerator,
     pub minimum_memory_bytes: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum ModelAccelerator {
     NvidiaCuda,
+    Cpu,
 }
 
 /// Minimum reported VRAM for managed local model packages.
@@ -94,21 +43,31 @@ pub enum ModelAccelerator {
 /// An 8 GB product may report slightly less than 8 GiB to the driver, so the
 /// eligibility threshold intentionally uses 7 GiB.
 pub const MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES: u64 = 7 * 1024 * 1024 * 1024;
+/// Lower entry threshold for the small ASR/translation pair on nominal 4 GB GPUs.
+pub const MANAGED_SMALL_MODEL_MINIMUM_VRAM_BYTES: u64 = 3 * 1024 * 1024 * 1024;
 pub const MANAGED_LOCAL_MODEL_HARDWARE: ModelHardwareRequirements = ModelHardwareRequirements {
     accelerator: ModelAccelerator::NvidiaCuda,
     minimum_memory_bytes: MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES,
 };
+pub const MANAGED_SMALL_MODEL_HARDWARE: ModelHardwareRequirements = ModelHardwareRequirements {
+    accelerator: ModelAccelerator::NvidiaCuda,
+    minimum_memory_bytes: MANAGED_SMALL_MODEL_MINIMUM_VRAM_BYTES,
+};
+pub const CPU_MODEL_HARDWARE: ModelHardwareRequirements = ModelHardwareRequirements {
+    accelerator: ModelAccelerator::Cpu,
+    minimum_memory_bytes: 0,
+};
 
 /// Wire-level audio produced by a native model package. The desktop uses this
 /// immutable capability instead of trusting an editable provider setting.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct ModelAudioOutput {
     pub sample_rate_hz: u32,
     pub channels: u16,
     pub sample_format: ModelAudioSampleFormat,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum ModelAudioSampleFormat {
     PcmI16Le,
 }
@@ -116,14 +75,85 @@ pub enum ModelAudioSampleFormat {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelLevel {
+    Small,
     Normal,
     Big,
     Ultra,
 }
 
+/// How audio reaches an ASR adapter. Local cards currently use complete
+/// speech segments; a future live adapter can opt into incremental delivery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum AsrDelivery {
+    Utterance,
+    Live,
+}
+
+/// Request format used by an audio-chat recognition adapter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum AsrPromptStyle {
+    QwenAsr,
+}
+
+/// Prompt and decoding contract for a text chat translation model.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum TranslationPromptStyle {
+    Contextual,
+    Bilingual,
+}
+
+/// Executable interface selected by the model card, independent of its name.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum ModelRuntime {
+    LlamaAudioChat {
+        model_alias: &'static str,
+        delivery: AsrDelivery,
+        prompt_style: AsrPromptStyle,
+        context_bias: bool,
+        vocabulary_bias: bool,
+    },
+    SherpaOfflineAsr {
+        delivery: AsrDelivery,
+    },
+    LlamaTextChat {
+        model_alias: &'static str,
+        prompt_style: TranslationPromptStyle,
+        flash_attention: bool,
+        allow_reference_context: bool,
+    },
+}
+
+impl ModelRuntime {
+    #[must_use]
+    pub const fn uses_llama_cpp(self) -> bool {
+        matches!(
+            self,
+            Self::LlamaAudioChat { .. } | Self::LlamaTextChat { .. }
+        )
+    }
+
+    #[must_use]
+    pub const fn transport(self) -> &'static str {
+        match self {
+            Self::LlamaAudioChat { .. } | Self::LlamaTextChat { .. } => "local",
+            Self::SherpaOfflineAsr { .. } => "onnx-cpu",
+        }
+    }
+
+    #[must_use]
+    pub const fn model_alias(self) -> Option<&'static str> {
+        match self {
+            Self::LlamaAudioChat { model_alias, .. } | Self::LlamaTextChat { model_alias, .. } => {
+                Some(model_alias)
+            }
+            Self::SherpaOfflineAsr { .. } => None,
+        }
+    }
+}
+
 /// Runtime role of a file inside a model package. Server factories query this
 /// role instead of relying on manifest array position.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize)]
 pub enum ModelFileRole {
     Weights,
     MultimodalProjection,
@@ -153,6 +183,7 @@ impl ModelLevel {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Small => "small",
             Self::Normal => "normal",
             Self::Big => "big",
             Self::Ultra => "ultra",
@@ -161,7 +192,7 @@ impl ModelLevel {
 }
 
 /// A file that must exist within a [`ModelAssetManifest::relative_directory`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct RequiredModelFile {
     pub role: ModelFileRole,
     /// File path relative to the asset directory. This is intentionally not a
@@ -176,7 +207,7 @@ pub struct RequiredModelFile {
 }
 
 /// Repository metadata retained for installers and release packaging.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct ModelSource {
     /// Source repository expected to contain this asset.
     pub repository: &'static str,
@@ -187,8 +218,7 @@ pub struct ModelSource {
     pub remote_directory: &'static str,
     /// Exact source-file patterns used by an installer, if it has one.
     pub include_patterns: &'static [&'static str],
-    /// Per-file source overrides for packages assembled from compatible,
-    /// independently versioned exports.
+    /// Per-file source overrides for compatible exports and pinned notices.
     pub file_overrides: &'static [ModelFileSource],
     /// Optional immutable archive used for most files in a model package.
     /// Entries are extracted declaratively; per-file overrides still use the
@@ -197,18 +227,15 @@ pub struct ModelSource {
 }
 
 impl ModelSource {
-    /// Builds a pinned Hugging Face resolve URL for a manifest file.
+    /// Builds the pinned download URL for a manifest file.
     #[must_use]
-    pub fn hugging_face_resolve_url(&self, relative_path: &str) -> String {
+    pub fn file_url(&self, relative_path: &str) -> String {
         if let Some(source) = self
             .file_overrides
             .iter()
-            .find(|source| source.relative_path == relative_path)
+            .find(|source| source.relative_path() == relative_path)
         {
-            return format!(
-                "https://huggingface.co/{}/resolve/{}/{}",
-                source.repository, source.revision, source.remote_path
-            );
+            return source.url();
         }
         let remote_path = if self.remote_directory.is_empty() {
             relative_path.to_owned()
@@ -228,15 +255,44 @@ impl ModelSource {
 
 /// Immutable source of one file that differs from the package's primary
 /// repository. Download and verification still use the shared installer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ModelFileSource {
-    pub relative_path: &'static str,
-    pub repository: &'static str,
-    pub revision: &'static str,
-    pub remote_path: &'static str,
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum ModelFileSource {
+    HuggingFace {
+        relative_path: &'static str,
+        repository: &'static str,
+        revision: &'static str,
+        remote_path: &'static str,
+    },
+    DirectUrl {
+        relative_path: &'static str,
+        /// Use an immutable revision in the URL; bytes and SHA-256 are checked.
+        url: &'static str,
+    },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+impl ModelFileSource {
+    fn relative_path(self) -> &'static str {
+        match self {
+            Self::HuggingFace { relative_path, .. } | Self::DirectUrl { relative_path, .. } => {
+                relative_path
+            }
+        }
+    }
+
+    fn url(self) -> String {
+        match self {
+            Self::HuggingFace {
+                repository,
+                revision,
+                remote_path,
+                ..
+            } => format!("https://huggingface.co/{repository}/resolve/{revision}/{remote_path}"),
+            Self::DirectUrl { url, .. } => url.to_owned(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct ModelArchiveSource {
     pub filename: &'static str,
     pub url: &'static str,
@@ -245,7 +301,7 @@ pub struct ModelArchiveSource {
     pub entries: &'static [ModelArchiveEntry],
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct ModelArchiveEntry {
     pub relative_path: &'static str,
     pub archive_path: &'static str,
@@ -254,7 +310,7 @@ pub struct ModelArchiveEntry {
 /// A stable, user-selectable base voice contained in one model package.
 /// Language routing remains a package capability; this metadata only chooses
 /// a speaker/accent within the selected package and never creates a download.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct ModelVoicePreset {
     pub key: &'static str,
     pub label: &'static str,
@@ -262,20 +318,43 @@ pub struct ModelVoicePreset {
     pub is_default: bool,
 }
 
+/// One published result for comparing base model families. Scores of a
+/// quantized export must only be attributed to that export when measured.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct ModelBenchmark {
+    pub benchmark: &'static str,
+    pub metric: &'static str,
+    /// Score in hundredths of a percent, preserving published precision.
+    pub score_centipercent: u16,
+    pub source_url: &'static str,
+    pub note: &'static str,
+}
+
 /// Static description of one locally-installed model package.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct ModelAssetManifest {
     pub id: ModelAssetId,
     pub label: &'static str,
     pub capability: ModelCapability,
     pub level: ModelLevel,
+    /// Explicit default within this provider, capability and size tier.
+    /// TTS language packs are composable and do not use tier defaults.
+    pub tier_default: bool,
+    /// Approximate peak device memory during inference, including model
+    /// weights and a modest runtime/context allowance. Not a hardware gate.
+    pub estimated_vram_bytes: u64,
+    pub parameters_millions: Option<u32>,
+    pub benchmark: Option<ModelBenchmark>,
     pub provider: &'static str,
-    /// BCP-47-style language tags covered by this package. An empty list means
-    /// the model is not partitioned into selectable language packs.
+    /// Supported BCP-47 language tags. `zh-Hant` denotes Traditional Chinese;
+    /// the legacy UI value `zh-TW` is normalized when checking routes.
     pub languages: &'static [&'static str],
     pub voice_presets: &'static [ModelVoicePreset],
     pub hardware: ModelHardwareRequirements,
     pub audio_output: Option<ModelAudioOutput>,
+    /// Local execution contract. TTS packages use their existing provider
+    /// adapters and therefore leave this unset.
+    pub runtime: Option<ModelRuntime>,
     /// Directory relative to the models root.
     pub relative_directory: &'static str,
     pub required_files: &'static [RequiredModelFile],

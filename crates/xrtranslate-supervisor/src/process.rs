@@ -12,6 +12,7 @@ pub struct LlamaServerProcess {
     child: Option<Child>,
     endpoint: LlamaServerEndpoint,
     role: LlamaServerRole,
+    model_alias: String,
 }
 
 impl LlamaServerProcess {
@@ -20,12 +21,18 @@ impl LlamaServerProcess {
             child: Some(child),
             endpoint: spec.endpoint.clone(),
             role: spec.role,
+            model_alias: spec.model_alias.clone(),
         }
     }
 
     #[must_use]
     pub const fn role(&self) -> LlamaServerRole {
         self.role
+    }
+
+    #[must_use]
+    pub fn model_alias(&self) -> &str {
+        &self.model_alias
     }
 
     #[must_use]
@@ -111,6 +118,26 @@ impl LlamaServerLauncher for StdLlamaServerLauncher {
 
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             child_command.creation_flags(CREATE_NO_WINDOW);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+
+            // The GUI may terminate its backend abruptly. Ask Linux to kill
+            // this model process if that backend dies before Rust can drop it.
+            let parent_pid = unsafe { libc::getpid() };
+            unsafe {
+                child_command.pre_exec(move || {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    // Close the race where the parent exits before prctl runs.
+                    if libc::getppid() != parent_pid {
+                        return Err(io::Error::from_raw_os_error(libc::ESRCH));
+                    }
+                    Ok(())
+                });
+            }
         }
         let child = child_command.spawn()?;
         Ok(LlamaServerProcess::new(child, spec))

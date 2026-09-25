@@ -2,7 +2,7 @@
 //!
 //! The configured `model_manager.llama_cpp.downloads` list is the contract:
 //! we select CUDA when the installed NVIDIA driver reports a compatible
-//! runtime, adequate compute capability, and at least 7 GiB of VRAM. Managed
+//! runtime, adequate compute capability, and enough VRAM for the selected packages. Managed
 //! model packages never fall back to CPU; bundled small ONNX components are a
 //! separate application resource class and do not use this installer.
 
@@ -22,7 +22,7 @@ use xrtranslate_config::{
 use xrtranslate_download::{DownloadCancellation, DownloadClient, DownloadSource, DownloadSpec};
 
 const MIN_CUDA_COMPUTE_CAPABILITY: (u16, u16) = (6, 0);
-const MIN_LOCAL_MODEL_VRAM_BYTES: u64 = xrtranslate_assets::MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES;
+const MIN_LOCAL_MODEL_VRAM_BYTES: u64 = 1024 * 1024 * 1024;
 const TURING_COMPUTE_CAPABILITY: (u16, u16) = (7, 5);
 const BLACKWELL_MINIMUM_CUDA: (u16, u16) = (12, 8);
 pub(crate) const NVIDIA_APP_URL: &str = "https://www.nvidia.com/en-us/software/nvidia-app/";
@@ -59,6 +59,7 @@ struct RuntimePlan {
     downloads: Vec<RuntimeDownload>,
     marker_ready: bool,
     requirements: RuntimeRequirements,
+    model_assets: Vec<xrtranslate_assets::ModelAssetId>,
     local_models: LocalModelAvailability,
     blocking_error: Option<String>,
 }
@@ -249,10 +250,21 @@ impl RuntimeInstaller {
     }
 
     #[must_use]
-    pub fn plan_matches(&self, requirements: RuntimeRequirements) -> bool {
+    pub fn plan_matches(
+        &self,
+        requirements: RuntimeRequirements,
+        model_assets: &[xrtranslate_assets::ModelAssetId],
+    ) -> bool {
         self.selection
             .as_ref()
-            .is_some_and(|selection| selection.requirements == requirements)
+            .is_some_and(|selection| {
+                selection.requirements == requirements && selection.model_assets == model_assets
+            })
+    }
+
+    #[must_use]
+    pub fn has_plan(&self) -> bool {
+        self.selection.is_some()
     }
 
     #[must_use]
@@ -1721,18 +1733,30 @@ fn configured_runtime_plan(
     requirements: RuntimeRequirements,
 ) -> Result<RuntimePlan, String> {
     let config = load_app_config(project_root)?;
+    let model_assets = config
+        .active_native_model_assets()
+        .into_iter()
+        .filter_map(|key| xrtranslate_assets::ModelAssetId::from_config_key(&key))
+        .collect::<Vec<_>>();
     let nvidia = supported_nvidia_cuda()?;
     let local_models = local_model_availability(nvidia.as_ref());
     let requires_managed_model = requirements.llama_cpp || requirements.onnx_tts;
+    let required_model_vram_bytes = required_local_model_vram_bytes(&config);
     let blocking_error = if requires_managed_model {
         match &local_models {
+            LocalModelAvailability::Available { gpu, memory_bytes }
+                if *memory_bytes < required_model_vram_bytes => Some(format!(
+                "NVIDIA GPU {gpu} has {:.1} GiB of VRAM; the selected local models require at least {:.0} GiB.",
+                *memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+                required_model_vram_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+            )),
             LocalModelAvailability::Available { .. } => None,
             LocalModelAvailability::InsufficientVram {
                 gpu,
                 memory_bytes,
                 required_bytes,
             } => Some(format!(
-                "NVIDIA GPU {gpu} has {:.1} GiB of VRAM; managed local models require at least {:.0} GiB.",
+                "NVIDIA GPU {gpu} has {:.1} GiB of VRAM; local models require at least {:.0} GiB.",
                 *memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
                 *required_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
             )),
@@ -1787,9 +1811,20 @@ fn configured_runtime_plan(
         downloads,
         marker_ready,
         requirements,
+        model_assets,
         local_models,
         blocking_error,
     })
+}
+
+fn required_local_model_vram_bytes(config: &AppConfig) -> u64 {
+    config
+        .active_native_model_assets()
+        .into_iter()
+        .filter_map(|key| xrtranslate_assets::ModelAssetId::from_config_key(&key))
+        .map(|id| xrtranslate_assets::manifest_for(id).hardware.minimum_memory_bytes)
+        .max()
+        .unwrap_or(xrtranslate_assets::MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES)
 }
 
 /// Verifies that the immutable files selected by a runtime plan are also
@@ -1897,7 +1932,7 @@ fn runtime_marker_matches_plan(
 fn local_model_availability(nvidia: Option<&NvidiaCuda>) -> LocalModelAvailability {
     let Some(nvidia) = nvidia else {
         return LocalModelAvailability::Unavailable(
-            "Managed local models require an NVIDIA GPU with at least 7 GiB of VRAM. Small bundled ONNX components remain available.".to_owned(),
+            "Managed CUDA models require an NVIDIA GPU with at least 1 GiB of VRAM. CPU ONNX models remain available.".to_owned(),
         );
     };
     if nvidia.compute_capability < MIN_CUDA_COMPUTE_CAPABILITY {
@@ -3141,6 +3176,7 @@ mod tests {
                 onnx_cuda: true,
                 ..RuntimeRequirements::default()
             },
+            model_assets: Vec::new(),
             local_models: LocalModelAvailability::Available {
                 gpu: "test GPU".into(),
                 memory_bytes: 16 * 1024 * 1024 * 1024,
@@ -3475,12 +3511,12 @@ mod tests {
     }
 
     #[test]
-    fn managed_local_models_require_seven_gib_of_vram() {
+    fn compact_local_models_can_use_one_gib_of_vram() {
         let low_memory = NvidiaCuda {
             gpu: "NVIDIA GeForce RTX test".into(),
             compute_capability: (8, 9),
             driver_cuda: "13.0".into(),
-            memory_bytes: 6 * 1024 * 1024 * 1024,
+            memory_bytes: 512 * 1024 * 1024,
         };
         assert!(matches!(
             local_model_availability(Some(&low_memory)),
@@ -3488,11 +3524,11 @@ mod tests {
                 memory_bytes,
                 required_bytes,
                 ..
-            } if memory_bytes == 6 * 1024 * 1024 * 1024
-                && required_bytes == 7 * 1024 * 1024 * 1024
+            } if memory_bytes == 512 * 1024 * 1024
+                && required_bytes == 1024 * 1024 * 1024
         ));
         let minimum_memory = NvidiaCuda {
-            memory_bytes: 7 * 1024 * 1024 * 1024,
+            memory_bytes: 1024 * 1024 * 1024,
             ..low_memory.clone()
         };
         assert!(matches!(
@@ -3503,6 +3539,32 @@ mod tests {
             local_model_availability(None),
             LocalModelAvailability::Unavailable(reason) if reason.contains("require an NVIDIA GPU")
         ));
+    }
+
+    #[test]
+    fn runtime_vram_gate_tracks_the_selected_model_assets() {
+        let mut document: serde_json::Value =
+            serde_json::from_str(include_str!("../../config.json")).unwrap();
+        let normal = AppConfig::from_value(document.clone()).unwrap();
+        assert_eq!(
+            required_local_model_vram_bytes(&normal),
+            7 * 1024 * 1024 * 1024
+        );
+        document["asr"]["providers"]["qwen3-gguf"]["model_asset"] =
+            serde_json::Value::from("qwen3-asr-0.6b-q8-gguf");
+        document["translation"]["providers"]["hunyuan"]["model_asset"] =
+            serde_json::Value::from("hy-mt2-1.8b-q2-k");
+        let small = AppConfig::from_value(document.clone()).unwrap();
+        assert_eq!(
+            required_local_model_vram_bytes(&small),
+            3 * 1024 * 1024 * 1024
+        );
+        document["tts"]["provider"] = serde_json::Value::from("openvoice");
+        let with_tts = AppConfig::from_value(document).unwrap();
+        assert_eq!(
+            required_local_model_vram_bytes(&with_tts),
+            7 * 1024 * 1024 * 1024
+        );
     }
 
     #[test]

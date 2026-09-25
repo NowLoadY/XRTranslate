@@ -4,7 +4,7 @@ use xrtranslate_prompt::{PromptMessage, TranslationPromptContext};
 
 use crate::openai::remove_completion_markers;
 
-pub(super) fn clean_hunyuan(text: &str) -> String {
+pub(super) fn clean_contextual(text: &str) -> String {
     clean_shared(text)
 }
 
@@ -212,7 +212,7 @@ mod tests {
             "bonjour"
         );
         assert_eq!(
-            clean_hunyuan("Translation: bonjour <|im_end|>"),
+            clean_contextual("Translation: bonjour <|im_end|>"),
             "Translation: bonjour"
         );
     }

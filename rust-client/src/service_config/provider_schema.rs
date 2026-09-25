@@ -1,7 +1,6 @@
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ProviderFieldEditor {
     Default,
-    ModelLevel,
     UnsignedRange {
         minimum: u32,
         maximum: u32,
@@ -46,7 +45,7 @@ const PROVIDER_FIELDS: &[ProviderFieldDescriptor] = &[
             "local uses the managed llama.cpp model; openai uses an OpenAI-compatible HTTP API; websocket uses a provider-native WebSocket API.",
         ),
         editor: ProviderFieldEditor::Options(&["local", "openai", "websocket"]),
-        visibility: ProviderFieldVisibility::Default,
+        visibility: ProviderFieldVisibility::Hidden,
     },
     ProviderFieldDescriptor {
         name: "sample_rate",
@@ -118,8 +117,8 @@ const PROVIDER_FIELDS: &[ProviderFieldDescriptor] = &[
         name: "model_asset",
         label: "Level",
         help: None,
-        editor: ProviderFieldEditor::ModelLevel,
-        visibility: ProviderFieldVisibility::NativeModel,
+        editor: ProviderFieldEditor::Default,
+        visibility: ProviderFieldVisibility::Hidden,
     },
     ProviderFieldDescriptor {
         name: "supports_prompt_context",
@@ -193,7 +192,7 @@ const PROVIDER_FIELDS: &[ProviderFieldDescriptor] = &[
         label: "Model",
         help: None,
         editor: ProviderFieldEditor::Default,
-        visibility: ProviderFieldVisibility::Default,
+        visibility: ProviderFieldVisibility::Hidden,
     },
     ProviderFieldDescriptor {
         name: "guide_url",
@@ -226,11 +225,15 @@ mod tests {
 
     #[test]
     fn native_visibility_matches_the_existing_provider_form() {
-        assert!(
-            provider_field_descriptor("model_asset")
-                .unwrap()
-                .is_visible(true)
-        );
+        assert!(!provider_field_descriptor("transport")
+            .unwrap()
+            .is_visible(false));
+        assert!(!provider_field_descriptor("model_asset")
+            .unwrap()
+            .is_visible(true));
+        assert!(!provider_field_descriptor("model")
+            .unwrap()
+            .is_visible(false));
         assert!(
             provider_field_descriptor("context_window_tokens")
                 .unwrap()

@@ -825,18 +825,7 @@ fn preferred_llama_server_path(layout: &RuntimeLayout, configured: &str) -> Stri
 }
 
 fn configured_llama_server_path(layout: &RuntimeLayout, configured: &str) -> PathBuf {
-    let configured_path = PathBuf::from(configured);
-    let mut candidate = layout.resolve_configured_path(&configured_path);
-
-    // The shared config keeps the managed executable extensionless so the
-    // same default works on Unix. Windows archives contain llama-server.exe.
-    if cfg!(windows)
-        && configured_path.is_relative()
-        && candidate == layout.managed_llama_server("llama-server")
-    {
-        candidate.set_extension("exe");
-    }
-
+    let candidate = layout.resolve_llama_server_path(configured);
     std::path::absolute(&candidate).unwrap_or(candidate)
 }
 

@@ -65,10 +65,7 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                                 render_general_appearance_section(app, ui);
                             }
                             SettingsSection::ServiceProviders => {
-                                let project_root = app.project_root();
-                                let apply =
-                                    app.service_config
-                                        .render(ui, &project_root, app.ui_language);
+                                let apply = app.service_config.render(ui, app.ui_language);
                                 if apply {
                                     app.apply_service_configuration(Some(ui.ctx().clone()));
                                 }

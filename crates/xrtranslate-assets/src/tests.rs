@@ -6,12 +6,14 @@ use std::{
 };
 
 use crate::{
-    AUDIO8_TTS_ONNX_FP16, AtomicInstallError, HUNYUAN_MT_GGUF, MANAGED_LOCAL_MODEL_HARDWARE,
-    MODEL_ASSET_CATALOG, ModelAssetDiagnostic, ModelAssetId, ModelAssetManifest, ModelAssetProblem,
-    ModelAssetsConfig, ModelCapability, ModelFileRole, ModelLevel, ModelSource,
-    NativeModelInstaller, OPENVOICE_V2_ONNX_FP16, OPENVOICE_V2_ZH_ONNX_FP16,
-    OPENVOICE_V3_ONNX_FP16, QWEN3_ASR_GGUF, RequiredModelFile, ResolvedModelAsset,
-    ResolvedModelAssets, install::install_verified_directory, manifest_for, preflight::sha256_file,
+    AUDIO8_TTS_ONNX_FP16, AtomicInstallError, HUNYUAN_MT_GGUF, HUNYUAN_MT_Q2K_GGUF,
+    MANAGED_LOCAL_MODEL_HARDWARE, MODEL_ASSET_CATALOG, ModelAssetDiagnostic, ModelAssetId,
+    ModelAssetManifest, ModelAssetProblem, ModelAssetsConfig, ModelCapability, ModelFileRole,
+    ModelLevel, ModelSource, NativeModelInstaller, OPENVOICE_V2_ONNX_FP16,
+    OPENVOICE_V2_ZH_ONNX_FP16, OPENVOICE_V3_ONNX_FP16, QWEN3_ASR_06B_Q8_GGUF, QWEN3_ASR_GGUF,
+    RequiredModelFile, ResolvedModelAsset, ResolvedModelAssets,
+    install::install_verified_directory, manifest_for, preflight::sha256_file,
+    tier_default_manifest,
 };
 
 static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
@@ -31,9 +33,26 @@ fn temporary_project_root() -> PathBuf {
 
 #[test]
 fn static_catalog_declares_every_native_model_package() {
-    assert_eq!(MODEL_ASSET_CATALOG.len(), 7);
+    assert_eq!(MODEL_ASSET_CATALOG.len(), 12);
     assert_eq!(QWEN3_ASR_GGUF.required_files.len(), 2);
+    assert_eq!(crate::CONFUCIUS4_R2T2_Q8_GGUF.level, ModelLevel::Normal);
+    assert!(!crate::CONFUCIUS4_R2T2_Q8_GGUF.tier_default);
+    assert_eq!(crate::CONFUCIUS4_R2T2_Q8_GGUF.required_files.len(), 3);
+    assert!(
+        crate::CONFUCIUS4_R2T2_Q8_GGUF
+            .source
+            .file_url("MODEL_LICENSE")
+            .contains("26d55a54ce5670cff9947a167d8ed95d569fd4d9")
+    );
     assert_eq!(HUNYUAN_MT_GGUF.required_files.len(), 1);
+    assert_eq!(QWEN3_ASR_06B_Q8_GGUF.download_bytes(), 1_019_141_728);
+    assert_eq!(HUNYUAN_MT_Q2K_GGUF.download_bytes(), 777_483_264);
+    assert_eq!(
+        tier_default_manifest("hunyuan", ModelCapability::Translation, ModelLevel::Small)
+            .unwrap()
+            .id,
+        ModelAssetId::HunyuanMtQ2kGguf
+    );
     assert_eq!(
         OPENVOICE_V2_ONNX_FP16.source.archive.unwrap().sha256,
         "266dc4662965858e07a1c8cb086f17e1c30f0fdc3202e8934103dc7927314811"
@@ -47,21 +66,17 @@ fn static_catalog_declares_every_native_model_package() {
         "tencent/Hy-MT2-1.8B-GGUF"
     );
     assert_eq!(
-        QWEN3_ASR_GGUF
-            .source
-            .hugging_face_resolve_url("Qwen3-ASR-1.7B.Q4_K_M.gguf"),
+        QWEN3_ASR_GGUF.source.file_url("Qwen3-ASR-1.7B.Q4_K_M.gguf"),
         "https://huggingface.co/mradermacher/Qwen3-ASR-1.7B-GGUF/resolve/cc946c78d3804752f7ba1bc42720c0f7aaf3d1ad/Qwen3-ASR-1.7B.Q4_K_M.gguf"
     );
     assert_eq!(
-        AUDIO8_TTS_ONNX_FP16
-            .source
-            .hugging_face_resolve_url("slow_ar_fp16.onnx"),
+        AUDIO8_TTS_ONNX_FP16.source.file_url("slow_ar_fp16.onnx"),
         "https://huggingface.co/OpenVoiceOS/phoonnx-audio8-tts/resolve/6e4de996325cebb25df81efd6b0adc08792cd21f/slow_ar_fp16.onnx"
     );
     assert_eq!(
         AUDIO8_TTS_ONNX_FP16
             .source
-            .hugging_face_resolve_url("runtime_manifest.json"),
+            .file_url("runtime_manifest.json"),
         "https://huggingface.co/Audio8/Audio8-TTS-Preview-0.6B-ONNX-INT4/resolve/818569c6b832118ad68d61bbd873abe250fcd68a/runtime_manifest.json"
     );
     let archive = OPENVOICE_V3_ONNX_FP16.source.archive.unwrap();
@@ -74,10 +89,32 @@ fn static_catalog_declares_every_native_model_package() {
     assert_eq!(
         OPENVOICE_V2_ZH_ONNX_FP16
             .source
-            .hugging_face_resolve_url("models/melo.onnx"),
+            .file_url("models/melo.onnx"),
         "https://huggingface.co/NowLoadY/XRTranslate-OpenVoice-ONNX/resolve/8a5782785c7f728692057eab37e9a3645b5747f8/packages/zh/v1/models/melo.onnx"
     );
     for manifest in MODEL_ASSET_CATALOG {
+        if manifest.hardware.accelerator == crate::ModelAccelerator::NvidiaCuda {
+            assert!(manifest.estimated_vram_bytes >= manifest.installed_bytes());
+        }
+        assert!(
+            !manifest.languages.is_empty(),
+            "{} lacks supported languages",
+            manifest.id
+        );
+        for code in manifest.languages {
+            assert!(
+                !code.is_empty()
+                    && code
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphabetic() || byte == b'-')
+            );
+        }
+        if matches!(
+            manifest.capability,
+            ModelCapability::Asr | ModelCapability::Translation
+        ) {
+            assert!(manifest.parameters_millions.is_some());
+        }
         assert!(
             manifest.required_files.iter().any(|file| matches!(
                 file.role,
@@ -100,6 +137,50 @@ fn static_catalog_declares_every_native_model_package() {
             );
         }
     }
+    for capability in [ModelCapability::Asr, ModelCapability::Translation] {
+        for level in [ModelLevel::Small, ModelLevel::Normal, ModelLevel::Big] {
+            let defaults = MODEL_ASSET_CATALOG
+                .iter()
+                .filter(|manifest| {
+                    manifest.capability == capability
+                        && manifest.level == level
+                        && manifest.tier_default
+                })
+                .count();
+            assert!(
+                defaults <= 1,
+                "duplicate default for {capability:?} {level:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn small_models_resolve_by_file_role_and_keep_normal_defaults() {
+    let mut config = ModelAssetsConfig::default();
+    config.select_asset(ModelAssetId::Qwen3Asr06bQ8Gguf);
+    config.select_asset(ModelAssetId::HunyuanMtQ2kGguf);
+    let assets = config.resolve("release-root");
+    let paths = assets.llama_cpp_paths();
+    assert_eq!(
+        paths.qwen3_asr_model,
+        Path::new("release-root/models/Qwen3-ASR-0.6B-Q8_0-GGUF/Qwen3-ASR-0.6B-Q8_0.gguf")
+    );
+    assert_eq!(
+        paths.qwen3_asr_mmproj,
+        Path::new("release-root/models/Qwen3-ASR-0.6B-Q8_0-GGUF/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf")
+    );
+    assert_eq!(
+        paths.hunyuan_mt_model,
+        Path::new("release-root/models/Hy-MT2-1.8B-Q2_K-GGUF/Hy-MT2-1.8B.i1-Q2_K.gguf")
+    );
+    assert_eq!(
+        ResolvedModelAssets::for_project_root("release-root")
+            .qwen3_asr
+            .manifest()
+            .id,
+        ModelAssetId::Qwen3AsrGguf
+    );
 }
 
 #[test]
@@ -354,11 +435,16 @@ fn explicit_integrity_verification_accepts_matching_files_and_reports_hash_tampe
         label: "fixture",
         capability: ModelCapability::Asr,
         level: ModelLevel::Normal,
+        tier_default: false,
+        estimated_vram_bytes: 1,
+        parameters_millions: None,
+        benchmark: None,
         provider: "fixture",
         languages: &[],
         voice_presets: &[],
         hardware: MANAGED_LOCAL_MODEL_HARDWARE,
         audio_output: None,
+        runtime: None,
         relative_directory: "fixture",
         required_files: files,
         source: ModelSource {
@@ -406,11 +492,16 @@ fn verified_staging_directory_is_promoted_without_overwriting_an_install() {
         label: "fixture",
         capability: ModelCapability::Translation,
         level: ModelLevel::Normal,
+        tier_default: false,
+        estimated_vram_bytes: 1,
+        parameters_millions: None,
+        benchmark: None,
         provider: "fixture",
         languages: &[],
         voice_presets: &[],
         hardware: MANAGED_LOCAL_MODEL_HARDWARE,
         audio_output: None,
+        runtime: None,
         relative_directory: "fixture",
         required_files: files,
         source: ModelSource {

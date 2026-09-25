@@ -96,6 +96,8 @@ pub struct ClientSettings {
     pub ui_theme: UiTheme,
     #[serde(default = "default_true")]
     pub first_run: bool,
+    #[serde(default)]
+    pub model_defaults_initialized: bool,
     #[serde(default = "default_server_url")]
     pub server_url: String,
     #[serde(default)]
@@ -181,6 +183,7 @@ impl Default for ClientSettings {
             ui_language: default_ui_language(),
             ui_theme: UiTheme::default(),
             first_run: true,
+            model_defaults_initialized: false,
             server_url: default_server_url(),
             download_proxy_url: String::new(),
             update_channel: UpdateChannel::Stable,

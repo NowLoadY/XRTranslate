@@ -1,7 +1,7 @@
 use serde_json::Value;
 use xrtranslate_prompt::PromptProviderTarget;
 
-use super::{TranslationProfile, output::clean_hunyuan};
+use super::{TranslationProfile, output::clean_contextual};
 use crate::translation::TranslationOptions;
 
 const TEMPERATURE: f64 = 0.7;
@@ -13,7 +13,7 @@ pub(super) static PROFILE: TranslationProfile = TranslationProfile {
     target: PromptProviderTarget::Hunyuan,
     temperature: TEMPERATURE,
     apply_sampling,
-    clean_output: clean_hunyuan,
+    clean_output: clean_contextual,
 };
 
 fn apply_sampling(payload: &mut Value, options: &TranslationOptions) {

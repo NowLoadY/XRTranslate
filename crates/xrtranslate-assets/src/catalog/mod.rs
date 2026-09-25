@@ -1,33 +1,19 @@
-mod asr;
-mod translation;
-mod tts;
+include!(concat!(env!("OUT_DIR"), "/model_ids.rs"));
 mod types;
 
-pub use asr::QWEN3_ASR_GGUF;
-pub use translation::{HUNYUAN_MT_7B_GGUF, HUNYUAN_MT_GGUF};
-pub use tts::{
-    AUDIO8_TTS_ONNX_FP16, OPENVOICE_V2_ONNX_FP16, OPENVOICE_V2_ZH_ONNX_FP16, OPENVOICE_V3_ONNX_FP16,
-};
 pub use types::{
-    MANAGED_LOCAL_MODEL_HARDWARE, MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES, ModelAccelerator,
-    ModelArchiveEntry, ModelArchiveSource, ModelAssetId, ModelAssetManifest, ModelAudioOutput,
-    ModelAudioSampleFormat, ModelCapability, ModelFileRole, ModelFileSource,
-    ModelHardwareRequirements, ModelLevel, ModelSource, ModelVoicePreset, RequiredModelFile,
+    AsrDelivery, AsrPromptStyle, CPU_MODEL_HARDWARE, MANAGED_LOCAL_MODEL_HARDWARE,
+    MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES, MANAGED_SMALL_MODEL_HARDWARE,
+    MANAGED_SMALL_MODEL_MINIMUM_VRAM_BYTES, ModelAccelerator, ModelArchiveEntry,
+    ModelArchiveSource, ModelAssetManifest, ModelAudioOutput, ModelAudioSampleFormat,
+    ModelBenchmark, ModelCapability, ModelFileRole, ModelFileSource, ModelHardwareRequirements,
+    ModelLevel, ModelRuntime, ModelSource, ModelVoicePreset, RequiredModelFile,
+    TranslationPromptStyle,
 };
 
-/// Complete immutable catalog of native model packages.
-pub const MODEL_ASSET_CATALOG: &[ModelAssetManifest] = &[
-    QWEN3_ASR_GGUF,
-    HUNYUAN_MT_GGUF,
-    HUNYUAN_MT_7B_GGUF,
-    OPENVOICE_V2_ONNX_FP16,
-    OPENVOICE_V2_ZH_ONNX_FP16,
-    OPENVOICE_V3_ONNX_FP16,
-    AUDIO8_TTS_ONNX_FP16,
-];
-
-/// Compatibility name retained for callers of the original GGUF-only catalog.
-pub const DEFAULT_GGUF_MANIFEST: &[ModelAssetManifest] = MODEL_ASSET_CATALOG;
+// All model cards, including download artifacts and language capabilities,
+// come from one versioned JSON file. Cargo generates these static values.
+include!(concat!(env!("OUT_DIR"), "/model_catalog.rs"));
 
 pub fn manifests_for_capability(
     capability: ModelCapability,
@@ -35,6 +21,19 @@ pub fn manifests_for_capability(
     MODEL_ASSET_CATALOG
         .iter()
         .filter(move |manifest| manifest.capability == capability)
+}
+
+/// Returns the declared default package for one provider and user-facing tier.
+/// Additional variants in the same tier never change this choice by catalogue order.
+#[must_use]
+pub fn tier_default_manifest(
+    provider: &str,
+    capability: ModelCapability,
+    level: ModelLevel,
+) -> Option<&'static ModelAssetManifest> {
+    manifests_for_capability(capability).find(|manifest| {
+        manifest.provider == provider && manifest.level == level && manifest.tier_default
+    })
 }
 
 /// Returns the static manifest for `id`.

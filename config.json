@@ -390,7 +390,7 @@
         }
       ]
     },
-    "llama_server_path": "runtime/llama.cpp/llama-server.exe"
+    "llama_server_path": "runtime/llama.cpp/llama-server"
   },
   "osc": {
     "enabled": true,

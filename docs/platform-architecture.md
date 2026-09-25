@@ -68,8 +68,9 @@ start inference, or choose storage locations.
   the core then loads its colocated `onnxruntime_providers_shared` and
   `onnxruntime_providers_cuda`. Provider DLLs must never be preloaded directly
   or combined with a core from another archive.
-- Downloadable managed model packages require an NVIDIA GPU with at least
-  7 GiB of reported VRAM and a compatible complete CUDA runtime. The host
+- Downloadable managed model packages require an NVIDIA GPU with enough reported
+  VRAM for the selected packages (3 GiB for small ASR/translation, 7 GiB for
+  normal ASR/translation and the current TTS packages) and a complete CUDA runtime. The host
   disables their selectors before installation, the runtime planner refuses an
   ineligible plan, and the backend refuses CPU markers before constructing a
   model process or TTS adapter. There is no managed-model CPU fallback.
