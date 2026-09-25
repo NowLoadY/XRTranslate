@@ -54,11 +54,13 @@ The release includes a default XR Corpus seed at `corpora/default.sqlite`.
 On first launch, the editable terminology database is created at
 `runtime/xr-corpus.sqlite`; application updates preserve that runtime file.
 
-Local ASR, translation, and TTS models require a compatible NVIDIA GPU with at
-least 7 GiB of reported VRAM. The Linux managed runtime catalogue includes
-llama.cpp CUDA 12.8 and ONNX Runtime 1.28 CUDA 12 with matching CUDA and cuDNN
-libraries. The compact CPU ONNX core runs the bundled VAD, denoise, and speaker
-models; large managed models do not fall back to CPU.
+Managed GGUF ASR and translation models require a compatible NVIDIA GPU. The
+required VRAM varies by model card; compact choices can be offered on smaller
+GPUs. SenseVoiceSmall recognition runs on the CPU without CUDA. Managed TTS
+models still require a compatible accelerated runtime. The Linux runtime
+catalogue includes llama.cpp CUDA 12.8 and ONNX Runtime 1.28 CUDA 12 with
+matching CUDA and cuDNN libraries. The bundled CPU ONNX core runs the basic
+VAD, denoise, and speaker models; GPU models do not fall back to CPU.
 
 ## Audio capture
 

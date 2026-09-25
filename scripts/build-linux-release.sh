@@ -51,6 +51,7 @@ cargo build --locked --manifest-path XR-Corpus/Cargo.toml \
 mkdir -p "$(dirname "${TARGET_DIR}")"
 STAGE_DIR="$(mktemp -d "${TARGET_DIR}.tmp.XXXXXX")"
 trap 'rm -r -- "${STAGE_DIR}"' EXIT
+chmod 0755 "${STAGE_DIR}"
 mkdir -p "${STAGE_DIR}/bin" "${STAGE_DIR}/resources" "${STAGE_DIR}/XR-Corpus" "${STAGE_DIR}/corpora" "${STAGE_DIR}/runtime"
 install -m 0755 target/release/rust-client "${STAGE_DIR}/xrtranslate"
 install -m 0755 target/release/xrtranslate-backend target/release/xr-corpus-server "${STAGE_DIR}/bin/"
