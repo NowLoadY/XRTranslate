@@ -2763,16 +2763,25 @@ impl AudioSystem {
 
 #[cfg(windows)]
 fn enumerate_audio_applications() -> Result<Vec<AudioApplication>, String> {
-    initialize_mta()
-        .ok()
-        .map_err(|error| format!("Cannot initialize WASAPI: {error}"))?;
     struct ComApartmentGuard;
     impl Drop for ComApartmentGuard {
         fn drop(&mut self) {
             deinitialize();
         }
     }
-    let _apartment = ComApartmentGuard;
+    let _apartment = match initialize_mta().ok() {
+        Ok(()) => Some(ComApartmentGuard),
+        Err(err)
+            if err.code().0 == 0x80010106u32 as i32
+                || err.to_string().contains("0x80010106")
+                || err.to_string().contains("RPC_E_CHANGED_MODE") =>
+        {
+            // COM is already initialized on this thread (e.g. STA on GUI thread).
+            // Proceed without deinitializing the caller's apartment on drop.
+            None
+        }
+        Err(error) => return Err(format!("Cannot initialize WASAPI: {error}")),
+    };
     let enumerator = DeviceEnumerator::new()
         .map_err(|error| format!("Cannot enumerate playback devices: {error}"))?;
     let endpoints = enumerator
@@ -2879,9 +2888,14 @@ fn run_loopback_capture(
     input_meter: Option<Arc<InputPeakMeter>>,
     studio_metering: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    initialize_mta()
-        .ok()
-        .map_err(|error| format!("Cannot initialize WASAPI: {error}"))?;
+    if let Err(err) = initialize_mta().ok() {
+        if err.code().0 != 0x80010106u32 as i32
+            && !err.to_string().contains("0x80010106")
+            && !err.to_string().contains("RPC_E_CHANGED_MODE")
+        {
+            return Err(format!("Cannot initialize WASAPI: {err}"));
+        }
+    }
     let (mut client, name) = open_loopback_client(target)?;
     let format = WaveFormat::new(32, 32, &SampleType::Float, 48_000, 2, None);
     let mode = StreamMode::EventsShared {

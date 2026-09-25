@@ -1,6 +1,7 @@
-// This is a desktop GUI executable. Use the Windows GUI subsystem in every
-// build so double-clicking the executable never creates a transient console.
-#![cfg_attr(windows, windows_subsystem = "windows")]
+// Use the Windows GUI subsystem in release builds so double-clicking the
+// executable never creates a transient console. Keep the console subsystem in
+// debug builds for direct terminal logs and developer visibility.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use eframe::egui;
@@ -4754,10 +4755,16 @@ fn main() -> eframe::Result<()> {
             if let Err(error) = window_backdrop::apply(cc, window_backdrop) {
                 log::warn!("Unable to configure {window_backdrop:?} window backdrop: {error}");
             }
-            let director_port = std::env::args()
-                .position(|a| a == "--director" || a == "--director-port")
-                .and_then(|idx| std::env::args().nth(idx + 1))
-                .and_then(|p| p.parse::<u16>().ok());
+            let args: Vec<String> = std::env::args().collect();
+            let director_port = if let Some(idx) = args.iter().position(|a| a == "--director-port") {
+                args.get(idx + 1).and_then(|p| p.parse::<u16>().ok())
+            } else if let Some(idx) = args.iter().position(|a| a == "--director") {
+                args.get(idx + 1)
+                    .and_then(|p| p.parse::<u16>().ok())
+                    .or(Some(ui::automation::DEFAULT_DIRECTOR_PORT))
+            } else {
+                None
+            };
             ui::automation::init(cc.egui_ctx.clone(), director_port);
 
             let mut app = XRTranslateApp::default();

@@ -28,10 +28,17 @@ class UIDirector:
     """Client for controlling the XRTranslate UI via the Remote Director protocol."""
 
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, timeout: float = 5.0):
-        self.base_url = f"http://{host}:{port}"
+        self.base_url = f"http://{host}:{port}/"
         self.timeout = timeout
 
-    def _send_command(self, cmd: str, args: Any = None, **kwargs) -> Dict[str, Any]:
+    def _send_command(
+        self,
+        cmd: str,
+        args: Any = None,
+        retries: int = 1,
+        retry_delay: float = 0.3,
+        **kwargs,
+    ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"cmd": cmd}
         if args is not None:
             payload["args"] = args
@@ -44,17 +51,34 @@ class UIDirector:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                result_bytes = resp.read()
-                return json.loads(result_bytes.decode("utf-8"))
-        except urllib.error.URLError as e:
-            return {
-                "success": False,
-                "message": f"Connection to UI Director failed at {self.base_url}: {e}",
-            }
-        except Exception as e:
-            return {"success": False, "message": f"Error: {e}"}
+        last_error = None
+        for attempt in range(retries + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    result_bytes = resp.read()
+                    return json.loads(result_bytes.decode("utf-8"))
+            except (urllib.error.URLError, OSError) as e:
+                last_error = e
+                if attempt < retries:
+                    time.sleep(retry_delay)
+                    continue
+            except Exception as e:
+                return {"success": False, "message": f"Error: {e}"}
+
+        return {
+            "success": False,
+            "message": f"Connection to UI Director failed at {self.base_url}: {last_error}",
+        }
+
+    def wait_ready(self, timeout: float = 10.0, poll_interval: float = 0.25) -> bool:
+        """Wait until the UI Director server is ready and responding."""
+        start = time.time()
+        while time.time() - start < timeout:
+            resp = self._send_command("status", retries=0)
+            if resp.get("success"):
+                return True
+            time.sleep(poll_interval)
+        return False
 
     def status(self) -> Dict[str, Any]:
         """Get application and UI director status."""
@@ -324,6 +348,10 @@ def main() -> None:
     get_p = subparsers.add_parser("get", help="Get element value")
     get_p.add_argument("target", help="Target element")
 
+    # wait_ready
+    wait_p = subparsers.add_parser("wait_ready", help="Wait until UI Director server is ready")
+    wait_p.add_argument("--timeout", type=float, default=10.0, help="Timeout in seconds")
+
     # run script
     run_p = subparsers.add_parser("run", help="Run a screenplay script file")
     run_p.add_argument("script_file", help="Path to script file")
@@ -367,7 +395,14 @@ def main() -> None:
         print(json.dumps(director.set_value(args.target, val), indent=2, ensure_ascii=False))
     elif args.action == "get":
         print(json.dumps(director.get_value(args.target), indent=2, ensure_ascii=False))
+    elif args.action == "wait_ready":
+        ready = director.wait_ready(timeout=args.timeout)
+        print(json.dumps({"success": ready, "message": "Server is ready" if ready else "Timeout waiting for server"}))
+        if not ready:
+            sys.exit(1)
     elif args.action == "run":
+        if not director.wait_ready(timeout=5.0):
+            print("Warning: UI Director server did not respond before script start. Attempting anyway...")
         run_screenplay_script(director, args.script_file)
 
 

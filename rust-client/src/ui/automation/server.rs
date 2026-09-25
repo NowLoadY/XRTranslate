@@ -167,6 +167,7 @@ fn handle_http_request(
     );
     let _ = stream.write_all(http_response.as_bytes());
     let _ = stream.flush();
+    let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 
 fn parse_json_value_command(
