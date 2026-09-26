@@ -348,6 +348,24 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             ui.add_space(8.0);
             let tts_configured = app.service_config.tts_is_configured();
             crate::ui::layout::flow_row(ui, |ui| {
+                if ui
+                    .button(crate::i18n::tr(app.ui_language, "Translation style"))
+                    .clicked()
+                {
+                    app.prompt_studio.open_style_panel(
+                        app.service_config.translation_prompt_target(),
+                        &app.prompt_library,
+                    );
+                    app.navigation.page = crate::ui::Page::PromptStudio;
+                }
+                if ui
+                    .button(crate::i18n::tr(app.ui_language, "Translator microphone"))
+                    .clicked()
+                {
+                    app.open_audio_studio();
+                }
+            });
+            crate::ui::layout::flow_row(ui, |ui| {
                 let mut tts_enabled = app.tts_enabled;
                 let tts_response = ui.add_enabled_ui(tts_configured, |ui| {
                     if components::feature_checkbox(

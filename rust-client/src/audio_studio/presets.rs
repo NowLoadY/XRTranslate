@@ -11,10 +11,12 @@ pub enum AudioStudioPreset {
     TranslationSafe,
     VrchatKaraoke,
     TtsToGameMicrophone,
+    TranslatorMicrophone,
 }
 
 impl AudioStudioPreset {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
+        Self::TranslatorMicrophone,
         Self::CompleteAudioSystem,
         Self::TranslationSafe,
         Self::VrchatKaraoke,
@@ -27,6 +29,7 @@ impl AudioStudioPreset {
             Self::TranslationSafe => "translation-safe",
             Self::VrchatKaraoke => "vrchat-karaoke",
             Self::TtsToGameMicrophone => "tts-to-game-microphone",
+            Self::TranslatorMicrophone => "translator-microphone",
         }
     }
 
@@ -36,6 +39,7 @@ impl AudioStudioPreset {
             Self::TranslationSafe => "Translation-safe system audio",
             Self::VrchatKaraoke => "Karaoke / shared microphone",
             Self::TtsToGameMicrophone => "TTS to app microphone",
+            Self::TranslatorMicrophone => "Translator microphone",
         }
     }
 }
@@ -46,6 +50,7 @@ pub fn graph_for_preset(preset: AudioStudioPreset) -> AudioGraph {
         AudioStudioPreset::TranslationSafe => translation_safe(),
         AudioStudioPreset::VrchatKaraoke => vrchat_karaoke(),
         AudioStudioPreset::TtsToGameMicrophone => tts_to_game_microphone(),
+        AudioStudioPreset::TranslatorMicrophone => translator_microphone(),
     };
     graph.initialize_source_gates();
     graph
@@ -126,6 +131,7 @@ fn complete_audio_system() -> AudioGraph {
             AudioNodeKind::GameMicrophoneOutput {
                 device_id: None,
                 voicemeeter_bus: None,
+                follow_tts: false,
             },
         ),
         node(
@@ -175,6 +181,28 @@ fn complete_audio_system() -> AudioGraph {
         ),
         AudioLink::new("tts-to-monitor", "tts", "tts-monitor"),
     ];
+    graph
+}
+
+fn translator_microphone() -> AudioGraph {
+    let mut graph = complete_audio_system();
+    graph.id = super::graph::GraphId::new(AudioStudioPreset::TranslatorMicrophone.stable_id());
+    graph.name = AudioStudioPreset::TranslatorMicrophone
+        .display_name()
+        .into();
+    // Preserve the complete recognition path; only simplify the app output.
+    for id in ["bgm", "gain-bgm-game", "tts-monitor"] {
+        graph.nodes.retain(|node| node.id.0 != id);
+        graph
+            .links
+            .retain(|link| link.from.node_id.0 != id && link.to.node_id.0 != id);
+    }
+    for node in &mut graph.nodes {
+        if let AudioNodeKind::GameMicrophoneOutput { follow_tts, .. } = &mut node.kind {
+            *follow_tts = true;
+            node.label = "Translator microphone".into();
+        }
+    }
     graph
 }
 
@@ -292,6 +320,7 @@ fn vrchat_karaoke() -> AudioGraph {
             AudioNodeKind::GameMicrophoneOutput {
                 device_id: None,
                 voicemeeter_bus: None,
+                follow_tts: false,
             },
         ),
     ];
@@ -349,6 +378,7 @@ fn tts_to_game_microphone() -> AudioGraph {
             AudioNodeKind::GameMicrophoneOutput {
                 device_id: None,
                 voicemeeter_bus: None,
+                follow_tts: false,
             },
         ),
     ];

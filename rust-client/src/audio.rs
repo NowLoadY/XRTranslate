@@ -184,6 +184,7 @@ pub struct AudioRouteMediaConfig {
 /// that synthesized speech is not connected to this route.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioRouteConfig {
+    pub follow_tts: bool,
     pub microphone: Option<AudioRouteSourceConfig>,
     pub system_loopback: Option<AudioRouteLoopbackConfig>,
     pub tts_gain: Option<f32>,
@@ -198,6 +199,7 @@ pub struct AudioRouteConfig {
 impl Default for AudioRouteConfig {
     fn default() -> Self {
         Self {
+            follow_tts: false,
             microphone: None,
             system_loopback: None,
             tts_gain: Some(1.0),
@@ -378,6 +380,8 @@ impl AudioRouteSourceBuffer {
 }
 
 struct AudioRouteControl {
+    follow_tts: bool,
+    tts_enabled: Arc<AtomicBool>,
     state: AtomicU8,
     last_error: Mutex<Option<String>>,
     dropped_samples: Arc<AtomicU64>,
@@ -554,6 +558,7 @@ impl AudioRouteHandle {
 }
 
 pub struct AudioSystem {
+    tts_enabled: Arc<AtomicBool>,
     host: cpal::Host,
     active_captures: Vec<ActiveCapture>,
     tts_player: Option<TtsPlayer>,
@@ -858,6 +863,9 @@ fn reap_worker(worker: thread::JoinHandle<()>) {
 }
 
 impl AudioSystem {
+    pub fn set_tts_enabled(&self, enabled: bool) {
+        self.tts_enabled.store(enabled, Ordering::Release);
+    }
     /// Returns the latest lock-free RMS envelopes for the currently installed
     /// real-time routes. The audio callbacks already maintain these meters, so
     /// graph visualizations never need to inspect or copy PCM samples.
@@ -895,6 +903,7 @@ impl AudioSystem {
 
     pub fn new() -> Self {
         Self {
+            tts_enabled: Arc::new(AtomicBool::new(false)),
             host: cpal::default_host(),
             active_captures: Vec::new(),
             tts_player: None,
@@ -1269,6 +1278,8 @@ impl AudioSystem {
             .collect::<Vec<_>>();
         let output_level = Arc::new(AtomicU32::new(0.0f32.to_bits()));
         let control = Arc::new(AudioRouteControl {
+            follow_tts: config.follow_tts,
+            tts_enabled: Arc::clone(&self.tts_enabled),
             state: AtomicU8::new(encode_route_state(AudioRouteState::Starting)),
             last_error: Mutex::new(None),
             dropped_samples,
@@ -2242,6 +2253,18 @@ impl RouteRateReader {
     }
 }
 
+/// Read once per output buffer. Both queues continue draining, including the
+/// muted branch, so switching cannot replay buffered original speech.
+fn route_voice_selection(follow_tts: bool, tts_enabled: bool) -> (f32, f32) {
+    if !follow_tts {
+        (1.0, 1.0)
+    } else if tts_enabled {
+        (0.0, 1.0)
+    } else {
+        (1.0, 0.0)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_route_output_stream<T>(
     device: &cpal::Device,
@@ -2278,9 +2301,14 @@ where
                     .iter()
                     .map(|source| source.queue.lock())
                     .collect::<Vec<_>>();
-                let microphone_gain = microphone.as_ref().map_or(0.0, |source| source.gain());
+                let (mic_enabled, tts_enabled) = route_voice_selection(
+                    control.follow_tts,
+                    control.tts_enabled.load(Ordering::Acquire),
+                );
+                let microphone_gain =
+                    microphone.as_ref().map_or(0.0, |source| source.gain()) * mic_enabled;
                 let loopback_gain = system_loopback.as_ref().map_or(0.0, |source| source.gain());
-                let tts_gain = tts.as_ref().map_or(0.0, |source| source.gain());
+                let tts_gain = tts.as_ref().map_or(0.0, |source| source.gain()) * tts_enabled;
                 let metering = control.studio_metering.load(Ordering::Relaxed);
                 let mut energy = 0.0;
                 let mut frames = 0;
@@ -3099,6 +3127,31 @@ fn take_loopback_mono(pending: &mut VecDeque<u8>, frames: usize) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn automatic_microphone_keeps_original_voice_muted_through_tts_silence_and_drains_it() {
+        use super::{AUDIO_ROUTE_SAMPLE_RATE, RouteRateReader, route_voice_selection};
+        use std::collections::VecDeque;
+        let mut mic = VecDeque::from(vec![0.4; 32]);
+        let mut tts = VecDeque::new();
+        let mut mic_reader = RouteRateReader::default();
+        let mut tts_reader = RouteRateReader::default();
+        let (mic_gain, tts_gain) = route_voice_selection(true, true);
+        // No TTS samples yet: never fall back to private original speech.
+        for _ in 0..32 {
+            let mixed = mic_reader.read(&mut mic, AUDIO_ROUTE_SAMPLE_RATE) * mic_gain
+                + tts_reader.read(&mut tts, AUDIO_ROUTE_SAMPLE_RATE) * tts_gain;
+            assert_eq!(mixed, 0.0);
+        }
+        assert!(mic.is_empty());
+        let (mic_gain, tts_gain) = route_voice_selection(true, false);
+        assert_eq!(
+            mic_reader.read(&mut mic, AUDIO_ROUTE_SAMPLE_RATE) * mic_gain,
+            0.0
+        );
+        assert_eq!(tts_gain, 0.0);
+        assert_eq!(route_voice_selection(false, false), (1.0, 1.0));
+    }
+
     use super::{
         AudioRouteConfig, AudioRouteError, AudioRouteLoopbackConfig, AudioRouteLoopbackTarget,
         AudioRouteSourceBuffer, AudioRouteSourceConfig, AudioSystem, InputDevice,

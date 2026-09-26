@@ -1,5 +1,11 @@
 # Prompt architecture
 
+The translation style panel edits one shared Compose node through an optional
+`PromptNodeGraph.translation_style` binding. Full named style prompts are saved
+with the graph; model/mode processing rules and message assembly remain separate.
+The collapsible panel lives in the graph canvas, reusing execution, persistence,
+activation and history. See [Style panel and audio controls](studio-quick-controls.md).
+
 Prompt Studio owns the complete translation prompt and semantic ASR instruction
 sent to a model. It also owns rendering provider text fields that are explicitly
 declared as lexical ASR context. There is no hidden instruction,
@@ -139,10 +145,12 @@ The fixed `REFERENCE HANDLING RULES` Compose node tells the model how terminolog
 history, revisions, and surrounding speech must be interpreted. It is separate
 from `TRANSLATION CONTEXT`, which contains the rendered runtime data. Both feed
 the provider-specific with-context composition nodes, making policy and data
-visible as distinct graph inputs without changing the assembled prompt text.
+visible as distinct graph inputs. Expression preferences live in one Shared
+Compose node, `Translation style`. Each provider combines that node with its
+selected processing instruction before either context branch; no-context and
+pseudo-streaming requests therefore use the same complete style prompt too.
 The rules require the model to use only relevant context to resolve ambiguity,
-references, tone, and discourse continuity, producing coherent, natural,
-idiomatic target-language expression. Predicates, arguments, referents, or
+references, tone, and discourse continuity. Predicates, arguments, referents, or
 other meaning omitted from `Current input` must be recovered when the relevant
 dialogue entails exactly one interpretation. Making that implicit meaning
 explicit in the target language is semantic recovery, not expansion. When

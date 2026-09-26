@@ -352,6 +352,13 @@ pub(super) fn render_graph_editor(
             Sense::click_and_drag(),
         );
         controller.canvas.resize_viewport(canvas.size());
+        let panel = super::style_panel::render(
+            snapshot, controller, &mut draft, ui, canvas, language, actions,
+        );
+        let over_panel = panel.is_some_and(|rect| {
+            ui.input(|i| i.pointer.hover_pos().is_some_and(|p| rect.contains(p)))
+        });
+        let editable = editable && !over_panel;
 
         let pointer_over_node_or_link = response.interact_pointer_pos().is_some_and(|pointer| {
             let over_node = draft
@@ -409,7 +416,9 @@ pub(super) fn render_graph_editor(
             controller.canvas.fit_pending = false;
         }
         let mut canvas_ui = graph_canvas::canvas_viewport(ui, canvas);
-        controller.handle_navigation(canvas, &response, &canvas_ui, true, false);
+        if !over_panel {
+            controller.handle_navigation(canvas, &response, &canvas_ui, true, false);
+        }
         let pointer_over_node = response.interact_pointer_pos().is_some_and(|pointer| {
             draft
                 .graph
@@ -444,15 +453,17 @@ pub(super) fn render_graph_editor(
                 )
             })
             .collect::<Vec<_>>();
-        controller.handle_canvas_selection(
-            &response,
-            &canvas_ui,
-            editable,
-            pointer_over_node,
-            pointer_over_link,
-            selectable_nodes,
-        );
-        if response.hovered() {
+        if !over_panel {
+            controller.handle_canvas_selection(
+                &response,
+                &canvas_ui,
+                editable,
+                pointer_over_node,
+                pointer_over_link,
+                selectable_nodes,
+            );
+        }
+        if response.hovered() && !over_panel {
             let scroll = canvas_ui.input(|input| input.smooth_scroll_delta.y);
             if scroll.abs() > f32::EPSILON {
                 let pointer = canvas_ui
@@ -549,6 +560,9 @@ pub(super) fn render_graph_editor(
         }
         render_wire_preview(&mut canvas_ui, canvas, &draft, controller);
         render_selection_box(&mut canvas_ui, controller);
+        if over_panel && let Some(panel) = panel {
+            super::style_panel::paint_connection(&canvas_ui, canvas, panel, &draft.graph, controller);
+        }
     });
     controller.sync_branch_filters(&draft.graph);
     controller.draft = Some(draft);
@@ -1155,6 +1169,19 @@ fn render_nodes(
             }
             runtime_preview::render(ui, &profile.graph, &node, runtime_trace, language);
         });
+        if editable
+            && profile.graph.static_text(&node.id).is_some()
+            && !profile.graph.links.iter().any(|link| link.to == node.id)
+        {
+            response.context_menu(|ui| {
+                if ui.button(crate::i18n::tr(language, "Use as translation style")).clicked() {
+                    controller.push_history(profile.clone());
+                    profile.graph.bind_translation_style(&node.id);
+                    controller.style_panel.collapsed = false;
+                    ui.close();
+                }
+            });
+        }
         if editable && response.double_clicked() {
             let initial = if node.label.trim().is_empty() || node.label == "COMPOSE TEXT" {
                 node_display_label(&node)

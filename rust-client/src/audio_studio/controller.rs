@@ -1593,6 +1593,7 @@ fn resolve_graph_devices(
         if let AudioNodeKind::GameMicrophoneOutput {
             device_id,
             voicemeeter_bus,
+            ..
         } = &mut node.kind
             && voicemeeter_bus.is_none()
             && device_id.as_ref().is_some_and(|selected| {
@@ -1914,6 +1915,35 @@ pub fn validate_for_host(graph: &AudioGraph, host: &HostAudioSnapshot) -> GraphV
         if node.bypassed || !node_is_on_active_route(graph, &node.id) {
             continue;
         }
+        if matches!(
+            node.kind,
+            AudioNodeKind::GameMicrophoneOutput {
+                follow_tts: true,
+                ..
+            }
+        ) {
+            let sources = graph
+                .nodes
+                .iter()
+                .filter(|source| {
+                    source.kind.is_source() && path_between(graph, &source.id, &node.id).is_some()
+                })
+                .collect::<Vec<_>>();
+            if sources.len() != 2
+                || !sources
+                    .iter()
+                    .any(|source| matches!(source.kind, AudioNodeKind::Microphone { .. }))
+                || !sources
+                    .iter()
+                    .any(|source| matches!(source.kind, AudioNodeKind::TextToSpeech))
+            {
+                validation.issues.push(GraphValidationIssue::for_node(
+                    GraphIssueCode::CapabilityUnavailable,
+                    "Automatic translator microphone requires only microphone and TTS sources. Use the Translator microphone preset or edit the graph.",
+                    &node.id,
+                ));
+            }
+        }
         let (capability, role, internal_output) = match &node.kind {
             AudioNodeKind::Microphone { .. } => (
                 host.capabilities.microphone_capture,
@@ -1988,6 +2018,7 @@ pub fn validate_for_host(graph: &AudioGraph, host: &HostAudioSnapshot) -> GraphV
             AudioNodeKind::GameMicrophoneOutput {
                 device_id,
                 voicemeeter_bus,
+                ..
             } => {
                 if let Some(bus) = voicemeeter_bus {
                     match &host.voicemeeter {
@@ -2165,6 +2196,44 @@ mod tests {
     use super::*;
     use crate::audio_studio::graph_for_preset;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn automatic_microphone_persists_policy_and_rejects_incomplete_sources() {
+        let host = complete_host();
+        let settings = AudioStudioSettings {
+            graph: graph_for_preset(AudioStudioPreset::TranslatorMicrophone),
+            ..Default::default()
+        };
+        let encoded = serde_json::to_string(&settings).unwrap();
+        let mut decoded: AudioStudioSettings = serde_json::from_str(&encoded).unwrap();
+        decoded.normalize();
+        let graph = resolve_graph_devices(&decoded.graph, &decoded.device_defaults, &host);
+        assert!(validate_for_host(&graph, &host).is_valid());
+        let mut broken = graph.clone();
+        broken
+            .links
+            .iter_mut()
+            .find(|link| link.id.0 == "tts-to-gain")
+            .unwrap()
+            .enabled = false;
+        assert!(
+            validate_for_host(&broken, &host)
+                .issues
+                .iter()
+                .any(|issue| issue
+                    .message
+                    .starts_with("Automatic translator microphone requires"))
+        );
+        let legacy: AudioNodeKind =
+            serde_json::from_str(r#"{"kind":"game_microphone_output"}"#).unwrap();
+        assert!(matches!(
+            legacy,
+            AudioNodeKind::GameMicrophoneOutput {
+                follow_tts: false,
+                ..
+            }
+        ));
+    }
 
     fn repository(name: &str) -> AudioStudioRepository {
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -2873,6 +2942,7 @@ mod tests {
         output.kind = AudioNodeKind::GameMicrophoneOutput {
             device_id: Some(DeviceId::new("voicemeeter-input")),
             voicemeeter_bus: Some(VoiceMeeterBus::B1),
+            follow_tts: false,
         };
 
         assert!(validate_for_host(&graph, &host).is_valid());
@@ -2927,6 +2997,7 @@ mod tests {
             graph.node(&NodeId::new("game-microphone")).unwrap().kind,
             AudioNodeKind::GameMicrophoneOutput {
                 voicemeeter_bus: Some(VoiceMeeterBus::B3),
+                follow_tts: false,
                 ..
             }
         ));
@@ -2976,6 +3047,7 @@ mod tests {
             graph.node(&NodeId::new("game-microphone")).unwrap().kind,
             AudioNodeKind::GameMicrophoneOutput {
                 voicemeeter_bus: Some(VoiceMeeterBus::B1),
+                follow_tts: false,
                 ..
             }
         ));
@@ -2988,6 +3060,7 @@ mod tests {
                 .kind,
             AudioNodeKind::GameMicrophoneOutput {
                 voicemeeter_bus: None,
+                follow_tts: false,
                 ..
             }
         ));

@@ -1,4 +1,5 @@
 mod canvas;
+mod style_panel;
 mod history;
 mod navigation;
 mod runtime_preview;
@@ -58,6 +59,7 @@ pub(crate) struct PromptStudioController {
     branch_hidden_nodes: HashSet<String>,
     runtime_trace: Option<PromptExecutionTrace>,
     overview_positions: HashMap<String, [f32; 2]>,
+    style_panel: style_panel::StylePanel,
 }
 
 impl Default for PromptStudioController {
@@ -85,6 +87,7 @@ impl PromptStudioController {
             branch_hidden_nodes: HashSet::new(),
             runtime_trace: None,
             overview_positions: HashMap::new(),
+            style_panel: style_panel::StylePanel::default(),
         }
     }
 
@@ -94,6 +97,16 @@ impl PromptStudioController {
             self.switch_domain(domain);
         }
         self.select_provider(target);
+    }
+
+    pub fn open_style_panel(
+        &mut self,
+        target: PromptProviderTarget,
+        library: &PromptTemplateLibrary,
+    ) {
+        self.sync_provider(target);
+        self.style_panel.collapsed = false;
+        self.select_profile(library.active_id.clone(), library);
     }
 
     pub fn snapshot(&mut self, library: &PromptTemplateLibrary) -> PromptStudioSnapshot {

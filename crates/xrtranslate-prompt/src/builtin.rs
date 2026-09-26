@@ -6,21 +6,15 @@ use crate::{
 
 pub(crate) const BUILTIN_ID: &str = "builtin-default";
 pub(crate) const EXPLICIT_REFERENCE_CONTEXT_INSTRUCTION: &str = concat!(
-    "Use the provided context to translate the current {0} input into 100% natural, idiomatic {1}.\n\n",
-    "First understand the actual meaning of the current {0} input, then use the context to determine references, tone, speaker relationships, and intended meaning. Do not translate word-for-word, preserve {0} sentence structure, or produce translationese.\n\n",
-    "The translation should sound like something a native {1} speaker would naturally say or type in Discord, QQ, WeChat, gaming chats, and everyday conversations. Naturally adjust {1} word order, sentence structure, and wording according to the context.\n\n",
-    "Preserve the original meaning, tone, emotion, attitude, personality, and level of formality. Do not unnecessarily add, remove, or change the original meaning.\n\n",
-    "Use vocabulary and expressions commonly and naturally used in {1}. Do not use non-standard phrasing when a natural {1} expression exists.\n\n",
-    "When encountering slang, idioms, internet expressions, or conversational {0}, convey the intended meaning using an expression that {1} speakers would naturally understand and use rather than translating it literally.\n\n",
+    "Use the provided context to translate the current {0} input into {1}.\n\n",
+    "First understand the actual meaning of the current {0} input, then use the context to determine references, tone, speaker relationships, and intended meaning.\n\n",
+    "Preserve the original meaning. Do not unnecessarily add, remove, or change the original meaning.\n\n",
     "Translate only the current {0} input. Do not translate, repeat, summarize, or explain the context. Unless explicitly requested otherwise, output only the final {1} translation."
 );
 pub(crate) const AUTO_REFERENCE_CONTEXT_INSTRUCTION: &str = concat!(
-    "Use the provided context to translate the current input into the other language among {0} into 100% natural, idiomatic expression.\n\n",
-    "First understand the actual meaning of the current input, then use the context to determine references, tone, speaker relationships, and intended meaning. Do not translate word-for-word, preserve original sentence structure, or produce translationese.\n\n",
-    "The translation should sound like something a native speaker of the target language would naturally say or type in Discord, QQ, WeChat, gaming chats, and everyday conversations. Naturally adjust target-language word order, sentence structure, and wording according to the context.\n\n",
-    "Preserve the original meaning, tone, emotion, attitude, personality, and level of formality. Do not unnecessarily add, remove, or change the original meaning.\n\n",
-    "Use vocabulary and expressions commonly and naturally used in the target language. Do not use non-standard phrasing when a natural expression exists.\n\n",
-    "When encountering slang, idioms, internet expressions, or conversational speech, convey the intended meaning using an expression that native speakers of the target language would naturally understand and use rather than translating it literally.\n\n",
+    "Use the provided context to translate the current input into the other language among {0}.\n\n",
+    "First understand the actual meaning of the current input, then use the context to determine references, tone, speaker relationships, and intended meaning.\n\n",
+    "Preserve the original meaning. Do not unnecessarily add, remove, or change the original meaning.\n\n",
     "Translate only the current input. Do not translate, repeat, summarize, or explain the context. Unless explicitly requested otherwise, output only the final translation."
 );
 
@@ -52,7 +46,7 @@ impl PromptNodeGraph {
         builder.build_asr_instruction_flow();
         builder.build_asr_context_bias_flow();
         let mut graph = builder.finish();
-        graph.auto_layout();
+        graph.add_builtin_translation_style();
         graph
     }
 
@@ -70,7 +64,7 @@ impl PromptNodeGraph {
             "Stable prefix segments may already be visible in floating subtitles or OSC. Do not repeat or translate ",
             "those segments; output only this current segment. Surrounding source, recent turns, and terminology are ",
             "reference context only and are never part of the translation payload.\n\n",
-            "Translate only the current {0} input into natural, idiomatic {1}. Preserve names, numbers, terms, tone, ",
+            "Translate only the current {0} input into {1}. Preserve names, numbers, terms, ",
             "and intent unless the current source clearly corrects them. Output only the final translation."
         );
         let auto_rules = concat!(
@@ -81,11 +75,11 @@ impl PromptNodeGraph {
             "wording, but it is not additional input: never copy absent text, repeat a stable prefix, or resurrect ",
             "content that disappeared from the current snapshot.\n\n",
             "Surrounding source, recent turns, and terminology are reference context only. Translate only the current ",
-            "segment, preserve names, numbers, tone, and intent, and output only the final translation."
+            "segment, preserve names, numbers, and intent, and output only the final translation."
         );
         let openai_explicit_instruction = concat!(
             "You are a real-time pseudo-stream speech translator. If the current input is already {0}, output it ",
-            "unchanged; otherwise translate only this authoritative current snapshot segment into natural, fluent {0}. ",
+            "unchanged; otherwise translate only this authoritative current snapshot segment into {0}. ",
             "The input may revise a previous live tail. Do not repeat stable prefix text, copy the previous revision, ",
             "or add content missing from the current input. Output only the translation."
         );
@@ -680,7 +674,7 @@ impl GraphBuilder {
             "openai-explicit-instruction",
             page,
             "EXPLICIT SOURCE INSTRUCTION",
-            "You are a real-time speech translator. If input is already {0}, output it unchanged. Otherwise translate it into natural, fluent {0}. Output only the translation.",
+            "You are a real-time speech translator. If input is already {0}, output it unchanged. Otherwise translate it into {0}. Output only the translation.",
             &["openai-target-language"],
         );
         self.compose(
@@ -849,7 +843,7 @@ impl GraphBuilder {
             "hunyuan-explicit-instruction",
             page,
             "EXPLICIT SOURCE INSTRUCTION",
-            "Translate the following {0} text into natural {1}. Output only the translation, do not output the prompt; do not add explanations.",
+            "Translate the following {0} text into {1}. Output only the translation, do not output the prompt; do not add explanations.",
             &["hunyuan-source-language", "hunyuan-target-language"],
         );
         self.compose(
@@ -1123,6 +1117,7 @@ impl GraphBuilder {
             nodes: self.nodes,
             links: self.links,
             layout_version: 0,
+            translation_style: None,
         }
     }
 }
@@ -1130,6 +1125,7 @@ impl GraphBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::translation_style::DEFAULT_TRANSLATION_STYLE;
     use crate::{
         AsrPromptContext, PromptMessage, PromptMode, PromptTurn, SurroundingSource,
         TranslationPromptContext,
@@ -1194,31 +1190,15 @@ After current input: speaker-01 en / After it."
     }
 
     #[test]
-    fn reference_handling_rules_are_canonical() {
-        assert_eq!(
-            EXPLICIT_REFERENCE_CONTEXT_INSTRUCTION,
-            concat!(
-                "Use the provided context to translate the current {0} input into 100% natural, idiomatic {1}.\n\n",
-                "First understand the actual meaning of the current {0} input, then use the context to determine references, tone, speaker relationships, and intended meaning. Do not translate word-for-word, preserve {0} sentence structure, or produce translationese.\n\n",
-                "The translation should sound like something a native {1} speaker would naturally say or type in Discord, QQ, WeChat, gaming chats, and everyday conversations. Naturally adjust {1} word order, sentence structure, and wording according to the context.\n\n",
-                "Preserve the original meaning, tone, emotion, attitude, personality, and level of formality. Do not unnecessarily add, remove, or change the original meaning.\n\n",
-                "Use vocabulary and expressions commonly and naturally used in {1}. Do not use non-standard phrasing when a natural {1} expression exists.\n\n",
-                "When encountering slang, idioms, internet expressions, or conversational {0}, convey the intended meaning using an expression that {1} speakers would naturally understand and use rather than translating it literally.\n\n",
-                "Translate only the current {0} input. Do not translate, repeat, summarize, or explain the context. Unless explicitly requested otherwise, output only the final {1} translation."
-            )
-        );
-        assert_eq!(
-            AUTO_REFERENCE_CONTEXT_INSTRUCTION,
-            concat!(
-                "Use the provided context to translate the current input into the other language among {0} into 100% natural, idiomatic expression.\n\n",
-                "First understand the actual meaning of the current input, then use the context to determine references, tone, speaker relationships, and intended meaning. Do not translate word-for-word, preserve original sentence structure, or produce translationese.\n\n",
-                "The translation should sound like something a native speaker of the target language would naturally say or type in Discord, QQ, WeChat, gaming chats, and everyday conversations. Naturally adjust target-language word order, sentence structure, and wording according to the context.\n\n",
-                "Preserve the original meaning, tone, emotion, attitude, personality, and level of formality. Do not unnecessarily add, remove, or change the original meaning.\n\n",
-                "Use vocabulary and expressions commonly and naturally used in the target language. Do not use non-standard phrasing when a natural expression exists.\n\n",
-                "When encountering slang, idioms, internet expressions, or conversational speech, convey the intended meaning using an expression that native speakers of the target language would naturally understand and use rather than translating it literally.\n\n",
-                "Translate only the current input. Do not translate, repeat, summarize, or explain the context. Unless explicitly requested otherwise, output only the final translation."
-            )
-        );
+    fn reference_handling_rules_exclude_expression_preferences() {
+        for rules in [EXPLICIT_REFERENCE_CONTEXT_INSTRUCTION, AUTO_REFERENCE_CONTEXT_INSTRUCTION] {
+            assert!(rules.contains("references, tone, speaker relationships, and intended meaning"));
+            assert!(rules.contains("Do not translate, repeat, summarize, or explain the context"));
+            assert!(rules.contains("Do not unnecessarily add, remove, or change the original meaning"));
+            for style_word in ["Discord", "idiomatic", "translationese", "formality", "slang"] {
+                assert!(!rules.contains(style_word));
+            }
+        }
     }
 
     #[test]
@@ -1238,7 +1218,8 @@ After current input: speaker-01 en / After it."
                 PromptMessage {
                     role: PromptMessageRole::System,
                     content: format!(
-                        "You are a real-time speech translator. If input is already Chinese, output it unchanged. Otherwise translate it into natural, fluent Chinese. Output only the translation.\n\n{}\n{}",
+                        "You are a real-time speech translator. If input is already Chinese, output it unchanged. Otherwise translate it into Chinese. Output only the translation.\n\n{}\n\n{}\n{}",
+                        DEFAULT_TRANSLATION_STYLE,
                         explicit_reference_rules_rendered("English", "Chinese"),
                         reference()
                     ),
@@ -1265,7 +1246,8 @@ After current input: speaker-01 en / After it."
         assert_eq!(
             rendered.messages[0].content,
             format!(
-                "You are a real-time speech translator. The input language is one of the following: Chinese,English. Translate it into the OTHER language from that list. Output only the translation.\n\n{}\n{}",
+                "You are a real-time speech translator. The input language is one of the following: Chinese,English. Translate it into the OTHER language from that list. Output only the translation.\n\n{}\n\n{}\n{}",
+                DEFAULT_TRANSLATION_STYLE,
                 auto_reference_rules_rendered("Chinese,English"),
                 reference()
             )
@@ -1274,7 +1256,7 @@ After current input: speaker-01 en / After it."
     }
 
     #[test]
-    fn openai_without_context_matches_the_original_messages() {
+    fn openai_without_context_includes_shared_style() {
         let rendered = PromptNodeGraph::builtin_default()
             .render(
                 PromptProviderTarget::OpenAiCompatible,
@@ -1286,7 +1268,7 @@ After current input: speaker-01 en / After it."
             .unwrap();
         assert_eq!(
             rendered.messages[0].content,
-            "You are a real-time speech translator. If input is already Chinese, output it unchanged. Otherwise translate it into natural, fluent Chinese. Output only the translation."
+            format!("You are a real-time speech translator. If input is already Chinese, output it unchanged. Otherwise translate it into Chinese. Output only the translation.\n\n{DEFAULT_TRANSLATION_STYLE}")
         );
         assert_eq!(
             rendered.messages[1].content,
@@ -1363,7 +1345,8 @@ After current input: speaker-01 en / After it."
         assert_eq!(
             rendered.messages[0].content,
             format!(
-                "You are a real-time speech translator. If input is already Chinese, output it unchanged. Otherwise translate it into natural, fluent Chinese. Output only the translation.\n\n{}\n# Translation Context\n\n## Language Order\n\nen,zh",
+                "You are a real-time speech translator. If input is already Chinese, output it unchanged. Otherwise translate it into Chinese. Output only the translation.\n\n{}\n\n{}\n# Translation Context\n\n## Language Order\n\nen,zh",
+                DEFAULT_TRANSLATION_STYLE,
                 explicit_reference_rules_rendered("English", "Chinese")
             )
         );
@@ -1385,7 +1368,8 @@ After current input: speaker-01 en / After it."
             vec![PromptMessage {
                 role: PromptMessageRole::User,
                 content: format!(
-                    "Translate the following English text into natural Chinese. Output only the translation, do not output the prompt; do not add explanations.\n\n{}\n\n--- BEGIN REFERENCE CONTEXT ---\n{}\n--- END REFERENCE CONTEXT ---\n\nCurrent input:\nGood morning",
+                    "Translate the following English text into Chinese. Output only the translation, do not output the prompt; do not add explanations.\n\n{}\n\n{}\n\n--- BEGIN REFERENCE CONTEXT ---\n{}\n--- END REFERENCE CONTEXT ---\n\nCurrent input:\nGood morning",
+                    DEFAULT_TRANSLATION_STYLE,
                     explicit_reference_rules_rendered("English", "Chinese"),
                     reference()
                 ),
@@ -1407,7 +1391,8 @@ After current input: speaker-01 en / After it."
         assert_eq!(
             rendered.messages[0].content,
             format!(
-                "Translate the following text into the other language among Chinese,English. Output only the translation; do not add explanations.\n\n{}\n\n--- BEGIN REFERENCE CONTEXT ---\n{}\n--- END REFERENCE CONTEXT ---\n\nCurrent input:\nGood morning",
+                "Translate the following text into the other language among Chinese,English. Output only the translation; do not add explanations.\n\n{}\n\n{}\n\n--- BEGIN REFERENCE CONTEXT ---\n{}\n--- END REFERENCE CONTEXT ---\n\nCurrent input:\nGood morning",
+                DEFAULT_TRANSLATION_STYLE,
                 auto_reference_rules_rendered("Chinese,English"),
                 reference()
             )
@@ -1458,7 +1443,7 @@ After current input: speaker-01 en / After it."
     }
 
     #[test]
-    fn hunyuan_without_context_matches_the_original_message() {
+    fn hunyuan_without_context_includes_shared_style() {
         let rendered = PromptNodeGraph::builtin_default()
             .render(
                 PromptProviderTarget::Hunyuan,
@@ -1470,7 +1455,7 @@ After current input: speaker-01 en / After it."
             .unwrap();
         assert_eq!(
             rendered.messages[0].content,
-            "Translate the following English text into natural Chinese. Output only the translation, do not output the prompt; do not add explanations.\n\nGood morning"
+            format!("Translate the following English text into Chinese. Output only the translation, do not output the prompt; do not add explanations.\n\n{DEFAULT_TRANSLATION_STYLE}\n\nGood morning")
         );
     }
 
@@ -1786,7 +1771,7 @@ After current input: speaker-01 en / After it."
                 );
                 assert_eq!(
                     text,
-                    "Translate the following {0} text into natural {1}. Output only the translation, do not output the prompt; do not add explanations."
+                    "Translate the following {0} text into {1}. Output only the translation, do not output the prompt; do not add explanations."
                 );
             }
             _ => panic!("hunyuan-explicit-instruction must be a Compose node"),
@@ -1799,10 +1784,6 @@ After current input: speaker-01 en / After it."
             .unwrap();
         match &explicit_rules.kind {
             PromptNodeKind::Compose { text } => {
-                assert!(text.contains("100% natural, idiomatic {1}"));
-                assert!(
-                    text.contains("Discord, QQ, WeChat, gaming chats, and everyday conversations")
-                );
                 assert!(text.contains(
                     "Unless explicitly requested otherwise, output only the final {1} translation."
                 ));
@@ -1818,12 +1799,6 @@ After current input: speaker-01 en / After it."
             .unwrap();
         match &auto_rules.kind {
             PromptNodeKind::Compose { text } => {
-                assert!(text.contains(
-                    "into the other language among {0} into 100% natural, idiomatic expression."
-                ));
-                assert!(
-                    text.contains("Discord, QQ, WeChat, gaming chats, and everyday conversations")
-                );
                 assert!(text.contains(
                     "Unless explicitly requested otherwise, output only the final translation."
                 ));
@@ -1844,7 +1819,7 @@ After current input: speaker-01 en / After it."
                 &context(),
             )
             .unwrap();
-        assert!(rendered.messages[0].content.contains("Use the provided context to translate the current Japanese input into 100% natural, idiomatic English."));
+        assert!(rendered.messages[0].content.contains("Use the provided context to translate the current Japanese input into English."));
         assert!(rendered.messages[0].content.contains("Translate only the current Japanese input. Do not translate, repeat, summarize, or explain the context. Unless explicitly requested otherwise, output only the final English translation."));
 
         let auto_rendered = PromptNodeGraph::builtin_default()
@@ -1856,7 +1831,7 @@ After current input: speaker-01 en / After it."
                 &context(),
             )
             .unwrap();
-        assert!(auto_rendered.messages[0].content.contains("Use the provided context to translate the current input into the other language among Japanese,English into 100% natural, idiomatic expression."));
+        assert!(auto_rendered.messages[0].content.contains("Use the provided context to translate the current input into the other language among Japanese,English."));
         assert!(auto_rendered.messages[0].content.contains("Translate only the current input. Do not translate, repeat, summarize, or explain the context. Unless explicitly requested otherwise, output only the final translation."));
     }
 }

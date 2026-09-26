@@ -328,6 +328,7 @@ fn compile_audio_studio_route(
             .map(|render_sink| -> Result<AudioRouteConfig, String> {
                 let upstream = upstream_of(&render_sink.id);
                 let mut route = AudioRouteConfig {
+                    follow_tts: matches!(render_sink.kind, AudioNodeKind::GameMicrophoneOutput { follow_tts: true, .. }),
                     output_device_id: render_sink
                         .kind
                         .selected_device()
@@ -441,6 +442,9 @@ fn compile_audio_studio_route(
                     && route.media.is_empty()
                 {
                     return Err("The selected output has no executable audio source".into());
+                }
+                if route.follow_tts && (route.microphone.is_none() || route.tts_gain.is_none() || route.system_loopback.is_some() || !route.media.is_empty()) {
+                    return Err("Automatic translator microphone requires only microphone and TTS sources. Use the Translator microphone preset or edit the graph.".into());
                 }
                 Ok(route)
             })
@@ -2016,6 +2020,7 @@ impl XRTranslateApp {
     }
 
     fn reconcile_audio_studio_live_routing(&mut self) {
+        self.audio_system.set_tts_enabled(self.tts_enabled);
         let _ = self
             .audio_studio
             .sync_translation_workflow_running(self.is_translating);
@@ -2032,6 +2037,7 @@ impl XRTranslateApp {
             AudioNodeKind::GameMicrophoneOutput {
                 device_id: Some(device_id),
                 voicemeeter_bus: Some(bus),
+                ..
             } => Some((device_id.clone(), *bus)),
             _ => None,
         });
@@ -2425,6 +2431,37 @@ impl XRTranslateApp {
     fn render_audio_studio_page(&mut self, ui: &mut egui::Ui) {
         let host_audio = self.audio_studio_host_snapshot();
         let mut snapshot = self.audio_studio.snapshot(&host_audio);
+        ui.horizontal(|ui| {
+            let mut enabled = self.tts_enabled;
+            if ui
+                .add_enabled(
+                    self.service_config.tts_is_configured(),
+                    egui::Checkbox::new(&mut enabled, i18n::tr(self.ui_language, "TTS")),
+                )
+                .changed()
+            {
+                self.set_tts_enabled(enabled);
+            }
+            if snapshot.selected_graph.nodes.iter().any(|node| {
+                !node.bypassed
+                    && matches!(
+                        node.kind,
+                        AudioNodeKind::GameMicrophoneOutput {
+                            follow_tts: true,
+                            ..
+                        }
+                    )
+            }) {
+                ui.weak(i18n::tr(
+                    self.ui_language,
+                    if self.tts_enabled {
+                        "Automatic microphone: translated speech"
+                    } else {
+                        "Automatic microphone: original voice"
+                    },
+                ));
+            }
+        });
         let route_levels = self.audio_system.active_audio_route_levels();
         let routed_input = |select: fn(&audio::AudioRouteLevels) -> Option<f32>| {
             route_levels.iter().filter_map(select).reduce(f32::max)
@@ -3120,6 +3157,7 @@ impl XRTranslateApp {
             .sync_provider(self.service_config.translation_prompt_target());
         if !self.service_config.tts_is_configured() {
             self.tts_enabled = false;
+            self.audio_system.set_tts_enabled(false);
             self.audio_system.clear_tts_playback();
         }
         let resume_translation = self.is_translating;
@@ -3931,12 +3969,14 @@ impl XRTranslateApp {
     fn set_tts_enabled(&mut self, enabled: bool) {
         if enabled && !self.service_config.tts_is_configured() {
             self.tts_enabled = false;
+            self.audio_system.set_tts_enabled(false);
             self.last_error =
                 Some("Configure a TTS provider in Settings before enabling TTS.".into());
             return;
         }
         self.tts_enabled = enabled
             && crate::feature_access::is_available(crate::feature_access::Feature::TtsPlayback);
+        self.audio_system.set_tts_enabled(self.tts_enabled);
         self.save_settings();
         if !self.tts_enabled {
             self.audio_system.clear_tts_playback();
@@ -4838,6 +4878,59 @@ mod tests {
         compile_audio_studio_asr, compile_audio_studio_route, initialize_live_audio,
         vad_threshold_for_background_noise,
     };
+
+    #[test]
+    fn translator_microphone_compiles_without_changing_recognition_or_monitor_policy() {
+        use crate::audio_studio::{AudioLink, AudioNode, AudioNodeKind, DeviceId};
+        let mut graph = graph_for_preset(AudioStudioPreset::TranslatorMicrophone);
+        for node in &mut graph.nodes {
+            if let AudioNodeKind::GameMicrophoneOutput { device_id, .. } = &mut node.kind {
+                *device_id = Some(DeviceId::new("virtual-cable"));
+            }
+        }
+        graph
+            .links
+            .iter_mut()
+            .find(|link| link.id.0 == "asr-mixer-to-asr")
+            .unwrap()
+            .enabled = true;
+        graph.nodes.push(AudioNode::new(
+            "monitor",
+            "Monitor",
+            AudioNodeKind::MonitorOutput { device_id: None },
+        ));
+        graph
+            .links
+            .push(AudioLink::new("monitor-link", "tts-gate", "monitor"));
+        let plan = compile_audio_studio_route(&graph).unwrap();
+        assert_eq!(plan.routes.len(), 2);
+        let automatic = plan
+            .routes
+            .iter()
+            .find(|route| route.output_device_id == "virtual-cable")
+            .unwrap();
+        assert!(automatic.follow_tts);
+        assert!(automatic.microphone.is_some() && automatic.tts_gain.is_some());
+        assert!(automatic.system_loopback.is_none() && automatic.media.is_empty());
+        assert!(
+            !plan
+                .routes
+                .iter()
+                .find(|route| route.output_device_id.is_empty())
+                .unwrap()
+                .follow_tts
+        );
+        assert_eq!(
+            plan.asr.as_ref().unwrap().capture_source,
+            CaptureSource::Both
+        );
+        for node in &mut graph.nodes {
+            if let AudioNodeKind::GameMicrophoneOutput { follow_tts, .. } = &mut node.kind {
+                *follow_tts = false;
+            }
+        }
+        assert_eq!(compile_audio_studio_route(&graph).unwrap().asr, plan.asr);
+    }
 
     #[test]
     fn audio_source_gates_compile_in_wire_order_for_capture_media_and_tts() {

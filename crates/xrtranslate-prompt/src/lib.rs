@@ -9,6 +9,7 @@ mod execution;
 mod library;
 mod schema;
 mod template;
+mod translation_style;
 
 pub use context::{
     AsrPromptContext, PromptTurn, SurroundingSource, TranslationPromptBlock,
@@ -25,3 +26,4 @@ pub use schema::{
     system_value_label,
 };
 pub use template::compose_input_indexes;
+pub use translation_style::{TranslationStyle, TranslationStylePreset};

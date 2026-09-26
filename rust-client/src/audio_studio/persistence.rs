@@ -57,6 +57,11 @@ impl AudioStudioSettings {
     }
 
     pub fn normalize(&mut self) {
+        // v3 adds conditional app-microphone output. Older executors must not
+        // silently interpret it as a mixed microphone/TTS route.
+        if self.graph.format_version == 2 {
+            self.graph.format_version = super::graph::AUDIO_GRAPH_FORMAT_VERSION;
+        }
         fn clear_empty(selection: &mut Option<DeviceId>) {
             if selection
                 .as_ref()
@@ -268,6 +273,25 @@ mod tests {
     #[test]
     fn repository_uses_the_core_runtime_path() {
         assert_eq!(AUDIO_STUDIO_SETTINGS_PATH, "runtime/audio_studio.json");
+    }
+
+    #[test]
+    fn v2_graph_load_preserves_customizations_and_upgrades_output_semantics_version() {
+        let path = test_path("v2-graph");
+        let repository = AudioStudioRepository::at_path(&path);
+        let mut settings = AudioStudioSettings::default();
+        settings.graph.nodes[0].label = "My capture source".into();
+        settings.graph.format_version = 2;
+        let document = PersistedDocument {
+            schema_version: AUDIO_STUDIO_SCHEMA_VERSION,
+            settings: settings.clone(),
+        };
+        fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+        let loaded = repository.load().unwrap();
+        settings.graph.format_version = super::super::graph::AUDIO_GRAPH_FORMAT_VERSION;
+        assert_eq!(loaded, settings);
+        assert!(loaded.graph.validate().is_valid());
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

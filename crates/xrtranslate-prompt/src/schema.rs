@@ -210,6 +210,9 @@ pub struct PromptNodeGraph {
     pub links: Vec<PromptLink>,
     #[serde(default)]
     pub layout_version: u16,
+    /// The panel edits one shared node; saved styles never affect execution directly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translation_style: Option<crate::TranslationStyle>,
 }
 
 impl PromptNode {
@@ -277,6 +280,7 @@ impl PromptNodeGraph {
             nodes: Vec::new(),
             links: Vec::new(),
             layout_version: 0,
+            translation_style: None,
         }
     }
 
@@ -438,6 +442,9 @@ impl PromptNodeGraph {
     pub fn remove_node(&mut self, id: &str) {
         self.nodes.retain(|node| node.id != id);
         self.links.retain(|link| link.from != id && link.to != id);
+        if self.translation_style.as_ref().is_some_and(|style| style.node_id == id) {
+            self.translation_style = None;
+        }
     }
 
     pub fn connect(&mut self, from: &str, to: &str, input: u8) -> bool {
@@ -1924,6 +1931,7 @@ mod tests {
         let mut graph = PromptNodeGraph {
             schema_version: 6,
             layout_version: 7,
+            translation_style: None,
             nodes: vec![
                 PromptNode {
                     id: "source".into(),

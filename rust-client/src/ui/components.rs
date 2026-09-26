@@ -2006,6 +2006,15 @@ pub fn resource_delete_button(
     id_source: impl std::hash::Hash + std::fmt::Debug,
     language: crate::i18n::UiLanguage,
 ) -> egui::Response {
+    delete_icon_button(ui, id_source, crate::i18n::tr(language, "Delete"))
+}
+
+/// Shared trash button; callers explain what is removed in the tooltip.
+pub fn delete_icon_button(
+    ui: &mut Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    tooltip: &str,
+) -> egui::Response {
     let id = ui.make_persistent_id(("resource_delete_btn", id_source));
     let is_hovered = ui.memory(|m| {
         m.data
@@ -2047,7 +2056,11 @@ pub fn resource_delete_button(
         .show(ui, |ui| ui.add(icon))
         .response
         .interact(egui::Sense::click())
-        .on_hover_text(crate::i18n::tr(language, "Delete"));
+        .on_hover_text(tooltip);
+
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tooltip)
+    });
 
     ui.memory_mut(|m| {
         m.data.insert_temp(id.with("hover_state"), resp.hovered());

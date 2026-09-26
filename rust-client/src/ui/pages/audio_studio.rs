@@ -46,6 +46,7 @@ const SUCCESS: Color32 = Color32::from_rgb(48, 91, 78);
 
 #[derive(Clone, Debug, Default)]
 struct AudioStudioCanvasState {
+    show_graph: bool,
     editor: GraphEditorState<NodeId, LinkId, GraphEndpoint, GraphEndpoint>,
     history: GraphEditHistory<AudioGraph>,
     pending_preset_load: Option<AudioStudioPreset>,
@@ -298,6 +299,9 @@ fn node_description(graph: &AudioGraph, node: &AudioNode) -> String {
             |input_mode| format!("Active recognition path · {}", input_mode.label()),
         ),
         AudioNodeKind::MonitorOutput { .. } => "What you hear locally".into(),
+        AudioNodeKind::GameMicrophoneOutput { follow_tts: true, .. } => {
+            "TTS on: translated speech only, including silence while waiting. TTS off: your original microphone.".into()
+        }
         AudioNodeKind::GameMicrophoneOutput { .. } => {
             "XRTranslate mix → microphone input of another app".into()
         }
@@ -526,6 +530,7 @@ fn state_id(ui: &egui::Ui) -> Id {
 #[derive(Clone, Debug)]
 enum CanvasCommand {
     DiscoverApplications,
+    UpdateNode(AudioNode),
     ReplaceGraph(AudioGraph),
     MoveNode {
         node_id: NodeId,
@@ -1317,6 +1322,21 @@ fn render_node(
             node_kind_label(&node.kind),
             node_description(graph, node)
         ));
+    if let AudioNodeKind::GameMicrophoneOutput { follow_tts, .. } = node.kind {
+        response.context_menu(|ui| {
+            let mut mode = follow_tts;
+            if ui
+                .checkbox(&mut mode, tr(language, "Follow TTS switch"))
+                .changed()
+            {
+                let mut next = node.clone();
+                if let AudioNodeKind::GameMicrophoneOutput { follow_tts, .. } = &mut next.kind {
+                    *follow_tts = mode;
+                }
+                commands.push(CanvasCommand::UpdateNode(next));
+            }
+        });
+    }
     if response.clicked() {
         let extend = ui.input(|input| input.modifiers.shift || input.modifiers.ctrl);
         state.select_node(node.id.clone(), extend);
@@ -1461,6 +1481,7 @@ fn render_node(
         );
     }
     let compact_summary = match &node.kind {
+        AudioNodeKind::GameMicrophoneOutput { follow_tts: true, .. } => Some(tr(language, "Follow TTS switch").into()),
         AudioNodeKind::AsrTap => Some(
             current_asr_input_mode(graph)
                 .map_or_else(|| "Off".to_owned(), |mode| mode.label().to_owned()),
@@ -2382,22 +2403,66 @@ fn render_scoped(
     });
     let mut actions = Vec::new();
 
+    if state
+        .editor
+        .reset_for_graph(snapshot.selected_graph.id.0.clone())
+    {
+        state.history.clear();
+    }
+
     render_header(snapshot, ui, &mut state, &mut actions, language);
     ui.add_space(8.0);
 
     let mut commands = Vec::new();
-    render_graph_canvas(
-        snapshot,
-        ui,
-        &mut state,
-        &mut commands,
-        &mut actions,
-        language,
-    );
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut state.show_graph, false, tr(language, "Quick controls"));
+        ui.selectable_value(&mut state.show_graph, true, tr(language, "Node graph"));
+        if !state.show_graph {
+            if ui
+                .add_enabled(
+                    state.history.can_undo(),
+                    egui::Button::new(tr(language, "Undo")),
+                )
+                .clicked()
+            {
+                if let Some(graph) = state.history.undo(snapshot.selected_graph.clone()) {
+                    commands.push(CanvasCommand::ReplaceGraph(graph));
+                }
+            }
+            if ui
+                .add_enabled(
+                    state.history.can_redo(),
+                    egui::Button::new(tr(language, "Redo")),
+                )
+                .clicked()
+            {
+                if let Some(graph) = state.history.redo(snapshot.selected_graph.clone()) {
+                    commands.push(CanvasCommand::ReplaceGraph(graph));
+                }
+            }
+        }
+    });
+    if state.show_graph {
+        render_graph_canvas(
+            snapshot,
+            ui,
+            &mut state,
+            &mut commands,
+            &mut actions,
+            language,
+        );
+    } else {
+        let before_actions = actions.len();
+        render_quick_controls(snapshot, ui, &mut state, &mut actions, language);
+        if actions.len() != before_actions {
+            state.history.push(snapshot.selected_graph.clone());
+        }
+    }
     for command in commands {
         if matches!(
             command,
             CanvasCommand::MoveNode { .. }
+                | CanvasCommand::UpdateNode(_)
                 | CanvasCommand::CommitWire(_)
                 | CanvasCommand::DeleteLink(_)
                 | CanvasCommand::RemoveNode(_)
@@ -2411,6 +2476,7 @@ fn render_scoped(
             state.history.push(snapshot.selected_graph.clone());
         }
         let action = match command {
+            CanvasCommand::UpdateNode(node) => AudioStudioUiAction::UpdateNode(node),
             CanvasCommand::DiscoverApplications => AudioStudioUiAction::DiscoverApplications,
             CanvasCommand::ReplaceGraph(graph) => AudioStudioUiAction::ReplaceSelectedGraph(graph),
             CanvasCommand::MoveNode { node_id, position } => {
@@ -2464,6 +2530,87 @@ fn render_scoped(
     actions
 }
 
+fn render_quick_controls(
+    snapshot: &AudioStudioUiSnapshot,
+    ui: &mut egui::Ui,
+    state: &mut AudioStudioCanvasState,
+    actions: &mut Vec<AudioStudioUiAction>,
+    language: crate::i18n::UiLanguage,
+) {
+    ui.add_space(12.0);
+    ui.heading(tr(language, "Translator microphone"));
+    ui.label(tr(language, "TTS on: translated speech only, including silence while waiting. TTS off: your original microphone."));
+    if ui
+        .button(tr(language, "Set up translator microphone"))
+        .clicked()
+    {
+        state.pending_preset_load = Some(AudioStudioPreset::TranslatorMicrophone);
+        state.pending_safe_reset = false;
+    }
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        for node in &snapshot.selected_graph.nodes {
+            let role = match node.kind {
+                AudioNodeKind::Microphone { .. } => AudioDeviceRole::MicrophoneCapture,
+                AudioNodeKind::GameMicrophoneOutput { .. } => AudioDeviceRole::GameMicrophoneSink,
+                _ => continue,
+            };
+            ui.push_id(&node.id, |ui| {
+                ui.add_space(12.0);
+                ui.strong(tr_dynamic(language, &node.label));
+                let locked = snapshot.host_audio.translation_workflow_locked_by.is_some() && snapshot.selected_graph.reaches_asr_sink(&node.id);
+                ui.add_enabled_ui(!locked, |ui| {
+                    crate::ui::components::combobox_ui_with_width(ui, "device", device_selection_text(&node.kind, &snapshot.host_audio.devices), Some(420.0), |ui| {
+                        if ui.selectable_label(node.kind.selected_device().is_none(), tr(language, "Automatic")).clicked() {
+                            actions.push(AudioStudioUiAction::SetNodeDevice { node_id: node.id.clone(), device_id: None });
+                        }
+                        for device in snapshot.host_audio.devices.iter().filter(|device| device.role == role && !device.id.0.is_empty()) {
+                            if ui.selectable_label(node.kind.selected_device() == Some(&device.id), &device.name).clicked() {
+                                actions.push(AudioStudioUiAction::SetNodeDevice { node_id: node.id.clone(), device_id: Some(device.id.clone()) });
+                                if role == AudioDeviceRole::GameMicrophoneSink && device.voicemeeter_strip_index.is_none() {
+                                    actions.push(AudioStudioUiAction::SetNodeVoiceMeeterBus { node_id: node.id.clone(), bus: None });
+                                }
+                            }
+                        }
+                    });
+                });
+                if let AudioNodeKind::GameMicrophoneOutput { follow_tts, .. } = node.kind {
+                    let mut next = node.clone();
+                    let mut mode = follow_tts;
+                    if ui.checkbox(&mut mode, tr(language, "Follow TTS switch")).changed() {
+                        if let AudioNodeKind::GameMicrophoneOutput { follow_tts, .. } = &mut next.kind { *follow_tts = mode; }
+                        actions.push(AudioStudioUiAction::UpdateNode(next));
+                    }
+                    let mut enabled = !node.bypassed;
+                    if ui.checkbox(&mut enabled, tr(language, "Microphone output enabled")).changed() {
+                        let mut next = node.clone();
+                        next.bypassed = !enabled;
+                        actions.push(AudioStudioUiAction::UpdateNode(next));
+                    }
+                    if let Some(target) = voicemeeter_target(node, &snapshot.host_audio) {
+                        let bus = selected_voicemeeter_bus(node);
+                        crate::ui::components::combobox_ui_with_width(ui, "bus", bus.label(), Some(120.0), |ui| {
+                            for candidate in target.snapshot.edition.supported_buses() {
+                                if ui.selectable_label(bus == *candidate, candidate.label()).clicked() {
+                                    actions.push(AudioStudioUiAction::SetNodeVoiceMeeterBus { node_id: node.id.clone(), bus: Some(*candidate) });
+                                }
+                            }
+                        });
+                        ui.label(format!("{}: {}", tr(language, "Select this microphone in VRChat"), paired_recording_device(bus)));
+                    } else {
+                        ui.label(tr(language, "In VRChat, select the recording end of the chosen virtual cable (for VB-CABLE: CABLE Output)."));
+                    }
+                }
+            });
+        }
+        ui.add_space(12.0);
+        render_game_microphone_status(snapshot, ui);
+        if !snapshot.host_audio.devices.iter().any(|device| device.role == AudioDeviceRole::GameMicrophoneSink && !device.id.0.is_empty()) {
+            ui.hyperlink_to(tr(language, "Get a virtual audio cable"), "https://vb-audio.com/Cable/");
+        }
+        render_status(snapshot, ui, language);
+    });
+}
+
 fn render_header(
     snapshot: &AudioStudioUiSnapshot,
     ui: &mut egui::Ui,
@@ -2500,55 +2647,57 @@ fn render_header(
                 }
             }
         });
-        ui.menu_button(tr(language, "+ Node"), |ui| render_add_node_menu(snapshot, state, ui, actions));
-        ui.separator();
-        for (label, delta, hint) in [("−", -120.0, "Zoom out"), ("+", 120.0, "Zoom in")] {
-            if graph_style::toolbar_button(ui, label, true).on_hover_text(hint).clicked() {
-                state.canvas.zoom_from_center(delta);
-            }
-        }
-        if graph_style::toolbar_button(ui, tr(language, "Fit graph"), true).clicked() {
-            state.canvas.fit_pending = true;
-        }
-        ui.menu_button("⋯", |ui| {
-            if graph_style::toolbar_button(ui, tr(language, "Auto layout"), true).clicked() {
-                let arranged = auto_layout_graph(&snapshot.selected_graph, &snapshot.host_audio);
-                if arranged != snapshot.selected_graph {
-                    state.history.push(snapshot.selected_graph.clone());
-                    actions.push(AudioStudioUiAction::ReplaceSelectedGraph(arranged));
-                    state.canvas.fit_pending = true;
+        if state.show_graph {
+            ui.menu_button(tr(language, "+ Node"), |ui| render_add_node_menu(snapshot, state, ui, actions));
+            ui.separator();
+            for (label, delta, hint) in [("−", -120.0, "Zoom out"), ("+", 120.0, "Zoom in")] {
+                if graph_style::toolbar_button(ui, label, true).on_hover_text(hint).clicked() {
+                    state.canvas.zoom_from_center(delta);
                 }
-                ui.close();
             }
-            if graph_style::toolbar_button(ui, tr(language, "Undo"), state.history.can_undo()).clicked()
-                && let Some(previous) = state.history.undo(snapshot.selected_graph.clone())
-            {
-                actions.push(AudioStudioUiAction::ReplaceSelectedGraph(previous));
-                ui.close();
+            if graph_style::toolbar_button(ui, tr(language, "Fit graph"), true).clicked() {
+                state.canvas.fit_pending = true;
             }
-            if graph_style::toolbar_button(ui, tr(language, "Redo"), state.history.can_redo()).clicked()
-                && let Some(next) = state.history.redo(snapshot.selected_graph.clone())
-            {
-                actions.push(AudioStudioUiAction::ReplaceSelectedGraph(next));
-                ui.close();
-            }
-            let has_selection = !state.selected_nodes.is_empty() || !state.selected_links.is_empty();
-            if graph_style::toolbar_button(ui, tr(language, "Delete selection"), has_selection).clicked() {
-                state.history.push(snapshot.selected_graph.clone());
-                let (nodes, links) = state.take_selection();
-                actions.extend(nodes.into_iter().map(AudioStudioUiAction::RemoveNode));
-                actions.extend(links.into_iter().map(AudioStudioUiAction::DeleteLink));
-                ui.close();
-            }
-            ui.separator();
-            if ui.button("Reset audio system").clicked() {
-                state.pending_preset_load = None;
-                state.pending_safe_reset = true;
-                ui.close();
-            }
-            ui.separator();
-            ui.label(RichText::new("Space + drag · Pan\nScroll · Zoom\nDrag ports · Connect\nShift + click · Multi-select\nDel · Delete\nCtrl+Z / Ctrl+Y · Undo / Redo").small().color(MUTED));
-        });
+            ui.menu_button("⋯", |ui| {
+                if graph_style::toolbar_button(ui, tr(language, "Auto layout"), true).clicked() {
+                    let arranged = auto_layout_graph(&snapshot.selected_graph, &snapshot.host_audio);
+                    if arranged != snapshot.selected_graph {
+                        state.history.push(snapshot.selected_graph.clone());
+                        actions.push(AudioStudioUiAction::ReplaceSelectedGraph(arranged));
+                        state.canvas.fit_pending = true;
+                    }
+                    ui.close();
+                }
+                if graph_style::toolbar_button(ui, tr(language, "Undo"), state.history.can_undo()).clicked()
+                    && let Some(previous) = state.history.undo(snapshot.selected_graph.clone())
+                {
+                    actions.push(AudioStudioUiAction::ReplaceSelectedGraph(previous));
+                    ui.close();
+                }
+                if graph_style::toolbar_button(ui, tr(language, "Redo"), state.history.can_redo()).clicked()
+                    && let Some(next) = state.history.redo(snapshot.selected_graph.clone())
+                {
+                    actions.push(AudioStudioUiAction::ReplaceSelectedGraph(next));
+                    ui.close();
+                }
+                let has_selection = !state.selected_nodes.is_empty() || !state.selected_links.is_empty();
+                if graph_style::toolbar_button(ui, tr(language, "Delete selection"), has_selection).clicked() {
+                    state.history.push(snapshot.selected_graph.clone());
+                    let (nodes, links) = state.take_selection();
+                    actions.extend(nodes.into_iter().map(AudioStudioUiAction::RemoveNode));
+                    actions.extend(links.into_iter().map(AudioStudioUiAction::DeleteLink));
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("Reset audio system").clicked() {
+                    state.pending_preset_load = None;
+                    state.pending_safe_reset = true;
+                    ui.close();
+                }
+                ui.separator();
+                ui.label(RichText::new("Space + drag · Pan\nScroll · Zoom\nDrag ports · Connect\nShift + click · Multi-select\nDel · Delete\nCtrl+Z / Ctrl+Y · Undo / Redo").small().color(MUTED));
+            });
+        }
         let issue_count = snapshot.validation.issues.len()
             + snapshot.risk_report.blocking_count()
             + snapshot.risk_report.warning_count();
@@ -2857,6 +3006,7 @@ fn render_add_node_menu(
         AudioNodeKind::GameMicrophoneOutput {
             device_id: None,
             voicemeeter_bus: None,
+            follow_tts: false,
         },
     );
 }
@@ -3167,6 +3317,7 @@ mod tests {
         let kind = AudioNodeKind::GameMicrophoneOutput {
             device_id: None,
             voicemeeter_bus: None,
+            follow_tts: false,
         };
         let sink = host_device(
             "virtual-1",
@@ -3257,6 +3408,7 @@ mod tests {
             AudioNodeKind::GameMicrophoneOutput {
                 device_id: Some(DeviceId::new("vm-feed")),
                 voicemeeter_bus: None,
+                follow_tts: false,
             },
         );
         let mut device = host_device(

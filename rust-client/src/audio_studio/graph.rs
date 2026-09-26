@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 
-pub const AUDIO_GRAPH_FORMAT_VERSION: u32 = 2;
+pub const AUDIO_GRAPH_FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -233,6 +233,9 @@ pub enum AudioNodeKind {
         device_id: Option<DeviceId>,
     },
     GameMicrophoneOutput {
+        /// Select TTS while enabled, otherwise the original microphone.
+        #[serde(default)]
+        follow_tts: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device_id: Option<DeviceId>,
         /// When the selected render endpoint feeds a VoiceMeeter input strip,
@@ -1271,6 +1274,7 @@ mod tests {
         let selected = AudioNodeKind::GameMicrophoneOutput {
             device_id: Some(DeviceId::new("virtual-input")),
             voicemeeter_bus: Some(VoiceMeeterBus::B2),
+            follow_tts: false,
         };
         let value = serde_json::to_value(&selected).unwrap();
         assert_eq!(value["voicemeeter_bus"], "b2");
