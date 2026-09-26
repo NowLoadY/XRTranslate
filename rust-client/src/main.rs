@@ -4249,7 +4249,8 @@ impl XRTranslateApp {
             if let Some((source_lang, target_lang)) = state.pending_route_change.take() {
                 self.source_lang = source_lang;
                 self.target_lang = target_lang;
-                self.save_settings();
+                // Dynamic runtime route changes update live session state without
+                // permanently overwriting the user's base configuration in config.json.
             }
             if let Some(err) = &state.last_error {
                 self.last_error = Some(err.clone());

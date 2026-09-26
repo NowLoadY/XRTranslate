@@ -1252,11 +1252,11 @@ impl NativeInference {
                 Err(error)
                     if !context_window_retried
                         && options.prompt_context.has_reference_context()
-                        && is_context_window_error(&error) =>
+                        && is_recoverable_provider_error(&error) =>
                 {
                     warn!(
                         %error,
-                        "translation context exceeded the provider window; retrying current segment without optional context"
+                        "translation provider encountered context or memory pressure; retrying current segment without optional context"
                     );
                     context_window_retried = true;
                     options.prompt_context = options.prompt_context.without_reference_context();
@@ -1317,6 +1317,26 @@ fn is_context_window_error(error: &InferenceError) -> bool {
             body.contains("exceed_context_size")
                 || body.contains("exceeds the available context size")
                 || body.contains("context window")
+        }
+        _ => false,
+    }
+}
+
+fn is_recoverable_provider_error(error: &InferenceError) -> bool {
+    if is_context_window_error(error) {
+        return true;
+    }
+    match error {
+        InferenceError::HttpStatus {
+            status,
+            body_preview,
+            ..
+        } if *status == 500 || *status == 400 => {
+            let body = body_preview.to_ascii_lowercase();
+            body.contains("bad allocation")
+                || body.contains("out of memory")
+                || body.contains("cuda out of memory")
+                || body.contains("std::bad_alloc")
         }
         _ => false,
     }
@@ -1422,7 +1442,7 @@ mod tests {
     use super::{
         FRAME_SAMPLES, FixedWindow, FixedWindowEvent, MAX_INPUT_PCM_BYTES, RecognizedOutput,
         TimedUtterance, Utterance, UtteranceEndReason, asr_language, frames_for_ms,
-        is_context_window_error, translation_route, vad_is_active, validate_input_chunk_size,
+        is_context_window_error, is_recoverable_provider_error, translation_route, vad_is_active, validate_input_chunk_size,
         validate_input_sample_rate,
     };
     use xrtranslate_engine::translation_segment_pairs_for_final_text_with_lang;
@@ -1491,6 +1511,11 @@ mod tests {
             endpoint: "http://127.0.0.1:8002".into(),
             status: 500,
             body_preview: "internal error".into(),
+        }));
+        assert!(is_recoverable_provider_error(&InferenceError::HttpStatus {
+            endpoint: "http://127.0.0.1:8002".into(),
+            status: 500,
+            body_preview: "got exception: bad allocation".into(),
         }));
     }
 

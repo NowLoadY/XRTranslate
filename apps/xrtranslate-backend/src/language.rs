@@ -280,10 +280,22 @@ impl AdaptiveLanguageRoute {
             return AutoDecision::Accept(pair.route(language));
         }
 
+        // If the active pair contains Japanese, pure Kanji text without distinct Chinese
+        // markers (e.g. "了解", "大丈夫", "乾杯") is Japanese speech. Accept directly as Japanese.
+        if let Some(ja) = SupportedLanguage::from_code("ja") {
+            if pair.contains(ja)
+                && xrtranslate_engine::has_substantial_script_evidence(Script::Han, text)
+                && !xrtranslate_engine::has_distinct_chinese_markers(text)
+            {
+                self.confirm(ja);
+                return AutoDecision::Accept(pair.route(ja));
+            }
+        }
+
         let candidate = languages().find(|language| {
             !pair.contains(*language)
                 && script_evidence(*language, text) != Evidence::Incompatible
-                && has_substantial_language_evidence(*language, text)
+                && has_substantial_candidate_evidence(*language, text)
         });
 
         if let Some(candidate) = candidate {
@@ -294,10 +306,15 @@ impl AdaptiveLanguageRoute {
                 .filter(|observation| **observation == Some(candidate))
                 .count();
             if count >= SWITCH_CANDIDATE_THRESHOLD {
+                let fallback = if candidate == pair.0[1] {
+                    pair.0[0]
+                } else {
+                    pair.0[1]
+                };
                 let partner = self
                     .anchor
-                    .filter(|language| pair.contains(*language))
-                    .unwrap_or(pair.0[1]);
+                    .filter(|language| pair.contains(*language) && *language != candidate)
+                    .unwrap_or(fallback);
                 let active = LanguagePair([candidate, partner]);
                 self.active = Some(active);
                 self.anchor = Some(candidate);
@@ -388,6 +405,16 @@ fn has_substantial_language_evidence(language: SupportedLanguage, text: &str) ->
     xrtranslate_engine::has_substantial_script_evidence(language.0.script, text)
 }
 
+fn has_substantial_candidate_evidence(language: SupportedLanguage, text: &str) -> bool {
+    if language.0.script == Script::Latin {
+        xrtranslate_engine::is_substantial_english_candidate(text)
+    } else if language.0.script == Script::Han {
+        xrtranslate_engine::has_distinct_chinese_markers(text)
+    } else {
+        xrtranslate_engine::has_substantial_script_evidence(language.0.script, text)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,7 +470,7 @@ mod tests {
             AutoDecision::Accept(LanguageRoute { source, .. }) if source == language("en")
         ));
         assert!(matches!(
-            route.classify(Some("Chinese"), "再会"),
+            route.classify(Some("Chinese"), "我们下次再会"),
             AutoDecision::Retry {
                 candidate: Some(_),
                 ..
@@ -528,17 +555,59 @@ mod tests {
         let mut route = AdaptiveLanguageRoute::default();
         route.configure("auto", "ja,en");
 
-        // Turn 1: Chinese -> Retry
-        let decision1 = route.classify(Some("Chinese"), "再会");
+        // Turn 1: Chinese with distinct markers -> Retry
+        let decision1 = route.classify(Some("Chinese"), "我们下次再会");
         assert!(matches!(decision1, AutoDecision::Retry { .. }));
 
-        // Turn 2: Chinese -> Accept & Switch
-        let decision2 = route.classify(Some("Chinese"), "再会");
+        // Turn 2: Chinese with distinct markers -> Accept & Switch
+        let decision2 = route.classify(Some("Chinese"), "我们下次再会");
         assert!(matches!(
             decision2,
             AutoDecision::Switched { route: LanguageRoute { source, .. }, .. } if source == language("zh")
         ));
         assert_eq!(route.active_targets(""), "zh,en");
+    }
+
+    #[test]
+    fn kanji_without_chinese_markers_does_not_switch_away_from_japanese() {
+        let mut route = AdaptiveLanguageRoute::default();
+        route.configure("auto", "ja,en");
+
+        // Japanese pure Kanji utterance "了解" with ASR detecting Chinese
+        // should be accepted directly as Japanese and NOT trigger Chinese candidate
+        let decision1 = route.classify(Some("Chinese"), "了解");
+        assert!(matches!(
+            decision1,
+            AutoDecision::Accept(LanguageRoute { source, target })
+                if source == language("ja") && target == language("en")
+        ));
+
+        let decision2 = route.classify(Some("Chinese"), "大丈夫");
+        assert!(matches!(
+            decision2,
+            AutoDecision::Accept(LanguageRoute { source, target })
+                if source == language("ja") && target == language("en")
+        ));
+
+        assert_eq!(route.active_targets(""), "ja,en");
+    }
+
+    #[test]
+    fn loanwords_do_not_switch_to_english() {
+        let mut route = AdaptiveLanguageRoute::default();
+        route.configure("auto", "ja,zh");
+
+        // Common loanwords / noise should NOT count as English candidate
+        let decision1 = route.classify(Some("English"), "OK");
+        assert!(!matches!(decision1, AutoDecision::Switched { .. }));
+
+        let decision2 = route.classify(Some("English"), "nice vrchat");
+        assert!(!matches!(decision2, AutoDecision::Switched { .. }));
+
+        let decision3 = route.classify(Some("English"), "gg");
+        assert!(!matches!(decision3, AutoDecision::Switched { .. }));
+
+        assert_eq!(route.active_targets(""), "ja,zh");
     }
 
     #[test]

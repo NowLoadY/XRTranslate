@@ -1649,7 +1649,8 @@ async fn run_inference_worker(
                 } else {
                     (job.source_language.clone(), job.target_language.clone())
                 };
-                adaptive_route.configure(&routed_source, &routed_target);
+                // Do not reconfigure adaptive_route here: routed_source is already resolved
+                // to a concrete language and passing it to configure() would clear adaptive state.
                 let active_target_language = adaptive_route.active_targets(&routed_target);
                 let asr_context = match corpus_session
                     .prepare_asr(&PrepareAsrRequest {

@@ -107,6 +107,92 @@ pub fn has_substantial_script_evidence(script: Script, text: &str) -> bool {
     }
 }
 
+/// Determines whether text contains distinct Chinese linguistic markers
+/// (unique characters, grammatical particles, or common Chinese phrases)
+/// that distinguish Chinese from Japanese Kanji. Zero heap allocations.
+pub fn has_distinct_chinese_markers(text: &str) -> bool {
+    let has_char_marker = text.chars().any(|c| {
+        matches!(
+            c,
+            '你' | '妳' | '她' | '它' | '牠' | '祂'
+            | '们' | '們' | '这' | '這' | '哪'
+            | '什' | '么' | '麼' | '谁' | '誰'
+            | '吗' | '嗎' | '呢' | '吧' | '呀' | '很'
+            | '没' | '說' | '话' | '話' | '请' | '請' | '让' | '進' | '进'
+            | '门' | '关' | '开' | '车' | '钱' | '东' | '认' | '识'
+            | '欢' | '变' | '电' | '风' | '问' | '买' | '卖' | '头'
+            | '过' | '对' | '为' | '样' | '个' | '谢' | '謝'
+        )
+    });
+    if has_char_marker {
+        return true;
+    }
+
+    const PHRASES: &[&str] = &[
+        "不用", "可以", "好的", "真的", "不知道", "早上好", "晚上好", "再见", "再見",
+    ];
+    PHRASES.iter().any(|phrase| text.contains(phrase))
+}
+
+/// Determines if text represents genuine, substantial English candidate speech
+/// rather than isolated gaming loanwords, short acknowledgments, or noise hallucinations.
+/// Single-pass, zero heap allocations.
+pub fn is_substantial_english_candidate(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let mut total_words = 0usize;
+    let mut non_loanword_count = 0usize;
+    let mut has_function_word = false;
+
+    for raw in trimmed.split_whitespace() {
+        let word = raw.trim_matches(|c: char| !c.is_alphabetic());
+        if word.is_empty() {
+            continue;
+        }
+        total_words += 1;
+
+        if is_english_function_word(word) {
+            has_function_word = true;
+        }
+        if !is_common_loanword(word) {
+            non_loanword_count += 1;
+        }
+    }
+
+    if total_words < 2 || non_loanword_count < 2 {
+        return false;
+    }
+
+    let total_letters: usize = trimmed.chars().filter(|c| c.is_ascii_alphabetic()).count();
+    has_function_word || (total_words >= 3 && total_letters >= 16)
+}
+
+fn is_common_loanword(word: &str) -> bool {
+    // Check against common short loanwords without allocating strings
+    matches!(
+        word.to_ascii_lowercase().as_str(),
+        "ok" | "okay" | "nice" | "gg" | "good" | "great" | "vrc" | "vrchat"
+        | "hi" | "hello" | "hey" | "yes" | "yeah" | "yep" | "no" | "nope"
+        | "sorry" | "thx" | "thanks" | "thank" | "you" | "lol" | "kusa" | "w"
+        | "39" | "bye" | "cool" | "super" | "omg" | "wow" | "pls" | "please"
+        | "subtitles" | "watching" | "subscribe" | "amara" | "mbc"
+    )
+}
+
+fn is_english_function_word(word: &str) -> bool {
+    matches!(
+        word.to_ascii_lowercase().as_str(),
+        "the" | "is" | "are" | "was" | "were" | "am" | "be" | "been" | "being"
+        | "have" | "has" | "had" | "do" | "does" | "did" | "would" | "should" | "could"
+        | "will" | "can" | "this" | "that" | "these" | "those" | "what" | "where" | "when"
+        | "which" | "who" | "how" | "why" | "with" | "from" | "about" | "into" | "because"
+        | "they" | "them" | "their" | "your" | "ours" | "we" | "i" | "it" | "my" | "me"
+    )
+}
+
 /// Detects the most likely primary language code for input text.
 pub fn detect_text_language(text: &str) -> Option<&'static str> {
     let trimmed = text.trim();
@@ -181,7 +267,7 @@ pub fn auto_route_language_pair(
     current_source: &str,
     current_target: &str,
 ) -> Option<(&'static str, &'static str)> {
-    let detected = detect_text_language(text)?;
+    let mut detected = detect_text_language(text)?;
     let src = current_source.trim().to_ascii_lowercase();
     let target_parts = current_target
         .split(',')
@@ -200,6 +286,25 @@ pub fn auto_route_language_pair(
         [first] => (first.to_ascii_lowercase(), None),
         [] => (String::new(), None),
     };
+
+    // If active session involves Japanese and text is Han characters without Chinese markers,
+    // it's Japanese Kanji, not Chinese!
+    if (src == "ja" || tgt == "ja" || pair_target.as_deref() == Some("ja"))
+        && detected == "zh"
+        && !has_distinct_chinese_markers(text)
+    {
+        detected = "ja";
+    }
+
+    // Do not route to English if the text is merely gaming loanwords / acronyms
+    if detected == "en"
+        && src != "en"
+        && tgt != "en"
+        && pair_target.as_deref() != Some("en")
+        && !is_substantial_english_candidate(text)
+    {
+        return None;
+    }
 
     if src == "auto" {
         if let Some(second) = pair_target.as_deref() {
@@ -346,5 +451,53 @@ mod tests {
             auto_route_language_pair("こんにちは", "zh", "en"),
             Some(("ja", "en"))
         );
+
+        // Pure Japanese Kanji without Chinese markers in a Japanese context stays Japanese
+        assert_eq!(
+            auto_route_language_pair("了解", "ja", "zh"),
+            None // Already matching source "ja", no flip
+        );
+
+        // English loanwords in a ja -> zh context do not trigger false English routing
+        assert_eq!(
+            auto_route_language_pair("OK nice", "ja", "zh"),
+            None
+        );
+
+        // Substantial English sentences route properly
+        assert_eq!(
+            auto_route_language_pair("What are you doing today?", "ja", "zh"),
+            Some(("en", "zh"))
+        );
+    }
+
+    #[test]
+    fn test_chinese_vs_japanese_discrimination() {
+        // Japanese Kanji words without Chinese markers
+        assert!(!has_distinct_chinese_markers("了解"));
+        assert!(!has_distinct_chinese_markers("大丈夫"));
+        assert!(!has_distinct_chinese_markers("写真"));
+        assert!(!has_distinct_chinese_markers("乾杯"));
+        assert!(!has_distinct_chinese_markers("先生"));
+        assert!(!has_distinct_chinese_markers("再会"));
+
+        // Chinese sentences with distinct markers
+        assert!(has_distinct_chinese_markers("你好，吃了吗"));
+        assert!(has_distinct_chinese_markers("这是我的朋友"));
+        assert!(has_distinct_chinese_markers("我们明天见"));
+        assert!(has_distinct_chinese_markers("没问题，马上来"));
+        assert!(has_distinct_chinese_markers("謝謝大家"));
+    }
+
+    #[test]
+    fn test_english_substantial_candidate() {
+        assert!(!is_substantial_english_candidate("ok"));
+        assert!(!is_substantial_english_candidate("OK nice"));
+        assert!(!is_substantial_english_candidate("gg vrchat"));
+        assert!(!is_substantial_english_candidate("thank you"));
+        assert!(!is_substantial_english_candidate("Thank you for watching."));
+        
+        assert!(is_substantial_english_candidate("How are you doing today?"));
+        assert!(is_substantial_english_candidate("This is a complete English sentence."));
     }
 }

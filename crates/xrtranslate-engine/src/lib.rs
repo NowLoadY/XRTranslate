@@ -14,8 +14,8 @@ pub mod language;
 pub mod text_processing;
 
 pub use language::{
-    Script, auto_route_language_pair, detect_text_language, has_substantial_script_evidence,
-    observed_scripts,
+    Script, auto_route_language_pair, detect_text_language, has_distinct_chinese_markers,
+    has_substantial_script_evidence, is_substantial_english_candidate, observed_scripts,
 };
 pub use text_processing::{
     RevisableTranscript, TranslationSegmentPair, collapse_asr_split_words,
