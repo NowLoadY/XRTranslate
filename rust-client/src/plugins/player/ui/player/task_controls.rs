@@ -26,27 +26,15 @@ pub(super) fn render_task_control_card(
         return action;
     };
 
-    let mut normalized_language = false;
-    if task.source_language != "auto"
-        && !snapshot.source_languages.iter().any(|(code, _)| *code == task.source_language)
-    {
-        task.source_language = snapshot.source_languages.first().map(|item| item.0).unwrap_or("zh").into();
-        normalized_language = true;
-    }
-    if !snapshot.target_languages.iter().any(|(code, _)| *code == task.target_language)
-        || (task.source_language != "auto" && crate::languages_conflict(&task.source_language, &task.target_language))
-    {
-        task.target_language = snapshot.target_languages.iter()
-            .find(|(code, _)| task.source_language == "auto" || !crate::languages_conflict(code, &task.source_language))
-            .map(|item| item.0).unwrap_or("en").into();
-        normalized_language = true;
-    }
-
     let mut routing_changed = false;
-    let mut task_settings_changed = normalized_language;
+    let mut task_settings_changed = false;
     let mut do_start = false;
     let mut do_pause = false;
     let mut do_restart = false;
+    let language_valid = snapshot
+        .languages
+        .select(&task.source_language, &task.target_language)
+        .is_ok();
 
     ui.add_space(10.0);
 
@@ -86,7 +74,7 @@ pub(super) fn render_task_control_card(
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if components::animated_button(ui, tr(language, "Clear & Restart")).clicked() {
+                    if components::animated_button_enabled(ui, tr(language, "Clear & Restart"), language_valid).clicked() {
                         do_restart = true;
                     }
 
@@ -97,7 +85,7 @@ pub(super) fn render_task_control_card(
                             do_pause = true;
                         }
                     } else {
-                        if components::primary_button(ui, tr(language, "Start Task")).clicked() {
+                        if components::primary_button_enabled(ui, tr(language, "Start Task"), language_valid).clicked() {
                             do_start = true;
                         }
                     }
@@ -243,68 +231,13 @@ pub(super) fn render_task_control_card(
             ui.add_space(14.0);
 
             // Row 1: Languages & Subtitle Mode
-            ui.columns(3, |cols| {
-                // Col 0: Source Language
+            ui.columns(2, |cols| {
                 cols[0].vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new(tr(language, "Source Language"))
-                            .size(12.5)
-                            .color(crate::ui::theme::text_weak()),
-                    );
-                    ui.add_space(3.0);
-                    let source_text = if task.source_language == "auto" {
-                        tr(language, "Auto Detect").to_owned()
-                    } else {
-                        crate::language_label(language, &task.source_language).to_owned()
-                    };
-                    crate::ui::components::combobox_ui(
-                        ui,
-                        "player_source_lang_select",
-                        source_text,
-                        |ui| {
-                            if ui.selectable_value(&mut task.source_language, "auto".into(), tr(language, "Auto Detect")).changed() {
-                                task_settings_changed = true;
-                            }
-                            for (code, label) in &snapshot.source_languages {
-                                if crate::languages_conflict(code, &task.target_language) {
-                                    continue;
-                                }
-                                if ui.selectable_value(&mut task.source_language, (*code).into(), crate::i18n::tr(language, label)).changed() {
-                                    task_settings_changed = true;
-                                }
-                            }
-                        },
-                    );
-                });
-
-                // Col 1: Target Language
-                cols[1].vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new(tr(language, "Target Language"))
-                            .size(12.5)
-                            .color(crate::ui::theme::text_weak()),
-                    );
-                    ui.add_space(3.0);
-                    let target_text = crate::language_label(language, &task.target_language).to_owned();
-                    crate::ui::components::combobox_ui(
-                        ui,
-                        "player_target_lang_select",
-                        target_text,
-                        |ui| {
-                            for (code, label) in &snapshot.target_languages {
-                                if task.source_language != "auto" && crate::languages_conflict(code, &task.source_language) {
-                                    continue;
-                                }
-                                if ui.selectable_value(&mut task.target_language, (*code).into(), crate::i18n::tr(language, label)).changed() {
-                                    task_settings_changed = true;
-                                }
-                            }
-                        },
-                    );
+                    task_settings_changed |= components::translation_language_selector(ui, "player_task", &mut task.source_language, &mut task.target_language, snapshot.languages, language);
                 });
 
                 // Col 2: Subtitle Mode
-                cols[2].vertical(|ui| {
+                cols[1].vertical(|ui| {
                     ui.label(
                         egui::RichText::new(tr(language, "Subtitle Mode"))
                             .size(12.5)
@@ -586,71 +519,37 @@ pub(super) fn render_task_control_card(
         });
     });
 
-    if do_restart {
+    if do_start || do_restart {
         if let Some(task) = controller.store.get(&active_id) {
-            let source = task.source.clone();
-            let source_language = task.source_language.clone();
-            let target_language = task.target_language.clone();
-            let recognition = task.recognition.clone();
-            let audio_channels = task.audio_channels.clone();
-            controller.clear_and_restart_task();
-            match &source {
-                MediaSource::LocalFile(path) => {
-                    action = VideoPlayerAction::StartTranslation(
-                        PlayerTranslationRequest::ImportMediaFile {
-                            path: path.clone(),
-                            source_language,
-                            target_language,
-                            recognition,
-                            audio_channels,
-                        },
-                    );
-                }
-                MediaSource::NetworkStream(_) => {
-                    action =
-                        VideoPlayerAction::StartTranslation(PlayerTranslationRequest::LiveStream {
-                            source_language,
-                            target_language,
-                            recognition,
-                            audio_channels,
-                        });
-                }
+            if snapshot
+                .languages
+                .select(&task.source_language, &task.target_language)
+                .is_ok()
+            {
+                let request = match &task.source {
+                    MediaSource::LocalFile(path) => PlayerTranslationRequest::ImportMediaFile {
+                        path: path.clone(),
+                        source_language: task.source_language.clone(),
+                        target_language: task.target_language.clone(),
+                        recognition: task.recognition.clone(),
+                        audio_channels: task.audio_channels.clone(),
+                    },
+                    MediaSource::NetworkStream(_) => PlayerTranslationRequest::LiveStream {
+                        source_language: task.source_language.clone(),
+                        target_language: task.target_language.clone(),
+                        recognition: task.recognition.clone(),
+                        audio_channels: task.audio_channels.clone(),
+                    },
+                };
+                action = VideoPlayerAction::StartTranslation {
+                    request,
+                    restart: do_restart,
+                };
             }
         }
     } else if do_pause {
         controller.pause_task();
         action = VideoPlayerAction::StopTranslation;
-    } else if do_start {
-        if let Some(task) = controller.store.get(&active_id) {
-            let source = task.source.clone();
-            let source_language = task.source_language.clone();
-            let target_language = task.target_language.clone();
-            let recognition = task.recognition.clone();
-            let audio_channels = task.audio_channels.clone();
-            controller.start_task();
-            match &source {
-                MediaSource::LocalFile(path) => {
-                    action = VideoPlayerAction::StartTranslation(
-                        PlayerTranslationRequest::ImportMediaFile {
-                            path: path.clone(),
-                            source_language,
-                            target_language,
-                            recognition,
-                            audio_channels,
-                        },
-                    );
-                }
-                MediaSource::NetworkStream(_) => {
-                    action =
-                        VideoPlayerAction::StartTranslation(PlayerTranslationRequest::LiveStream {
-                            source_language,
-                            target_language,
-                            recognition,
-                            audio_channels,
-                        });
-                }
-            }
-        }
     } else if routing_changed {
         controller.apply_channel_routing();
     } else if task_settings_changed {

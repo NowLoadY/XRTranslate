@@ -15,8 +15,8 @@ use std::{
 };
 
 use xrtranslate_assets::{
-    ModelAssetId, ModelAssetsConfig, ModelCapability, ModelFileRole, ModelLevel, ModelRuntime,
-    ResolvedModelAsset, ResolvedModelAssets, TranslationPromptStyle, tier_default_manifest,
+    ModelAssetId, ModelAssetsConfig, ModelCapability, ModelFileRole, ModelRuntime,
+    ResolvedModelAsset, ResolvedModelAssets, TranslationPromptStyle,
 };
 use xrtranslate_config::{
     AppConfig, AsrPromptMode, LocalModelRuntimeConfig, NativeModelRouteConfig,
@@ -39,6 +39,7 @@ use tts::TtsProfile;
 #[derive(Clone, Debug)]
 pub(crate) struct NativeProviderPlan {
     route: NativeModelRouteConfig,
+    pub(crate) language_capabilities: xrtranslate_engine::language::LanguageCapabilities,
     assets: ResolvedModelAssets,
     asr_profile: AsrProfile,
     translation_profile: TranslationProfile,
@@ -103,6 +104,7 @@ impl NativeProviderPlan {
             .unwrap_or(route.translation.supports_prompt_context);
 
         Ok(Self {
+            language_capabilities: route.language_capabilities()?,
             route,
             assets,
             asr_profile,
@@ -526,30 +528,12 @@ fn route_asset_id(
     provider: &xrtranslate_config::NativeProviderConfig,
     capability: ModelCapability,
 ) -> Result<ModelAssetId, String> {
-    let Some(key) = provider.model_asset.as_deref() else {
-        return tier_default_manifest(&provider.provider, capability, ModelLevel::Normal)
-            .map(|manifest| manifest.id)
-            .ok_or_else(|| {
-                format!(
-                    "provider {:?} has no default {capability:?} model card",
-                    provider.provider
-                )
-            });
-    };
-    let id = ModelAssetId::from_config_key(key).ok_or_else(|| {
-        format!(
-            "unknown model asset {key:?} for provider {:?}",
-            provider.provider
-        )
-    })?;
-    let manifest = xrtranslate_assets::manifest_for(id);
-    if manifest.provider != provider.provider || manifest.capability != capability {
-        return Err(format!(
-            "model asset {key:?} does not belong to provider {:?} for {capability:?}",
-            provider.provider
-        ));
-    }
-    Ok(id)
+    xrtranslate_assets::language::provider_model(
+        &provider.provider,
+        provider.model_asset.as_deref(),
+        capability,
+    )
+    .map(|model| model.id)
 }
 
 fn resolve_model_assets(

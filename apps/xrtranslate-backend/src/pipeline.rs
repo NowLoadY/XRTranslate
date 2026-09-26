@@ -46,8 +46,10 @@ use xrtranslate_vad::{
     SileroVad, Utterance, UtteranceEndReason, decode_pcm16le_frame,
 };
 
+use xrtranslate_engine::language::{LanguageCapabilities, LanguageSelection};
+
 use crate::language::{
-    AdaptiveLanguageRoute, AutoDecision, LanguageRoute, SupportedLanguage, is_traditional_chinese,
+    AdaptiveLanguageRoute, AutoDecision, SupportedLanguage, is_traditional_chinese,
     to_traditional_chinese,
 };
 use crate::model_runtime::{NativeAsrAdapter, NativeAsrOptions, NativeProviderPlan};
@@ -444,6 +446,7 @@ enum FixedWindowEvent {
 /// model HTTP calls from blocking WebSocket control and microphone intake.
 #[derive(Clone)]
 pub(crate) struct NativeInference {
+    languages: LanguageCapabilities,
     asr: NativeAsrAdapter,
     asr_prompt: AsrPromptPolicy,
     translation: TranslationAdapter<ReqwestClient>,
@@ -497,18 +500,6 @@ impl NativePipeline {
             opening_window_frames: 4,
         };
         let endpoint = EndpointDetector::new(endpoint_config).map_err(|error| error.to_string())?;
-        let asr_http = model_plan
-            .asr_http_client()
-            .map_err(|error| error.to_string())?;
-        let asr = model_plan
-            .asr_adapter(asr_http)
-            .map_err(|error| error.to_string())?;
-        let translation_http = model_plan
-            .translation_http_client()
-            .map_err(|error| error.to_string())?;
-        let translation = model_plan
-            .translation_adapter(translation_http)
-            .map_err(|error| error.to_string())?;
         let speaker = if config.speaker.enabled {
             let model_path = if config.speaker.model_path.is_absolute() {
                 config.speaker.model_path.clone()
@@ -599,25 +590,7 @@ impl NativePipeline {
             processed_samples: 0,
             vad_active: false,
             vad_transitions: Vec::new(),
-            inference: NativeInference {
-                asr,
-                asr_prompt: AsrPromptPolicy::new(
-                    model_plan.asr_prompt_mode(),
-                    model_plan.asr_context_max_chars(),
-                    model_plan.asr_supports_vocabulary_bias(),
-                    model_plan.asr_vocabulary_weight(),
-                ),
-                translation,
-                translation_supports_reference_context: model_plan
-                    .translation_supports_reference_context(),
-                asr_max_output_tokens: model_plan.asr_runtime().max_tokens,
-                translation_max_output_tokens: model_plan.translation_runtime().max_tokens,
-                asr_context_window_tokens: model_plan.asr_runtime().context_window_tokens,
-                translation_context_window_tokens: model_plan
-                    .translation_runtime()
-                    .context_window_tokens,
-                speaker,
-            },
+            inference: NativeInference::new(model_plan, speaker)?,
         })
     }
 
@@ -926,6 +899,44 @@ fn vad_is_active(probability: f32, threshold: f32) -> bool {
 }
 
 impl NativeInference {
+    fn new(
+        model_plan: &NativeProviderPlan,
+        speaker: Option<SpeakerInferenceConfig>,
+    ) -> Result<Self, String> {
+        let asr_http = model_plan
+            .asr_http_client()
+            .map_err(|error| error.to_string())?;
+        let asr = model_plan
+            .asr_adapter(asr_http)
+            .map_err(|error| error.to_string())?;
+        let translation_http = model_plan
+            .translation_http_client()
+            .map_err(|error| error.to_string())?;
+        let translation = model_plan
+            .translation_adapter(translation_http)
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            languages: model_plan.language_capabilities,
+            asr,
+            asr_prompt: AsrPromptPolicy::new(
+                model_plan.asr_prompt_mode(),
+                model_plan.asr_context_max_chars(),
+                model_plan.asr_supports_vocabulary_bias(),
+                model_plan.asr_vocabulary_weight(),
+            ),
+            translation,
+            translation_supports_reference_context: model_plan
+                .translation_supports_reference_context(),
+            asr_max_output_tokens: model_plan.asr_runtime().max_tokens,
+            translation_max_output_tokens: model_plan.translation_runtime().max_tokens,
+            asr_context_window_tokens: model_plan.asr_runtime().context_window_tokens,
+            translation_context_window_tokens: model_plan
+                .translation_runtime()
+                .context_window_tokens,
+            speaker,
+        })
+    }
+
     /// Opens one stateless embedding model and generation-local tracker on the
     /// bounded inference worker. Disabled configurations allocate nothing.
     pub(crate) fn speaker_diarizer(&self) -> Result<Option<OnlineSpeakerDiarizer>, String> {
@@ -992,12 +1003,12 @@ impl NativeInference {
             .collect::<Vec<_>>();
         let asr_started = Instant::now();
         let max_tokens = asr_max_tokens(samples.len()).min(self.asr_max_output_tokens);
+        let selection = self
+            .languages
+            .select(source_language, target_language)
+            .map_err(InferenceFailure::runtime)?;
         adaptive_route.configure(source_language, target_language);
-        if source_language.eq_ignore_ascii_case("auto") && !adaptive_route.is_configured() {
-            return Err(InferenceFailure::runtime(
-                "Automatic input requires two different supported languages in the pair",
-            ));
-        }
+        adaptive_route.constrain(self.languages.sources());
         let active_targets = adaptive_route.active_targets(target_language);
         let delivery = self.asr_prompt.delivery(
             prompt_graph,
@@ -1026,11 +1037,28 @@ impl NativeInference {
         else {
             return Ok(None);
         };
-        let explicit_route = explicit_language_route(source_language, target_language);
-        let (result, route, route_switched) = if let Some(route) = explicit_route {
-            (auto_result, route, None)
+        let direct_route = match selection {
+            LanguageSelection::Fixed { source, target } => Some((Some(source), target)),
+            LanguageSelection::Detect { target } => {
+                let source = auto_result
+                    .transcript
+                    .language
+                    .as_deref()
+                    .and_then(|labels| labels.split(',').find_map(SupportedLanguage::parse));
+                if let Some(source) = source {
+                    self.languages
+                        .select(source.code(), target.code())
+                        .map_err(InferenceFailure::runtime)?;
+                }
+                Some((source, target))
+            }
+            LanguageSelection::Bidirectional(_) => None,
+        };
+        let (result, source, target, route_switched) = if let Some((source, target)) = direct_route
+        {
+            (auto_result, source, target, None)
         } else {
-            match adaptive_route.classify(
+            let (result, route, switched) = match adaptive_route.classify(
                 auto_result.transcript.language.as_deref(),
                 &auto_result.transcript.text,
             ) {
@@ -1048,7 +1076,7 @@ impl NativeInference {
                             .language
                             .as_deref()
                             .unwrap_or("unknown"),
-                        retry_language = language.model_name(),
+                        retry_language = language.name(),
                         "ASR result needs constrained recovery"
                     );
                     let forced_delivery = self.asr_prompt.delivery(
@@ -1067,7 +1095,7 @@ impl NativeInference {
                         .transcribe_attempt(
                             &pcm,
                             samples.len(),
-                            Some(language.model_name().to_owned()),
+                            Some(language.code().to_owned()),
                             forced_delivery,
                             forced_context_free_delivery,
                             echo_candidates,
@@ -1096,7 +1124,7 @@ impl NativeInference {
                             .transcribe_attempt(
                                 &pcm,
                                 samples.len(),
-                                Some(forced_language.model_name().to_owned()),
+                                Some(forced_language.code().to_owned()),
                                 alternate_delivery,
                                 alternate_context_free_delivery,
                                 echo_candidates,
@@ -1111,7 +1139,8 @@ impl NativeInference {
                     let route = adaptive_route.recovery(forced_language);
                     (forced, route, None)
                 }
-            }
+            };
+            (result, Some(route.source), route.target, switched)
         };
         let AsrAttemptResult {
             transcript,
@@ -1122,17 +1151,15 @@ impl NativeInference {
         if source_text.is_empty() {
             return Ok(None);
         }
-        if is_traditional_chinese(route.source.code()) {
+        let source_code = source.map_or("auto", SupportedLanguage::code);
+        if is_traditional_chinese(source_code) {
             source_text = to_traditional_chinese(&source_text);
         }
         Ok(Some(RecognizedOutput {
-            segments: translation_segment_pairs_for_final_text_with_lang(
-                &source_text,
-                route.source.code(),
-            ),
+            segments: translation_segment_pairs_for_final_text_with_lang(&source_text, source_code),
             source_text,
-            source_language: route.source.code().to_owned(),
-            target_language: route.target.code().to_owned(),
+            source_language: source_code.to_owned(),
+            target_language: target.code().to_owned(),
             asr_elapsed,
             route_switched,
             prompt_trace,
@@ -1216,6 +1243,10 @@ impl NativeInference {
         prompt_graph: PromptNodeGraph,
         prompt_context: TranslationPromptContext,
     ) -> Result<TranslationOutput, InferenceFailure> {
+        self.languages
+            .for_text()
+            .select(source_language, target_language)
+            .map_err(InferenceFailure::runtime)?;
         let route = translation_route(source_language, target_language);
         if route.source_code == "zh" && is_traditional_chinese(&route.target_code) {
             let mt_started = Instant::now();
@@ -1370,13 +1401,7 @@ struct TranslationRoute {
 
 fn asr_language(source_language: &str) -> Option<String> {
     let source = normalized_code(source_language);
-    (source != "auto").then(|| language_name(&source).to_owned())
-}
-
-fn explicit_language_route(source: &str, target: &str) -> Option<LanguageRoute> {
-    let source = SupportedLanguage::from_code(source)?;
-    let target = target.split(',').find_map(SupportedLanguage::from_code)?;
-    Some(LanguageRoute { source, target })
+    (source != "auto").then_some(source)
 }
 
 fn translation_route(source_language: &str, target_language: &str) -> TranslationRoute {
@@ -1395,15 +1420,14 @@ fn translation_route(source_language: &str, target_language: &str) -> Translatio
 }
 
 fn normalized_code(value: &str) -> String {
-    let normalized = value.trim().to_ascii_lowercase().replace('_', "-");
-    SupportedLanguage::from_code(&normalized)
+    SupportedLanguage::parse(value)
         .map(|language| language.code().to_owned())
-        .unwrap_or(normalized)
+        .unwrap_or_else(|| value.trim().to_ascii_lowercase().replace('_', "-"))
 }
 
 fn language_name(code: &str) -> &str {
     if let Some(language) = SupportedLanguage::from_code(code) {
-        return language.model_name();
+        return language.name();
     }
     match code {
         "auto" => "automatically detected language",
@@ -1436,6 +1460,9 @@ pub(crate) fn validate_input_chunk_size(bytes: usize) -> Result<(), String> {
 }
 
 #[cfg(test)]
+mod language_tests;
+
+#[cfg(test)]
 mod tests {
     use std::time::Duration;
 
@@ -1464,7 +1491,7 @@ mod tests {
 
     #[test]
     fn explicit_language_is_used_for_asr_and_translation() {
-        assert_eq!(asr_language("ja"), Some("Japanese".into()));
+        assert_eq!(asr_language("ja"), Some("ja".into()));
         assert_eq!(
             translation_route("ja", "en"),
             super::TranslationRoute {
@@ -1474,7 +1501,7 @@ mod tests {
                 target_code: "en".into(),
             }
         );
-        assert_eq!(asr_language("hi-IN"), Some("Hindi".into()));
+        assert_eq!(asr_language("hi-IN"), Some("hi".into()));
         assert_eq!(
             translation_route("hi-IN", "vi-VN"),
             super::TranslationRoute {

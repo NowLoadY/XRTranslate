@@ -1,5 +1,5 @@
+use crate::CaptureSource;
 use crate::ui::components::{self, danger_button, section, status_badge};
-use crate::{CaptureSource, language_label};
 use eframe::egui;
 use std::hash::{Hash, Hasher};
 
@@ -141,11 +141,8 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
         if components::dismissible_error_notice(ui, app.ui_language, &error) {
             app.last_error = None;
         }
-        if components::animated_button(
-            ui,
-            crate::i18n::tr(app.ui_language, "View Detailed Log"),
-        )
-        .clicked()
+        if components::animated_button(ui, crate::i18n::tr(app.ui_language, "View Detailed Log"))
+            .clicked()
         {
             let log = app.backend_manager.get_latest_log();
             app.modal_dialog =
@@ -156,87 +153,15 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     ui.add_space(14.0);
 
     section(ui, crate::i18n::tr(app.ui_language, "Voice Route"), |ui| {
-        let source_languages = crate::model_language::source_options(&app.service_config);
-        let target_languages = crate::model_language::target_options(&app.service_config);
-        crate::model_language::normalize_route(&app.service_config, &mut app.source_lang, &mut app.target_lang);
-        let previous_source = app.source_lang.clone();
-        let previous_target = app.target_lang.clone();
-
-        crate::ui::layout::flow_row(ui, |ui| {
-            ui.label(
-                egui::RichText::new(crate::i18n::tr(app.ui_language, "Input:"))
-                    .color(crate::ui::theme::text_strong())
-                    .strong(),
-            );
-            let mut source_options = vec![(
-                "auto".to_string(),
-                crate::i18n::tr(app.ui_language, "Auto (bidirectional)").to_string(),
-            )];
-            for (code, label) in &source_languages {
-                source_options.push((
-                    (*code).to_string(),
-                    crate::i18n::tr(app.ui_language, label).to_string(),
-                ));
-            }
-            if components::searchable_combobox(
-                ui,
-                "source_language",
-                language_label(app.ui_language, &app.source_lang),
-                &mut app.source_lang,
-                &source_options,
-            ) && app.source_lang != "auto"
-                && app.target_lang == app.source_lang
-            {
-                app.target_lang = if app.source_lang == "zh" {
-                    "en".to_string()
-                } else {
-                    "zh".to_string()
-                };
-            }
-
-            if app.source_lang == "auto" {
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(crate::i18n::tr(app.ui_language, "Pair:"))
-                        .color(crate::ui::theme::text_strong())
-                        .strong(),
-                );
-                components::target_language_pair_selector(
-                    ui,
-                    "translation_page",
-                    &app.source_lang,
-                    &mut app.target_lang,
-                    app.ui_language,
-                    &source_languages,
-                    |code, lang| language_label(lang, code).to_string(),
-                );
-            } else {
-                ui.add_space(4.0);
-                if components::swap_capsule_button(ui, true).clicked() {
-                    let temp = app.source_lang.clone();
-                    app.source_lang = app.target_lang.clone();
-                    app.target_lang = temp;
-                    app.apply_language_route();
-                }
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(crate::i18n::tr(app.ui_language, "Target:"))
-                        .color(crate::ui::theme::text_strong())
-                        .strong(),
-                );
-                components::target_language_pair_selector(
-                    ui,
-                    "translation_page",
-                    &app.source_lang,
-                    &mut app.target_lang,
-                    app.ui_language,
-                    &target_languages,
-                    |code, lang| language_label(lang, code).to_string(),
-                );
-            }
-        });
-
-        if app.source_lang != previous_source || app.target_lang != previous_target {
+        let capabilities = app.language_capabilities();
+        if components::translation_language_selector(
+            ui,
+            "translation_page",
+            &mut app.source_lang,
+            &mut app.target_lang,
+            capabilities,
+            app.ui_language,
+        ) {
             app.apply_language_route();
         }
     });
@@ -277,30 +202,30 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 (CaptureSource::Both, _) => crate::i18n::tr(app.ui_language, "Both").to_owned(),
             };
             components::combobox_ui(ui, "capture_source", selected_source_text, |ui| {
+                ui.selectable_value(
+                    &mut app.capture_source,
+                    CaptureSource::Microphone,
+                    crate::i18n::tr(app.ui_language, "Microphone"),
+                );
+                let system_audio_available = !app.loopback_devices.is_empty()
+                    || !app.audio_applications.is_empty()
+                    || matches!(
+                        &app.system_audio_input,
+                        crate::SystemAudioInputSelection::Application { .. }
+                    );
+                ui.add_enabled_ui(system_audio_available, |ui| {
                     ui.selectable_value(
                         &mut app.capture_source,
-                        CaptureSource::Microphone,
-                        crate::i18n::tr(app.ui_language, "Microphone"),
+                        CaptureSource::SystemAudio,
+                        crate::i18n::tr(app.ui_language, "System Audio"),
                     );
-                    let system_audio_available = !app.loopback_devices.is_empty()
-                        || !app.audio_applications.is_empty()
-                        || matches!(
-                            &app.system_audio_input,
-                            crate::SystemAudioInputSelection::Application { .. }
-                        );
-                    ui.add_enabled_ui(system_audio_available, |ui| {
-                        ui.selectable_value(
-                            &mut app.capture_source,
-                            CaptureSource::SystemAudio,
-                            crate::i18n::tr(app.ui_language, "System Audio"),
-                        );
-                        ui.selectable_value(
-                            &mut app.capture_source,
-                            CaptureSource::Both,
-                            crate::i18n::tr(app.ui_language, "Both"),
-                        );
-                    });
+                    ui.selectable_value(
+                        &mut app.capture_source,
+                        CaptureSource::Both,
+                        crate::i18n::tr(app.ui_language, "Both"),
+                    );
                 });
+            });
             if app.capture_source != previous_source {
                 app.switch_capture_source(previous_source);
             }
@@ -543,9 +468,7 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 if status.as_ref().is_some_and(|status| {
                     status.state == xrtranslate_protocol::VoiceClonePhase::Ready
                 }) {
-                    ui.label(
-                        egui::RichText::new("OK").color(egui::Color32::from_rgb(5, 150, 105)),
-                    );
+                    ui.label(egui::RichText::new("OK").color(egui::Color32::from_rgb(5, 150, 105)));
                 }
 
                 ui.add_space(12.0);

@@ -1,6 +1,11 @@
 mod openai_chat;
 mod qwen3;
 mod qwen_audio_streaming;
+#[cfg(feature = "sensevoice")]
+mod sensevoice;
+
+#[cfg(feature = "sensevoice")]
+pub use sensevoice::SenseVoiceAdapter;
 
 pub use openai_chat::{OpenAiAsrAdapter, OpenAiAsrOptions};
 pub use qwen_audio_streaming::{QwenAudioStreamingAdapter, QwenAudioStreamingOptions};

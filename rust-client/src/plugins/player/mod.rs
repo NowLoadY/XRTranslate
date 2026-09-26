@@ -20,8 +20,7 @@ pub use task::VideoSubtitleMode;
 #[derive(Clone, Debug)]
 pub struct VideoPlayerUiSnapshot {
     pub language: UiLanguage,
-    pub source_languages: Vec<(&'static str, &'static str)>,
-    pub target_languages: Vec<(&'static str, &'static str)>,
+    pub languages: xrtranslate_engine::language::LanguageCapabilities,
 }
 
 pub(crate) fn runtime_bin_directories() -> Vec<PathBuf> {
@@ -59,7 +58,10 @@ pub enum PlayerTranslationRequest {
 pub enum VideoPlayerAction {
     #[default]
     None,
-    StartTranslation(PlayerTranslationRequest),
+    StartTranslation {
+        request: PlayerTranslationRequest,
+        restart: bool,
+    },
     StopTranslation,
 }
 

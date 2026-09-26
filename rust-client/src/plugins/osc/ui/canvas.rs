@@ -86,14 +86,9 @@ pub fn render_bottom_input_bar(
     plugin: &mut super::super::OscPlugin,
     ui: &mut egui::Ui,
     language: crate::i18n::UiLanguage,
-    translation_languages: &[(&'static str, &'static str)],
+    capabilities: xrtranslate_engine::language::LanguageCapabilities,
     actions: &mut Vec<super::OscUiAction>,
 ) {
-    let mut source = plugin.draft().typing_source_lang.clone();
-    let mut target = plugin.draft().typing_target_lang.clone();
-    crate::model_language::normalize_route_for_options(translation_languages, translation_languages, &mut source, &mut target);
-    plugin.draft_mut().typing_source_lang = source;
-    plugin.draft_mut().typing_target_lang = target;
     let is_enabled = plugin.draft().enabled;
     let mut submit = false;
     let has_text = !plugin.draft_input().trim().is_empty();
@@ -101,17 +96,7 @@ pub fn render_bottom_input_bar(
 
     let container_id = ui.make_persistent_id("osc_bottom_chatbox_container");
 
-    if crate::languages_conflict(
-        &plugin.draft().typing_source_lang,
-        &plugin.draft().typing_target_lang,
-    ) {
-        plugin.draft_mut().typing_target_lang =
-            if crate::languages_conflict(&plugin.draft().typing_source_lang, "zh") {
-                "en".to_string()
-            } else {
-                "zh".to_string()
-            };
-    }
+    let translation_languages = capabilities.targets().options();
 
     let input_border_color = crate::ui::theme::border();
     crate::ui::organic_border::show(
@@ -310,7 +295,9 @@ pub fn render_bottom_input_bar(
                     if let Some((new_src, new_tgt)) =
                         xrtranslate_engine::auto_route_language_pair(text, current_src, current_tgt)
                     {
-                        if new_src != current_src || new_tgt != current_tgt {
+                        if (new_src != current_src || new_tgt != current_tgt)
+                            && capabilities.select(new_src, new_tgt).is_ok()
+                        {
                             plugin.draft_mut().typing_source_lang = new_src.to_string();
                             plugin.draft_mut().typing_target_lang = new_tgt.to_string();
                         }
@@ -339,6 +326,10 @@ pub fn render_bottom_input_bar(
             } else {
                 (current_src.clone(), current_tgt.clone())
             };
+            if let Err(error) = capabilities.select(&final_src, &final_tgt) {
+                crate::ui::components::validation_notice(ui, language, &error);
+                return;
+            }
             plugin.draft_mut().typing_source_lang = final_src.clone();
             plugin.draft_mut().typing_target_lang = final_tgt.clone();
 

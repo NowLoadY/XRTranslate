@@ -104,7 +104,11 @@ fn translation(language: UiLanguage, english: &str) -> Option<&'static str> {
     let (_, zh, ja, ko, ru) = DICTIONARY
         .iter()
         .find(|entry| entry.0 == english)
-        .or_else(|| DICTIONARY.iter().find(|entry| entry.0.eq_ignore_ascii_case(english)))?;
+        .or_else(|| {
+            DICTIONARY
+                .iter()
+                .find(|entry| entry.0.eq_ignore_ascii_case(english))
+        })?;
     Some(match language {
         UiLanguage::Chinese => zh,
         UiLanguage::Japanese => ja,
@@ -118,17 +122,53 @@ fn translation(language: UiLanguage, english: &str) -> Option<&'static str> {
 const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     ("Presets", "预设", "プリセット", "프리셋", "Предустановки"),
     ("Status", "状态", "状態", "상태", "Состояние"),
-    ("Noise gate", "阈值器", "ノイズゲート", "노이즈 게이트", "Шумовой гейт"),
-    ("Volume threshold", "音量阈值", "音量しきい値", "음량 임계값", "Порог громкости"),
-    ("Input level", "输入音量", "入力音量", "입력 음량", "Уровень входа"),
+    (
+        "Noise gate",
+        "阈值器",
+        "ノイズゲート",
+        "노이즈 게이트",
+        "Шумовой гейт",
+    ),
+    (
+        "Volume threshold",
+        "音量阈值",
+        "音量しきい値",
+        "음량 임계값",
+        "Порог громкости",
+    ),
+    (
+        "Input level",
+        "输入音量",
+        "入力音量",
+        "입력 음량",
+        "Уровень входа",
+    ),
     ("Trigger", "触发", "作動", "트리거", "Порог"),
-    ("Choose media…", "选择媒体…", "メディアを選択…", "미디어 선택…", "Выбрать медиа…"),
+    (
+        "Choose media…",
+        "选择媒体…",
+        "メディアを選択…",
+        "미디어 선택…",
+        "Выбрать медиа…",
+    ),
     ("nodes", "个节点", "ノード", "노드", "узлов"),
     ("issues", "个问题", "件の問題", "문제", "проблем"),
-    ("Audio error", "音频错误", "オーディオエラー", "오디오 오류", "Ошибка аудио"),
+    (
+        "Audio error",
+        "音频错误",
+        "オーディオエラー",
+        "오디오 오류",
+        "Ошибка аудио",
+    ),
     ("+ Node", "+ 节点", "+ ノード", "+ 노드", "+ Узел"),
     ("Branches", "分支", "分岐", "분기", "Ветви"),
-    ("ASR prompts", "识别提示词", "認識プロンプト", "인식 프롬프트", "Промпты распознавания"),
+    (
+        "ASR prompts",
+        "识别提示词",
+        "認識プロンプト",
+        "인식 프롬프트",
+        "Промпты распознавания",
+    ),
     ("Preview", "预览", "プレビュー", "미리 보기", "Предпросмотр"),
     ("Graph", "图谱", "グラフ", "그래프", "Граф"),
     ("Hierarchy", "层级", "階層", "계층", "Иерархия"),
@@ -906,7 +946,13 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Видеоплеер использует активный сеанс перевода",
     ),
     ("small", "小型", "小型", "소형", "малый"),
-    ("Requires at least", "至少需要", "最低", "최소", "Требуется не менее"),
+    (
+        "Requires at least",
+        "至少需要",
+        "最低",
+        "최소",
+        "Требуется не менее",
+    ),
     ("normal", "普通", "標準", "일반", "обычный"),
     ("big", "大型", "大", "대형", "большой"),
     ("ultra", "超大", "超大", "초대형", "ультра"),
@@ -2160,6 +2206,13 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     ),
     ("Input:", "输入：", "入力:", "입력:", "Вход:"),
     ("Pair:", "语言对：", "言語対:", "언어 쌍:", "Пара:"),
+    (
+        "Auto Detect",
+        "自动识别",
+        "自動検出",
+        "자동 감지",
+        "Автоопределение",
+    ),
     (
         "Auto (bidirectional)",
         "自动（双向）",
@@ -3783,7 +3836,13 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "모델 제공자 구성",
         "Настройка провайдеров моделей",
     ),
-    ("Selected models ≈", "所选模型约", "選択モデル約", "선택 모델 약", "Выбранные модели ≈"),
+    (
+        "Selected models ≈",
+        "所选模型约",
+        "選択モデル約",
+        "선택 모델 약",
+        "Выбранные модели ≈",
+    ),
     (
         "Estimated model VRAM includes weights and runtime overhead; actual use varies with context and concurrent workloads.",
         "估算显存包含权重和运行开销；实际用量会随上下文和并行任务变化。",
@@ -3791,9 +3850,27 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "추정 GPU 메모리에는 가중치와 실행 오버헤드가 포함되며 실제 사용량은 달라질 수 있습니다.",
         "Оценка включает веса и накладные расходы; фактическое потребление зависит от нагрузки.",
     ),
-    ("Official model results", "官方模型数据", "公式モデル結果", "공식 모델 결과", "Официальные результаты"),
-    ("Parameters (B)", "参数量（十亿）", "パラメータ数（十億）", "매개변수 수(십억)", "Параметры (млрд)"),
-    ("Model license", "模型许可", "モデルライセンス", "모델 라이선스", "Лицензия модели"),
+    (
+        "Official model results",
+        "官方模型数据",
+        "公式モデル結果",
+        "공식 모델 결과",
+        "Официальные результаты",
+    ),
+    (
+        "Parameters (B)",
+        "参数量（十亿）",
+        "パラメータ数（十億）",
+        "매개변수 수(십억)",
+        "Параметры (млрд)",
+    ),
+    (
+        "Model license",
+        "模型许可",
+        "モデルライセンス",
+        "모델 라이선스",
+        "Лицензия модели",
+    ),
     (
         "Select local models or cloud APIs for speech recognition and translation. Required model packages will be downloaded in the final step.",
         "选择语音识别与翻译的本地模型或在线 API。所需模型包将在最后一步统一下载。",

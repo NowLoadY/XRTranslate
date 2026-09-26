@@ -299,86 +299,24 @@ fn validated_vocabulary(
 fn map_language(
     language: Option<&str>,
 ) -> Result<(Option<&'static str>, Option<String>), InferenceError> {
-    let Some(language) = language.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(language) = crate::asr::types::parse_language(language)? else {
         return Ok((None, None));
     };
-    if language.eq_ignore_ascii_case("auto") {
-        return Ok((None, None));
+    // This API uses tl for Filipino and base codes for script variants.
+    let code = match language.base_code() {
+        "fil" => "tl",
+        code => code,
+    };
+    if !xrtranslate_assets::language::QWEN_AUDIO_STREAMING_LANGUAGES.contains(&code) {
+        return Err(InferenceError::InvalidConfiguration {
+            field: "asr.language",
+            message: format!(
+                "{} is not supported by Qwen Audio streaming ASR",
+                language.code()
+            ),
+        });
     }
-
-    let normalized = language.to_ascii_lowercase().replace('_', "-");
-    let primary = normalized.split('-').next().unwrap_or_default();
-    let code = match normalized.as_str() {
-        "chinese" | "traditional chinese" | "simplified chinese" => "zh",
-        "english" => "en",
-        "japanese" => "ja",
-        "korean" => "ko",
-        "vietnamese" => "vi",
-        "thai" => "th",
-        "indonesian" => "id",
-        "malay" => "ms",
-        "filipino" | "tagalog" => "tl",
-        "hindi" => "hi",
-        "arabic" => "ar",
-        "french" => "fr",
-        "german" => "de",
-        "spanish" => "es",
-        "portuguese" => "pt",
-        "russian" => "ru",
-        "italian" => "it",
-        "dutch" => "nl",
-        "swedish" => "sv",
-        "danish" => "da",
-        "finnish" => "fi",
-        "norwegian" => "no",
-        "greek" => "el",
-        "polish" => "pl",
-        "czech" => "cs",
-        "hungarian" => "hu",
-        "romanian" => "ro",
-        "bulgarian" => "bg",
-        "croatian" => "hr",
-        "slovak" => "sk",
-        _ => match primary {
-            "zh" => "zh",
-            "en" => "en",
-            "ja" => "ja",
-            "ko" => "ko",
-            "vi" => "vi",
-            "th" => "th",
-            "id" => "id",
-            "ms" => "ms",
-            "tl" => "tl",
-            "hi" => "hi",
-            "ar" => "ar",
-            "fr" => "fr",
-            "de" => "de",
-            "es" => "es",
-            "pt" => "pt",
-            "ru" => "ru",
-            "it" => "it",
-            "nl" => "nl",
-            "sv" => "sv",
-            "da" => "da",
-            "fi" => "fi",
-            "no" => "no",
-            "el" => "el",
-            "pl" => "pl",
-            "cs" => "cs",
-            "hu" => "hu",
-            "ro" => "ro",
-            "bg" => "bg",
-            "hr" => "hr",
-            "sk" => "sk",
-            _ => {
-                return Err(InferenceError::InvalidConfiguration {
-                    field: "language",
-                    message: format!("{language:?} is not supported by Qwen Audio streaming ASR"),
-                });
-            }
-        },
-    };
-    Ok((Some(code), Some(language.to_owned())))
+    Ok((Some(code), Some(language.code().to_owned())))
 }
 
 fn finish_task(task_id: &str) -> Value {
@@ -581,7 +519,7 @@ mod tests {
         let (request, requested_language) =
             build_run_task("task-1", "qwen-model", &options).unwrap();
 
-        assert_eq!(requested_language.as_deref(), Some("Japanese"));
+        assert_eq!(requested_language.as_deref(), Some("ja"));
         assert_eq!(
             request["payload"]["parameters"]["language_hints"],
             json!(["ja"])
@@ -603,6 +541,15 @@ mod tests {
         assert_eq!(map_language(Some("Chinese")).unwrap().0, Some("zh"));
         assert_eq!(map_language(Some("zh-TW")).unwrap().0, Some("zh"));
         assert_eq!(map_language(Some("Portuguese")).unwrap().0, Some("pt"));
+        assert_eq!(
+            map_language(Some("fil-PH")).unwrap(),
+            (Some("tl"), Some("fil".into()))
+        );
+        assert_eq!(
+            map_language(Some("Traditional Chinese")).unwrap(),
+            (Some("zh"), Some("zh-TW".into()))
+        );
+        assert!(map_language(Some("Cantonese")).is_err());
         assert_eq!(map_language(Some("auto")).unwrap(), (None, None));
         assert!(map_language(Some("Klingon")).is_err());
     }

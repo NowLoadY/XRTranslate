@@ -9,7 +9,7 @@ pub struct OscPageContext<'a> {
     pub language: crate::i18n::UiLanguage,
     pub last_error: Option<&'a str>,
     pub mute_gate_enabled: bool,
-    pub translation_languages: &'a [(&'static str, &'static str)],
+    pub languages: xrtranslate_engine::language::LanguageCapabilities,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -71,7 +71,13 @@ pub fn render(
 
     ui.add_space(10.0);
 
-    canvas::render_bottom_input_bar(plugin, ui, context.language, context.translation_languages, &mut actions);
+    canvas::render_bottom_input_bar(
+        plugin,
+        ui,
+        context.language,
+        context.languages,
+        &mut actions,
+    );
 
     actions
 }

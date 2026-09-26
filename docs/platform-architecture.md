@@ -6,6 +6,34 @@ start inference, or choose storage locations.
 
 ## Boundaries
 
+- `xrtranslate-engine::language` owns task language selection and adaptive routing.
+  Fixed direction, automatic detection into one fixed target, and bidirectional
+  automatic switching are distinct intents. Existing `source_lang`/`target_lang`
+  fields remain the storage and wire format; `LanguageSelection` parses them at
+  boundaries. `LanguageCapabilities` intersects recognition and translation
+  support for audio, and uses only translation support for text. The same policy
+  validates UI choices, task admission, and dynamic switching; empty intersections
+  are errors and never manufacture a Chinese/English fallback.
+- Model cards and remote provider metadata declare capability subsets;
+  `NativeModelRouteConfig::language_capabilities` resolves them for both client
+  and backend. The client caches the result until configuration is saved or
+  reloaded. Unspecified remote support remains explicitly unknown and is subject
+  to the provider's final validation.
+- `session_coordinator::TranslationTask` captures the selected languages, input,
+  and plugin binding before backend startup. Files share one import/session path;
+  deferred starts and audio reconfiguration use the captured task languages.
+  Continuing or reprocessing a meeting reads that meeting's stored selection.
+  Plugin UI rendering never rewrites saved language intent to fit a model.
+- `xrtranslate-engine::language` owns the shared language catalogue: canonical
+  codes, English display names, aliases and available script evidence. UI options,
+  backend routes and inference adapters use this catalogue. The ASR pipeline
+  passes canonical codes (or no language for automatic detection), including on
+  retries. `xrtranslate-inference/src/asr/providers/` owns each provider's wire
+  differences: Qwen3 name prefills, Qwen streaming hints and SenseVoice base codes.
+  Model manifests/API capability lists remain separate from language identity;
+  appearing in the catalogue does not imply support by every model. The optional
+  inference `sensevoice` feature owns sherpa-onnx; the backend only constructs
+  and dispatches the adapter. Unknown language codes never default to English.
 - `xrtranslate-assets` owns model manifests, immutable downloads, staging,
   integrity verification, and atomic activation. Model packages are identical
   across operating systems. Provider configuration selects packages through

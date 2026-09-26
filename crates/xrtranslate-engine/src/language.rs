@@ -3,6 +3,13 @@
 //! Deliberately owns no network, audio, or persistent state. Provides fast,
 //! zero-allocation script analysis and pair-aware language auto-routing.
 
+mod catalog;
+pub use catalog::{LANGUAGE_OPTIONS, LANGUAGES, SupportedLanguage, is_traditional_chinese};
+mod adaptive;
+pub use adaptive::{AdaptiveLanguageRoute, AutoDecision, LanguagePair, LanguageRoute};
+mod selection;
+pub use selection::{LanguageCapabilities, LanguageSelection, LanguageSet};
+
 /// Unicode scripts recognized for rapid language classification.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Script {
@@ -307,14 +314,17 @@ pub fn auto_route_language_pair(
     }
 
     if src == "auto" {
+        if pair_target.is_none() {
+            return Some((detected, static_code(&tgt)?));
+        }
         if let Some(second) = pair_target.as_deref() {
             if is_language_code_match(detected, &tgt) {
-                return Some((static_code(&tgt), static_code(second)));
+                return Some((static_code(&tgt)?, static_code(second)?));
             }
             if is_language_code_match(detected, second) {
-                return Some((static_code(second), static_code(&tgt)));
+                return Some((static_code(second)?, static_code(&tgt)?));
             }
-            return Some((detected, static_code(&tgt)));
+            return Some((detected, static_code(&tgt)?));
         }
     }
 
@@ -325,69 +335,53 @@ pub fn auto_route_language_pair(
 
     // If matches target, flip the pair!
     if is_language_code_match(detected, &tgt) {
-        return Some((static_code(&tgt), static_code(&src)));
+        return Some((static_code(&tgt)?, static_code(&src)?));
     }
 
     // If detected is a distinct third language, route detected -> target (or source if target conflicts).
     let next_target = if is_language_code_match(detected, &tgt) {
-        static_code(&src)
+        static_code(&src)?
     } else {
-        static_code(&tgt)
+        static_code(&tgt)?
     };
 
     Some((detected, next_target))
 }
 
 fn is_language_code_match(detected: &str, code: &str) -> bool {
-    if detected.eq_ignore_ascii_case(code) {
-        return true;
+    match (
+        SupportedLanguage::from_code(detected),
+        SupportedLanguage::from_code(code),
+    ) {
+        (Some(a), Some(b)) => a.base_code() == b.base_code(),
+        _ => false,
     }
-    let primary = code.split(['-', '_']).next().unwrap_or(code);
-    if detected.eq_ignore_ascii_case(primary)
-        || (detected.eq_ignore_ascii_case("hi") && primary.eq_ignore_ascii_case("hin"))
-    {
-        return true;
-    }
-    if detected == "zh" && (code.starts_with("zh") || code == "zh-tw" || code == "zh-cn") {
-        return true;
-    }
-    false
 }
 
-fn static_code(code: &str) -> &'static str {
-    let normalized = code.trim().to_ascii_lowercase().replace('_', "-");
-    match normalized.as_str() {
-        "zh-tw" | "zh-hant" | "zh-hk" | "zh-mo" => return "zh-TW",
-        "zh" | "zh-cn" | "zh-hans" => return "zh",
-        _ => {}
-    }
-    let primary = normalized.split('-').next().unwrap_or_default();
-    match primary {
-        "en" => "en",
-        "ja" => "ja",
-        "ko" => "ko",
-        "ru" => "ru",
-        "th" => "th",
-        "hi" | "hin" => "hi",
-        "fr" => "fr",
-        "de" => "de",
-        "es" => "es",
-        "pt" => "pt",
-        "it" => "it",
-        "vi" => "vi",
-        "id" => "id",
-        "pl" => "pl",
-        "cs" => "cs",
-        "nl" => "nl",
-        "bg" => "bg",
-        "af" => "af",
-        _ => "en",
-    }
+fn static_code(code: &str) -> Option<&'static str> {
+    SupportedLanguage::from_code(code).map(SupportedLanguage::code)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routing_preserves_catalogue_languages_without_an_english_fallback() {
+        assert_eq!(
+            auto_route_language_pair("こんにちは", "en", "yue"),
+            Some(("ja", "yue"))
+        );
+        assert_eq!(
+            auto_route_language_pair("こんにちは", "en", "ar"),
+            Some(("ja", "ar"))
+        );
+        assert_eq!(
+            auto_route_language_pair("こんにちは", "en", "unknown"),
+            None
+        );
+        assert_eq!(static_code("unknown"), None);
+    }
 
     #[test]
     fn test_detect_text_language() {
@@ -405,9 +399,9 @@ mod tests {
 
     #[test]
     fn test_auto_route_language_pair() {
-        assert_eq!(static_code("vi-VN"), "vi");
-        assert_eq!(static_code("hi_IN"), "hi");
-        assert_eq!(static_code("bg-BG"), "bg");
+        assert_eq!(static_code("vi-VN"), Some("vi"));
+        assert_eq!(static_code("hi_IN"), Some("hi"));
+        assert_eq!(static_code("bg-BG"), Some("bg"));
 
         // When typing English on a zh -> en pair, it should flip to en -> zh
         assert_eq!(

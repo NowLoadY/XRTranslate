@@ -1685,9 +1685,7 @@ impl AudioSystem {
                         input_meter.observe(&samples, src_rate);
                     }
                     processing.process(&mut samples);
-                    if let Some(level) = &level
-                        && metering
-                    {
+                    if let Some(level) = &level {
                         update_input_level(&samples, level);
                     }
                     if let Some(resampler) = &mut resampler {
@@ -3103,10 +3101,15 @@ fn take_loopback_mono(pending: &mut VecDeque<u8>, frames: usize) -> Vec<f32> {
 mod tests {
     use super::{
         AudioRouteConfig, AudioRouteError, AudioRouteLoopbackConfig, AudioRouteLoopbackTarget,
-        AudioRouteSourceBuffer, AudioRouteSourceConfig, InputDevice, deduplicate_input_devices,
-        matching_available_input_id, resample_mono, validate_audio_route_config,
+        AudioRouteSourceBuffer, AudioRouteSourceConfig, AudioSystem, InputDevice,
+        deduplicate_input_devices, matching_available_input_id, resample_mono,
+        validate_audio_route_config,
     };
-    use std::sync::{Arc, atomic::AtomicU64};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU32, AtomicU64},
+    };
+    use std::time::Duration;
 
     #[test]
     fn capture_worker_applies_gate_and_accepts_live_threshold_changes() {
@@ -3293,5 +3296,38 @@ mod tests {
             ..AudioRouteConfig::default()
         };
         assert!(validate_audio_route_config(&invalid_ceiling).is_err());
+    }
+
+    #[test]
+    fn processing_worker_updates_level_even_when_studio_metering_is_disabled() {
+        let (raw_tx, raw_rx) = crossbeam_channel::bounded::<Vec<f32>>(8);
+        let (out_tx, out_rx) = crossbeam_channel::bounded::<Vec<f32>>(8);
+        let level = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+        let studio_metering = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let worker = AudioSystem::spawn_processing_worker_with_level(
+            raw_rx,
+            16_000,
+            16_000,
+            out_tx,
+            Some(Arc::clone(&level)),
+            Arc::new(parking_lot::Mutex::new(super::default_source_effects())),
+            Arc::new(super::InputPeakMeter::default()),
+            studio_metering,
+        )
+        .expect("worker spawned");
+
+        // Send audio samples while studio metering is disabled
+        raw_tx.send(vec![0.5; 320]).expect("audio sent");
+        let _ = out_rx.recv_timeout(Duration::from_millis(500)).expect("audio received");
+
+        let recorded_level = f32::from_bits(level.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(
+            recorded_level > 0.05,
+            "level must be updated even when studio metering is disabled, got {recorded_level}"
+        );
+
+        drop(raw_tx);
+        worker.join().expect("worker terminated cleanly");
     }
 }

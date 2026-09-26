@@ -9,3 +9,5 @@ repository.workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 xr-corpus-core = { path = "../../XR-Corpus/crates/core" }
+xrtranslate-assets = { path = "../xrtranslate-assets" }
+xrtranslate-engine = { path = "../xrtranslate-engine" }

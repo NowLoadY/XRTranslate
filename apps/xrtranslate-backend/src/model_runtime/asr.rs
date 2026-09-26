@@ -1,7 +1,5 @@
 //! ASR provider profiles and provider-erased adapter dispatch.
 
-use std::{collections::HashMap, path::PathBuf, sync::mpsc, thread};
-
 use xrtranslate_assets::{
     AsrDelivery, AsrPromptStyle, ModelCapability, ModelFileRole, ModelRuntime, ResolvedModelAsset,
     manifests_for_capability,
@@ -9,7 +7,7 @@ use xrtranslate_assets::{
 use xrtranslate_inference::{
     AsrTranscript, AsrVocabularyBias, InferenceError, OpenAiAsrAdapter, OpenAiAsrOptions,
     Qwen3AsrAdapter, Qwen3AsrOptions, QwenAudioStreamingAdapter, QwenAudioStreamingOptions,
-    ReqwestClient,
+    ReqwestClient, SenseVoiceAdapter,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -22,6 +20,7 @@ pub(super) enum AsrProfile {
 
 #[derive(Clone, Debug)]
 pub(crate) struct NativeAsrOptions {
+    /// Canonical code from the shared catalogue; None selects automatic ASR.
     pub(crate) language: Option<String>,
     pub(crate) instruction_prompt: Option<String>,
     pub(crate) context_bias: Option<String>,
@@ -38,113 +37,6 @@ pub(crate) enum NativeAsrAdapter {
     OpenAi(OpenAiAsrAdapter<ReqwestClient>),
     QwenAudioStreaming(QwenAudioStreamingAdapter),
     SenseVoice(SenseVoiceAdapter),
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct SenseVoiceAdapter {
-    requests: mpsc::Sender<SenseVoiceRequest>,
-}
-
-#[derive(Debug)]
-struct SenseVoiceRequest {
-    samples: Vec<f32>,
-    language: String,
-    reply: tokio::sync::oneshot::Sender<Result<String, String>>,
-}
-
-impl SenseVoiceAdapter {
-    pub(crate) fn new(model: PathBuf, tokens: PathBuf) -> Self {
-        let (requests, receiver) = mpsc::channel::<SenseVoiceRequest>();
-        thread::Builder::new()
-            .name("sensevoice-asr".into())
-            .spawn(move || {
-                use sherpa_onnx::{
-                    OfflineRecognizer, OfflineRecognizerConfig, OfflineSenseVoiceModelConfig,
-                };
-                let mut recognizers: HashMap<String, OfflineRecognizer> = HashMap::new();
-                for request in receiver {
-                    let result = (|| {
-                        if !recognizers.contains_key(&request.language) {
-                            let mut config = OfflineRecognizerConfig::default();
-                            config.model_config.sense_voice = OfflineSenseVoiceModelConfig {
-                                model: Some(model.to_string_lossy().into_owned()),
-                                language: Some(request.language.clone()),
-                                use_itn: true,
-                            };
-                            config.model_config.tokens =
-                                Some(tokens.to_string_lossy().into_owned());
-                            config.model_config.provider = Some("cpu".into());
-                            config.model_config.num_threads = 2;
-                            let recognizer = OfflineRecognizer::create(&config)
-                                .ok_or_else(|| "cannot create SenseVoice recognizer".to_owned())?;
-                            recognizers.insert(request.language.clone(), recognizer);
-                        }
-                        let recognizer = &recognizers[&request.language];
-                        let stream = recognizer.create_stream();
-                        stream.accept_waveform(16_000, &request.samples);
-                        recognizer.decode(&stream);
-                        stream
-                            .get_result()
-                            .map(|result| result.text)
-                            .ok_or_else(|| "SenseVoice returned no result".to_owned())
-                    })();
-                    let _ = request.reply.send(result);
-                }
-            })
-            .expect("cannot start SenseVoice ASR worker");
-        Self { requests }
-    }
-
-    async fn transcribe(
-        &self,
-        pcm: &[u8],
-        language: Option<String>,
-    ) -> Result<AsrTranscript, InferenceError> {
-        if pcm.is_empty() || pcm.len() % 2 != 0 {
-            return Err(InferenceError::InvalidAudio {
-                message: "SenseVoice requires nonempty 16-bit mono PCM".into(),
-            });
-        }
-        let samples = pcm
-            .chunks_exact(2)
-            .map(|bytes| f32::from(i16::from_le_bytes([bytes[0], bytes[1]])) / 32768.0)
-            .collect();
-        let normalized_language = match language.as_deref() {
-            Some("zh-TW" | "zh-Hant") => "zh".to_owned(),
-            Some(code) => code.to_owned(),
-            None => "auto".to_owned(),
-        };
-        let (reply, result) = tokio::sync::oneshot::channel();
-        self.requests
-            .send(SenseVoiceRequest {
-                samples,
-                language: normalized_language,
-                reply,
-            })
-            .map_err(|error| InferenceError::InvalidResponse {
-                endpoint: "sensevoice-onnx".into(),
-                message: error.to_string(),
-                body_preview: String::new(),
-            })?;
-        let text = result
-            .await
-            .map_err(|error| InferenceError::InvalidResponse {
-                endpoint: "sensevoice-onnx".into(),
-                message: error.to_string(),
-                body_preview: String::new(),
-            })?
-            .map_err(|message| InferenceError::InvalidResponse {
-                endpoint: "sensevoice-onnx".into(),
-                message,
-                body_preview: String::new(),
-            })?;
-        if text.trim().is_empty() {
-            return Err(InferenceError::EmptyOutput {
-                operation: "SenseVoice ASR",
-            });
-        }
-        Ok(AsrTranscript { language, text })
-    }
 }
 
 impl AsrProfile {
@@ -277,7 +169,11 @@ impl NativeAsrAdapter {
                     )
                     .await
             }
-            Self::SenseVoice(adapter) => adapter.transcribe(pcm, options.language).await,
+            Self::SenseVoice(adapter) => {
+                adapter
+                    .transcribe_pcm16(pcm, options.language.as_deref())
+                    .await
+            }
         }
     }
 }
@@ -285,12 +181,15 @@ impl NativeAsrAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
-    /// Run with SENSEVOICE_TEST_DIR pointing at a verified model package plus
-    /// the upstream test_wavs/en.wav fixture.
+    /// Exercises the same language codes sent by the pipeline, including its
+    /// constrained recovery after an automatic recognition attempt.
     #[tokio::test]
     #[ignore = "requires downloaded SenseVoiceSmall model and audio fixture"]
-    async fn sensevoice_english_fixture_smoke() {
+    async fn sensevoice_pipeline_language_fixture_smoke() {
+        use crate::language::{AdaptiveLanguageRoute, AutoDecision};
+
         let root =
             PathBuf::from(std::env::var_os("SENSEVOICE_TEST_DIR").expect("SENSEVOICE_TEST_DIR"));
         let wave = sherpa_onnx::Wave::read(root.join("en.wav").to_str().unwrap()).unwrap();
@@ -301,8 +200,23 @@ mod tests {
             .flat_map(|sample| ((*sample * 32767.0) as i16).to_le_bytes())
             .collect::<Vec<_>>();
         let adapter = SenseVoiceAdapter::new(root.join("model.int8.onnx"), root.join("tokens.txt"));
-        let result = adapter.transcribe(&pcm, Some("en".into())).await.unwrap();
-        assert!(!result.text.trim().is_empty());
-        eprintln!("SenseVoice transcription: {}", result.text);
+        let automatic = adapter.transcribe_pcm16(&pcm, None).await.unwrap();
+        assert!(!automatic.text.trim().is_empty());
+
+        let mut route = AdaptiveLanguageRoute::default();
+        route.configure("auto", "zh,en");
+        let AutoDecision::Retry { language, .. } =
+            route.classify(automatic.language.as_deref(), &automatic.text)
+        else {
+            panic!("expected constrained recovery for unlabelled automatic output");
+        };
+        let recovered = adapter
+            .transcribe_pcm16(&pcm, Some(language.code()))
+            .await
+            .unwrap();
+        assert_eq!(recovered.text, automatic.text);
+        let explicit = adapter.transcribe_pcm16(&pcm, Some("en")).await.unwrap();
+        assert_eq!(explicit.text, recovered.text);
+        assert_eq!(explicit.language.as_deref(), Some("en"));
     }
 }

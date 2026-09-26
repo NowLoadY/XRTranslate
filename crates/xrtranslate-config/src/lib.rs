@@ -6,6 +6,8 @@
 
 #![forbid(unsafe_code)]
 
+mod language;
+
 use std::{
     error::Error,
     fmt, fs, io,

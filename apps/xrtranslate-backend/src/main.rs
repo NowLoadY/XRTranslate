@@ -476,6 +476,11 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                 return;
             }
         };
+    let mut audio_route_valid = state
+        .model_plan
+        .language_capabilities
+        .select(session.source_lang(), session.target_lang())
+        .is_ok();
     let mut input_format = PcmFormat::mono_s16le(state.config.audio.sample_rate);
     let speaker_available = pipeline.inference().speaker_is_available();
     let speaker_recognition_enabled = Arc::new(AtomicBool::new(false));
@@ -760,12 +765,20 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                                 }
                                 input_format = PcmFormat::mono_s16le(sample_rate);
                             }
-                            if let Err(error) = session.set_route(&source, &target) {
-                                if send_error(&outbound_sender, error).await.is_err() {
-                                    break;
-                                }
+                            if let Err(error) = state.model_plan.language_capabilities
+                                .select(&source, &target)
+                                .and_then(|selection| {
+                                    let (source, target) = selection.wire();
+                                    session.set_route(&source, &target)
+                                }) {
+                                audio_route_valid = false;
+                                pipeline.reset();
+                                generation.audio_epoch.advance();
+                                generation_sender.send_replace(generation);
+                                if send_error(&outbound_sender, error).await.is_err() { break; }
                                 continue;
                             }
+                            audio_route_valid = true;
                             pipeline.reset();
                             generation.route_epoch = session.route_epoch();
                             generation.audio_epoch.advance();
@@ -817,12 +830,20 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                                 }
                                 continue;
                             }
-                            if let Err(error) = session.set_route(&source, &target) {
-                                if send_error(&outbound_sender, error).await.is_err() {
-                                    break;
-                                }
+                            if let Err(error) = state.model_plan.language_capabilities
+                                .select(&source, &target)
+                                .and_then(|selection| {
+                                    let (source, target) = selection.wire();
+                                    session.set_route(&source, &target)
+                                }) {
+                                audio_route_valid = false;
+                                pipeline.reset();
+                                generation.audio_epoch.advance();
+                                generation_sender.send_replace(generation);
+                                if send_error(&outbound_sender, error).await.is_err() { break; }
                                 continue;
                             }
+                            audio_route_valid = true;
                             pipeline.reset();
                             workload = configured_workload;
                             audio_source = configured_audio_source;
@@ -1033,7 +1054,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                         }
                     },
                     Message::Binary(audio) => {
-                        if !input_state.accepts_audio() {
+                        if !audio_route_valid || !input_state.accepts_audio() {
                             continue;
                         }
                         if let Err(error) = validate_input_chunk_size(audio.len()) {

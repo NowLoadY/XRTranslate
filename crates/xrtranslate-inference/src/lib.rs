@@ -15,6 +15,8 @@ mod translation;
 mod tts;
 mod wav;
 
+#[cfg(feature = "sensevoice")]
+pub use asr::SenseVoiceAdapter;
 pub use asr::{
     AsrTranscript, AsrVocabularyBias, OpenAiAsrAdapter, OpenAiAsrOptions, Qwen3AsrAdapter,
     Qwen3AsrOptions, QwenAudioStreamingAdapter, QwenAudioStreamingOptions,

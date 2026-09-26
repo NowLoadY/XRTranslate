@@ -163,10 +163,11 @@ pub(super) fn draft_validation_error(
     if snapshot.host_session_busy {
         return Some("Stop the current translation session before starting a meeting".into());
     }
-    if controller.draft.source_language != "auto"
-        && controller.draft.source_language == controller.draft.target_language
-    {
-        return Some("Spoken language and translation language cannot be the same".into());
+    if let Err(error) = snapshot.languages.select(
+        &controller.draft.source_language,
+        &controller.draft.target_language,
+    ) {
+        return Some(error);
     }
     if controller.draft.import_audio {
         let value = controller.draft.import_path.trim();

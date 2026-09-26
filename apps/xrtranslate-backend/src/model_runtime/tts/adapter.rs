@@ -1,6 +1,7 @@
 //! Provider-erased TTS capability consumed by session orchestration.
 
 use std::sync::Arc;
+use xrtranslate_engine::language::SupportedLanguage;
 
 use xrtranslate_inference::{
     Audio8OnnxAdapter, InferenceError, OnnxExecutionDevice, OpenVoiceOnnxAdapter, SynthesizedPcm,
@@ -148,18 +149,14 @@ impl NativeTtsAdapter {
     }
 }
 
-fn normalized_language(language: &str) -> String {
-    language.trim().replace('_', "-").to_ascii_lowercase()
-}
-
 fn language_is_supported(supported_languages: &[String], language: &str) -> bool {
-    let language = normalized_language(language);
+    let parsed = SupportedLanguage::parse(language);
     supported_languages.is_empty()
         || supported_languages.iter().any(|supported| {
-            supported == &language
-                || language
-                    .split_once('-')
-                    .is_some_and(|(base, _)| supported == base)
+            match (SupportedLanguage::parse(supported), parsed) {
+                (Some(supported), Some(language)) => supported.base_code() == language.base_code(),
+                _ => supported.eq_ignore_ascii_case(language.trim()),
+            }
         })
 }
 
@@ -171,6 +168,8 @@ mod tests {
     fn language_capability_matches_locales_without_provider_branches() {
         let english = vec!["en".to_owned()];
         assert!(language_is_supported(&english, "EN_us"));
+        assert!(language_is_supported(&english, "English"));
+        assert!(language_is_supported(&["zh".into()], "zh_Hant_TW"));
         assert!(!language_is_supported(&english, "zh-CN"));
         assert!(language_is_supported(&[], "zh-CN"));
     }

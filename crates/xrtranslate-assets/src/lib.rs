@@ -7,6 +7,7 @@
 
 mod catalog;
 mod install;
+pub mod language;
 mod preflight;
 mod resolve;
 

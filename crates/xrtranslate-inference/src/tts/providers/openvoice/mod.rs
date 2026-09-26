@@ -89,15 +89,13 @@ impl OpenVoiceBaseVoice {
     }
 
     fn supports_language(self, language: &str) -> bool {
-        let language = language.trim().to_ascii_lowercase();
-        match self.frontend_kind() {
-            MeloFrontendKind::ChineseMixedEnglish => {
-                matches!(language.as_str(), "zh" | "zh-cn" | "zh-tw" | "chinese")
-            }
-            MeloFrontendKind::English => {
-                matches!(language.as_str(), "en" | "en-us" | "en-gb" | "english")
-            }
-        }
+        xrtranslate_engine::language::SupportedLanguage::parse(language).is_some_and(|language| {
+            language.base_code()
+                == match self.frontend_kind() {
+                    MeloFrontendKind::ChineseMixedEnglish => "zh",
+                    MeloFrontendKind::English => "en",
+                }
+        })
     }
 }
 

@@ -21,7 +21,6 @@ clap = { version = "4.5.58", features = ["derive"] }
 futures-util = "0.3.31"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-sherpa-onnx = "1.13.8"
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
@@ -31,7 +30,7 @@ xr-corpus-client = { path = "../../XR-Corpus/crates/client" }
 xr-corpus-protocol = { path = "../../XR-Corpus/crates/protocol" }
 xrtranslate-config = { path = "../../crates/xrtranslate-config" }
 xrtranslate-engine = { path = "../../crates/xrtranslate-engine" }
-xrtranslate-inference = { path = "../../crates/xrtranslate-inference" }
+xrtranslate-inference = { path = "../../crates/xrtranslate-inference", features = ["sensevoice"] }
 xrtranslate-prompt = { path = "../../crates/xrtranslate-prompt" }
 xrtranslate-protocol = { path = "../../crates/xrtranslate-protocol" }
 xrtranslate-denoise = { path = "../../crates/xrtranslate-denoise" }
@@ -39,3 +38,6 @@ xrtranslate-speaker = { path = "../../crates/xrtranslate-speaker" }
 xrtranslate-supervisor = { path = "../../crates/xrtranslate-supervisor" }
 xrtranslate-vad = { path = "../../crates/xrtranslate-vad" }
 zhconv = "0.3"
+
+[dev-dependencies]
+sherpa-onnx = "1.13.8"

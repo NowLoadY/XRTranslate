@@ -1,6 +1,9 @@
 use crate::ui::theme;
 use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Stroke, Ui, Vec2};
 
+#[cfg(test)]
+mod language_tests;
+
 pub fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     let border_id = ui.next_auto_id().with("organic_card_border");
     crate::ui::organic_border::show(
@@ -194,9 +197,8 @@ pub fn segmented_audio_meter(
         history.resize(SAMPLES, 0.0);
     }
 
-    let last_sample_time = ui.memory(|m| {
-        m.data.get_temp::<f64>(id.with("last_time")).unwrap_or(now)
-    });
+    let last_sample_time =
+        ui.memory(|m| m.data.get_temp::<f64>(id.with("last_time")).unwrap_or(now));
 
     if !updating {
         history.fill(0.0);
@@ -482,14 +484,22 @@ pub fn animated_button_enabled_with_id(
         if enabled {
             let hover_bg = theme::surface_control_hover();
             let active_bg = theme::surface_control_active();
-            let bg = crate::ui::animation::AnimationSystem::lerp_color(Color32::TRANSPARENT, hover_bg, hover_factor);
+            let bg = crate::ui::animation::AnimationSystem::lerp_color(
+                Color32::TRANSPARENT,
+                hover_bg,
+                hover_factor,
+            );
             crate::ui::animation::AnimationSystem::lerp_color(bg, active_bg, active_factor)
         } else {
             Color32::TRANSPARENT
         }
     } else if enabled {
         let hover_bg = theme::surface_control_hover();
-        crate::ui::animation::AnimationSystem::lerp_color(theme::surface_control(), hover_bg, hover_factor)
+        crate::ui::animation::AnimationSystem::lerp_color(
+            theme::surface_control(),
+            hover_bg,
+            hover_factor,
+        )
     } else {
         theme::surface_control()
     };
@@ -1207,8 +1217,13 @@ pub fn searchable_combobox_with_options<T: PartialEq + Clone>(
 pub fn search_bar(ui: &mut Ui, query: &mut String, hint: &str) -> bool {
     let is_hand_drawn = theme::is_hand_drawn(ui.ctx());
     let id = ui.make_persistent_id("search_bar_comp");
-    let is_hovered = ui.memory(|m| m.data.get_temp::<bool>(id.with("hover_state")).unwrap_or(false));
-    let hover_factor = crate::ui::animation::AnimationSystem::hover(ui.ctx(), id.with("anim_hover"), is_hovered);
+    let is_hovered = ui.memory(|m| {
+        m.data
+            .get_temp::<bool>(id.with("hover_state"))
+            .unwrap_or(false)
+    });
+    let hover_factor =
+        crate::ui::animation::AnimationSystem::hover(ui.ctx(), id.with("anim_hover"), is_hovered);
     let mut changed = false;
     let has_query = !query.is_empty();
 
@@ -1430,113 +1445,96 @@ pub fn validation_notice(ui: &mut Ui, language: crate::i18n::UiLanguage, details
         });
 }
 
-pub fn target_language_pair_selector(
+pub fn translation_language_selector(
     ui: &mut Ui,
-    id_prefix: &str,
-    source_language: &str,
-    target_language: &mut String,
+    id: &str,
+    source: &mut String,
+    target: &mut String,
+    capabilities: xrtranslate_engine::language::LanguageCapabilities,
     language: crate::i18n::UiLanguage,
-    available_options: &[(&'static str, &'static str)],
-    label_fn: impl Fn(&str, crate::i18n::UiLanguage) -> String,
 ) -> bool {
-    let mut changed = false;
-    if source_language == "auto" {
-        let (mut a, mut b) = match target_language.split_once(',') {
-            Some((x, y)) => (x.to_string(), y.to_string()),
-            None => ("zh".to_string(), "en".to_string()),
-        };
-
-        let options_a: Vec<_> = available_options
-            .iter()
-            .filter(|(code, _)| !crate::languages_conflict(code, &b))
-            .map(|(code, label)| {
-                (
-                    (*code).to_string(),
-                    crate::i18n::tr(language, label).to_string(),
-                )
-            })
-            .collect();
-
-        let options_b: Vec<_> = available_options
-            .iter()
-            .filter(|(code, _)| !crate::languages_conflict(code, &a))
-            .map(|(code, label)| {
-                (
-                    (*code).to_string(),
-                    crate::i18n::tr(language, label).to_string(),
-                )
-            })
-            .collect();
-
-        ui.horizontal(|ui| {
-            if searchable_combobox(
-                ui,
-                format!("{id_prefix}_target_a"),
-                label_fn(&a, language),
-                &mut a,
-                &options_a,
-            ) {
-                changed = true;
-            }
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new("↔")
-                    .color(crate::ui::theme::text_weak())
-                    .strong(),
-            );
-            ui.add_space(4.0);
-            if searchable_combobox(
-                ui,
-                format!("{id_prefix}_target_b"),
-                label_fn(&b, language),
-                &mut b,
-                &options_b,
-            ) {
-                changed = true;
-            }
-        });
-
-        let new_target = format!("{a},{b}");
-        if new_target != *target_language {
-            *target_language = new_target;
-            changed = true;
-        }
+    let tr = |label| crate::i18n::tr(language, label).to_string();
+    let label = |code: &str| crate::language_label(language, code).to_string();
+    let mut input = if source == "auto" && target.contains(',') {
+        "auto-pair".to_owned()
     } else {
-        if target_language.contains(',') {
-            if let Some((first, _)) = target_language.split_once(',') {
-                *target_language = first.to_string();
+        source.clone()
+    };
+    let mut options = vec![("auto".to_owned(), tr("Auto Detect"))];
+    if capabilities.change_input("auto", target, true).is_ok() {
+        options.push(("auto-pair".to_owned(), tr("Auto (bidirectional)")));
+    }
+    options.extend(
+        capabilities
+            .sources()
+            .iter()
+            .map(|item| (item.code().to_owned(), tr(item.name()))),
+    );
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        let selected = if input == "auto-pair" {
+            tr("Auto (bidirectional)")
+        } else {
+            options
+                .iter()
+                .find(|(code, _)| code == &input)
+                .map(|(_, label)| label.clone())
+                .unwrap_or_else(|| label(&input))
+        };
+        if searchable_combobox(ui, format!("{id}_source"), selected, &mut input, &options) {
+            let pair = input == "auto-pair";
+            let next_source = if pair { "auto" } else { &input };
+            if let Ok(selection) = capabilities.change_input(next_source, target, pair) {
+                (*source, *target) = selection.wire();
                 changed = true;
             }
         }
-        if crate::languages_conflict(target_language, source_language) {
-            let fallback = if crate::languages_conflict(source_language, "zh") {
-                "en"
-            } else {
-                "zh"
-            };
-            *target_language = fallback.to_string();
+        let pair = source == "auto" && target.contains(',');
+        if source != "auto"
+            && ui
+                .push_id(id, |ui| {
+                    swap_capsule_button(ui, capabilities.select(target, source).is_ok()).clicked()
+                })
+                .inner
+        {
+            std::mem::swap(source, target);
             changed = true;
         }
-
-        let mut target_options = Vec::new();
-        for (code, label) in available_options {
-            if !crate::languages_conflict(code, source_language) {
-                target_options.push((
-                    (*code).to_string(),
-                    crate::i18n::tr(language, label).to_string(),
-                ));
+        let available = if pair {
+            capabilities.sources()
+        } else {
+            capabilities.targets()
+        };
+        let mut targets: Vec<String> = target.split(',').map(str::to_owned).collect();
+        for index in 0..targets.len() {
+            ui.label(if pair { "↔" } else { "→" });
+            let options: Vec<_> = available
+                .iter()
+                .filter(|item| {
+                    if pair {
+                        targets.iter().enumerate().all(|(other, code)| {
+                            other == index || !crate::languages_conflict(item.code(), code)
+                        })
+                    } else {
+                        item.code() != source
+                    }
+                })
+                .map(|item| (item.code().to_owned(), tr(item.name())))
+                .collect();
+            if searchable_combobox(
+                ui,
+                format!("{id}_target_{index}"),
+                label(&targets[index]),
+                &mut targets[index],
+                &options,
+            ) {
+                *target = targets.join(",");
+                changed = true;
             }
         }
-
-        if searchable_combobox(
-            ui,
-            format!("{id_prefix}_target"),
-            label_fn(target_language, language),
-            target_language,
-            &target_options,
-        ) {
-            changed = true;
-        }
+    });
+    if let Err(error) = capabilities.select(source, target) {
+        validation_notice(ui, language, &error);
     }
     changed
 }
@@ -1839,7 +1837,11 @@ pub fn tech_numeric_badge(ui: &mut Ui, text: &str) {
     );
 }
 
-pub fn checkbox(ui: &mut Ui, checked: &mut bool, text: impl Into<egui::WidgetText>) -> egui::Response {
+pub fn checkbox(
+    ui: &mut Ui,
+    checked: &mut bool,
+    text: impl Into<egui::WidgetText>,
+) -> egui::Response {
     let id = ui.next_auto_id();
     let text = text.into();
     let is_hand_drawn = theme::is_hand_drawn(ui.ctx());
@@ -1931,12 +1933,8 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, text: impl Into<egui::WidgetTex
         );
 
         if check_factor > 0.05 {
-            let check_color = Color32::from_rgba_unmultiplied(
-                37,
-                99,
-                235,
-                (255.0 * check_factor) as u8,
-            );
+            let check_color =
+                Color32::from_rgba_unmultiplied(37, 99, 235, (255.0 * check_factor) as u8);
             crate::ui::organic_line::paint_hand_drawn_checkmark(
                 painter,
                 id.with("check"),
@@ -2019,16 +2017,10 @@ pub fn resource_delete_button(
             .get_temp::<bool>(id.with("active_state"))
             .unwrap_or(false)
     });
-    let hover_factor = crate::ui::animation::AnimationSystem::hover(
-        ui.ctx(),
-        id.with("anim_hover"),
-        is_hovered,
-    );
-    let active_factor = crate::ui::animation::AnimationSystem::active(
-        ui.ctx(),
-        id.with("anim_active"),
-        is_active,
-    );
+    let hover_factor =
+        crate::ui::animation::AnimationSystem::hover(ui.ctx(), id.with("anim_hover"), is_hovered);
+    let active_factor =
+        crate::ui::animation::AnimationSystem::active(ui.ctx(), id.with("anim_active"), is_active);
 
     let alpha = (0.06 + 0.12 * hover_factor + 0.08 * active_factor).clamp(0.0, 1.0);
     let border_alpha = (0.25 + 0.45 * hover_factor + 0.15 * active_factor).clamp(0.0, 1.0);
@@ -2052,9 +2044,7 @@ pub fn resource_delete_button(
         .stroke(stroke)
         .corner_radius(CornerRadius::same(6))
         .inner_margin(Margin::symmetric(7, 5))
-        .show(ui, |ui| {
-            ui.add(icon)
-        })
+        .show(ui, |ui| ui.add(icon))
         .response
         .interact(egui::Sense::click())
         .on_hover_text(crate::i18n::tr(language, "Delete"));
@@ -2145,11 +2135,8 @@ pub fn text_edit_ui(
             .get_temp::<bool>(id.with("hover_state"))
             .unwrap_or(false)
     });
-    let hover_factor = crate::ui::animation::AnimationSystem::hover(
-        ui.ctx(),
-        id.with("anim_hover"),
-        is_hovered,
-    );
+    let hover_factor =
+        crate::ui::animation::AnimationSystem::hover(ui.ctx(), id.with("anim_hover"), is_hovered);
 
     let (response, rect) = ui.scope(|ui| {
         if is_hand_drawn {
@@ -2404,13 +2391,8 @@ pub fn sub_sidebar<T: Copy + PartialEq>(
                     if resp.clicked() {
                         *selected = item.id;
                     }
-                    let simulated_click = crate::ui::automation::record_button(
-                        ui,
-                        id,
-                        &item.label,
-                        true,
-                        resp.rect,
-                    );
+                    let simulated_click =
+                        crate::ui::automation::record_button(ui, id, &item.label, true, resp.rect);
                     if simulated_click {
                         *selected = item.id;
                         simulate_click_on(ui, resp.rect);
@@ -2425,6 +2407,188 @@ pub fn sub_sidebar<T: Copy + PartialEq>(
     );
 }
 
+pub struct ModernSlider<'a, Num: egui::emath::Numeric> {
+    label: &'a str,
+    value: &'a mut Num,
+    range: std::ops::RangeInclusive<Num>,
+    default: Num,
+    step: Option<f64>,
+    suffix: Option<String>,
+    precision: Option<usize>,
+    states: &'a [&'a str],
+    percentage: bool,
+    id_salt: Option<String>,
+    label_width: Option<f32>,
+}
+
+impl<'a, Num: egui::emath::Numeric> ModernSlider<'a, Num> {
+    pub fn new(
+        label: &'a str,
+        value: &'a mut Num,
+        range: std::ops::RangeInclusive<Num>,
+        default: Num,
+    ) -> Self {
+        Self {
+            label,
+            value,
+            range,
+            default,
+            step: None,
+            suffix: None,
+            precision: None,
+            states: &[],
+            percentage: false,
+            id_salt: None,
+            label_width: None,
+        }
+    }
+
+    pub fn step(mut self, step: f64) -> Self {
+        self.step = Some(step);
+        self
+    }
+
+    pub fn suffix(mut self, suffix: impl Into<String>) -> Self {
+        self.suffix = Some(suffix.into());
+        self
+    }
+
+    pub fn precision(mut self, precision: usize) -> Self {
+        self.precision = Some(precision);
+        self
+    }
+
+    pub fn states(mut self, states: &'a [&'a str]) -> Self {
+        self.states = states;
+        self
+    }
+
+    pub fn percentage(mut self, percentage: bool) -> Self {
+        self.percentage = percentage;
+        self
+    }
+
+    pub fn id_salt(mut self, id_salt: impl Into<String>) -> Self {
+        self.id_salt = Some(id_salt.into());
+        self
+    }
+
+    pub fn label_width(mut self, width: f32) -> Self {
+        self.label_width = Some(width);
+        self
+    }
+
+    pub fn show(self, ui: &mut Ui) -> egui::Response {
+        ui.horizontal(|ui| {
+            let available = ui.available_width();
+            let is_narrow = available < 280.0;
+            let default_label_w = if is_narrow { 85.0 } else { 110.0 };
+            let label_w = self.label_width.unwrap_or(default_label_w);
+
+            if !self.label.is_empty() {
+                ui.allocate_ui_with_layout(
+                    Vec2::new(label_w, 20.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new(self.label)
+                                .color(crate::ui::theme::text_strong())
+                                .size(if is_narrow { 12.0 } else { 13.0 })
+                                .strong(),
+                        );
+                    },
+                );
+            }
+
+            let badge_text = if !self.states.is_empty() {
+                let val_f = self.value.to_f64() as f32;
+                let start_f = self.range.start().to_f64() as f32;
+                let end_f = self.range.end().to_f64() as f32;
+                let range_f = start_f..=end_f;
+                slider_state_label(val_f, &range_f, self.states)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| {
+                        let prec = self.precision.unwrap_or(2);
+                        format!("{:.prec$}", val_f)
+                    })
+            } else if self.percentage {
+                let percent = (self.value.to_f64() * 100.0).round() as i64;
+                format!("{percent} %")
+            } else {
+                let val = self.value.to_f64();
+                let suffix = self.suffix.as_deref().unwrap_or("");
+                if let Some(prec) = self.precision {
+                    format!("{val:.prec$}{suffix}")
+                } else if Num::INTEGRAL {
+                    format!("{val:.0}{suffix}")
+                } else {
+                    format!("{val:.2}{suffix}")
+                }
+            };
+
+            let reserve_w = (badge_text.chars().count() as f32 * 7.5 + 36.0).max(82.0);
+            let slider_w = (ui.available_width() - reserve_w).max(50.0);
+            let mut response = ui
+                .scope(|ui| {
+                    let style = ui.style_mut();
+                    style.spacing.slider_rail_height = 8.0;
+                    style.visuals.widgets.inactive.bg_fill =
+                        Color32::from_rgba_unmultiplied(130, 139, 143, 170);
+                    style.visuals.widgets.hovered.bg_fill = theme::primary();
+                    style.visuals.widgets.hovered.fg_stroke = Stroke::NONE;
+                    style.visuals.widgets.active.bg_fill = theme::primary();
+                    style.visuals.widgets.active.fg_stroke = Stroke::NONE;
+                    style.visuals.widgets.inactive.fg_stroke = Stroke::NONE;
+                    style.visuals.selection.bg_fill = theme::primary_fill();
+                    style.visuals.widgets.inactive.corner_radius = CornerRadius::same(4);
+                    style.visuals.handle_shape = egui::style::HandleShape::Rect { aspect_ratio: 0.0 };
+
+                    let mut slider = egui::Slider::new(self.value, self.range.clone())
+                        .show_value(false)
+                        .trailing_fill(true);
+                    if let Some(step) = self.step {
+                        slider = slider.step_by(step);
+                    }
+                    ui.add_sized(Vec2::new(slider_w, 20.0), slider)
+                })
+                .inner;
+
+            let salt_str = self.id_salt.as_deref().unwrap_or(self.label);
+            let salt = if salt_str.is_empty() { "slider" } else { salt_str };
+            let slider_id = ui.make_persistent_id(salt);
+            let record_label = if self.label.is_empty() { salt } else { self.label };
+            if let Some(new_val) = crate::ui::automation::record_slider(
+                ui,
+                slider_id,
+                record_label,
+                self.value.to_f64(),
+                true,
+                response.rect,
+            ) {
+                let clamped = new_val.clamp(
+                    self.range.start().to_f64(),
+                    self.range.end().to_f64(),
+                );
+                *self.value = Num::from_f64(clamped);
+                response.mark_changed();
+            }
+
+            ui.add_space(4.0);
+            tech_numeric_badge(ui, &badge_text);
+
+            let mut reset = reset_button(ui, salt);
+            let diff = (self.value.to_f64() - self.default.to_f64()).abs();
+            if reset.clicked() && (diff > 1e-6 || *self.value != self.default) {
+                *self.value = self.default;
+                reset.mark_changed();
+            }
+
+            response | reset
+        })
+        .inner
+    }
+}
+
 pub fn modern_slider_f64(
     ui: &mut Ui,
     value: &mut f64,
@@ -2433,76 +2597,11 @@ pub fn modern_slider_f64(
     label: &str,
     suffix: &str,
 ) -> egui::Response {
-    ui.horizontal(|ui| {
-        let available = ui.available_width();
-        let is_narrow = available < 280.0;
-        let label_w = if is_narrow { 85.0 } else { 110.0 };
-
-        if !label.is_empty() {
-            ui.allocate_ui_with_layout(
-                Vec2::new(label_w, 20.0),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.label(
-                        egui::RichText::new(label)
-                            .color(crate::ui::theme::text_strong())
-                            .size(if is_narrow { 12.0 } else { 13.0 })
-                            .strong(),
-                    );
-                },
-            );
-        }
-
-        let slider = egui::Slider::new(value, range.clone())
-            .show_value(false)
-            .step_by(0.5)
-            .trailing_fill(true);
-
-        let slider_w = (ui.available_width() - 82.0).max(50.0);
-        let mut response = ui
-            .scope(|ui| {
-                let style = ui.style_mut();
-                style.spacing.slider_rail_height = 8.0;
-                style.visuals.widgets.inactive.bg_fill =
-                    Color32::from_rgba_unmultiplied(130, 139, 143, 170);
-                style.visuals.widgets.hovered.bg_fill = theme::primary();
-                style.visuals.widgets.hovered.fg_stroke = Stroke::NONE;
-                style.visuals.widgets.active.bg_fill = theme::primary();
-                style.visuals.widgets.active.fg_stroke = Stroke::NONE;
-                style.visuals.widgets.inactive.fg_stroke = Stroke::NONE;
-                style.visuals.selection.bg_fill = theme::primary_fill();
-                style.visuals.widgets.inactive.corner_radius = CornerRadius::same(4);
-                style.visuals.handle_shape = egui::style::HandleShape::Rect { aspect_ratio: 0.0 };
-                ui.add_sized(Vec2::new(slider_w, 20.0), slider)
-            })
-            .inner;
-
-        let slider_id = ui.make_persistent_id(label);
-        if let Some(new_val) = crate::ui::automation::record_slider(
-            ui,
-            slider_id,
-            label,
-            *value,
-            true,
-            response.rect,
-        ) {
-            *value = new_val.clamp(*range.start(), *range.end());
-            response.mark_changed();
-        }
-
-        let value_text = format!("{:.1}{}", *value, suffix);
-        ui.add_space(4.0);
-        tech_numeric_badge(ui, &value_text);
-
-        let mut reset = reset_button(ui, label);
-        if reset.clicked() && *value != default {
-            *value = default;
-            reset.mark_changed();
-        }
-
-        response | reset
-    })
-    .inner
+    ModernSlider::new(label, value, range, default)
+        .step(0.5)
+        .suffix(suffix)
+        .precision(1)
+        .show(ui)
 }
 
 pub fn modern_slider_f32(
@@ -2513,75 +2612,11 @@ pub fn modern_slider_f32(
     label: &str,
     states: &[&str],
 ) -> egui::Response {
-    ui.horizontal(|ui| {
-        let available = ui.available_width();
-        let is_narrow = available < 280.0;
-        let label_w = if is_narrow { 85.0 } else { 110.0 };
-
-        ui.allocate_ui_with_layout(
-            Vec2::new(label_w, 20.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.label(
-                    egui::RichText::new(label)
-                        .color(crate::ui::theme::text_strong())
-                        .size(if is_narrow { 12.0 } else { 13.0 })
-                        .strong(),
-                );
-            },
-        );
-        let slider_w = (ui.available_width() - 82.0).max(50.0);
-        let mut response = ui
-            .scope(|ui| {
-                let style = ui.style_mut();
-                style.spacing.slider_rail_height = 8.0;
-                style.visuals.widgets.inactive.bg_fill =
-                    Color32::from_rgba_unmultiplied(130, 139, 143, 170);
-                style.visuals.widgets.hovered.bg_fill = theme::primary();
-                style.visuals.widgets.hovered.fg_stroke = Stroke::NONE;
-                style.visuals.widgets.active.bg_fill = theme::primary();
-                style.visuals.widgets.active.fg_stroke = Stroke::NONE;
-                style.visuals.widgets.inactive.fg_stroke = Stroke::NONE;
-                style.visuals.selection.bg_fill = theme::primary_fill();
-                style.visuals.widgets.inactive.corner_radius = CornerRadius::same(4);
-                style.visuals.handle_shape = egui::style::HandleShape::Rect { aspect_ratio: 0.0 };
-                ui.add_sized(
-                    Vec2::new(slider_w, 20.0),
-                    egui::Slider::new(value, range.clone())
-                        .show_value(false)
-                        .step_by(0.01)
-                        .trailing_fill(true),
-                )
-            })
-            .inner;
-
-        let slider_id = ui.make_persistent_id(label);
-        if let Some(new_val) = crate::ui::automation::record_slider(
-            ui,
-            slider_id,
-            label,
-            *value as f64,
-            true,
-            response.rect,
-        ) {
-            *value = (new_val as f32).clamp(*range.start(), *range.end());
-            response.mark_changed();
-        }
-
-        ui.add_space(4.0);
-        let badge_label = slider_state_label(*value, &range, states)
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("{value:.2}"));
-        tech_numeric_badge(ui, &badge_label);
-
-        let mut reset = reset_button(ui, badge_label.as_str());
-        if reset.clicked() && *value != default {
-            *value = default;
-            reset.mark_changed();
-        }
-        response | reset
-    })
-    .inner
+    ModernSlider::new(label, value, range, default)
+        .step(0.01)
+        .precision(2)
+        .states(states)
+        .show(ui)
 }
 
 fn slider_state_label<'a>(

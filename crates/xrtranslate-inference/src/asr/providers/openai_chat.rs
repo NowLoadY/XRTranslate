@@ -1,3 +1,4 @@
+use crate::asr::types::parse_language;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::json;
 
@@ -46,7 +47,7 @@ impl<C: AsyncHttpClient> OpenAiAsrAdapter<C> {
         options: OpenAiAsrOptions,
     ) -> Result<AsrTranscript, InferenceError> {
         let audio = STANDARD.encode(pcm16_mono_16khz_to_wav(pcm)?);
-        let language = normalized(&options.language);
+        let language = parse_language(options.language.as_deref())?;
         let instruction = normalized(&options.instruction_prompt);
         let mut messages = Vec::new();
         if let Some(instruction) = instruction {
@@ -65,7 +66,7 @@ impl<C: AsyncHttpClient> OpenAiAsrAdapter<C> {
         });
         let completion = self.chat.chat_completion(payload).await?;
         Ok(AsrTranscript {
-            language: language.map(str::to_owned),
+            language: language.map(|language| language.code().to_owned()),
             text: completion.text.trim().to_owned(),
         })
     }
@@ -121,6 +122,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(transcript.text, "hello");
+        assert_eq!(transcript.language.as_deref(), Some("en"));
         let request = adapter
             .chat
             .into_inner()

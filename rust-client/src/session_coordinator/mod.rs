@@ -7,10 +7,12 @@
 
 mod owner;
 mod plugin_session;
+mod request;
 mod subscriber;
 
 pub use owner::{PluginSessionOwner, TranslationSessionOwner};
 pub use plugin_session::{PluginSessionBinding, SessionOutputPolicy, TranslationSessionPlugin};
+pub(crate) use request::{TranslationInput, TranslationTask};
 pub use subscriber::{
     CaptionUpdate, HostOutputEvent, HostOutputSubscriber, SessionEventSubscriber,
 };
@@ -45,6 +47,7 @@ mod architecture_tests {
             include_str!("../media_import/mpv_extract.rs"),
         ),
         ("session_coordinator/owner.rs", include_str!("owner.rs")),
+        ("session_coordinator/request.rs", include_str!("request.rs")),
         (
             "session_coordinator/plugin_session.rs",
             include_str!("plugin_session.rs"),

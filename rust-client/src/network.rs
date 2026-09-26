@@ -343,8 +343,7 @@ impl SessionHandle {
 
 pub struct SessionConfig {
     pub server_url: String,
-    pub source_lang: String,
-    pub target_lang: String,
+    pub languages: xrtranslate_engine::language::LanguageSelection,
     pub external_audio_gate: ExternalAudioGate,
     /// Controls presentation in the host translation UI and external caption
     /// plugins. Domain plugins still receive the typed segment stream.
@@ -424,8 +423,7 @@ async fn run_session(
 ) {
     let SessionConfig {
         server_url,
-        source_lang,
-        target_lang,
+        languages,
         external_audio_gate,
         publish_to_host_outputs,
         tts: tts_handle,
@@ -437,6 +435,7 @@ async fn run_session(
         finish_when_audio_ends,
         prompt_graphs,
     } = config;
+    let (source_lang, target_lang) = languages.wire();
     let workload = if finish_when_audio_ends {
         InferenceWorkload::Offline
     } else {

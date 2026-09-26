@@ -1,7 +1,7 @@
 //! User interface for the SteamVR overlay plugin page and settings contribution.
 
 use eframe::egui;
-use crate::ui::components::card;
+use crate::ui::components::{card, ModernSlider};
 use crate::ui::theme;
 use super::runtime::{VrOverlaySettings, VrRuntimeStatus};
 
@@ -122,15 +122,19 @@ pub fn render(
                 let mut changed = false;
 
                 // Max Items
-                if slider_with_reset_usize(
-                    ui,
+                if ModernSlider::new(
                     &crate::i18n::tr(lang, "Max Subtitle Count"),
                     &mut settings.max_items,
                     1..=5,
                     VrOverlaySettings::DEFAULT_MAX_ITEMS,
-                    &crate::i18n::tr(lang, "lines"),
-                    "vr_max_items",
-                ) {
+                )
+                .step(1.0)
+                .suffix(format!(" {}", crate::i18n::tr(lang, "lines")))
+                .id_salt("vr_max_items")
+                .label_width(120.0)
+                .show(ui)
+                .changed()
+                {
                     changed = true;
                 }
 
@@ -158,43 +162,55 @@ pub fn render(
                 });
 
                 // Font Size
-                if slider_with_reset_f32(
-                    ui,
+                if ModernSlider::new(
                     &crate::i18n::tr(lang, "Font Size"),
                     &mut settings.font_size,
                     12.0..=36.0,
-                    1.0,
                     VrOverlaySettings::DEFAULT_FONT_SIZE,
-                    " px",
-                    1,
-                    "vr_font_size",
-                ) {
+                )
+                .step(1.0)
+                .precision(1)
+                .suffix(" px")
+                .id_salt("vr_font_size")
+                .label_width(120.0)
+                .show(ui)
+                .changed()
+                {
                     changed = true;
                 }
 
                 // Opacity
-                if slider_opacity_with_reset(
-                    ui,
+                if ModernSlider::new(
                     &crate::i18n::tr(lang, "Opacity"),
                     &mut settings.opacity,
+                    0.20..=1.00,
                     VrOverlaySettings::DEFAULT_OPACITY,
-                    "vr_opacity",
-                ) {
+                )
+                .step(0.01)
+                .percentage(true)
+                .id_salt("vr_opacity")
+                .label_width(120.0)
+                .show(ui)
+                .changed()
+                {
                     changed = true;
                 }
 
                 // Display Timeout
-                if slider_with_reset_f32(
-                    ui,
+                if ModernSlider::new(
                     &crate::i18n::tr(lang, "Display Duration"),
                     &mut settings.display_timeout_seconds,
                     3.0..=30.0,
-                    0.5,
                     VrOverlaySettings::DEFAULT_TIMEOUT,
-                    " s",
-                    1,
-                    "vr_timeout",
-                ) {
+                )
+                .step(0.5)
+                .precision(1)
+                .suffix(" s")
+                .id_salt("vr_timeout")
+                .label_width(120.0)
+                .show(ui)
+                .changed()
+                {
                     changed = true;
                 }
 
@@ -233,47 +249,56 @@ pub fn render(
                 let mut changed = false;
 
                 // Distance
-                if slider_with_reset_f32(
-                    ui,
+                if ModernSlider::new(
                     &crate::i18n::tr(lang, "Distance in Front"),
                     &mut settings.distance_meters,
                     0.5..=2.5,
-                    0.05,
                     VrOverlaySettings::DEFAULT_DISTANCE,
-                    " m",
-                    2,
-                    "vr_dist",
-                ) {
+                )
+                .step(0.05)
+                .precision(2)
+                .suffix(" m")
+                .id_salt("vr_dist")
+                .label_width(120.0)
+                .show(ui)
+                .changed()
+                {
                     changed = true;
                 }
 
                 // Vertical offset
-                if slider_with_reset_f32(
-                    ui,
+                if ModernSlider::new(
                     &crate::i18n::tr(lang, "Height Offset"),
                     &mut settings.vertical_offset_meters,
                     -0.80..=0.40,
-                    0.02,
                     VrOverlaySettings::DEFAULT_VERTICAL_OFFSET,
-                    " m",
-                    2,
-                    "vr_v_offset",
-                ) {
+                )
+                .step(0.02)
+                .precision(2)
+                .suffix(" m")
+                .id_salt("vr_v_offset")
+                .label_width(120.0)
+                .show(ui)
+                .changed()
+                {
                     changed = true;
                 }
 
                 // Overlay Width
-                if slider_with_reset_f32(
-                    ui,
+                if ModernSlider::new(
                     &crate::i18n::tr(lang, "Overlay Width"),
                     &mut settings.overlay_width_meters,
                     0.30..=1.50,
-                    0.02,
                     VrOverlaySettings::DEFAULT_OVERLAY_WIDTH,
-                    " m",
-                    3,
-                    "vr_width",
-                ) {
+                )
+                .step(0.02)
+                .precision(2)
+                .suffix(" m")
+                .id_salt("vr_width")
+                .label_width(120.0)
+                .show(ui)
+                .changed()
+                {
                     changed = true;
                 }
 
@@ -346,144 +371,5 @@ pub fn render_settings_contribution(
         }
     });
 
-    changed
-}
-
-fn slider_with_reset_f32(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut f32,
-    range: std::ops::RangeInclusive<f32>,
-    step: f64,
-    default: f32,
-    suffix: &str,
-    format_precision: usize,
-    id_salt: &str,
-) -> bool {
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        let label_w = 120.0;
-        ui.allocate_ui_with_layout(
-            egui::Vec2::new(label_w, 20.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.label(
-                    egui::RichText::new(label)
-                        .color(theme::text_strong())
-                        .size(13.0)
-                        .strong(),
-                );
-            },
-        );
-
-        let slider_w = (ui.available_width() - 95.0).max(60.0);
-        let slider = egui::Slider::new(value, range)
-            .show_value(false)
-            .step_by(step)
-            .trailing_fill(true);
-        if ui.add_sized(egui::vec2(slider_w, 20.0), slider).changed() {
-            changed = true;
-        }
-        ui.add_space(4.0);
-        let badge_text = format!("{:.prec$}{}", *value, suffix, prec = format_precision);
-        crate::ui::components::tech_numeric_badge(ui, &badge_text);
-        let mut reset = crate::ui::components::reset_button(ui, id_salt);
-        if reset.clicked() && (*value - default).abs() > 0.0001 {
-            *value = default;
-            reset.mark_changed();
-            changed = true;
-        }
-    });
-    changed
-}
-
-fn slider_with_reset_usize(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut usize,
-    range: std::ops::RangeInclusive<usize>,
-    default: usize,
-    suffix: &str,
-    id_salt: &str,
-) -> bool {
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        let label_w = 120.0;
-        ui.allocate_ui_with_layout(
-            egui::Vec2::new(label_w, 20.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.label(
-                    egui::RichText::new(label)
-                        .color(theme::text_strong())
-                        .size(13.0)
-                        .strong(),
-                );
-            },
-        );
-
-        let slider_w = (ui.available_width() - 95.0).max(60.0);
-        let slider = egui::Slider::new(value, range)
-            .show_value(false)
-            .trailing_fill(true);
-        if ui.add_sized(egui::vec2(slider_w, 20.0), slider).changed() {
-            changed = true;
-        }
-        ui.add_space(4.0);
-        let badge_text = format!("{} {}", *value, suffix);
-        crate::ui::components::tech_numeric_badge(ui, &badge_text);
-        let mut reset = crate::ui::components::reset_button(ui, id_salt);
-        if reset.clicked() && *value != default {
-            *value = default;
-            reset.mark_changed();
-            changed = true;
-        }
-    });
-    changed
-}
-
-fn slider_opacity_with_reset(
-    ui: &mut egui::Ui,
-    label: &str,
-    opacity: &mut f32,
-    default: f32,
-    id_salt: &str,
-) -> bool {
-    let mut changed = false;
-    let mut percent = (*opacity * 100.0).round() as u32;
-    ui.horizontal(|ui| {
-        let label_w = 120.0;
-        ui.allocate_ui_with_layout(
-            egui::Vec2::new(label_w, 20.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.label(
-                    egui::RichText::new(label)
-                        .color(theme::text_strong())
-                        .size(13.0)
-                        .strong(),
-                );
-            },
-        );
-
-        let slider_w = (ui.available_width() - 95.0).max(60.0);
-        let slider = egui::Slider::new(&mut percent, 20..=100)
-            .show_value(false)
-            .trailing_fill(true);
-        if ui.add_sized(egui::vec2(slider_w, 20.0), slider).changed() {
-            *opacity = (percent as f32) / 100.0;
-            changed = true;
-        }
-        ui.add_space(4.0);
-        let badge_text = format!("{} %", percent);
-        crate::ui::components::tech_numeric_badge(ui, &badge_text);
-        let mut reset = crate::ui::components::reset_button(ui, id_salt);
-        let default_percent = (default * 100.0).round() as u32;
-        if reset.clicked() && percent != default_percent {
-            *opacity = default;
-            reset.mark_changed();
-            changed = true;
-        }
-    });
     changed
 }

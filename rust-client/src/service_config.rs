@@ -69,6 +69,8 @@ pub struct ServiceConfigEditor {
     message: Option<String>,
     message_is_error: bool,
     onboarding_save_error: Option<String>,
+    language_capabilities:
+        std::sync::OnceLock<Result<xrtranslate_engine::language::LanguageCapabilities, String>>,
 }
 
 impl ServiceConfigEditor {
@@ -83,6 +85,7 @@ impl ServiceConfigEditor {
             message: None,
             message_is_error: false,
             onboarding_save_error: None,
+            language_capabilities: Default::default(),
         };
         if let Err(error) = editor.reload() {
             editor.message = Some(error);
@@ -92,6 +95,7 @@ impl ServiceConfigEditor {
     }
 
     pub fn reload(&mut self) -> Result<(), String> {
+        self.language_capabilities.take();
         let base_contents = std::fs::read_to_string(&self.path)
             .map_err(|error| format!("Cannot read {}: {error}", self.path.display()))?;
         let base_document = serde_json::from_str(&base_contents)
@@ -135,6 +139,20 @@ impl ServiceConfigEditor {
             .map(|field| field.value.as_str())
             .unwrap_or("local");
         prompt_target_for_translation_provider(&category.selected_provider, transport)
+    }
+
+    pub(crate) fn language_capabilities(
+        &self,
+    ) -> Result<xrtranslate_engine::language::LanguageCapabilities, String> {
+        self.language_capabilities
+            .get_or_init(|| {
+                xrtranslate_config::AppConfig::from_value(self.document.clone())
+                    .map_err(|error| error.to_string())?
+                    .native_model_route()
+                    .map_err(|error| error.to_string())?
+                    .language_capabilities()
+            })
+            .clone()
     }
 
     pub fn runtime_requirements(&self) -> xrtranslate_config::RuntimeRequirements {
@@ -428,11 +446,7 @@ impl ServiceConfigEditor {
         }
     }
 
-    pub fn render(
-        &mut self,
-        ui: &mut eframe::egui::Ui,
-        language: crate::i18n::UiLanguage,
-    ) -> bool {
+    pub fn render(&mut self, ui: &mut eframe::egui::Ui, language: crate::i18n::UiLanguage) -> bool {
         use crate::ui::components::{self, section};
         use eframe::egui;
 
@@ -677,6 +691,7 @@ impl ServiceConfigEditor {
     }
 
     fn save(&mut self) -> Result<(), String> {
+        self.language_capabilities.take();
         Self::sync_categories(&mut self.document, &self.categories)?;
         let parsed = xrtranslate_config::AppConfig::from_value(self.document.clone())
             .map_err(|error| format!("Invalid configuration: {error}"))?;
@@ -1257,21 +1272,16 @@ fn render_field_input(
             {
                 let mut changed = false;
                 let current = field.value.clone();
-                crate::ui::components::combobox_ui(
-                    ui,
-                    &field.name,
-                    &current,
-                    |ui| {
-                        for &opt in options {
-                            if ui
-                                .selectable_value(&mut field.value, opt.to_string(), opt)
-                                .changed()
-                            {
-                                changed = true;
-                            }
+                crate::ui::components::combobox_ui(ui, &field.name, &current, |ui| {
+                    for &opt in options {
+                        if ui
+                            .selectable_value(&mut field.value, opt.to_string(), opt)
+                            .changed()
+                        {
+                            changed = true;
                         }
-                    },
-                );
+                    }
+                });
                 changed
             } else {
                 crate::ui::components::singleline_input(
@@ -1484,10 +1494,7 @@ mod tests {
 
     #[test]
     fn settings_display_full_model_names_without_switch_fields() {
-        let local = provider_card(
-            "qwen3-gguf",
-            &[("model_asset", "qwen3-asr-0.6b-q8-gguf")],
-        );
+        let local = provider_card("qwen3-gguf", &[("model_asset", "qwen3-asr-0.6b-q8-gguf")]);
         assert_eq!(
             provider_model_names(&local, "asr"),
             vec!["Qwen3-ASR 0.6B · Q8_0"]
@@ -1542,6 +1549,7 @@ mod tests {
             message: None,
             message_is_error: false,
             onboarding_save_error: None,
+            language_capabilities: Default::default(),
         };
         let context = eframe::egui::Context::default();
         let mut output = context.run_ui(eframe::egui::RawInput::default(), |context| {
@@ -1703,6 +1711,7 @@ mod tests {
             message: None,
             message_is_error: false,
             onboarding_save_error: None,
+            language_capabilities: Default::default(),
         };
         assert_eq!(editor.tts_sample_rate(), 22_050);
     }
@@ -1819,6 +1828,7 @@ mod tests {
             message: None,
             message_is_error: false,
             onboarding_save_error: None,
+            language_capabilities: Default::default(),
         };
 
         editor.select_onboarding_provider("asr", "openai");
@@ -1860,6 +1870,7 @@ mod tests {
             message: None,
             message_is_error: false,
             onboarding_save_error: None,
+            language_capabilities: Default::default(),
         };
 
         editor.select_onboarding_provider("asr", "qwen");
@@ -1894,6 +1905,7 @@ mod tests {
             message: None,
             message_is_error: false,
             onboarding_save_error: None,
+            language_capabilities: Default::default(),
         };
         assert_eq!(
             editor.selected_model_asset_ids(),
@@ -1925,6 +1937,7 @@ mod tests {
             message: None,
             message_is_error: false,
             onboarding_save_error: None,
+            language_capabilities: Default::default(),
         };
         let asr = editor
             .categories

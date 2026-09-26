@@ -9,6 +9,7 @@ description = "llama.cpp and OpenAI-compatible inference adapters for XRTranslat
 [features]
 default = []
 managed-ort = ["ort/load-dynamic"]
+sensevoice = ["dep:sherpa-onnx"]
 
 [dependencies]
 base64 = "0.22.1"
@@ -20,6 +21,7 @@ reqwest = { version = "0.13.4", features = ["json"] }
 rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+sherpa-onnx = { version = "1.13.8", optional = true }
 tokio = { version = "1.47.1", features = ["macros", "rt", "sync", "time"] }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
 tokenizers = { version = "0.22.2", default-features = false, features = ["onig"] }
@@ -27,6 +29,8 @@ tracing = "0.1.41"
 unicode_categories = "0.1.1"
 uuid = { version = "1.18.1", features = ["v4"] }
 xrtranslate-prompt = { path = "../xrtranslate-prompt" }
+xrtranslate-engine = { path = "../xrtranslate-engine" }
+xrtranslate-assets = { path = "../xrtranslate-assets" }
 
 [dev-dependencies]
 tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread", "io-util", "net"] }

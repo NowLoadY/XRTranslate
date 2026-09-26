@@ -1,5 +1,8 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::json;
+use xrtranslate_engine::language::SupportedLanguage;
+
+use crate::asr::types::parse_language;
 
 use crate::{
     AsrTranscript, AsrVocabularyBias, AsyncHttpClient, InferenceError, OpenAiCompatibleClient,
@@ -10,8 +13,8 @@ use crate::{
 /// Options for one Qwen3-ASR completion request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Qwen3AsrOptions {
-    /// Language name understood by Qwen3-ASR (for example `English` or
-    /// `Chinese`). An empty value asks the model to infer the language.
+    /// Canonical language code; shared names/locales are also accepted.
+    /// None, empty or auto asks the model to infer the language.
     pub language: Option<String>,
     /// Official Qwen3-ASR recognition context. This is sent as the system
     /// message content, exactly as the Python/vLLM implementation does.
@@ -100,6 +103,7 @@ impl<C: AsyncHttpClient> Qwen3AsrAdapter<C> {
         pcm: &[u8],
         options: Qwen3AsrOptions,
     ) -> Result<AsrTranscript, InferenceError> {
+        let language = parse_language(options.language.as_deref())?;
         let wav = pcm16_mono_16khz_to_wav(pcm)?;
         let encoded_wav = STANDARD.encode(wav);
 
@@ -115,7 +119,13 @@ impl<C: AsyncHttpClient> Qwen3AsrAdapter<C> {
             "role": "user",
             "content": content
         }));
-        if let Some(language) = normalized_optional(&options.language) {
+        if let Some(language) = language {
+            // Qwen3's prefill uses names and a single Chinese speech token.
+            let language = if language.base_code() == "zh" {
+                "Chinese"
+            } else {
+                language.name()
+            };
             messages.push(json!({
                 "role": "assistant",
                 "content": format!("language {language}<asr_text>"),
@@ -131,7 +141,7 @@ impl<C: AsyncHttpClient> Qwen3AsrAdapter<C> {
         let completion = self.chat.chat_completion(payload).await?;
         Ok(parse_asr_transcript(
             &completion.text,
-            normalized_optional(&options.language),
+            language.map(SupportedLanguage::code),
         ))
     }
 }
@@ -270,7 +280,14 @@ fn parse_asr_transcript(text: &str, forced_language: Option<&str>) -> AsrTranscr
         },
     );
     AsrTranscript {
-        language: detected_language.or(forced_language).map(str::to_owned),
+        language: detected_language.or(forced_language).and_then(|labels| {
+            let codes = labels
+                .split(',')
+                .filter_map(SupportedLanguage::parse)
+                .map(SupportedLanguage::code)
+                .collect::<Vec<_>>();
+            (!codes.is_empty()).then(|| codes.join(","))
+        }),
         text: remove_completion_markers(transcript),
     }
 }
@@ -321,7 +338,7 @@ mod tests {
             .transcribe_pcm16(
                 &[1, 0, 2, 0],
                 Qwen3AsrOptions {
-                    language: Some("English".into()),
+                    language: Some("en".into()),
                     context_bias: Some("Names: Codex".into()),
                     vocabulary_bias: vec![AsrVocabularyBias {
                         text: "VRChat".into(),
@@ -335,7 +352,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.text, "Hello");
-        assert_eq!(result.language.as_deref(), Some("English"));
+        assert_eq!(result.language.as_deref(), Some("en"));
         let http = adapter.chat.into_inner();
         let request = http.requests.lock().unwrap().pop().unwrap();
         assert_eq!(request.method, "POST");
@@ -380,6 +397,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_codes_are_adapted_to_qwen_names_only_at_the_wire_boundary() {
+        for (input, wire, code) in [
+            (Some("en-US"), Some("English"), Some("en")),
+            (Some("zh-Hant"), Some("Chinese"), Some("zh-TW")),
+            (Some("Japanese"), Some("Japanese"), Some("ja")),
+            (None, None, None),
+            (Some(" AUTO "), None, None),
+        ] {
+            let http = RecordingHttpClient::default();
+            http.respond_with(HttpResponse {
+                status: 200,
+                body: r#"{"choices":[{"message":{"content":"test"}}]}"#.into(),
+            });
+            let adapter =
+                Qwen3AsrAdapter::new(http, "http://localhost/v1/chat/completions", "qwen3-asr")
+                    .unwrap();
+            let transcript = adapter
+                .transcribe_pcm16(
+                    &[0, 0],
+                    Qwen3AsrOptions {
+                        language: input.map(str::to_owned),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(transcript.language.as_deref(), code);
+            let http = adapter.chat.into_inner();
+            let request = http.requests.lock().unwrap().pop().unwrap();
+            let messages = request.body["messages"].as_array().unwrap();
+            assert_eq!(messages.len(), if wire.is_some() { 2 } else { 1 });
+            if let Some(wire) = wire {
+                assert_eq!(messages[1]["content"], format!("language {wire}<asr_text>"));
+            }
+        }
+        assert_eq!(
+            parse_asr_transcript("language Chinese,English<asr_text>hello", None)
+                .language
+                .as_deref(),
+            Some("zh,en")
+        );
+    }
+
+    #[tokio::test]
     async fn qwen3_http_failure_is_structured() {
         let http = RecordingHttpClient::default();
         http.respond_with(HttpResponse {
@@ -421,7 +482,7 @@ mod tests {
         assert_eq!(
             parse_asr_transcript("こんにちは", Some("Japanese")),
             AsrTranscript {
-                language: Some("Japanese".into()),
+                language: Some("ja".into()),
                 text: "こんにちは".into(),
             }
         );

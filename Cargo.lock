@@ -7434,6 +7434,8 @@ dependencies = [
  "serde",
  "serde_json",
  "xr-corpus-core",
+ "xrtranslate-assets",
+ "xrtranslate-engine",
 ]
 
 [[package]]
@@ -7472,6 +7474,7 @@ dependencies = [
  "rustfft",
  "serde",
  "serde_json",
+ "sherpa-onnx",
  "tokenizers",
  "tokio",
  "tokio-tungstenite 0.30.0",
@@ -7479,6 +7482,8 @@ dependencies = [
  "tracing-subscriber",
  "unicode_categories",
  "uuid",
+ "xrtranslate-assets",
+ "xrtranslate-engine",
  "xrtranslate-prompt",
 ]
 

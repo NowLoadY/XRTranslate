@@ -1,6 +1,6 @@
 use super::{
     actions::{UiAction, draft_validation_error},
-    presentation::{capture_label, meeting_language_label, page_header},
+    presentation::{capture_label, page_header},
 };
 use crate::plugins::meeting::{
     MeetingAudioSource, MeetingUiSnapshot, controller::MeetingController, i18n::tr,
@@ -29,14 +29,6 @@ pub(super) fn render_setup(
             }
         },
     );
-
-    crate::model_language::normalize_route_for_options(
-        &snapshot.source_languages,
-        &snapshot.target_languages,
-        &mut controller.draft.source_language,
-        &mut controller.draft.target_language,
-    );
-    let validation_error = draft_validation_error(controller, snapshot);
 
     components::card(ui, |ui| {
         ui.vertical(|ui| {
@@ -136,68 +128,13 @@ pub(super) fn render_setup(
 
             ui.add_space(14.0);
 
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new(tr(language, "Spoken language"))
-                            .strong()
-                            .color(crate::ui::theme::text_strong()),
-                    );
-                    ui.add_space(4.0);
-
-                    let mut source_options = vec![(
-                        "auto".to_string(),
-                        tr(language, "Auto (bidirectional)").to_string(),
-                    )];
-                    for (code, label) in &snapshot.source_languages {
-                        source_options.push((
-                            (*code).to_string(),
-                            tr(language, label).to_string(),
-                        ));
-                    }
-
-                    if components::searchable_combobox(
-                        ui,
-                        "meeting_source_language",
-                        meeting_language_label(&controller.draft.source_language, language),
-                        &mut controller.draft.source_language,
-                        &source_options,
-                    ) && controller.draft.source_language != "auto"
-                        && controller.draft.target_language == controller.draft.source_language
-                    {
-                        controller.draft.target_language =
-                            if controller.draft.source_language == "zh" {
-                                "en".to_string()
-                            } else {
-                                "zh".to_string()
-                            };
-                    }
-                });
-                ui.add_space(24.0);
-                ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new(tr(language, "Translation language"))
-                            .strong()
-                            .color(crate::ui::theme::text_strong()),
-                    );
-                    ui.add_space(4.0);
-
-                    components::target_language_pair_selector(
-                        ui,
-                        "meeting_setup",
-                        &controller.draft.source_language,
-                        &mut controller.draft.target_language,
-                        language,
-                        if controller.draft.source_language == "auto" { &snapshot.source_languages } else { &snapshot.target_languages },
-                        |code, lang| meeting_language_label(code, lang),
-                    );
-                });
-            });
+            components::translation_language_selector(ui, "meeting_setup", &mut controller.draft.source_language, &mut controller.draft.target_language, snapshot.languages, language);
 
             ui.add_space(18.0);
             ui.separator();
             ui.add_space(14.0);
 
+            let validation_error = draft_validation_error(controller, snapshot);
             if let Some(error) = validation_error.as_deref() {
                 components::validation_notice(ui, language, tr(language, error));
                 ui.add_space(12.0);

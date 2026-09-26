@@ -6,6 +6,8 @@
 mod providers;
 mod types;
 
+#[cfg(feature = "sensevoice")]
+pub use providers::SenseVoiceAdapter;
 pub use providers::{
     OpenAiAsrAdapter, OpenAiAsrOptions, Qwen3AsrAdapter, Qwen3AsrOptions,
     QwenAudioStreamingAdapter, QwenAudioStreamingOptions, is_probable_asr_hallucination,

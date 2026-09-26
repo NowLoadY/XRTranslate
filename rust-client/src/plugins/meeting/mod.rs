@@ -41,8 +41,7 @@ pub struct MeetingUiSnapshot {
     pub default_audio_source: MeetingAudioSource,
     pub default_source_language: String,
     pub default_target_language: String,
-    pub source_languages: Vec<(&'static str, &'static str)>,
-    pub target_languages: Vec<(&'static str, &'static str)>,
+    pub languages: xrtranslate_engine::language::LanguageCapabilities,
     /// True when another host feature owns the exclusive recognition session.
     pub host_session_busy: bool,
     pub language: crate::i18n::UiLanguage,
@@ -54,8 +53,7 @@ impl Default for MeetingUiSnapshot {
             default_audio_source: MeetingAudioSource::Microphone,
             default_source_language: "auto".into(),
             default_target_language: "zh".into(),
-            source_languages: crate::LANGUAGE_OPTIONS.to_vec(),
-            target_languages: crate::LANGUAGE_OPTIONS.to_vec(),
+            languages: Default::default(),
             host_session_busy: false,
             language: crate::i18n::UiLanguage::English,
         }
@@ -110,7 +108,6 @@ pub struct MeetingPlugin {
     pub controller: MeetingController,
     pub event_sink: events::MeetingEventSink,
     pub audio_import: Option<audio_file::AudioImportHandle>,
-    pub pending_audio_import: Option<PathBuf>,
     pub meeting_recording: Option<recording::MeetingRecording>,
 }
 
@@ -125,7 +122,6 @@ impl MeetingPlugin {
             controller,
             event_sink,
             audio_import: None,
-            pending_audio_import: None,
             meeting_recording: None,
         }
     }
@@ -135,12 +131,7 @@ impl MeetingPlugin {
     pub fn is_busy(&self) -> bool {
         self.controller.active_meeting_id().is_some()
             || self.audio_import.is_some()
-            || self.pending_audio_import.is_some()
             || self.meeting_recording.is_some()
-    }
-
-    pub fn has_audio_import(&self) -> bool {
-        self.audio_import.is_some()
     }
 
     pub fn set_audio_import(&mut self, import: audio_file::AudioImportHandle) {
@@ -151,24 +142,11 @@ impl MeetingPlugin {
         self.audio_import = None;
     }
 
-    pub fn set_pending_audio_import(&mut self, path: PathBuf) {
-        self.pending_audio_import = Some(path);
-    }
-
-    pub fn take_pending_audio_import(&mut self) -> Option<PathBuf> {
-        self.pending_audio_import.take()
-    }
-
-    pub fn clear_pending_audio_import(&mut self) {
-        self.pending_audio_import = None;
-    }
-
     pub fn set_error(&mut self, error: impl Into<String>) {
         self.controller.set_host_error(error);
     }
 
     pub fn fail_active_startup(&mut self, error: &str) {
-        self.clear_pending_audio_import();
         if let Some(store_error) = self.controller.fail_active_meeting(error) {
             log::error!("Could not mark failed meeting startup: {store_error}");
         }
@@ -210,32 +188,5 @@ impl TranslationSessionPlugin for MeetingPlugin {
             external_audio_gate: false,
             finish_when_audio_ends: active.imported_audio,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    #[test]
-    fn pending_import_is_owned_by_the_plugin_boundary() {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "xrtranslate-meeting-plugin-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let mut plugin = MeetingPlugin::open(&root);
-        let path = PathBuf::from("recording.wav");
-
-        plugin.set_pending_audio_import(path.clone());
-        assert!(plugin.is_busy());
-        assert_eq!(plugin.take_pending_audio_import(), Some(path));
-        assert!(!plugin.is_busy());
-        plugin.clear_pending_audio_import();
-
-        drop(plugin);
-        std::fs::remove_dir_all(root).unwrap();
     }
 }
