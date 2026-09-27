@@ -1,0 +1,158 @@
+//! Screen-space speech, independent of the model's pose and the page's behavior.
+use crate::ui::theme;
+use eframe::egui::{self, Color32, FontId, Painter, Pos2, Rect, Vec2};
+use unicode_segmentation::UnicodeSegmentation;
+
+#[derive(Clone, Default)]
+pub struct Speech {
+    text: &'static str,
+    end: usize,
+    next_letter: f64,
+    last_letter: Option<f64>,
+    dismiss_at: f64,
+    position: Option<Pos2>,
+    size: Vec2,
+    opacity: f32,
+}
+
+impl Speech {
+    pub fn say(&mut self, text: &'static str, now: f64) {
+        self.text = text;
+        self.end = 0;
+        self.next_letter = now;
+        self.last_letter = None;
+        self.dismiss_at = f64::INFINITY;
+    }
+
+    pub fn finished(&self, now: f64) -> bool {
+        self.text.is_empty() || now >= self.dismiss_at
+    }
+
+    /// Use a caller-owned clock so dialogue pauses with its scene.
+    pub fn advance(&mut self, now: f64) -> f32 {
+        while self.end < self.text.len() && now >= self.next_letter {
+            let letter = self.text[self.end..].graphemes(true).next().unwrap();
+            self.end += letter.len();
+            let delay = letter_delay(letter);
+            self.last_letter =
+                (delay < 0.15 && !letter.trim().is_empty()).then_some(self.next_letter);
+            self.next_letter += delay;
+            if self.end == self.text.len() {
+                let reading_time =
+                    (self.text.graphemes(true).count() as f64 * 0.035).clamp(2.2, 4.0);
+                self.dismiss_at = self.next_letter + reading_time;
+            }
+        }
+        self.last_letter.map_or(0.0, |at| {
+            let age = ((now - at) / 0.12).clamp(0.0, 1.0) as f32;
+            (age * std::f32::consts::PI).sin().max(0.0) * 0.65
+        })
+    }
+
+    /// Paint without a widget or hit region; the bubble never steals page input.
+    pub fn paint(
+        &mut self,
+        painter: &Painter,
+        bounds: Rect,
+        anchor: Pos2,
+        radius: f32,
+        now: f64,
+        dt: f32,
+    ) -> bool {
+        let visible = !self.finished(now);
+        let target_opacity = if visible { 1.0 } else { 0.0 };
+        self.opacity += (target_opacity - self.opacity) * (1.0 - (-dt / 0.12).exp());
+        if self.opacity < 0.005 && !visible {
+            self.position = None;
+            self.size = Vec2::ZERO;
+            return false;
+        }
+
+        let width_limit = if bounds.height() < 72.0 { 340.0 } else { 260.0 };
+        let max_width = (bounds.width() - radius * 3.0 - 44.0).clamp(80.0, width_limit);
+        let galley = painter.layout(
+            self.text[..self.end].to_owned(),
+            FontId::proportional(14.0),
+            theme::text_strong(),
+            max_width,
+        );
+        let desired_size = (galley.size() + egui::vec2(28.0, 22.0))
+            .max(egui::vec2(38.0, 40.0))
+            .min(bounds.size());
+        if self.size == Vec2::ZERO {
+            self.size = egui::vec2(38.0, 40.0).min(bounds.size());
+        }
+        self.size += (desired_size - self.size) * (1.0 - (-dt / 0.09).exp());
+        self.size = self.size.min(bounds.size());
+        // Reserve enough room for the whole line when choosing a side, so typing
+        // cannot make the bubble switch sides midway through a sentence.
+        let side = if anchor.x - bounds.left() > max_width + radius + 40.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        let target = anchor + egui::vec2(side * (radius + 20.0 + self.size.x * 0.5), -10.0);
+        let position = self.position.get_or_insert(target);
+        *position += (target - *position) * (1.0 - (-dt / 0.22).exp());
+        // Clamp after following: resize and scroll must never cover page controls.
+        *position = bounds.shrink2(self.size * 0.5).clamp(*position);
+        let rect = Rect::from_center_size(*position, self.size);
+        let mut painter = painter.with_clip_rect(bounds);
+        painter.multiply_opacity(self.opacity);
+        let fill = Color32::from_rgba_unmultiplied(252, 252, 253, 245);
+        painter.add(
+            egui::epaint::Shadow {
+                offset: [0, 3],
+                blur: 14,
+                spread: 0,
+                color: Color32::from_black_alpha(16),
+            }
+            .as_shape(rect, egui::CornerRadius::same(16)),
+        );
+        let edge = egui::pos2(
+            if side < 0.0 {
+                rect.right()
+            } else {
+                rect.left()
+            },
+            rect.center().y,
+        );
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                edge + egui::vec2(0.0, -5.0),
+                edge + egui::vec2(-side * 10.0, 3.0),
+                edge + egui::vec2(0.0, 6.0),
+            ],
+            fill,
+            egui::Stroke::NONE,
+        ));
+        painter.rect_filled(rect, 16.0, fill);
+        painter
+            .with_clip_rect(rect.shrink2(egui::vec2(12.0, 9.0)))
+            .galley(
+                rect.min + egui::vec2(14.0, 11.0),
+                galley,
+                theme::text_strong(),
+            );
+        visible || (self.opacity - target_opacity).abs() > 0.005
+    }
+}
+
+fn letter_delay(letter: &str) -> f64 {
+    match letter.chars().next().unwrap_or(' ') {
+        '.' | '!' | '?' | '。' | '！' | '？' | '؟' | '।' | '॥' | '\n' => 0.46,
+        '…' | '—' => 0.55,
+        ',' | ';' | ':' | '，' | '、' | '；' | '：' | '،' | '؛' => 0.24,
+        c if c.is_whitespace() => 0.025,
+        c if c.is_ascii_punctuation()
+            || matches!(c, '\u{2000}'..='\u{206f}' | '\u{3001}'..='\u{303f}'
+                | '\u{ff01}'..='\u{ff0f}' | '\u{ff1a}'..='\u{ff20}'
+                | '\u{ff3b}'..='\u{ff40}' | '\u{ff5b}'..='\u{ff65}') =>
+        {
+            0.16
+        }
+        // CJK syllables/ideographs carry more information per character.
+        '\u{3040}'..='\u{9fff}' | '\u{ac00}'..='\u{d7af}' => 0.075,
+        _ => 0.042,
+    }
+}

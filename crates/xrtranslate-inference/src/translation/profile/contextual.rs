@@ -11,6 +11,7 @@ const REPEAT_PENALTY: f64 = 1.05;
 
 pub(super) static PROFILE: TranslationProfile = TranslationProfile {
     target: PromptProviderTarget::Hunyuan,
+    graph: super::configured_graph,
     temperature: TEMPERATURE,
     apply_sampling,
     clean_output: clean_contextual,

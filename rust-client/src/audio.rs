@@ -310,7 +310,9 @@ impl InputPeakMeter {
 
 struct AudioRouteSourceBuffer {
     queue: Arc<Mutex<VecDeque<f32>>>,
-    capacity: usize,
+    /// Live capture keeps only recent samples; synthesized utterances must be
+    /// retained in full, like the standalone TTS player.
+    capacity: Option<usize>,
     gain: AtomicU32,
     level: Arc<AtomicU32>,
     input_meter: Arc<InputPeakMeter>,
@@ -322,14 +324,14 @@ struct AudioRouteSourceBuffer {
 
 impl AudioRouteSourceBuffer {
     fn new(
-        capacity: usize,
+        capacity: Option<usize>,
         gain: f32,
         effects: &[SourceEffect],
         dropped_samples: Arc<AtomicU64>,
         metering_enabled: Arc<AtomicBool>,
     ) -> Self {
         Self {
-            queue: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
+            queue: Arc::new(Mutex::new(VecDeque::with_capacity(capacity.unwrap_or(0)))),
             capacity,
             gain: AtomicU32::new(gain.to_bits()),
             level: Arc::new(AtomicU32::new(0.0f32.to_bits())),
@@ -353,15 +355,19 @@ impl AudioRouteSourceBuffer {
         for sample in &mut samples {
             *sample = sample.clamp(-1.0, 1.0);
         }
-        let input_excess = samples.len().saturating_sub(self.capacity);
+        let input_excess = self
+            .capacity
+            .map_or(0, |capacity| samples.len().saturating_sub(capacity));
         if input_excess != 0 {
             samples.drain(..input_excess);
         }
         let mut queue = self.queue.lock();
-        let queued_excess = queue
-            .len()
-            .saturating_add(samples.len())
-            .saturating_sub(self.capacity);
+        let queued_excess = self.capacity.map_or(0, |capacity| {
+            queue
+                .len()
+                .saturating_add(samples.len())
+                .saturating_sub(capacity)
+        });
         if queued_excess != 0 {
             queue.drain(..queued_excess);
         }
@@ -562,6 +568,7 @@ pub struct AudioSystem {
     host: cpal::Host,
     active_captures: Vec<ActiveCapture>,
     tts_player: Option<TtsPlayer>,
+    voice_preview: Option<TtsPlayer>,
     audio_routes: Vec<AudioRouteHandle>,
     routed_tts_targets: Arc<Mutex<Vec<RoutedTtsTarget>>>,
     microphone_fanout: Option<(String, Arc<MicrophoneFanout>)>,
@@ -907,6 +914,7 @@ impl AudioSystem {
             host: cpal::default_host(),
             active_captures: Vec::new(),
             tts_player: None,
+            voice_preview: None,
             audio_routes: Vec::new(),
             routed_tts_targets: Arc::new(Mutex::new(Vec::new())),
             microphone_fanout: None,
@@ -1082,7 +1090,7 @@ impl AudioSystem {
                 queue: Arc::clone(&target.source.queue),
                 sample_rate: AUDIO_ROUTE_SAMPLE_RATE,
                 source_sample_rate,
-                max_queued_samples: Some(target.source.capacity),
+                max_queued_samples: target.source.capacity,
                 dropped_samples: Some(Arc::clone(&target.source.dropped_samples)),
                 playback_tail_samples: Arc::clone(&target.source.playback_tail_samples),
                 playback_clock_rate: target.output_sample_rate,
@@ -1112,6 +1120,27 @@ impl AudioSystem {
                 processing: Arc::clone(&p.processing),
             })
             .ok_or_else(|| "TTS output stream was not initialized".into())
+    }
+
+    pub fn preview_voice(&mut self, pcm: &[u8], sample_rate: u32) -> Result<(), String> {
+        if self.voice_preview.is_none() {
+            self.voice_preview = Some(self.create_tts_player("")?);
+        }
+        let player = self.voice_preview.as_ref().unwrap();
+        let samples = resample_mono(pcm16_mono_samples(pcm), sample_rate, player.sample_rate)?;
+        // Replace any previous preview; reference playback does not enter the audio graph.
+        *player.queue.lock() = samples.into();
+        Ok(())
+    }
+
+    pub fn voice_preview_playing(&self) -> bool {
+        self.voice_preview
+            .as_ref()
+            .is_some_and(|player| !player.queue.lock().is_empty())
+    }
+
+    pub fn stop_voice_preview(&mut self) {
+        self.voice_preview = None;
     }
 
     /// Build a complete set of replacement routes before swapping it into the
@@ -1238,7 +1267,7 @@ impl AudioSystem {
         let dropped_samples = Arc::new(AtomicU64::new(0));
         let microphone = config.microphone.as_ref().map(|source| {
             Arc::new(AudioRouteSourceBuffer::new(
-                capacity,
+                Some(capacity),
                 source.gain,
                 &source.effects,
                 Arc::clone(&dropped_samples),
@@ -1247,7 +1276,7 @@ impl AudioSystem {
         });
         let system_loopback = config.system_loopback.as_ref().map(|source| {
             Arc::new(AudioRouteSourceBuffer::new(
-                capacity,
+                Some(capacity),
                 source.gain,
                 &source.effects,
                 Arc::clone(&dropped_samples),
@@ -1256,7 +1285,7 @@ impl AudioSystem {
         });
         let tts = config.tts_gain.map(|gain| {
             Arc::new(AudioRouteSourceBuffer::new(
-                capacity,
+                None,
                 gain,
                 &config.tts_effects,
                 Arc::clone(&dropped_samples),
@@ -1268,7 +1297,7 @@ impl AudioSystem {
             .iter()
             .map(|source| {
                 Arc::new(AudioRouteSourceBuffer::new(
-                    capacity,
+                    Some(capacity),
                     1.0,
                     &source.effects,
                     Arc::clone(&dropped_samples),
@@ -1752,7 +1781,11 @@ impl AudioSystem {
         {
             return Ok(());
         }
-        self.tts_player = None;
+        self.tts_player = Some(self.create_tts_player(device_id)?);
+        Ok(())
+    }
+
+    fn create_tts_player(&self, device_id: &str) -> Result<TtsPlayer, String> {
         let device = if device_id.is_empty() {
             self.host
                 .default_output_device()
@@ -1871,7 +1904,7 @@ impl AudioSystem {
             channels,
             sample_format
         );
-        self.tts_player = Some(TtsPlayer {
+        Ok(TtsPlayer {
             queue,
             sample_rate,
             device_id: device_id.to_owned(),
@@ -1881,8 +1914,7 @@ impl AudioSystem {
                 &default_source_effects(),
                 sample_rate,
             ))),
-        });
-        Ok(())
+        })
     }
 }
 
@@ -3208,7 +3240,7 @@ mod tests {
     #[test]
     fn route_source_buffer_gates_before_queueing_audio() {
         let source = AudioRouteSourceBuffer::new(
-            4800,
+            Some(4800),
             1.0,
             &super::default_source_effects(),
             Arc::new(AtomicU64::new(0)),
@@ -3224,7 +3256,7 @@ mod tests {
     fn input_meter_samples_before_the_gate_only_when_studio_is_visible() {
         let visible = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let source = AudioRouteSourceBuffer::new(
-            9600,
+            Some(9600),
             1.0,
             &super::default_source_effects(),
             Arc::new(AtomicU64::new(0)),
@@ -3282,13 +3314,44 @@ mod tests {
 
     #[test]
     fn tts_resampling_preserves_duration_and_signal() {
-        let source = (0..4_410)
+        let source = (0..66_150)
             .map(|frame| ((frame as f32 / 44_100.0) * 440.0 * std::f32::consts::TAU).sin())
             .collect();
         let output = resample_mono(source, 44_100, 48_000).unwrap();
-        assert_eq!(output.len(), 4_800);
+        assert_eq!(output.len(), 72_000);
         assert!(output.iter().all(|sample| sample.is_finite()));
         assert!(output.iter().any(|sample| sample.abs() > 0.5));
+        let source = Arc::new(AudioRouteSourceBuffer::new(
+            None,
+            1.0,
+            &[],
+            Arc::new(AtomicU64::new(0)),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        ));
+        let target = super::RoutedTtsTarget {
+            control: std::sync::Weak::new(),
+            source: Arc::clone(&source),
+            output_sample_rate: super::AUDIO_ROUTE_SAMPLE_RATE,
+        };
+        // Both synthesized chunks exceed the live capture queue. Neither the
+        // first chunk nor an already queued prefix may be discarded.
+        target.enqueue_samples(&output[..48_000]);
+        target.enqueue_samples(&output[48_000..]);
+        assert_eq!(source.queue.lock().len(), output.len());
+        assert_eq!(
+            source
+                .dropped_samples
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+        );
+        let mut reader = super::RouteRateReader::default();
+        let mut queue = source.queue.lock();
+        for sample in output {
+            assert_eq!(
+                reader.read(&mut queue, super::AUDIO_ROUTE_SAMPLE_RATE),
+                sample.clamp(-1.0, 1.0),
+            );
+        }
     }
 
     #[test]
@@ -3313,7 +3376,7 @@ mod tests {
     fn route_source_queue_is_bounded_and_keeps_recent_audio() {
         let dropped = Arc::new(AtomicU64::new(0));
         let source = AudioRouteSourceBuffer::new(
-            3,
+            Some(3),
             1.0,
             &[],
             Arc::clone(&dropped),
@@ -3372,7 +3435,9 @@ mod tests {
 
         // Send audio samples while studio metering is disabled
         raw_tx.send(vec![0.5; 320]).expect("audio sent");
-        let _ = out_rx.recv_timeout(Duration::from_millis(500)).expect("audio received");
+        let _ = out_rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("audio received");
 
         let recorded_level = f32::from_bits(level.load(std::sync::atomic::Ordering::Relaxed));
         assert!(

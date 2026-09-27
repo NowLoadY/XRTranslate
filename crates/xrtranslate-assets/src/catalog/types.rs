@@ -34,8 +34,21 @@ pub struct ModelHardwareRequirements {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum ModelAccelerator {
+    /// llama.cpp GPU execution through NVIDIA CUDA or AMD Vulkan.
+    LlamaGpu,
     NvidiaCuda,
     Cpu,
+}
+
+impl ModelAccelerator {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::LlamaGpu => "NVIDIA CUDA / AMD Vulkan",
+            Self::NvidiaCuda => "NVIDIA CUDA",
+            Self::Cpu => "CPU",
+        }
+    }
 }
 
 /// Minimum reported VRAM for managed local model packages.
@@ -50,7 +63,7 @@ pub const MANAGED_LOCAL_MODEL_HARDWARE: ModelHardwareRequirements = ModelHardwar
     minimum_memory_bytes: MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES,
 };
 pub const MANAGED_SMALL_MODEL_HARDWARE: ModelHardwareRequirements = ModelHardwareRequirements {
-    accelerator: ModelAccelerator::NvidiaCuda,
+    accelerator: ModelAccelerator::LlamaGpu,
     minimum_memory_bytes: MANAGED_SMALL_MODEL_MINIMUM_VRAM_BYTES,
 };
 pub const CPU_MODEL_HARDWARE: ModelHardwareRequirements = ModelHardwareRequirements {

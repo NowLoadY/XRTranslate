@@ -8,8 +8,11 @@ description = "Static local model manifests and preflight checks for XRTranslate
 
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 sha2 = "0.10.9"
+uuid = { version = "1.18.1", features = ["v4"] }
 xrtranslate-download = { path = "../xrtranslate-download" }
+xrtranslate-engine = { path = "../xrtranslate-engine" }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]

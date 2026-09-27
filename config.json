@@ -85,6 +85,47 @@
     "llama_cpp": {
       "downloads": [
         {
+          "bytes": 34147775,
+          "executable": "llama-server.exe",
+          "kind": "server-vulkan",
+          "name": "llama-b10333-bin-win-vulkan-x64.zip",
+          "required_files": [
+            "ggml.dll",
+            "ggml-base.dll",
+            "ggml-vulkan.dll",
+            "ggml-cpu-x64.dll",
+            "llama.dll",
+            "llama-common.dll",
+            "llama-server-impl.dll",
+            "mtmd.dll",
+            "libomp140.x86_64.dll"
+          ],
+          "sha256": "117bca1f594cffd96a77703aa23d98450800bc22022a307d1e3567187fbb50fe",
+          "target": "windows-x86_64",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10333/llama-b10333-bin-win-vulkan-x64.zip"
+        },
+        {
+          "bytes": 32521550,
+          "executable": "llama-server",
+          "kind": "server-vulkan",
+          "name": "llama-b10333-bin-ubuntu-vulkan-x64.tar.gz",
+          "required_files": [
+            "libllama-server-impl.so",
+            "libggml-vulkan.so",
+            "libllama-common.so.0",
+            "libmtmd.so.0",
+            "libllama.so.0",
+            "libggml.so.0",
+            "libggml-base.so.0",
+            "libggml-cpu-x64.so"
+          ],
+          "sha256": "f14e312fbee33ce60d2eed7036de5debe31c1d7f4d8f0e37920eb0a2de0854a5",
+          "target": "linux-x86_64",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10333/llama-b10333-bin-ubuntu-vulkan-x64.tar.gz",
+          "archive_format": "tar-gz",
+          "archive_directory": "llama-b10333"
+        },
+        {
           "bytes": 18399512,
           "executable": "llama-server.exe",
           "kind": "server-cpu",

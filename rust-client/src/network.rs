@@ -12,6 +12,7 @@ use tokio_tungstenite::{
     connect_async,
     tungstenite::{self, Message},
 };
+use xrtranslate_engine::audio::f32_to_pcm16le;
 use xrtranslate_prompt::PromptExecutionTrace;
 use xrtranslate_protocol::{
     CorpusTermMatch, DrainReason, InferenceWorkload, PromptGraphSet, SegmentBoundary,
@@ -1105,21 +1106,6 @@ fn forward_server_event(
         }
         _ => {}
     }
-}
-
-fn f32_to_pcm16le(samples: Vec<f32>) -> Vec<u8> {
-    samples
-        .into_iter()
-        .flat_map(|sample| {
-            let sample = sample.clamp(-1.0, 1.0);
-            let pcm = if sample < 0.0 {
-                (sample * 32768.0) as i16
-            } else {
-                (sample * 32767.0) as i16
-            };
-            pcm.to_le_bytes()
-        })
-        .collect()
 }
 
 #[cfg(test)]

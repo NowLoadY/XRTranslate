@@ -11,6 +11,25 @@ pub(crate) const DEFAULT_TRANSLATION_STYLE: &str = concat!(
     "When encountering slang, idioms, internet expressions, or conversational speech, convey the intended meaning using an expression that native speakers of the target language would naturally understand and use rather than translating it literally."
 );
 
+const CHINESE_TRANSLATION_STYLE: &str = concat!(
+    "Translate the input into the most natural, idiomatic Simplified Chinese used by native speakers in Mainland China.\n\n",
+    "The goal is for the output to sound as though it was originally spoken or written by a person from Mainland China, not translated from another language.\n\n",
+    "Understand the complete meaning and context of the source text first. Then express the same meaning using the words, phrases, sentence structures, and expressions that a native Mainland Chinese speaker would naturally use.\n\n",
+    "Do not translate word-for-word. Do not copy the source language's sentence structure. Choose the natural Chinese expression that most accurately conveys the original meaning, even when the Chinese wording is very different from the source wording.\n\n",
+    "Preserve all meaning, information, intent, tone, emotion, attitude, and intensity. Do not add, remove, exaggerate, soften, or reinterpret anything.\n\n",
+    "Use authentic Mainland Chinese vocabulary and usage. Avoid wording associated primarily with Taiwan, Hong Kong, Macau, or overseas Chinese communities when a natural Mainland Chinese equivalent exists.\n\n",
+    "Translate slang, idioms, jokes, sarcasm, profanity, and colloquial expressions according to their intended meaning and how a native Mainland Chinese speaker would naturally express that idea.\n\n",
+    "Use natural everyday Mainland Chinese by default. Do not make the translation unnecessarily formal or literary. If the original text is formal, technical, or serious, preserve that register while still using natural Mainland Chinese.\n\n",
+    "For gaming and technical terminology, use the established Mainland Chinese term when one exists.\n\n",
+    "Do not deliberately add internet slang, memes, emojis, or filler words. Native-sounding Chinese does not mean adding slang to every sentence.\n\n",
+    "The highest priority is:\n\n",
+    "1. Accurate meaning\n",
+    "2. Authentic native Mainland Chinese expression\n",
+    "3. Natural Chinese sentence structure\n",
+    "4. Preservation of the original tone and intent\n\n",
+    "Output only the final Simplified Chinese translation."
+);
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TranslationStyle {
     pub node_id: String,
@@ -145,12 +164,27 @@ impl PromptNodeGraph {
             .label = "Translation style".into();
         self.bind_translation_style(&style);
         self.save_style_preset("Default");
+        self.translation_style
+            .as_mut()
+            .unwrap()
+            .presets
+            .push(TranslationStylePreset {
+                name: "Chinese".into(),
+                text: CHINESE_TRANSLATION_STYLE.into(),
+            });
         for (prefix, page) in [
             ("openai", PromptNodePage::OpenAiCompatible),
             ("hunyuan", PromptNodePage::Hunyuan),
         ] {
             let instruction = format!("{prefix}-instruction");
-            let join = self.add_compose(page, "{0}\n\n{1}".into(), [0.0, 0.0]);
+            // A single-message translation model treats text following the
+            // translation directive as input. Keep style before that boundary.
+            let template = if page == PromptNodePage::Hunyuan {
+                "{1}\n\n{0}"
+            } else {
+                "{0}\n\n{1}"
+            };
+            let join = self.add_compose(page, template.into(), [0.0, 0.0]);
             self.nodes
                 .iter_mut()
                 .find(|node| node.id == join)
@@ -271,7 +305,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             output.messages[0].content,
-            "Translate the following English text into Japanese. Output only the translation, do not output the prompt; do not add explanations.\n\nHello"
+            "Translate the following English text into Japanese. Output only the translation, do not output the prompt; do not add explanations.\n\nCurrent input:\nHello"
         );
     }
 
@@ -291,7 +325,7 @@ mod tests {
         assert!(copy.graph.save_style_preset("我自己的风格"));
         assert_eq!(
             copy.graph.translation_style.as_ref().unwrap().presets.len(),
-            2
+            builtin.translation_style.as_ref().unwrap().presets.len() + 1
         );
         copy.graph.set_style_text("An unsaved draft");
         let json = copy.export_project_json().unwrap();

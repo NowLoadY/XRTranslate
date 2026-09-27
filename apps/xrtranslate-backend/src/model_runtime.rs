@@ -15,7 +15,7 @@ use std::{
 };
 
 use xrtranslate_assets::{
-    ModelAssetId, ModelAssetsConfig, ModelCapability, ModelFileRole, ModelRuntime,
+    ModelAssetId, ModelCapability, ModelFileRole, ModelRuntime,
     ResolvedModelAsset, ResolvedModelAssets, TranslationPromptStyle,
 };
 use xrtranslate_config::{
@@ -380,11 +380,12 @@ impl NativeProviderPlan {
     ) -> Result<(Option<LlamaServerSpec>, Option<LlamaServerSpec>), String> {
         if (self.asr_uses_llama_server() || self.translation_uses_llama_server())
             && !self.native_runtime.as_ref().is_some_and(|runtime| {
-                runtime.llama_cpp_backend == Some(NativeRuntimeBackend::Cuda)
+                matches!(runtime.llama_cpp_backend,
+                    Some(NativeRuntimeBackend::Cuda | NativeRuntimeBackend::Vulkan))
             })
         {
             return Err(
-                "Managed ASR and translation models require a verified CUDA runtime marker; CPU fallback is disabled."
+                "Managed ASR and translation models require a verified CUDA or Vulkan runtime marker; CPU fallback is disabled."
                     .to_owned(),
             );
         }
@@ -495,6 +496,14 @@ fn apply_managed_runtime_environment(
     let Some(runtime) = runtime else {
         return Ok(());
     };
+    if runtime.llama_cpp_backend == Some(NativeRuntimeBackend::Vulkan) {
+        let device = runtime.vulkan_device.ok_or("Managed Vulkan runtime has no selected GPU; run hardware detection again.")?;
+        spec.environment.push(("GGML_VK_VISIBLE_DEVICES".into(), device.to_string().into()));
+        // A required device makes llama.cpp fail clearly if the driver changes;
+        // it must not silently run a GPU model on CPU. The visible list has one GPU.
+        spec.extra_args.extend(["--device".into(), "Vulkan0".into()]);
+        return Ok(());
+    }
     let Some(cuda_directory) = runtime.cuda_bin_dir.as_ref() else {
         return Ok(());
     };
@@ -541,11 +550,7 @@ fn resolve_model_assets(
     project_root: &Path,
     active_asset_ids: impl IntoIterator<Item = ModelAssetId>,
 ) -> ResolvedModelAssets {
-    let mut assets = ModelAssetsConfig::with_directory_overrides(
-        config.model_manager.models_directory.clone(),
-        config.model_manager.qwen3_asr_gguf_directory.clone(),
-        config.model_manager.hunyuan_mt_gguf_directory.clone(),
-    );
+    let mut assets = config.model_asset_paths();
     for id in active_asset_ids {
         assets.select_asset(id);
     }
@@ -577,6 +582,7 @@ mod tests {
         plan.native_runtime = Some(ResolvedNativeRuntimeSelection {
             backend: NativeRuntimeBackend::Cuda,
             llama_cpp_backend: Some(NativeRuntimeBackend::Cuda),
+            vulkan_device: None,
             onnx_backend: Some(NativeRuntimeBackend::Cuda),
             cuda_version: Some("13.3".into()),
             provider_dir: None,
@@ -591,9 +597,10 @@ mod tests {
     #[test]
     fn managed_cuda_directory_is_injected_only_into_llama_child_path() {
         let cuda = std::env::temp_dir().join("xrtranslate-managed-cuda");
-        let runtime = ResolvedNativeRuntimeSelection {
+        let mut runtime = ResolvedNativeRuntimeSelection {
             backend: xrtranslate_config::NativeRuntimeBackend::Cuda,
             llama_cpp_backend: Some(xrtranslate_config::NativeRuntimeBackend::Cuda),
+            vulkan_device: None,
             onnx_backend: None,
             cuda_version: Some("13.3".into()),
             provider_dir: None,
@@ -626,6 +633,14 @@ mod tests {
             .map(|(_, value)| value)
             .unwrap();
         assert_eq!(std::env::split_paths(path).next().as_ref(), Some(&cuda));
+        runtime.llama_cpp_backend = Some(NativeRuntimeBackend::Vulkan);
+        runtime.vulkan_device = Some(2);
+        spec.environment.clear();
+        apply_managed_runtime_environment(&mut spec, Some(&runtime)).unwrap();
+        assert_eq!(spec.environment, vec![("GGML_VK_VISIBLE_DEVICES".into(), "2".into())]);
+        assert!(spec.extra_args.ends_with(&["--device".into(), "Vulkan0".into()]));
+        runtime.vulkan_device = None;
+        assert!(apply_managed_runtime_environment(&mut spec, Some(&runtime)).is_err());
     }
 
     #[test]
@@ -895,6 +910,7 @@ mod tests {
         let mut plan = NativeProviderPlan::resolve(&config, Path::new("release-root")).unwrap();
         attach_test_cuda_runtime(&mut plan);
         assert_eq!(plan.translation_model_alias(), "haidass-translate");
+        assert!(!plan.translation_supports_reference_context());
         let spec = plan.managed_server_specs(0, 8102).unwrap().1.unwrap();
         assert_eq!(spec.model_alias, "haidass-translate");
         assert!(spec.model.ends_with("Haidass-Translate-143M.Q8_0.gguf"));

@@ -15,6 +15,7 @@ sensevoice = ["dep:sherpa-onnx"]
 base64 = "0.22.1"
 futures-util = "0.3.33"
 half = "2.7.1"
+jieba-rs = "0.11.0"
 ndarray = "0.17"
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "tls-rustls", "api-27", "half", "cuda", "preload-dylibs"] }
 reqwest = { version = "0.13.4", features = ["json"] }

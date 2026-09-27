@@ -9,6 +9,18 @@ use sha2::{Digest, Sha256};
 use crate::{ModelAssetId, RequiredModelFile, ResolvedModelAsset, ResolvedModelAssets};
 
 impl ResolvedModelAssets {
+    /// Complete, readable catalog packages at their configured install paths.
+    /// Checks file sizes without hashing multi-gigabyte weights or loading models.
+    pub fn installed_assets(&self) -> impl Iterator<Item = &ResolvedModelAsset> {
+        self.catalog_assets().filter(|asset| {
+            asset.manifest().required_files.iter().all(|file| {
+                asset.check_file(*file).is_none()
+                    && fs::metadata(asset.directory().join(file.relative_path))
+                        .is_ok_and(|metadata| metadata.len() == file.bytes)
+            })
+        })
+    }
+
     /// Checks every active runtime file without modifying its contents.
     #[must_use]
     pub fn check(&self) -> ModelAssetsPreflight {

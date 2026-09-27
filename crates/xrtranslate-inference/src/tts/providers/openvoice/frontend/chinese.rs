@@ -1,5 +1,7 @@
 //! Chinese-with-English-code-switch MeloTTS frontend.
 
+mod tone_sandhi;
+
 use std::{collections::HashMap, path::Path};
 
 use half::f16;
@@ -27,6 +29,7 @@ pub(in crate::tts::providers::openvoice) struct ChineseFrontend {
     lexicon: ChineseLexicon,
     max_phrase_chars: usize,
     pinyin_to_phones: HashMap<String, Vec<String>>,
+    tone_sandhi: tone_sandhi::ToneSandhi,
 }
 
 impl ChineseFrontend {
@@ -60,6 +63,7 @@ impl ChineseFrontend {
             lexicon,
             max_phrase_chars,
             pinyin_to_phones,
+            tone_sandhi: tone_sandhi::ToneSandhi::default(),
         })
     }
 
@@ -91,6 +95,15 @@ impl ChineseFrontend {
         let mut word2phone = vec![1_usize];
         let mut cursor = 0;
         while cursor < inner.len() {
+            // Chinese punctuation has tone zero; only English words receive
+            // the English tone offset in the mixed-language checkpoint.
+            if is_punctuation(&inner[cursor]) {
+                phones.push(inner[cursor].clone());
+                tones.push(0);
+                word2phone.push(1);
+                cursor += 1;
+                continue;
+            }
             if is_han_token(&inner[cursor]) {
                 let begin = cursor;
                 while cursor < inner.len() && is_han_token(&inner[cursor]) {
@@ -231,9 +244,13 @@ impl ChineseFrontend {
                 cursor += 1;
             }
         }
-        apply_tone_sandhi(characters, &mut result)?;
+        self.tone_sandhi.apply(characters, &mut result)?;
         Ok(result)
     }
+}
+
+fn is_punctuation(token: &str) -> bool {
+    matches!(token, "!" | "?" | "…" | "," | "." | "'" | "-")
 }
 
 fn is_han_token(token: &str) -> bool {
@@ -252,55 +269,6 @@ fn split_tone(syllable: &str) -> Result<(&str, i32), InferenceError> {
         .filter(|tone| (1..=5).contains(tone))
         .ok_or_else(|| frontend_error(format!("invalid numbered pinyin {syllable:?}")))?;
     Ok((base, tone))
-}
-
-fn apply_tone_sandhi(characters: &[char], syllables: &mut [String]) -> Result<(), InferenceError> {
-    let mut tones = syllables
-        .iter()
-        .map(|syllable| split_tone(syllable).map(|(_, tone)| tone))
-        .collect::<Result<Vec<_>, _>>()?;
-    for index in 0..tones.len().saturating_sub(1) {
-        match characters[index] {
-            '不' if tones[index + 1] == 4 => tones[index] = 2,
-            '一' if is_numeric_yi(characters, index)
-                || index > 0 && characters[index - 1] == '第' => {}
-            '一' if tones[index + 1] == 4 => tones[index] = 2,
-            '一' if matches!(tones[index + 1], 1..=3) => tones[index] = 4,
-            _ => {}
-        }
-    }
-
-    // Upstream uses jieba word boundaries to distinguish the 2+1 and 1+2
-    // readings of three-or-more consecutive third tones. Without that lexical
-    // information only a run of exactly two third tones is unambiguous.
-    let mut begin = 0;
-    while begin < tones.len() {
-        if tones[begin] != 3 {
-            begin += 1;
-            continue;
-        }
-        let mut end = begin + 1;
-        while end < tones.len() && tones[end] == 3 {
-            end += 1;
-        }
-        if end - begin == 2 {
-            tones[begin] = 2;
-        }
-        begin = end;
-    }
-    for (syllable, tone) in syllables.iter_mut().zip(tones) {
-        syllable.pop();
-        syllable.push(char::from_digit(tone as u32, 10).expect("tone is 1..=5"));
-    }
-    Ok(())
-}
-
-fn is_numeric_yi(characters: &[char], index: usize) -> bool {
-    characters[index] == '一'
-        && (index > 0 && is_chinese_number_character(characters[index - 1])
-            || characters
-                .get(index + 1)
-                .is_some_and(|character| is_chinese_number_character(*character)))
 }
 
 fn is_chinese_number_character(character: char) -> bool {
@@ -497,12 +465,16 @@ mod tests {
             .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
-        apply_tone_sandhi(&characters, &mut syllables).unwrap();
+        tone_sandhi::ToneSandhi::default()
+            .apply(&characters, &mut syllables)
+            .unwrap();
         assert_eq!(syllables, ["bu2", "shi4", "yi2", "duan4", "hen2", "hao3"]);
 
         let characters = "一天".chars().collect::<Vec<_>>();
         let mut syllables = ["yi1", "tian1"].map(str::to_owned);
-        apply_tone_sandhi(&characters, &mut syllables).unwrap();
+        tone_sandhi::ToneSandhi::default()
+            .apply(&characters, &mut syllables)
+            .unwrap();
         assert_eq!(syllables, ["yi4", "tian1"]);
     }
 
@@ -510,20 +482,41 @@ mod tests {
     fn yi_sandhi_preserves_numbers_and_ordinals() {
         let characters = "一百零二".chars().collect::<Vec<_>>();
         let mut syllables = ["yi1", "bai3", "ling2", "er4"].map(str::to_owned);
-        apply_tone_sandhi(&characters, &mut syllables).unwrap();
+        tone_sandhi::ToneSandhi::default()
+            .apply(&characters, &mut syllables)
+            .unwrap();
         assert_eq!(syllables, ["yi1", "bai3", "ling2", "er4"]);
 
         let characters = "第一名".chars().collect::<Vec<_>>();
         let mut syllables = ["di4", "yi1", "ming2"].map(str::to_owned);
-        apply_tone_sandhi(&characters, &mut syllables).unwrap();
+        tone_sandhi::ToneSandhi::default()
+            .apply(&characters, &mut syllables)
+            .unwrap();
         assert_eq!(syllables, ["di4", "yi1", "ming2"]);
     }
 
     #[test]
-    fn third_tone_triplets_remain_conservative_without_word_segmentation() {
-        let characters = "纸老虎".chars().collect::<Vec<_>>();
-        let mut syllables = ["zhi3", "lao3", "hu3"].map(str::to_owned);
-        apply_tone_sandhi(&characters, &mut syllables).unwrap();
-        assert_eq!(syllables, ["zhi3", "lao3", "hu3"]);
+    fn word_boundaries_control_neutral_and_third_tones() {
+        let sandhi = tone_sandhi::ToneSandhi::default();
+        for (text, original, expected) in [
+            ("纸老虎", "zhi3 lao3 hu3", "zhi3 lao2 hu3"),
+            ("展览馆", "zhan3 lan3 guan3", "zhan2 lan2 guan3"),
+            ("朋友", "peng2 you3", "peng2 you5"),
+            ("名字", "ming2 zi4", "ming2 zi5"),
+            ("时候", "shi2 hou4", "shi2 hou5"),
+            ("看一看", "kan4 yi1 kan4", "kan4 yi5 kan4"),
+            ("看看", "kan4 kan4", "kan4 kan5"),
+            ("听不懂", "ting1 bu4 dong3", "ting1 bu5 dong3"),
+            ("电子", "dian4 zi3", "dian4 zi3"),
+        ] {
+            let mut syllables = original
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            sandhi
+                .apply(&text.chars().collect::<Vec<_>>(), &mut syllables)
+                .unwrap();
+            assert_eq!(syllables.join(" "), expected, "{text}");
+        }
     }
 }

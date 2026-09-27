@@ -8,6 +8,7 @@
 mod catalog;
 mod install;
 pub mod language;
+pub mod voices;
 mod preflight;
 mod resolve;
 

@@ -63,6 +63,16 @@ install -m 0644 XR-Corpus/corpora/default.sqlite "${STAGE_DIR}/corpora/default.s
 for resource in "${bundled_resources[@]}"; do
   install -D -m 0644 "${resource}" "${STAGE_DIR}/${resource}"
 done
+# Ship the same curated references embedded in the app, alongside their attribution.
+for voice in crates/xrtranslate-assets/resources/voices/*; do
+  for resource in reference.wav reference.txt LICENSE SOURCE.md; do
+    install -D -m 0644 "${voice}/${resource}" "${STAGE_DIR}/resources/voices/$(basename "${voice}")/${resource}"
+  done
+done
+# Runtime data is never copied wholesale from the development machine.
+for private in debug.md voice_clones recordings user-config.json rust-client-settings.json; do
+  test ! -e "${STAGE_DIR}/runtime/${private}"
+done
 mv -- "${STAGE_DIR}" "${TARGET_DIR}"
 trap - EXIT
 

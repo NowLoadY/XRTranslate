@@ -4,9 +4,9 @@ use crate::audio_studio::graph::{
     SystemCapturePolicy, VoiceMeeterBus,
 };
 use crate::audio_studio::{
-    AudioDeviceRole, AudioStudioLifecycle, AudioStudioPreset, AudioStudioSignalLevels,
-    AudioStudioUiAction, AudioStudioUiSnapshot, HostAudioDevice, HostAudioSnapshot,
-    RouteRiskReport, RouteRiskSeverity, VoiceMeeterEdition, VoiceMeeterSnapshot,
+    AudioDeviceRole, AudioStudioLifecycle, AudioStudioSignalLevels, AudioStudioUiAction,
+    AudioStudioUiSnapshot, HostAudioDevice, HostAudioSnapshot, RouteRiskReport, RouteRiskSeverity,
+    VoiceMeeterEdition, VoiceMeeterSnapshot,
 };
 use crate::i18n::{tr, tr_dynamic};
 use crate::ui::{
@@ -44,15 +44,31 @@ const ERROR: Color32 = Color32::from_rgb(132, 62, 62);
 const WARNING: Color32 = Color32::from_rgb(143, 105, 44);
 const SUCCESS: Color32 = Color32::from_rgb(48, 91, 78);
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct AudioStudioCanvasState {
     show_graph: bool,
     editor: GraphEditorState<NodeId, LinkId, GraphEndpoint, GraphEndpoint>,
     history: GraphEditHistory<AudioGraph>,
-    pending_preset_load: Option<AudioStudioPreset>,
+    rename_graph: Option<String>,
+    pending_graph_delete: bool,
     pending_safe_reset: bool,
     signal_envelopes: HashMap<LinkId, f32>,
     last_signal_update_seconds: Option<f64>,
+}
+
+impl Default for AudioStudioCanvasState {
+    fn default() -> Self {
+        Self {
+            show_graph: true,
+            editor: Default::default(),
+            history: Default::default(),
+            rename_graph: None,
+            pending_graph_delete: false,
+            pending_safe_reset: false,
+            signal_envelopes: HashMap::new(),
+            last_signal_update_seconds: None,
+        }
+    }
 }
 
 impl std::ops::Deref for AudioStudioCanvasState {
@@ -1255,7 +1271,7 @@ fn render_gain_orb_node(
     // 5. Value display floating ABOVE the ball only when controlling (per user: "数值仅在控制时显示在球的上方")
     if is_controlling {
         let value_text = if linear_gain < 0.01 {
-            "MUTE".to_string()
+            "Mute".to_string()
         } else if (linear_gain - 1.0).abs() < 0.02 {
             "1.0x (0 dB)".to_string()
         } else {
@@ -1481,7 +1497,9 @@ fn render_node(
         );
     }
     let compact_summary = match &node.kind {
-        AudioNodeKind::GameMicrophoneOutput { follow_tts: true, .. } => Some(tr(language, "Follow TTS switch").into()),
+        AudioNodeKind::GameMicrophoneOutput {
+            follow_tts: true, ..
+        } => Some(tr(language, "Follow TTS switch").into()),
         AudioNodeKind::AsrTap => Some(
             current_asr_input_mode(graph)
                 .map_or_else(|| "Off".to_owned(), |mode| mode.label().to_owned()),
@@ -1618,7 +1636,8 @@ fn paint_gate_meter(
 }
 
 fn paint_gate_level_bar(ui: &egui::Ui, bar: Rect, db: Option<f32>, threshold_db: f32) {
-    ui.painter().rect_filled(bar, 3.0, Color32::from_rgb(229, 234, 240));
+    ui.painter()
+        .rect_filled(bar, 3.0, Color32::from_rgb(229, 234, 240));
     if let Some(db) = db {
         let x = bar.left() + bar.width() * ((db + 80.0) / 80.0).clamp(0.0, 1.0);
         ui.painter().rect_filled(
@@ -1671,10 +1690,10 @@ fn device_selection_text(kind: &AudioNodeKind, devices: &[HostAudioDevice]) -> S
                     })
                 })
                 .map(|device| format!("Endpoint · {}", device.name))
-                .unwrap_or_else(|| "ENDPOINT · System default".into()),
+                .unwrap_or_else(|| "Endpoint · System default".into()),
             SystemAudioCapture::Application { application, .. } => {
                 application.as_ref().map_or_else(
-                    || "APP · Select an application".into(),
+                    || "App · Select an application".into(),
                     |application| format!("App · {}", application.display_name),
                 )
             }
@@ -2414,34 +2433,6 @@ fn render_scoped(
     ui.add_space(8.0);
 
     let mut commands = Vec::new();
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut state.show_graph, false, tr(language, "Quick controls"));
-        ui.selectable_value(&mut state.show_graph, true, tr(language, "Node graph"));
-        if !state.show_graph {
-            if ui
-                .add_enabled(
-                    state.history.can_undo(),
-                    egui::Button::new(tr(language, "Undo")),
-                )
-                .clicked()
-            {
-                if let Some(graph) = state.history.undo(snapshot.selected_graph.clone()) {
-                    commands.push(CanvasCommand::ReplaceGraph(graph));
-                }
-            }
-            if ui
-                .add_enabled(
-                    state.history.can_redo(),
-                    egui::Button::new(tr(language, "Redo")),
-                )
-                .clicked()
-            {
-                if let Some(graph) = state.history.redo(snapshot.selected_graph.clone()) {
-                    commands.push(CanvasCommand::ReplaceGraph(graph));
-                }
-            }
-        }
-    });
     if state.show_graph {
         render_graph_canvas(
             snapshot,
@@ -2453,7 +2444,7 @@ fn render_scoped(
         );
     } else {
         let before_actions = actions.len();
-        render_quick_controls(snapshot, ui, &mut state, &mut actions, language);
+        render_quick_controls(snapshot, ui, &mut actions, language);
         if actions.len() != before_actions {
             state.history.push(snapshot.selected_graph.clone());
         }
@@ -2533,20 +2524,9 @@ fn render_scoped(
 fn render_quick_controls(
     snapshot: &AudioStudioUiSnapshot,
     ui: &mut egui::Ui,
-    state: &mut AudioStudioCanvasState,
     actions: &mut Vec<AudioStudioUiAction>,
     language: crate::i18n::UiLanguage,
 ) {
-    ui.add_space(12.0);
-    ui.heading(tr(language, "Translator microphone"));
-    ui.label(tr(language, "TTS on: translated speech only, including silence while waiting. TTS off: your original microphone."));
-    if ui
-        .button(tr(language, "Set up translator microphone"))
-        .clicked()
-    {
-        state.pending_preset_load = Some(AudioStudioPreset::TranslatorMicrophone);
-        state.pending_safe_reset = false;
-    }
     egui::ScrollArea::vertical().show(ui, |ui| {
         for node in &snapshot.selected_graph.nodes {
             let role = match node.kind {
@@ -2603,11 +2583,9 @@ fn render_quick_controls(
             });
         }
         ui.add_space(12.0);
-        render_game_microphone_status(snapshot, ui);
         if !snapshot.host_audio.devices.iter().any(|device| device.role == AudioDeviceRole::GameMicrophoneSink && !device.id.0.is_empty()) {
             ui.hyperlink_to(tr(language, "Get a virtual audio cable"), "https://vb-audio.com/Cable/");
         }
-        render_status(snapshot, ui, language);
     });
 }
 
@@ -2618,13 +2596,101 @@ fn render_header(
     actions: &mut Vec<AudioStudioUiAction>,
     language: crate::i18n::UiLanguage,
 ) {
+    let is_default = snapshot.selected_graph.id.0 == crate::audio_studio::DEFAULT_AUDIO_GRAPH_ID;
+    let unlocked = snapshot.host_audio.translation_workflow_locked_by.is_none();
+    let rename_id = ui.make_persistent_id("audio_graph_name");
+    let mut focus_name = false;
     ui.horizontal_wrapped(|ui| {
         ui.heading(tr(language, "Audio Studio"));
-        ui.label(
-            RichText::new(format!("{} nodes", snapshot.selected_graph.nodes.len()))
-                .small()
-                .color(MUTED),
-        );
+        ui.add_enabled_ui(unlocked, |ui| {
+            let name = if is_default {
+                tr(language, "Default")
+            } else {
+                &snapshot.selected_graph.name
+            };
+            crate::ui::components::combobox_ui_with_width(
+                ui,
+                "audio_graph",
+                name,
+                Some(190.0),
+                |ui| {
+                    for default_group in [true, false] {
+                        for (id, name) in &snapshot.graphs {
+                            if (id.0 == crate::audio_studio::DEFAULT_AUDIO_GRAPH_ID)
+                                != default_group
+                            {
+                                continue;
+                            }
+                            let label = if default_group {
+                                tr(language, "Default")
+                            } else {
+                                name
+                            };
+                            if ui
+                                .selectable_label(*id == snapshot.selected_graph.id, label)
+                                .clicked()
+                            {
+                                if *id != snapshot.selected_graph.id {
+                                    actions.push(AudioStudioUiAction::SelectGraph(id.clone()));
+                                }
+                                state.rename_graph = None;
+                                state.pending_graph_delete = false;
+                                state.pending_safe_reset = false;
+                                ui.close();
+                            }
+                        }
+                        if default_group && snapshot.graphs.len() > 1 {
+                            ui.separator();
+                        }
+                    }
+                },
+            );
+            if ui.button(tr(language, "New graph")).clicked() {
+                actions.push(AudioStudioUiAction::NewGraph);
+                state.show_graph = true;
+                state.rename_graph = Some(String::new());
+                state.pending_graph_delete = false;
+                state.pending_safe_reset = false;
+                focus_name = true;
+            }
+            ui.menu_button("⋯", |ui| {
+                if ui.button(tr(language, "Duplicate graph")).clicked() {
+                    actions.push(AudioStudioUiAction::DuplicateGraph);
+                    state.rename_graph = None;
+                    state.pending_graph_delete = false;
+                    state.pending_safe_reset = false;
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(!is_default, egui::Button::new(tr(language, "Rename")))
+                    .clicked()
+                {
+                    state.rename_graph = Some(snapshot.selected_graph.name.clone());
+                    state.pending_graph_delete = false;
+                    state.pending_safe_reset = false;
+                    focus_name = true;
+                    ui.close();
+                }
+                if ui
+                    .add_enabled(!is_default, egui::Button::new(tr(language, "Delete graph")))
+                    .clicked()
+                {
+                    state.pending_graph_delete = true;
+                    state.pending_safe_reset = false;
+                    state.rename_graph = None;
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button(tr(language, "Reset graph")).clicked() {
+                    state.pending_safe_reset = true;
+                    state.pending_graph_delete = false;
+                    state.rename_graph = None;
+                    ui.close();
+                }
+            });
+        })
+        .response
+        .on_disabled_hover_text(tr(language, "Stop translation to switch graphs"));
         route_lifecycle_chip(ui, &snapshot.lifecycle, language);
         if snapshot.dirty {
             if graph_style::command_button(ui, tr(language, "Save"), true).clicked() {
@@ -2634,69 +2700,86 @@ fn render_header(
             ui.label(RichText::new(tr(language, "Saved")).small().color(MUTED));
         }
     });
-    ui.add_space(6.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.menu_button(format!("{} ▾", tr(language, "Presets")), |ui| {
-            ui.label(RichText::new(&snapshot.selected_graph.name).small().color(MUTED));
-            ui.separator();
-            for preset in AudioStudioPreset::ALL {
-                if ui.button(preset.display_name()).clicked() {
-                    state.pending_preset_load = Some(preset);
-                    state.pending_safe_reset = false;
-                    ui.close();
-                }
+    if let Some(mut name) = state.rename_graph.clone() {
+        ui.horizontal(|ui| {
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut name)
+                    .id(rename_id)
+                    .hint_text(tr(language, "Graph name"))
+                    .desired_width(220.0),
+            );
+            if focus_name {
+                edit.request_focus();
+            }
+            let apply = ui
+                .add_enabled(
+                    !name.trim().is_empty(),
+                    egui::Button::new(tr(language, "Rename")),
+                )
+                .clicked()
+                || (edit.lost_focus()
+                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                    && !name.trim().is_empty());
+            if apply {
+                actions.push(AudioStudioUiAction::RenameGraph(name.clone()));
+                state.rename_graph = None;
+            } else if ui.button(tr(language, "Cancel")).clicked() {
+                state.rename_graph = None;
+            } else {
+                state.rename_graph = Some(name);
             }
         });
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.selectable_value(&mut state.show_graph, true, tr(language, "Node graph"));
+        ui.selectable_value(&mut state.show_graph, false, tr(language, "Quick controls"));
+        ui.separator();
         if state.show_graph {
-            ui.menu_button(tr(language, "+ Node"), |ui| render_add_node_menu(snapshot, state, ui, actions));
+            ui.menu_button(tr(language, "+ Node"), |ui| {
+                render_add_node_menu(snapshot, state, ui, actions)
+            });
+        }
+        if graph_style::toolbar_button(ui, tr(language, "Undo"), state.history.can_undo()).clicked()
+            && let Some(previous) = state.history.undo(snapshot.selected_graph.clone())
+        {
+            actions.push(AudioStudioUiAction::ReplaceSelectedGraph(previous));
+        }
+        if graph_style::toolbar_button(ui, tr(language, "Redo"), state.history.can_redo()).clicked()
+            && let Some(next) = state.history.redo(snapshot.selected_graph.clone())
+        {
+            actions.push(AudioStudioUiAction::ReplaceSelectedGraph(next));
+        }
+        if state.show_graph {
             ui.separator();
             for (label, delta, hint) in [("−", -120.0, "Zoom out"), ("+", 120.0, "Zoom in")] {
-                if graph_style::toolbar_button(ui, label, true).on_hover_text(hint).clicked() {
+                if graph_style::toolbar_button(ui, label, true)
+                    .on_hover_text(tr(language, hint))
+                    .clicked()
+                {
                     state.canvas.zoom_from_center(delta);
                 }
             }
             if graph_style::toolbar_button(ui, tr(language, "Fit graph"), true).clicked() {
                 state.canvas.fit_pending = true;
             }
-            ui.menu_button("⋯", |ui| {
-                if graph_style::toolbar_button(ui, tr(language, "Auto layout"), true).clicked() {
-                    let arranged = auto_layout_graph(&snapshot.selected_graph, &snapshot.host_audio);
-                    if arranged != snapshot.selected_graph {
-                        state.history.push(snapshot.selected_graph.clone());
-                        actions.push(AudioStudioUiAction::ReplaceSelectedGraph(arranged));
-                        state.canvas.fit_pending = true;
-                    }
-                    ui.close();
-                }
-                if graph_style::toolbar_button(ui, tr(language, "Undo"), state.history.can_undo()).clicked()
-                    && let Some(previous) = state.history.undo(snapshot.selected_graph.clone())
-                {
-                    actions.push(AudioStudioUiAction::ReplaceSelectedGraph(previous));
-                    ui.close();
-                }
-                if graph_style::toolbar_button(ui, tr(language, "Redo"), state.history.can_redo()).clicked()
-                    && let Some(next) = state.history.redo(snapshot.selected_graph.clone())
-                {
-                    actions.push(AudioStudioUiAction::ReplaceSelectedGraph(next));
-                    ui.close();
-                }
-                let has_selection = !state.selected_nodes.is_empty() || !state.selected_links.is_empty();
-                if graph_style::toolbar_button(ui, tr(language, "Delete selection"), has_selection).clicked() {
+            if graph_style::toolbar_button(ui, tr(language, "Auto layout"), true).clicked() {
+                let arranged = auto_layout_graph(&snapshot.selected_graph, &snapshot.host_audio);
+                if arranged != snapshot.selected_graph {
                     state.history.push(snapshot.selected_graph.clone());
-                    let (nodes, links) = state.take_selection();
-                    actions.extend(nodes.into_iter().map(AudioStudioUiAction::RemoveNode));
-                    actions.extend(links.into_iter().map(AudioStudioUiAction::DeleteLink));
-                    ui.close();
+                    actions.push(AudioStudioUiAction::ReplaceSelectedGraph(arranged));
+                    state.canvas.fit_pending = true;
                 }
-                ui.separator();
-                if ui.button("Reset audio system").clicked() {
-                    state.pending_preset_load = None;
-                    state.pending_safe_reset = true;
-                    ui.close();
-                }
-                ui.separator();
-                ui.label(RichText::new("Space + drag · Pan\nScroll · Zoom\nDrag ports · Connect\nShift + click · Multi-select\nDel · Delete\nCtrl+Z / Ctrl+Y · Undo / Redo").small().color(MUTED));
-            });
+            }
+            let has_selection =
+                !state.selected_nodes.is_empty() || !state.selected_links.is_empty();
+            if graph_style::toolbar_button(ui, tr(language, "Delete selection"), has_selection)
+                .clicked()
+            {
+                state.history.push(snapshot.selected_graph.clone());
+                let (nodes, links) = state.take_selection();
+                actions.extend(nodes.into_iter().map(AudioStudioUiAction::RemoveNode));
+                actions.extend(links.into_iter().map(AudioStudioUiAction::DeleteLink));
+            }
         }
         let issue_count = snapshot.validation.issues.len()
             + snapshot.risk_report.blocking_count()
@@ -2704,39 +2787,67 @@ fn render_header(
         let has_error = snapshot.last_error.is_some()
             || matches!(snapshot.lifecycle, AudioStudioLifecycle::Error { .. });
         let label = if issue_count > 0 {
-            format!("⚠ {issue_count} issues")
+            format!("⚠ {issue_count}")
         } else if has_error {
-            format!("⚠ {}", tr(language, "Audio error"))
+            tr(language, "Audio error").into()
         } else {
-            tr(language, "Status").to_owned()
+            tr(language, "Status").into()
         };
-        ui.menu_button(RichText::new(label).color(if has_error { ERROR } else if issue_count > 0 { WARNING } else { MUTED }), |ui| {
-            ui.set_width(440.0);
-            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| render_status(snapshot, ui, language));
-        });
+        ui.menu_button(
+            RichText::new(label).color(if has_error {
+                ERROR
+            } else if issue_count > 0 {
+                WARNING
+            } else {
+                MUTED
+            }),
+            |ui| {
+                ui.set_width(440.0);
+                egui::ScrollArea::vertical()
+                    .max_height(420.0)
+                    .show(ui, |ui| render_status(snapshot, ui, language));
+            },
+        );
     });
-
-    if state.pending_preset_load.is_some() || state.pending_safe_reset {
+    if state.pending_safe_reset || state.pending_graph_delete {
         ui.horizontal_wrapped(|ui| {
-            let label = state.pending_preset_load.map_or_else(
-                || "Reset to the default audio system?".to_owned(),
-                |preset| format!("Replace with ‘{}’?", preset.display_name()),
-            );
-            ui.label(RichText::new(label).color(WARNING));
-            if graph_style::command_button(ui, tr(language, "Replace graph"), true).clicked() {
-                actions.push(state.pending_preset_load.map_or(
-                    AudioStudioUiAction::ResetToDefault,
-                    AudioStudioUiAction::LoadPreset,
-                ));
+            ui.label(tr(
+                language,
+                if state.pending_graph_delete {
+                    "Delete this graph?"
+                } else {
+                    "Restore the default layout?"
+                },
+            ));
+            if ui
+                .add_enabled(
+                    unlocked,
+                    egui::Button::new(tr(
+                        language,
+                        if state.pending_graph_delete {
+                            "Delete"
+                        } else {
+                            "Reset graph"
+                        },
+                    )),
+                )
+                .clicked()
+            {
+                actions.push(if state.pending_graph_delete {
+                    AudioStudioUiAction::DeleteGraph
+                } else {
+                    AudioStudioUiAction::ResetToDefault
+                });
                 state.history.clear();
                 state.clear_selection();
                 state.canvas.fit_pending = true;
-                state.pending_preset_load = None;
+                state.rename_graph = None;
                 state.pending_safe_reset = false;
+                state.pending_graph_delete = false;
             }
             if ui.button(tr(language, "Cancel")).clicked() {
-                state.pending_preset_load = None;
                 state.pending_safe_reset = false;
+                state.pending_graph_delete = false;
             }
         });
     }
@@ -3229,7 +3340,7 @@ fn mono_label(text: &str) -> RichText {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_studio::presets::graph_for_preset;
+    use crate::audio_studio::{AudioStudioPreset, graph_for_preset};
 
     fn host_device(id: &str, name: &str, role: AudioDeviceRole) -> HostAudioDevice {
         HostAudioDevice {

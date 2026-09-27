@@ -6,7 +6,7 @@ mod qwen;
 
 use serde_json::{Value, json};
 use xrtranslate_prompt::{
-    PromptExecutionTrace, PromptMessage, PromptMessageRole, PromptProviderTarget,
+    PromptExecutionTrace, PromptMessage, PromptMessageRole, PromptNodeGraph, PromptProviderTarget,
 };
 
 use crate::InferenceError;
@@ -18,6 +18,7 @@ pub(super) use output::translation_output_rejection;
 
 pub(super) struct TranslationProfile {
     target: PromptProviderTarget,
+    graph: fn(&TranslationOptions) -> Result<&PromptNodeGraph, InferenceError>,
     temperature: f64,
     apply_sampling: fn(&mut Value, &TranslationOptions),
     clean_output: fn(&str) -> String,
@@ -33,7 +34,7 @@ impl TranslationProfile {
         source_text: &str,
         options: &TranslationOptions,
     ) -> Result<RenderedTranslationPrompt, InferenceError> {
-        render_prompt(self.target, source_text, options)
+        render_prompt((self.graph)(options)?, self.target, source_text, options)
     }
 
     pub(super) fn apply_sampling(&self, payload: &mut Value, options: &TranslationOptions) {
@@ -88,13 +89,17 @@ impl RenderedTranslationPrompt {
     }
 }
 
+fn configured_graph(options: &TranslationOptions) -> Result<&PromptNodeGraph, InferenceError> {
+    Ok(&options.prompt_graph)
+}
+
 fn render_prompt(
+    graph: &PromptNodeGraph,
     target: PromptProviderTarget,
     source_text: &str,
     options: &TranslationOptions,
 ) -> Result<RenderedTranslationPrompt, InferenceError> {
-    let execution = options
-        .prompt_graph
+    let execution = graph
         .render_with_trace(
             target,
             source_text,
@@ -144,5 +149,26 @@ mod tests {
                 .unwrap();
         assert_eq!(openai.as_array().unwrap().len(), 2);
         assert_eq!(hunyuan.as_array().unwrap().len(), 1);
+
+        let mut options = options;
+        options.prompt_context.terminology_rows = vec!["unrelated context".into()];
+        let bilingual =
+            build_translation_messages(TranslationProvider::Bilingual, "Good morning", &options)
+                .unwrap();
+        assert_eq!(
+            bilingual,
+            json!([{"role": "user", "content": "Translate the following text from English to Simplified Chinese.\nGood morning"}])
+        );
+        options.target_language = "en".into();
+        let bilingual =
+            build_translation_messages(TranslationProvider::Bilingual, "早上好", &options).unwrap();
+        assert_eq!(
+            bilingual,
+            json!([{"role": "user", "content": "请将以下简体中文翻译成英文。\n早上好"}])
+        );
+        options.target_language = "French".into();
+        assert!(
+            build_translation_messages(TranslationProvider::Bilingual, "hello", &options).is_err()
+        );
     }
 }

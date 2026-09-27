@@ -405,6 +405,21 @@ fn package(plan: &ReleasePlan) -> Result<PathBuf, PackageError> {
         copy_native_directory(&plan.resources_dir, &staging.join("resources"))?;
         copy_file_to(&plan.seed_database, &staging.join(CORPUS_SEED_PATH))?;
         copy_file_to(&plan.license, &staging.join("LICENSE"))?;
+        // Export the exact curated references used by the app, never runtime recordings.
+        for voice in xrtranslate_assets::voices::BUILTIN_VOICES {
+            let directory = staging.join("resources/voices").join(voice.id);
+            fs::create_dir_all(&directory)
+                .and_then(|()| {
+                    fs::write(directory.join("reference.wav"), voice.wav)?;
+                    fs::write(directory.join("reference.txt"), voice.transcript)?;
+                    fs::write(directory.join("SOURCE.md"), voice.source_notice)?;
+                    fs::write(directory.join("LICENSE"), voice.license)
+                })
+                .map_err(|source| PackageError::Io {
+                    context: format!("cannot write built-in voice resources {}", voice.id),
+                    source,
+                })?;
+        }
         copy_file_to(&plan.vad_model, &staging.join(VAD_RELATIVE_PATH))?;
         copy_file_to(&plan.speaker_model, &staging.join(SPEAKER_RELATIVE_PATH))?;
         copy_file_to(&plan.denoise_model, &staging.join(DENOISE_RELATIVE_PATH))?;
@@ -689,6 +704,19 @@ fn copy_model_packages(staging: &Path, assets: &ResolvedModelAssets) -> Result<(
 }
 
 fn verify_staged_release(staging: &Path) -> Result<(), PackageError> {
+    for private in [
+        "runtime/debug.md",
+        "runtime/voice_clones",
+        "runtime/recordings",
+        "runtime/user-config.json",
+        "runtime/rust-client-settings.json",
+    ] {
+        if staging.join(private).exists() {
+            return Err(PackageError::InvalidInput(format!(
+                "staged release contains private local data: {private}"
+            )));
+        }
+    }
     for forbidden in [
         "backend",
         "server",
@@ -1117,6 +1145,23 @@ mod tests {
         write(&onnx_runtime_notices, b"onnx notices");
         write(&config, br#"{"model_manager":{"llama_server_path":"old"}}"#);
         write(&license, b"AGPL-3.0-only");
+        write(&source.join("runtime/debug.md"), b"hello\nlocal only");
+        write(
+            &source.join("runtime/voice_clones/xrtranslate_microphone.wav"),
+            b"private recording",
+        );
+        write(
+            &source.join("runtime/voice_clones/selection.json"),
+            br#"{"builtin_id":"miku"}"#,
+        );
+        write(
+            &source.join("runtime/recordings/personal.wav"),
+            b"private recording",
+        );
+        write(
+            &source.join("runtime/voice_clones/cards/ab/abcdef/reference.wav"),
+            b"private card audio",
+        );
 
         let plan = ReleasePlan::from_arguments(Arguments {
             rust_client_bin: client,
@@ -1186,6 +1231,28 @@ mod tests {
         assert!(output.join(ONNX_NOTICES_RELATIVE_PATH).is_file());
         assert!(output.join("release-manifest.json").is_file());
         assert!(!output.join("runtime/llama.cpp").exists());
+        assert!(!output.join("runtime/debug.md").exists());
+        assert!(!output.join("runtime/voice_clones").exists());
+        assert!(!output.join("runtime/recordings").exists());
+        for voice in xrtranslate_assets::voices::BUILTIN_VOICES {
+            let directory = output.join("resources/voices").join(voice.id);
+            assert_eq!(
+                fs::read(directory.join("reference.wav")).unwrap(),
+                voice.wav
+            );
+            assert_eq!(
+                fs::read_to_string(directory.join("reference.txt")).unwrap(),
+                voice.transcript
+            );
+            assert_eq!(
+                fs::read_to_string(directory.join("LICENSE")).unwrap(),
+                voice.license
+            );
+            assert_eq!(
+                fs::read_to_string(directory.join("SOURCE.md")).unwrap(),
+                voice.source_notice
+            );
+        }
         assert!(!output.join("backend").exists());
         assert!(!output.join("server").exists());
         assert!(!output.join("main.py").exists());

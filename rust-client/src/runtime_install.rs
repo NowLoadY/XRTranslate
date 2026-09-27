@@ -1,8 +1,8 @@
 //! Native llama.cpp runtime discovery and installation.
 //!
 //! The configured `model_manager.llama_cpp.downloads` list is the contract:
-//! we select CUDA when the installed NVIDIA driver reports a compatible
-//! runtime, adequate compute capability, and enough VRAM for the selected packages. Managed
+//! CUDA and Vulkan selection follows verified GPU capabilities and the selected
+//! packages' memory requirements. Managed
 //! model packages never fall back to CPU; bundled small ONNX components are a
 //! separate application resource class and do not use this installer.
 
@@ -11,7 +11,6 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
-    process::Command,
     thread,
 };
 use xrtranslate_config::{
@@ -21,23 +20,23 @@ use xrtranslate_config::{
 };
 use xrtranslate_download::{DownloadCancellation, DownloadClient, DownloadSource, DownloadSpec};
 
-const MIN_CUDA_COMPUTE_CAPABILITY: (u16, u16) = (6, 0);
-const MIN_LOCAL_MODEL_VRAM_BYTES: u64 = 1024 * 1024 * 1024;
 const TURING_COMPUTE_CAPABILITY: (u16, u16) = (7, 5);
 const BLACKWELL_MINIMUM_CUDA: (u16, u16) = (12, 8);
-pub(crate) const NVIDIA_APP_URL: &str = "https://www.nvidia.com/en-us/software/nvidia-app/";
+mod hardware;
+pub use hardware::LocalModelAvailability;
+pub(crate) use hardware::NVIDIA_APP_URL;
+use hardware::{Hardware, NvidiaCuda, VulkanGpu};
+#[cfg(test)]
+use hardware::{cuda_version_from_nvidia_smi, local_model_availability, parse_nvidia_gpu_rows};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RuntimeBackend {
-    Cpu,
-    Cuda,
-}
+type RuntimeBackend = NativeRuntimeBackend;
 
 #[derive(Clone, Debug)]
 struct RuntimeSelection {
     assets: Vec<ReleaseAsset>,
     backend: RuntimeBackend,
     executable: String,
+    vulkan_device: Option<u32>,
     fallback_reason: Option<String>,
 }
 
@@ -84,38 +83,6 @@ impl RuntimePlan {
     fn requires_marker_repair(&self) -> bool {
         self.blocking_error.is_none() && self.downloads.is_empty() && !self.marker_ready
     }
-}
-
-impl RuntimeBackend {
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Cpu => "CPU",
-            Self::Cuda => "CUDA",
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct NvidiaCuda {
-    gpu: String,
-    compute_capability: (u16, u16),
-    driver_cuda: String,
-    memory_bytes: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LocalModelAvailability {
-    Detecting,
-    Available {
-        gpu: String,
-        memory_bytes: u64,
-    },
-    InsufficientVram {
-        gpu: String,
-        memory_bytes: u64,
-        required_bytes: u64,
-    },
-    Unavailable(String),
 }
 
 #[derive(Clone, Debug)]
@@ -255,11 +222,9 @@ impl RuntimeInstaller {
         requirements: RuntimeRequirements,
         model_assets: &[xrtranslate_assets::ModelAssetId],
     ) -> bool {
-        self.selection
-            .as_ref()
-            .is_some_and(|selection| {
-                selection.requirements == requirements && selection.model_assets == model_assets
-            })
+        self.selection.as_ref().is_some_and(|selection| {
+            selection.requirements == requirements && selection.model_assets == model_assets
+        })
     }
 
     #[must_use]
@@ -663,6 +628,7 @@ async fn install_onnx_runtime(
             llama_cpp_backend: existing
                 .as_ref()
                 .and_then(|marker| marker.llama_cpp_backend),
+            vulkan_device: existing.as_ref().and_then(|marker| marker.vulkan_device),
             onnx_backend: Some(NativeRuntimeBackend::Cpu),
             cuda_version: existing
                 .as_ref()
@@ -883,11 +849,14 @@ async fn install_onnx_runtime(
         &cudnn.required_files,
     )?);
     let onnx_core_library = provider_directory.join(RuntimeLayout::ONNX_CORE_LIBRARY);
+    let existing = load_native_runtime_selection(&layout)?;
     let marker = NativeRuntimeSelection {
         schema_version: 1,
         backend: NativeRuntimeBackend::Cuda,
-        llama_cpp_backend: load_native_runtime_selection(&layout)?
+        llama_cpp_backend: existing
+            .as_ref()
             .and_then(|marker| marker.llama_cpp_backend),
+        vulkan_device: existing.as_ref().and_then(|marker| marker.vulkan_device),
         onnx_backend: Some(NativeRuntimeBackend::Cuda),
         cuda_version: Some(cuda_version.into()),
         provider_dir: Some(layout.config_path_for(&provider_directory)),
@@ -1062,6 +1031,7 @@ async fn install(
         persist_llama_runtime_marker(
             &layout,
             selection.backend,
+            selection.vulkan_device,
             cuda_asset,
             cuda_directory.as_deref(),
             selection.fallback_reason.as_deref(),
@@ -1169,6 +1139,7 @@ async fn install(
     persist_llama_runtime_marker(
         &layout,
         selection.backend,
+        selection.vulkan_device,
         cuda_asset,
         cuda_directory.as_deref(),
         selection.fallback_reason.as_deref(),
@@ -1587,22 +1558,20 @@ fn load_native_runtime_selection(
 fn persist_llama_runtime_marker(
     layout: &RuntimeLayout,
     backend: RuntimeBackend,
+    vulkan_device: Option<u32>,
     cuda_asset: Option<&ReleaseAsset>,
     cuda_directory: Option<&Path>,
     fallback_reason: Option<&str>,
 ) -> Result<(), String> {
     let existing = load_native_runtime_selection(layout)?;
-    let llama_backend = match backend {
-        RuntimeBackend::Cpu => NativeRuntimeBackend::Cpu,
-        RuntimeBackend::Cuda => NativeRuntimeBackend::Cuda,
-    };
     let marker = NativeRuntimeSelection {
         schema_version: 1,
         backend: existing
             .as_ref()
             .and_then(|marker| marker.onnx_backend)
-            .unwrap_or(llama_backend),
-        llama_cpp_backend: Some(llama_backend),
+            .unwrap_or(backend),
+        llama_cpp_backend: Some(backend),
+        vulkan_device,
         onnx_backend: existing.as_ref().and_then(|marker| marker.onnx_backend),
         cuda_version: cuda_asset
             .and_then(|asset| asset.cuda_version.clone())
@@ -1738,40 +1707,35 @@ fn configured_runtime_plan(
         .into_iter()
         .filter_map(|key| xrtranslate_assets::ModelAssetId::from_config_key(&key))
         .collect::<Vec<_>>();
-    let nvidia = supported_nvidia_cuda()?;
-    let local_models = local_model_availability(nvidia.as_ref());
+    let hardware = Hardware::detect();
+    let local_models = hardware.availability;
     let requires_managed_model = requirements.llama_cpp || requirements.onnx_tts;
     let required_model_vram_bytes = required_local_model_vram_bytes(&config);
-    let blocking_error = if requires_managed_model {
-        match &local_models {
-            LocalModelAvailability::Available { gpu, memory_bytes }
-                if *memory_bytes < required_model_vram_bytes => Some(format!(
-                "NVIDIA GPU {gpu} has {:.1} GiB of VRAM; the selected local models require at least {:.0} GiB.",
-                *memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
-                required_model_vram_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
-            )),
-            LocalModelAvailability::Available { .. } => None,
-            LocalModelAvailability::InsufficientVram {
-                gpu,
-                memory_bytes,
-                required_bytes,
-            } => Some(format!(
-                "NVIDIA GPU {gpu} has {:.1} GiB of VRAM; local models require at least {:.0} GiB.",
-                *memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
-                *required_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
-            )),
-            LocalModelAvailability::Unavailable(reason) => Some(reason.clone()),
-            LocalModelAvailability::Detecting => {
-                Some("NVIDIA GPU detection did not complete.".to_owned())
-            }
-        }
-    } else {
-        None
-    };
-    let eligible_nvidia = blocking_error
-        .is_none()
-        .then_some(nvidia.as_ref())
+    let blocking_error = requires_managed_model
+        .then(|| {
+            model_assets
+                .iter()
+                .map(|id| xrtranslate_assets::manifest_for(*id))
+                .find(|model| !local_models.supports(model.hardware))
+                .map(|model| {
+                    format!(
+                        "{} requires {} with at least {:.0} GiB of device memory. Detected: {}",
+                        model.id,
+                        model.hardware.accelerator.label(),
+                        model.hardware.minimum_memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+                        local_models,
+                    )
+                })
+        })
         .flatten();
+    let eligible_nvidia = hardware.nvidia.as_ref().filter(|_| {
+        matches!(&local_models, LocalModelAvailability::Available { cuda_memory_bytes, .. }
+            if *cuda_memory_bytes >= required_model_vram_bytes)
+    });
+    let eligible_amd = hardware
+        .amd
+        .as_ref()
+        .filter(|gpu| gpu.memory_bytes >= required_model_vram_bytes);
     // ONNX CUDA deliberately reuses the declared llama.cpp CUDA redistributable
     // catalogue. Small bundled ONNX components do not participate in this plan.
     let llama_assets = (requirements.llama_cpp || requirements.onnx_cuda)
@@ -1779,7 +1743,7 @@ fn configured_runtime_plan(
         .transpose()?
         .unwrap_or_default();
     let llama_cpp = (requirements.llama_cpp && blocking_error.is_none())
-        .then(|| select_assets_for_hardware(&llama_assets, eligible_nvidia))
+        .then(|| select_llama_assets(&llama_assets, eligible_nvidia, eligible_amd))
         .transpose()?;
     let onnx = if requirements.onnx_tts && requirements.onnx_cuda && blocking_error.is_none() {
         let providers = onnx_assets_from_config(&config.model_manager.onnxruntime)?;
@@ -1798,8 +1762,6 @@ fn configured_runtime_plan(
             &cudnn_runtimes,
             eligible_nvidia,
         )?)
-    } else if requirements.onnx_tts {
-        None
     } else {
         None
     };
@@ -1822,7 +1784,11 @@ fn required_local_model_vram_bytes(config: &AppConfig) -> u64 {
         .active_native_model_assets()
         .into_iter()
         .filter_map(|key| xrtranslate_assets::ModelAssetId::from_config_key(&key))
-        .map(|id| xrtranslate_assets::manifest_for(id).hardware.minimum_memory_bytes)
+        .map(|id| {
+            xrtranslate_assets::manifest_for(id)
+                .hardware
+                .minimum_memory_bytes
+        })
         .max()
         .unwrap_or(xrtranslate_assets::MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES)
 }
@@ -1846,11 +1812,10 @@ fn runtime_marker_matches_plan(
     let resolved = layout.resolve_native_runtime_selection(&marker);
 
     if let Some(selection) = llama {
-        let expected_backend = match selection.backend {
-            RuntimeBackend::Cpu => NativeRuntimeBackend::Cpu,
-            RuntimeBackend::Cuda => NativeRuntimeBackend::Cuda,
-        };
-        if marker.llama_cpp_backend != Some(expected_backend) {
+        let expected_backend = selection.backend;
+        if marker.llama_cpp_backend != Some(expected_backend)
+            || marker.vulkan_device != selection.vulkan_device
+        {
             return false;
         }
         if let Some(cuda_asset) = selection
@@ -1871,10 +1836,7 @@ fn runtime_marker_matches_plan(
     }
 
     if let Some(selection) = onnx {
-        let expected_backend = match selection.backend {
-            RuntimeBackend::Cpu => NativeRuntimeBackend::Cpu,
-            RuntimeBackend::Cuda => NativeRuntimeBackend::Cuda,
-        };
+        let expected_backend = selection.backend;
         if marker.backend != expected_backend || marker.onnx_backend != Some(expected_backend) {
             return false;
         }
@@ -1929,33 +1891,6 @@ fn runtime_marker_matches_plan(
     true
 }
 
-fn local_model_availability(nvidia: Option<&NvidiaCuda>) -> LocalModelAvailability {
-    let Some(nvidia) = nvidia else {
-        return LocalModelAvailability::Unavailable(
-            "Managed CUDA models require an NVIDIA GPU with at least 1 GiB of VRAM. CPU ONNX models remain available.".to_owned(),
-        );
-    };
-    if nvidia.compute_capability < MIN_CUDA_COMPUTE_CAPABILITY {
-        return LocalModelAvailability::Unavailable(format!(
-            "NVIDIA GPU {} has compute capability {}, below the required {}.",
-            nvidia.gpu,
-            format_version(nvidia.compute_capability),
-            format_version(MIN_CUDA_COMPUTE_CAPABILITY),
-        ));
-    }
-    if nvidia.memory_bytes < MIN_LOCAL_MODEL_VRAM_BYTES {
-        return LocalModelAvailability::InsufficientVram {
-            gpu: nvidia.gpu.clone(),
-            memory_bytes: nvidia.memory_bytes,
-            required_bytes: MIN_LOCAL_MODEL_VRAM_BYTES,
-        };
-    }
-    LocalModelAvailability::Available {
-        gpu: nvidia.gpu.clone(),
-        memory_bytes: nvidia.memory_bytes,
-    }
-}
-
 fn missing_runtime_downloads(
     project_root: &Path,
     llama: Option<&RuntimeSelection>,
@@ -2008,6 +1943,7 @@ fn missing_runtime_downloads(
             if !ready {
                 let label = match asset.kind {
                     LlamaCppAssetKind::ServerCpu => "llama.cpp (CPU)".to_owned(),
+                    LlamaCppAssetKind::ServerVulkan => "llama.cpp (Vulkan)".to_owned(),
                     LlamaCppAssetKind::ServerCuda => format!(
                         "llama.cpp (CUDA {})",
                         asset.cuda_version.as_deref().unwrap_or_default()
@@ -2482,7 +2418,38 @@ fn release_assets_from_config(config: &LlamaCppRuntimeConfig) -> Result<Vec<Rele
         .collect()
 }
 
-fn select_assets_for_hardware(
+fn select_llama_assets(
+    assets: &[ReleaseAsset],
+    nvidia: Option<&NvidiaCuda>,
+    amd: Option<&VulkanGpu>,
+) -> Result<RuntimeSelection, String> {
+    let cuda = select_cuda_assets(assets, nvidia);
+    if cuda.is_ok() || amd.is_none() {
+        return cuda;
+    }
+    let gpu = amd.unwrap();
+    let asset = assets
+        .iter()
+        .find(|asset| {
+            asset.target == current_runtime_target()
+                && asset.kind == LlamaCppAssetKind::ServerVulkan
+        })
+        .ok_or_else(|| {
+            format!(
+                "No AMD Vulkan llama.cpp runtime is configured for {}.",
+                current_runtime_target()
+            )
+        })?;
+    Ok(RuntimeSelection {
+        assets: vec![asset.clone()],
+        backend: RuntimeBackend::Vulkan,
+        executable: asset.executable.clone(),
+        vulkan_device: Some(gpu.index),
+        fallback_reason: None,
+    })
+}
+
+fn select_cuda_assets(
     assets: &[ReleaseAsset],
     nvidia: Option<&NvidiaCuda>,
 ) -> Result<RuntimeSelection, String> {
@@ -2580,6 +2547,7 @@ fn select_assets_for_hardware(
             assets: vec![runtime, cudart],
             backend: RuntimeBackend::Cuda,
             executable,
+            vulkan_device: None,
             fallback_reason,
         });
     }
@@ -2642,6 +2610,7 @@ fn normalize_runtime_metadata(
         match kind {
             LlamaCppAssetKind::ServerCpu => vec!["ggml.dll".into()],
             LlamaCppAssetKind::ServerCuda => vec!["ggml.dll".into(), "ggml-cuda.dll".into()],
+            LlamaCppAssetKind::ServerVulkan => vec!["ggml.dll".into(), "ggml-vulkan.dll".into()],
             LlamaCppAssetKind::CudaRuntime => Vec::new(),
         }
     } else {
@@ -2722,156 +2691,6 @@ fn minimum_cuda_for_compute_capability(capability: (u16, u16)) -> (u16, u16) {
     } else {
         (0, 0)
     }
-}
-
-fn supported_nvidia_cuda() -> Result<Option<NvidiaCuda>, String> {
-    let Some((program, query)) = run_nvidia_smi(&[
-        "--query-gpu=name,compute_cap,memory.total",
-        "--format=csv,noheader,nounits",
-    ])?
-    else {
-        return Ok(None);
-    };
-    if !query.status.success() {
-        return Err(command_failure("Cannot query NVIDIA GPUs", &query));
-    }
-    let gpus = parse_nvidia_gpu_rows(&String::from_utf8_lossy(&query.stdout))?;
-    // ORT and llama.cpp currently use CUDA's default device. Gate the same
-    // primary device instead of approving the plan from a different adapter.
-    let Some(mut selected) = gpus.into_iter().next() else {
-        return Ok(None);
-    };
-
-    let version_output = crate::child_process::hide_console(&mut Command::new(&program))
-        .output()
-        .map_err(|error| format!("Cannot run {}: {error}", program.display()))?;
-    if !version_output.status.success() {
-        return Err(command_failure(
-            "Cannot query the NVIDIA driver CUDA version",
-            &version_output,
-        ));
-    }
-    let version_text = String::from_utf8_lossy(&version_output.stdout);
-    selected.driver_cuda = cuda_version_from_nvidia_smi(&version_text).ok_or_else(|| {
-        "nvidia-smi did not report a parseable CUDA Version or CUDA UMD Version; refusing to silently install the CPU runtime on an NVIDIA system.".to_owned()
-    })?;
-    Ok(Some(selected))
-}
-
-fn parse_nvidia_gpu_rows(output: &str) -> Result<Vec<NvidiaCuda>, String> {
-    let mut gpus = Vec::new();
-    let mut invalid = Vec::new();
-    for line in output.lines().filter(|line| !line.trim().is_empty()) {
-        let columns = line.split(',').map(str::trim).collect::<Vec<_>>();
-        let [gpu, capability, memory_mib] = columns.as_slice() else {
-            invalid.push(line.to_owned());
-            continue;
-        };
-        let Some(compute_capability) = parse_version(capability) else {
-            invalid.push(line.to_owned());
-            continue;
-        };
-        let Ok(memory_mib) = memory_mib.parse::<u64>() else {
-            invalid.push(line.to_owned());
-            continue;
-        };
-        gpus.push(NvidiaCuda {
-            gpu: (*gpu).to_owned(),
-            compute_capability,
-            driver_cuda: String::new(),
-            memory_bytes: memory_mib.saturating_mul(1024 * 1024),
-        });
-    }
-    if gpus.is_empty() {
-        let detail = if invalid.is_empty() {
-            "nvidia-smi returned no GPU rows".to_owned()
-        } else {
-            format!("unparseable rows: {}", invalid.join(" | "))
-        };
-        Err(format!("Cannot identify an NVIDIA GPU ({detail})."))
-    } else {
-        Ok(gpus)
-    }
-}
-
-fn run_nvidia_smi(args: &[&str]) -> Result<Option<(PathBuf, std::process::Output)>, String> {
-    let mut candidates = Vec::new();
-    if let Some(system_root) = std::env::var_os("SystemRoot") {
-        candidates.push(PathBuf::from(system_root).join("System32/nvidia-smi.exe"));
-    }
-    if let Some(program_files) = std::env::var_os("ProgramFiles") {
-        candidates
-            .push(PathBuf::from(program_files).join("NVIDIA Corporation/NVSMI/nvidia-smi.exe"));
-    }
-    candidates.push(PathBuf::from("nvidia-smi"));
-
-    for program in candidates {
-        match crate::child_process::hide_console(&mut Command::new(&program))
-            .args(args)
-            .output()
-        {
-            Ok(output) => return Ok(Some((program, output))),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(format!("Cannot run {}: {error}", program.display()));
-            }
-        }
-    }
-
-    if windows_reports_nvidia_adapter() {
-        Err(format!(
-            "Windows reports an NVIDIA display adapter, but nvidia-smi could not be found. Reinstall or update the NVIDIA driver with NVIDIA App ({NVIDIA_APP_URL}); the installer will not silently substitute a CPU runtime."
-        ))
-    } else {
-        Ok(None)
-    }
-}
-
-fn windows_reports_nvidia_adapter() -> bool {
-    if !cfg!(target_os = "windows") {
-        return false;
-    }
-    crate::child_process::hide_console(&mut Command::new("reg"))
-        .args([
-            "query",
-            "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}",
-            "/s",
-            "/v",
-            "DriverDesc",
-        ])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .is_some_and(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .to_ascii_lowercase()
-                .contains("nvidia")
-        })
-}
-
-fn command_failure(context: &str, output: &std::process::Output) -> String {
-    let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    if detail.is_empty() {
-        format!("{context} (exit status {})", output.status)
-    } else {
-        format!("{context}: {detail}")
-    }
-}
-
-fn cuda_version_from_nvidia_smi(version_text: &str) -> Option<String> {
-    let version = ["CUDA Version: ", "CUDA UMD Version: "]
-        .into_iter()
-        .find_map(|marker| {
-            let start = version_text.find(marker)? + marker.len();
-            Some(
-                version_text[start..]
-                    .split_whitespace()
-                    .next()?
-                    .trim_end_matches('|'),
-            )
-        })?;
-    parse_version(version)?;
-    Some(version.to_owned())
 }
 
 fn validate_runtime_files(
@@ -3104,6 +2923,7 @@ mod tests {
             assets: vec![server, cuda.clone()],
             backend: RuntimeBackend::Cuda,
             executable: "llama-server.exe".into(),
+            vulkan_device: None,
             fallback_reason: None,
         };
         let onnx = OnnxRuntimeSelection {
@@ -3180,6 +3000,7 @@ mod tests {
             local_models: LocalModelAvailability::Available {
                 gpu: "test GPU".into(),
                 memory_bytes: 16 * 1024 * 1024 * 1024,
+                cuda_memory_bytes: 16 * 1024 * 1024 * 1024,
             },
             blocking_error: None,
         };
@@ -3286,6 +3107,7 @@ mod tests {
                 schema_version: 1,
                 backend: NativeRuntimeBackend::Cuda,
                 llama_cpp_backend: Some(NativeRuntimeBackend::Cuda),
+                vulkan_device: None,
                 onnx_backend: None,
                 cuda_version: Some("13.3".into()),
                 provider_dir: None,
@@ -3380,7 +3202,7 @@ mod tests {
             driver_cuda: "13.3".into(),
             memory_bytes: 16 * 1024 * 1024 * 1024,
         };
-        let selected = select_assets_for_hardware(&assets, Some(&nvidia)).unwrap();
+        let selected = select_cuda_assets(&assets, Some(&nvidia)).unwrap();
         assert_eq!(selected.backend, RuntimeBackend::Cuda);
         assert_eq!(
             selected
@@ -3407,7 +3229,7 @@ mod tests {
             ("NVIDIA GeForce GTX 1080", (6, 1)),
             ("NVIDIA TITAN V", (7, 0)),
         ] {
-            let selected = select_assets_for_hardware(
+            let selected = select_cuda_assets(
                 &assets,
                 Some(&NvidiaCuda {
                     gpu: gpu.into(),
@@ -3448,7 +3270,7 @@ mod tests {
             driver_cuda: "13.2".into(),
             memory_bytes: 16 * 1024 * 1024 * 1024,
         };
-        let selected = select_assets_for_hardware(&assets, Some(&nvidia)).unwrap();
+        let selected = select_cuda_assets(&assets, Some(&nvidia)).unwrap();
         assert_eq!(selected.backend, RuntimeBackend::Cuda);
         assert_eq!(selected.assets[0].cuda_version.as_deref(), Some("13.1"));
         let notice = selected.fallback_reason.unwrap();
@@ -3467,7 +3289,7 @@ mod tests {
             asset("llama-b1-bin-win-cuda-13.3-x64.zip"),
             asset("cudart-llama-bin-win-cuda-13.3-x64.zip"),
         ];
-        let error = select_assets_for_hardware(
+        let error = select_cuda_assets(
             &assets,
             Some(&NvidiaCuda {
                 gpu: "NVIDIA GeForce RTX 5080".into(),
@@ -3494,7 +3316,7 @@ mod tests {
             driver_cuda: "13.3".into(),
             memory_bytes: 16 * 1024 * 1024 * 1024,
         };
-        let error = select_assets_for_hardware(&assets, Some(&nvidia)).unwrap_err();
+        let error = select_cuda_assets(&assets, Some(&nvidia)).unwrap_err();
         assert!(error.contains("missing the CUDA runtime package"));
     }
 
@@ -3519,7 +3341,7 @@ mod tests {
             memory_bytes: 512 * 1024 * 1024,
         };
         assert!(matches!(
-            local_model_availability(Some(&low_memory)),
+            local_model_availability(Some(&low_memory), None),
             LocalModelAvailability::InsufficientVram {
                 memory_bytes,
                 required_bytes,
@@ -3532,13 +3354,32 @@ mod tests {
             ..low_memory.clone()
         };
         assert!(matches!(
-            local_model_availability(Some(&minimum_memory)),
+            local_model_availability(Some(&minimum_memory), None),
             LocalModelAvailability::Available { .. }
         ));
         assert!(matches!(
-            local_model_availability(None),
-            LocalModelAvailability::Unavailable(reason) if reason.contains("require an NVIDIA GPU")
+            local_model_availability(None, None),
+            LocalModelAvailability::Unavailable(reason) if reason.contains("NVIDIA CUDA or AMD Vulkan")
         ));
+        let amd = VulkanGpu {
+            gpu: "AMD Radeon".into(),
+            memory_bytes: 8 * 1024 * 1024 * 1024,
+            index: 2,
+        };
+        let availability = local_model_availability(None, Some(&amd));
+        assert!(availability.supports(xrtranslate_assets::MANAGED_SMALL_MODEL_HARDWARE));
+        assert!(!availability.supports(xrtranslate_assets::MANAGED_LOCAL_MODEL_HARDWARE));
+        let mixed = local_model_availability(Some(&minimum_memory), Some(&amd));
+        assert!(!mixed.supports(xrtranslate_assets::MANAGED_LOCAL_MODEL_HARDWARE));
+        let config = AppConfig::from_json_str(include_str!("../../config.json")).unwrap();
+        let assets = release_assets_from_config(&config.model_manager.llama_cpp).unwrap();
+        let vulkan = select_llama_assets(&assets, None, Some(&amd)).unwrap();
+        assert_eq!(vulkan.backend, RuntimeBackend::Vulkan);
+        assert_eq!(vulkan.vulkan_device, Some(2));
+        assert_eq!(vulkan.assets.len(), 1);
+        assert_eq!(vulkan.assets[0].kind, LlamaCppAssetKind::ServerVulkan);
+        assert!(vulkan.assets[0].cuda_version.is_none());
+        assert!(select_llama_assets(&[], None, Some(&amd)).is_err());
     }
 
     #[test]

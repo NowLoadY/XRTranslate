@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt;
 
+pub mod audio;
 pub mod language;
 pub mod text_processing;
 

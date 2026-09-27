@@ -228,30 +228,42 @@ runtime dispatch.
 
 Core Studio infrastructure is owned outside the plugin catalogue:
 
-- `audio_studio`: the one user-authored global audio graph, preset templates, validation,
+- `ui::pages::prompt_studio` opens a read-only style card picker. Saved style texts
+  come from the existing prompt library; selection changes only the active graph's
+  bound style node and uses the existing save/session-update path. The graph editor
+  and its overlays live in `prompt_studio/editor`, while card presentation and
+  selection live in `prompt_studio/style_picker`. Hover and selection reuse the
+  shared animation system. The editor entry and mutation boundary require both
+  beta updates and a manually created `runtime/debug.md` whose first line is exactly
+  `hello` (LF and CRLF are accepted). Revoking either condition returns to cards.
+  The marker is never created by the app, is ignored by Git, and is rejected in
+  release staging. Returning to Prompt Studio from another page opens the cards.
+- `audio_studio`: the default audio graph, saved user graphs, validation,
   core persistence, and routing controller. `ui::pages::audio_studio` owns its
   page, alongside `ui::pages::prompt_studio`. It compiles its graph into the
   neutral host audio route contract; the host owns microphone, system-loopback,
   application process-loopback, render-output, and bounded TTS PCM routing.
   A system-audio node stores a typed endpoint/application capture choice rather
   than encoding applications as fake devices. Shared audio code never imports
-  Audio Studio node or preset types. Optional VoiceMeeter metadata appears in
+  Audio Studio node types. Optional VoiceMeeter metadata appears in
   the host snapshot only when the host found the installed Remote API. The
   graph stores only the selected B1/B2/B3 intent; Windows registry discovery,
   DLL lifetime, strip control, and restoration remain host responsibilities.
-  Audio Studio does not contain graph pages or competing saved routes. Loading
-  a preset is an explicitly confirmed whole-graph replacement; it never creates
-  another graph. The persisted graph always has one stable global identity, and
-  edits made while live routing is active are reported as unapplied until the
-  route is updated. Older unsupported Audio Studio documents are replaced with
-  the current translation-safe default instead of exposing storage schema errors
-  in the product UI. Structural validation decides whether a route can run. A separate risk report
+  The only built-in graph contains recognition, microphone, application audio,
+  TTS, monitoring and app-microphone paths. Users can create, duplicate, rename,
+  switch and delete their own graphs. Exactly one graph supplies the host route;
+  switching retains each graph's edits, and Save persists the entire collection.
+  Graph replacement and deletion require an inline confirmation. The default
+  graph cannot be renamed or deleted. Schema 6 preserves schema 5's existing
+  graph and adds inactive user graphs; older unsupported documents retain their
+  existing reset-to-default migration. Structural validation decides whether a
+  route can run. A separate risk report
   follows active graph paths, classifies blocking feedback and non-blocking
   contamination/acoustic risks, and maps every diagnosis back to its nodes and
   links so the graph remains the explanation of the real audio path.
   Audio-route lifecycle is independent from recognition/translation lifecycle:
-  Audio Studio may enable a render route and configure the core ASR input, but
-  it never starts or stops translation. A valid global graph synchronizes its
+  Audio Studio reconciles render outputs separately from the core ASR input;
+  enabling or disabling the ASR path starts or stops translation. The selected graph synchronizes its
   ASR branch immediately when its source, device, application, or relevant link
   changes; enabling the real-time render route is not a prerequisite.
   Mixer nodes allocate one stable socket per connection plus one empty socket
@@ -261,7 +273,7 @@ Core Studio infrastructure is owned outside the plugin catalogue:
   Translation state shown in Audio Studio is a read-only host snapshot. If an enabled route selects a VoiceMeeter
   endpoint, the host starts VoiceMeeter automatically and shuts it down later
   only when that process was originally started by XRTranslate.
-  The global graph is the source of truth for ASR when Translation starts. A
+  The selected graph is the source of truth for ASR when Translation starts. A
   valid ASR branch and the Translation page consume one typed host input
   selection. Application identity is stable and visible on the Translation
   page; a live PID is resolved from automatic discovery only when capture

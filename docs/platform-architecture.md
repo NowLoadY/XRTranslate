@@ -45,6 +45,36 @@ start inference, or choose storage locations.
   same language are replacement model variants, not a composable set.
   `voice_presets` declares stable user-facing speaker/accent choices contained
   by one package; choosing a preset never creates another download.
+- TTS Center shares Prompt Studio's `ui/components/selection_card` presentation.
+  Its immutable reference recordings, matching transcripts and attribution live
+  in `xrtranslate-assets/resources/voices`, explicitly embedded by `voices/mod.rs`.
+  `tts_session::voices::VoiceLibrary` applies a reference through the current
+  `NativeTtsAdapter`, including every active language pack. `GET/POST /tts/voice`
+  uses DTOs from `xrtranslate-protocol::tts`; the UI never handles provider-specific
+  clone formats. Selection is committed only after registration succeeds and
+  is restored with the active provider after restart. Personal recordings and
+  `selection.json` stay in `runtime/voice_clones`; releases include only curated
+  audio and its attribution in `resources/voices/<id>/reference.wav`,
+  `reference.txt`, `SOURCE.md` and `LICENSE`, never that writable directory.
+  Source WAV files are tracked in Git alongside their transcripts and attribution.
+  User cards use `voices::VoiceCatalog`, shared by the desktop and backend.
+  Each reference has a stable UUID, stored under
+  `runtime/voice_clones/cards/<first-two-id-characters>/<id>/` as `card.json`,
+  `reference.wav` and `reference.txt`. Display names never become paths. Imports
+  commit by renaming a complete staging directory; a repeated name creates a new
+  identity rather than overwriting another card. The catalog loads only metadata
+  in a background worker; audio is read on demand. The shared card grid renders
+  visible rows only, and search results are recalculated only when content or the
+  query changes. Import uses the existing media decoder/resampler and the shared
+  engine PCM/WAV encoder. The default transcript comes from the configured ASR
+  adapter via `POST /tts/reference/transcribe`, scheduled as offline work without
+  changing the live translation session. The source-language picker is shared
+  with Translation and constrained by ASR support; manual text remains optional
+  and allows imports without starting model services. Clone data
+  remains provider-owned and is only created for selected cards. `voice_id` also
+  reads the older `builtin_id` selection field for compatibility.
+  Preview playback uses a separate local output stream and cannot enter the
+  live audio graph.
 - `xrtranslate-download` owns download-source routing as well as transfer
   mechanics. Feature installers pass a neutral `DownloadSource`; the shared
   router maps supported official GitHub and Hugging Face URLs to the selected
@@ -96,12 +126,24 @@ start inference, or choose storage locations.
   the core then loads its colocated `onnxruntime_providers_shared` and
   `onnxruntime_providers_cuda`. Provider DLLs must never be preloaded directly
   or combined with a core from another archive.
-- Downloadable managed model packages require an NVIDIA GPU with enough reported
-  VRAM for the selected packages (3 GiB for small ASR/translation, 7 GiB for
-  normal ASR/translation and the current TTS packages) and a complete CUDA runtime. The host
-  disables their selectors before installation, the runtime planner refuses an
-  ineligible plan, and the backend refuses CPU markers before constructing a
-  model process or TTS adapter. There is no managed-model CPU fallback.
+- Managed llama.cpp model cards declare `LlamaGpu`: NVIDIA CUDA or AMD Vulkan.
+  `runtime_install/hardware.rs` owns GPU probing and the shared model eligibility
+  check; the UI and runtime planner consume the same result. AMD probing queries
+  Vulkan 1.2, 16-bit storage, compute queues and device-local memory directly,
+  without an SDK or downloaded helper. Memory thresholds remain per model card.
+  CUDA is preferred when eligible; otherwise the best eligible AMD adapter is
+  selected. Vulkan server archives are declared only in `config.json` and use
+  the same download/mirror/hash/extraction/repair/removal lifecycle and
+  `runtime/llama.cpp` directory as CUDA servers. No CUDA/cuDNN archives are
+  selected for Vulkan-only inference.
+- The native marker records the Vulkan physical device index. The backend
+  supplies it only to the llama child through `GGML_VK_VISIBLE_DEVICES` and
+  requires `--device Vulkan0`, preventing silent CPU fallback. Host preflight
+  revalidates the selection against the current driver enumeration. ONNX marker
+  updates preserve the independent llama backend and device selection.
+- Current managed ONNX TTS cards still declare `NvidiaCuda`; AMD llama support
+  does not imply ONNX CUDA compatibility. Unsupported model choices are disabled
+  before installation, and managed GPU models never silently fall back to CPU.
 - Small ONNX components shipped as application resources (currently VAD,
   denoise and speaker helpers) are a separate execution class. They may use the
   compact packaged CPU ONNX core and do not cause CUDA, cuDNN, or model-package
@@ -156,10 +198,10 @@ start inference, or choose storage locations.
   in-flight scan and retains its last successful snapshot; a refresh must not
   temporarily invalidate graphs, clear unrelated errors, reset level meters, or
   require a page-specific refresh button.
-- Audio Studio persists exactly one global graph for the host audio topology.
-  Presets are replacement templates, not independently active documents, so
-  monitor, virtual-microphone, TTS, BGM, and ASR branches cannot acquire hidden
-  cross-page precedence. The graph's ASR branch is synchronized before the core
+- Audio Studio persists one complete default graph and user-created graphs.
+  Only the selected graph supplies the host audio topology; inactive graphs do
+  not execute. Switching graphs preserves their edits and reconciles the host
+  route. The selected graph's ASR branch is synchronized before the core
   Translation workflow starts; starting live routing controls only monitor and
   application-microphone outputs.
 - Mixer connections use stable, dynamically allocated input ports. Each input

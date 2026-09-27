@@ -1,6 +1,10 @@
 use crate::ui::theme;
 use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Stroke, Ui, Vec2};
 
+pub mod avatar;
+pub mod faded_scroll_text;
+pub mod selection_card;
+
 #[cfg(test)]
 mod language_tests;
 
@@ -181,7 +185,11 @@ pub fn segmented_audio_meter(
     let id = ui.make_persistent_id(("audio_waveform_meter", id_source));
     let now = ui.ctx().input(|i| i.time);
 
-    let raw_level = if updating { raw_fraction.clamp(0.0, 1.0) } else { 0.0 };
+    let raw_level = if updating {
+        raw_fraction.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let target_amplitude = if raw_level < 0.015 {
         0.0
     } else {
@@ -233,7 +241,8 @@ pub fn segmented_audio_meter(
 
     let max_in_history = history.iter().copied().fold(0.0_f32, f32::max);
     if updating && (max_in_history > 0.005 || target_amplitude > 0.005) {
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(16));
     }
 
     let (rect, _) = ui.allocate_exact_size(Vec2::new(WIDTH, HEIGHT), egui::Sense::hover());
@@ -668,8 +677,10 @@ pub fn primary_button_enabled_with_id(
         let base_fill = Color32::TRANSPARENT;
         let hover_fill = theme::surface_control_hover();
         let active_fill = theme::surface_control_active();
-        let fill = crate::ui::animation::AnimationSystem::lerp_color(base_fill, hover_fill, hover_factor);
-        let fill = crate::ui::animation::AnimationSystem::lerp_color(fill, active_fill, active_factor);
+        let fill =
+            crate::ui::animation::AnimationSystem::lerp_color(base_fill, hover_fill, hover_factor);
+        let fill =
+            crate::ui::animation::AnimationSystem::lerp_color(fill, active_fill, active_factor);
         let text_color = if enabled {
             crate::ui::animation::AnimationSystem::lerp_color(
                 theme::primary_dark(),
@@ -764,7 +775,8 @@ pub fn primary_button_enabled_with_id(
     let simulated_click = crate::ui::automation::record_button(ui, id, text, enabled, resp.rect);
     if simulated_click {
         ui.ctx().memory_mut(|m| {
-            m.data.insert_temp(id.with("click_time"), ui.ctx().input(|i| i.time));
+            m.data
+                .insert_temp(id.with("click_time"), ui.ctx().input(|i| i.time));
         });
         ui.ctx().input_mut(|i| {
             i.events.push(egui::Event::PointerButton {
@@ -817,8 +829,10 @@ pub fn secondary_button_enabled(ui: &mut Ui, text: &str, enabled: bool) -> egui:
         let base_fill = Color32::TRANSPARENT;
         let hover_fill = theme::surface_control_hover();
         let active_fill = theme::surface_control_active();
-        let fill = crate::ui::animation::AnimationSystem::lerp_color(base_fill, hover_fill, hover_factor);
-        let fill = crate::ui::animation::AnimationSystem::lerp_color(fill, active_fill, active_factor);
+        let fill =
+            crate::ui::animation::AnimationSystem::lerp_color(base_fill, hover_fill, hover_factor);
+        let fill =
+            crate::ui::animation::AnimationSystem::lerp_color(fill, active_fill, active_factor);
         let text_color = if enabled {
             crate::ui::animation::AnimationSystem::lerp_color(
                 theme::text_strong(),
@@ -833,8 +847,10 @@ pub fn secondary_button_enabled(ui: &mut Ui, text: &str, enabled: bool) -> egui:
         let base_fill = theme::surface_control();
         let hover_fill = theme::surface_control_hover();
         let active_fill = theme::surface_control_active();
-        let fill = crate::ui::animation::AnimationSystem::lerp_color(base_fill, hover_fill, hover_factor);
-        let fill = crate::ui::animation::AnimationSystem::lerp_color(fill, active_fill, active_factor);
+        let fill =
+            crate::ui::animation::AnimationSystem::lerp_color(base_fill, hover_fill, hover_factor);
+        let fill =
+            crate::ui::animation::AnimationSystem::lerp_color(fill, active_fill, active_factor);
 
         let stroke_color = Color32::from_rgba_unmultiplied(
             188,
@@ -1281,14 +1297,16 @@ pub fn search_bar(ui: &mut Ui, query: &mut String, hint: &str) -> bool {
                 });
             }
             response
-        }).inner
+        })
+        .inner
     });
 
     let rect = inner_resp.response.rect;
     let has_focus = inner_resp.inner.has_focus();
     let hovered = inner_resp.response.hovered() || inner_resp.inner.hovered();
     ui.memory_mut(|m| {
-        m.data.insert_temp(id.with("hover_state"), hovered || has_focus);
+        m.data
+            .insert_temp(id.with("hover_state"), hovered || has_focus);
     });
 
     if is_hand_drawn {
@@ -1445,6 +1463,39 @@ pub fn validation_notice(ui: &mut Ui, language: crate::i18n::UiLanguage, details
         });
 }
 
+/// Shared source-language picker; only translation exposes bidirectional routing.
+pub fn source_language_selector(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    source: &mut String,
+    available: xrtranslate_engine::language::LanguageSet,
+    bidirectional: bool,
+    language: crate::i18n::UiLanguage,
+) -> bool {
+    let tr = |label| crate::i18n::tr(language, label).to_string();
+    let mut options = vec![("auto".to_owned(), tr("Auto Detect"))];
+    if bidirectional {
+        options.push(("auto-pair".to_owned(), tr("Auto (bidirectional)")));
+    }
+    options.extend(
+        available
+            .iter()
+            .map(|item| (item.code().to_owned(), tr(item.name()))),
+    );
+    let selected = options
+        .iter()
+        .find(|(code, _)| code == source)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| {
+            if source == "auto-pair" {
+                tr("Auto (bidirectional)")
+            } else {
+                crate::language_label(language, source).to_owned()
+            }
+        });
+    searchable_combobox(ui, id, selected, source, &options)
+}
+
 pub fn translation_language_selector(
     ui: &mut Ui,
     id: &str,
@@ -1460,28 +1511,16 @@ pub fn translation_language_selector(
     } else {
         source.clone()
     };
-    let mut options = vec![("auto".to_owned(), tr("Auto Detect"))];
-    if capabilities.change_input("auto", target, true).is_ok() {
-        options.push(("auto-pair".to_owned(), tr("Auto (bidirectional)")));
-    }
-    options.extend(
-        capabilities
-            .sources()
-            .iter()
-            .map(|item| (item.code().to_owned(), tr(item.name()))),
-    );
     let mut changed = false;
     ui.horizontal_wrapped(|ui| {
-        let selected = if input == "auto-pair" {
-            tr("Auto (bidirectional)")
-        } else {
-            options
-                .iter()
-                .find(|(code, _)| code == &input)
-                .map(|(_, label)| label.clone())
-                .unwrap_or_else(|| label(&input))
-        };
-        if searchable_combobox(ui, format!("{id}_source"), selected, &mut input, &options) {
+        if source_language_selector(
+            ui,
+            format!("{id}_source"),
+            &mut input,
+            capabilities.sources(),
+            capabilities.change_input("auto", target, true).is_ok(),
+            language,
+        ) {
             let pair = input == "auto-pair";
             let next_source = if pair { "auto" } else { &input };
             if let Ok(selection) = capabilities.change_input(next_source, target, pair) {
@@ -1601,10 +1640,14 @@ pub fn danger_button_enabled_with_id(
     let danger_rgb = (239, 68, 68);
     let (fill, stroke, text_color) = if is_hand_drawn {
         let base_fill = Color32::TRANSPARENT;
-        let hover_fill = Color32::from_rgba_unmultiplied(danger_rgb.0, danger_rgb.1, danger_rgb.2, 25);
-        let active_fill = Color32::from_rgba_unmultiplied(danger_rgb.0, danger_rgb.1, danger_rgb.2, 45);
-        let fill = crate::ui::animation::AnimationSystem::lerp_color(base_fill, hover_fill, hover_factor);
-        let fill = crate::ui::animation::AnimationSystem::lerp_color(fill, active_fill, active_factor);
+        let hover_fill =
+            Color32::from_rgba_unmultiplied(danger_rgb.0, danger_rgb.1, danger_rgb.2, 25);
+        let active_fill =
+            Color32::from_rgba_unmultiplied(danger_rgb.0, danger_rgb.1, danger_rgb.2, 45);
+        let fill =
+            crate::ui::animation::AnimationSystem::lerp_color(base_fill, hover_fill, hover_factor);
+        let fill =
+            crate::ui::animation::AnimationSystem::lerp_color(fill, active_fill, active_factor);
         let text_color = if enabled {
             crate::ui::animation::AnimationSystem::lerp_color(
                 Color32::from_rgb(185, 28, 28),
@@ -1878,10 +1921,16 @@ pub fn checkbox(
 
     let box_size = 15.0;
     let spacing = 6.0;
-    let total_width = box_size + if galley.text().is_empty() { 0.0 } else { spacing + galley.size().x };
+    let total_width = box_size
+        + if galley.text().is_empty() {
+            0.0
+        } else {
+            spacing + galley.size().x
+        };
     let total_height = box_size.max(galley.size().y);
 
-    let (rect, mut response) = ui.allocate_exact_size(Vec2::new(total_width, total_height), egui::Sense::click());
+    let (rect, mut response) =
+        ui.allocate_exact_size(Vec2::new(total_width, total_height), egui::Sense::click());
     if response.clicked() {
         *checked = !*checked;
         response.mark_changed();
@@ -2151,34 +2200,37 @@ pub fn text_edit_ui(
     let hover_factor =
         crate::ui::animation::AnimationSystem::hover(ui.ctx(), id.with("anim_hover"), is_hovered);
 
-    let (response, rect) = ui.scope(|ui| {
-        if is_hand_drawn {
-            ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
-            ui.style_mut().visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
-            ui.style_mut().visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
-            ui.style_mut().visuals.widgets.hovered.bg_fill =
-                crate::ui::theme::surface_control_hover();
-            ui.style_mut().visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
-            ui.style_mut().visuals.widgets.active.bg_fill =
-                crate::ui::theme::surface_control_active();
-            ui.style_mut().visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
-            ui.style_mut().visuals.widgets.open.bg_fill = egui::Color32::TRANSPARENT;
-            ui.style_mut().visuals.extreme_bg_color = egui::Color32::TRANSPARENT;
-            ui.style_mut().visuals.widgets.inactive.corner_radius = egui::CornerRadius::ZERO;
-            ui.style_mut().visuals.widgets.hovered.corner_radius = egui::CornerRadius::ZERO;
-            ui.style_mut().visuals.widgets.active.corner_radius = egui::CornerRadius::ZERO;
-            ui.style_mut().visuals.widgets.open.corner_radius = egui::CornerRadius::ZERO;
-        }
+    let (response, rect) = ui
+        .scope(|ui| {
+            if is_hand_drawn {
+                ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                ui.style_mut().visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+                ui.style_mut().visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+                ui.style_mut().visuals.widgets.hovered.bg_fill =
+                    crate::ui::theme::surface_control_hover();
+                ui.style_mut().visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
+                ui.style_mut().visuals.widgets.active.bg_fill =
+                    crate::ui::theme::surface_control_active();
+                ui.style_mut().visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
+                ui.style_mut().visuals.widgets.open.bg_fill = egui::Color32::TRANSPARENT;
+                ui.style_mut().visuals.extreme_bg_color = egui::Color32::TRANSPARENT;
+                ui.style_mut().visuals.widgets.inactive.corner_radius = egui::CornerRadius::ZERO;
+                ui.style_mut().visuals.widgets.hovered.corner_radius = egui::CornerRadius::ZERO;
+                ui.style_mut().visuals.widgets.active.corner_radius = egui::CornerRadius::ZERO;
+                ui.style_mut().visuals.widgets.open.corner_radius = egui::CornerRadius::ZERO;
+            }
 
-        let resp = ui.add(text_edit);
-        let rect = resp.rect;
-        (resp, rect)
-    }).inner;
+            let resp = ui.add(text_edit);
+            let rect = resp.rect;
+            (resp, rect)
+        })
+        .inner;
 
     let has_focus = response.has_focus();
     let hovered = response.hovered() || response.is_pointer_button_down_on();
     ui.memory_mut(|m| {
-        m.data.insert_temp(id.with("hover_state"), hovered || has_focus);
+        m.data
+            .insert_temp(id.with("hover_state"), hovered || has_focus);
     });
 
     if is_hand_drawn {
@@ -2554,7 +2606,8 @@ impl<'a, Num: egui::emath::Numeric> ModernSlider<'a, Num> {
                     style.visuals.widgets.inactive.fg_stroke = Stroke::NONE;
                     style.visuals.selection.bg_fill = theme::primary_fill();
                     style.visuals.widgets.inactive.corner_radius = CornerRadius::same(4);
-                    style.visuals.handle_shape = egui::style::HandleShape::Rect { aspect_ratio: 0.0 };
+                    style.visuals.handle_shape =
+                        egui::style::HandleShape::Rect { aspect_ratio: 0.0 };
 
                     let mut slider = egui::Slider::new(self.value, self.range.clone())
                         .show_value(false)
@@ -2567,9 +2620,17 @@ impl<'a, Num: egui::emath::Numeric> ModernSlider<'a, Num> {
                 .inner;
 
             let salt_str = self.id_salt.as_deref().unwrap_or(self.label);
-            let salt = if salt_str.is_empty() { "slider" } else { salt_str };
+            let salt = if salt_str.is_empty() {
+                "slider"
+            } else {
+                salt_str
+            };
             let slider_id = ui.make_persistent_id(salt);
-            let record_label = if self.label.is_empty() { salt } else { self.label };
+            let record_label = if self.label.is_empty() {
+                salt
+            } else {
+                self.label
+            };
             if let Some(new_val) = crate::ui::automation::record_slider(
                 ui,
                 slider_id,
@@ -2578,10 +2639,7 @@ impl<'a, Num: egui::emath::Numeric> ModernSlider<'a, Num> {
                 true,
                 response.rect,
             ) {
-                let clamped = new_val.clamp(
-                    self.range.start().to_f64(),
-                    self.range.end().to_f64(),
-                );
+                let clamped = new_val.clamp(self.range.start().to_f64(), self.range.end().to_f64());
                 *self.value = Num::from_f64(clamped);
                 response.mark_changed();
             }

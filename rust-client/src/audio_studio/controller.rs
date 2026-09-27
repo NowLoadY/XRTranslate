@@ -8,7 +8,6 @@ use super::{
     persistence::{
         AudioStudioPersistenceError, AudioStudioRepository, AudioStudioSettings, DeviceDefaults,
     },
-    presets::AudioStudioPreset,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::VecDeque, fmt, path::Path};
@@ -266,8 +265,9 @@ impl RouteRiskReport {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioStudioUiSnapshot {
+    pub graphs: Vec<(GraphId, String)>,
     pub selected_graph: AudioGraph,
-    /// Host-resolved execution form of the global graph. The editor keeps
+    /// Host-resolved execution form of the selected graph. The editor keeps
     /// automatic device/application choices symbolic in `selected_graph`.
     pub resolved_graph: AudioGraph,
     pub lifecycle: AudioStudioLifecycle,
@@ -300,7 +300,11 @@ pub struct AudioStudioSignalLevels {
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub enum AudioStudioUiAction {
-    LoadPreset(AudioStudioPreset),
+    SelectGraph(GraphId),
+    NewGraph,
+    DuplicateGraph,
+    RenameGraph(String),
+    DeleteGraph,
     ResetToDefault,
     ReplaceSelectedGraph(AudioGraph),
     AddNode(AudioNode),
@@ -467,7 +471,14 @@ impl AudioStudioController {
         let resolved_graph =
             resolve_graph_devices(&selected_graph, &self.settings.device_defaults, host_audio);
         let risk_report = analyze_route_risks(&resolved_graph);
+        let mut graphs = self
+            .settings
+            .all_graphs()
+            .map(|graph| (graph.id.clone(), graph.name.clone()))
+            .collect::<Vec<_>>();
+        graphs.sort_by(|(left, _), (right, _)| left.0.cmp(&right.0));
         AudioStudioUiSnapshot {
+            graphs,
             validation: validate_for_host(&resolved_graph, host_audio),
             risk_report,
             selected_graph,
@@ -493,7 +504,10 @@ impl AudioStudioController {
     ) -> Result<Vec<AudioStudioHostAction>, AudioStudioControllerError> {
         let changes_routing = matches!(
             &action,
-            AudioStudioUiAction::LoadPreset(_)
+            AudioStudioUiAction::SelectGraph(_)
+                | AudioStudioUiAction::NewGraph
+                | AudioStudioUiAction::DuplicateGraph
+                | AudioStudioUiAction::DeleteGraph
                 | AudioStudioUiAction::ResetToDefault
                 | AudioStudioUiAction::ReplaceSelectedGraph(_)
                 | AudioStudioUiAction::AddNode(_)
@@ -512,7 +526,10 @@ impl AudioStudioController {
         );
         let may_change_asr_input = matches!(
             &action,
-            AudioStudioUiAction::LoadPreset(_)
+            AudioStudioUiAction::SelectGraph(_)
+                | AudioStudioUiAction::NewGraph
+                | AudioStudioUiAction::DuplicateGraph
+                | AudioStudioUiAction::DeleteGraph
                 | AudioStudioUiAction::ResetToDefault
                 | AudioStudioUiAction::ReplaceSelectedGraph(_)
                 | AudioStudioUiAction::AddNode(_)
@@ -528,6 +545,19 @@ impl AudioStudioController {
                 | AudioStudioUiAction::DeleteLink(_)
                 | AudioStudioUiAction::SetLinkEnabled { .. }
         );
+        if matches!(
+            action,
+            AudioStudioUiAction::SelectGraph(_)
+                | AudioStudioUiAction::NewGraph
+                | AudioStudioUiAction::DuplicateGraph
+                | AudioStudioUiAction::DeleteGraph
+                | AudioStudioUiAction::ResetToDefault
+        ) && host_audio.translation_workflow_locked_by.is_some()
+        {
+            return Err(AudioStudioControllerError::InvalidEdit(
+                "Stop the active translation session before switching graphs".into(),
+            ));
+        }
         let routing_before = changes_routing.then(|| {
             (
                 self.settings.graph.clone(),
@@ -535,19 +565,46 @@ impl AudioStudioController {
             )
         });
         match action {
-            AudioStudioUiAction::LoadPreset(preset) => {
-                self.settings.replace_with_preset(preset);
+            AudioStudioUiAction::SelectGraph(id) => {
+                self.settings
+                    .select_graph(&id)
+                    .map_err(AudioStudioControllerError::InvalidEdit)?;
+                self.dirty = true;
+            }
+            AudioStudioUiAction::NewGraph | AudioStudioUiAction::DuplicateGraph => {
+                self.settings
+                    .create_graph(matches!(action, AudioStudioUiAction::DuplicateGraph));
+                self.dirty = true;
+            }
+            AudioStudioUiAction::DeleteGraph => {
+                self.settings
+                    .delete_selected_graph()
+                    .map_err(AudioStudioControllerError::InvalidEdit)?;
+                self.dirty = true;
+            }
+            AudioStudioUiAction::RenameGraph(name) => {
+                if self.settings.graph.id.0 == super::DEFAULT_AUDIO_GRAPH_ID {
+                    return Err(AudioStudioControllerError::InvalidEdit(
+                        "Duplicate the default graph to rename it".into(),
+                    ));
+                }
+                let name = name.trim();
+                if name.is_empty() {
+                    return Err(AudioStudioControllerError::InvalidEdit(
+                        "Graph name cannot be empty".into(),
+                    ));
+                }
+                self.settings.graph.name = name.into();
                 self.dirty = true;
             }
             AudioStudioUiAction::ResetToDefault => {
-                self.settings
-                    .replace_with_preset(AudioStudioPreset::CompleteAudioSystem);
+                self.settings.reset_selected_graph();
                 self.dirty = true;
             }
             AudioStudioUiAction::ReplaceSelectedGraph(graph) => {
                 if graph.id != self.settings.graph.id {
                     return Err(AudioStudioControllerError::InvalidEdit(
-                        "replacement graph ID must match the global audio graph".into(),
+                        "replacement graph ID must match the selected audio graph".into(),
                     ));
                 }
                 self.settings.graph = graph;
@@ -2194,8 +2251,14 @@ impl From<AudioStudioPersistenceError> for AudioStudioControllerError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_studio::graph_for_preset;
+    use crate::audio_studio::{AudioStudioPreset, graph_for_preset};
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn load_test_graph(preset: AudioStudioPreset) -> AudioStudioUiAction {
+        let mut graph = graph_for_preset(preset);
+        graph.id = GraphId::new(super::super::DEFAULT_AUDIO_GRAPH_ID);
+        AudioStudioUiAction::ReplaceSelectedGraph(graph)
+    }
 
     #[test]
     fn automatic_microphone_persists_policy_and_rejects_incomplete_sources() {
@@ -2566,6 +2629,18 @@ mod tests {
         let mut host = complete_host();
         host.translation_workflow_locked_by = Some("Meeting".into());
 
+        let before = controller.settings.clone();
+        for action in [
+            AudioStudioUiAction::NewGraph,
+            AudioStudioUiAction::DuplicateGraph,
+            AudioStudioUiAction::DeleteGraph,
+            AudioStudioUiAction::ResetToDefault,
+            AudioStudioUiAction::SelectGraph(before.graph.id.clone()),
+        ] {
+            assert!(controller.handle_ui_action(action, &host).is_err());
+            assert_eq!(controller.settings, before);
+        }
+
         let result = controller.handle_ui_action(
             AudioStudioUiAction::SetLinkEnabled {
                 link_id: LinkId::new("gain-rec-sys-to-asr-mixer"),
@@ -2594,7 +2669,7 @@ mod tests {
         let mut controller = AudioStudioController::from_repository(repository("activation"));
         let actions = controller
             .handle_ui_action(
-                AudioStudioUiAction::LoadPreset(AudioStudioPreset::TranslationSafe),
+                load_test_graph(AudioStudioPreset::TranslationSafe),
                 &complete_host(),
             )
             .unwrap();
@@ -2657,10 +2732,7 @@ mod tests {
         host.translation_workflow_running = true;
         let mut controller = AudioStudioController::from_repository(repository("exclusion"));
         controller
-            .handle_ui_action(
-                AudioStudioUiAction::LoadPreset(AudioStudioPreset::TranslationSafe),
-                &host,
-            )
+            .handle_ui_action(load_test_graph(AudioStudioPreset::TranslationSafe), &host)
             .unwrap();
         controller.sync_translation_workflow_running(true).unwrap();
         let validation = controller.snapshot(&host).validation;
@@ -2717,24 +2789,31 @@ mod tests {
     }
 
     #[test]
-    fn loading_a_preset_replaces_the_one_global_graph() {
-        let mut controller = AudioStudioController::from_repository(repository("load-preset"));
+    fn switching_user_graphs_preserves_the_default_and_their_edits() {
+        let mut controller = AudioStudioController::from_repository(repository("graph-library"));
         let host = complete_host();
+        let original = controller.settings.graph.clone();
         controller
-            .handle_ui_action(
-                AudioStudioUiAction::LoadPreset(AudioStudioPreset::VrchatKaraoke),
-                &host,
-            )
+            .handle_ui_action(AudioStudioUiAction::DuplicateGraph, &host)
             .unwrap();
-        let snapshot = controller.snapshot(&host);
-        assert_eq!(snapshot.selected_graph.id.0, "audio-system");
-        assert!(snapshot.selected_graph.node(&NodeId::new("bgm")).is_some());
-        assert!(
-            snapshot
-                .selected_graph
-                .node(&NodeId::new("monitor"))
-                .is_none()
-        );
+        let user_id = controller.settings.graph.id.clone();
+        controller
+            .handle_ui_action(AudioStudioUiAction::RenameGraph("My route".into()), &host)
+            .unwrap();
+        controller
+            .handle_ui_action(AudioStudioUiAction::NewGraph, &host)
+            .unwrap();
+        assert!(controller.settings.graph.nodes.is_empty());
+        controller
+            .handle_ui_action(AudioStudioUiAction::DeleteGraph, &host)
+            .unwrap();
+        assert_eq!(controller.settings.graph, original);
+        controller
+            .handle_ui_action(AudioStudioUiAction::SelectGraph(user_id), &host)
+            .unwrap();
+        assert_eq!(controller.settings.graph.name, "My route");
+        assert_eq!(controller.settings.graph.nodes, original.nodes);
+        assert_eq!(controller.snapshot(&host).graphs.len(), 2);
     }
 
     #[test]
@@ -2788,10 +2867,7 @@ mod tests {
         });
         let mut controller = AudioStudioController::from_repository(repository("auto-virtual-mic"));
         let actions = controller
-            .handle_ui_action(
-                AudioStudioUiAction::LoadPreset(AudioStudioPreset::VrchatKaraoke),
-                &host,
-            )
+            .handle_ui_action(load_test_graph(AudioStudioPreset::VrchatKaraoke), &host)
             .unwrap();
         let graph = actions
             .iter()
@@ -2827,10 +2903,7 @@ mod tests {
 
         let mut controller = AudioStudioController::from_repository(repository("os-default"));
         controller
-            .handle_ui_action(
-                AudioStudioUiAction::LoadPreset(AudioStudioPreset::TranslationSafe),
-                &host,
-            )
+            .handle_ui_action(load_test_graph(AudioStudioPreset::TranslationSafe), &host)
             .unwrap();
         let snapshot = controller.snapshot(&host);
         assert!(
@@ -2961,10 +3034,7 @@ mod tests {
         });
         let mut controller = AudioStudioController::from_repository(repository("vm-bus"));
         let actions = controller
-            .handle_ui_action(
-                AudioStudioUiAction::LoadPreset(AudioStudioPreset::VrchatKaraoke),
-                &host,
-            )
+            .handle_ui_action(load_test_graph(AudioStudioPreset::VrchatKaraoke), &host)
             .unwrap();
         acknowledge_activation(&mut controller, &actions);
         let actions = controller
@@ -3021,10 +3091,7 @@ mod tests {
         });
         let mut controller = AudioStudioController::from_repository(repository("vm-auto-b1"));
         let actions = controller
-            .handle_ui_action(
-                AudioStudioUiAction::LoadPreset(AudioStudioPreset::VrchatKaraoke),
-                &host,
-            )
+            .handle_ui_action(load_test_graph(AudioStudioPreset::VrchatKaraoke), &host)
             .unwrap();
         acknowledge_activation(&mut controller, &actions);
         let actions = controller

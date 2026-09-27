@@ -7,6 +7,9 @@
 #![forbid(unsafe_code)]
 
 mod language;
+mod models;
+
+pub use models::InstalledModel;
 
 use std::{
     error::Error,
@@ -42,6 +45,9 @@ pub struct NativeRuntimeSelection {
     pub backend: NativeRuntimeBackend,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llama_cpp_backend: Option<NativeRuntimeBackend>,
+    /// Physical Vulkan adapter index, selected by the host before launch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vulkan_device: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub onnx_backend: Option<NativeRuntimeBackend>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -71,12 +77,25 @@ pub struct NativeRuntimeSelection {
 pub enum NativeRuntimeBackend {
     Cpu,
     Cuda,
+    Vulkan,
+}
+
+impl NativeRuntimeBackend {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Cpu => "CPU",
+            Self::Cuda => "CUDA",
+            Self::Vulkan => "Vulkan",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedNativeRuntimeSelection {
     pub backend: NativeRuntimeBackend,
     pub llama_cpp_backend: Option<NativeRuntimeBackend>,
+    pub vulkan_device: Option<u32>,
     pub onnx_backend: Option<NativeRuntimeBackend>,
     pub cuda_version: Option<String>,
     pub provider_dir: Option<PathBuf>,
@@ -197,6 +216,7 @@ impl RuntimeLayout {
         ResolvedNativeRuntimeSelection {
             backend: selection.backend,
             llama_cpp_backend: selection.llama_cpp_backend,
+            vulkan_device: selection.vulkan_device,
             onnx_backend: selection.onnx_backend,
             cuda_version: selection.cuda_version.clone(),
             provider_dir: resolve(&selection.provider_dir),
@@ -1260,6 +1280,7 @@ pub enum LlamaCppAssetKind {
     #[default]
     ServerCpu,
     ServerCuda,
+    ServerVulkan,
     CudaRuntime,
 }
 
@@ -2081,6 +2102,7 @@ mod tests {
             schema_version: 1,
             backend: NativeRuntimeBackend::Cuda,
             llama_cpp_backend: Some(NativeRuntimeBackend::Cuda),
+            vulkan_device: None,
             onnx_backend: Some(NativeRuntimeBackend::Cuda),
             cuda_version: Some("13.3".into()),
             provider_dir: Some(PathBuf::from("runtime/onnxruntime/cuda-13")),

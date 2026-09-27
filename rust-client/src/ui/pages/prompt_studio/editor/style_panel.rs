@@ -460,7 +460,14 @@ mod tests {
                 .unwrap()
                 .presets
                 .len(),
-            3
+            profile
+                .graph
+                .translation_style
+                .as_ref()
+                .unwrap()
+                .presets
+                .len()
+                + 1
         );
         assert_eq!(
             saved
@@ -480,10 +487,18 @@ mod tests {
     fn removing_and_saving_a_style_keeps_current_text_and_offers_restore() {
         let ctx = egui::Context::default();
         let mut library = PromptTemplateLibrary::default();
-        let original = PromptTemplateLibrary::editable_copy_of(
+        let mut original = PromptTemplateLibrary::editable_copy_of(
             library.active_profile().unwrap(),
             "remove-style-test",
         );
+        // Exercise removing the last saved style independently of the built-in catalog.
+        original
+            .graph
+            .translation_style
+            .as_mut()
+            .unwrap()
+            .presets
+            .retain(|preset| preset.name == "Default");
         library.active_id = original.id.clone();
         library.profiles.push(original.clone());
         let mut controller = PromptStudioController::default();

@@ -63,6 +63,7 @@ use crate::{
 };
 
 mod conversation_context;
+mod diagnostics;
 mod language;
 mod model_runtime;
 mod pipeline;
@@ -77,9 +78,8 @@ use model_runtime::{
 };
 use scheduler::InferenceScheduler;
 use tts_session::{
-    TtsSynthesisJob, VoiceCloneCapture, clone_voice_name, max_input_chars as tts_max_input_chars,
-    restore_persisted_voice_clones, run_tts_worker, save_persisted_voice_clone,
-    split_text as split_tts_text,
+    MICROPHONE_VOICE_NAME, TtsSynthesisJob, VoiceCloneCapture, VoiceLibrary,
+    max_input_chars as tts_max_input_chars, run_tts_worker, split_text as split_tts_text,
 };
 use xr_corpus_client::CorpusClient;
 use xr_corpus_protocol::{
@@ -276,6 +276,8 @@ impl OutboundMessage {
     about = "Native XRTranslate backend"
 )]
 struct Arguments {
+    #[command(subcommand)]
+    command: Option<diagnostics::Command>,
     /// Path to the compatibility config.json file.
     #[arg(long, default_value = "config.json")]
     config: std::path::PathBuf,
@@ -297,7 +299,7 @@ struct BackendState {
     model_plan: Arc<NativeProviderPlan>,
     corpus_client: CorpusClient,
     project_root: PathBuf,
-    voice_clones_dir: PathBuf,
+    voices: Arc<VoiceLibrary>,
     next_session_id: Arc<AtomicU64>,
     inference_scheduler: InferenceScheduler,
     tts: Option<NativeTtsAdapter>,
@@ -326,6 +328,9 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let args = Arguments::parse();
+    if let Some(command) = &args.command {
+        return diagnostics::run(&args, command).await;
+    }
     let configured_root = args
         .config
         .parent()
@@ -376,12 +381,9 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
     };
     let voice_clones_dir =
         RuntimeLayout::for_config(&project_root, &config.model_manager).voice_clones_directory();
-    if let Some(adapter) = &tts {
-        let restored = restore_persisted_voice_clones(&voice_clones_dir, adapter).await;
-        if restored > 0 {
-            info!(restored, "restored persisted voice clones");
-        }
-    }
+    let voices = Arc::new(
+        VoiceLibrary::open(voice_clones_dir, config.tts.provider.clone(), tts.clone()).await,
+    );
     info!(
         provider = %config.tts.provider,
         configured = tts.is_some(),
@@ -394,7 +396,7 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
         model_plan,
         corpus_client,
         project_root,
-        voice_clones_dir,
+        voices,
         next_session_id: Arc::new(AtomicU64::new(1)),
         inference_scheduler,
         tts,
@@ -402,7 +404,15 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
     };
     let app = Router::new()
         .route("/healthz", get(health))
+        .route(
+            "/tts/voice",
+            get(tts_session::voice_status).post(tts_session::select_voice),
+        )
         .route("/ws", get(websocket))
+        .route(
+            "/tts/reference/transcribe",
+            axum::routing::post(tts_session::transcribe_reference),
+        )
         .route("/integrations/vrcx/status", get(vrcx_status))
         .with_state(state);
 
@@ -578,35 +588,10 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                         clone_capture.armed = false;
                         let registering = VoiceCloneState { state: VoiceClonePhase::Registering, collected_seconds: collected, required_seconds: clone_capture.minimum_samples as f32 / SAMPLE_RATE_HZ as f32, message: None };
                         if send_event(&outbound_sender, Some(generation), ServerEvent::VoiceCloneState(registering)).await.is_err() { break; }
-                        let registration = match &tts {
-                            Some(tts) => {
-                                let pcm = samples.into_iter().flat_map(i16::to_le_bytes).collect::<Vec<_>>();
-                                match pcm16_mono_16khz_to_wav(&pcm) {
-                                    Ok(wav) => {
-                                        let result = tts
-                                            .register_voice(clone_voice_name(audio_source), wav.clone(), &transcript)
-                                            .await
-                                            .map_err(|error| error.to_string());
-                                        if result.is_ok() {
-                                            if let Err(error) = save_persisted_voice_clone(
-                                                &state.voice_clones_dir,
-                                                clone_voice_name(audio_source),
-                                                &wav,
-                                                &transcript,
-                                            ) {
-                                                warn!(
-                                                    voice = clone_voice_name(audio_source),
-                                                    %error,
-                                                    "failed to persist voice clone to disk"
-                                                );
-                                            }
-                                        }
-                                        result
-                                    }
-                                    Err(error) => Err(error.to_string()),
-                                }
-                            }
-                            None => Err("Select and configure a TTS provider before cloning a voice.".into()),
+                        let pcm = samples.into_iter().flat_map(i16::to_le_bytes).collect::<Vec<_>>();
+                        let registration = match pcm16_mono_16khz_to_wav(&pcm) {
+                            Ok(wav) => state.voices.register_personal(wav, &transcript).await,
+                            Err(error) => Err(error.to_string()),
                         };
                         if registration.is_ok() {
                             clone_capture.ready = true;
@@ -615,7 +600,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                             Ok(()) => {
                                 info!(
                                     %session_id,
-                                    voice = clone_voice_name(audio_source),
+                                    voice = MICROPHONE_VOICE_NAME,
                                     collected_seconds = collected,
                                     "TTS voice clone registered"
                                 );
@@ -627,6 +612,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                         if send_event(&outbound_sender, Some(generation), ServerEvent::VoiceCloneState(state)).await.is_err() { break; }
                     }
                 }
+                let (active_voice, voice_ready) = state.voices.active_voice();
                 match handle_inference_event(
                     &outbound_sender,
                     &mut session,
@@ -634,8 +620,8 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                     result,
                     tts.as_ref(),
                     tts_job_sender.as_ref(),
-                    clone_voice_name(audio_source),
-                    clone_capture.ready,
+                    &active_voice,
+                    voice_ready,
                     tts_max_input_chars,
                 ).await {
                     Ok(true) => pending_tts_jobs += 1,
@@ -847,12 +833,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                             pipeline.reset();
                             workload = configured_workload;
                             audio_source = configured_audio_source;
-                            clone_capture.ready = match &tts {
-                                Some(tts) if audio_source == AudioSource::Microphone => {
-                                    tts.has_voice(clone_voice_name(AudioSource::Microphone)).await
-                                }
-                                _ => false,
-                            };
+                            clone_capture.ready = state.voices.active_voice().1;
                             generation.route_epoch = session.route_epoch();
                             generation.audio_epoch.advance();
                             generation_sender.send_replace(generation);
@@ -861,7 +842,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                                 source_lang = session.source_lang(),
                                 target_lang = session.target_lang(),
                                 sample_rate,
-                                voice = clone_voice_name(audio_source),
+                                voice = %state.voices.active_voice().0,
                                 voice_ready = clone_capture.ready,
                                 "audio configured"
                             );
@@ -993,7 +974,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                                 clone_capture.arm();
                                 info!(
                                     %session_id,
-                                    voice = clone_voice_name(audio_source),
+                                    voice = MICROPHONE_VOICE_NAME,
                                     required_seconds = clone_capture.minimum_samples as f32 / SAMPLE_RATE_HZ as f32,
                                     "TTS voice clone capture armed"
                                 );

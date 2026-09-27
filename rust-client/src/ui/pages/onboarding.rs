@@ -19,7 +19,10 @@ use crate::{
 const STEPS: [&'static str; 4] = ["Welcome", "Configure models", "Optional TTS", "Download"];
 const QQ_GROUP_NUMBER: &str = "1009732148";
 
-pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
+pub fn render_onboarding_fullscreen(
+    app: &mut crate::XRTranslateApp,
+    ui: &mut egui::Ui,
+) -> crate::ui::companion::OnboardingLayout {
     let total_pages = STEPS.len();
     if app.onboarding_page >= total_pages {
         app.onboarding_page = total_pages - 1;
@@ -34,8 +37,12 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
     );
 
     let viewport_focused = ui.input(|input| input.viewport().focused.unwrap_or(true));
+    let mut companion = crate::ui::companion::OnboardingLayout {
+        requirement,
+        ..Default::default()
+    };
 
-    egui::Panel::bottom("onboarding_bottom_nav")
+    let footer = egui::Panel::bottom("onboarding_bottom_nav")
         .show_separator_line(false)
         .frame(
             Frame::new()
@@ -60,8 +67,8 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
                             ui,
                             i18n::tr(app.ui_language, "Open Translation"),
                             can_open,
-                        )
-                        .clicked();
+                        );
+                        companion.next = open_translation.rect;
                         ui.add_space(8.0);
                         if tts_configured {
                             if components::checkbox(
@@ -85,17 +92,19 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
                             app.modal_dialog =
                                 crate::ui::modal::ModalDialog::usage_guidelines(app.ui_language);
                         }
-                        if open_translation {
+                        if open_translation.clicked() {
                             app.finish_onboarding();
                         }
-                    } else if components::primary_button_enabled(
-                        ui,
-                        i18n::tr(app.ui_language, "Continue"),
-                        requirement.is_none(),
-                    )
-                    .clicked()
-                    {
-                        app.onboarding_page += 1;
+                    } else {
+                        let next = components::primary_button_enabled(
+                            ui,
+                            i18n::tr(app.ui_language, "Continue"),
+                            requirement.is_none(),
+                        );
+                        companion.next = next.rect;
+                        if next.clicked() {
+                            app.onboarding_page += 1;
+                        }
                     }
                     if let Some(hint) = requirement {
                         ui.label(
@@ -213,7 +222,7 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
                     }
                     ui.add_space(10.0);
                 }
-                ui.label(
+                let heading = ui.label(
                     RichText::new(i18n::tr(
                         app.ui_language,
                         "A calm start, one step at a time",
@@ -224,9 +233,21 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
                 );
                 ui.add_space(20.0);
 
-                render_onboarding_steps(ui, app.ui_language, &STEPS, app.onboarding_page);
+                let steps =
+                    render_onboarding_steps(ui, app.ui_language, &STEPS, app.onboarding_page);
 
                 ui.add_space(28.0);
+                companion.header = if ui.max_rect().right() - steps.right() < 318.0 {
+                    egui::Rect::from_min_max(
+                        egui::pos2(heading.rect.right() + 18.0, heading.rect.top() - 14.0),
+                        egui::pos2(ui.max_rect().right(), steps.top() - 6.0),
+                    )
+                } else {
+                    egui::Rect::from_min_max(
+                        egui::pos2(steps.right() + 18.0, steps.top() - 30.0),
+                        egui::pos2(ui.max_rect().right(), ui.cursor().top() - 6.0),
+                    )
+                };
 
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -238,7 +259,10 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
                             ui,
                             cur,
                             |ui| match cur {
-                                0 => render_onboarding_welcome(app.ui_language, ui),
+                                0 => {
+                                    companion.features =
+                                        Some(render_onboarding_welcome(app.ui_language, ui))
+                                }
                                 1 => render_onboarding_models(app, ui),
                                 2 => render_onboarding_tts(app, ui),
                                 _ => render_onboarding_download(app, ui),
@@ -249,6 +273,8 @@ pub fn render_onboarding_fullscreen(app: &mut crate::XRTranslateApp, ui: &mut eg
         });
 
     render_qq_group_dialog(ui.ctx(), app.ui_language);
+    companion.footer = footer.response.rect;
+    companion
 }
 
 fn onboarding_icon_button(ui: &mut egui::Ui, icon: egui::Image<'_>, tooltip: &str) -> bool {
@@ -315,7 +341,8 @@ fn render_onboarding_steps(
     language: i18n::UiLanguage,
     steps: &[&'static str],
     current: usize,
-) {
+) -> egui::Rect {
+    let mut bounds = egui::Rect::NOTHING;
     ui.horizontal(|ui| {
         for (i, title) in steps.iter().enumerate() {
             let active = i == current;
@@ -341,7 +368,7 @@ fn render_onboarding_steps(
             } else {
                 Stroke::new(1.0, theme::border())
             };
-            Frame::new()
+            let step = Frame::new()
                 .fill(fill)
                 .stroke(stroke)
                 .corner_radius(CornerRadius::same(12))
@@ -355,12 +382,14 @@ fn render_onboarding_steps(
                             .strong(),
                     );
                 });
+            bounds = bounds.union(step.response.rect);
 
             if i + 1 < steps.len() {
                 ui.add_space(4.0);
             }
         }
     });
+    bounds
 }
 
 fn onboarding_title(
@@ -392,7 +421,7 @@ fn onboarding_feature_card(
     description: &'static str,
     stroke_color: Color32,
     language: crate::i18n::UiLanguage,
-) {
+) -> egui::Rect {
     let border_id = ui.make_persistent_id(("onboarding_feature_border", title));
     crate::ui::organic_border::show(
         ui,
@@ -422,39 +451,41 @@ fn onboarding_feature_card(
                     .line_height(Some(19.0)),
             );
         },
-    );
+    )
+    .response
+    .rect
 }
 
-fn render_onboarding_welcome(language: crate::i18n::UiLanguage, ui: &mut egui::Ui) {
-    onboarding_title(
-        ui,
-        language,
-        "Welcome to XRTranslate",
-        Some("Your modular, real-time speech recognition, translation, and VR immersion platform."),
-    );
+fn render_onboarding_welcome(
+    language: crate::i18n::UiLanguage,
+    ui: &mut egui::Ui,
+) -> [egui::Rect; 3] {
+    onboarding_title(ui, language, "Welcome to XRTranslate", None);
     ui.columns(3, |columns| {
-        onboarding_feature_card(
-            &mut columns[0],
-            "Audio Input",
-            "Microphone & desktop audio capture with AI noise suppression and VAD detection.",
-            Color32::from_rgb(59, 130, 246),
-            language,
-        );
-        onboarding_feature_card(
-            &mut columns[1],
-            "Recognition & Translation",
-            "High-accuracy real-time speech translation powered by local models or cloud APIs.",
-            Color32::from_rgb(16, 185, 129),
-            language,
-        );
-        onboarding_feature_card(
-            &mut columns[2],
-            "Plugins & Integrations",
-            "VRChat OSC sync, desktop floating subtitles, and meeting minutes recording.",
-            Color32::from_rgb(245, 158, 11),
-            language,
-        );
-    });
+        [
+            onboarding_feature_card(
+                &mut columns[0],
+                "Audio Input",
+                "Microphone & desktop audio capture with AI noise suppression and VAD detection.",
+                Color32::from_rgb(59, 130, 246),
+                language,
+            ),
+            onboarding_feature_card(
+                &mut columns[1],
+                "Recognition & Translation",
+                "High-accuracy real-time speech translation powered by local models or cloud APIs.",
+                Color32::from_rgb(16, 185, 129),
+                language,
+            ),
+            onboarding_feature_card(
+                &mut columns[2],
+                "Plugins & Integrations",
+                "VRChat OSC sync, desktop floating subtitles, and meeting minutes recording.",
+                Color32::from_rgb(245, 158, 11),
+                language,
+            ),
+        ]
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -485,13 +516,14 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
         {
             for package in current.iter().filter(|package| {
                 package.level == ModelLevel::Normal
-                    && matches!(package.capability, ModelCapability::Asr | ModelCapability::Translation)
+                    && matches!(
+                        package.capability,
+                        ModelCapability::Asr | ModelCapability::Translation
+                    )
             }) {
-                if let Some(asset_id) = default_model_for_vram(
-                    package.provider,
-                    package.capability,
-                    *memory_bytes,
-                ) {
+                if let Some(asset_id) =
+                    default_model_for_vram(package.provider, package.capability, *memory_bytes)
+                {
                     match set_model_asset(&project_root, package.capability, asset_id) {
                         Ok(()) => changed = true,
                         Err(error) => {
@@ -509,7 +541,10 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
             }
             app.model_task_manager.invalidate_discovery();
             let requirements = app.service_config.runtime_requirements();
-            if let Err(error) = app.runtime_installer.prepare_for(project_root.clone(), requirements) {
+            if let Err(error) = app
+                .runtime_installer
+                .prepare_for(project_root.clone(), requirements)
+            {
                 app.last_error = Some(error);
                 failed = true;
             }
@@ -612,9 +647,11 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
             "translation" => Some(ModelCapability::Translation),
             _ => None,
         };
-        if saved && capability.is_some_and(|capability| {
-            !model_packages_for_provider(&provider, capability).is_empty()
-        }) {
+        if saved
+            && capability.is_some_and(|capability| {
+                !model_packages_for_provider(&provider, capability).is_empty()
+            })
+        {
             app.model_defaults_initialized = false;
             app.save_settings();
         }
@@ -641,7 +678,10 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
                 app.model_task_manager.invalidate_discovery();
                 app.backend_manager.shutdown();
                 let requirements = app.service_config.runtime_requirements();
-                if let Err(error) = app.runtime_installer.prepare_for(project_root.clone(), requirements) {
+                if let Err(error) = app
+                    .runtime_installer
+                    .prepare_for(project_root.clone(), requirements)
+                {
                     app.last_error = Some(error);
                 }
                 app.model_defaults_initialized = true;
@@ -680,7 +720,7 @@ fn local_model_warning_icon(
             "{}\n\n{gpu}: {:.1} GiB / {:.0} GiB",
             i18n::tr(
                 language,
-                "Your GPU has less than 1 GiB of VRAM. CUDA models require at least 1 GiB, so this option is disabled."
+                "Your GPU has less than 1 GiB of VRAM. GPU models require at least 1 GiB, so this option is disabled."
             ),
             *memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
             *required_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
@@ -689,7 +729,7 @@ fn local_model_warning_icon(
             "{}\n\n{}",
             i18n::tr(
                 language,
-                "Local models are unavailable on this device. You can continue with an online API, or update the NVIDIA driver or GPU and try again."
+                "Local models are unavailable on this device. You can continue with an online API, or update the graphics driver or GPU and try again."
             ),
             reason
         ),
@@ -705,18 +745,17 @@ fn local_model_warning_icon(
     ui.add(icon).on_hover_text(tooltip);
 }
 
-fn model_hardware_available(
+
+fn model_hardware_hint(
+    language: i18n::UiLanguage,
     hardware: xrtranslate_assets::ModelHardwareRequirements,
-    availability: &crate::runtime_install::LocalModelAvailability,
-) -> bool {
-    match hardware.accelerator {
-        xrtranslate_assets::ModelAccelerator::Cpu => true,
-        xrtranslate_assets::ModelAccelerator::NvidiaCuda => matches!(
-            availability,
-            crate::runtime_install::LocalModelAvailability::Available { memory_bytes, .. }
-                if *memory_bytes >= hardware.minimum_memory_bytes
-        ),
-    }
+) -> String {
+    format!(
+        "{} {} · {:.0} GiB VRAM",
+        i18n::tr(language, "Requires at least"),
+        hardware.accelerator.label(),
+        hardware.minimum_memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+    )
 }
 
 fn onboarding_model_config_card(
@@ -794,7 +833,7 @@ fn onboarding_model_config_card(
                 );
                 components::combobox_ui(ui, (category, "provider_mode"), mode_text, |ui| {
                     let local_available = levels.iter().any(|package| {
-                        model_hardware_available(package.hardware, local_availability)
+                        local_availability.supports(package.hardware)
                     });
                     ui.add_enabled_ui(local_available, |ui| {
                         ui.selectable_value(
@@ -805,7 +844,7 @@ fn onboarding_model_config_card(
                     });
                     ui.selectable_value(&mut remote, true, i18n::tr(language, "Online API"));
                 });
-                if !levels.iter().any(|package| model_hardware_available(package.hardware, local_availability)) {
+                if !levels.iter().any(|package| local_availability.supports(package.hardware)) {
                     local_model_warning_icon(ui, language, local_availability);
                 }
                 if remote != provider.remote
@@ -842,7 +881,7 @@ fn onboarding_model_config_card(
                         selected_name
                     };
                     let local_available = levels.iter().any(|package| {
-                        model_hardware_available(package.hardware, local_availability)
+                        local_availability.supports(package.hardware)
                     });
                     ui.add_enabled_ui(local_available, |ui| {
                         components::combobox_ui(ui, (category, "model_level"), selected_label, |ui| {
@@ -853,7 +892,7 @@ fn onboarding_model_config_card(
                                 for package in choices {
                                     let present = model_asset_is_present(project_root, package.id)
                                         .unwrap_or(false);
-                                    let enough_memory = model_hardware_available(package.hardware, local_availability);
+                                    let enough_memory = local_availability.supports(package.hardware);
                                     ui.horizontal(|ui| {
                                         let manifest = xrtranslate_assets::manifest_for(package.id);
                                         let label = if present {
@@ -873,12 +912,8 @@ fn onboarding_model_config_card(
                                             .size(10.5)
                                             .color(theme::text_weak()),
                                         );
-                                        if !enough_memory && package.hardware.accelerator == xrtranslate_assets::ModelAccelerator::NvidiaCuda {
-                                            choice.on_hover_text(format!(
-                                                "{} {:.0} GiB VRAM",
-                                                i18n::tr(language, "Requires at least"),
-                                                package.hardware.minimum_memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
-                                            ));
+                                        if !enough_memory && package.hardware.accelerator != xrtranslate_assets::ModelAccelerator::Cpu {
+                                            choice.on_disabled_hover_text(model_hardware_hint(language, package.hardware));
                                         }
                                         if let Some(license) = manifest.required_files.iter().find(
                                             |file| file.role == xrtranslate_assets::ModelFileRole::License,
@@ -936,13 +971,22 @@ fn onboarding_model_config_card(
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                         for code in manifest.languages {
-                            let (rect, response) = ui.allocate_exact_size(
-                                egui::vec2(32.0, 32.0), egui::Sense::hover(),
+                            let (rect, response) = ui
+                                .allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
+                            ui.painter().circle_filled(
+                                rect.center(),
+                                15.0,
+                                Color32::from_rgb(227, 237, 255),
                             );
-                            ui.painter().circle_filled(rect.center(), 15.0, Color32::from_rgb(227, 237, 255));
-                            ui.painter().circle_stroke(rect.center(), 15.0, Stroke::new(1.0, Color32::from_rgb(160, 190, 245)));
+                            ui.painter().circle_stroke(
+                                rect.center(),
+                                15.0,
+                                Stroke::new(1.0, Color32::from_rgb(160, 190, 245)),
+                            );
                             ui.painter().text(
-                                rect.center(), egui::Align2::CENTER_CENTER, *code,
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                *code,
                                 egui::FontId::proportional(if code.len() > 4 { 7.0 } else { 10.0 }),
                                 Color32::from_rgb(28, 72, 155),
                             );
@@ -998,7 +1042,7 @@ fn onboarding_model_config_card(
                     crate::runtime_install::LocalModelAvailability::Detecting => {
                         ui.add_space(8.0);
                         ui.label(
-                            RichText::new(i18n::tr(language, "Detecting NVIDIA GPU…"))
+                            RichText::new(i18n::tr(language, "Detecting GPU…"))
                                 .size(11.5)
                                 .color(theme::text_weak()),
                         );
@@ -1069,19 +1113,13 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     for choice in &provider.choices {
                         let (label, _asset_id, _present) =
                             provider_choice_resource(choice, &project_root, language);
-                        let local_available = match &local_availability {
-                            crate::runtime_install::LocalModelAvailability::Available { memory_bytes, .. } => {
-                                !choice.model_assets.is_empty()
-                                    && choice.model_assets.iter().all(|key| {
-                                        ModelAssetId::from_config_key(key).is_some_and(|id| {
-                                            *memory_bytes >= xrtranslate_assets::manifest_for(id)
-                                                .hardware.minimum_memory_bytes
-                                        })
-                                    })
-                            }
-                            _ => false,
-                        };
-                        ui.add_enabled_ui(
+                        let local_available = !choice.model_assets.is_empty()
+                            && choice.model_assets.iter().all(|key| {
+                                ModelAssetId::from_config_key(key).is_some_and(|id| {
+                                    local_availability.supports(xrtranslate_assets::manifest_for(id).hardware)
+                                })
+                            });
+                        let response = ui.add_enabled_ui(
                             choice.name == "none" || choice.remote || local_available,
                             |ui| {
                                 if ui
@@ -1092,6 +1130,12 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                                 }
                             },
                         );
+                        if let Some(model) = choice.model_assets.iter()
+                            .filter_map(|key| ModelAssetId::from_config_key(key))
+                            .map(xrtranslate_assets::manifest_for)
+                            .find(|model| !local_availability.supports(model.hardware)) {
+                            response.response.on_disabled_hover_text(model_hardware_hint(language, model.hardware));
+                        }
                     }
                 });
                 local_model_warning_icon(ui, language, &local_availability);
@@ -1138,16 +1182,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                         let checked = selected_assets
                             .iter()
                             .any(|asset| asset == package.id.as_str());
-                        let package_enabled = matches!(
-                            (&availability, package.hardware.accelerator),
-                            (
-                                crate::runtime_install::LocalModelAvailability::Available {
-                                    memory_bytes,
-                                    ..
-                                },
-                                xrtranslate_assets::ModelAccelerator::NvidiaCuda
-                            ) if *memory_bytes >= package.hardware.minimum_memory_bytes
-                        );
+                        let package_enabled = availability.supports(package.hardware);
                         let may_toggle = package_enabled
                             && (!checked || selected_assets.len() > 1)
                             && !app.model_task_manager.is_busy();
@@ -1179,12 +1214,8 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                                         .size(11.5)
                                         .color(theme::text_weak()),
                                 );
-                                if components::resource_delete_button(
-                                    ui,
-                                    package.id,
-                                    language,
-                                )
-                                .clicked()
+                                if components::resource_delete_button(ui, package.id, language)
+                                    .clicked()
                                 {
                                     delete_tts = Some(package.id);
                                 }
@@ -1268,7 +1299,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                         crate::runtime_install::LocalModelAvailability::Unavailable(_) => {}
                         crate::runtime_install::LocalModelAvailability::Detecting => {
                             ui.label(
-                                RichText::new(i18n::tr(language, "Detecting NVIDIA GPU…"))
+                                RichText::new(i18n::tr(language, "Detecting GPU…"))
                                     .size(11.5)
                                     .color(theme::text_weak()),
                             );
@@ -1393,7 +1424,9 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
     let requirements = app.service_config.runtime_requirements();
     let model_assets = app.service_config.selected_model_asset_ids();
     if !app.runtime_installer.is_busy()
-        && !app.runtime_installer.plan_matches(requirements, &model_assets)
+        && !app
+            .runtime_installer
+            .plan_matches(requirements, &model_assets)
         && let Err(error) = app
             .runtime_installer
             .prepare_for(project_root.clone(), requirements)
@@ -1461,7 +1494,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                 download_bytes: package.download_bytes,
                 installed_bytes: package.installed_bytes,
                 installed,
-                hardware_available: model_hardware_available(package.hardware, &local_availability),
+                hardware_available: local_availability.supports(package.hardware),
                 stroke_color,
             }
         })
@@ -1677,11 +1710,7 @@ fn render_download_card(
                     if item.installed {
                         if ui
                             .add_enabled_ui(delete_enabled, |ui| {
-                                components::resource_delete_button(
-                                    ui,
-                                    item.id,
-                                    language,
-                                )
+                                components::resource_delete_button(ui, item.id, language)
                             })
                             .inner
                             .clicked()
@@ -1690,7 +1719,10 @@ fn render_download_card(
                         }
                         Frame::new()
                             .fill(Color32::from_rgba_unmultiplied(16, 185, 129, 20))
-                            .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(16, 185, 129, 100)))
+                            .stroke(Stroke::new(
+                                1.0,
+                                Color32::from_rgba_unmultiplied(16, 185, 129, 100),
+                            ))
                             .corner_radius(CornerRadius::same(8))
                             .inner_margin(Margin::symmetric(14, 5))
                             .show(ui, |ui| {
@@ -1823,7 +1855,10 @@ fn render_runtime_installation_section(
                 if ready {
                     Frame::new()
                         .fill(Color32::from_rgba_unmultiplied(16, 185, 129, 20))
-                        .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(16, 185, 129, 100)))
+                        .stroke(Stroke::new(
+                            1.0,
+                            Color32::from_rgba_unmultiplied(16, 185, 129, 100),
+                        ))
                         .corner_radius(CornerRadius::same(8))
                         .inner_margin(Margin::symmetric(14, 5))
                         .show(ui, |ui| {
@@ -1872,12 +1907,7 @@ fn render_runtime_installation_section(
                     }
                 }
                 if managed_runtime_present
-                    && components::resource_delete_button(
-                        ui,
-                        "managed_runtime",
-                        language,
-                    )
-                    .clicked()
+                    && components::resource_delete_button(ui, "managed_runtime", language).clicked()
                 {
                     delete_runtime = true;
                 }

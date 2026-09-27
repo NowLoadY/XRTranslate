@@ -153,6 +153,7 @@ impl AutomationDriver {
                     "audiostudio" | "audio_studio" | "audio-studio" | "audio" => {
                         Some(Page::AudioStudio)
                     }
+                    "ttscenter" | "tts_center" | "tts-center" | "tts" => Some(Page::TtsCenter),
                     "promptstudio" | "prompt_studio" | "prompt-studio" | "prompt" => {
                         Some(Page::PromptStudio)
                     }
@@ -178,7 +179,7 @@ impl AutomationDriver {
                     ));
                 } else {
                     let _ = responder.send(DirectorResponse::err(format!(
-                        "Unknown page '{page_name}'. Valid pages: Translation, Settings, AudioStudio, PromptStudio, osc, meeting, vr_overlay, video_player, onboarding:<step>"
+                        "Unknown page '{page_name}'. Valid pages: Translation, Settings, AudioStudio, PromptStudio, TtsCenter, osc, meeting, vr_overlay, video_player, onboarding:<step>"
                     )));
                 }
             }

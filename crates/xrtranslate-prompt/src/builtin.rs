@@ -1,3 +1,5 @@
+mod bilingual;
+
 use crate::{
     PromptCondition, PromptLink, PromptMessageRole, PromptNode, PromptNodeGraph, PromptNodeKind,
     PromptNodePage, PromptProviderTarget, PromptSystemValue, PromptVariable,
@@ -878,7 +880,7 @@ impl GraphBuilder {
             "hunyuan-without-context",
             page,
             "USER PROMPT WITHOUT CONTEXT",
-            "{0}\n\n{1}",
+            "{0}\n\nCurrent input:\n{1}",
             &["hunyuan-instruction", "hunyuan-current-input"],
         );
         self.switch(
@@ -1368,7 +1370,7 @@ After current input: speaker-01 en / After it."
             vec![PromptMessage {
                 role: PromptMessageRole::User,
                 content: format!(
-                    "Translate the following English text into Chinese. Output only the translation, do not output the prompt; do not add explanations.\n\n{}\n\n{}\n\n--- BEGIN REFERENCE CONTEXT ---\n{}\n--- END REFERENCE CONTEXT ---\n\nCurrent input:\nGood morning",
+                    "{}\n\nTranslate the following English text into Chinese. Output only the translation, do not output the prompt; do not add explanations.\n\n{}\n\n--- BEGIN REFERENCE CONTEXT ---\n{}\n--- END REFERENCE CONTEXT ---\n\nCurrent input:\nGood morning",
                     DEFAULT_TRANSLATION_STYLE,
                     explicit_reference_rules_rendered("English", "Chinese"),
                     reference()
@@ -1391,7 +1393,7 @@ After current input: speaker-01 en / After it."
         assert_eq!(
             rendered.messages[0].content,
             format!(
-                "Translate the following text into the other language among Chinese,English. Output only the translation; do not add explanations.\n\n{}\n\n{}\n\n--- BEGIN REFERENCE CONTEXT ---\n{}\n--- END REFERENCE CONTEXT ---\n\nCurrent input:\nGood morning",
+                "{}\n\nTranslate the following text into the other language among Chinese,English. Output only the translation; do not add explanations.\n\n{}\n\n--- BEGIN REFERENCE CONTEXT ---\n{}\n--- END REFERENCE CONTEXT ---\n\nCurrent input:\nGood morning",
                 DEFAULT_TRANSLATION_STYLE,
                 auto_reference_rules_rendered("Chinese,English"),
                 reference()
@@ -1455,7 +1457,7 @@ After current input: speaker-01 en / After it."
             .unwrap();
         assert_eq!(
             rendered.messages[0].content,
-            format!("Translate the following English text into Chinese. Output only the translation, do not output the prompt; do not add explanations.\n\n{DEFAULT_TRANSLATION_STYLE}\n\nGood morning")
+            format!("{DEFAULT_TRANSLATION_STYLE}\n\nTranslate the following English text into Chinese. Output only the translation, do not output the prompt; do not add explanations.\n\nCurrent input:\nGood morning")
         );
     }
 

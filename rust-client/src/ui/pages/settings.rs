@@ -369,7 +369,11 @@ pub(crate) fn render_update_action_button(app: &mut crate::XRTranslateApp, ui: &
         } => {
             if *total > 0 {
                 let percent = (*downloaded as f64 / *total as f64 * 100.0).clamp(0.0, 100.0);
-                format!("{} {:.0}%", crate::i18n::tr(language, "Downloading..."), percent)
+                format!(
+                    "{} {:.0}%",
+                    crate::i18n::tr(language, "Downloading..."),
+                    percent
+                )
             } else {
                 crate::i18n::tr(language, "Downloading...").to_string()
             }
@@ -420,11 +424,16 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 
     let language = app.ui_language;
     let mut beta_enabled = app.update_channel == UpdateChannel::Beta;
-    if components::checkbox(ui, &mut beta_enabled, "Receive beta updates")
-        .on_hover_text(
-            "Include prerelease builds. Beta builds can still update to stable releases.",
-        )
-        .changed()
+    if components::checkbox(
+        ui,
+        &mut beta_enabled,
+        crate::i18n::tr(language, "Receive beta updates"),
+    )
+    .on_hover_text(crate::i18n::tr(
+        language,
+        "Include prerelease builds. Beta builds can still update to stable releases.",
+    ))
+    .changed()
     {
         app.set_update_channel(if beta_enabled {
             UpdateChannel::Beta

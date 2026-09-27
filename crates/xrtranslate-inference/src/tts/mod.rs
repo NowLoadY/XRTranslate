@@ -19,6 +19,18 @@ pub struct SynthesizedPcm {
     pub sample_rate: u32,
 }
 
+impl SynthesizedPcm {
+    /// Convert provider output to the mono PCM16 input expected by recognition.
+    pub fn resample_pcm16(&self, sample_rate: u32) -> Result<Vec<i16>, InferenceError> {
+        audio::resample_pcm16(&self.bytes, self.sample_rate, sample_rate).map(|samples| {
+            samples
+                .into_iter()
+                .map(|sample| (sample * 32768.0).round().clamp(-32768.0, 32767.0) as i16)
+                .collect()
+        })
+    }
+}
+
 pub(crate) fn decode_pcm16_wav(wav: &[u8]) -> Result<SynthesizedPcm, InferenceError> {
     if wav.len() < 12 || &wav[..4] != b"RIFF" || &wav[8..12] != b"WAVE" {
         return Err(InferenceError::InvalidAudio {

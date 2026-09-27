@@ -97,6 +97,13 @@ its frontend behavior is versioned and tested with fixtures from the matching
 official MeloTTS source. See
 [OpenVoice language-pack recipe](openvoice-language-packs.md).
 
+Chinese tone changes use the Rust Jieba segmenter and the pinned MeloTTS
+neutral-word rules in the provider's `frontend/chinese/` directory. Punctuation
+keeps Chinese tone zero; the English tone offset applies only to English words.
+The pronunciation lexicon alone does not encode contextual neutral tones or
+third-tone word boundaries. Rust and Python Jieba can choose different boundaries
+for ambiguous phrases; this frontend does not promise identical segmentation.
+
 The BERT, MeloTTS, converter, and reference-encoder sessions form one CUDA
 execution group. Every active language pack is prepared before the provider
 is reported ready. If any graph cannot construct on CUDA, provider startup

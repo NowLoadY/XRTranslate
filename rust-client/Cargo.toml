@@ -10,6 +10,7 @@ default = []
 mpv = ["dep:libmpv-sys"]
 
 [dependencies]
+ash = { version = "0.38", default-features = false, features = ["loaded", "std"] }
 xr-corpus-client = { path = "../XR-Corpus/crates/client" }
 bytemuck = { version = "1.25", features = ["derive"] }
 cpal = "0.18.1"
@@ -19,6 +20,7 @@ flate2 = "1.1.9"
 egui_extras = { version = "0.36.1", features = ["svg", "image"] }
 env_logger = "0.11.11"
 futures = "0.3.33"
+glam = { version = "0.33.10", default-features = false, features = ["std"] }
 log = "0.4.33"
 parking_lot = "0.12.5"
 reqwest = { version = "0.13.4", features = ["json", "socks"] }
@@ -34,6 +36,7 @@ tar = "0.4.46"
 tokio = { version = "1.53.1", features = ["full"] }
 tokio-tungstenite = "0.30.0"
 tungstenite = "0.30.0"
+unicode-segmentation = "1.13.3"
 uuid = { version = "1.18.1", features = ["v4"] }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 xrtranslate-assets = { path = "../crates/xrtranslate-assets" }

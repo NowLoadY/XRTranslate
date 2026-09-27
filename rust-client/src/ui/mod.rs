@@ -1,5 +1,6 @@
 pub mod animation;
 pub mod automation;
+pub(crate) mod companion;
 pub mod components;
 pub mod fonts;
 pub(crate) mod graph_canvas;
@@ -26,6 +27,7 @@ pub enum Page {
     Settings,
     AudioStudio,
     PromptStudio,
+    TtsCenter,
     CorpusStudio,
 }
 
@@ -38,6 +40,7 @@ impl Serialize for Page {
             Self::Translation => serializer.serialize_str("Translation"),
             Self::Settings => serializer.serialize_str("Settings"),
             Self::AudioStudio => serializer.serialize_str("AudioStudio"),
+            Self::TtsCenter => serializer.serialize_str("TtsCenter"),
             Self::PromptStudio => serializer.serialize_str("PromptStudio"),
             Self::CorpusStudio => serializer.serialize_str("CorpusStudio"),
             Self::Plugin(id) => serializer.serialize_str(&format!("plugin:{}", id.as_str())),
@@ -56,6 +59,7 @@ impl<'de> Deserialize<'de> for Page {
             "Settings" | "settings" => Ok(Self::Settings),
             "AudioStudio" => Ok(Self::AudioStudio),
             "PromptStudio" | "prompt_studio" | "prompt-studio" => Ok(Self::PromptStudio),
+            "TtsCenter" => Ok(Self::TtsCenter),
             "CorpusStudio" => Ok(Self::CorpusStudio),
             // Compatibility with the former derived enum representation.
             "Osc" | "osc" => Ok(Self::Plugin(crate::plugins::PluginId::OSC)),
@@ -134,6 +138,7 @@ pub fn render_sidebar(
     ui: &mut egui::Ui,
     navigation: &mut NavigationState,
     plugin_preferences: &crate::plugins::PluginPreferences,
+    tts_configured: bool,
     modal_dialog: &mut modal::ModalDialog,
     first_run: &mut bool,
     onboarding_page: &mut usize,
@@ -145,6 +150,7 @@ pub fn render_sidebar(
     let icon_tr = include_image!("../../resources/icons/translation.svg");
     let icon_settings = include_image!("../../resources/icons/settings.svg");
     let icon_guide = include_image!("../../resources/icons/guide.svg");
+    let icon_tts = include_image!("../../resources/icons/tts-center.svg");
     let icon_prompt = include_image!("../../resources/icons/prompt-studio.svg");
     let icon_corpus = include_image!("../../resources/icons/corpus-studio.svg");
     let icon_audio = include_image!("../../resources/icons/audio-studio.svg");
@@ -247,6 +253,17 @@ pub fn render_sidebar(
             expand_factor,
         );
         ui.add_space(4.0);
+        if tts_configured {
+            nav_item_animated(
+                ui,
+                navigation,
+                Page::TtsCenter,
+                icon_tts,
+                crate::i18n::tr(language, "TTS Center"),
+                expand_factor,
+            );
+            ui.add_space(4.0);
+        }
         nav_item_animated(
             ui,
             navigation,

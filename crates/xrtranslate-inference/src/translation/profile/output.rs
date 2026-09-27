@@ -11,7 +11,10 @@ pub(super) fn clean_contextual(text: &str) -> String {
 pub(super) fn clean_openai_compatible(text: &str) -> String {
     let text = clean_shared(text);
     for label in ["translation:", "translated text:"] {
-        if text.len() >= label.len() && text[..label.len()].eq_ignore_ascii_case(label) {
+        if text
+            .get(..label.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(label))
+        {
             return text[label.len()..].trim().to_owned();
         }
     }
@@ -215,6 +218,7 @@ mod tests {
             clean_contextual("Translation: bonjour <|im_end|>"),
             "Translation: bonjour"
         );
+        assert_eq!(clean_openai_compatible("你好，我是Danny。"), "你好，我是Danny。");
     }
 
     #[test]

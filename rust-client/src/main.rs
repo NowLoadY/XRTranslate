@@ -672,6 +672,7 @@ struct XRTranslateApp {
     pub prompt_library: PromptTemplateLibrary,
     pub prompt_studio: ui::pages::prompt_studio::PromptStudioController,
     corpus_studio: ui::pages::corpus_studio::CorpusStudioController,
+    tts_center: ui::pages::tts_center::TtsCenterController,
     pub modal_dialog: ui::modal::ModalDialog,
     pending_resource_deletion: Option<PendingResourceDeletion>,
     pub first_run: bool,
@@ -1472,6 +1473,7 @@ impl Default for XRTranslateApp {
                 prompt_provider,
             ),
             corpus_studio: ui::pages::corpus_studio::CorpusStudioController::default(),
+            tts_center: Default::default(),
             modal_dialog: ui::modal::ModalDialog::default(),
             pending_resource_deletion: None,
             first_run,
@@ -1669,7 +1671,31 @@ impl XRTranslateApp {
         use ui::pages::prompt_studio::PromptStudioAction;
 
         for action in actions {
+            // Recheck at the mutation boundary, including shortcuts and queued UI actions.
+            if !matches!(action, PromptStudioAction::SelectStyle(_))
+                && !ui::pages::prompt_studio::editor_enabled(
+                    self.update_channel == client_settings::UpdateChannel::Beta,
+                    &self.project_root(),
+                )
+            {
+                continue;
+            }
             match action {
+                PromptStudioAction::SelectStyle(selection) => {
+                    match ui::pages::prompt_studio::selected_style_profile(
+                        &self.prompt_library,
+                        &selection,
+                        self.service_config.translation_prompt_target(),
+                    ) {
+                        Ok(profile) => {
+                            let id = profile.id.clone();
+                            self.commit_prompt_profile(profile);
+                            self.activate_prompt_template(id.clone());
+                            self.prompt_studio.select_profile(id, &self.prompt_library);
+                        }
+                        Err(error) => self.last_error = Some(error),
+                    }
+                }
                 PromptStudioAction::SwitchDomain(next_domain) => {
                     self.prompt_studio.switch_domain(next_domain);
                 }
@@ -3170,7 +3196,9 @@ impl XRTranslateApp {
         let requirements = self.service_config.runtime_requirements();
         let model_assets = self.service_config.selected_model_asset_ids();
         if !self.runtime_installer.is_busy()
-            && !self.runtime_installer.plan_matches(requirements, &model_assets)
+            && !self
+                .runtime_installer
+                .plan_matches(requirements, &model_assets)
             && let Err(error) = self
                 .runtime_installer
                 .prepare_for(self.project_root(), requirements)
@@ -4458,6 +4486,7 @@ impl XRTranslateApp {
                 Page::AudioStudio => "AudioStudio".to_string(),
                 Page::PromptStudio => "PromptStudio".to_string(),
                 Page::CorpusStudio => "CorpusStudio".to_string(),
+                Page::TtsCenter => "TtsCenter".to_string(),
                 Page::Plugin(PluginId::OSC) => "Plugin:OSC".to_string(),
                 Page::Plugin(PluginId::MEETING) => "Plugin:Meeting".to_string(),
                 Page::Plugin(PluginId::VR_OVERLAY) => "Plugin:VROverlay".to_string(),
@@ -4492,6 +4521,12 @@ impl eframe::App for XRTranslateApp {
             self.onboarding_page = step;
             self.first_run = true;
         }
+        if self.navigation.page == Page::TtsCenter && !self.service_config.tts_is_configured() {
+            self.navigation.page = Page::Translation;
+        }
+        if self.navigation.page != Page::PromptStudio || self.first_run {
+            ui::pages::prompt_studio::leave_page(ui.ctx());
+        }
 
         self.model_task_manager.poll();
         if let Some(path) = self.runtime_installer.poll() {
@@ -4504,7 +4539,9 @@ impl eframe::App for XRTranslateApp {
             runtime_install::RuntimeInstallState::Failed(_)
         ) && !self.runtime_installer.has_plan();
         if !self.runtime_installer.is_busy()
-            && !self.runtime_installer.plan_matches(runtime_requirements, &model_assets)
+            && !self
+                .runtime_installer
+                .plan_matches(runtime_requirements, &model_assets)
             && !failed_without_plan
             && let Err(error) = self
                 .runtime_installer
@@ -4530,10 +4567,42 @@ impl eframe::App for XRTranslateApp {
             std::time::Duration::from_millis(100)
         };
         ui.ctx().request_repaint_after(idle_repaint_interval);
+        self.tts_center.poll(
+            &mut self.backend_manager,
+            &self.server_url,
+            ui.ctx(),
+            !self.first_run && self.navigation.page == Page::TtsCenter,
+        );
+        if let Some((id, pcm)) = self.tts_center.catalog.preview.take()
+            && !self.first_run
+            && self.navigation.page == Page::TtsCenter
+        {
+            match self
+                .audio_system
+                .preview_voice(&pcm, xrtranslate_assets::voices::SAMPLE_RATE)
+            {
+                Ok(()) => self.tts_center.previewing = Some(id),
+                Err(error) => self.tts_center.error = Some(error),
+            }
+        }
+        if self.first_run || self.navigation.page != Page::TtsCenter {
+            self.audio_system.stop_voice_preview();
+            self.tts_center.previewing = None;
+            if !self.tts_center.busy() {
+                self.tts_center.loaded = false;
+            }
+        } else if !self.audio_system.voice_preview_playing() {
+            self.tts_center.previewing = None;
+        }
         if self.first_run {
             self.audio_system.set_audio_studio_metering(false);
-            ui::render_onboarding_fullscreen(self, ui);
+            let companion_layout = ui::render_onboarding_fullscreen(self, ui);
             self.render_modal_layer(ui.ctx());
+            ui::companion::show(
+                ui.ctx(),
+                self,
+                ui::companion::Layout::Onboarding(companion_layout),
+            );
             ui::layout::finish_frame(ui.ctx());
             ui::automation::finish_frame();
             return;
@@ -4583,6 +4652,7 @@ impl eframe::App for XRTranslateApp {
                         ui,
                         &mut self.navigation,
                         &self.plugin_preferences,
+                        self.service_config.tts_is_configured(),
                         &mut self.modal_dialog,
                         &mut self.first_run,
                         &mut self.onboarding_page,
@@ -4620,7 +4690,7 @@ impl eframe::App for XRTranslateApp {
                 .inner_margin(egui::Margin::symmetric(24, 20))
         };
 
-        egui::CentralPanel::default()
+        let content = egui::CentralPanel::default()
             .frame(central_frame)
             .show(ui, |ui| {
                 if !is_player_fullscreen
@@ -4669,14 +4739,53 @@ impl eframe::App for XRTranslateApp {
                         ui,
                         Page::PromptStudio,
                         |ui| {
-                            let snapshot = self.prompt_studio.snapshot(&self.prompt_library);
+                            let project_root = self.project_root();
                             let actions = ui::pages::prompt_studio::render(
-                                &snapshot,
+                                &self.prompt_library,
                                 &mut self.prompt_studio,
                                 ui,
                                 self.ui_language,
+                                self.service_config.translation_prompt_target(),
+                                self.update_channel == client_settings::UpdateChannel::Beta,
+                                &project_root,
                             );
                             self.apply_prompt_studio_actions(actions);
+                        },
+                    );
+                    return;
+                }
+                if self.navigation.page == Page::TtsCenter {
+                    ui::animation::AnimationSystem::render_animated_page(
+                        ui,
+                        Page::TtsCenter,
+                        |ui| {
+                            use ui::pages::tts_center::{self, Action};
+                            let asr_languages = self
+                                .language_capabilities()
+                                .recognition
+                                .unwrap_or(LanguageSet::ALL);
+                            match tts_center::render(
+                                &mut self.tts_center,
+                                ui,
+                                self.ui_language,
+                                self.service_config.tts_is_configured(),
+                                asr_languages,
+                            ) {
+                                Some(Action::Settings) => {
+                                    self.navigation.page = Page::Settings;
+                                    self.settings_section =
+                                        ui::pages::settings::SettingsSection::ServiceProviders;
+                                }
+                                Some(Action::Preview(id)) => {
+                                    if self.tts_center.previewing.as_deref() == Some(&id) {
+                                        self.audio_system.stop_voice_preview();
+                                        self.tts_center.previewing = None;
+                                    } else {
+                                        self.tts_center.catalog.preview(id, ui.ctx());
+                                    }
+                                }
+                                None => {}
+                            }
                         },
                     );
                     return;
@@ -4724,10 +4833,19 @@ impl eframe::App for XRTranslateApp {
                         Page::AudioStudio => unreachable!(),
                         Page::PromptStudio => unreachable!(),
                         Page::CorpusStudio => unreachable!(),
+                        Page::TtsCenter => unreachable!(),
                     });
             });
 
         self.render_modal_layer(ui.ctx());
+        ui::companion::show(
+            ui.ctx(),
+            self,
+            ui::companion::Layout::Page {
+                bounds: content.response.rect,
+                layer: content.response.layer_id,
+            },
+        );
         ui::layout::finish_frame(ui.ctx());
         ui::automation::finish_frame();
     }
@@ -4772,6 +4890,18 @@ fn cleanup_runtime_cache() {
 
 fn main() -> eframe::Result<()> {
     env_logger::init();
+
+    #[cfg(debug_assertions)]
+    {
+        let mut render_args = std::env::args().skip_while(|arg| arg != "--avatar-render");
+        if render_args.next().is_some() {
+            let path = render_args.next().ok_or_else(|| {
+                eframe::Error::AppCreation("--avatar-render requires an output directory".into())
+            })?;
+            return ui::components::avatar::render_views(std::path::Path::new(&path))
+                .map_err(eframe::Error::AppCreation);
+        }
+    }
 
     #[cfg(windows)]
     configure_dll_search_paths();
@@ -4820,6 +4950,11 @@ fn main() -> eframe::Result<()> {
                     state.target_format,
                     &mut state.renderer.write(),
                 );
+                ui::components::avatar::install(
+                    &state.device,
+                    state.target_format,
+                    &mut state.renderer.write(),
+                );
             } else {
                 log::warn!("wgpu render state is unavailable during app creation");
             }
@@ -4827,7 +4962,8 @@ fn main() -> eframe::Result<()> {
                 log::warn!("Unable to configure {window_backdrop:?} window backdrop: {error}");
             }
             let args: Vec<String> = std::env::args().collect();
-            let director_port = if let Some(idx) = args.iter().position(|a| a == "--director-port") {
+            let director_port = if let Some(idx) = args.iter().position(|a| a == "--director-port")
+            {
                 args.get(idx + 1).and_then(|p| p.parse::<u16>().ok())
             } else if let Some(idx) = args.iter().position(|a| a == "--director") {
                 args.get(idx + 1)

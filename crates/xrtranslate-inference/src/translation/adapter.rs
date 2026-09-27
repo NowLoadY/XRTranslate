@@ -175,7 +175,7 @@ mod tests {
         assert_eq!(request.body["min_p"], 0.0);
         assert_eq!(request.body["messages"].as_array().unwrap().len(), 1);
         let prompt = request.body["messages"][0]["content"].as_str().unwrap();
-        assert!(prompt.contains("following English text into natural Chinese"));
+        assert!(prompt.contains("following English text into Chinese"));
         assert!(prompt.contains("--- BEGIN REFERENCE CONTEXT ---"));
         assert!(prompt.contains("A previous sentence."));
         assert!(prompt.ends_with("Current input:\nhello"));

@@ -899,6 +899,10 @@ fn vad_is_active(probability: f32, threshold: f32) -> bool {
 }
 
 impl NativeInference {
+    pub(crate) fn for_diagnostics(model_plan: &NativeProviderPlan) -> Result<Self, String> {
+        Self::new(model_plan, None)
+    }
+
     fn new(
         model_plan: &NativeProviderPlan,
         speaker: Option<SpeakerInferenceConfig>,

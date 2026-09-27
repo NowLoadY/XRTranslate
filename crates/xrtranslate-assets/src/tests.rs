@@ -93,8 +93,11 @@ fn static_catalog_declares_every_native_model_package() {
         "https://huggingface.co/NowLoadY/XRTranslate-OpenVoice-ONNX/resolve/8a5782785c7f728692057eab37e9a3645b5747f8/packages/zh/v1/models/melo.onnx"
     );
     for manifest in MODEL_ASSET_CATALOG {
-        if manifest.hardware.accelerator == crate::ModelAccelerator::NvidiaCuda {
+        if manifest.hardware.accelerator != crate::ModelAccelerator::Cpu {
             assert!(manifest.estimated_vram_bytes >= manifest.installed_bytes());
+        }
+        if manifest.runtime.is_some_and(|runtime| runtime.uses_llama_cpp()) {
+            assert_eq!(manifest.hardware.accelerator, crate::ModelAccelerator::LlamaGpu);
         }
         assert!(
             !manifest.languages.is_empty(),

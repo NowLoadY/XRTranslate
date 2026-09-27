@@ -91,8 +91,9 @@ shared domain/runtime/UI capability
   serialized compatibility alias while accepting `model_assets` where plural
   selection is meaningful.
 - Downloadable managed models must not silently change execution class. They
-  require an eligible NVIDIA CUDA host with at least 7 GiB VRAM; only explicitly
-  classified small bundled ONNX components may execute on CPU.
+  require the accelerator and memory declared by each model card: llama.cpp
+  supports NVIDIA CUDA or AMD Vulkan; current managed ONNX TTS requires CUDA.
+  Explicitly CPU-classified ONNX models/components remain independent.
 
 ## When to extract or split
 

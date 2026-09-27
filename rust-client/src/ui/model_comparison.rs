@@ -67,7 +67,7 @@ pub(super) fn vram_budget(
     selected_assets: &[ModelAssetId],
 ) {
     let (gpu, capacity) = match availability {
-        LocalModelAvailability::Available { gpu, memory_bytes }
+        LocalModelAvailability::Available { gpu, memory_bytes, .. }
         | LocalModelAvailability::InsufficientVram {
             gpu, memory_bytes, ..
         } => (gpu, *memory_bytes),

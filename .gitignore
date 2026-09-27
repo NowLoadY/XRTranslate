@@ -1,6 +1,8 @@
 # Project specific runtime/build folders
 .env
 runtime/
+# Manually created local editor access marker; never ship or track it.
+**/runtime/debug.md
 models/
 target/
 **/target/
@@ -30,6 +32,8 @@ dist/
 *.mp3
 *.flac
 *.ogg
+# Curated built-in references are source assets, not personal audio caches.
+!/crates/xrtranslate-assets/resources/voices/*/reference.wav
 .temp/
 *.tmp
 *.bak

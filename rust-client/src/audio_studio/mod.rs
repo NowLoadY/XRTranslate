@@ -1,14 +1,16 @@
 //! Core Audio Studio domain boundary.
 //!
-//! Audio Studio owns the serializable route graph, presets, controller state,
+//! Audio Studio owns the saved route graphs, default graph, controller state,
 //! and persistence. Device discovery and audio execution stay behind typed
 //! host actions. Like Prompt Studio, this is always-available infrastructure,
 //! not an optional plugin.
 
 pub mod controller;
+mod default_graph;
 pub mod graph;
 pub mod persistence;
-pub mod presets;
+#[cfg(test)]
+mod test_graphs;
 
 #[allow(unused_imports)]
 pub use controller::{
@@ -20,6 +22,8 @@ pub use controller::{
     analyze_route_risks, validate_for_host,
 };
 #[allow(unused_imports)]
+pub use default_graph::DEFAULT_AUDIO_GRAPH_ID;
+#[allow(unused_imports)]
 pub use graph::{
     AUDIO_GRAPH_FORMAT_VERSION, ApplicationId, ApplicationSelection, AsrInputMode, AudioGraph,
     AudioLink, AudioNode, AudioNodeKind, AudioProcessor, DeviceId, GraphAudioSettings,
@@ -30,7 +34,7 @@ pub use graph::{
 #[allow(unused_imports)]
 pub use persistence::{
     AUDIO_STUDIO_SCHEMA_VERSION, AUDIO_STUDIO_SETTINGS_PATH, AudioStudioPersistenceError,
-    AudioStudioRepository, AudioStudioSettings, DeviceDefaults, GLOBAL_AUDIO_GRAPH_ID,
+    AudioStudioRepository, AudioStudioSettings, DeviceDefaults,
 };
-#[allow(unused_imports)]
-pub use presets::{AudioStudioPreset, graph_for_preset};
+#[cfg(test)]
+pub use test_graphs::{AudioStudioPreset, graph_for_preset};

@@ -6,6 +6,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod tts;
+
 use std::{error::Error, fmt};
 
 use serde::{Deserialize, Serialize};

@@ -51,7 +51,7 @@
     ],
     "voice_presets": [],
     "hardware": {
-      "accelerator": "NvidiaCuda",
+      "accelerator": "LlamaGpu",
       "minimum_memory_bytes": 7516192768
     },
     "audio_output": null,
@@ -144,7 +144,7 @@
     ],
     "voice_presets": [],
     "hardware": {
-      "accelerator": "NvidiaCuda",
+      "accelerator": "LlamaGpu",
       "minimum_memory_bytes": 3221225472
     },
     "audio_output": null,
@@ -218,7 +218,7 @@
     ],
     "voice_presets": [],
     "hardware": {
-      "accelerator": "NvidiaCuda",
+      "accelerator": "LlamaGpu",
       "minimum_memory_bytes": 7516192768
     },
     "audio_output": null,
@@ -399,7 +399,7 @@
     ],
     "voice_presets": [],
     "hardware": {
-      "accelerator": "NvidiaCuda",
+      "accelerator": "LlamaGpu",
       "minimum_memory_bytes": 7516192768
     },
     "audio_output": null,
@@ -485,7 +485,7 @@
     ],
     "voice_presets": [],
     "hardware": {
-      "accelerator": "NvidiaCuda",
+      "accelerator": "LlamaGpu",
       "minimum_memory_bytes": 3221225472
     },
     "audio_output": null,
@@ -581,7 +581,7 @@
     ],
     "voice_presets": [],
     "hardware": {
-      "accelerator": "NvidiaCuda",
+      "accelerator": "LlamaGpu",
       "minimum_memory_bytes": 7516192768
     },
     "audio_output": null,
@@ -631,7 +631,7 @@
     ],
     "voice_presets": [],
     "hardware": {
-      "accelerator": "NvidiaCuda",
+      "accelerator": "LlamaGpu",
       "minimum_memory_bytes": 1073741824
     },
     "audio_output": null,
@@ -660,7 +660,7 @@
       "model_alias": "haidass-translate",
       "prompt_style": "bilingual",
       "flash_attention": true,
-      "allow_reference_context": true
+      "allow_reference_context": false
     }
   },
   {

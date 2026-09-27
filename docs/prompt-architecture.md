@@ -38,6 +38,13 @@ capabilities; `pipeline/asr_prompt.rs` renders the matching graph target before
 the adapter converts those neutral fields to its wire format. Adapters do not
 rewrite already-rendered prompt text.
 
+Sentence-only bilingual checkpoints select a fixed graph from the same prompt
+domain instead of the user's editable graph. Haidass uses its training instructions
+without style or reference inputs, disables reference context through its model
+card, and supplies the empty thinking prefix and neutral repetition penalty in
+its inference profile. Other models continue to use the selected Prompt Studio
+graph. Execution traces always describe the graph actually used.
+
 ## Output validation and regeneration
 
 Translation output is validated in `xrtranslate-inference` after provider
