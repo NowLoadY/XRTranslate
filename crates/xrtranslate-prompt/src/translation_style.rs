@@ -129,7 +129,43 @@ impl PromptNodeGraph {
         let Some(style) = &self.translation_style else {
             return false;
         };
-        let mut pending = vec![style.node_id.as_str()];
+        self.node_reaches_target(&style.node_id, target)
+    }
+
+    /// Repair legacy/imported graphs that kept the style node but lost its binding.
+    /// Never guess between candidates or replace an explicit binding to an existing node.
+    pub(crate) fn restore_translation_style_binding(&mut self) {
+        if self
+            .translation_style
+            .as_ref()
+            .is_some_and(|style| self.nodes.iter().any(|node| node.id == style.node_id))
+        {
+            return;
+        }
+        let mut candidates = self.nodes.iter().filter(|node| {
+            (node.label.trim().eq_ignore_ascii_case("Translation style")
+                || node.label.trim() == "翻译风格")
+                && self.static_text(&node.id).is_some()
+                && !self.links.iter().any(|link| link.to == node.id)
+                && [
+                    PromptProviderTarget::Hunyuan,
+                    PromptProviderTarget::OpenAiCompatible,
+                ]
+                .into_iter()
+                .any(|target| self.node_reaches_target(&node.id, target))
+        });
+        let Some(candidate) = candidates.next() else {
+            return;
+        };
+        if candidates.next().is_some() {
+            return;
+        }
+        let id = candidate.id.clone();
+        self.bind_translation_style(&id);
+    }
+
+    fn node_reaches_target(&self, node_id: &str, target: PromptProviderTarget) -> bool {
+        let mut pending = vec![node_id];
         let mut visited = std::collections::HashSet::new();
         while let Some(id) = pending.pop() {
             if !visited.insert(id) {
@@ -352,6 +388,63 @@ mod tests {
                 .translation_style,
             imported.graph.translation_style
         );
+
+        // Old shared graphs can keep the authored style node without its metadata.
+        let style_id = copy
+            .graph
+            .translation_style
+            .as_ref()
+            .unwrap()
+            .node_id
+            .clone();
+        let mut legacy = copy.clone();
+        legacy.graph.translation_style = None;
+        let nodes = legacy.graph.nodes.clone();
+        let links = legacy.graph.links.clone();
+        legacy.graph.restore_translation_style_binding();
+        assert_eq!(
+            legacy.graph.translation_style.as_ref().unwrap().node_id,
+            style_id
+        );
+        assert_eq!(legacy.graph.nodes, nodes);
+        assert_eq!(legacy.graph.links, links);
+        assert_eq!(legacy.graph.style_text(), copy.graph.style_text());
+
+        legacy.graph.translation_style = None;
+        let imported = PromptTemplateProfile::import_project_json(
+            &legacy.export_project_json().unwrap(),
+            "legacy-style",
+        )
+        .unwrap();
+        assert_eq!(imported.graph.style_text(), copy.graph.style_text());
+        let mut library = PromptTemplateLibrary {
+            active_id: legacy.id.clone(),
+            profiles: vec![legacy],
+        };
+        library.normalize();
+        assert_eq!(library.active_graph().style_text(), copy.graph.style_text());
+        let once = library.clone();
+        library.normalize();
+        assert_eq!(library, once);
+
+        // A stale node ID must not discard the user's named presets.
+        copy.graph.translation_style.as_mut().unwrap().node_id = "missing-style-node".into();
+        let presets = copy
+            .graph
+            .translation_style
+            .as_ref()
+            .unwrap()
+            .presets
+            .clone();
+        copy.graph.restore_translation_style_binding();
+        assert_eq!(
+            copy.graph.translation_style.as_ref().unwrap().node_id,
+            style_id
+        );
+        assert_eq!(
+            copy.graph.translation_style.as_ref().unwrap().presets,
+            presets
+        );
     }
 
     #[test]
@@ -407,5 +500,28 @@ mod tests {
                 .translation_style
                 .is_none()
         );
+
+        // Ambiguous or dynamic authored graphs still require explicit binding.
+        let mut ambiguous = PromptNodeGraph::builtin_default();
+        let style_id = &ambiguous.translation_style.as_ref().unwrap().node_id;
+        let join = ambiguous
+            .links
+            .iter()
+            .find(|link| &link.from == style_id)
+            .unwrap()
+            .to
+            .clone();
+        ambiguous.translation_style = None;
+        let second =
+            ambiguous.add_compose(PromptNodePage::Shared, "Another style".into(), [0.0, 0.0]);
+        ambiguous
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == second)
+            .unwrap()
+            .label = "翻译风格".into();
+        assert!(ambiguous.connect(&second, &join, 2));
+        ambiguous.restore_translation_style_binding();
+        assert!(ambiguous.translation_style.is_none());
     }
 }

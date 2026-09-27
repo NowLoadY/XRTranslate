@@ -185,13 +185,13 @@ pub fn text_weak() -> Color32 {
 }
 
 pub fn surface_subtle() -> Color32 {
-    Color32::from_rgba_unmultiplied(220, 225, 225, 68)
+    Color32::from_rgba_unmultiplied(246, 246, 246, 64)
 }
 
 /// Neutral history layers keep the message bubbles from picking up a blue cast
 /// when composited over the Windows acrylic backdrop.
 pub fn history_surface() -> Color32 {
-    Color32::from_rgba_unmultiplied(214, 216, 216, 72)
+    Color32::from_rgba_unmultiplied(248, 248, 248, 100)
 }
 
 pub fn history_viewport() -> Color32 {
@@ -199,15 +199,15 @@ pub fn history_viewport() -> Color32 {
 }
 
 pub fn surface_control() -> Color32 {
-    Color32::from_rgba_unmultiplied(205, 212, 214, 72)
+    Color32::from_rgba_unmultiplied(226, 228, 228, 100)
 }
 
 pub fn surface_control_hover() -> Color32 {
-    Color32::from_rgba_unmultiplied(196, 205, 208, 92)
+    Color32::from_rgba_unmultiplied(212, 216, 216, 120)
 }
 
 pub fn surface_control_active() -> Color32 {
-    Color32::from_rgba_unmultiplied(188, 198, 201, 116)
+    Color32::from_rgba_unmultiplied(199, 205, 205, 140)
 }
 
 pub fn sidebar(focused: bool) -> Color32 {
@@ -225,7 +225,7 @@ pub fn modal_backdrop() -> Color32 {
 }
 
 pub fn border() -> Color32 {
-    Color32::from_rgba_unmultiplied(28, 33, 36, 210)
+    Color32::from_rgba_unmultiplied(100, 110, 114, 110)
 }
 
 pub fn primary() -> Color32 {

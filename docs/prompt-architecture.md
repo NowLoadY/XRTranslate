@@ -4,7 +4,20 @@ The translation style panel edits one shared Compose node through an optional
 `PromptNodeGraph.translation_style` binding. Full named style prompts are saved
 with the graph; model/mode processing rules and message assembly remain separate.
 The collapsible panel lives in the graph canvas, reusing execution, persistence,
-activation and history. See [Style panel and audio controls](studio-quick-controls.md).
+activation and history. Loading or importing an older graph can restore a missing
+binding only when one literal, connected translation-style node is unambiguous;
+authored text and existing bindings remain intact.
+Loading compares the stored JSON with the current serialized format and writes
+upgrades back to `runtime/prompt-studio.json`, including migrations performed
+during deserialization. Files that cannot be decoded are left untouched.
+
+The normal read-only card picker reads named presets and saved style-node text
+from the same library, including inactive graphs. Named presets are deduplicated
+by both name and text; a differently named preset remains visible even with the
+same text. Unnamed node text adds a card only when no card already contains it.
+Leaving the debug editor saves through its usual profile actions. Selecting
+a card updates the active graph's style and refreshes the editor draft, so the
+two views do not maintain separate style stores.
 
 Prompt Studio owns the complete translation prompt and semantic ASR instruction
 sent to a model. It also owns rendering provider text fields that are explicitly

@@ -64,8 +64,6 @@ pub struct ClientSettings {
     pub selected_device_id: String,
     #[serde(default)]
     pub selected_loopback_device_id: String,
-    #[serde(default)]
-    pub selected_tts_output_device_id: String,
     #[serde(default = "default_background_noise")]
     pub background_noise: f32,
     #[serde(default = "default_pause_tolerance")]
@@ -167,7 +165,6 @@ impl Default for ClientSettings {
             capture_source: CaptureSource::Microphone,
             selected_device_id: String::new(),
             selected_loopback_device_id: String::new(),
-            selected_tts_output_device_id: String::new(),
             background_noise: default_background_noise(),
             pause_tolerance: default_pause_tolerance(),
             continuous_recognition: false,

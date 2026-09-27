@@ -406,6 +406,21 @@ mod tests {
         profile.graph.set_style_text(&default);
         library.active_id = profile.id.clone();
         library.profiles.push(profile.clone());
+        // A shared/imported profile with a stale binding must render editable text and presets.
+        library
+            .profiles
+            .last_mut()
+            .unwrap()
+            .graph
+            .translation_style
+            .as_mut()
+            .unwrap()
+            .node_id = "missing-style-node".into();
+        library.normalize();
+        assert_eq!(
+            library.active_graph().style_text().as_deref(),
+            Some(default.as_str())
+        );
         let mut controller = PromptStudioController::default();
         let size = Vec2::new(1200.0, 900.0);
         for _ in 0..3 {

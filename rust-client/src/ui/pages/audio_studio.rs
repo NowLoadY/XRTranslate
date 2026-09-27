@@ -2645,15 +2645,16 @@ fn render_header(
                     }
                 },
             );
-            if ui.button(tr(language, "New graph")).clicked() {
-                actions.push(AudioStudioUiAction::NewGraph);
-                state.show_graph = true;
-                state.rename_graph = Some(String::new());
-                state.pending_graph_delete = false;
-                state.pending_safe_reset = false;
-                focus_name = true;
-            }
             ui.menu_button("⋯", |ui| {
+                if ui.button(tr(language, "New graph")).clicked() {
+                    actions.push(AudioStudioUiAction::NewGraph);
+                    state.show_graph = true;
+                    state.rename_graph = Some(String::new());
+                    state.pending_graph_delete = false;
+                    state.pending_safe_reset = false;
+                    focus_name = true;
+                    ui.close();
+                }
                 if ui.button(tr(language, "Duplicate graph")).clicked() {
                     actions.push(AudioStudioUiAction::DuplicateGraph);
                     state.rename_graph = None;
@@ -2738,48 +2739,54 @@ fn render_header(
             ui.menu_button(tr(language, "+ Node"), |ui| {
                 render_add_node_menu(snapshot, state, ui, actions)
             });
-        }
-        if graph_style::toolbar_button(ui, tr(language, "Undo"), state.history.can_undo()).clicked()
-            && let Some(previous) = state.history.undo(snapshot.selected_graph.clone())
-        {
-            actions.push(AudioStudioUiAction::ReplaceSelectedGraph(previous));
-        }
-        if graph_style::toolbar_button(ui, tr(language, "Redo"), state.history.can_redo()).clicked()
-            && let Some(next) = state.history.redo(snapshot.selected_graph.clone())
-        {
-            actions.push(AudioStudioUiAction::ReplaceSelectedGraph(next));
-        }
-        if state.show_graph {
-            ui.separator();
-            for (label, delta, hint) in [("−", -120.0, "Zoom out"), ("+", 120.0, "Zoom in")] {
-                if graph_style::toolbar_button(ui, label, true)
-                    .on_hover_text(tr(language, hint))
-                    .clicked()
-                {
-                    state.canvas.zoom_from_center(delta);
-                }
-            }
             if graph_style::toolbar_button(ui, tr(language, "Fit graph"), true).clicked() {
                 state.canvas.fit_pending = true;
             }
-            if graph_style::toolbar_button(ui, tr(language, "Auto layout"), true).clicked() {
-                let arranged = auto_layout_graph(&snapshot.selected_graph, &snapshot.host_audio);
-                if arranged != snapshot.selected_graph {
-                    state.history.push(snapshot.selected_graph.clone());
-                    actions.push(AudioStudioUiAction::ReplaceSelectedGraph(arranged));
-                    state.canvas.fit_pending = true;
+        }
+        ui.menu_button(tr(language, "Edit"), |ui| {
+            if graph_style::toolbar_button(ui, tr(language, "Undo"), state.history.can_undo()).clicked()
+                && let Some(previous) = state.history.undo(snapshot.selected_graph.clone())
+            {
+                actions.push(AudioStudioUiAction::ReplaceSelectedGraph(previous));
+                ui.close();
+            }
+            if graph_style::toolbar_button(ui, tr(language, "Redo"), state.history.can_redo()).clicked()
+                && let Some(next) = state.history.redo(snapshot.selected_graph.clone())
+            {
+                actions.push(AudioStudioUiAction::ReplaceSelectedGraph(next));
+                ui.close();
+            }
+            if state.show_graph {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    for (label, delta, hint) in [("−", -120.0, "Zoom out"), ("+", 120.0, "Zoom in")] {
+                        if graph_style::toolbar_button(ui, label, true)
+                            .on_hover_text(tr(language, hint))
+                            .clicked()
+                        {
+                            state.canvas.zoom_from_center(delta);
+                        }
+                    }
+                });
+                if graph_style::toolbar_button(ui, tr(language, "Auto layout"), true).clicked() {
+                    let arranged = auto_layout_graph(&snapshot.selected_graph, &snapshot.host_audio);
+                    if arranged != snapshot.selected_graph {
+                        state.history.push(snapshot.selected_graph.clone());
+                        actions.push(AudioStudioUiAction::ReplaceSelectedGraph(arranged));
+                        state.canvas.fit_pending = true;
+                    }
+                    ui.close();
                 }
             }
-            let has_selection =
-                !state.selected_nodes.is_empty() || !state.selected_links.is_empty();
-            if graph_style::toolbar_button(ui, tr(language, "Delete selection"), has_selection)
-                .clicked()
-            {
-                state.history.push(snapshot.selected_graph.clone());
-                let (nodes, links) = state.take_selection();
-                actions.extend(nodes.into_iter().map(AudioStudioUiAction::RemoveNode));
-                actions.extend(links.into_iter().map(AudioStudioUiAction::DeleteLink));
-            }
+        });
+        if state.show_graph
+            && (!state.selected_nodes.is_empty() || !state.selected_links.is_empty())
+            && graph_style::toolbar_button(ui, tr(language, "Delete selection"), true).clicked()
+        {
+            state.history.push(snapshot.selected_graph.clone());
+            let (nodes, links) = state.take_selection();
+            actions.extend(nodes.into_iter().map(AudioStudioUiAction::RemoveNode));
+            actions.extend(links.into_iter().map(AudioStudioUiAction::DeleteLink));
         }
         let issue_count = snapshot.validation.issues.len()
             + snapshot.risk_report.blocking_count()

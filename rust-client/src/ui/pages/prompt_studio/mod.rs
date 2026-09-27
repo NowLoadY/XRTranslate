@@ -42,14 +42,24 @@ fn state_id() -> Id {
     Id::new("prompt_studio_page")
 }
 
-pub(crate) fn leave_page(ctx: &egui::Context) {
+pub(crate) fn leave_page(
+    ctx: &egui::Context,
+    controller: &mut PromptStudioController,
+    library: &PromptTemplateLibrary,
+) -> Vec<PromptStudioAction> {
+    let mut actions = Vec::new();
     ctx.data_mut(|data| {
         if let Some(mut state) = data.get_temp::<PageState>(state_id()) {
+            if state.editor_open {
+                let snapshot = controller.snapshot(library);
+                editor::save_before_switch(&snapshot, controller, &mut actions);
+            }
             state.editor_open = false;
             state.checked = None;
             data.insert_temp(state_id(), state);
         }
     });
+    actions
 }
 
 pub(crate) fn render(

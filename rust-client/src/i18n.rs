@@ -2174,6 +2174,14 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "미리 듣기",
         "Прослушать",
     ),
+    (
+        "Recognition settings",
+        "识别设置",
+        "認識設定",
+        "인식 설정",
+        "Настройки распознавания",
+    ),
+    ("Edit", "编辑", "編集", "편집", "Изменить"),
     ("Cute", "可爱", "キュート", "귀여움", "Милый"),
     (
         "Bright, playful and a little mischievous.",

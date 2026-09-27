@@ -128,10 +128,9 @@ impl PromptStudioController {
             .or_else(|| profiles.first().cloned())
             .unwrap_or_else(default_profile);
         if self.draft.is_none()
-            || self
-                .draft
-                .as_ref()
-                .is_some_and(|draft| draft.id != selected.id)
+            || self.draft.as_ref().is_some_and(|draft| {
+                draft.id != selected.id || (!self.dirty && draft != &selected)
+            })
         {
             self.draft = Some(selected.clone());
             self.dirty = false;
@@ -151,19 +150,13 @@ impl PromptStudioController {
     }
 
     pub fn select_profile(&mut self, id: String, library: &PromptTemplateLibrary) {
-        if self.dirty {
-            return;
-        }
-        self.selected_id = id;
-        self.draft = library
-            .profiles
-            .iter()
-            .find(|profile| profile.id == self.selected_id)
-            .cloned();
-        self.history.clear();
-        self.editor.reset_for_graph(self.selected_id.clone());
-        self.cleanup_transient_state();
-        self.sync_current_branch_filters();
+        self.select_profile_from_snapshot(id, &library.profiles);
+    }
+
+    /// An explicit card choice has already been committed and supersedes the editor snapshot.
+    pub fn accept_style_selection(&mut self, id: String, library: &PromptTemplateLibrary) {
+        self.dirty = false;
+        self.select_profile(id, library);
     }
 
     pub fn select_profile_from_snapshot(&mut self, id: String, profiles: &[PromptTemplateProfile]) {

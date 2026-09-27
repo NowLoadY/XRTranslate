@@ -20,6 +20,7 @@ pub struct TtsCenterController {
     pub error: Option<String>,
     pub loaded: bool,
     pub previewing: Option<String>,
+    pub requested_voice: Option<String>,
     pub catalog: CatalogController,
     pub draft: Option<VoiceDraft>,
     pending: Option<Request>,
@@ -43,6 +44,7 @@ impl TtsCenterController {
 
     pub fn import(&mut self, draft: VoiceDraft, ctx: &egui::Context) {
         self.error = None;
+        self.requested_voice = None;
         if draft.manual_transcript {
             self.catalog.import(draft, None, ctx);
         } else {
@@ -54,6 +56,10 @@ impl TtsCenterController {
         if self.busy() {
             return;
         }
+        self.requested_voice = match &request {
+            Request::Select(selection) => selection.voice_id.clone(),
+            _ => None,
+        };
         self.pending = Some(request);
         self.deadline = None;
         self.next_poll = None;
@@ -80,7 +86,10 @@ impl TtsCenterController {
                     self.error = None;
                 }
                 Ok(false) => {}
-                Err(error) => self.error = Some(error),
+                Err(error) => {
+                    self.requested_voice = None;
+                    self.error = Some(error);
+                }
             }
         }
         if let Some(response) = &self.response {

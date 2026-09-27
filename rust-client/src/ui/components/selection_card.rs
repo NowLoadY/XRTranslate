@@ -183,7 +183,7 @@ pub fn show(
         FontId::proportional(12.0),
         Color32::from_gray(84),
     );
-    if !selected {
+    if !selected && enabled {
         painter.text(
             Pos2::new(rect.right() - 26.0 + hover * 2.0, footer.center().y),
             Align2::CENTER_CENTER,

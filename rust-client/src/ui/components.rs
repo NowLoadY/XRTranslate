@@ -14,12 +14,12 @@ pub fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
         ui,
         border_id,
         Frame::new()
-            .fill(Color32::TRANSPARENT)
-            .corner_radius(CornerRadius::same(10))
+            .fill(theme::surface_subtle())
+            .corner_radius(CornerRadius::same(16))
             .inner_margin(Margin::same(16))
             .shadow(egui::Shadow::NONE),
-        10.0,
-        theme::border(),
+        16.0,
+        theme::border().gamma_multiply(0.55),
         add_contents,
     )
     .inner
@@ -47,9 +47,9 @@ pub fn history_entry_card<R>(
 ) -> egui::Response {
     Frame::new()
         .fill(theme::history_surface())
-        .corner_radius(CornerRadius::same(8))
+        .corner_radius(CornerRadius::same(12))
         .inner_margin(Margin::symmetric(12, 9))
-        .stroke(Stroke::new(1.0, theme::border()))
+        .stroke(Stroke::new(1.0, theme::border().gamma_multiply(0.35)))
         .show(ui, add_contents)
         .response
 }
@@ -392,23 +392,10 @@ pub fn section_heading(ui: &mut Ui, title: &str) {
 
 pub fn section<R>(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     ui.push_id(title, |ui| {
-        let border_id = ui.make_persistent_id("organic_section_border");
-        crate::ui::organic_border::show(
-            ui,
-            border_id,
-            Frame::new()
-                .fill(Color32::TRANSPARENT)
-                .corner_radius(CornerRadius::same(10))
-                .inner_margin(Margin::same(16))
-                .shadow(egui::Shadow::NONE),
-            10.0,
-            theme::border(),
-            |ui| {
-                section_heading(ui, title);
-                add_contents(ui)
-            },
-        )
-        .inner
+        card(ui, |ui| {
+            section_heading(ui, title);
+            add_contents(ui)
+        })
     })
     .inner
 }

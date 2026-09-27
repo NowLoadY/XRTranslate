@@ -1,6 +1,7 @@
 //! One persistent companion for the whole application.
 mod attention;
 mod dialogue;
+mod feedback;
 mod parking;
 mod placement;
 
@@ -76,6 +77,7 @@ struct Guide {
     line: &'static str,
     speech: Speech,
     mouth: f32,
+    feedback: feedback::Feedback,
 }
 
 impl Guide {
@@ -111,6 +113,7 @@ impl Guide {
             line: scene.cue.text(),
             speech: Speech::default(),
             mouth: 0.0,
+            feedback: feedback::Feedback::default(),
         }
     }
 
@@ -436,11 +439,12 @@ pub(crate) fn show(ctx: &egui::Context, app: &crate::XRTranslateApp, layout: Lay
     } else {
         Gaze::default()
     };
+    let reaction = state.feedback.update(app, state.clock);
     let expression =
         if state.stage == Stage::Greet || (attentive && hovered == Some(Attention::Avatar)) {
             Expression::Happy
         } else {
-            Expression::Calm
+            reaction.unwrap_or(Expression::Calm)
         };
     let mut pose = Pose::animated(ctx, state_id(), expression, gaze);
     if let Some(yaw) = yaw {

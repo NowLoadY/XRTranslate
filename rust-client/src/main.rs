@@ -617,7 +617,6 @@ struct XRTranslateApp {
     selected_loopback_device_id: String,
     system_audio_input: SystemAudioInputSelection,
     tts_output_devices: Vec<InputDevice>,
-    selected_tts_output_device_id: String,
     capture_source: CaptureSource,
     microphone_recognition: RecognitionSettings,
     loopback_recognition: RecognitionSettings,
@@ -1416,7 +1415,6 @@ impl Default for XRTranslateApp {
             selected_loopback_device_id: settings.selected_loopback_device_id,
             system_audio_input: initial_system_audio_input,
             tts_output_devices,
-            selected_tts_output_device_id: settings.selected_tts_output_device_id,
             capture_source: settings.capture_source,
             microphone_recognition: settings.microphone_recognition,
             loopback_recognition: settings.loopback_recognition,
@@ -1596,16 +1594,10 @@ impl XRTranslateApp {
         let tts = if host_tts
             && crate::feature_access::is_available(crate::feature_access::Feature::TtsPlayback)
         {
-            match self.audio_system.tts_handle(
-                self.service_config.tts_sample_rate(),
-                &self.selected_tts_output_device_id,
-            ) {
-                Ok(handle) => Some(handle),
-                Err(error) => {
-                    self.last_error = Some(format!("TTS output is unavailable: {error}"));
-                    None
-                }
-            }
+            Some(
+                self.audio_system
+                    .tts_handle(self.service_config.tts_sample_rate()),
+            )
         } else {
             None
         };
@@ -1691,7 +1683,8 @@ impl XRTranslateApp {
                             let id = profile.id.clone();
                             self.commit_prompt_profile(profile);
                             self.activate_prompt_template(id.clone());
-                            self.prompt_studio.select_profile(id, &self.prompt_library);
+                            self.prompt_studio
+                                .accept_style_selection(id, &self.prompt_library);
                         }
                         Err(error) => self.last_error = Some(error),
                     }
@@ -2877,7 +2870,6 @@ impl XRTranslateApp {
             capture_source: self.capture_source,
             selected_device_id: self.selected_device_id.clone(),
             selected_loopback_device_id: self.selected_loopback_device_id.clone(),
-            selected_tts_output_device_id: self.selected_tts_output_device_id.clone(),
             background_noise: self.microphone_recognition.background_noise,
             pause_tolerance: self.microphone_recognition.pause_tolerance,
             continuous_recognition: self.microphone_recognition.continuous_recognition,
@@ -4525,7 +4517,12 @@ impl eframe::App for XRTranslateApp {
             self.navigation.page = Page::Translation;
         }
         if self.navigation.page != Page::PromptStudio || self.first_run {
-            ui::pages::prompt_studio::leave_page(ui.ctx());
+            let actions = ui::pages::prompt_studio::leave_page(
+                ui.ctx(),
+                &mut self.prompt_studio,
+                &self.prompt_library,
+            );
+            self.apply_prompt_studio_actions(actions);
         }
 
         self.model_task_manager.poll();

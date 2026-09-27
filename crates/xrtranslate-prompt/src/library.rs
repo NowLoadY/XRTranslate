@@ -128,6 +128,7 @@ impl PromptTemplateProfile {
         graph.upgrade_known_pseudo_streaming_prompts();
         graph.sync_text_switch_cases(&imported_graph);
         graph.remove_invalid_socket_links();
+        graph.restore_translation_style_binding();
         graph.auto_layout();
 
         if let Err(err) = graph.validate_for_activation() {
@@ -218,14 +219,22 @@ impl PromptTemplateLibrary {
 
     pub fn load_from_dir(runtime_dir: &Path) -> Self {
         let path = runtime_dir.join(Self::FILE_NAME);
-        let contents = std::fs::read_to_string(&path).ok();
-        let mut library = contents
-            .as_deref()
-            .and_then(|contents| serde_json::from_str::<Self>(contents).ok())
-            .unwrap_or_default();
-        let stored = library.clone();
+        let stored = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|contents| serde_json::from_str::<serde_json::Value>(&contents).ok());
+        let Some(mut library) = stored
+            .as_ref()
+            .and_then(|value| Self::deserialize(value).ok())
+        else {
+            return Self::default();
+        };
         library.normalize();
-        if contents.is_some() && library != stored {
+        // Compare the on-disk shape: deserialization itself can already migrate legacy fields.
+        // Round-trip through JSON text to retain its f32 formatting for node positions.
+        let current = serde_json::to_string(&library)
+            .ok()
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok());
+        if current.is_some() && current != stored {
             let _ = library.save_to_dir(runtime_dir);
         }
         library
@@ -279,6 +288,7 @@ impl PromptTemplateLibrary {
                 profile.graph.upgrade_known_pseudo_streaming_prompts();
                 profile.graph.sync_text_switch_cases(&stored_graph);
                 profile.graph.remove_invalid_socket_links();
+                profile.graph.restore_translation_style_binding();
             }
             profile.read_only = false;
         }
@@ -861,16 +871,27 @@ mod tests {
         let mut custom =
             PromptTemplateLibrary::editable_copy_of(&library.profiles[0], "custom-test-profile");
         custom.name = "Custom Test Profile".into();
+        custom.graph.nodes[0].position = [123.1, 456.7];
         library.profiles.push(custom);
         library.active_id = "custom-test-profile".into();
 
         library.save_to_dir(&temp_dir).unwrap();
         assert!(temp_dir.join(PromptTemplateLibrary::FILE_NAME).exists());
 
+        let file = std::fs::File::options()
+            .write(true)
+            .open(temp_dir.join(PromptTemplateLibrary::FILE_NAME))
+            .unwrap();
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(60))
+            .unwrap();
+        let modified = file.metadata().unwrap().modified().unwrap();
+
         let loaded = PromptTemplateLibrary::load_from_dir(&temp_dir);
         assert_eq!(loaded.active_id, "custom-test-profile");
         assert_eq!(loaded.profiles.len(), 2);
         assert_eq!(loaded.profiles[1].name, "Custom Test Profile");
+        assert_eq!(file.metadata().unwrap().modified().unwrap(), modified);
+        drop(file);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
@@ -931,6 +952,35 @@ mod tests {
         assert!(saved_value.get("pseudo_streaming").is_none());
         assert!(saved_value.get("profiles").is_some());
         assert!(saved_value.get("active_id").is_some());
+
+        // Even fully normalized graphs must leave their legacy outer format behind.
+        let legacy_wrapper = serde_json::json!({
+            "ordinary": upgraded,
+            "pseudo_streaming": { "active_id": "", "profiles": [] }
+        });
+        let decoded: PromptTemplateLibrary =
+            serde_json::from_value(legacy_wrapper.clone()).unwrap();
+        assert_eq!(decoded, upgraded);
+        let path = temp_dir.join(PromptTemplateLibrary::FILE_NAME);
+        std::fs::write(&path, serde_json::to_string(&legacy_wrapper).unwrap()).unwrap();
+        assert_eq!(PromptTemplateLibrary::load_from_dir(&temp_dir), upgraded);
+        let rewritten = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rewritten).unwrap(),
+            saved_value
+        );
+        assert_eq!(PromptTemplateLibrary::load_from_dir(&temp_dir), upgraded);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), rewritten);
+
+        // Unreadable data is not an old format and must not be overwritten during loading.
+        for invalid in ["{", "{\"profiles\": \"invalid\"}"] {
+            std::fs::write(&path, invalid).unwrap();
+            assert_eq!(
+                PromptTemplateLibrary::load_from_dir(&temp_dir),
+                PromptTemplateLibrary::default()
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+        }
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 

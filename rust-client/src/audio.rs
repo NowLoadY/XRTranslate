@@ -567,8 +567,7 @@ pub struct AudioSystem {
     tts_enabled: Arc<AtomicBool>,
     host: cpal::Host,
     active_captures: Vec<ActiveCapture>,
-    tts_player: Option<TtsPlayer>,
-    voice_preview: Option<TtsPlayer>,
+    voice_preview: Option<VoicePreview>,
     audio_routes: Vec<AudioRouteHandle>,
     routed_tts_targets: Arc<Mutex<Vec<RoutedTtsTarget>>>,
     microphone_fanout: Option<(String, Arc<MicrophoneFanout>)>,
@@ -581,17 +580,8 @@ pub struct AudioSystem {
 
 #[derive(Clone)]
 pub struct TtsPlayerHandle {
-    queue: Arc<Mutex<VecDeque<f32>>>,
-    sample_rate: u32,
     source_sample_rate: u32,
-    max_queued_samples: Option<usize>,
-    dropped_samples: Option<Arc<AtomicU64>>,
-    playback_tail_samples: Arc<AtomicU64>,
-    playback_clock_rate: u32,
-    level: Option<Arc<AudioRouteSourceBuffer>>,
     routed_tts_targets: Arc<Mutex<Vec<RoutedTtsTarget>>>,
-    legacy_available: bool,
-    processing: Arc<Mutex<SourcePipeline>>,
 }
 
 impl TtsPlayerHandle {
@@ -602,107 +592,45 @@ impl TtsPlayerHandle {
         if self.source_sample_rate == 0 {
             return Err("TTS source sample rate must be greater than zero".into());
         }
-        let routed_targets = self
+        let targets = self
             .routed_tts_targets
             .lock()
             .iter()
             .filter(|target| target.is_running())
             .cloned()
             .collect::<Vec<_>>();
-        if !routed_targets.is_empty() {
-            let samples = resample_mono(
-                pcm16_mono_samples(pcm),
-                self.source_sample_rate,
-                AUDIO_ROUTE_SAMPLE_RATE,
-            )?;
-            for target in &routed_targets {
-                target.enqueue_samples(&samples);
-            }
-            log::info!(
-                "Queued TTS audio for {} routed outputs: input_bytes={}, output_samples={}, source_rate={}, route_rate={}",
-                routed_targets.len(),
-                pcm.len(),
-                samples.len(),
-                self.source_sample_rate,
-                AUDIO_ROUTE_SAMPLE_RATE,
-            );
+        // No enabled graph output means silence, never an implicit speaker fallback.
+        if targets.is_empty() {
             return Ok(());
         }
-        if !self.legacy_available {
-            return Err("the audio route used by this TTS handle is no longer running".into());
-        }
-        let samples = pcm16_mono_samples(pcm);
-        let mut samples = resample_mono(samples, self.source_sample_rate, self.sample_rate)?;
-        let mut processing = self.processing.lock();
-        if self.playback_tail_samples.load(Ordering::Acquire) == 0 && self.queue.lock().is_empty() {
-            processing.reset();
-        }
-        processing.process(&mut samples);
-        drop(processing);
-        if let Some(level) = &self.level {
-            update_input_level(&samples, &level.level);
-        }
-        let output_samples = samples.len();
-        let mut queue = self.queue.lock();
-        queue.extend(samples);
-        if let Some(capacity) = self.max_queued_samples {
-            let excess = queue.len().saturating_sub(capacity);
-            queue.drain(..excess);
-            if let Some(dropped) = &self.dropped_samples {
-                dropped.fetch_add(excess as u64, Ordering::Relaxed);
-            }
-        }
-        let queued_samples = queue.len();
-        // Keep ASR suppression active for a short device-buffer tail after the
-        // last queued sample has been rendered. This avoids reopening a
-        // loopback recognizer while WASAPI still has synthesized speech in
-        // flight.
-        self.playback_tail_samples.store(
-            queued_samples as u64 * u64::from(self.playback_clock_rate)
-                / u64::from(self.sample_rate)
-                + u64::from(self.playback_clock_rate) * 150 / 1_000,
-            Ordering::Release,
-        );
-        drop(queue);
-        log::info!(
-            "Queued TTS audio for playback: input_bytes={}, output_samples={}, queued_samples={}, source_rate={}, output_rate={}",
-            pcm.len(),
-            output_samples,
-            queued_samples,
+        let samples = resample_mono(
+            pcm16_mono_samples(pcm),
             self.source_sample_rate,
-            self.sample_rate
+            AUDIO_ROUTE_SAMPLE_RATE,
+        )?;
+        for target in &targets {
+            target.enqueue_samples(&samples);
+        }
+        log::info!(
+            "Queued TTS audio for {} routed outputs: input_bytes={}, output_samples={}, source_rate={}, route_rate={}",
+            targets.len(), pcm.len(), samples.len(), self.source_sample_rate, AUDIO_ROUTE_SAMPLE_RATE,
         );
         Ok(())
     }
 
     pub fn is_playing(&self) -> bool {
-        let routed_targets = self
-            .routed_tts_targets
-            .lock()
-            .iter()
-            .filter(|target| target.is_running())
-            .cloned()
-            .collect::<Vec<_>>();
-        if !routed_targets.is_empty() {
-            return routed_targets.iter().any(|target| {
-                !target.source.queue.lock().is_empty()
-                    || target.source.playback_tail_samples.load(Ordering::Acquire) != 0
-            }) || self.playback_tail_samples.load(Ordering::Acquire) != 0;
-        }
-        if !self.legacy_available {
-            return false;
-        }
-        !self.queue.lock().is_empty() || self.playback_tail_samples.load(Ordering::Acquire) != 0
+        self.routed_tts_targets.lock().iter().any(|target| {
+            target.is_running()
+                && (!target.source.queue.lock().is_empty()
+                    || target.source.playback_tail_samples.load(Ordering::Acquire) != 0)
+        })
     }
 }
 
-struct TtsPlayer {
+struct VoicePreview {
     queue: Arc<Mutex<VecDeque<f32>>>,
     sample_rate: u32,
-    device_id: String,
-    playback_tail_samples: Arc<AtomicU64>,
     _stream: Stream,
-    processing: Arc<Mutex<SourcePipeline>>,
 }
 
 enum ActiveCapture {
@@ -913,7 +841,6 @@ impl AudioSystem {
             tts_enabled: Arc::new(AtomicBool::new(false)),
             host: cpal::default_host(),
             active_captures: Vec::new(),
-            tts_player: None,
             voice_preview: None,
             audio_routes: Vec::new(),
             routed_tts_targets: Arc::new(Mutex::new(Vec::new())),
@@ -1055,10 +982,6 @@ impl AudioSystem {
     }
 
     pub fn clear_tts_playback(&mut self) {
-        if let Some(player) = &self.tts_player {
-            player.queue.lock().clear();
-            player.playback_tail_samples.store(0, Ordering::Release);
-        }
         let routed_targets = self.routed_tts_targets.lock().clone();
         for target in routed_targets {
             target.source.queue.lock().clear();
@@ -1073,58 +996,17 @@ impl AudioSystem {
         }
     }
 
-    /// Get a handle to the TTS player that can be safely sent to other threads.
-    pub fn tts_handle(
-        &mut self,
-        source_sample_rate: u32,
-        device_id: &str,
-    ) -> Result<TtsPlayerHandle, String> {
-        let routed_target = self
-            .routed_tts_targets
-            .lock()
-            .iter()
-            .find(|target| target.is_running())
-            .cloned();
-        if let Some(target) = routed_target {
-            return Ok(TtsPlayerHandle {
-                queue: Arc::clone(&target.source.queue),
-                sample_rate: AUDIO_ROUTE_SAMPLE_RATE,
-                source_sample_rate,
-                max_queued_samples: target.source.capacity,
-                dropped_samples: Some(Arc::clone(&target.source.dropped_samples)),
-                playback_tail_samples: Arc::clone(&target.source.playback_tail_samples),
-                playback_clock_rate: target.output_sample_rate,
-                level: Some(Arc::clone(&target.source)),
-                routed_tts_targets: Arc::clone(&self.routed_tts_targets),
-                legacy_available: false,
-                processing: Arc::new(Mutex::new(SourcePipeline::new(
-                    &[],
-                    AUDIO_ROUTE_SAMPLE_RATE,
-                ))),
-            });
+    /// Follow the current Audio Studio routes, including changes after session startup.
+    pub fn tts_handle(&self, source_sample_rate: u32) -> TtsPlayerHandle {
+        TtsPlayerHandle {
+            source_sample_rate,
+            routed_tts_targets: Arc::clone(&self.routed_tts_targets),
         }
-        self.ensure_tts_player(device_id)?;
-        self.tts_player
-            .as_ref()
-            .map(|p| TtsPlayerHandle {
-                queue: Arc::clone(&p.queue),
-                sample_rate: p.sample_rate,
-                source_sample_rate,
-                max_queued_samples: None,
-                dropped_samples: None,
-                playback_tail_samples: Arc::clone(&p.playback_tail_samples),
-                playback_clock_rate: p.sample_rate,
-                level: None,
-                routed_tts_targets: Arc::clone(&self.routed_tts_targets),
-                legacy_available: true,
-                processing: Arc::clone(&p.processing),
-            })
-            .ok_or_else(|| "TTS output stream was not initialized".into())
     }
 
     pub fn preview_voice(&mut self, pcm: &[u8], sample_rate: u32) -> Result<(), String> {
         if self.voice_preview.is_none() {
-            self.voice_preview = Some(self.create_tts_player("")?);
+            self.voice_preview = Some(self.create_voice_preview()?);
         }
         let player = self.voice_preview.as_ref().unwrap();
         let samples = resample_mono(pcm16_mono_samples(pcm), sample_rate, player.sample_rate)?;
@@ -1199,19 +1081,6 @@ impl AudioSystem {
         if let Some((device_id, fanout)) = microphone_fanouts.into_iter().next() {
             self.microphone_fanout = Some((device_id, fanout));
         }
-        if !replacement_targets.is_empty() {
-            // Stop legacy queueing without dropping its render-tail guard: a
-            // shared-mode output may still reach loopback briefly after the
-            // route switch.
-            if let Some(player) = &self.tts_player {
-                player.queue.lock().clear();
-                player.playback_tail_samples.fetch_max(
-                    u64::from(player.sample_rate) * 150 / 1_000,
-                    Ordering::Release,
-                );
-            }
-        }
-
         *self.routed_tts_targets.lock() = replacement_targets;
         let previous = std::mem::replace(&mut self.audio_routes, replacements.clone());
         for handle in previous {
@@ -1773,147 +1642,51 @@ impl AudioSystem {
         self.active_captures.push(capture);
     }
 
-    fn ensure_tts_player(&mut self, device_id: &str) -> Result<(), String> {
-        if self
-            .tts_player
-            .as_ref()
-            .is_some_and(|player| player.device_id == device_id)
-        {
-            return Ok(());
-        }
-        self.tts_player = Some(self.create_tts_player(device_id)?);
-        Ok(())
-    }
-
-    fn create_tts_player(&self, device_id: &str) -> Result<TtsPlayer, String> {
-        let device = if device_id.is_empty() {
-            self.host
-                .default_output_device()
-                .ok_or("No default audio output device available for TTS playback")?
-        } else {
-            let parsed_id = device_id
-                .parse()
-                .map_err(|error| format!("Invalid TTS output ID '{device_id}': {error}"))?;
-            self.host
-                .device_by_id(&parsed_id)
-                .ok_or_else(|| format!("TTS output '{device_id}' is no longer available"))?
-        };
+    fn create_voice_preview(&self) -> Result<VoicePreview, String> {
+        let device = self
+            .host
+            .default_output_device()
+            .ok_or("No default audio output device available for voice preview")?;
         let config = device
             .default_output_config()
-            .map_err(|error| format!("Cannot read TTS output format: {error}"))?;
+            .map_err(|error| format!("Cannot read voice preview output format: {error}"))?;
         let sample_rate = config.sample_rate();
         let channels = config.channels() as usize;
         let sample_format = config.sample_format();
         let queue = Arc::new(Mutex::new(VecDeque::new()));
-        let playback_tail_samples = Arc::new(AtomicU64::new(0));
         let stream_config: cpal::StreamConfig = config.into();
+        macro_rules! build_output {
+            ($sample:ty) => {
+                build_preview_output_stream::<$sample>(
+                    &device,
+                    stream_config,
+                    channels,
+                    Arc::clone(&queue),
+                )
+            };
+        }
         let stream = match sample_format {
-            cpal::SampleFormat::F32 => build_tts_output_stream::<f32>(
-                &device,
-                stream_config,
-                channels,
-                Arc::clone(&queue),
-                Arc::clone(&playback_tail_samples),
-            ),
-            cpal::SampleFormat::F64 => build_tts_output_stream::<f64>(
-                &device,
-                stream_config,
-                channels,
-                Arc::clone(&queue),
-                Arc::clone(&playback_tail_samples),
-            ),
-            cpal::SampleFormat::I8 => build_tts_output_stream::<i8>(
-                &device,
-                stream_config,
-                channels,
-                Arc::clone(&queue),
-                Arc::clone(&playback_tail_samples),
-            ),
-            cpal::SampleFormat::I16 => build_tts_output_stream::<i16>(
-                &device,
-                stream_config,
-                channels,
-                Arc::clone(&queue),
-                Arc::clone(&playback_tail_samples),
-            ),
-            cpal::SampleFormat::I24 => build_tts_output_stream::<cpal::I24>(
-                &device,
-                stream_config,
-                channels,
-                Arc::clone(&queue),
-                Arc::clone(&playback_tail_samples),
-            ),
-            cpal::SampleFormat::I32 => build_tts_output_stream::<i32>(
-                &device,
-                stream_config,
-                channels,
-                Arc::clone(&queue),
-                Arc::clone(&playback_tail_samples),
-            ),
-            cpal::SampleFormat::I64 => build_tts_output_stream::<i64>(
-                &device,
-                stream_config,
-                channels,
-                Arc::clone(&queue),
-                Arc::clone(&playback_tail_samples),
-            ),
-            cpal::SampleFormat::U8 => build_tts_output_stream::<u8>(
-                &device,
-                stream_config,
-                channels,
-                Arc::clone(&queue),
-                Arc::clone(&playback_tail_samples),
-            ),
-            cpal::SampleFormat::U16 => build_tts_output_stream::<u16>(
-                &device,
-                stream_config,
-                channels,
-                Arc::clone(&queue),
-                Arc::clone(&playback_tail_samples),
-            ),
-            cpal::SampleFormat::U24 => build_tts_output_stream::<cpal::U24>(
-                &device,
-                stream_config,
-                channels,
-                Arc::clone(&queue),
-                Arc::clone(&playback_tail_samples),
-            ),
-            cpal::SampleFormat::U32 => build_tts_output_stream::<u32>(
-                &device,
-                stream_config,
-                channels,
-                Arc::clone(&queue),
-                Arc::clone(&playback_tail_samples),
-            ),
-            cpal::SampleFormat::U64 => build_tts_output_stream::<u64>(
-                &device,
-                stream_config,
-                channels,
-                Arc::clone(&queue),
-                Arc::clone(&playback_tail_samples),
-            ),
-            format => Err(format!("Unsupported TTS output sample format: {format}")),
+            cpal::SampleFormat::F32 => build_output!(f32),
+            cpal::SampleFormat::F64 => build_output!(f64),
+            cpal::SampleFormat::I8 => build_output!(i8),
+            cpal::SampleFormat::I16 => build_output!(i16),
+            cpal::SampleFormat::I24 => build_output!(cpal::I24),
+            cpal::SampleFormat::I32 => build_output!(i32),
+            cpal::SampleFormat::I64 => build_output!(i64),
+            cpal::SampleFormat::U8 => build_output!(u8),
+            cpal::SampleFormat::U16 => build_output!(u16),
+            cpal::SampleFormat::U24 => build_output!(cpal::U24),
+            cpal::SampleFormat::U32 => build_output!(u32),
+            cpal::SampleFormat::U64 => build_output!(u64),
+            format => Err(format!("Unsupported voice preview sample format: {format}")),
         }?;
         stream
             .play()
-            .map_err(|error| format!("Cannot start TTS output stream: {error}"))?;
-        log::info!(
-            "TTS output stream started: device_id={:?}, sample_rate={}, channels={}, sample_format={}",
-            device_id,
-            sample_rate,
-            channels,
-            sample_format
-        );
-        Ok(TtsPlayer {
+            .map_err(|error| format!("Cannot start voice preview output stream: {error}"))?;
+        Ok(VoicePreview {
             queue,
             sample_rate,
-            device_id: device_id.to_owned(),
-            playback_tail_samples,
             _stream: stream,
-            processing: Arc::new(Mutex::new(SourcePipeline::new(
-                &default_source_effects(),
-                sample_rate,
-            ))),
         })
     }
 }
@@ -2395,17 +2168,16 @@ where
         })
 }
 
-fn build_tts_output_stream<T>(
+fn build_preview_output_stream<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
     channels: usize,
     queue: Arc<Mutex<VecDeque<f32>>>,
-    playback_tail_samples: Arc<AtomicU64>,
 ) -> Result<Stream, String>
 where
     T: cpal::Sample + cpal::SizedSample + cpal::FromSample<f32>,
 {
-    let error_callback = |error| log::error!("TTS output stream error: {error}");
+    let error_callback = |error| log::error!("Voice preview output stream error: {error}");
     device
         .build_output_stream(
             config,
@@ -2413,7 +2185,6 @@ where
                 let mut pending = queue.lock();
                 for frame in output.chunks_mut(channels) {
                     let sample = pending.pop_front().unwrap_or(0.0);
-                    decrement_playback_tail(&playback_tail_samples);
                     for channel in frame {
                         *channel = T::from_sample(sample);
                     }
@@ -2422,7 +2193,7 @@ where
             error_callback,
             None,
         )
-        .map_err(|error| format!("Cannot create TTS output stream: {error}"))
+        .map_err(|error| format!("Cannot create voice preview output stream: {error}"))
 }
 
 fn decrement_playback_tail(remaining: &AtomicU64) {
@@ -3352,6 +3123,56 @@ mod tests {
                 sample.clamp(-1.0, 1.0),
             );
         }
+        drop(queue);
+
+        // A session started without outputs follows later graph changes, with no fallback.
+        use super::{AudioRouteControl, AudioRouteState, Mutex, TtsPlayerHandle, encode_route_state};
+        use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+        let routes = Arc::new(Mutex::new(Vec::new()));
+        let player = TtsPlayerHandle {
+            source_sample_rate: 22_050,
+            routed_tts_targets: Arc::clone(&routes),
+        };
+        let pcm = [0, 32].repeat(22_050);
+        player.play_pcm(&pcm).unwrap();
+        assert!(!player.is_playing());
+        let control = Arc::new(AudioRouteControl {
+            follow_tts: false,
+            tts_enabled: Arc::new(AtomicBool::new(true)),
+            state: AtomicU8::new(encode_route_state(AudioRouteState::Running)),
+            last_error: Mutex::new(None),
+            dropped_samples: Arc::clone(&source.dropped_samples),
+            output_level: Arc::new(AtomicU32::new(0)),
+            studio_metering: Arc::new(AtomicBool::new(false)),
+            output_sample_rate: super::AUDIO_ROUTE_SAMPLE_RATE,
+            microphone: None,
+            system_loopback: None,
+            tts: Some(Arc::clone(&source)),
+            media: Vec::new(),
+            routed_tts_targets: Arc::clone(&routes),
+            resources: Mutex::new(None),
+        });
+        let target = super::RoutedTtsTarget {
+            control: Arc::downgrade(&control),
+            ..target
+        };
+        routes.lock().push(target.clone());
+        player.play_pcm(&pcm).unwrap();
+        assert_eq!(source.queue.lock().len(), 48_000);
+        assert!(player.is_playing());
+        routes.lock().clear();
+        player.play_pcm(&pcm).unwrap();
+        assert_eq!(source.queue.lock().len(), 48_000);
+        assert!(!player.is_playing());
+        routes.lock().push(target);
+        player.play_pcm(&pcm).unwrap();
+        assert_eq!(source.queue.lock().len(), 96_000);
+        control
+            .state
+            .store(encode_route_state(AudioRouteState::Stopped), Ordering::Release);
+        player.play_pcm(&pcm).unwrap();
+        assert_eq!(source.queue.lock().len(), 96_000);
+        assert!(!player.is_playing());
     }
 
     #[test]

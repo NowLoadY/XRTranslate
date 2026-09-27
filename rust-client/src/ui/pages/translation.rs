@@ -152,7 +152,8 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 
     ui.add_space(14.0);
 
-    section(ui, crate::i18n::tr(app.ui_language, "Voice Route"), |ui| {
+    components::card(ui, |ui| {
+        ui.set_min_width(ui.available_width());
         let capabilities = app.language_capabilities();
         if components::translation_language_selector(
             ui,
@@ -164,11 +165,7 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
         ) {
             app.apply_language_route();
         }
-    });
-
-    ui.add_space(10.0);
-
-    section(ui, crate::i18n::tr(app.ui_language, "Audio Input"), |ui| {
+        ui.add_space(14.0);
         crate::ui::layout::flow_row(ui, |ui| {
             ui.label(
                 egui::RichText::new(crate::i18n::tr(app.ui_language, "Source:"))
@@ -230,288 +227,164 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 app.switch_capture_source(previous_source);
             }
         });
+        ui.add_space(8.0);
+        render_input_channels(app, ui, render_capture_device_selector);
 
         ui.add_space(8.0);
-        render_capture_device_selector(app, ui);
-
-        ui.add_space(10.0);
-        if app.capture_source == CaptureSource::Both
-            && (!app.loopback_devices.is_empty()
-                || matches!(
-                    &app.system_audio_input,
-                    crate::SystemAudioInputSelection::Application { .. }
-                ))
-        {
-            let avail_w = ui.available_width();
-            if avail_w < 620.0 {
-                egui::Frame::new()
-                    .fill(egui::Color32::TRANSPARENT)
-                    .corner_radius(egui::CornerRadius::same(8))
-                    .stroke(egui::Stroke::new(1.0, crate::ui::theme::border()))
-                    .inner_margin(egui::Margin::same(12))
-                    .show(ui, |ui| {
-                        render_input_adaptation(app, ui, CaptureSource::Microphone);
-                    });
-
-                ui.add_space(8.0);
-
-                egui::Frame::new()
-                    .fill(egui::Color32::TRANSPARENT)
-                    .corner_radius(egui::CornerRadius::same(8))
-                    .stroke(egui::Stroke::new(1.0, crate::ui::theme::border()))
-                    .inner_margin(egui::Margin::same(12))
-                    .show(ui, |ui| {
-                        render_input_adaptation(app, ui, CaptureSource::SystemAudio);
-                    });
-            } else {
-                ui.columns(2, |columns| {
-                    egui::Frame::new()
-                        .fill(egui::Color32::TRANSPARENT)
-                        .corner_radius(egui::CornerRadius::same(8))
-                        .stroke(egui::Stroke::new(1.0, crate::ui::theme::border()))
-                        .inner_margin(egui::Margin::same(12))
-                        .show(&mut columns[0], |ui| {
-                            render_input_adaptation(app, ui, CaptureSource::Microphone);
-                        });
-
-                    egui::Frame::new()
-                        .fill(egui::Color32::TRANSPARENT)
-                        .corner_radius(egui::CornerRadius::same(8))
-                        .stroke(egui::Stroke::new(1.0, crate::ui::theme::border()))
-                        .inner_margin(egui::Margin::same(12))
-                        .show(&mut columns[1], |ui| {
-                            render_input_adaptation(app, ui, CaptureSource::SystemAudio);
-                        });
-                });
-            }
-        } else {
-            render_input_adaptation(app, ui, app.capture_source);
-        }
-
+        egui::CollapsingHeader::new(crate::i18n::tr(app.ui_language, "Recognition settings"))
+            .id_salt("recognition_settings")
+            .show(ui, |ui| {
+                render_input_channels(app, ui, render_input_adaptation);
+                if let Some(config) = &app.selected_input_config {
+                    ui.weak(format!(
+                        "{} Hz, {} ch ({})",
+                        config.sample_rate, config.channels, config.sample_format
+                    ));
+                }
+            });
         ui.add_space(12.0);
 
-        components::action_card(ui, |ui| {
-            crate::ui::layout::flow_row(ui, |ui| {
-                if app.is_translating {
-                    match &app.session_owner {
-                        crate::session_coordinator::TranslationSessionOwner::Plugin(owner) => {
-                            let plugin_id = crate::plugins::PluginId::parse(owner.plugin_id());
-                            let open_label = owner.open_label(app.ui_language);
-                            let active_message = owner.active_message(app.ui_language);
-                            let open_clicked = components::primary_button(ui, open_label).clicked();
-                            ui.label(
-                                egui::RichText::new(active_message)
-                                    .color(crate::ui::theme::text_weak())
-                                    .size(11.5),
-                            );
-                            if open_clicked && let Some(plugin_id) = plugin_id {
-                                app.open_plugin(plugin_id);
-                            }
-                        }
-                        _ => {
-                            if danger_button(
-                                ui,
-                                crate::i18n::tr(app.ui_language, "Stop Translation"),
-                            )
-                            .clicked()
-                            {
-                                app.stop();
-                            }
-                        }
-                    }
-                } else {
-                    if components::animated_button_enabled(
-                        ui,
-                        crate::i18n::tr(app.ui_language, "Start Translation"),
-                        app.backend_start_deadline.is_none(),
-                    )
-                    .clicked()
-                    {
-                        app.start(Some(ui.ctx().clone()));
-                    }
-                }
-
-                if let Some(config) = &app.selected_input_config {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let tts_configured = app.service_config.tts_is_configured();
+        crate::ui::layout::flow_row(ui, |ui| {
+            if app.is_translating {
+                match &app.session_owner {
+                    crate::session_coordinator::TranslationSessionOwner::Plugin(owner) => {
+                        let plugin_id = crate::plugins::PluginId::parse(owner.plugin_id());
+                        let open_label = owner.open_label(app.ui_language);
+                        let active_message = owner.active_message(app.ui_language);
+                        let open_clicked = components::primary_button(ui, open_label).clicked();
                         ui.label(
-                            egui::RichText::new(format!(
-                                "{} Hz, {} ch ({})",
-                                config.sample_rate, config.channels, config.sample_format
-                            ))
-                            .color(crate::ui::theme::text_weak())
-                            .size(11.5),
+                            egui::RichText::new(active_message)
+                                .color(crate::ui::theme::text_weak())
+                                .size(11.5),
                         );
-                    });
-                }
-            });
-
-            ui.add_space(8.0);
-            let tts_configured = app.service_config.tts_is_configured();
-            crate::ui::layout::flow_row(ui, |ui| {
-                if ui
-                    .button(crate::i18n::tr(app.ui_language, "Translation style"))
-                    .clicked()
-                {
-                    app.prompt_studio.open_style_panel(
-                        app.service_config.translation_prompt_target(),
-                        &app.prompt_library,
-                    );
-                    app.navigation.page = crate::ui::Page::PromptStudio;
-                }
-                if ui
-                    .button(crate::i18n::tr(app.ui_language, "Translator microphone"))
-                    .clicked()
-                {
-                    app.open_audio_studio();
-                }
-            });
-            crate::ui::layout::flow_row(ui, |ui| {
-                let mut tts_enabled = app.tts_enabled;
-                let tts_response = ui.add_enabled_ui(tts_configured, |ui| {
-                    if components::feature_checkbox(
-                        ui,
-                        crate::feature_access::Feature::TtsPlayback,
-                        app.ui_language,
-                        &mut tts_enabled,
-                        crate::i18n::tr(app.ui_language, "TTS"),
-                    )
-                    .changed()
-                    {
-                        app.set_tts_enabled(tts_enabled);
-                    }
-                });
-                if !tts_configured {
-                    tts_response
-                        .response
-                        .on_disabled_hover_text(crate::i18n::tr(
-                            app.ui_language,
-                            "Configure a TTS provider in Settings to enable TTS playback.",
-                        ));
-                }
-
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(crate::i18n::tr(app.ui_language, "TTS output:"))
-                        .color(crate::ui::theme::text_normal()),
-                );
-                let current_output = app
-                    .tts_output_devices
-                    .iter()
-                    .find(|device| device.id == app.selected_tts_output_device_id)
-                    .map(|device| device.name.clone())
-                    .unwrap_or_else(|| crate::i18n::tr(app.ui_language, "Default speaker").into());
-                let mut output_options = vec![(
-                    String::new(),
-                    crate::i18n::tr(app.ui_language, "Default speaker").to_owned(),
-                )];
-                output_options.extend(
-                    app.tts_output_devices
-                        .iter()
-                        .map(|device| (device.id.clone(), device.name.clone())),
-                );
-                let output_selector =
-                    ui.add_enabled_ui(tts_configured && !app.is_translating, |ui| {
-                        if components::searchable_combobox(
-                            ui,
-                            "tts_output_device_selector",
-                            &current_output,
-                            &mut app.selected_tts_output_device_id,
-                            &output_options,
-                        ) {
-                            app.audio_system.clear_tts_playback();
-                            app.save_settings();
+                        if open_clicked && let Some(plugin_id) = plugin_id {
+                            app.open_plugin(plugin_id);
                         }
-                    });
-                if app.is_translating {
-                    output_selector.response.on_hover_text(crate::i18n::tr(
-                        app.ui_language,
-                        "Stop translation to change the TTS output device.",
-                    ));
-                }
-            });
-
-            ui.add_space(6.0);
-            crate::ui::layout::flow_row(ui, |ui| {
-                ui.add_space(8.0);
-                let mic_capturing = matches!(
-                    app.capture_source,
-                    CaptureSource::Microphone | CaptureSource::Both
-                );
-                let status = app.voice_clone_state().cloned();
-                let busy = status.as_ref().is_some_and(|status| {
-                    matches!(
-                        status.state,
-                        xrtranslate_protocol::VoiceClonePhase::Collecting
-                            | xrtranslate_protocol::VoiceClonePhase::Registering
-                    )
-                });
-                let label = match status.as_ref().map(|status| status.state) {
-                    Some(xrtranslate_protocol::VoiceClonePhase::Collecting) => status
-                        .as_ref()
-                        .map(|status| {
-                            format!(
-                                "{} {:.1}/{:.1}s",
-                                crate::i18n::tr(app.ui_language, "Collecting voice…"),
-                                status.collected_seconds,
-                                status.required_seconds
-                            )
-                        })
-                        .unwrap(),
-                    Some(xrtranslate_protocol::VoiceClonePhase::Registering) => {
-                        crate::i18n::tr(app.ui_language, "Creating voice…").into()
                     }
-                    _ => crate::i18n::tr(app.ui_language, "Clone microphone voice").into(),
-                };
-                let enabled = app.is_translating && mic_capturing && !busy && tts_configured;
-                let response = components::animated_button_enabled(ui, &label, enabled);
-                let clicked = response.clicked();
-                if let Some(message) =
-                    status.as_ref().and_then(|status| status.message.as_deref())
-                {
-                    response.on_hover_text(message);
-                } else if !tts_configured {
-                    response.on_disabled_hover_text(crate::i18n::tr(
-                        app.ui_language,
-                        "Configure a TTS provider in Settings to enable voice cloning.",
-                    ));
-                } else if !mic_capturing {
-                    response.on_disabled_hover_text(crate::i18n::tr(
-                        app.ui_language,
-                        "Start microphone translation to clone your voice.",
-                    ));
+                    _ => {
+                        if danger_button(
+                            ui,
+                            crate::i18n::tr(app.ui_language, "Stop Translation"),
+                        )
+                        .clicked()
+                        {
+                            app.stop();
+                        }
+                    }
                 }
-                if clicked {
-                    app.begin_voice_clone();
-                }
-                if status.as_ref().is_some_and(|status| {
-                    status.state == xrtranslate_protocol::VoiceClonePhase::Ready
-                }) {
-                    ui.label(egui::RichText::new("OK").color(egui::Color32::from_rgb(5, 150, 105)));
-                }
-
-                ui.add_space(12.0);
-                let mut floating_enabled = app.floating_subtitles_enabled;
+            } else if components::primary_button_enabled(
+                ui,
+                crate::i18n::tr(app.ui_language, "Start Translation"),
+                app.backend_start_deadline.is_none(),
+            )
+            .clicked()
+            {
+                app.start(Some(ui.ctx().clone()));
+            }
+            ui.add_space(12.0);
+            let mut tts_enabled = app.tts_enabled;
+            let tts_response = ui.add_enabled_ui(tts_configured, |ui| {
                 if components::feature_checkbox(
                     ui,
-                    crate::feature_access::Feature::FloatingSubtitles,
+                    crate::feature_access::Feature::TtsPlayback,
                     app.ui_language,
-                    &mut floating_enabled,
-                    crate::i18n::tr(app.ui_language, "Floating subtitles"),
+                    &mut tts_enabled,
+                    crate::i18n::tr(app.ui_language, "TTS"),
                 )
                 .changed()
                 {
-                    app.set_floating_subtitles_enabled(floating_enabled);
+                    app.set_tts_enabled(tts_enabled);
                 }
             });
-            if let Some(message) = app.voice_clone_state().and_then(|status| {
-                (status.state == xrtranslate_protocol::VoiceClonePhase::Failed)
-                    .then_some(status.message.as_deref())
-                    .flatten()
+            if !tts_configured {
+                tts_response
+                    .response
+                    .on_disabled_hover_text(crate::i18n::tr(
+                        app.ui_language,
+                        "Configure a TTS provider in Settings to enable TTS playback.",
+                    ));
+            }
+
+            ui.add_space(8.0);
+            let mic_capturing = matches!(
+                app.capture_source,
+                CaptureSource::Microphone | CaptureSource::Both
+            );
+            let status = app.voice_clone_state().cloned();
+            let busy = status.as_ref().is_some_and(|status| {
+                matches!(
+                    status.state,
+                    xrtranslate_protocol::VoiceClonePhase::Collecting
+                        | xrtranslate_protocol::VoiceClonePhase::Registering
+                )
+            });
+            let label = match status.as_ref().map(|status| status.state) {
+                Some(xrtranslate_protocol::VoiceClonePhase::Collecting) => status
+                    .as_ref()
+                    .map(|status| {
+                        format!(
+                            "{} {:.1}/{:.1}s",
+                            crate::i18n::tr(app.ui_language, "Collecting voice…"),
+                            status.collected_seconds,
+                            status.required_seconds
+                        )
+                    })
+                    .unwrap(),
+                Some(xrtranslate_protocol::VoiceClonePhase::Registering) => {
+                    crate::i18n::tr(app.ui_language, "Creating voice…").into()
+                }
+                _ => crate::i18n::tr(app.ui_language, "Clone microphone voice").into(),
+            };
+            let enabled = app.is_translating && mic_capturing && !busy && tts_configured;
+            let response = components::animated_button_enabled(ui, &label, enabled);
+            let clicked = response.clicked();
+            if let Some(message) =
+                status.as_ref().and_then(|status| status.message.as_deref())
+            {
+                response.on_hover_text(message);
+            } else if !tts_configured {
+                response.on_disabled_hover_text(crate::i18n::tr(
+                    app.ui_language,
+                    "Configure a TTS provider in Settings to enable voice cloning.",
+                ));
+            } else if !mic_capturing {
+                response.on_disabled_hover_text(crate::i18n::tr(
+                    app.ui_language,
+                    "Start microphone translation to clone your voice.",
+                ));
+            }
+            if clicked {
+                app.begin_voice_clone();
+            }
+            if status.as_ref().is_some_and(|status| {
+                status.state == xrtranslate_protocol::VoiceClonePhase::Ready
             }) {
-                ui.add_space(8.0);
-                components::error_notice(ui, app.ui_language, message);
+                ui.label(egui::RichText::new("OK").color(egui::Color32::from_rgb(5, 150, 105)));
+            }
+
+            ui.add_space(12.0);
+            let mut floating_enabled = app.floating_subtitles_enabled;
+            if components::feature_checkbox(
+                ui,
+                crate::feature_access::Feature::FloatingSubtitles,
+                app.ui_language,
+                &mut floating_enabled,
+                crate::i18n::tr(app.ui_language, "Floating subtitles"),
+            )
+            .changed()
+            {
+                app.set_floating_subtitles_enabled(floating_enabled);
             }
         });
+        if let Some(message) = app.voice_clone_state().and_then(|status| {
+            (status.state == xrtranslate_protocol::VoiceClonePhase::Failed)
+                .then_some(status.message.as_deref())
+                .flatten()
+        }) {
+            ui.add_space(8.0);
+            components::error_notice(ui, app.ui_language, message);
+        }
     });
 
     ui.add_space(10.0);
@@ -964,119 +837,83 @@ fn render_audio_level(
     components::segmented_audio_meter(ui, id_source, raw_fraction, active, visible, updating);
 }
 
-fn render_capture_device_selector(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
-    crate::ui::layout::flow_row(ui, |ui| {
-        let input_label = if app.capture_source == CaptureSource::SystemAudio
-            && matches!(
-                &app.system_audio_input,
-                crate::SystemAudioInputSelection::Application { .. }
-            ) {
-            "Input:"
-        } else {
-            "Device:"
-        };
-        ui.label(
-            egui::RichText::new(crate::i18n::tr(app.ui_language, input_label))
-                .color(crate::ui::theme::text_strong())
-                .strong(),
-        );
-        match app.capture_source {
-            CaptureSource::Microphone => {
-                let previous_device = app.selected_device_id.clone();
-                let current_name = app
-                    .devices
-                    .iter()
-                    .find(|device| device.id == app.selected_device_id)
-                    .map(|device| device.name.as_str())
-                    .unwrap_or(crate::i18n::tr(app.ui_language, "Default microphone"));
-
-                let mut mic_options = vec![(
-                    String::new(),
-                    crate::i18n::tr(app.ui_language, "Default microphone").to_string(),
-                )];
-                for device in &app.devices {
-                    mic_options.push((device.id.clone(), device.name.clone()));
-                }
-
-                if components::searchable_combobox(
-                    ui,
-                    "mic_device_selector",
-                    current_name,
-                    &mut app.selected_device_id,
-                    &mic_options,
-                ) {
-                    app.switch_capture_device(CaptureSource::Microphone, previous_device);
-                }
+fn render_input_channels(
+    app: &mut crate::XRTranslateApp,
+    ui: &mut egui::Ui,
+    render: fn(&mut crate::XRTranslateApp, &mut egui::Ui, CaptureSource),
+) {
+    let sources = app.capture_source.routes();
+    let columns = if crate::ui::layout::should_stack(ui.available_width(), sources.len(), 360.0) {
+        1
+    } else {
+        sources.len()
+    };
+    ui.columns(columns, |columns| {
+        for (index, &source) in sources.iter().enumerate() {
+            let column = index % columns.len();
+            let ui = &mut columns[column];
+            if index > 0 && column == 0 {
+                ui.add_space(8.0);
             }
-            CaptureSource::SystemAudio => {
-                render_system_audio_input_selector(app, ui, "loopback_device_selector");
-            }
-            CaptureSource::Both => {
-                let previous_device = app.selected_device_id.clone();
-                let current_name = app
-                    .devices
-                    .iter()
-                    .find(|device| device.id == app.selected_device_id)
-                    .map(|device| device.name.as_str())
-                    .unwrap_or(crate::i18n::tr(app.ui_language, "Default microphone"));
-                let mut mic_options = vec![(
-                    String::new(),
-                    crate::i18n::tr(app.ui_language, "Default microphone").to_string(),
-                )];
-                for device in &app.devices {
-                    mic_options.push((device.id.clone(), device.name.clone()));
-                }
-
-                if components::searchable_combobox(
-                    ui,
-                    "both_mic_device_selector",
-                    current_name,
-                    &mut app.selected_device_id,
-                    &mic_options,
-                ) {
-                    app.switch_capture_device(CaptureSource::Microphone, previous_device);
-                }
-            }
+            ui.push_id(source, |ui| render(app, ui, source));
         }
-        ui.add_space(8.0);
-        let (id_source, level, vad_active) = match app.capture_source {
-            CaptureSource::Microphone | CaptureSource::Both => {
-                ("microphone", &app.input_level, &app.microphone_vad_active)
-            }
-            CaptureSource::SystemAudio => (
-                "system_audio",
-                &app.loopback_level,
-                &app.loopback_vad_active,
-            ),
-        };
-        render_audio_level(ui, id_source, level, vad_active, true, app.is_translating);
     });
+}
 
-    if app.capture_source == CaptureSource::Both
-        && (!app.loopback_devices.is_empty()
-            || matches!(
-                &app.system_audio_input,
-                crate::SystemAudioInputSelection::Application { .. }
-            ))
-    {
-        ui.add_space(6.0);
-        crate::ui::layout::flow_row(ui, |ui| {
-            ui.label(
-                egui::RichText::new(crate::i18n::tr(app.ui_language, "System Audio"))
-                    .color(crate::ui::theme::text_strong())
-                    .strong(),
-            );
-            render_system_audio_input_selector(app, ui, "both_loopback_device_selector");
-            ui.add_space(8.0);
-            render_audio_level(
-                ui,
+fn render_capture_device_selector(
+    app: &mut crate::XRTranslateApp,
+    ui: &mut egui::Ui,
+    source: CaptureSource,
+) {
+    let microphone = source == CaptureSource::Microphone;
+    ui.horizontal(|ui| {
+        ui.label(crate::i18n::tr(
+            app.ui_language,
+            if microphone {
+                "Microphone"
+            } else {
+                "System Audio"
+            },
+        ));
+        let (id, level, vad) = if microphone {
+            ("microphone", &app.input_level, &app.microphone_vad_active)
+        } else {
+            (
                 "system_audio",
                 &app.loopback_level,
                 &app.loopback_vad_active,
-                true,
-                app.is_translating,
-            );
-        });
+            )
+        };
+        render_audio_level(ui, id, level, vad, true, app.is_translating);
+    });
+    if microphone {
+        let previous_device = app.selected_device_id.clone();
+        let current_name = app
+            .devices
+            .iter()
+            .find(|device| device.id == app.selected_device_id)
+            .map(|device| device.name.as_str())
+            .unwrap_or(crate::i18n::tr(app.ui_language, "Default microphone"));
+        let mut options = vec![(
+            String::new(),
+            crate::i18n::tr(app.ui_language, "Default microphone").to_string(),
+        )];
+        options.extend(
+            app.devices
+                .iter()
+                .map(|device| (device.id.clone(), device.name.clone())),
+        );
+        if components::searchable_combobox(
+            ui,
+            "mic_device_selector",
+            current_name,
+            &mut app.selected_device_id,
+            &options,
+        ) {
+            app.switch_capture_device(source, previous_device);
+        }
+    } else {
+        render_system_audio_input_selector(app, ui, "loopback_device_selector");
     }
 }
 
@@ -1096,18 +933,25 @@ fn render_system_audio_input_selector(
             } else {
                 crate::i18n::tr(app.ui_language, "Not running")
             };
-            ui.label(
-                egui::RichText::new(format!("{} · {status}", application.display_name)).color(
-                    if available {
-                        crate::ui::theme::text_strong()
-                    } else {
-                        crate::ui::theme::danger()
-                    },
-                ),
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(format!("{} · {status}", application.display_name)).color(
+                        if available {
+                            crate::ui::theme::text_strong()
+                        } else {
+                            crate::ui::theme::danger()
+                        },
+                    ),
+                )
+                .truncate(),
             )
-            .on_hover_text(crate::i18n::tr(
-                app.ui_language,
-                "Configured by the applied Audio Studio route",
+            .on_hover_text(format!(
+                "{}\n{}",
+                application.display_name,
+                crate::i18n::tr(
+                    app.ui_language,
+                    "Configured by the applied Audio Studio route",
+                )
             ));
             if components::animated_button(
                 ui,
