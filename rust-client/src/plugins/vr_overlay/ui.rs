@@ -18,6 +18,23 @@ pub enum VrOverlayUiAction {
     ClearSubtitles,
     ConnectSteamVr,
     DisconnectSteamVr,
+    RecenterAvatar,
+}
+
+// Reserve a complete button before wrapped layout chooses the next row.
+// A nested frame alone can squeeze its label into the row's remaining sliver.
+fn header_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let label = ui.painter().layout_no_wrap(
+        text.to_owned(),
+        egui::FontId::proportional(13.0),
+        egui::Color32::WHITE,
+    );
+    ui.allocate_ui_with_layout(
+        label.size() + egui::vec2(30.0, 14.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| crate::ui::components::secondary_button(ui, text),
+    )
+    .inner
 }
 
 pub fn render(
@@ -47,7 +64,12 @@ pub fn render(
                 ui.add_space(8.0);
                 if context.status.steamvr_connected {
                     crate::ui::components::status_badge(ui, &tr("SteamVR Connected"), true, false);
-                    if crate::ui::components::secondary_button(ui, tr("Disconnect")).clicked() {
+                    if context.status.avatar_available
+                        && header_button(ui, tr("Come here")).clicked()
+                    {
+                        actions.push(VrOverlayUiAction::RecenterAvatar);
+                    }
+                    if header_button(ui, tr("Disconnect")).clicked() {
                         actions.push(VrOverlayUiAction::DisconnectSteamVr);
                     }
                 } else {
@@ -59,6 +81,14 @@ pub fn render(
             });
             if let Some(error) = &context.status.last_error {
                 crate::ui::components::error_notice(ui, lang, error);
+            }
+            if let Some(error) = &context.status.avatar_error {
+                ui.label(
+                    egui::RichText::new(tr("Avatar unavailable"))
+                        .small()
+                        .color(theme::text_weak()),
+                )
+                .on_hover_text(error);
             }
             ui.add_space(12.0);
             card(ui, |ui| {
@@ -363,5 +393,85 @@ mod tests {
         assert_eq!(changed.width(), default.width() * 2.0);
         settings.distance_meters *= 2.0;
         assert_eq!(preview_geometry(view, &settings).0.width(), default.width());
+    }
+
+    #[test]
+    fn recenter_button_wraps_and_dispatches_in_every_language() {
+        let driver = crate::ui::automation::driver();
+        for language in crate::i18n::UiLanguage::ALL {
+            for width in [280.0, 780.0] {
+                let ctx = egui::Context::default();
+                crate::ui::fonts::configure_multilingual_fonts(&ctx);
+                crate::ui::theme::install_context(&ctx, Default::default());
+                let mut settings = VrOverlaySettings::default();
+                let status = VrRuntimeStatus {
+                    steamvr_connected: true,
+                    avatar_available: true,
+                    ..Default::default()
+                };
+                let label = crate::i18n::tr(language, "Come here");
+                let mut actions = Vec::new();
+                // Settle wrapped egui layout before clicking the visible control.
+                let mut pointer = egui::Pos2::ZERO;
+                for frame in 0..5 {
+                    if frame == 2 {
+                        let state = driver.frame_state.lock().unwrap();
+                        let rect = state.last_snapshot.find_element(label).unwrap().rect;
+                        pointer = egui::pos2(rect[0] + rect[2] * 0.5, rect[1] + rect[3] * 0.5);
+                    }
+                    let mut events = Vec::new();
+                    if frame >= 2 {
+                        events.push(egui::Event::PointerMoved(pointer));
+                    }
+                    if frame >= 3 {
+                        events.push(egui::Event::PointerButton {
+                            pos: pointer,
+                            button: egui::PointerButton::Primary,
+                            pressed: frame == 3,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    }
+                    driver.begin_frame("vr_overlay");
+                    let mut output = ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(width, 800.0),
+                            )),
+                            events,
+                            ..Default::default()
+                        },
+                        |ui| {
+                            actions.extend(render(
+                                &mut settings,
+                                ui,
+                                VrOverlayPageContext {
+                                    language,
+                                    status: &status,
+                                },
+                            ));
+                        },
+                    );
+                    output.textures_delta.clear();
+                    driver.finish_frame();
+                }
+                assert!(
+                    actions.contains(&VrOverlayUiAction::RecenterAvatar),
+                    "{language:?}, width={width}, pointer={pointer:?}, actions={actions:?}, widgets={:?}",
+                    driver.frame_state.lock().unwrap().last_snapshot.elements
+                );
+                assert!(!actions.contains(&VrOverlayUiAction::SettingsChanged));
+                let state = driver.frame_state.lock().unwrap();
+                let button = state.last_snapshot.find_element(label).unwrap();
+                assert!(button.enabled);
+                assert!(button.rect.iter().all(|value| value.is_finite()));
+                assert!(button.rect[0] >= 0.0);
+                assert!(
+                    button.rect[0] + button.rect[2] <= width + 1.0,
+                    "{language:?} at {width}: {:?}",
+                    button.rect
+                );
+            }
+        }
     }
 }

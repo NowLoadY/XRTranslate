@@ -3,9 +3,16 @@
 //! Provides private, low-latency, HMD-locked bilingual subtitles rendered
 //! directly inside VR using the official SteamVR (OpenVR) Compositor Overlay API.
 
+mod avatar;
+mod graphics;
 mod openvr;
+#[cfg(debug_assertions)]
+mod preview;
+#[cfg(debug_assertions)]
+pub(crate) use preview::render as render_avatar_preview;
 mod renderer;
 pub mod runtime;
+mod space;
 pub mod ui;
 
 pub use runtime::{VrOverlayHandle, VrOverlayManager, VrOverlaySettings};

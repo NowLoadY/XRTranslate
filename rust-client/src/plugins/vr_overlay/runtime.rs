@@ -8,8 +8,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use super::avatar::AvatarOverlay;
 use super::openvr::{OpenVrApi, OpenVrOverlay, OpenVrSession, OverlayError};
 use super::renderer::{VrOverlayRenderer, VrSubtitleCard};
+use crate::ui::components::avatar::Presentation;
 
 const RENDER_WIDTH: u32 = 640;
 const RENDER_HEIGHT: u32 = 320;
@@ -138,6 +140,8 @@ impl Default for VrOverlaySettings {
 pub struct VrRuntimeStatus {
     pub steamvr_installed: bool,
     pub steamvr_connected: bool,
+    pub avatar_available: bool,
+    pub avatar_error: Option<String>,
     pub last_error: Option<String>,
     pub active_card_count: usize,
     pub latest_caption_preview: Option<String>,
@@ -164,6 +168,7 @@ pub enum VrCommand {
     Connect,
     Disconnect,
     UpdateSettings(VrOverlaySettings),
+    RecenterAvatar,
     Shutdown,
 }
 
@@ -182,6 +187,7 @@ pub struct VrOverlayManager {
     status: Arc<Mutex<VrRuntimeStatus>>,
     shutdown: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
+    companion: Arc<Mutex<Presentation>>,
 }
 
 impl VrOverlayManager {
@@ -192,9 +198,19 @@ impl VrOverlayManager {
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let worker_shutdown = Arc::clone(&shutdown);
+        let companion = Arc::new(Mutex::new(Presentation::default()));
+        let worker_companion = Arc::clone(&companion);
         let worker = std::thread::Builder::new()
             .name("vr-overlay-worker".into())
-            .spawn(move || run_vr_worker(command_rx, settings, worker_status, worker_shutdown))
+            .spawn(move || {
+                run_vr_worker(
+                    command_rx,
+                    settings,
+                    worker_status,
+                    worker_shutdown,
+                    worker_companion,
+                )
+            })
             .expect("failed to spawn VR overlay worker");
 
         Self {
@@ -202,6 +218,7 @@ impl VrOverlayManager {
             status,
             shutdown,
             worker: Some(worker),
+            companion,
         }
     }
 
@@ -209,6 +226,16 @@ impl VrOverlayManager {
         VrOverlayHandle {
             command_tx: self.command_tx.clone(),
         }
+    }
+
+    pub(crate) fn companion_active(&self) -> bool {
+        self.status.lock().avatar_available
+    }
+    pub(crate) fn present_companion(&self, presentation: Presentation) {
+        *self.companion.lock() = presentation;
+    }
+    pub fn recenter_avatar(&self) {
+        let _ = self.command_tx.send(VrCommand::RecenterAvatar);
     }
 
     pub fn status(&self) -> VrRuntimeStatus {
@@ -288,6 +315,7 @@ fn run_vr_worker(
     mut settings: VrOverlaySettings,
     status: Arc<Mutex<VrRuntimeStatus>>,
     shutdown: Arc<AtomicBool>,
+    companion: Arc<Mutex<Presentation>>,
 ) {
     settings.normalize();
     let mut renderer = VrOverlayRenderer::new(RENDER_WIDTH, RENDER_HEIGHT)
@@ -295,6 +323,8 @@ fn run_vr_worker(
     let mut openvr_api: Option<Arc<OpenVrApi>> = OpenVrApi::try_load();
     let mut vr_session: Option<OpenVrSession> = None;
     let mut vr_overlay: Option<OpenVrOverlay> = None;
+    let mut avatar: Option<AvatarOverlay> = None;
+    let mut next_avatar_frame = Instant::now();
 
     let mut entries: Vec<StreamEntry> = Vec::new();
     let mut needs_redraw = false;
@@ -305,7 +335,13 @@ fn run_vr_worker(
     }
 
     while !shutdown.load(Ordering::Acquire) {
-        let timeout = Duration::from_millis(100);
+        let timeout = if avatar.is_some() {
+            next_avatar_frame
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(100))
+        } else {
+            Duration::from_millis(100)
+        };
         let first = command_rx.recv_timeout(timeout);
         let mut commands = vec![first];
         commands.extend(command_rx.try_iter().take(127).map(Ok));
@@ -353,6 +389,15 @@ fn run_vr_worker(
                                                 continue;
                                             }
                                             is_overlay_visible = false;
+                                            // Avatar failure leaves the caption connection usable.
+                                            let created = AvatarOverlay::new(&session);
+                                            {
+                                                let mut st = status.lock();
+                                                st.avatar_available = created.is_ok();
+                                                st.avatar_error = created.as_ref().err().cloned();
+                                            }
+                                            avatar = created.ok();
+                                            next_avatar_frame = Instant::now();
                                             vr_overlay = Some(overlay);
                                             vr_session = Some(session);
                                             needs_redraw = true;
@@ -384,11 +429,14 @@ fn run_vr_worker(
                     }
                 }
                 Ok(VrCommand::Disconnect) => {
+                    avatar = None;
                     vr_overlay = None;
                     vr_session = None;
                     is_overlay_visible = false;
                     let mut st = status.lock();
                     st.steamvr_connected = false;
+                    st.avatar_available = false;
+                    st.avatar_error = None;
                     st.last_error = None;
                 }
                 Ok(VrCommand::Caption {
@@ -448,6 +496,11 @@ fn run_vr_worker(
                     clamp_entries(&mut entries, settings.max_items);
                     needs_redraw = true;
                 }
+                Ok(VrCommand::RecenterAvatar) => {
+                    if let Some(avatar) = avatar.as_mut() {
+                        avatar.recenter();
+                    }
+                }
                 Ok(VrCommand::Shutdown) => return,
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
@@ -463,11 +516,13 @@ fn run_vr_worker(
         if vr_session.is_some() {
             let running = super::openvr::is_steamvr_running();
             if !running || !settings.enabled {
+                avatar = None;
                 vr_overlay = None;
                 vr_session = None;
                 is_overlay_visible = false;
                 let mut st = status.lock();
                 st.steamvr_connected = false;
+                st.avatar_available = false;
             }
         }
 
@@ -514,12 +569,28 @@ fn run_vr_worker(
                         st.last_error = Some(error.to_string());
                         if lost {
                             // Destroy before shutdown. Captions remain available for reconnect.
+                            avatar = None;
                             vr_overlay = None;
                             vr_session = None;
                             is_overlay_visible = false;
                             st.steamvr_connected = false;
+                            st.avatar_available = false;
                         }
                     }
+                }
+            }
+        }
+        // Captions have already drained and rendered; companion dialogue timing
+        // never gates subtitle consumption. Avoid command bursts starving frames.
+        if avatar.is_some() && Instant::now() >= next_avatar_frame {
+            next_avatar_frame = Instant::now() + Duration::from_millis(33);
+            let presentation = companion.lock().clone();
+            if let Some(current) = avatar.as_mut() {
+                if let Err(error) = current.frame(&presentation) {
+                    avatar = None;
+                    let mut st = status.lock();
+                    st.avatar_available = false;
+                    st.avatar_error = Some(error.to_string());
                 }
             }
         }

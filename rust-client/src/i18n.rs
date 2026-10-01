@@ -5033,6 +5033,20 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Внутриигровой оверлей SteamVR",
     ),
     (
+        "Come here",
+        "过来这里",
+        "こっちにおいで",
+        "이리 와",
+        "Иди сюда",
+    ),
+    (
+        "Avatar unavailable",
+        "形象暂时无法显示",
+        "アバターを表示できません",
+        "아바타를 표시할 수 없습니다",
+        "Аватар недоступен",
+    ),
+    (
         "SteamVR Connected",
         "SteamVR 已连接",
         "SteamVR 接続済み",

@@ -36,15 +36,36 @@ pub struct Pose {
     pub(super) blink: f32,
 }
 
+fn blink_at(phase: f64) -> f32 {
+    if phase < 0.2 {
+        (phase as f32 / 0.2 * PI).sin().powi(2)
+    } else {
+        0.0
+    }
+}
+
 impl Pose {
+    pub(crate) fn idle_at(clock: f64, expression: Expression) -> Self {
+        Self {
+            blink: blink_at(clock.rem_euclid(4.8)),
+            joy: if matches!(expression, Expression::Happy) {
+                1.0
+            } else {
+                0.0
+            },
+            curiosity: if matches!(expression, Expression::Curious) {
+                1.0
+            } else {
+                0.0
+            },
+            ..Self::default()
+        }
+    }
+
     pub fn animated(ctx: &egui::Context, id: Id, expression: Expression, gaze: Gaze) -> Self {
         let animate = |key, value| AnimationSystem::animate_value(ctx, id.with(key), value, 0.22);
         let phase = (ctx.input(|input| input.time) + (id.value() % 997) as f64 / 211.0) % 4.8;
-        let blink = if phase < 0.2 {
-            (phase as f32 / 0.2 * PI).sin().powi(2)
-        } else {
-            0.0
-        };
+        let blink = blink_at(phase);
         ctx.request_repaint_after(if phase < 0.2 {
             Duration::from_millis(16)
         } else {

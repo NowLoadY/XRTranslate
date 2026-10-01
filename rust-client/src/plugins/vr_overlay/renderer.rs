@@ -146,6 +146,7 @@ pub struct VrOverlayRenderer {
     height: u32,
     ctx: egui::Context,
     atlas: egui::ColorImage,
+    speech_layout: crate::ui::components::avatar::Speech,
 }
 
 impl VrOverlayRenderer {
@@ -158,6 +159,7 @@ impl VrOverlayRenderer {
             height,
             ctx,
             atlas: egui::ColorImage::default(),
+            speech_layout: Default::default(),
         })
     }
 
@@ -172,6 +174,33 @@ impl VrOverlayRenderer {
         bilingual: bool,
         font_size: f32,
     ) -> Result<Vec<u8>, String> {
+        self.render_surface(|painter, rect| paint_cards(painter, rect, cards, bilingual, font_size))
+    }
+
+    pub(super) fn render_speech(
+        &mut self,
+        speech: &crate::ui::components::avatar::Speech,
+        clock: f64,
+    ) -> Result<Vec<u8>, String> {
+        let mut speech = speech.on_surface(&self.speech_layout);
+        let output = self.render_surface(|painter, rect| {
+            speech.paint(
+                painter,
+                rect,
+                Pos2::new(rect.center().x, rect.bottom() - 16.0),
+                24.0,
+                clock,
+                0.08,
+            );
+        });
+        self.speech_layout = speech;
+        output
+    }
+
+    pub(super) fn render_surface(
+        &mut self,
+        mut paint: impl FnMut(&Painter, Rect),
+    ) -> Result<Vec<u8>, String> {
         let rect =
             Rect::from_min_size(Pos2::ZERO, Vec2::new(self.width as f32, self.height as f32));
         let mut output = self.ctx.run_ui(
@@ -179,9 +208,7 @@ impl VrOverlayRenderer {
                 screen_rect: Some(rect),
                 ..Default::default()
             },
-            |ui| {
-                paint_cards(ui.painter(), rect, cards, bilingual, font_size);
-            },
+            |ui| paint(ui.painter(), rect),
         );
         let deltas = std::mem::take(&mut output.textures_delta.set);
         output.textures_delta.clear();

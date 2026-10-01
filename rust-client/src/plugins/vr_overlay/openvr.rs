@@ -3,11 +3,12 @@
 //! Connects to SteamVR using standard OpenVR exported entrypoints,
 //! managing overlay lifetime and HMD tracking transform without hard dependencies.
 
-use std::ffi::{CString, c_char, c_void};
+use std::ffi::{CStr, CString, c_char, c_void};
 #[cfg(windows)]
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::{any::Any, cell::RefCell};
 
 pub const VR_APPLICATION_OVERLAY: i32 = 2;
 pub const TRACKED_DEVICE_INDEX_HMD: u32 = 0;
@@ -97,36 +98,36 @@ struct IVROverlayFnTable {
     _set_overlay_texture_bounds: usize, // 30
     _get_overlay_texture_bounds: usize, // 31
     _get_overlay_transform_type: usize, // 32
-    _set_overlay_transform_absolute: usize, // 33
+    set_overlay_transform_absolute: unsafe extern "system" fn(u64, i32, *const HmdMatrix34) -> i32, // 33
     _get_overlay_transform_absolute: usize, // 34
     set_overlay_transform_tracked_device_relative:
         unsafe extern "system" fn(u64, u32, *const HmdMatrix34) -> i32, // 35
     _get_overlay_transform_tracked_device_relative: usize, // 36
     _set_overlay_transform_tracked_device_component: usize, // 37
     _get_overlay_transform_tracked_device_component: usize, // 38
-    _set_overlay_transform_cursor: usize, // 39
-    _get_overlay_transform_cursor: usize, // 40
+    _set_overlay_transform_cursor: usize,   // 39
+    _get_overlay_transform_cursor: usize,   // 40
     _set_overlay_transform_projection: usize, // 41
-    _set_subview_position: usize, // 42
+    _set_subview_position: usize,           // 42
     show_overlay: unsafe extern "system" fn(u64) -> i32, // 43
     hide_overlay: unsafe extern "system" fn(u64) -> i32, // 44
-    _is_overlay_visible: usize, // 45
+    _is_overlay_visible: usize,             // 45
     _get_transform_for_overlay_coordinates: usize, // 46
-    _wait_frame_sync: usize, // 47
-    _poll_next_overlay_event: usize, // 48
-    _get_overlay_input_method: usize, // 49
-    _set_overlay_input_method: usize, // 50
-    _get_overlay_mouse_scale: usize, // 51
-    _set_overlay_mouse_scale: usize, // 52
-    _compute_overlay_intersection: usize, // 53
-    _is_hover_target_overlay: usize, // 54
-    _set_overlay_intersection_mask: usize, // 55
+    wait_frame_sync: unsafe extern "system" fn(u32) -> i32, // 47
+    _poll_next_overlay_event: usize,        // 48
+    _get_overlay_input_method: usize,       // 49
+    _set_overlay_input_method: usize,       // 50
+    _get_overlay_mouse_scale: usize,        // 51
+    _set_overlay_mouse_scale: usize,        // 52
+    _compute_overlay_intersection: usize,   // 53
+    _is_hover_target_overlay: usize,        // 54
+    _set_overlay_intersection_mask: usize,  // 55
     _trigger_laser_mouse_haptic_vibration: usize, // 56
-    _set_overlay_cursor: usize, // 57
+    _set_overlay_cursor: usize,             // 57
     _set_overlay_cursor_position_override: usize, // 58
     _clear_overlay_cursor_position_override: usize, // 59
-    _set_overlay_texture: usize, // 60
-    _clear_overlay_texture: usize, // 61
+    set_overlay_texture: unsafe extern "system" fn(u64, *const NativeTexture) -> i32, // 60
+    _clear_overlay_texture: usize,          // 61
     set_overlay_raw: unsafe extern "system" fn(u64, *mut c_void, u32, u32, u32) -> i32, // 62
 }
 
@@ -300,6 +301,7 @@ impl OpenVrApi {
             inner: Rc::new(OpenVrSessionInner {
                 api: Arc::clone(self),
                 overlay_interface,
+                graphics: RefCell::new(Vec::new()),
             }),
         })
     }
@@ -314,6 +316,8 @@ pub struct OpenVrSession {
 struct OpenVrSessionInner {
     api: Arc<OpenVrApi>,
     overlay_interface: *mut c_void,
+    // Valve requires shutdown before releasing submitted GPU resources.
+    graphics: RefCell<Vec<Box<dyn Any>>>,
 }
 
 impl Drop for OpenVrSessionInner {
@@ -322,7 +326,179 @@ impl Drop for OpenVrSessionInner {
     }
 }
 
+// Exact IVRSystem_026 prefix (v2.15.6): these slots differ from older versions.
+#[repr(C)]
+struct IVRSystemFnTable {
+    _render_size: usize,
+    _projection: usize,
+    _projection_raw: usize,
+    _distortion: usize,
+    _distortion_set: usize,
+    eye_to_head: unsafe extern "system" fn(i32) -> HmdMatrix34, // 5
+    _vsync: usize,
+    _d3d9: usize,
+    _dxgi: usize,
+    output_device: unsafe extern "system" fn(*mut u64, i32, *mut c_void), // 9
+    _on_desktop: usize,
+    _display_visibility: usize,
+    tracking_pose: unsafe extern "system" fn(i32, f32, *mut TrackedPose, u32), // 12
+}
+#[repr(C)]
+struct IVRCompositorFnTable {
+    _prefix: [usize; 41],
+    instance_extensions: unsafe extern "system" fn(*mut c_char, u32) -> u32, // 41
+    device_extensions: unsafe extern "system" fn(*mut c_void, *mut c_char, u32) -> u32, // 42
+}
+#[repr(C)]
+#[derive(Default)]
+struct TrackedPose {
+    transform: HmdMatrix34,
+    velocity: [f32; 3],
+    angular_velocity: [f32; 3],
+    result: i32,
+    valid: bool,
+    connected: bool,
+}
+#[repr(C)]
+pub(super) struct VulkanTexture {
+    pub image: u64,
+    pub device: *mut c_void,
+    pub physical_device: *mut c_void,
+    pub instance: *mut c_void,
+    pub queue: *mut c_void,
+    pub queue_family: u32,
+    pub width: u32,
+    pub height: u32,
+    pub format: u32,
+    pub samples: u32,
+}
+#[repr(C)]
+struct NativeTexture {
+    handle: *mut c_void,
+    texture_type: i32,
+    color_space: i32,
+}
+
+/// Only avatar creation requests these additional versioned interfaces.
+pub(super) struct AvatarTracking {
+    session: Rc<OpenVrSessionInner>,
+    system: *const IVRSystemFnTable,
+    compositor: *const IVRCompositorFnTable,
+}
+impl AvatarTracking {
+    pub fn eyes_and_head(&self) -> Option<([glam::Mat4; 2], glam::Mat4)> {
+        let table = unsafe { &*self.system };
+        let mut head = TrackedPose::default();
+        // Standing tracking origin, bounded 11 ms prediction. Placement is native;
+        // this pose is used only for the mesh's actual view and spatial movement.
+        unsafe { (table.tracking_pose)(1, 0.011, &mut head, 1) };
+        if !head.valid || !head.connected {
+            return None;
+        }
+        let head = head.transform.rigid_matrix()?;
+        let eyes = [0, 1].map(|eye| unsafe { (table.eye_to_head)(eye) }.rigid_matrix());
+        Some(([head * eyes[0]?, head * eyes[1]?], head))
+    }
+    pub fn output_device(&self, instance: *mut c_void) -> u64 {
+        let mut device = 0;
+        unsafe { ((*self.system).output_device)(&mut device, 2, instance) };
+        device
+    }
+    pub fn extensions(&self, physical_device: Option<*mut c_void>) -> Result<Vec<CString>, String> {
+        let table = unsafe { &*self.compositor };
+        let query = |buffer, size| unsafe {
+            match physical_device {
+                Some(device) => (table.device_extensions)(device, buffer, size),
+                None => (table.instance_extensions)(buffer, size),
+            }
+        };
+        let size = query(std::ptr::null_mut(), 0);
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+        if size > 16384 {
+            return Err("Invalid SteamVR Vulkan extension list".into());
+        }
+        let mut buffer = vec![0u8; size as usize];
+        if query(buffer.as_mut_ptr().cast(), size) > size {
+            return Err("SteamVR extension list changed".into());
+        }
+        let value = CStr::from_bytes_until_nul(&buffer).map_err(|e| e.to_string())?;
+        value
+            .to_str()
+            .map_err(|e| e.to_string())?
+            .split_whitespace()
+            .map(|s| CString::new(s).map_err(|e| e.to_string()))
+            .collect()
+    }
+    pub fn retain_graphics(&self, owner: Box<dyn Any>) {
+        self.session.graphics.borrow_mut().push(owner);
+    }
+    pub fn wait_frame(&self) -> Result<(), OverlayError> {
+        let table = unsafe { &*(self.session.overlay_interface as *const IVROverlayFnTable) };
+        check_overlay_error("WaitFrameSync", unsafe { (table.wait_frame_sync)(8) })
+    }
+}
+impl Default for HmdMatrix34 {
+    fn default() -> Self {
+        Self { m: [[0.0; 4]; 3] }
+    }
+}
+impl HmdMatrix34 {
+    pub fn from_matrix(matrix: glam::Mat4) -> Self {
+        let a = matrix.transpose().to_cols_array_2d();
+        Self {
+            m: [a[0], a[1], a[2]],
+        }
+    }
+    pub fn rigid_matrix(&self) -> Option<glam::Mat4> {
+        let matrix = glam::Mat4::from_cols_array(&[
+            self.m[0][0],
+            self.m[1][0],
+            self.m[2][0],
+            0.0,
+            self.m[0][1],
+            self.m[1][1],
+            self.m[2][1],
+            0.0,
+            self.m[0][2],
+            self.m[1][2],
+            self.m[2][2],
+            0.0,
+            self.m[0][3],
+            self.m[1][3],
+            self.m[2][3],
+            1.0,
+        ]);
+        let basis = glam::Mat3::from_mat4(matrix);
+        (matrix.is_finite()
+            && (basis.determinant() - 1.0).abs() < 0.02
+            && (basis.transpose() * basis - glam::Mat3::IDENTITY)
+                .to_cols_array()
+                .iter()
+                .all(|v| v.abs() < 0.02))
+        .then_some(matrix)
+    }
+}
+
 impl OpenVrSession {
+    pub(super) fn avatar_tracking(&self) -> Result<AvatarTracking, String> {
+        let interface = |name: &CStr| {
+            let mut error = 0;
+            let ptr =
+                unsafe { (self.inner.api.vr_get_generic_interface)(name.as_ptr(), &mut error) };
+            if ptr.is_null() || error != 0 {
+                Err("SteamVR avatar interfaces unavailable; update SteamVR".to_owned())
+            } else {
+                Ok(ptr)
+            }
+        };
+        Ok(AvatarTracking {
+            session: Rc::clone(&self.inner),
+            system: interface(c"FnTable:IVRSystem_026")?.cast(),
+            compositor: interface(c"FnTable:IVRCompositor_029")?.cast(),
+        })
+    }
     pub fn create_overlay(&self, key: &str, name: &str) -> Result<OpenVrOverlay, String> {
         let c_key = CString::new(key).map_err(|e| e.to_string())?;
         let c_name = CString::new(name).map_err(|e| e.to_string())?;
@@ -409,6 +585,48 @@ impl Drop for OpenVrOverlay {
 }
 
 impl OpenVrOverlay {
+    pub(super) fn set_world_transform(&self, matrix: glam::Mat4) -> Result<(), OverlayError> {
+        let transform = HmdMatrix34::from_matrix(matrix);
+        if transform.rigid_matrix().is_none() {
+            return Err(OverlayError::InvalidFrame(
+                "Invalid avatar transform".into(),
+            ));
+        }
+        check_overlay_error("SetOverlayTransformAbsolute", unsafe {
+            (self.table().set_overlay_transform_absolute)(self.handle, 1, &transform)
+        })
+    }
+    pub(super) fn configure_stereo(&self) -> Result<(), OverlayError> {
+        for flag in [1 << 10, 1 << 21] {
+            check_overlay_error("SetOverlayFlag", unsafe {
+                (self.table().set_overlay_flag)(self.handle, flag, true)
+            })?;
+        }
+        Ok(())
+    }
+    pub(super) fn set_vulkan_texture(&self, data: &mut VulkanTexture) -> Result<(), OverlayError> {
+        if data.image == 0
+            || [data.device, data.physical_device, data.instance, data.queue]
+                .iter()
+                .any(|p| p.is_null())
+            || data.width != 1024
+            || data.height != 512
+            || data.samples != 1
+            || data.format != 37
+        {
+            return Err(OverlayError::InvalidFrame(
+                "Invalid avatar GPU texture".into(),
+            ));
+        }
+        let texture = NativeTexture {
+            handle: (data as *mut VulkanTexture).cast(),
+            texture_type: 2,
+            color_space: 2,
+        };
+        check_overlay_error("SetOverlayTexture", unsafe {
+            (self.table().set_overlay_texture)(self.handle, &texture)
+        })
+    }
     fn table(&self) -> &IVROverlayFnTable {
         unsafe { &*(self.session.overlay_interface as *const IVROverlayFnTable) }
     }
@@ -648,6 +866,8 @@ pub(super) mod tests {
         calls: Vec<&'static str>,
         failure: Option<(&'static str, i32)>,
         missing_interface: bool,
+        missing_avatar: bool,
+        invalid_pose: bool,
         raw_pointer: usize,
         raw_dimensions: (u32, u32, u32),
     }
@@ -655,6 +875,8 @@ pub(super) mod tests {
         calls: Vec::new(),
         failure: None,
         missing_interface: false,
+        missing_avatar: false,
+        invalid_pose: false,
         raw_pointer: 0,
         raw_dimensions: (0, 0, 0),
     });
@@ -681,10 +903,7 @@ pub(super) mod tests {
         true
     }
     unsafe extern "C" fn fake_interface(name: *const c_char, error: *mut i32) -> *mut c_void {
-        assert_eq!(
-            unsafe { std::ffi::CStr::from_ptr(name) },
-            c"FnTable:IVROverlay_028"
-        );
+        let name = unsafe { CStr::from_ptr(name) };
         if NATIVE.lock().unwrap().missing_interface {
             unsafe {
                 *error = 105;
@@ -694,7 +913,18 @@ pub(super) mod tests {
         unsafe {
             *error = 0;
         }
-        table() as *const _ as *mut c_void
+        if name != c"FnTable:IVROverlay_028" && NATIVE.lock().unwrap().missing_avatar {
+            unsafe {
+                *error = 105;
+            }
+            return std::ptr::null_mut();
+        }
+        match name {
+            n if n == c"FnTable:IVROverlay_028" => table() as *const _ as *mut c_void,
+            n if n == c"FnTable:IVRSystem_026" => system_table() as *const _ as *mut c_void,
+            n if n == c"FnTable:IVRCompositor_029" => compositor_table() as *const _ as *mut c_void,
+            _ => panic!("Unexpected interface request"),
+        }
     }
     unsafe extern "system" fn fake_create(
         _: *const c_char,
@@ -711,8 +941,7 @@ pub(super) mod tests {
         call("DestroyOverlay")
     }
     unsafe extern "system" fn fake_flag(_: u64, flag: i32, value: bool) -> i32 {
-        assert_eq!(flag, 1 << 21);
-        assert!(!value);
+        assert!(flag == 1 << 21 || (flag == 1 << 10 && value));
         call("SetOverlayFlag")
     }
     unsafe extern "system" fn fake_alpha(_: u64, value: f32) -> i32 {
@@ -758,6 +987,99 @@ pub(super) mod tests {
         drop(state);
         call("SetOverlayRaw")
     }
+    unsafe extern "system" fn fake_eye(eye: i32) -> HmdMatrix34 {
+        HmdMatrix34::from_matrix(glam::Mat4::from_translation(
+            glam::Vec3::X * if eye == 0 { -0.032 } else { 0.032 },
+        ))
+    }
+    unsafe extern "system" fn fake_tracking(
+        origin: i32,
+        prediction: f32,
+        pose: *mut TrackedPose,
+        count: u32,
+    ) {
+        assert_eq!(origin, 1);
+        assert_eq!(count, 1);
+        assert!((0.0..=0.02).contains(&prediction));
+        unsafe {
+            *pose = TrackedPose {
+                transform: HmdMatrix34::from_matrix(glam::Mat4::from_translation(
+                    glam::Vec3::Y * 1.6,
+                )),
+                valid: !NATIVE.lock().unwrap().invalid_pose,
+                connected: true,
+                ..Default::default()
+            };
+        }
+    }
+    unsafe extern "system" fn fake_output(device: *mut u64, _: i32, _: *mut c_void) {
+        unsafe {
+            *device = 123;
+        }
+    }
+    unsafe extern "system" fn fake_instance_extensions(buffer: *mut c_char, size: u32) -> u32 {
+        let value = c"VK_KHR_external_memory_capabilities".to_bytes_with_nul();
+        if size >= value.len() as u32 {
+            unsafe {
+                std::ptr::copy_nonoverlapping(value.as_ptr(), buffer.cast(), value.len());
+            }
+        }
+        value.len() as u32
+    }
+    unsafe extern "system" fn fake_device_extensions(
+        _: *mut c_void,
+        buffer: *mut c_char,
+        size: u32,
+    ) -> u32 {
+        fake_instance_extensions_call(buffer, size)
+    }
+    fn fake_instance_extensions_call(buffer: *mut c_char, size: u32) -> u32 {
+        unsafe { fake_instance_extensions(buffer, size) }
+    }
+    fn system_table() -> &'static IVRSystemFnTable {
+        static TABLE: IVRSystemFnTable = IVRSystemFnTable {
+            _render_size: 0,
+            _projection: 0,
+            _projection_raw: 0,
+            _distortion: 0,
+            _distortion_set: 0,
+            eye_to_head: fake_eye,
+            _vsync: 0,
+            _d3d9: 0,
+            _dxgi: 0,
+            output_device: fake_output,
+            _on_desktop: 0,
+            _display_visibility: 0,
+            tracking_pose: fake_tracking,
+        };
+        &TABLE
+    }
+    fn compositor_table() -> &'static IVRCompositorFnTable {
+        static TABLE: IVRCompositorFnTable = IVRCompositorFnTable {
+            _prefix: [0; 41],
+            instance_extensions: fake_instance_extensions,
+            device_extensions: fake_device_extensions,
+        };
+        &TABLE
+    }
+    unsafe extern "system" fn fake_absolute(
+        _: u64,
+        origin: i32,
+        matrix: *const HmdMatrix34,
+    ) -> i32 {
+        assert_eq!(origin, 1);
+        assert!(unsafe { &*matrix }.rigid_matrix().is_some());
+        call("SetOverlayTransformAbsolute")
+    }
+    unsafe extern "system" fn fake_wait(_: u32) -> i32 {
+        call("WaitFrameSync")
+    }
+    unsafe extern "system" fn fake_texture(_: u64, texture: *const NativeTexture) -> i32 {
+        let texture = unsafe { &*texture };
+        assert_eq!(texture.texture_type, 2);
+        assert_eq!(texture.color_space, 2);
+        call("SetOverlayTexture")
+    }
     fn table() -> &'static IVROverlayFnTable {
         static TABLE: OnceLock<IVROverlayFnTable> = OnceLock::new();
         TABLE.get_or_init(|| IVROverlayFnTable {
@@ -794,7 +1116,7 @@ pub(super) mod tests {
             _set_overlay_texture_bounds: 0,
             _get_overlay_texture_bounds: 0,
             _get_overlay_transform_type: 0,
-            _set_overlay_transform_absolute: 0,
+            set_overlay_transform_absolute: fake_absolute,
             _get_overlay_transform_absolute: 0,
             set_overlay_transform_tracked_device_relative: fake_transform,
             _get_overlay_transform_tracked_device_relative: 0,
@@ -808,7 +1130,7 @@ pub(super) mod tests {
             hide_overlay: fake_hide,
             _is_overlay_visible: 0,
             _get_transform_for_overlay_coordinates: 0,
-            _wait_frame_sync: 0,
+            wait_frame_sync: fake_wait,
             _poll_next_overlay_event: 0,
             _get_overlay_input_method: 0,
             _set_overlay_input_method: 0,
@@ -821,7 +1143,7 @@ pub(super) mod tests {
             _set_overlay_cursor: 0,
             _set_overlay_cursor_position_override: 0,
             _clear_overlay_cursor_position_override: 0,
-            _set_overlay_texture: 0,
+            set_overlay_texture: fake_texture,
             _clear_overlay_texture: 0,
             set_overlay_raw: fake_raw,
         })
@@ -930,6 +1252,125 @@ pub(super) mod tests {
             &state.calls[state.calls.len() - 2..],
             &["DestroyOverlay", "Shutdown"]
         );
+    }
+
+    #[test]
+    fn avatar_tracking_uses_eye_transforms_and_hides_invalid_tracking() {
+        let (_lock, session) = fake_session();
+        let tracking = session.avatar_tracking().unwrap();
+        let (eyes, head) = tracking.eyes_and_head().unwrap();
+        assert!((eyes[1].w_axis.x - eyes[0].w_axis.x - 0.064).abs() < 0.00001);
+        assert_eq!(head.w_axis.y, 1.6);
+        assert_eq!(tracking.output_device(std::ptr::null_mut()), 123);
+        assert_eq!(
+            tracking.extensions(None).unwrap()[0].as_c_str(),
+            c"VK_KHR_external_memory_capabilities"
+        );
+        NATIVE.lock().unwrap().invalid_pose = true;
+        assert!(tracking.eyes_and_head().is_none());
+        fail_operation("WaitFrameSync", 34);
+        assert!(matches!(
+            tracking.wait_frame(),
+            Err(OverlayError::Api(_, 34))
+        ));
+    }
+    #[test]
+    fn avatar_interfaces_are_optional_and_graphics_outlive_shutdown() {
+        let (_lock, session) = fake_session();
+        NATIVE.lock().unwrap().missing_avatar = true;
+        assert!(session.avatar_tracking().is_err());
+        let overlay = session.create_overlay("caption", "caption").unwrap();
+        NATIVE.lock().unwrap().missing_avatar = false;
+        let tracking = session.avatar_tracking().unwrap();
+        struct Graphics;
+        impl Drop for Graphics {
+            fn drop(&mut self) {
+                call("FreeGraphics");
+            }
+        }
+        tracking.retain_graphics(Box::new(Graphics));
+        drop(tracking);
+        drop(session);
+        assert!(!NATIVE.lock().unwrap().calls.contains(&"Shutdown"));
+        drop(overlay);
+        let state = NATIVE.lock().unwrap();
+        assert_eq!(
+            &state.calls[state.calls.len() - 3..],
+            &["DestroyOverlay", "Shutdown", "FreeGraphics"]
+        );
+    }
+    #[test]
+    fn stereo_texture_and_world_transform_validate_and_propagate_native_failures() {
+        let (_lock, session) = fake_session();
+        let overlay = session.create_overlay("avatar", "avatar").unwrap();
+        overlay.configure_stereo().unwrap();
+        let world = glam::Mat4::from_rotation_translation(
+            glam::Quat::from_rotation_y(0.3),
+            glam::Vec3::new(0.4, 1.2, -1.0),
+        );
+        overlay.set_world_transform(world).unwrap();
+        assert!(
+            HmdMatrix34::from_matrix(world)
+                .rigid_matrix()
+                .unwrap()
+                .abs_diff_eq(world, 0.00001)
+        );
+        assert!(
+            overlay
+                .set_world_transform(glam::Mat4::from_scale(glam::Vec3::splat(2.0)))
+                .is_err()
+        );
+        let mut texture = VulkanTexture {
+            image: 1,
+            device: 1usize as *mut _,
+            physical_device: 2usize as *mut _,
+            instance: 3usize as *mut _,
+            queue: 4usize as *mut _,
+            queue_family: 0,
+            width: 1024,
+            height: 512,
+            format: 37,
+            samples: 1,
+        };
+        overlay.set_vulkan_texture(&mut texture).unwrap();
+        fail_operation("SetOverlayTexture", 24);
+        assert!(matches!(
+            overlay.set_vulkan_texture(&mut texture),
+            Err(OverlayError::Api(_, 24))
+        ));
+        texture.width = 0;
+        let count = NATIVE.lock().unwrap().calls.len();
+        assert!(overlay.set_vulkan_texture(&mut texture).is_err());
+        assert_eq!(NATIVE.lock().unwrap().calls.len(), count);
+    }
+    #[test]
+    fn avatar_ffi_slots_and_payload_match_pinned_c_header() {
+        use std::mem::{offset_of, size_of};
+        let slot = size_of::<usize>();
+        assert_eq!(offset_of!(IVRSystemFnTable, eye_to_head), 5 * slot);
+        assert_eq!(offset_of!(IVRSystemFnTable, output_device), 9 * slot);
+        assert_eq!(offset_of!(IVRSystemFnTable, tracking_pose), 12 * slot);
+        assert_eq!(
+            offset_of!(IVRCompositorFnTable, instance_extensions),
+            41 * slot
+        );
+        assert_eq!(
+            offset_of!(IVRCompositorFnTable, device_extensions),
+            42 * slot
+        );
+        assert_eq!(
+            offset_of!(IVROverlayFnTable, set_overlay_transform_absolute),
+            33 * slot
+        );
+        assert_eq!(offset_of!(IVROverlayFnTable, wait_frame_sync), 47 * slot);
+        assert_eq!(
+            offset_of!(IVROverlayFnTable, set_overlay_texture),
+            60 * slot
+        );
+        assert_eq!(size_of::<TrackedPose>(), 80);
+        assert_eq!(offset_of!(TrackedPose, valid), 76);
+        assert_eq!(offset_of!(VulkanTexture, queue_family), 5 * slot);
+        assert_eq!(size_of::<NativeTexture>(), slot + 8);
     }
 
     #[test]

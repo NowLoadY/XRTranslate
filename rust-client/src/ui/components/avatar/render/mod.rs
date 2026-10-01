@@ -1,6 +1,7 @@
 //! Instanced 3D solids rendered with depth into reusable transparent MSAA targets.
 #[cfg(debug_assertions)]
 pub(crate) mod export;
+pub(crate) mod stereo;
 use super::{
     geometry,
     model::{Geometry, Model, Part},
@@ -54,7 +55,6 @@ struct Target {
     capacity: usize,
     parts: wgpu::Buffer,
     color: wgpu::TextureView,
-    #[cfg(debug_assertions)]
     texture: wgpu::Texture,
     msaa: wgpu::TextureView,
     depth: wgpu::TextureView,
@@ -65,6 +65,8 @@ struct Target {
     last_uv: [f32; 4],
     last_seen: Instant,
     last_parts: Vec<Instance>,
+    last_camera: Option<glam::Mat4>,
+    camera: Option<(wgpu::Buffer, wgpu::BindGroup)>,
     last_batches: Vec<Batch>,
 }
 impl Target {
@@ -169,7 +171,6 @@ impl Target {
             capacity,
             parts,
             color,
-            #[cfg(debug_assertions)]
             texture: color_texture,
             msaa,
             depth,
@@ -180,6 +181,8 @@ impl Target {
             last_uv: [0.0; 4],
             last_seen: Instant::now(),
             last_parts: Vec::new(),
+            last_camera: None,
+            camera: None,
             last_batches: Vec::new(),
         }
     }
@@ -193,6 +196,7 @@ struct Renderer {
     shadow_sampler: wgpu::Sampler,
     composite_pipeline: wgpu::RenderPipeline,
     camera: wgpu::BindGroup,
+    camera_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     vertices: wgpu::Buffer,
@@ -454,6 +458,7 @@ impl Renderer {
             shadow_sampler,
             composite_pipeline,
             camera,
+            camera_layout,
             texture_layout,
             sampler,
             vertices,
@@ -484,6 +489,7 @@ struct Draw {
     rect: Rect,
     batches: Vec<Batch>,
     parts: Vec<Instance>,
+    projection: Option<glam::Mat4>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -551,7 +557,46 @@ impl CallbackTrait for Draw {
             queue.write_buffer(&target.composite_uv, 0, bytemuck::cast_slice(&uv));
             target.last_uv = uv;
         }
-        if target.last_parts == self.parts && target.last_batches == self.batches {
+        if target.last_camera != self.projection {
+            if let Some(matrix) = self.projection {
+                let light = glam::camera::rh::proj::directx::orthographic(
+                    -0.45, 0.45, -0.45, 0.45, 0.01, 4.0,
+                ) * glam::camera::rh::view::look_at_mat4(
+                    Vec3::new(-0.6, 1.0, 1.4),
+                    Vec3::ZERO,
+                    Vec3::Y,
+                );
+                let values = [matrix.to_cols_array(), light.to_cols_array()];
+                if target.camera.is_none() {
+                    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("avatar eye camera"),
+                        size: 128,
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+                    let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("avatar eye camera"),
+                        layout: &renderer.camera_layout,
+                        entries: &[wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: buffer.as_entire_binding(),
+                        }],
+                    });
+                    target.camera = Some((buffer, bind));
+                }
+                queue.write_buffer(
+                    &target.camera.as_ref().unwrap().0,
+                    0,
+                    bytemuck::cast_slice(&values),
+                );
+            } else {
+                target.camera = None;
+            }
+        }
+        let camera_changed = target.last_camera != self.projection;
+        target.last_camera = self.projection;
+        if !camera_changed && target.last_parts == self.parts && target.last_batches == self.batches
+        {
             return Vec::new();
         }
         target.last_parts.clear();
@@ -648,11 +693,19 @@ impl Draw {
             rect,
             batches,
             parts: model.parts.iter().map(Instance::from).collect(),
+            projection: None,
         }
     }
 
     fn draw_parts(&self, pass: &mut wgpu::RenderPass<'_>, renderer: &Renderer, target: &Target) {
-        pass.set_bind_group(0, &renderer.camera, &[]);
+        pass.set_bind_group(
+            0,
+            target
+                .camera
+                .as_ref()
+                .map_or(&renderer.camera, |camera| &camera.1),
+            &[],
+        );
         pass.set_vertex_buffer(0, renderer.vertices.slice(..));
         pass.set_vertex_buffer(1, target.parts.slice(..));
         pass.set_index_buffer(renderer.indices.slice(..), wgpu::IndexFormat::Uint32);

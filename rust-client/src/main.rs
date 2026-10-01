@@ -2821,6 +2821,9 @@ impl XRTranslateApp {
                 VrOverlayUiAction::ConnectSteamVr => {
                     self.vr_overlay_plugin.connect();
                 }
+                VrOverlayUiAction::RecenterAvatar => {
+                    self.vr_overlay_plugin.manager().recenter_avatar()
+                }
                 VrOverlayUiAction::DisconnectSteamVr => {
                     self.vr_overlay_plugin.disconnect();
                 }
@@ -4865,6 +4868,16 @@ impl Drop for XRTranslateApp {
 }
 
 impl eframe::App for XRTranslateApp {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.first_run && !ctx.input(|input| input.viewport().visible().unwrap_or(true)) {
+            self.poll_backend_startup(Some(ctx.clone()));
+            self.poll_text_translation(ctx);
+            self.poll_session_events();
+            ui::companion::tick_background(ctx, self);
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui::theme::install_context(ui.ctx(), self.ui_theme);
         ui::layout::begin_frame(ui.ctx());
@@ -5257,6 +5270,14 @@ fn main() -> eframe::Result<()> {
 
     #[cfg(debug_assertions)]
     {
+        let mut vr_args = std::env::args().skip_while(|arg| arg != "--vr-avatar-render");
+        if vr_args.next().is_some() {
+            let path = vr_args.next().ok_or_else(|| {
+                eframe::Error::AppCreation("--vr-avatar-render requires an output directory".into())
+            })?;
+            return plugins::vr_overlay::render_avatar_preview(std::path::Path::new(&path))
+                .map_err(eframe::Error::AppCreation);
+        }
         let mut render_args = std::env::args().skip_while(|arg| arg != "--avatar-render");
         if render_args.next().is_some() {
             let path = render_args.next().ok_or_else(|| {

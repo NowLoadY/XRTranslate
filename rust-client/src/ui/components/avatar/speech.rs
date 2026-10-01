@@ -16,6 +16,16 @@ pub struct Speech {
 }
 
 impl Speech {
+    /// Reuse dialogue timing on another surface without its desktop position.
+    pub(crate) fn on_surface(&self, previous: &Self) -> Self {
+        Self {
+            position: previous.position,
+            size: previous.size,
+            opacity: previous.opacity,
+            ..self.clone()
+        }
+    }
+
     pub fn say(&mut self, text: &'static str, now: f64) {
         self.text = text;
         self.end = 0;
@@ -154,5 +164,32 @@ fn letter_delay(letter: &str) -> f64 {
         // CJK syllables/ideographs carry more information per character.
         '\u{3040}'..='\u{9fff}' | '\u{ac00}'..='\u{d7af}' => 0.075,
         _ => 0.042,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn another_surface_keeps_dialogue_and_its_own_layout() {
+        let mut desktop = Speech::default();
+        desktop.say("Hi, I'm right here!", 0.0);
+        desktop.advance(1.5);
+        desktop.position = Some(egui::pos2(1000.0, 600.0));
+        let previous = Speech {
+            position: Some(egui::pos2(320.0, 240.0)),
+            size: egui::vec2(180.0, 40.0),
+            opacity: 0.8,
+            ..Default::default()
+        };
+        let surface = desktop.on_surface(&previous);
+        assert_eq!(surface.text, desktop.text);
+        assert_eq!(surface.end, desktop.end);
+        assert_eq!(surface.dismiss_at, desktop.dismiss_at);
+        assert_eq!(surface.position, previous.position);
+        assert_eq!(surface.size, previous.size);
+        assert_eq!(surface.opacity, previous.opacity);
+        assert_eq!(surface.finished(5.0), desktop.finished(5.0));
     }
 }

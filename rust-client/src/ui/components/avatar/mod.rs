@@ -17,6 +17,16 @@ pub use motion::{Expression, Gaze, Pose};
 #[cfg(debug_assertions)]
 pub(crate) use render::export::render_views;
 pub use render::install;
+pub(crate) use render::stereo::StereoRenderer;
+
+/// A presentation of the existing companion, never a second dialogue owner.
+#[derive(Clone, Default)]
+pub(crate) struct Presentation {
+    pub pose: Pose,
+    pub speech: Speech,
+    pub clock: f64,
+    pub visible: bool,
+}
 pub use speech::Speech;
 
 use eframe::egui::{self, Color32, Id, Pos2, Rect, Vec2};

@@ -61,7 +61,7 @@ impl Part {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Model {
     pub parts: Vec<Part>,
 }

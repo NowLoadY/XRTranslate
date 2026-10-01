@@ -10,7 +10,7 @@ pub(crate) use inbox::Inbox;
 
 use crate::{
     i18n::{self, UiLanguage},
-    ui::components::avatar::{Classic, Expression, Gaze, Pose, Speech},
+    ui::components::avatar::{Classic, Expression, Gaze, Pose, Presentation, Speech},
 };
 use attention::{Attention, Target};
 use dialogue::{Cue, Route};
@@ -62,6 +62,7 @@ struct Guide {
     clock: f64,
     last_wall: f64,
     paused: bool,
+    background_tick: Option<std::time::Instant>,
     language: UiLanguage,
     route: Route,
     cue: Cue,
@@ -97,6 +98,7 @@ impl Guide {
             clock: 0.0,
             last_wall: now,
             paused: true,
+            background_tick: None,
             language,
             route: scene.route,
             cue: scene.cue,
@@ -167,6 +169,26 @@ impl Guide {
         self.pending.is_none()
             && self.speech.finished(self.clock)
             && self.clock - self.last_spoken >= 3.0
+    }
+
+    fn advance_background(&mut self, now: std::time::Instant) -> f32 {
+        let dt = self
+            .background_tick
+            .replace(now)
+            .map_or(0.0, |last| now.duration_since(last).as_secs_f64().min(0.5));
+        self.clock += dt;
+        // A resumed paint pass must not count the hidden time again.
+        self.paused = true;
+        dt as f32
+    }
+
+    fn read_mail(&mut self, inbox: &mut Inbox) {
+        if self.stage == Stage::Ready
+            && self.ready_to_speak()
+            && let Some(message) = inbox.read()
+        {
+            self.say(message);
+        }
     }
 
     fn attend(&mut self, target: Option<Target>, clicked: bool, scene: &dialogue::Context) {
@@ -275,7 +297,8 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     let hidden = app.modal_dialog.open
         || ctx.memory(|memory| memory.top_modal_layer().is_some())
         || screen.height() < radius * 4.0;
-    let interactive = !hidden && focused && !ctx.any_popup_open();
+    let vr_active = app.vr_overlay_plugin.manager().companion_active();
+    let interactive = !hidden && (focused || vr_active) && !ctx.any_popup_open();
     let paused = !interactive || pressed;
     let visual_dt = if interactive {
         (wall - state.last_wall).clamp(0.0, 0.05) as f32
@@ -289,6 +312,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     };
     let dt = (elapsed_wall as f32).min(0.05);
     state.last_wall = wall;
+    state.background_tick = None;
     state.paused = paused;
     state.clock += elapsed_wall;
     state.follow_scene(
@@ -307,12 +331,15 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         }
     }
     if hidden {
+        app.vr_overlay_plugin
+            .manager()
+            .present_companion(Presentation::default());
         ctx.data_mut(|data| data.insert_temp(state_id(), state));
         return;
     }
     let dock = page
         .and_then(|(bounds, layer)| state.parking.locate(ctx, layer, bounds, small, state.clock));
-    if page.is_some() && dock.is_none() {
+    if page.is_some() && dock.is_none() && !vr_active {
         ctx.request_repaint_after(Duration::from_millis(350));
         ctx.data_mut(|data| data.insert_temp(state_id(), state));
         return;
@@ -335,12 +362,8 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     }
     // Read mail on the companion's own clock, without interrupting dialogue,
     // entrance, dragging, hidden/modal states, or its existing speech cooldown.
-    if !paused
-        && state.stage == Stage::Ready
-        && state.ready_to_speak()
-        && let Some(message) = app.companion_inbox.read()
-    {
-        state.say(message);
+    if !paused {
+        state.read_mail(&mut app.companion_inbox);
     }
     let elapsed = (state.clock - state.stage_started) as f32;
     let mut size = radius;
@@ -504,7 +527,59 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
             Duration::from_secs(1)
         });
     }
+    app.vr_overlay_plugin
+        .manager()
+        .present_companion(Presentation {
+            pose,
+            speech: state.speech.clone(),
+            clock: state.clock,
+            visible: !hidden,
+        });
+    if vr_active {
+        ctx.request_repaint_after(Duration::from_millis(33));
+    }
     ctx.data_mut(|data| data.insert_temp(state_id(), state));
+}
+
+/// eframe's hidden-window logic hook runs without a paint pass. Keep the same
+/// Guide/mailbox alive using a monotonic clock rather than frozen egui input time.
+pub(crate) fn tick_background(ctx: &egui::Context, app: &mut crate::XRTranslateApp) {
+    let Some(mut state) = ctx.data(|data| data.get_temp::<Guide>(state_id())) else {
+        return;
+    };
+    if !app.vr_overlay_plugin.manager().companion_active() || app.modal_dialog.open {
+        state.background_tick = None;
+        app.vr_overlay_plugin
+            .manager()
+            .present_companion(Presentation::default());
+        ctx.data_mut(|data| data.insert_temp(state_id(), state));
+        return;
+    }
+    let dt = state.advance_background(std::time::Instant::now());
+    let scene = dialogue::Context::read(app, None);
+    state.follow_scene(&scene, state.center, false);
+    if state.language != app.ui_language {
+        state.language = app.ui_language;
+    }
+    state.read_mail(&mut app.companion_inbox);
+    let expression = state
+        .feedback
+        .update(app, state.clock)
+        .unwrap_or(Expression::Calm);
+    let mut pose = Pose::idle_at(state.clock, expression);
+    let mouth = state.speech.advance(state.clock);
+    state.mouth += (mouth - state.mouth) * (1.0 - (-dt / 0.045).exp());
+    pose.speech = state.mouth;
+    app.vr_overlay_plugin
+        .manager()
+        .present_companion(Presentation {
+            pose,
+            speech: state.speech.clone(),
+            clock: state.clock,
+            visible: true,
+        });
+    ctx.data_mut(|data| data.insert_temp(state_id(), state));
+    ctx.request_repaint_after(Duration::from_millis(33));
 }
 
 fn smooth(t: f32) -> f32 {
@@ -537,12 +612,67 @@ mod tests {
         guide.speech.advance(guide.clock);
         guide.clock = 20.0;
         assert!(guide.ready_to_speak());
-        guide.say(inbox.read().unwrap());
+        guide.read_mail(&mut inbox);
         assert_eq!(
             guide.line,
             "Translation session is not active. Please start translation first."
         );
         assert_eq!(inbox.read(), None);
         assert!(!guide.ready_to_speak());
+    }
+
+    #[test]
+    fn background_clock_reads_mail_without_a_paint_pass() {
+        let scene = dialogue::Context {
+            route: Route::Page(crate::ui::Page::Translation),
+            cue: Cue::Translation,
+            blocked: None,
+        };
+        let mut guide = Guide::new(123.0, UiLanguage::English, Pos2::ZERO, &scene, false);
+        guide.say("Select audio and start.");
+        let mut inbox = Inbox::default();
+        let message = "Translation session is not active. Please start translation first.";
+        inbox.post(message);
+        inbox.post(message);
+        let now = std::time::Instant::now();
+        for tick in 0..=100 {
+            guide.advance_background(now + Duration::from_millis(tick * 100));
+            guide.read_mail(&mut inbox);
+            guide.speech.advance(guide.clock);
+        }
+        assert_eq!(guide.line, message);
+        assert_eq!(inbox.read(), None);
+        assert!((guide.clock - 10.0).abs() < 0.001);
+        assert_eq!(guide.last_wall, 123.0); // No egui wall clock or paint needed.
+        assert!(guide.paused); // Resuming painting skips its first elapsed interval.
+        let before = guide.clock;
+        guide.advance_background(now + Duration::from_secs(200));
+        assert!((guide.clock - before - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn mail_waits_for_entrance_and_pending_dialogue() {
+        let scene = dialogue::Context {
+            route: Route::Page(crate::ui::Page::Translation),
+            cue: Cue::Translation,
+            blocked: None,
+        };
+        let mut guide = Guide::new(0.0, UiLanguage::English, Pos2::ZERO, &scene, true);
+        let mut inbox = Inbox::default();
+        inbox.post("Translation session is not active. Please start translation first.");
+        guide.clock = 20.0;
+        guide.read_mail(&mut inbox);
+        assert_eq!(guide.line, scene.cue.text());
+        guide.enter(Stage::Ready);
+        guide.pending = Some((Cue::Hello, guide.clock));
+        guide.read_mail(&mut inbox);
+        assert_eq!(guide.line, scene.cue.text());
+        guide.pending = None;
+        guide.read_mail(&mut inbox);
+        assert_eq!(
+            guide.line,
+            "Translation session is not active. Please start translation first."
+        );
+        assert_eq!(inbox.read(), None);
     }
 }
