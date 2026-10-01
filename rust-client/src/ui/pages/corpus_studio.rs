@@ -530,12 +530,12 @@ pub(crate) fn render(
                 controller.ensure_service(backend, ui.ctx());
             }
         });
-        if let Some(error) = controller
-            .service_error
-            .as_ref()
-            .or(controller.error.as_ref())
+        if let Some(error) = &controller.service_error {
+            components::error_notice(ui, language, error);
+        } else if let Some(error) = &controller.error
+            && components::dismissible_error_notice(ui, language, error)
         {
-            ui.colored_label(graph_style::ERROR_BORDER, error);
+            controller.error = None;
         }
         if controller.draft_dirty {
             ui.small(tr(
@@ -552,7 +552,9 @@ pub(crate) fn render(
             return;
         };
         let height = ui.available_height().max(360.0);
-        if controller.node_draft.is_some() && ui.available_width() < 700.0 {
+        let is_wide = (ui.available_width() > ui.available_height() && ui.available_width() >= 540.0)
+            || ui.available_width() >= 700.0;
+        if controller.node_draft.is_some() && !is_wide {
             egui::ScrollArea::vertical()
                 .id_salt("corpus_narrow_page")
                 .show(ui, |ui| {
@@ -583,6 +585,55 @@ pub(crate) fn render(
             });
         }
     });
+    if controller.confirm_delete_domain {
+        let domain = controller.snapshot.as_ref().and_then(|snapshot| {
+            snapshot.domains.iter().find(|domain| {
+                controller.selected_domain.as_deref() == Some(domain.id.as_str())
+            }).cloned()
+        });
+        if let Some(domain) = domain {
+            if let Some(confirmed) = crate::ui::modal::confirm(
+                ui.ctx(),
+                ui.make_persistent_id("corpus_delete_domain_confirmation"),
+                language,
+                tr(language, "Delete empty domain"),
+                &domain.title,
+                tr(language, "Confirm delete"),
+                !controller.pending,
+            ) {
+                controller.confirm_delete_domain = false;
+                if confirmed {
+                    controller.send(Command::DeleteDomain(domain.id));
+                }
+            }
+        } else {
+            controller.confirm_delete_domain = false;
+        }
+    } else if controller.confirm_delete {
+        if let Some(draft) = controller.node_draft.clone() {
+            let message = format!(
+                "{}\n\n{}",
+                node_label(&draft, language),
+                tr(language, "Delete this term? Connections will remain idle until a matching term is added."),
+            );
+            if let Some(confirmed) = crate::ui::modal::confirm(
+                ui.ctx(),
+                ui.make_persistent_id("corpus_delete_term_confirmation"),
+                language,
+                tr(language, "Delete term"),
+                &message,
+                tr(language, "Confirm delete"),
+                !controller.pending && !controller.draft_dirty,
+            ) {
+                controller.confirm_delete = false;
+                if confirmed {
+                    controller.send(Command::DeleteNode(draft.id));
+                }
+            }
+        } else {
+            controller.confirm_delete = false;
+        }
+    }
 }
 
 type DomainChildren<'a> = HashMap<Option<&'a str>, Vec<&'a GraphDomain>>;
@@ -686,6 +737,7 @@ fn render_domain_branch(
                     {
                         controller.confirm_delete_domain = true;
                         controller.editing_domain = false;
+                        ui.close();
                     }
                 });
             }
@@ -872,23 +924,6 @@ fn render_browser(
                 if components::secondary_button(ui, tr(language, "Cancel")).clicked() {
                     controller.editing_domain = false;
                     controller.domain_title_edit = domain.title.clone();
-                }
-            });
-        }
-        if controller.confirm_delete_domain {
-            ui.horizontal(|ui| {
-                if components::danger_button_enabled(
-                    ui,
-                    tr(language, "Confirm delete"),
-                    !controller.pending,
-                )
-                .clicked()
-                {
-                    controller.send(Command::DeleteDomain(domain.id.clone()));
-                    controller.confirm_delete_domain = false;
-                }
-                if components::secondary_button(ui, tr(language, "Cancel")).clicked() {
-                    controller.confirm_delete_domain = false;
                 }
             });
         }
@@ -1503,7 +1538,7 @@ fn render_workspace(
         .iter()
         .map(|&i| &snapshot.nodes[i])
         .collect::<Vec<_>>();
-    let canvas_height = (height - (ui.cursor().top() - top) - 24.0).max(220.0);
+    let canvas_height = (height - (ui.cursor().top() - top) - 42.0).max(180.0);
     Frame::new()
         .fill(graph_style::CANVAS_FILL)
         .stroke(Stroke::new(1.0, graph_style::CANVAS_BORDER))
@@ -1583,13 +1618,18 @@ fn render_workspace(
                     .canvas
                     .zoom_at_pointer(canvas, canvas.center(), zoom_step);
             }
-            let canvas_ui = graph_canvas::canvas_viewport(ui, canvas);
-            controller
+            let mut canvas_ui = graph_canvas::canvas_viewport(ui, canvas);
+            let touch_navigating = controller
                 .editor
                 .handle_navigation(canvas, &response, &canvas_ui, true, true);
+            if touch_navigating {
+                canvas_ui.disable();
+                controller.fit_layout = false;
+            }
             if response.dragged_by(egui::PointerButton::Primary)
                 && !controller.editor.wire_active()
-                && !ui.input(|i| i.key_down(egui::Key::Space))
+                && !touch_navigating
+                && !ui.input(|i| i.key_down(egui::Key::Space) || i.any_touches())
             {
                 controller.editor.canvas.pan += ui.input(|i| i.pointer.delta());
             }
@@ -1755,7 +1795,11 @@ fn render_workspace(
                     edge.kind == GraphEdgeKind::Context || !enabled,
                 );
             }
-            if response.clicked() && hovered.is_none() && !controller.draft_dirty {
+            if response.clicked()
+                && !touch_navigating
+                && hovered.is_none()
+                && !controller.draft_dirty
+            {
                 controller.selected_edge = hit_edge.map(|i| edge_key(&snapshot.edges[i]));
                 if hit_edge.is_none() {
                     controller.selected_node = None;
@@ -2517,26 +2561,10 @@ fn render_inspector(
                 }
             });
             if !controller.new_node {
-                if !controller.confirm_delete {
-                    if components::danger_button_enabled(ui, tr(language, "Delete term"),
-                        !controller.pending && !controller.draft_dirty).clicked()
-                    {
-                        controller.confirm_delete = true;
-                    }
-                } else {
-                    ui.colored_label(
-                        graph_style::ERROR_BORDER,
-                        tr(language, "Delete this term? Connections will remain idle until a matching term is added."),
-                    );
-                    if components::danger_button_enabled(ui, tr(language, "Confirm delete"),
-                        !controller.pending && !controller.draft_dirty).clicked()
-                    {
-                        controller.send(Command::DeleteNode(draft.id.clone()));
-                        controller.confirm_delete = false;
-                    }
-                    if components::secondary_button(ui, tr(language, "Cancel")).clicked() {
-                        controller.confirm_delete = false;
-                    }
+                if components::danger_button_enabled(ui, tr(language, "Delete term"),
+                    !controller.pending && !controller.draft_dirty).clicked()
+                {
+                    controller.confirm_delete = true;
                 }
                 ui.separator();
                 ui.label(RichText::new(tr(language, "Connections")).strong());

@@ -52,7 +52,7 @@ pub struct ReqwestClient {
 impl ReqwestClient {
     /// Builds a client with the request timeout used by the legacy backend.
     pub fn new(timeout: Duration) -> Result<Self, TransportError> {
-        reqwest::Client::builder()
+        client_builder()
             .timeout(timeout)
             .pool_idle_timeout(Duration::from_secs(3))
             .tcp_keepalive(Duration::from_secs(5))
@@ -70,7 +70,7 @@ impl ReqwestClient {
     /// should continue to use [`Self::new`] so their proxy configuration is
     /// respected.
     pub fn new_direct(timeout: Duration) -> Result<Self, TransportError> {
-        reqwest::Client::builder()
+        client_builder()
             .no_proxy()
             .timeout(timeout)
             .pool_idle_timeout(Duration::from_secs(3))
@@ -188,4 +188,21 @@ mod tests {
         assert_eq!(response.status, 200);
         assert_eq!(response.body, "{\"status\":\"ok\"}");
     }
+}
+
+fn client_builder() -> reqwest::ClientBuilder {
+    let builder = reqwest::Client::builder();
+    #[cfg(target_os = "android")]
+    {
+        // The managed service is a native process and has no Java VM.
+        let roots = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        builder.use_preconfigured_tls(config)
+    }
+    #[cfg(not(target_os = "android"))]
+    builder
 }

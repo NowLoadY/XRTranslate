@@ -535,6 +535,12 @@ impl BackendManager {
         self.resolve_managed_executable("xr-corpus-server")
     }
 
+    #[cfg(target_os = "android")]
+    fn resolve_managed_executable(&self, name: &str) -> Result<PathBuf, String> {
+        Ok(crate::android::native_executable(name))
+    }
+
+    #[cfg(not(target_os = "android"))]
     fn resolve_managed_executable(&self, name: &str) -> Result<PathBuf, String> {
         let executable = if cfg!(windows) {
             format!("{name}.exe")
@@ -758,6 +764,12 @@ impl Drop for BackendManager {
     }
 }
 
+#[cfg(target_os = "android")]
+fn project_root() -> PathBuf {
+    std::env::current_dir().expect("Application storage initialized")
+}
+
+#[cfg(not(target_os = "android"))]
 fn project_root() -> PathBuf {
     for start in [std::env::current_dir().ok(), std::env::current_exe().ok()] {
         let Some(start) = start else {
@@ -806,6 +818,14 @@ fn config_path_value(path: &std::path::Path) -> String {
     }
 }
 
+#[cfg(target_os = "android")]
+fn preferred_llama_server_path(_layout: &RuntimeLayout, _configured: &str) -> String {
+    crate::android::native_executable("llama-server")
+        .display()
+        .to_string()
+}
+
+#[cfg(not(target_os = "android"))]
 fn preferred_llama_server_path(layout: &RuntimeLayout, configured: &str) -> String {
     let configured = configured.trim();
     if !configured.is_empty() {

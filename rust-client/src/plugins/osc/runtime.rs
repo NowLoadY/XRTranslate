@@ -627,7 +627,9 @@ fn listen_loop(
             Err(error)
                 if matches!(
                     error.kind(),
-                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::Interrupted
                 ) => {}
             Err(error) => {
                 status.lock().last_error = Some(format!("VRChat OSC listener failed: {error}"));

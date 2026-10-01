@@ -13,7 +13,7 @@ use clap::{
 use xrtranslate_assets::{
     MODEL_ASSET_CATALOG, ModelAssetId, ModelAssetsConfig, NativeModelInstaller, ResolvedModelAssets,
 };
-use xrtranslate_config::AppConfig;
+use xrtranslate_config::{AppConfig, RuntimeLayout};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -31,6 +31,13 @@ struct Arguments {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Prepare verified shared application resources for packaging.
+    PrepareResources {
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value = "target/resource-downloads")]
+        cache: PathBuf,
+    },
     /// Download one immutable model package, verify it, and atomically enable it.
     Install {
         #[arg(value_parser = package_value_parser())]
@@ -79,6 +86,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let assets = asset_config.resolve(project_root);
 
     match args.command {
+        Command::PrepareResources { output, cache } => {
+            prepare_resources(&config, &output, &cache).await?
+        }
         Command::Install { package } => install(assets, package_id(&package)).await?,
         Command::Verify { package } => {
             verify(&assets, package.as_deref().map(package_id))?;
@@ -142,4 +152,72 @@ fn verify(
         .collect::<Vec<_>>()
         .join("\n");
     Err(message.into())
+}
+
+async fn prepare_resources(
+    config: &AppConfig,
+    output: &std::path::Path,
+    cache: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    use xrtranslate_download::{DownloadClient, DownloadSpec};
+    let client = DownloadClient::new("XRTranslate-build")?;
+    let mut included = std::collections::HashSet::new();
+    for asset in config.model_manager.resolved_bundled_models() {
+        if !included.insert(asset.relative_path.clone()) {
+            continue;
+        }
+        let relative = std::path::Path::new(&asset.relative_path);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return Err("Invalid resource path".into());
+        }
+        let destination = output.join(relative);
+        let (bytes, digest) = match asset.relative_path.as_str() {
+            RuntimeLayout::VAD_MODEL_PATH => (
+                RuntimeLayout::VAD_MODEL_BYTES,
+                RuntimeLayout::VAD_MODEL_SHA256,
+            ),
+            RuntimeLayout::DENOISE_MODEL_PATH => (
+                RuntimeLayout::DENOISE_MODEL_BYTES,
+                RuntimeLayout::DENOISE_MODEL_SHA256,
+            ),
+            RuntimeLayout::SPEAKER_MODEL_PATH => (
+                RuntimeLayout::SPEAKER_MODEL_BYTES,
+                RuntimeLayout::SPEAKER_MODEL_SHA256,
+            ),
+            _ => return Err("Unknown bundled resource".into()),
+        };
+        if destination.is_file() && destination.metadata()?.len() == bytes {
+            let content = std::fs::read(&destination)?;
+            if format!("{:x}", Sha256::digest(&content)) == digest {
+                continue;
+            }
+        }
+        std::fs::create_dir_all(destination.parent().ok_or("Resource directory missing")?)?;
+        let spec = DownloadSpec::verified(&asset.label, &asset.url, asset.bytes, &asset.sha256);
+        if let Some(archive_path) = &asset.archive_path {
+            std::fs::create_dir_all(&cache)?;
+            let archive = cache.join(format!("{}.zip", asset.name));
+            client.download_to(spec, &archive, |_| {}).await?;
+            let mut zip = zip::ZipArchive::new(std::fs::File::open(&archive)?)?;
+            let file = zip.by_name(archive_path)?;
+            if file.size() != bytes {
+                return Err("Bundled resource size does not match".into());
+            }
+            let mut data = Vec::new();
+            file.take(bytes + 1).read_to_end(&mut data)?;
+            if data.len() as u64 != bytes || format!("{:x}", Sha256::digest(&data)) != digest {
+                return Err("Bundled resource checksum does not match".into());
+            }
+            std::fs::write(&destination, data)?;
+        } else {
+            client.download_to(spec, &destination, |_| {}).await?;
+        }
+    }
+    Ok(())
 }

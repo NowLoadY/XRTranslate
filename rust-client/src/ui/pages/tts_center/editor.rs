@@ -1,5 +1,5 @@
 use crate::{
-    i18n::{UiLanguage, tr, tr_dynamic},
+    i18n::{UiLanguage, tr},
     ui::components,
 };
 use eframe::egui;
@@ -36,7 +36,6 @@ pub fn show(
     language: UiLanguage,
     asr_languages: LanguageSet,
     busy: bool,
-    error: Option<&str>,
 ) -> (bool, bool) {
     let mut open = true;
     let mut save = false;
@@ -58,11 +57,12 @@ pub fn show(
                         .desired_width(f32::INFINITY),
                 );
                 ui.add_space(8.0);
-                if components::secondary_button(ui, tr(language, "Choose reference audio"))
-                    .clicked()
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Audio", &["wav", "mp3", "flac", "ogg", "m4a", "aac"])
-                        .pick_file()
+                let choose_reference =
+                    components::secondary_button(ui, tr(language, "Choose reference audio"))
+                        .clicked();
+                if let Some(path) = crate::file_dialog::FileDialog::new()
+                    .add_filter("Audio", &["wav", "mp3", "flac", "ogg", "m4a", "aac"])
+                    .pick_file(ui.ctx(), "tts_reference_audio", choose_reference)
                 {
                     if draft.name.trim().is_empty() {
                         draft.name = path
@@ -122,12 +122,6 @@ pub fn show(
                         .char_limit(500),
                 );
                 ui.add_space(12.0);
-                if let Some(error) = error {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(165, 60, 65),
-                        tr_dynamic(language, error),
-                    );
-                }
                 ui.horizontal(|ui| {
                     save = components::primary_button_enabled(
                         ui,

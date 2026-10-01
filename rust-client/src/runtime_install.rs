@@ -15,17 +15,23 @@ use std::{
 };
 use xrtranslate_config::{
     AppConfig, LlamaCppArchiveFormat, LlamaCppAssetKind, LlamaCppRuntimeConfig,
-    ManagedRuntimeArchive, NativeRuntimeBackend, NativeRuntimeSelection, OnnxRuntimeConfig,
+    NativeRuntimeBackend, NativeRuntimeSelection, OnnxRuntimeConfig,
     RuntimeLayout, RuntimeRequirements,
 };
+#[cfg(any(not(target_os = "android"), test))]
+use xrtranslate_config::ManagedRuntimeArchive;
 use xrtranslate_download::{DownloadCancellation, DownloadClient, DownloadSource, DownloadSpec};
 
+#[cfg(any(not(target_os = "android"), test))]
 const TURING_COMPUTE_CAPABILITY: (u16, u16) = (7, 5);
+#[cfg(any(not(target_os = "android"), test))]
 const BLACKWELL_MINIMUM_CUDA: (u16, u16) = (12, 8);
 mod hardware;
 pub use hardware::LocalModelAvailability;
 pub(crate) use hardware::NVIDIA_APP_URL;
-use hardware::{Hardware, NvidiaCuda, VulkanGpu};
+use hardware::Hardware;
+#[cfg(any(not(target_os = "android"), test))]
+use hardware::{NvidiaCuda, VulkanGpu};
 #[cfg(test)]
 use hardware::{cuda_version_from_nvidia_smi, local_model_availability, parse_nvidia_gpu_rows};
 
@@ -589,8 +595,10 @@ struct ReleaseAsset {
     archive_format: LlamaCppArchiveFormat,
     archive_directory: String,
     kind: LlamaCppAssetKind,
+    #[cfg(any(not(target_os = "android"), test))]
     target: String,
     cuda_version: Option<String>,
+    #[cfg(any(not(target_os = "android"), test))]
     executable: String,
     required_files: Vec<String>,
     required_file_prefixes: Vec<String>,
@@ -603,6 +611,7 @@ struct ManagedRuntimeAsset {
     size: u64,
     sha256: String,
     archive_format: LlamaCppArchiveFormat,
+    #[cfg(any(not(target_os = "android"), test))]
     target: String,
     cuda_version: String,
     archive_directory: String,
@@ -1904,16 +1913,6 @@ fn clear_runtime_staging(project_root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Filesystem-backed startup preflight. This avoids treating the installer's
-/// empty, not-yet-planned UI state as proof that the runtime is missing.
-#[cfg(test)]
-pub fn configured_runtime_is_ready(
-    project_root: &Path,
-    requirements: RuntimeRequirements,
-) -> Result<bool, String> {
-    configured_runtime_plan(project_root, requirements).map(|plan| plan.is_ready())
-}
-
 fn configured_runtime_plan(
     project_root: &Path,
     requirements: RuntimeRequirements,
@@ -1926,9 +1925,8 @@ fn configured_runtime_plan(
         .collect::<Vec<_>>();
     let preferred_gpu = config.model_manager.preferred_gpu.as_deref();
     let hardware = Hardware::detect(preferred_gpu);
-    let local_models = hardware.availability;
+    let local_models = hardware.availability.clone();
     let requires_managed_model = requirements.llama_cpp || requirements.onnx_tts;
-    let required_model_vram_bytes = required_local_model_vram_bytes(&config);
     let blocking_error = requires_managed_model
         .then(|| {
             model_assets
@@ -1936,6 +1934,12 @@ fn configured_runtime_plan(
                 .map(|id| xrtranslate_assets::manifest_for(*id))
                 .find(|model| !local_models.supports(model.hardware))
                 .map(|model| {
+                    if local_models.is_cpu() {
+                        return format!(
+                            "{} cannot run with the available memory and processor: {}",
+                            model.label, local_models
+                        );
+                    }
                     format!(
                         "{} requires {} with at least {:.0} GiB of device memory. Detected: {}",
                         model.id,
@@ -1946,50 +1950,73 @@ fn configured_runtime_plan(
                 })
         })
         .flatten();
-    let eligible_nvidia = hardware.nvidia.as_ref().filter(|_| {
-        matches!(&local_models, LocalModelAvailability::Available { cuda_memory_bytes, .. }
-            if *cuda_memory_bytes >= required_model_vram_bytes)
-    });
-    let eligible_amd = hardware
-        .amd
-        .as_ref()
-        .filter(|gpu| gpu.memory_bytes >= required_model_vram_bytes);
-    // ONNX CUDA deliberately reuses the declared llama.cpp CUDA redistributable
-    // catalogue. Small bundled ONNX components do not participate in this plan.
-    let llama_assets = (requirements.llama_cpp || requirements.onnx_cuda)
-        .then(|| release_assets_from_config(&config.model_manager.llama_cpp))
-        .transpose()?
-        .unwrap_or_default();
-    let llama_cpp = (requirements.llama_cpp && blocking_error.is_none())
-        .then(|| select_llama_assets(&llama_assets, eligible_nvidia, eligible_amd))
-        .transpose()?;
-    let onnx = if requirements.onnx_tts && requirements.onnx_cuda && blocking_error.is_none() {
-        let providers = onnx_assets_from_config(&config.model_manager.onnxruntime)?;
-        let cuda_dependencies =
-            cuda_dependency_assets_from_config(&config.model_manager.onnxruntime)?;
-        let cudnn_runtimes = cudnn_assets_from_config(&config.model_manager.onnxruntime)?;
-        let cuda_runtimes = llama_assets
-            .iter()
-            .filter(|asset| asset.kind == LlamaCppAssetKind::CudaRuntime)
-            .cloned()
-            .collect::<Vec<_>>();
-        Some(select_onnx_assets_for_hardware(
-            &providers,
-            &cuda_runtimes,
-            &cuda_dependencies,
-            &cudnn_runtimes,
-            eligible_nvidia,
-        )?)
-    } else {
-        None
+    #[cfg(target_os = "android")]
+    let (llama_cpp, onnx, downloads, marker_ready) = {
+        let executable = crate::android::native_executable("llama-server");
+        let core = crate::android::native_executable("onnxruntime");
+        let marker_ready = crate::android::resources_ready()
+            && (!requirements.llama_cpp || executable.is_file())
+            && (!requirements.onnx_tts || core.is_file())
+            && project_root.join("runtime/native-runtime.json").is_file();
+        let llama_cpp = requirements.llama_cpp.then(|| RuntimeSelection {
+            assets: Vec::new(),
+            backend: NativeRuntimeBackend::Cpu,
+            executable: executable.display().to_string(),
+            vulkan_device: None,
+            fallback_reason: None,
+        });
+        (llama_cpp, None, Vec::new(), marker_ready)
     };
-    let mut downloads = missing_base_bundled_downloads(project_root, &config);
-    downloads.extend(missing_runtime_downloads(
-        project_root,
-        llama_cpp.as_ref(),
-        onnx.as_ref(),
-    ));
-    let marker_ready = runtime_marker_matches_plan(project_root, llama_cpp.as_ref(), onnx.as_ref());
+    #[cfg(not(target_os = "android"))]
+    let (llama_cpp, onnx, downloads, marker_ready) = {
+        let required_model_vram_bytes = required_local_model_vram_bytes(&config);
+        let eligible_nvidia = hardware.nvidia.as_ref().filter(|_| {
+            matches!(&local_models, LocalModelAvailability::Available { cuda_memory_bytes, .. }
+                if *cuda_memory_bytes >= required_model_vram_bytes)
+        });
+        let eligible_amd = hardware
+            .amd
+            .as_ref()
+            .filter(|gpu| gpu.memory_bytes >= required_model_vram_bytes);
+        // ONNX CUDA deliberately reuses the declared llama.cpp CUDA redistributable
+        // catalogue. Small bundled ONNX components do not participate in this plan.
+        let llama_assets = (requirements.llama_cpp || requirements.onnx_cuda)
+            .then(|| release_assets_from_config(&config.model_manager.llama_cpp))
+            .transpose()?
+            .unwrap_or_default();
+        let llama_cpp = (requirements.llama_cpp && blocking_error.is_none())
+            .then(|| select_llama_assets(&llama_assets, eligible_nvidia, eligible_amd))
+            .transpose()?;
+        let onnx = if requirements.onnx_tts && requirements.onnx_cuda && blocking_error.is_none() {
+            let providers = onnx_assets_from_config(&config.model_manager.onnxruntime)?;
+            let cuda_dependencies =
+                cuda_dependency_assets_from_config(&config.model_manager.onnxruntime)?;
+            let cudnn_runtimes = cudnn_assets_from_config(&config.model_manager.onnxruntime)?;
+            let cuda_runtimes = llama_assets
+                .iter()
+                .filter(|asset| asset.kind == LlamaCppAssetKind::CudaRuntime)
+                .cloned()
+                .collect::<Vec<_>>();
+            Some(select_onnx_assets_for_hardware(
+                &providers,
+                &cuda_runtimes,
+                &cuda_dependencies,
+                &cudnn_runtimes,
+                eligible_nvidia,
+            )?)
+        } else {
+            None
+        };
+        let mut downloads = missing_base_bundled_downloads(project_root, &config);
+        downloads.extend(missing_runtime_downloads(
+            project_root,
+            llama_cpp.as_ref(),
+            onnx.as_ref(),
+        ));
+        let marker_ready =
+            runtime_marker_matches_plan(project_root, llama_cpp.as_ref(), onnx.as_ref());
+        (llama_cpp, onnx, downloads, marker_ready)
+    };
     Ok(RuntimePlan {
         llama_cpp,
         onnx,
@@ -2002,6 +2029,7 @@ fn configured_runtime_plan(
     })
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn required_local_model_vram_bytes(config: &AppConfig) -> u64 {
     config
         .active_native_model_assets()
@@ -2020,6 +2048,7 @@ fn required_local_model_vram_bytes(config: &AppConfig) -> u64 {
 /// represented by the exact marker the backend will consume. File presence
 /// alone is insufficient: without this binding the backend cannot safely know
 /// which CUDA/ONNX/cuDNN closure it is allowed to load.
+#[cfg(any(not(target_os = "android"), test))]
 fn runtime_marker_matches_plan(
     project_root: &Path,
     llama: Option<&RuntimeSelection>,
@@ -2121,6 +2150,7 @@ fn runtime_marker_matches_plan(
     true
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn missing_base_bundled_downloads(project_root: &Path, config: &AppConfig) -> Vec<RuntimeDownload> {
     let layout = config.runtime_layout(project_root);
     let target = current_runtime_target();
@@ -2439,6 +2469,7 @@ fn load_onnx_runtime_config(project_root: &Path) -> Result<OnnxRuntimeConfig, St
         })
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn onnx_assets_from_config(config: &OnnxRuntimeConfig) -> Result<Vec<ManagedRuntimeAsset>, String> {
     if config.release.trim().is_empty() {
         return Err("model_manager.onnxruntime.release is empty in config.json.".into());
@@ -2449,6 +2480,7 @@ fn onnx_assets_from_config(config: &OnnxRuntimeConfig) -> Result<Vec<ManagedRunt
     managed_runtime_assets_from_config("model_manager.onnxruntime.downloads", &config.downloads)
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn cudnn_assets_from_config(
     config: &OnnxRuntimeConfig,
 ) -> Result<Vec<ManagedRuntimeAsset>, String> {
@@ -2461,6 +2493,7 @@ fn cudnn_assets_from_config(
     )
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn cuda_dependency_assets_from_config(
     config: &OnnxRuntimeConfig,
 ) -> Result<Vec<ManagedRuntimeAsset>, String> {
@@ -2475,6 +2508,7 @@ fn cuda_dependency_assets_from_config(
     )
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn managed_runtime_assets_from_config(
     config_path: &str,
     downloads: &[ManagedRuntimeArchive],
@@ -2547,6 +2581,7 @@ fn managed_runtime_assets_from_config(
         .collect()
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn select_onnx_assets_for_hardware(
     providers: &[ManagedRuntimeAsset],
     cuda_runtimes: &[ReleaseAsset],
@@ -2617,6 +2652,7 @@ fn select_onnx_assets_for_hardware(
     })
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn release_assets_from_config(config: &LlamaCppRuntimeConfig) -> Result<Vec<ReleaseAsset>, String> {
     if config.release.trim().is_empty() {
         return Err("model_manager.llama_cpp.release is empty in config.json.".into());
@@ -2689,6 +2725,7 @@ fn release_assets_from_config(config: &LlamaCppRuntimeConfig) -> Result<Vec<Rele
         .collect()
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn select_llama_assets(
     assets: &[ReleaseAsset],
     nvidia: Option<&NvidiaCuda>,
@@ -2720,6 +2757,7 @@ fn select_llama_assets(
     })
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn select_cuda_assets(
     assets: &[ReleaseAsset],
     nvidia: Option<&NvidiaCuda>,
@@ -2831,6 +2869,7 @@ fn select_cuda_assets(
 /// Converts persisted runtime metadata into the installer representation.
 /// The filename checks here are intentionally limited to legacy entries that
 /// predate the declarative fields; new entries never use vendor filenames.
+#[cfg(any(not(target_os = "android"), test))]
 fn normalize_runtime_metadata(
     download: &xrtranslate_config::LlamaCppDownload,
     name: &str,
@@ -2904,6 +2943,7 @@ fn normalize_runtime_metadata(
     ))
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn best_cuda_asset(
     assets: &[ReleaseAsset],
     supported: (u16, u16),
@@ -2931,6 +2971,7 @@ fn current_runtime_target() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn legacy_target_from_name(name: &str) -> String {
     if name.contains("-win-") {
         "windows-x86_64".into()
@@ -2945,6 +2986,7 @@ fn parse_version(value: &str) -> Option<(u16, u16)> {
     parts.next().is_none().then_some(version)
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn cuda_supports_compute_capability(
     cuda_version: (u16, u16),
     compute_capability: (u16, u16),
@@ -2952,10 +2994,12 @@ fn cuda_supports_compute_capability(
     cuda_version.0 < 13 || compute_capability >= TURING_COMPUTE_CAPABILITY
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn format_version(version: (u16, u16)) -> String {
     format!("{}.{}", version.0, version.1)
 }
 
+#[cfg(any(not(target_os = "android"), test))]
 fn minimum_cuda_for_compute_capability(capability: (u16, u16)) -> (u16, u16) {
     if capability.0 >= 10 {
         BLACKWELL_MINIMUM_CUDA

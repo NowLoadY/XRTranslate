@@ -27,20 +27,7 @@ if [[ -e "${TARGET_DIR}" ]]; then
   exit 2
 fi
 
-bundled_resources=(
-  models/silero-vad/src/silero_vad/data/silero_vad.onnx
-  models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx
-  models/gtcrn/gtcrn_simple.onnx
-  runtime/onnxruntime/cpu/libonnxruntime.so.1.28.0
-)
-for resource in XR-Corpus/corpora/default.sqlite "${bundled_resources[@]}"; do
-  if [[ ! -f "${resource}" ]]; then
-    printf 'Required release resource is missing: %s\n' "${resource}" >&2
-    exit 2
-  fi
-done
-
-cargo_args=(build --locked --target-dir "${ROOT_DIR}/target" -p rust-client -p xrtranslate-backend --features xrtranslate-backend/managed-ort --release)
+cargo_args=(build --locked --target-dir "${ROOT_DIR}/target" -p rust-client -p xrtranslate-backend -p xrtranslate-installer -p xrtranslate-updater -p xrtranslate-packager --features xrtranslate-backend/managed-ort --release)
 if [[ -n "${FEATURES}" ]]; then
   cargo_args+=(--features "${FEATURES}")
 fi
@@ -48,32 +35,36 @@ cargo "${cargo_args[@]}"
 cargo build --locked --manifest-path XR-Corpus/Cargo.toml \
   --target-dir "${ROOT_DIR}/target" -p xr-corpus-server --release
 
-mkdir -p "$(dirname "${TARGET_DIR}")"
-STAGE_DIR="$(mktemp -d "${TARGET_DIR}.tmp.XXXXXX")"
-trap 'rm -r -- "${STAGE_DIR}"' EXIT
-chmod 0755 "${STAGE_DIR}"
-mkdir -p "${STAGE_DIR}/bin" "${STAGE_DIR}/resources" "${STAGE_DIR}/XR-Corpus" "${STAGE_DIR}/corpora" "${STAGE_DIR}/runtime"
-install -m 0755 target/release/rust-client "${STAGE_DIR}/xrtranslate"
-install -m 0755 target/release/xrtranslate-backend target/release/xr-corpus-server "${STAGE_DIR}/bin/"
-sed 's|XR-Corpus/corpora/default.sqlite|corpora/default.sqlite|' config.json > "${STAGE_DIR}/config.json"
-install -m 0644 LICENSE LICENSE-MIT "${STAGE_DIR}/"
-install -m 0644 XR-Corpus/LICENSE "${STAGE_DIR}/XR-Corpus/"
-cp -a rust-client/resources/{branding,icons,plugins} "${STAGE_DIR}/resources/"
-install -m 0644 XR-Corpus/corpora/default.sqlite "${STAGE_DIR}/corpora/default.sqlite"
-for resource in "${bundled_resources[@]}"; do
-  install -D -m 0644 "${resource}" "${STAGE_DIR}/${resource}"
-done
-# Ship the same curated references embedded in the app, alongside their attribution.
-for voice in crates/xrtranslate-assets/resources/voices/*; do
-  for resource in reference.wav reference.txt LICENSE SOURCE.md; do
-    install -D -m 0644 "${voice}/${resource}" "${STAGE_DIR}/resources/voices/$(basename "${voice}")/${resource}"
-  done
-done
-# Runtime data is never copied wholesale from the development machine.
-for private in debug.md voice_clones recordings user-config.json rust-client-settings.json; do
-  test ! -e "${STAGE_DIR}/runtime/${private}"
-done
-mv -- "${STAGE_DIR}" "${TARGET_DIR}"
-trap - EXIT
+RESOURCE_DIR="${ROOT_DIR}/target/release-resources/linux-x86_64"
+mkdir -p "${RESOURCE_DIR}"
+# Use distributable defaults; private configuration and installed large models stay local.
+git show HEAD:config.json > "${RESOURCE_DIR}/config.json"
+target/release/xrtranslate-installer --config "${RESOURCE_DIR}/config.json" \
+  prepare-resources --output "${RESOURCE_DIR}" --cache "${RESOURCE_DIR}/downloads"
+
+ONNX_ARCHIVE="${RESOURCE_DIR}/onnxruntime-linux-x64-1.28.0.tgz"
+cargo run --locked --release -p xrtranslate-download --example fetch -- \
+  https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-1.28.0.tgz \
+  9125960 a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407 "${ONNX_ARCHIVE}"
+tar -xzf "${ONNX_ARCHIVE}" -C "${RESOURCE_DIR}" \
+  onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0 \
+  onnxruntime-linux-x64-1.28.0/LICENSE \
+  onnxruntime-linux-x64-1.28.0/ThirdPartyNotices.txt
+ONNX_DIR="${RESOURCE_DIR}/onnxruntime-linux-x64-1.28.0"
+
+target/release/xrtranslate-packager \
+  --rust-client-bin target/release/rust-client \
+  --backend-bin target/release/xrtranslate-backend \
+  --corpus-bin target/release/xr-corpus-server \
+  --installer-bin target/release/xrtranslate-installer \
+  --updater-bin target/release/xrtranslate-updater \
+  --config "${RESOURCE_DIR}/config.json" \
+  --resources-dir rust-client/resources \
+  --seed-database XR-Corpus/corpora/default.sqlite \
+  --onnx-runtime-cpu "${ONNX_DIR}/lib/libonnxruntime.so.1.28.0" \
+  --onnx-runtime-license "${ONNX_DIR}/LICENSE" \
+  --onnx-runtime-notices "${ONNX_DIR}/ThirdPartyNotices.txt" \
+  --output "${TARGET_DIR}"
+ln -s "$(basename "${TARGET_DIR}"/XRTranslate-v*)" "${TARGET_DIR}/xrtranslate"
 
 printf 'Linux release staged at %s\n' "${TARGET_DIR}"

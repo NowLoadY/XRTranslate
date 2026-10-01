@@ -93,6 +93,10 @@ pub struct AppUpdateManager {
 }
 
 impl AppUpdateManager {
+    pub const fn is_supported() -> bool {
+        cfg!(any(target_os = "windows", target_os = "linux"))
+    }
+
     pub fn set_proxy_url(&mut self, proxy_url: &str) {
         self.proxy_url = (!proxy_url.trim().is_empty()).then(|| proxy_url.trim().to_owned());
     }
@@ -115,7 +119,7 @@ impl AppUpdateManager {
     }
 
     pub fn check(&mut self) -> Result<(), String> {
-        if self.is_busy() {
+        if !Self::is_supported() || self.is_busy() {
             return Ok(());
         }
         let (sender, receiver) = unbounded();
@@ -282,7 +286,7 @@ async fn check_latest_release(
     proxy_url: Option<&str>,
     channel: UpdateChannel,
 ) -> Result<Option<ReleaseAsset>, String> {
-    if !cfg!(any(target_os = "windows", target_os = "linux")) {
+    if !AppUpdateManager::is_supported() {
         return Err("Updates are available for Windows and Linux builds only.".into());
     }
     let client = http_client(proxy_url)?;

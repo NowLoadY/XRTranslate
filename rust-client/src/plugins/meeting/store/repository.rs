@@ -304,123 +304,55 @@ impl MeetingStore {
     /// Inserts a new ASR segment, or revises the existing segment with the same
     /// `(meeting_id, external_key)`. Revisions preserve database id, topic and order.
     pub fn upsert_segment(&self, new_segment: NewSegment) -> Result<Segment> {
-        validate_segment(&new_segment)?;
-        let now = now_ms();
         let mut connection = self.connection()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        ensure_meeting_exists(&transaction, &new_segment.meeting_id)?;
-        ensure_topic_belongs_to(&transaction, &new_segment.topic_id, &new_segment.meeting_id)?;
-        let existing: Option<(String, String, i64, i64)> = transaction
-            .query_row(
-                "SELECT id, topic_id, sequence, created_at_ms FROM meeting_segments
-                 WHERE meeting_id = ?1 AND external_key = ?2",
-                params![new_segment.meeting_id, new_segment.external_key],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()?;
-        if let Some((_, existing_topic_id, _, _)) = &existing {
-            if existing_topic_id != &new_segment.topic_id {
-                return Err(MeetingStoreError::InvalidData(format!(
-                    "segment {} already belongs to topic {existing_topic_id}",
-                    new_segment.external_key
-                )));
-            }
-        }
-        let segment_id = existing
-            .as_ref()
-            .map(|item| item.0.clone())
-            .unwrap_or_else(new_id);
-        let sequence: i64 = match existing.as_ref() {
-            Some(item) => item.2,
-            None => transaction.query_row(
-                "SELECT COALESCE(MAX(sequence), -1) + 1 FROM meeting_segments WHERE topic_id = ?1",
-                params![new_segment.topic_id],
-                |row| row.get(0),
-            )?,
-        };
-        let created_at_ms = existing.as_ref().map(|item| item.3).unwrap_or(now);
-        let canonical_speaker_id = match new_segment.speaker_token.as_deref() {
-            Some(token) => transaction
-                .query_row(
-                    "SELECT canonical_speaker_id FROM speaker_aliases
-                     WHERE meeting_id = ?1 AND recognition_run_id = ?2 AND speaker_token = ?3",
-                    params![
-                        new_segment.meeting_id,
-                        new_segment.recognition_run_id,
-                        token
-                    ],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?,
-            None => None,
-        };
-        if existing.is_some() {
-            transaction.execute(
-                "UPDATE meeting_segments
-                 SET original_text = ?1, translated_text = ?2, start_ms = ?3, end_ms = ?4,
-                     source = ?5, recognition_run_id = ?6, speaker_token = ?7,
-                     canonical_speaker_id = ?8, is_final = ?9, updated_at_ms = ?10
-                 WHERE id = ?11",
-                params![
-                    new_segment.original_text,
-                    new_segment.translated_text,
-                    new_segment.start_ms,
-                    new_segment.end_ms,
-                    new_segment.source.as_str(),
-                    new_segment.recognition_run_id,
-                    new_segment.speaker_token,
-                    canonical_speaker_id,
-                    new_segment.is_final,
-                    now,
-                    segment_id,
-                ],
-            )?;
-        } else {
-            transaction.execute(
-                "INSERT INTO meeting_segments (
-                     id, external_key, meeting_id, topic_id, sequence, original_text, translated_text,
-                     start_ms, end_ms, source, recognition_run_id, speaker_token, canonical_speaker_id,
-                     is_final, created_at_ms, updated_at_ms
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)",
-                params![
-                    segment_id,
-                    new_segment.external_key,
-                    new_segment.meeting_id,
-                    new_segment.topic_id,
-                    sequence,
-                    new_segment.original_text,
-                    new_segment.translated_text,
-                    new_segment.start_ms,
-                    new_segment.end_ms,
-                    new_segment.source.as_str(),
-                    new_segment.recognition_run_id,
-                    new_segment.speaker_token,
-                    canonical_speaker_id,
-                    new_segment.is_final,
-                    now,
-                ],
-            )?;
-        }
-        touch_meeting(&transaction, &new_segment.meeting_id, now)?;
+        let segment = upsert_segment_in(&transaction, new_segment, now_ms())?;
         transaction.commit()?;
-        Ok(Segment {
-            id: segment_id,
-            external_key: new_segment.external_key,
-            meeting_id: new_segment.meeting_id,
-            topic_id: new_segment.topic_id,
-            sequence,
-            original_text: new_segment.original_text,
-            translated_text: new_segment.translated_text,
-            start_ms: new_segment.start_ms,
-            end_ms: new_segment.end_ms,
-            source: new_segment.source,
-            recognition_run_id: new_segment.recognition_run_id,
-            speaker_token: new_segment.speaker_token,
-            canonical_speaker_id,
-            is_final: new_segment.is_final,
-            created_at_ms,
-            updated_at_ms: now,
-        })
+        Ok(segment)
+    }
+
+    /// Atomically replaces only keys owned by the previous live batch. Annotated
+    /// rows remain available as evidence even when recognition removes them.
+    pub fn replace_segments(
+        &self,
+        segments: Vec<NewSegment>,
+        previous_keys: &[String],
+    ) -> Result<()> {
+        let Some(first) = segments.first() else {
+            return Ok(());
+        };
+        let meeting = first.meeting_id.clone();
+        let topic = first.topic_id.clone();
+        let run = first.recognition_run_id.clone();
+        if segments.iter().any(|segment| {
+            segment.meeting_id != meeting
+                || segment.topic_id != topic
+                || segment.recognition_run_id != run
+        }) {
+            return Err(MeetingStoreError::InvalidData(
+                "A segment batch must belong to one recording and topic".into(),
+            ));
+        }
+        let retained: std::collections::HashSet<_> = segments
+            .iter()
+            .map(|segment| segment.external_key.clone())
+            .collect();
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now = now_ms();
+        for segment in segments {
+            upsert_segment_in(&transaction, segment, now)?;
+        }
+        for key in previous_keys.iter().filter(|key| !retained.contains(*key)) {
+            transaction.execute(
+                "DELETE FROM meeting_segments WHERE meeting_id = ?1 AND topic_id = ?2
+                 AND recognition_run_id = ?3 AND external_key = ?4
+                 AND NOT EXISTS (SELECT 1 FROM segment_markers WHERE segment_id = meeting_segments.id)",
+                params![meeting, topic, run, key],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
     /// Compatibility alias with upsert semantics; callers should prefer
@@ -663,6 +595,132 @@ impl MeetingStore {
         ensure_meeting_exists(&connection, meeting_id)?;
         query_minutes(&connection, meeting_id)
     }
+}
+
+fn upsert_segment_in(
+    transaction: &Transaction<'_>,
+    mut new_segment: NewSegment,
+    now: i64,
+) -> Result<Segment> {
+    validate_segment(&new_segment)?;
+    ensure_meeting_exists(&transaction, &new_segment.meeting_id)?;
+    ensure_topic_belongs_to(&transaction, &new_segment.topic_id, &new_segment.meeting_id)?;
+    let existing: Option<(String, String, i64, i64, String, Option<String>)> = transaction
+        .query_row(
+            "SELECT id, topic_id, sequence, created_at_ms, original_text, translated_text FROM meeting_segments
+             WHERE meeting_id = ?1 AND external_key = ?2",
+            params![new_segment.meeting_id, new_segment.external_key],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+        )
+        .optional()?;
+    if let Some((_, existing_topic_id, ..)) = &existing {
+        if existing_topic_id != &new_segment.topic_id {
+            return Err(MeetingStoreError::InvalidData(format!(
+                "segment {} already belongs to topic {existing_topic_id}",
+                new_segment.external_key
+            )));
+        }
+    }
+    if new_segment.translated_text.is_none()
+        && let Some((_, _, _, _, source, translated)) = &existing
+        && *source == new_segment.original_text
+    {
+        new_segment.translated_text = translated.clone();
+    }
+    let segment_id = existing
+        .as_ref()
+        .map(|item| item.0.clone())
+        .unwrap_or_else(new_id);
+    let sequence: i64 = match existing.as_ref() {
+        Some(item) => item.2,
+        None => transaction.query_row(
+            "SELECT COALESCE(MAX(sequence), -1) + 1 FROM meeting_segments WHERE topic_id = ?1",
+            params![new_segment.topic_id],
+            |row| row.get(0),
+        )?,
+    };
+    let created_at_ms = existing.as_ref().map(|item| item.3).unwrap_or(now);
+    let canonical_speaker_id = match new_segment.speaker_token.as_deref() {
+        Some(token) => transaction
+            .query_row(
+                "SELECT canonical_speaker_id FROM speaker_aliases
+                 WHERE meeting_id = ?1 AND recognition_run_id = ?2 AND speaker_token = ?3",
+                params![
+                    new_segment.meeting_id,
+                    new_segment.recognition_run_id,
+                    token
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?,
+        None => None,
+    };
+    if existing.is_some() {
+        transaction.execute(
+            "UPDATE meeting_segments
+             SET original_text = ?1, translated_text = ?2, start_ms = ?3, end_ms = ?4,
+                 source = ?5, recognition_run_id = ?6, speaker_token = ?7,
+                 canonical_speaker_id = ?8, is_final = ?9, updated_at_ms = ?10
+             WHERE id = ?11",
+            params![
+                new_segment.original_text,
+                new_segment.translated_text,
+                new_segment.start_ms,
+                new_segment.end_ms,
+                new_segment.source.as_str(),
+                new_segment.recognition_run_id,
+                new_segment.speaker_token,
+                canonical_speaker_id,
+                new_segment.is_final,
+                now,
+                segment_id,
+            ],
+        )?;
+    } else {
+        transaction.execute(
+            "INSERT INTO meeting_segments (
+                 id, external_key, meeting_id, topic_id, sequence, original_text, translated_text,
+                 start_ms, end_ms, source, recognition_run_id, speaker_token, canonical_speaker_id,
+                 is_final, created_at_ms, updated_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)",
+            params![
+                segment_id,
+                new_segment.external_key,
+                new_segment.meeting_id,
+                new_segment.topic_id,
+                sequence,
+                new_segment.original_text,
+                new_segment.translated_text,
+                new_segment.start_ms,
+                new_segment.end_ms,
+                new_segment.source.as_str(),
+                new_segment.recognition_run_id,
+                new_segment.speaker_token,
+                canonical_speaker_id,
+                new_segment.is_final,
+                now,
+            ],
+        )?;
+    }
+    touch_meeting(&transaction, &new_segment.meeting_id, now)?;
+    Ok(Segment {
+        id: segment_id,
+        external_key: new_segment.external_key,
+        meeting_id: new_segment.meeting_id,
+        topic_id: new_segment.topic_id,
+        sequence,
+        original_text: new_segment.original_text,
+        translated_text: new_segment.translated_text,
+        start_ms: new_segment.start_ms,
+        end_ms: new_segment.end_ms,
+        source: new_segment.source,
+        recognition_run_id: new_segment.recognition_run_id,
+        speaker_token: new_segment.speaker_token,
+        canonical_speaker_id,
+        is_final: new_segment.is_final,
+        created_at_ms,
+        updated_at_ms: now,
+    })
 }
 
 fn query_meeting(connection: &Connection, meeting_id: &str) -> Result<Meeting> {

@@ -16,25 +16,60 @@ pub(super) fn render_timeline(
     action: &mut UiAction,
     ui: &mut egui::Ui,
 ) {
-    ui.horizontal(|ui| {
-        crate::ui::components::text_edit_ui(
-            ui,
-            "meeting_search",
-            egui::TextEdit::singleline(&mut controller.search)
-                .hint_text(tr(language, "Search this meeting"))
-                .desired_width(240.0),
+    egui::Panel::bottom("meeting_quick_note_bar")
+        .show_separator_line(false)
+        .frame(Frame::NONE)
+        .show(ui, |ui| {
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if components::primary_button(ui, tr(language, "Add note")).clicked() {
+                        *action = UiAction::QuickNote;
+                    }
+                    let width = ui.available_width();
+                    components::text_edit_ui(
+                        ui,
+                        "meeting_quick_note",
+                        egui::TextEdit::singleline(&mut controller.quick_note)
+                            .hint_text(tr(language, "Quick note linked to the latest message"))
+                            .desired_width(width),
+                    );
+                });
+            });
+        });
+
+    let width = ui.available_width();
+    ui.horizontal_wrapped(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(240.0_f32.min(width), ui.spacing().interact_size.y),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                components::text_edit_ui(
+                    ui,
+                    "meeting_search",
+                    egui::TextEdit::singleline(&mut controller.search)
+                        .hint_text(tr(language, "Search this meeting"))
+                        .desired_width(f32::INFINITY),
+                );
+            },
         );
-        ui.add_space(10.0);
-        crate::ui::components::text_edit_ui(
-            ui,
-            "meeting_new_topic",
-            egui::TextEdit::singleline(&mut controller.new_topic_title)
-                .hint_text(tr(language, "New topic title"))
-                .desired_width(200.0),
+        ui.allocate_ui_with_layout(
+            egui::vec2(360.0_f32.min(width), ui.spacing().interact_size.y),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                if components::animated_button(ui, tr(language, "New topic")).clicked() {
+                    *action = UiAction::NewTopic;
+                }
+                let input_width = ui.available_width();
+                components::text_edit_ui(
+                    ui,
+                    "meeting_new_topic",
+                    egui::TextEdit::singleline(&mut controller.new_topic_title)
+                        .hint_text(tr(language, "New topic title"))
+                        .desired_width(input_width),
+                );
+            },
         );
-        if components::animated_button(ui, tr(language, "New topic")).clicked() {
-            *action = UiAction::NewTopic;
-        }
     });
 
     ui.add_space(8.0);
@@ -182,19 +217,6 @@ pub(super) fn render_timeline(
     if evidence_reached {
         controller.evidence_target = None;
     }
-    ui.separator();
-    ui.horizontal(|ui| {
-        crate::ui::components::text_edit_ui(
-            ui,
-            "meeting_quick_note",
-            egui::TextEdit::singleline(&mut controller.quick_note)
-                .hint_text(tr(language, "Quick note linked to the latest message"))
-                .desired_width(f32::INFINITY),
-        );
-        if components::primary_button(ui, tr(language, "Add note")).clicked() {
-            *action = UiAction::QuickNote;
-        }
-    });
 }
 
 fn render_segment(
@@ -214,7 +236,7 @@ fn render_segment(
         .inner_margin(Margin::same(12))
         .show(ui, |ui| {
             ui.vertical(|ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     let speaker = segment
                         .canonical_speaker_id
                         .as_deref()
@@ -234,14 +256,12 @@ fn render_segment(
                         );
                     }
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            egui::RichText::new(format_duration(segment.start_ms))
-                                .size(11.0)
-                                .color(crate::ui::theme::text_weak())
-                                .monospace(),
-                        );
-                    });
+                    ui.label(
+                        egui::RichText::new(format_duration(segment.start_ms))
+                            .size(11.0)
+                            .color(crate::ui::theme::text_weak())
+                            .monospace(),
+                    );
                 });
 
                 ui.add_space(6.0);
@@ -327,7 +347,7 @@ fn render_segment(
                             .corner_radius(CornerRadius::same(6))
                             .inner_margin(Margin::symmetric(8, 4))
                             .show(ui, |ui| {
-                                ui.horizontal(|ui| {
+                                ui.horizontal_wrapped(|ui| {
                                     ui.label(
                                         egui::RichText::new(marker_label(marker.kind, language))
                                             .size(11.5)

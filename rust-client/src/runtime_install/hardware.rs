@@ -29,6 +29,10 @@ pub struct AvailableGpu {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LocalModelAvailability {
     Detecting,
+    #[cfg(target_os = "android")]
+    Cpu {
+        available_memory_bytes: u64,
+    },
     Available {
         gpu: String,
         memory_bytes: u64,
@@ -45,6 +49,25 @@ pub enum LocalModelAvailability {
 }
 
 impl LocalModelAvailability {
+    pub fn is_cpu(&self) -> bool {
+        match self {
+            #[cfg(target_os = "android")]
+            Self::Cpu { .. } => true,
+            _ => false,
+        }
+    }
+
+    pub fn available_memory_bytes(&self) -> Option<u64> {
+        match self {
+            Self::Available { memory_bytes, .. } => Some(*memory_bytes),
+            #[cfg(target_os = "android")]
+            Self::Cpu {
+                available_memory_bytes,
+            } => Some(*available_memory_bytes),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub fn available_gpus(&self) -> &[AvailableGpu] {
         match self {
@@ -56,6 +79,14 @@ impl LocalModelAvailability {
     pub fn supports(&self, hardware: ModelHardwareRequirements) -> bool {
         if hardware.accelerator == ModelAccelerator::Cpu {
             return true;
+        }
+        #[cfg(target_os = "android")]
+        if let Self::Cpu {
+            available_memory_bytes,
+        } = self
+        {
+            return hardware.accelerator == ModelAccelerator::LlamaGpu
+                && *available_memory_bytes >= hardware.minimum_memory_bytes;
         }
         matches!(self, Self::Available { memory_bytes, cuda_memory_bytes, .. }
             if (if hardware.accelerator == ModelAccelerator::NvidiaCuda {
@@ -69,6 +100,14 @@ impl LocalModelAvailability {
 impl std::fmt::Display for LocalModelAvailability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(target_os = "android")]
+            Self::Cpu {
+                available_memory_bytes,
+            } => write!(
+                f,
+                "CPU · {:.1} GiB",
+                *available_memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+            ),
             Self::Detecting => f.write_str("GPU detection in progress"),
             Self::Unavailable(reason) => f.write_str(reason),
             Self::Available {
@@ -95,12 +134,24 @@ pub(super) struct VulkanGpu {
 }
 
 pub(super) struct Hardware {
+    #[cfg(not(target_os = "android"))]
     pub nvidia: Option<NvidiaCuda>,
+    #[cfg(not(target_os = "android"))]
     pub amd: Option<VulkanGpu>,
     pub availability: LocalModelAvailability,
 }
 
 impl Hardware {
+    #[cfg(target_os = "android")]
+    pub fn detect(_preferred_gpu: Option<&str>) -> Self {
+        Self {
+            availability: LocalModelAvailability::Cpu {
+                available_memory_bytes: crate::android::available_memory(),
+            },
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
     pub fn detect(preferred_gpu: Option<&str>) -> Self {
         let cuda = supported_nvidia_cuda_gpus();
         let vulkan = supported_vulkan_gpus();

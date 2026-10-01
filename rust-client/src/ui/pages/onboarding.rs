@@ -24,6 +24,12 @@ pub fn render_onboarding_fullscreen(
     ui: &mut egui::Ui,
 ) -> crate::ui::companion::OnboardingLayout {
     let total_pages = STEPS.len();
+    let narrow = ui.available_width() < 680.0;
+    let compact_height = ui.available_height() < 480.0;
+    let compact = narrow || compact_height;
+    let margin = if compact { 16 } else { 36 };
+    let footer_margin_y = if compact_height { 8 } else { 14 };
+    let content_margin_y = if compact_height { 8 } else { 20 };
     if app.onboarding_page >= total_pages {
         app.onboarding_page = total_pages - 1;
     }
@@ -43,14 +49,52 @@ pub fn render_onboarding_fullscreen(
     };
 
     let footer = egui::Panel::bottom("onboarding_bottom_nav")
-        .show_separator_line(false)
+        .resizable(false)
+        .show_separator_line(true)
         .frame(
             Frame::new()
-                .fill(theme::content_backdrop(viewport_focused))
-                .inner_margin(Margin::symmetric(36, 14))
-                .stroke(Stroke::NONE),
+                .fill(theme::sidebar(viewport_focused))
+                .stroke(Stroke::new(1.0, theme::border()))
+                .inner_margin(Margin::symmetric(margin, footer_margin_y)),
         )
         .show(ui, |ui| {
+            let final_page = app.onboarding_page + 1 == total_pages;
+            let tts_configured = app.service_config.tts_is_configured();
+            let agreement_satisfied = !tts_configured || app.usage_guidelines_accepted;
+            if final_page {
+                ui.horizontal_wrapped(|ui| {
+                    if tts_configured
+                        && components::checkbox(
+                            ui,
+                            &mut app.usage_guidelines_accepted,
+                            i18n::tr(app.ui_language, "I have read and agree"),
+                        )
+                        .changed()
+                    {
+                        app.save_settings();
+                    }
+                    if ui
+                        .link(
+                            RichText::new(i18n::tr(app.ui_language, "Usage Guidelines")).size(12.5),
+                        )
+                        .clicked()
+                    {
+                        app.modal_dialog =
+                            crate::ui::modal::ModalDialog::usage_guidelines(app.ui_language);
+                    }
+                });
+            }
+            let hint = requirement.or_else(|| {
+                (final_page && !agreement_satisfied)
+                    .then_some("Please agree to the Usage Guidelines to continue.")
+            });
+            if let Some(hint) = hint {
+                ui.label(
+                    RichText::new(i18n::tr(app.ui_language, hint))
+                        .size(12.0)
+                        .color(theme::text_weak()),
+                );
+            }
             ui.horizontal(|ui| {
                 if app.onboarding_page > 0
                     && components::animated_button(ui, i18n::tr(app.ui_language, "Back")).clicked()
@@ -58,186 +102,69 @@ pub fn render_onboarding_fullscreen(
                     app.onboarding_page -= 1;
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if app.onboarding_page + 1 == total_pages {
-                        let tts_configured = app.service_config.tts_is_configured();
-                        let agreement_satisfied = !tts_configured || app.usage_guidelines_accepted;
-                        let can_open = requirement.is_none() && agreement_satisfied;
-
-                        let open_translation = components::primary_button_enabled(
-                            ui,
-                            i18n::tr(app.ui_language, "Open Translation"),
-                            can_open,
-                        );
-                        companion.next = open_translation.rect;
-                        ui.add_space(8.0);
-                        if tts_configured {
-                            if components::checkbox(
-                                ui,
-                                &mut app.usage_guidelines_accepted,
-                                i18n::tr(app.ui_language, "I have read and agree"),
-                            )
-                            .changed()
-                            {
-                                app.save_settings();
-                            }
-                            ui.add_space(6.0);
-                        }
-                        if ui
-                            .link(
-                                RichText::new(i18n::tr(app.ui_language, "Usage Guidelines"))
-                                    .size(12.5),
-                            )
-                            .clicked()
-                        {
-                            app.modal_dialog =
-                                crate::ui::modal::ModalDialog::usage_guidelines(app.ui_language);
-                        }
-                        if open_translation.clicked() {
+                    let next = components::primary_button_enabled(
+                        ui,
+                        i18n::tr(
+                            app.ui_language,
+                            if final_page {
+                                "Open Translation"
+                            } else {
+                                "Continue"
+                            },
+                        ),
+                        requirement.is_none() && (!final_page || agreement_satisfied),
+                    );
+                    companion.next = next.rect;
+                    if next.clicked() {
+                        if final_page {
                             app.finish_onboarding();
-                        }
-                    } else {
-                        let next = components::primary_button_enabled(
-                            ui,
-                            i18n::tr(app.ui_language, "Continue"),
-                            requirement.is_none(),
-                        );
-                        companion.next = next.rect;
-                        if next.clicked() {
+                        } else {
                             app.onboarding_page += 1;
                         }
-                    }
-                    if let Some(hint) = requirement {
-                        ui.label(
-                            RichText::new(i18n::tr(app.ui_language, hint))
-                                .size(12.0)
-                                .color(theme::text_weak()),
-                        );
-                    } else if app.onboarding_page + 1 == total_pages
-                        && app.service_config.tts_is_configured()
-                        && !app.usage_guidelines_accepted
-                    {
-                        ui.label(
-                            RichText::new(i18n::tr(
-                                app.ui_language,
-                                "Please agree to the Usage Guidelines to continue.",
-                            ))
-                            .size(12.0)
-                            .color(theme::text_weak()),
-                        );
                     }
                 });
             });
         });
 
-    egui::CentralPanel::default()
+    let content = egui::CentralPanel::default()
         .frame(
             Frame::new()
                 .fill(theme::content_backdrop(viewport_focused))
-                .inner_margin(Margin::symmetric(36, 20))
+                .inner_margin(Margin::symmetric(margin, content_margin_y))
                 .stroke(Stroke::NONE),
         )
         .show(ui, |ui| {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("XRTranslate")
-                            .size(14.0)
-                            .color(theme::primary())
-                            .strong(),
-                    );
-                    ui.add_space(6.0);
-                    for (icon, tooltip, url) in [
-                        (
-                            egui::include_image!("../../../resources/icons/github.svg"),
-                            "GitHub: NowLoadY/XRTranslate",
-                            "https://github.com/NowLoadY/XRTranslate",
-                        ),
-                        (
-                            egui::include_image!("../../../resources/icons/globe.svg"),
-                            "chatgpt.site: https://xrtranslate.nowloady.chatgpt.site",
-                            "https://xrtranslate.nowloady.chatgpt.site",
-                        ),
-                    ] {
-                        if onboarding_icon_button(ui, egui::Image::new(icon), tooltip) {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-                        }
-                        ui.add_space(4.0);
-                    }
-                    if onboarding_icon_button(
-                        ui,
-                        egui::Image::new(egui::include_image!("../../../resources/icons/qq.svg")),
-                        i18n::tr(app.ui_language, "QQ group"),
-                    ) {
-                        ui.ctx().data_mut(|data| {
-                            data.insert_temp(egui::Id::new("onboarding_qq_group"), true)
-                        });
-                    }
+                    render_onboarding_brand(ui, app.ui_language);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(format!(
-                                "{}/{}",
-                                i18n::tr(
-                                    app.ui_language,
-                                    match app.onboarding_page {
-                                        0 => "Step 1",
-                                        1 => "Step 2",
-                                        2 => "Step 3",
-                                        _ => "Step 4",
-                                    }
-                                ),
-                                total_pages
-                            ))
-                            .size(13.0)
-                            .color(theme::text_weak()),
-                        );
-                        ui.add_space(8.0);
-                        let mut language = app.ui_language;
-                        if components::language_selector(
-                            ui,
-                            "onboarding_ui_language",
-                            &mut language,
-                        ) {
-                            app.set_ui_language(language);
-                        }
-                        ui.add_space(8.0);
-                        let mut proxy = app.download_proxy_url.clone();
-                        let proxy_response = components::singleline_input(
-                            ui,
-                            &mut proxy,
-                            i18n::tr(app.ui_language, "Proxy, e.g. http://127.0.0.1:7890"),
-                            220.0,
-                            false,
-                        );
-                        if proxy_response.lost_focus() || proxy_response.changed() {
-                            app.set_download_proxy_url(proxy);
-                        }
-                        ui.add_space(8.0);
-                        crate::ui::pages::settings::render_update_action_button(app, ui);
+                        render_onboarding_preferences(app, ui, total_pages, compact);
                     });
                 });
-                ui.add_space(8.0);
-                if let Some(error) = app.last_error.as_deref() {
-                    if components::dismissible_error_notice(ui, app.ui_language, error) {
-                        app.last_error = None;
-                    }
-                    ui.add_space(10.0);
-                }
-                let heading = ui.label(
-                    RichText::new(i18n::tr(
-                        app.ui_language,
-                        "A calm start, one step at a time",
-                    ))
-                    .size(22.0)
-                    .color(theme::text_strong())
-                    .strong(),
-                );
-                ui.add_space(20.0);
+                ui.add_space(if compact_height { 4.0 } else { 8.0 });
+                let heading = if compact {
+                    ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
+                } else {
+                    let heading = ui.label(
+                        RichText::new(i18n::tr(
+                            app.ui_language,
+                            "A calm start, one step at a time",
+                        ))
+                        .size(22.0)
+                        .color(theme::text_strong())
+                        .strong(),
+                    );
+                    ui.add_space(20.0);
+                    heading
+                };
 
                 let steps =
                     render_onboarding_steps(ui, app.ui_language, &STEPS, app.onboarding_page);
 
-                ui.add_space(28.0);
-                companion.header = if ui.max_rect().right() - steps.right() < 318.0 {
+                ui.add_space(if compact_height { 6.0 } else if compact { 14.0 } else { 28.0 });
+                companion.header = if compact {
+                    egui::Rect::NOTHING
+                } else if ui.max_rect().right() - steps.right() < 318.0 {
                     egui::Rect::from_min_max(
                         egui::pos2(heading.rect.right() + 18.0, heading.rect.top() - 14.0),
                         egui::pos2(ui.max_rect().right(), steps.top() - 6.0),
@@ -274,17 +201,117 @@ pub fn render_onboarding_fullscreen(
 
     render_qq_group_dialog(ui.ctx(), app.ui_language);
     companion.footer = footer.response.rect;
+    companion.content = Some((content.response.rect, content.response.layer_id));
     companion
+}
+
+fn render_onboarding_social_icons(ui: &mut egui::Ui, language: i18n::UiLanguage) {
+    for (icon, tooltip, url) in [
+        (
+            egui::include_image!("../../../resources/icons/github.svg"),
+            "GitHub: NowLoadY/XRTranslate",
+            "https://github.com/NowLoadY/XRTranslate",
+        ),
+        (
+            egui::include_image!("../../../resources/icons/globe.svg"),
+            "chatgpt.site: https://xrtranslate.nowloady.chatgpt.site",
+            "https://xrtranslate.nowloady.chatgpt.site",
+        ),
+    ] {
+        if onboarding_icon_button(ui, egui::Image::new(icon), tooltip) {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        }
+        ui.add_space(4.0);
+    }
+    if onboarding_icon_button(
+        ui,
+        egui::Image::new(egui::include_image!("../../../resources/icons/qq.svg")),
+        &i18n::tr(language, "QQ group"),
+    ) {
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(egui::Id::new("onboarding_qq_group"), true));
+    }
+}
+
+fn render_onboarding_brand(ui: &mut egui::Ui, language: i18n::UiLanguage) {
+    ui.label(
+        RichText::new("XRTranslate")
+            .size(15.0)
+            .color(theme::primary())
+            .strong(),
+    );
+    ui.add_space(6.0);
+    render_onboarding_social_icons(ui, language);
+}
+
+fn render_onboarding_preferences(
+    app: &mut crate::XRTranslateApp,
+    ui: &mut egui::Ui,
+    total_pages: usize,
+    compact: bool,
+) {
+    if !compact {
+        ui.label(
+            RichText::new(format!(
+                "{}/{}",
+                i18n::tr(
+                    app.ui_language,
+                    match app.onboarding_page {
+                        0 => "Step 1",
+                        1 => "Step 2",
+                        2 => "Step 3",
+                        _ => "Step 4",
+                    }
+                ),
+                total_pages
+            ))
+            .size(13.0)
+            .color(theme::text_weak()),
+        );
+        ui.add_space(8.0);
+    }
+    let mut language = app.ui_language;
+    if components::language_selector(ui, "onboarding_ui_language", &mut language) {
+        app.set_ui_language(language);
+    }
+    ui.add_space(8.0);
+    if compact {
+        ui.menu_button("…", |ui| {
+            render_onboarding_download_controls(app, ui);
+        });
+    } else {
+        render_onboarding_download_controls(app, ui);
+    }
+}
+
+fn render_onboarding_download_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
+    let mut proxy = app.download_proxy_url.clone();
+    let proxy_response = components::singleline_input(
+        ui,
+        &mut proxy,
+        i18n::tr(app.ui_language, "Proxy, e.g. http://127.0.0.1:7890"),
+        220.0,
+        false,
+    );
+    if proxy_response.lost_focus() || proxy_response.changed() {
+        app.set_download_proxy_url(proxy);
+    }
+    ui.add_space(8.0);
+    crate::ui::pages::settings::render_update_action_button(app, ui);
 }
 
 fn onboarding_icon_button(ui: &mut egui::Ui, icon: egui::Image<'_>, tooltip: &str) -> bool {
     let icon = icon
         .fit_to_exact_size(egui::vec2(20.0, 20.0))
         .tint(theme::text_weak());
-    ui.add(egui::Button::image(icon).frame(false))
-        .on_hover_text(tooltip)
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
+    ui.add(
+        egui::Button::image(icon)
+            .frame(false)
+            .min_size(egui::vec2(28.0, 28.0)),
+    )
+    .on_hover_text(tooltip)
+    .on_hover_cursor(egui::CursorIcon::PointingHand)
+    .clicked()
 }
 
 fn render_qq_group_dialog(ctx: &egui::Context, language: i18n::UiLanguage) {
@@ -293,45 +320,23 @@ fn render_qq_group_dialog(ctx: &egui::Context, language: i18n::UiLanguage) {
         return;
     }
 
-    let response = egui::Modal::new(id)
-        .frame(
-            Frame::new()
-                .fill(theme::modal_backdrop())
-                .corner_radius(CornerRadius::same(20))
-                .inner_margin(Margin::same(20)),
-        )
-        .show(ctx, |ui| {
-            ui.set_min_width(300.0);
-            ui.label(
-                RichText::new(i18n::tr(language, "QQ group"))
-                    .size(17.0)
-                    .color(theme::text_strong())
-                    .strong(),
-            );
-            ui.add_space(16.0);
-            ui.label(
-                RichText::new(i18n::tr(language, "Group number"))
-                    .size(12.0)
-                    .color(theme::text_weak()),
-            );
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new(QQ_GROUP_NUMBER)
-                    .size(20.0)
-                    .color(theme::text_strong())
-                    .strong(),
-            );
-            ui.add_space(18.0);
-            ui.horizontal(|ui| {
+    let mut close = false;
+    let dismissed = crate::ui::modal::dialog(
+        ctx, id, language, i18n::tr(language, "QQ group"),
+        |ui| {
+            ui.label(RichText::new(i18n::tr(language, "Group number")).small().color(theme::text_weak()));
+            ui.label(RichText::new(QQ_GROUP_NUMBER).size(20.0).strong());
+        },
+        |ui| {
+            ui.horizontal_wrapped(|ui| {
                 if components::primary_button(ui, i18n::tr(language, "Copy number")).clicked() {
                     ctx.copy_text(QQ_GROUP_NUMBER.to_owned());
                 }
-                if components::secondary_button(ui, i18n::tr(language, "Close")).clicked() {
-                    ui.close();
-                }
+                close = components::secondary_button(ui, i18n::tr(language, "Close")).clicked();
             });
-        });
-    if response.should_close() {
+        },
+    );
+    if close || dismissed {
         ctx.data_mut(|data| data.insert_temp(id, false));
     }
 }
@@ -342,8 +347,15 @@ fn render_onboarding_steps(
     steps: &[&'static str],
     current: usize,
 ) -> egui::Rect {
+    let compact = ui.available_width() < 680.0 || ui.available_height() < 480.0;
     let mut bounds = egui::Rect::NOTHING;
-    ui.horizontal(|ui| {
+    let padding = ui.spacing().button_padding;
+    ui.spacing_mut().button_padding = if compact {
+        egui::vec2(10.0, 6.0)
+    } else {
+        egui::vec2(14.0, 8.0)
+    };
+    ui.horizontal_wrapped(|ui| {
         for (i, title) in steps.iter().enumerate() {
             let active = i == current;
             let visited = i < current;
@@ -368,27 +380,41 @@ fn render_onboarding_steps(
             } else {
                 Stroke::new(1.0, theme::border())
             };
-            let step = Frame::new()
+            let label = i18n::tr(language, *title);
+            let text = if compact {
+                (i + 1).to_string()
+            } else if !active {
+                (i + 1).to_string()
+            } else {
+                format!("{} {}", i + 1, label)
+            };
+            let step = ui.add(
+                egui::Button::new(
+                    RichText::new(text)
+                        .size(13.0)
+                        .color(text_color)
+                        .strong(),
+                )
+                .min_size(if compact {
+                    egui::vec2(36.0, 32.0)
+                } else {
+                    egui::Vec2::ZERO
+                })
                 .fill(fill)
                 .stroke(stroke)
-                .corner_radius(CornerRadius::same(12))
-                .inner_margin(Margin::symmetric(14, 8))
-                .show(ui, |ui| {
-                    let label = i18n::tr(language, *title);
-                    ui.label(
-                        RichText::new(format!("{} {}", i + 1, label))
-                            .size(12.5)
-                            .color(text_color)
-                            .strong(),
-                    );
-                });
-            bounds = bounds.union(step.response.rect);
+                .corner_radius(12)
+                .wrap_mode(egui::TextWrapMode::Extend)
+                .sense(egui::Sense::hover()),
+            );
+            let step = step.on_hover_text(label);
+            bounds = bounds.union(step.rect);
 
             if i + 1 < steps.len() {
-                ui.add_space(4.0);
+                ui.add_space(if compact { 10.0 } else { 4.0 });
             }
         }
     });
+    ui.spacing_mut().button_padding = padding;
     bounds
 }
 
@@ -398,21 +424,24 @@ fn onboarding_title(
     title: &'static str,
     body: Option<&'static str>,
 ) {
+    let compact_w = ui.available_width() < 680.0;
+    let compact_h = ui.available_height() < 480.0;
+    let compact = compact_w || compact_h;
     ui.label(
         RichText::new(crate::i18n::tr(language, title))
-            .size(28.0)
+            .size(if compact { 18.0 } else { 28.0 })
             .color(theme::text_strong())
             .strong(),
     );
     if let Some(subtitle) = body {
-        ui.add_space(6.0);
+        ui.add_space(if compact { 3.0 } else { 6.0 });
         ui.label(
             RichText::new(crate::i18n::tr(language, subtitle))
-                .size(14.0)
+                .size(if compact { 12.0 } else { 14.0 })
                 .color(theme::text_weak()),
         );
     }
-    ui.add_space(20.0);
+    ui.add_space(if compact { 8.0 } else { 20.0 });
 }
 
 fn onboarding_feature_card(
@@ -422,33 +451,42 @@ fn onboarding_feature_card(
     stroke_color: Color32,
     language: crate::i18n::UiLanguage,
 ) -> egui::Rect {
+    let compact_w = ui.available_width() < 440.0;
+    let compact_h = ui.available_height() < 340.0;
+    let compact = compact_w || compact_h;
     let border_id = ui.make_persistent_id(("onboarding_feature_border", title));
     crate::ui::organic_border::show(
         ui,
         border_id,
         Frame::new()
             .fill(theme::surface_control())
-            .corner_radius(CornerRadius::same(14))
-            .inner_margin(Margin::symmetric(22, 20)),
-        14.0,
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(if compact {
+                Margin::symmetric(14, 8)
+            } else {
+                Margin::symmetric(22, 20)
+            }),
+        12.0,
         stroke_color,
         |ui| {
             ui.set_width(ui.available_width());
-            ui.set_min_height(108.0);
+            if !compact {
+                ui.set_min_height(108.0);
+            }
 
             ui.label(
                 RichText::new(crate::i18n::tr(language, title))
-                    .size(16.0)
+                    .size(if compact { 14.0 } else { 16.0 })
                     .color(theme::text_strong())
                     .strong(),
             );
 
-            ui.add_space(8.0);
+            ui.add_space(if compact { 3.0 } else { 8.0 });
             ui.label(
                 RichText::new(crate::i18n::tr(language, description))
-                    .size(13.0)
+                    .size(if compact { 11.5 } else { 13.0 })
                     .color(theme::text_weak())
-                    .line_height(Some(19.0)),
+                    .line_height(if compact { Some(15.0) } else { Some(19.0) }),
             );
         },
     )
@@ -461,31 +499,30 @@ fn render_onboarding_welcome(
     ui: &mut egui::Ui,
 ) -> [egui::Rect; 3] {
     onboarding_title(ui, language, "Welcome to XRTranslate", None);
-    ui.columns(3, |columns| {
-        [
-            onboarding_feature_card(
-                &mut columns[0],
-                "Audio Input",
-                "Microphone & desktop audio capture with AI noise suppression and VAD detection.",
-                Color32::from_rgb(59, 130, 246),
-                language,
-            ),
-            onboarding_feature_card(
-                &mut columns[1],
-                "Recognition & Translation",
-                "High-accuracy real-time speech translation powered by local models or cloud APIs.",
-                Color32::from_rgb(16, 185, 129),
-                language,
-            ),
-            onboarding_feature_card(
-                &mut columns[2],
-                "Plugins & Integrations",
-                "VRChat OSC sync, desktop floating subtitles, and meeting minutes recording.",
-                Color32::from_rgb(245, 158, 11),
-                language,
-            ),
-        ]
-    })
+    let cards = [
+        (
+            "Audio Input",
+            "Microphone & desktop audio capture with AI noise suppression and VAD detection.",
+            Color32::from_rgb(59, 130, 246),
+        ),
+        (
+            "Recognition & Translation",
+            "High-accuracy real-time speech translation powered by local models or cloud APIs.",
+            Color32::from_rgb(16, 185, 129),
+        ),
+        (
+            "Plugins & Integrations",
+            "VRChat OSC sync, desktop floating subtitles, and meeting minutes recording.",
+            Color32::from_rgb(245, 158, 11),
+        ),
+    ];
+    let mut bounds = [egui::Rect::NOTHING; 3];
+    crate::ui::layout::responsive_columns(ui, cards.len(), 220.0, |ui, index| {
+        let (title, description, color) = cards[index];
+        bounds[index] = onboarding_feature_card(ui, title, description, color, language);
+    });
+
+    bounds
 }
 
 // ---------------------------------------------------------------------------
@@ -505,14 +542,13 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
     let project_root = app.project_root();
     let local_availability = app.runtime_installer.local_model_availability();
     if !app.model_defaults_initialized
-        && let crate::runtime_install::LocalModelAvailability::Available { memory_bytes, .. } =
-            &local_availability
+        && let Some(memory_bytes) = local_availability.available_memory_bytes()
     {
         // Existing explicit choices take precedence over the first-run hardware suggestion.
         let mut changed = false;
         let mut failed = false;
         if let Ok(current) = configured_model_packages(&project_root)
-            && *memory_bytes < xrtranslate_assets::MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES
+            && memory_bytes < xrtranslate_assets::MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES
         {
             for package in current.iter().filter(|package| {
                 package.level == ModelLevel::Normal
@@ -522,7 +558,7 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
                     )
             }) {
                 if let Some(asset_id) =
-                    default_model_for_vram(package.provider, package.capability, *memory_bytes)
+                    default_model_for_vram(package.provider, package.capability, memory_bytes)
                 {
                     match set_model_asset(&project_root, package.capability, asset_id) {
                         Ok(()) => changed = true,
@@ -582,51 +618,45 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
             "Translation Model",
         ),
     ];
-    ui.columns(capabilities.len(), |columns| {
-        for (index, (category, capability, title)) in capabilities.iter().enumerate() {
-            let package = packages
-                .iter()
-                .find(|package| package.capability == *capability);
-            let provider = app.service_config.onboarding_provider_state(category);
-            let levels = package.map_or_else(Vec::new, |package| {
-                model_packages_for_provider(package.provider, package.capability)
-            });
-            let result = onboarding_model_config_card(
-                &mut columns[index],
-                language,
-                category,
-                title,
-                &project_root,
-                provider,
-                package.map(|package| package.id),
-                &levels,
-                !app.model_task_manager.is_busy(),
-                &local_availability,
-                if index % 2 == 0 {
-                    Color32::from_rgb(59, 130, 246)
-                } else {
-                    Color32::from_rgb(16, 185, 129)
-                },
-            );
-            columns[index].add_space(12.0);
-            model_comparison::model_chart(
-                &mut columns[index],
-                language,
-                *capability,
-                package.map(|package| package.id),
-            );
-            if let Some(asset_id) = result.selected_asset {
-                model_change = Some((*capability, asset_id));
-            }
-            if let Some(provider) = result.selected_provider {
-                provider_change = Some((*category, provider));
-            }
-            if let Some(fields) = result.remote_fields {
-                remote_fields = Some((*category, fields));
-            }
-            if let Some(asset_id) = result.delete_asset {
-                delete_model = Some(asset_id);
-            }
+    crate::ui::layout::responsive_columns(ui, capabilities.len(), 300.0, |ui, index| {
+        let (category, capability, title) = &capabilities[index];
+        let package = packages
+            .iter()
+            .find(|package| package.capability == *capability);
+        let provider = app.service_config.onboarding_provider_state(category);
+        let levels = package.map_or_else(Vec::new, |package| {
+            model_packages_for_provider(package.provider, package.capability)
+        });
+        let result = onboarding_model_config_card(
+            ui,
+            language,
+            category,
+            title,
+            &project_root,
+            provider,
+            package.map(|package| package.id),
+            &levels,
+            !app.model_task_manager.is_busy(),
+            &local_availability,
+            if index % 2 == 0 {
+                Color32::from_rgb(59, 130, 246)
+            } else {
+                Color32::from_rgb(16, 185, 129)
+            },
+        );
+        ui.add_space(12.0);
+        model_comparison::model_chart(ui, language, *capability, package.map(|package| package.id));
+        if let Some(asset_id) = result.selected_asset {
+            model_change = Some((*capability, asset_id));
+        }
+        if let Some(provider) = result.selected_provider {
+            provider_change = Some((*category, provider));
+        }
+        if let Some(fields) = result.remote_fields {
+            remote_fields = Some((*category, fields));
+        }
+        if let Some(asset_id) = result.delete_asset {
+            delete_model = Some(asset_id);
         }
     });
     if let Some(asset_id) = delete_model {
@@ -738,6 +768,8 @@ fn local_model_warning_icon(
         ),
         crate::runtime_install::LocalModelAvailability::Detecting
         | crate::runtime_install::LocalModelAvailability::Available { .. } => return,
+        #[cfg(target_os = "android")]
+        crate::runtime_install::LocalModelAvailability::Cpu { .. } => return,
     };
     let icon = egui::Image::new(egui::include_image!(
         "../../../resources/icons/alert-triangle.svg"
@@ -751,11 +783,16 @@ fn local_model_warning_icon(
 fn model_hardware_hint(
     language: i18n::UiLanguage,
     hardware: xrtranslate_assets::ModelHardwareRequirements,
+    availability: &crate::runtime_install::LocalModelAvailability,
 ) -> String {
+    let uses_ram = hardware.accelerator == xrtranslate_assets::ModelAccelerator::Cpu
+        || (availability.is_cpu()
+            && hardware.accelerator == xrtranslate_assets::ModelAccelerator::LlamaGpu);
+    let (device, memory) = if uses_ram { ("CPU", "RAM") } else { (hardware.accelerator.label(), "VRAM") };
     format!(
-        "{} {} · {:.0} GiB VRAM",
+        "{} {} · {:.0} GiB {memory}",
         i18n::tr(language, "Requires at least"),
-        hardware.accelerator.label(),
+        device,
         hardware.minimum_memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
     )
 }
@@ -797,7 +834,7 @@ fn onboarding_model_config_card(
                 }
             });
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(
                     RichText::new(i18n::tr(language, title))
                         .size(16.0)
@@ -805,19 +842,17 @@ fn onboarding_model_config_card(
                         .strong(),
                 );
                 if let Some(guide_url) = guide_url {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let guide_btn = ui.hyperlink_to(
-                            RichText::new(format!("{} ↗", i18n::tr(language, "API Key Guide")))
-                                .size(12.5)
-                                .color(theme::primary()),
-                            guide_url,
-                        );
-                        guide_btn.on_hover_text(format!(
-                            "{}\n{}",
-                            i18n::tr(language, "Open official documentation to get an API key"),
-                            guide_url
-                        ));
-                    });
+                    let guide_btn = ui.hyperlink_to(
+                        RichText::new(format!("{} ↗", i18n::tr(language, "API Key Guide")))
+                            .size(12.5)
+                            .color(theme::primary()),
+                        guide_url,
+                    );
+                    guide_btn.on_hover_text(format!(
+                        "{}\n{}",
+                        i18n::tr(language, "Open official documentation to get an API key"),
+                        guide_url
+                    ));
                 }
             });
             ui.add_space(10.0);
@@ -826,65 +861,66 @@ fn onboarding_model_config_card(
                 return;
             };
 
-            ui.horizontal(|ui| {
-                ui.label(i18n::tr(language, "Mode"));
-                let mut remote = provider.remote;
-                let mode_text = i18n::tr(
-                    language,
-                    if remote { "Online API" } else { "Local model" },
-                );
-                components::combobox_ui(ui, (category, "provider_mode"), mode_text, |ui| {
-                    let local_available = levels.iter().any(|package| {
-                        local_availability.supports(package.hardware)
+            crate::ui::layout::responsive_columns(ui, 2, 230.0, |ui, index| {
+                if index == 0 {
+                    ui.label(i18n::tr(language, "Mode"));
+                    let mut remote = provider.remote;
+                    let mode_text =
+                        i18n::tr(language, if remote { "Online API" } else { "Local model" });
+                    components::combobox_ui(ui, (category, "provider_mode"), mode_text, |ui| {
+                        let local_available = levels
+                            .iter()
+                            .any(|package| local_availability.supports(package.hardware));
+                        ui.add_enabled_ui(local_available, |ui| {
+                            ui.selectable_value(
+                                &mut remote,
+                                false,
+                                i18n::tr(language, "Local model"),
+                            );
+                        });
+                        ui.selectable_value(&mut remote, true, i18n::tr(language, "Online API"));
                     });
-                    ui.add_enabled_ui(local_available, |ui| {
-                        ui.selectable_value(
-                            &mut remote,
-                            false,
-                            i18n::tr(language, "Local model"),
-                        );
-                    });
-                    ui.selectable_value(&mut remote, true, i18n::tr(language, "Online API"));
-                });
-                if !levels.iter().any(|package| local_availability.supports(package.hardware)) {
-                    local_model_warning_icon(ui, language, local_availability);
-                }
-                if remote != provider.remote
-                    && let Some(choice) = provider
-                        .choices
+                    if !levels
                         .iter()
-                        .find(|choice| choice.remote == remote)
-                {
-                    result.selected_provider = Some(choice.name.clone());
-                }
-
-                if !provider.remote {
+                        .any(|package| local_availability.supports(package.hardware))
+                    {
+                        local_model_warning_icon(ui, language, local_availability);
+                    }
+                    if remote != provider.remote
+                        && let Some(choice) = provider
+                            .choices
+                            .iter()
+                            .find(|choice| choice.remote == remote)
+                    {
+                        result.selected_provider = Some(choice.name.clone());
+                    }
+                } else if !provider.remote {
                     let Some(mut asset_id) = selected_asset else {
                         return;
                     };
-                    ui.add_space(12.0);
                     ui.label(i18n::tr(language, "Level"));
                     let selected_package = levels.iter().find(|package| package.id == asset_id);
-                    let selected_present = selected_package
-                        .is_some_and(|package| {
-                            model_asset_is_present(project_root, package.id).unwrap_or(false)
-                        });
+                    let selected_present = selected_package.is_some_and(|package| {
+                        model_asset_is_present(project_root, package.id).unwrap_or(false)
+                    });
                     let selected_name = selected_package.map_or_else(
                         || asset_id.as_str().to_owned(),
-                        |package| format!("{} · {}", i18n::tr(language, package.level.as_str()), package.label),
+                        |package| {
+                            format!(
+                                "{} · {}",
+                                i18n::tr(language, package.level.as_str()),
+                                package.label
+                            )
+                        },
                     );
                     let selected_label = if selected_present {
-                        format!(
-                            "{} · {}",
-                            selected_name,
-                            i18n::tr(language, "Installed")
-                        )
+                        format!("{} · {}", selected_name, i18n::tr(language, "Installed"))
                     } else {
                         selected_name
                     };
-                    let local_available = levels.iter().any(|package| {
-                        local_availability.supports(package.hardware)
-                    });
+                    let local_available = levels
+                        .iter()
+                        .any(|package| local_availability.supports(package.hardware));
                     ui.add_enabled_ui(local_available, |ui| {
                         components::combobox_ui(ui, (category, "model_level"), selected_label, |ui| {
                             for level in [ModelLevel::Small, ModelLevel::Normal, ModelLevel::Big, ModelLevel::Ultra] {
@@ -895,7 +931,7 @@ fn onboarding_model_config_card(
                                     let present = model_asset_is_present(project_root, package.id)
                                         .unwrap_or(false);
                                     let enough_memory = local_availability.supports(package.hardware);
-                                    ui.horizontal(|ui| {
+                                    ui.horizontal_wrapped(|ui| {
                                         let manifest = xrtranslate_assets::manifest_for(package.id);
                                         let label = if present {
                                             format!("{} · {}", package.label, i18n::tr(language, "Installed"))
@@ -915,7 +951,7 @@ fn onboarding_model_config_card(
                                             .color(theme::text_weak()),
                                         );
                                         if !enough_memory && package.hardware.accelerator != xrtranslate_assets::ModelAccelerator::Cpu {
-                                            choice.on_disabled_hover_text(model_hardware_hint(language, package.hardware));
+                                            choice.on_disabled_hover_text(model_hardware_hint(language, package.hardware, local_availability));
                                         }
                                         if let Some(license) = manifest.required_files.iter().find(
                                             |file| file.role == xrtranslate_assets::ModelFileRole::License,
@@ -945,23 +981,30 @@ fn onboarding_model_config_card(
                         result.selected_asset = Some(asset_id);
                     }
                 } else {
-                    ui.add_space(12.0);
+                    ui.label(i18n::tr(language, "Provider:"));
                     let selected_label =
                         crate::service_config::provider_display_label(&provider.selected, language);
-                    components::combobox_ui(ui, (category, "online_provider"), selected_label, |ui| {
-                        for choice in &provider.choices {
-                            if choice.remote {
-                                let label =
-                                    crate::service_config::provider_display_label(&choice.name, language);
-                                if ui
-                                    .selectable_label(provider.selected == choice.name, label)
-                                    .clicked()
-                                {
-                                    result.selected_provider = Some(choice.name.clone());
+                    components::combobox_ui(
+                        ui,
+                        (category, "online_provider"),
+                        selected_label,
+                        |ui| {
+                            for choice in &provider.choices {
+                                if choice.remote {
+                                    let label = crate::service_config::provider_display_label(
+                                        &choice.name,
+                                        language,
+                                    );
+                                    if ui
+                                        .selectable_label(provider.selected == choice.name, label)
+                                        .clicked()
+                                    {
+                                        result.selected_provider = Some(choice.name.clone());
+                                    }
                                 }
                             }
-                        }
-                    });
+                        },
+                    );
                 }
             });
 
@@ -1000,13 +1043,13 @@ fn onboarding_model_config_card(
 
             if provider.remote {
                 ui.add_space(12.0);
-                ui.horizontal(|ui| {
+                ui.vertical(|ui| {
                     ui.label(i18n::tr(language, "Model"));
                     let model_response = components::singleline_input(
                         ui,
                         &mut provider.model,
                         i18n::tr(language, "Model"),
-                        (ui.available_width() - 60.0).max(160.0),
+                        (ui.available_width() - 16.0).max(0.0),
                         false,
                     );
                     if model_response.changed() || model_response.lost_focus() {
@@ -1018,13 +1061,13 @@ fn onboarding_model_config_card(
                     }
                 });
                 ui.add_space(8.0);
-                ui.horizontal(|ui| {
+                ui.vertical(|ui| {
                     ui.label(i18n::tr(language, "API key"));
                     let key_response = components::singleline_input(
                         ui,
                         &mut provider.api_key,
                         i18n::tr(language, "API key"),
-                        (ui.available_width() - 70.0).max(160.0),
+                        (ui.available_width() - 16.0).max(0.0),
                         true,
                     );
                     let commit = key_response.lost_focus()
@@ -1050,6 +1093,8 @@ fn onboarding_model_config_card(
                         );
                     }
                     crate::runtime_install::LocalModelAvailability::Available { .. } => {}
+                    #[cfg(target_os = "android")]
+                    crate::runtime_install::LocalModelAvailability::Cpu { .. } => {}
                 }
             }
         },
@@ -1102,7 +1147,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 ui.label(i18n::tr(language, "No providers configured"));
                 return;
             };
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(i18n::tr(language, "Provider:"));
                 let local_availability = app.runtime_installer.local_model_availability();
                 let selected_label = provider
@@ -1145,6 +1190,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                                 .on_disabled_hover_text(model_hardware_hint(
                                     language,
                                     model.hardware,
+                                    &local_availability,
                                 ));
                         }
                     }
@@ -1197,7 +1243,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                         let may_toggle = package_enabled
                             && (!checked || selected_assets.len() > 1)
                             && !app.model_task_manager.is_busy();
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             let mut next = checked;
                             let language_pack = if package.languages.is_empty() {
                                 package.label.to_owned()
@@ -1269,7 +1315,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                                     })
                                     .unwrap_or(default);
                                 let mut selected_key = configured.key.to_owned();
-                                ui.horizontal(|ui| {
+                                ui.horizontal_wrapped(|ui| {
                                     ui.label(
                                         RichText::new(format!(
                                             "{} ({voice_language}):",
@@ -1316,6 +1362,8 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                             );
                         }
                         crate::runtime_install::LocalModelAvailability::Available { .. } => {}
+                        #[cfg(target_os = "android")]
+                        crate::runtime_install::LocalModelAvailability::Cpu { .. } => {}
                     }
                 } else if let Some(languages) = selected_choice
                     .map(|choice| choice.supported_languages.as_slice())
@@ -1540,7 +1588,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
         });
         if !missing.is_empty() {
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let label = format!(
                     "{} ({}) · {}",
                     i18n::tr(language, "Download all required models"),
@@ -1692,32 +1740,47 @@ fn render_download_card(
         item.stroke_color,
         |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(i18n::tr(language, item.category_title))
-                            .size(14.5)
-                            .color(theme::text_strong())
-                            .strong(),
-                    );
-                    ui.label(
-                        RichText::new(&item.detail)
-                            .size(13.0)
+            let compact = ui.available_width() < 680.0;
+            let layout = if compact {
+                Layout::top_down(Align::Min)
+            } else {
+                Layout::left_to_right(Align::Center)
+            };
+            ui.with_layout(layout, |ui| {
+                let details_width = if compact {
+                    ui.available_width()
+                } else {
+                    ui.available_width() - 200.0 - ui.spacing().item_spacing.x
+                };
+                ui.allocate_ui_with_layout(
+                    egui::vec2(details_width, 0.0),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        ui.label(
+                            RichText::new(i18n::tr(language, item.category_title))
+                                .size(14.5)
+                                .color(theme::text_strong())
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new(&item.detail)
+                                .size(13.0)
+                                .color(theme::text_weak()),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "· {} {} · {} {}",
+                                i18n::tr(language, "Download"),
+                                components::format_file_size(item.download_bytes),
+                                i18n::tr(language, "Installed size"),
+                                components::format_file_size(item.installed_bytes),
+                            ))
+                            .size(12.0)
                             .color(theme::text_weak()),
-                    );
-                    ui.label(
-                        RichText::new(format!(
-                            "· {} {} · {} {}",
-                            i18n::tr(language, "Download"),
-                            components::format_file_size(item.download_bytes),
-                            i18n::tr(language, "Installed size"),
-                            components::format_file_size(item.installed_bytes),
-                        ))
-                        .size(12.0)
-                        .color(theme::text_weak()),
-                    );
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        );
+                    },
+                );
+                ui.horizontal(|ui| {
                     if item.installed {
                         if ui
                             .add_enabled_ui(delete_enabled, |ui| {
@@ -1737,11 +1800,14 @@ fn render_download_card(
                             .corner_radius(CornerRadius::same(8))
                             .inner_margin(Margin::symmetric(14, 5))
                             .show(ui, |ui| {
-                                ui.label(
-                                    RichText::new(i18n::tr(language, "Installed"))
-                                        .color(Color32::from_rgb(5, 150, 105))
-                                        .size(12.5)
-                                        .strong(),
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(i18n::tr(language, "Installed"))
+                                            .color(Color32::from_rgb(5, 150, 105))
+                                            .size(12.5)
+                                            .strong(),
+                                    )
+                                    .truncate(),
                                 );
                             });
                     } else {
@@ -1862,7 +1928,7 @@ fn render_runtime_installation_section(
             let mut use_mirror = app.runtime_installer.use_mirror();
             let previous_source = use_mirror;
             let mut delete_runtime = false;
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ready {
                     Frame::new()
                         .fill(Color32::from_rgba_unmultiplied(16, 185, 129, 20))
@@ -1953,78 +2019,80 @@ fn render_runtime_installation_section(
 
     ui.add_space(12.0);
 
-    // Option B: Custom Runtime Directory
-    Frame::new()
-        .fill(theme::surface_control())
-        .corner_radius(CornerRadius::same(12))
-        .inner_margin(Margin::same(16))
-        .stroke(Stroke::new(
-            1.5,
-            if is_custom {
-                theme::primary()
-            } else {
-                theme::border()
-            },
-        ))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(
-                RichText::new(i18n::tr(
-                    language,
-                    "Option B: Choose Existing Runtime Directory",
-                ))
-                .size(14.5)
-                .color(theme::text_strong())
-                .strong(),
-            );
-            ui.add_space(8.0);
-
-            ui.horizontal(|ui| {
-                ui.label(i18n::tr(language, "Runtime Directory:"));
-                let response = components::singleline_input(
-                    ui,
-                    &mut runtime_dir,
-                    i18n::tr(language, "Path to runtime folder"),
-                    (ui.available_width() - 80.0).max(200.0),
-                    false,
+    if crate::file_dialog::folders_available() {
+        // Option B: Custom Runtime Directory
+        Frame::new()
+            .fill(theme::surface_control())
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(Margin::same(16))
+            .stroke(Stroke::new(
+                1.5,
+                if is_custom {
+                    theme::primary()
+                } else {
+                    theme::border()
+                },
+            ))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    RichText::new(i18n::tr(
+                        language,
+                        "Option B: Choose Existing Runtime Directory",
+                    ))
+                    .size(14.5)
+                    .color(theme::text_strong())
+                    .strong(),
                 );
-                if response.changed() || response.lost_focus() {
-                    app.backend_manager.runtime_directory = runtime_dir.clone();
-                    if let Err(error) = app.backend_manager.save_runtime_directory() {
-                        app.last_error = Some(error);
+                ui.add_space(8.0);
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(i18n::tr(language, "Runtime Directory:"));
+                    let response = components::singleline_input(
+                        ui,
+                        &mut runtime_dir,
+                        i18n::tr(language, "Path to runtime folder"),
+                        (ui.max_rect().width() - 16.0).clamp(96.0, 400.0),
+                        false,
+                    );
+                    if response.changed() || response.lost_focus() {
+                        app.backend_manager.runtime_directory = runtime_dir.clone();
+                        if let Err(error) = app.backend_manager.save_runtime_directory() {
+                            app.last_error = Some(error);
+                        }
+                        let requirements = app.service_config.runtime_requirements();
+                        let _ = app
+                            .runtime_installer
+                            .prepare_for(project_root.to_path_buf(), requirements);
                     }
-                    let requirements = app.service_config.runtime_requirements();
-                    let _ = app
-                        .runtime_installer
-                        .prepare_for(project_root.to_path_buf(), requirements);
-                }
-                if components::animated_button(ui, i18n::tr(language, "Browse...")).clicked()
-                    && let Some(path) = rfd::FileDialog::new().pick_folder()
-                {
-                    app.backend_manager.runtime_directory = path.to_string_lossy().to_string();
-                    if let Err(error) = app.backend_manager.save_runtime_directory() {
-                        app.last_error = Some(error);
+                    if components::animated_button(ui, i18n::tr(language, "Browse...")).clicked()
+                        && let Some(path) = crate::file_dialog::FileDialog::new().pick_folder()
+                    {
+                        app.backend_manager.runtime_directory = path.to_string_lossy().to_string();
+                        if let Err(error) = app.backend_manager.save_runtime_directory() {
+                            app.last_error = Some(error);
+                        }
+                        let requirements = app.service_config.runtime_requirements();
+                        let _ = app
+                            .runtime_installer
+                            .prepare_for(project_root.to_path_buf(), requirements);
                     }
-                    let requirements = app.service_config.runtime_requirements();
-                    let _ = app
-                        .runtime_installer
-                        .prepare_for(project_root.to_path_buf(), requirements);
+                });
+
+                if !is_custom {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "{} {}",
+                            i18n::tr(language, "Default:"),
+                            default_runtime.display()
+                        ))
+                        .size(12.0)
+                        .color(theme::text_weak()),
+                    );
                 }
             });
-
-            if !is_custom {
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(format!(
-                        "{} {}",
-                        i18n::tr(language, "Default:"),
-                        default_runtime.display()
-                    ))
-                    .size(12.0)
-                    .color(theme::text_weak()),
-                );
-            }
-        });
+    }
 }
 
 fn render_runtime_download_plan(
@@ -2040,7 +2108,7 @@ fn render_runtime_download_plan(
         .stroke(Stroke::new(1.0, theme::border()))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(
                     RichText::new(format!(
                         "{} ({})",
@@ -2051,34 +2119,30 @@ fn render_runtime_download_plan(
                     .strong()
                     .color(theme::text_normal()),
                 );
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(
-                        RichText::new(format!(
-                            "{} {}",
-                            i18n::tr(language, "Total"),
-                            components::format_file_size(total_bytes)
-                        ))
-                        .size(11.5)
-                        .color(theme::text_weak()),
-                    );
-                });
+                ui.label(
+                    RichText::new(format!(
+                        "{} {}",
+                        i18n::tr(language, "Total"),
+                        components::format_file_size(total_bytes)
+                    ))
+                    .size(11.5)
+                    .color(theme::text_weak()),
+                );
             });
             ui.add_space(2.0);
             for download in downloads {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(
                         RichText::new(&download.label)
                             .size(12.0)
                             .color(theme::text_strong()),
                     )
                     .on_hover_text(&download.archive_name);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(components::format_file_size(download.bytes))
-                                .size(11.5)
-                                .color(theme::text_weak()),
-                        );
-                    });
+                    ui.label(
+                        RichText::new(components::format_file_size(download.bytes))
+                            .size(11.5)
+                            .color(theme::text_weak()),
+                    );
                 });
             }
         });

@@ -57,13 +57,18 @@ impl Default for VideoPlayerController {
     fn default() -> Self {
         let storage_dir = PathBuf::from("runtime");
         let store = VideoTaskStore::load_from_dir(&storage_dir);
-        let backend: Option<Box<dyn MediaBackend>> = match super::backend::mpv::MpvBackend::new() {
-            Ok(b) => Some(Box::new(b)),
-            Err(e) => {
-                log::warn!("MPV backend not initialized on startup: {}", e);
+        let backend: Option<Box<dyn MediaBackend>> =
+            if !crate::plugins::PluginId::VIDEO_PLAYER.is_supported() {
                 None
-            }
-        };
+            } else {
+                match super::backend::mpv::MpvBackend::new() {
+                    Ok(b) => Some(Box::new(b)),
+                    Err(e) => {
+                        log::warn!("MPV backend not initialized on startup: {}", e);
+                        None
+                    }
+                }
+            };
 
         Self {
             route: VideoPlayerRoute::Library,

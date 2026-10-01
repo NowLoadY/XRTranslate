@@ -23,6 +23,10 @@ impl PluginId {
     pub const VIDEO_PLAYER: Self = Self("video_player");
     pub const VR_OVERLAY: Self = Self("vr_overlay");
 
+    pub fn is_supported(self) -> bool {
+        !cfg!(target_os = "android") || !matches!(self, Self::VR_OVERLAY | Self::VIDEO_PLAYER)
+    }
+
     pub const fn as_str(self) -> &'static str {
         self.0
     }
@@ -234,6 +238,9 @@ impl Default for PluginPreferences {
 
 impl PluginPreferences {
     pub fn is_enabled(&self, id: PluginId) -> bool {
+        if !id.is_supported() {
+            return false;
+        }
         self.enabled.get(id.as_str()).copied().unwrap_or_else(|| {
             PluginRegistry::builtin()
                 .descriptor(id)

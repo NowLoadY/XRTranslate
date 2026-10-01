@@ -22,6 +22,16 @@ pub struct PluginSessionBinding {
 }
 
 impl PluginSessionBinding {
+    pub fn text(owner: PluginSessionOwner, output_policy: SessionOutputPolicy) -> Self {
+        Self {
+            owner,
+            output_policy,
+            host_tts: false,
+            external_audio_gate: false,
+            finish_when_audio_ends: false,
+        }
+    }
+
     pub const fn publish_to_host_outputs(&self) -> bool {
         matches!(self.output_policy, SessionOutputPolicy::Host)
     }

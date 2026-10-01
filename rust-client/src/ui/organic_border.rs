@@ -2,7 +2,7 @@ use std::{borrow::Cow, collections::HashMap, num::NonZeroU64};
 
 use bytemuck::{Pod, Zeroable};
 use eframe::{
-    egui::{self, Color32, LayerId, Margin, Rect},
+    egui::{self, Color32, Margin, Rect},
     egui_wgpu::{self, CallbackResources, CallbackTrait, ScreenDescriptor},
     wgpu,
 };
@@ -171,33 +171,6 @@ pub fn install(
             .callback_resources
             .insert(OrganicBorderRenderer::new(device, target_format));
     }
-}
-
-pub fn paint_with_id(
-    ctx: &egui::Context,
-    layer_id: LayerId,
-    id: egui::Id,
-    rect: Rect,
-    style: OrganicBorderStyle,
-) {
-    if !crate::ui::theme::is_hand_drawn(ctx) {
-        if style.half_width > 0.0 {
-            ctx.layer_painter(layer_id).rect_stroke(
-                rect,
-                egui::CornerRadius::same(style.radius.round().clamp(0.0, 255.0) as u8),
-                crate::ui::theme::border_stroke(style.color),
-                egui::StrokeKind::Inside,
-            );
-        } else {
-            ctx.layer_painter(layer_id).rect_filled(
-                rect,
-                egui::CornerRadius::same(style.radius.round().clamp(0.0, 255.0) as u8),
-                style.color,
-            );
-        }
-        return;
-    }
-    paint_with_painter(&ctx.layer_painter(layer_id), id, rect, style);
 }
 
 /// Shows a frame while reserving enough layout space for the SDF outline.

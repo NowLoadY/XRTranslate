@@ -25,6 +25,44 @@ pub fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     .inner
 }
 
+pub fn responsive_settings_button(
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    compact: bool,
+    language: crate::i18n::UiLanguage,
+) -> egui::collapsing_header::CollapsingState {
+    let id = ui.make_persistent_id(id_salt);
+    let mut state =
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, !compact);
+    let previous = ui.ctx().data_mut(|data| {
+        let previous = data.get_temp::<bool>(id.with("compact"));
+        data.insert_temp(id.with("compact"), compact);
+        previous
+    });
+    if previous.is_some_and(|previous| previous != compact) {
+        state.set_open(!compact);
+    }
+    let label = crate::i18n::tr(language, "Settings");
+    let response = ui
+        .add(
+            egui::Button::image(
+                egui::Image::new(egui::include_image!("../../resources/icons/settings.svg"))
+                    .fit_to_exact_size(egui::vec2(18.0, 18.0))
+                    .tint(theme::text_strong()),
+            )
+            .selected(state.is_open())
+            .min_size(egui::vec2(36.0, ui.spacing().interact_size.y)),
+        )
+        .on_hover_text(label);
+    if response.clicked()
+        || crate::ui::automation::record_button(ui, id, label, ui.is_enabled(), response.rect)
+    {
+        state.toggle(ui);
+    }
+    state.store(ui.ctx());
+    state
+}
+
 pub fn action_card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     let border_id = ui.next_auto_id().with("organic_action_card_border");
     crate::ui::organic_border::show(
@@ -165,20 +203,17 @@ pub fn swap_capsule_button(ui: &mut Ui, enabled: bool) -> egui::Response {
     resp
 }
 
+pub const AUDIO_METER_WIDTH: f32 = 68.0;
+
 pub fn segmented_audio_meter(
     ui: &mut Ui,
     id_source: &'static str,
     raw_fraction: f32,
     active: bool,
-    visible: bool,
     updating: bool,
 ) {
-    if !visible {
-        return;
-    }
-
     const HEIGHT: f32 = 13.0;
-    const WIDTH: f32 = 68.0;
+    const WIDTH: f32 = AUDIO_METER_WIDTH;
     const SAMPLES: usize = 20;
     const RENDER_POINTS: usize = 64;
 
@@ -535,24 +570,43 @@ pub fn animated_button_enabled_with_id(
         CornerRadius::same(8)
     };
 
+    let natural = egui::WidgetText::from(egui::RichText::new(text).size(13.0).strong())
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        )
+        .size()
+        + egui::vec2(28.0 + 2.0 * stroke.width, 14.0 + 2.0 * stroke.width);
+    let size = egui::vec2(
+        natural.x.min(ui.max_rect().width()),
+        natural.y.max(ui.spacing().interact_size.y),
+    );
     let mut resp = ui
-        .add_enabled_ui(enabled, |ui| {
-            Frame::new()
-                .fill(fill)
-                .stroke(stroke)
-                .corner_radius(corner_radius)
-                .inner_margin(Margin::symmetric(14, 7))
-                .shadow(egui::Shadow::NONE)
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(text)
-                            .color(text_color)
-                            .size(13.0)
-                            .strong(),
-                    );
-                })
-                .response
-                .interact(egui::Sense::click())
+        .allocate_ui(size, |ui| {
+            ui.add_enabled_ui(enabled, |ui| {
+                Frame::new()
+                    .fill(fill)
+                    .stroke(stroke)
+                    .corner_radius(corner_radius)
+                    .inner_margin(Margin::symmetric(14, 7))
+                    .shadow(egui::Shadow::NONE)
+                    .show(ui, |ui| {
+                        ui.set_min_height(
+                            (ui.spacing().interact_size.y - 14.0 - 2.0 * stroke.width).max(0.0),
+                        );
+                        ui.label(
+                            egui::RichText::new(text)
+                                .color(text_color)
+                                .size(13.0)
+                                .strong(),
+                        );
+                    })
+                    .response
+                    .interact(egui::Sense::click())
+            })
+            .inner
         })
         .inner;
 
@@ -935,37 +989,41 @@ pub fn combobox_ui_with_width<R>(
         is_hovered,
     );
 
-    let inner_resp = ui.scope(|ui| {
-        if is_hand_drawn {
-            ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
-            ui.style_mut().visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
-            ui.style_mut().visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
-            ui.style_mut().visuals.widgets.hovered.bg_fill =
-                crate::ui::theme::surface_control_hover();
-            ui.style_mut().visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
-            ui.style_mut().visuals.widgets.active.bg_fill =
-                crate::ui::theme::surface_control_active();
-            ui.style_mut().visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
-            ui.style_mut().visuals.widgets.open.bg_fill = egui::Color32::TRANSPARENT;
-            ui.style_mut().visuals.widgets.inactive.corner_radius = egui::CornerRadius::ZERO;
-            ui.style_mut().visuals.widgets.hovered.corner_radius = egui::CornerRadius::ZERO;
-            ui.style_mut().visuals.widgets.active.corner_radius = egui::CornerRadius::ZERO;
-            ui.style_mut().visuals.widgets.open.corner_radius = egui::CornerRadius::ZERO;
-            ui.spacing_mut().button_padding = egui::vec2(6.0, 4.0);
-        }
+    let inner_resp = ui.allocate_ui_with_layout(
+        egui::vec2(control_width, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            if is_hand_drawn {
+                ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                ui.style_mut().visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+                ui.style_mut().visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+                ui.style_mut().visuals.widgets.hovered.bg_fill =
+                    crate::ui::theme::surface_control_hover();
+                ui.style_mut().visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
+                ui.style_mut().visuals.widgets.active.bg_fill =
+                    crate::ui::theme::surface_control_active();
+                ui.style_mut().visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
+                ui.style_mut().visuals.widgets.open.bg_fill = egui::Color32::TRANSPARENT;
+                ui.style_mut().visuals.widgets.inactive.corner_radius = egui::CornerRadius::ZERO;
+                ui.style_mut().visuals.widgets.hovered.corner_radius = egui::CornerRadius::ZERO;
+                ui.style_mut().visuals.widgets.active.corner_radius = egui::CornerRadius::ZERO;
+                ui.style_mut().visuals.widgets.open.corner_radius = egui::CornerRadius::ZERO;
+                ui.spacing_mut().button_padding = egui::vec2(6.0, 4.0);
+            }
 
-        let combo = egui::ComboBox::from_id_salt(&id_salt)
-            .selected_text(
-                egui::RichText::new(selected_text)
-                    .size(12.0)
-                    .color(crate::ui::theme::text_strong()),
-            )
-            .width(control_width)
-            .truncate()
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+            let combo = egui::ComboBox::from_id_salt(&id_salt)
+                .selected_text(
+                    egui::RichText::new(selected_text)
+                        .size(12.0)
+                        .color(crate::ui::theme::text_strong()),
+                )
+                .width(control_width)
+                .truncate()
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
 
-        combo.show_ui(ui, add_contents)
-    });
+            combo.show_ui(ui, add_contents)
+        },
+    );
 
     let mut resp = inner_resp.inner;
     resp.response = resp.response.on_hover_text(&selected_str);
@@ -1061,101 +1119,105 @@ pub fn searchable_combobox_with_options<T: PartialEq + Clone>(
     );
 
     let mut changed = false;
-    let inner_resp = ui.scope(|ui| {
-        if is_hand_drawn && frame {
-            ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
-            ui.style_mut().visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
-            ui.style_mut().visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
-            ui.style_mut().visuals.widgets.hovered.bg_fill =
-                crate::ui::theme::surface_control_hover();
-            ui.style_mut().visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
-            ui.style_mut().visuals.widgets.active.bg_fill =
-                crate::ui::theme::surface_control_active();
-            ui.style_mut().visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
-            ui.style_mut().visuals.widgets.open.bg_fill = egui::Color32::TRANSPARENT;
-            ui.style_mut().visuals.widgets.inactive.corner_radius = egui::CornerRadius::ZERO;
-            ui.style_mut().visuals.widgets.hovered.corner_radius = egui::CornerRadius::ZERO;
-            ui.style_mut().visuals.widgets.active.corner_radius = egui::CornerRadius::ZERO;
-            ui.style_mut().visuals.widgets.open.corner_radius = egui::CornerRadius::ZERO;
-            ui.spacing_mut().button_padding = egui::vec2(6.0, 4.0);
-        } else if !frame {
-            ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
-            ui.style_mut().visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
-            ui.style_mut().visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
-            ui.style_mut().visuals.widgets.hovered.bg_fill =
-                crate::ui::theme::surface_control_hover();
-            ui.style_mut().visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
-            ui.style_mut().visuals.widgets.active.bg_fill =
-                crate::ui::theme::surface_control_active();
-            ui.style_mut().visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
-            ui.style_mut().visuals.widgets.open.bg_fill = egui::Color32::TRANSPARENT;
-            ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
-        }
-
-        let combo = egui::ComboBox::from_id_salt(&id)
-            .selected_text(
-                egui::RichText::new(&selected_text)
-                    .size(12.0)
-                    .color(crate::ui::theme::text_strong()),
-            )
-            .width(control_width)
-            .truncate()
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
-
-        combo.show_ui(ui, |ui| {
-            let is_more_than_3 = options.len() > 3;
-
-            let mut search_query = if is_more_than_3 {
-                ui.memory(|m| m.data.get_temp::<String>(search_id).unwrap_or_default())
-            } else {
-                String::new()
-            };
-
-            if is_more_than_3 {
-                ui.add_space(2.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(2.0);
-                    let te = egui::TextEdit::singleline(&mut search_query)
-                        .hint_text("Search...")
-                        .desired_width(130.0)
-                        .margin(Margin::symmetric(6, 4));
-                    text_edit_ui(ui, search_id.with("inner_search_edit"), te);
-                    ui.add_space(2.0);
-                });
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(2.0);
-
-                ui.memory_mut(|m| m.data.insert_temp(search_id, search_query.clone()));
+    let inner_resp = ui.allocate_ui_with_layout(
+        egui::vec2(control_width, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            if is_hand_drawn && frame {
+                ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                ui.style_mut().visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+                ui.style_mut().visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+                ui.style_mut().visuals.widgets.hovered.bg_fill =
+                    crate::ui::theme::surface_control_hover();
+                ui.style_mut().visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
+                ui.style_mut().visuals.widgets.active.bg_fill =
+                    crate::ui::theme::surface_control_active();
+                ui.style_mut().visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
+                ui.style_mut().visuals.widgets.open.bg_fill = egui::Color32::TRANSPARENT;
+                ui.style_mut().visuals.widgets.inactive.corner_radius = egui::CornerRadius::ZERO;
+                ui.style_mut().visuals.widgets.hovered.corner_radius = egui::CornerRadius::ZERO;
+                ui.style_mut().visuals.widgets.active.corner_radius = egui::CornerRadius::ZERO;
+                ui.style_mut().visuals.widgets.open.corner_radius = egui::CornerRadius::ZERO;
+                ui.spacing_mut().button_padding = egui::vec2(6.0, 4.0);
+            } else if !frame {
+                ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                ui.style_mut().visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+                ui.style_mut().visuals.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+                ui.style_mut().visuals.widgets.hovered.bg_fill =
+                    crate::ui::theme::surface_control_hover();
+                ui.style_mut().visuals.widgets.active.bg_stroke = egui::Stroke::NONE;
+                ui.style_mut().visuals.widgets.active.bg_fill =
+                    crate::ui::theme::surface_control_active();
+                ui.style_mut().visuals.widgets.open.bg_stroke = egui::Stroke::NONE;
+                ui.style_mut().visuals.widgets.open.bg_fill = egui::Color32::TRANSPARENT;
+                ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
             }
 
-            let query_lower = search_query.trim().to_lowercase();
-            let mut match_count = 0;
+            let combo = egui::ComboBox::from_id_salt(&id)
+                .selected_text(
+                    egui::RichText::new(&selected_text)
+                        .size(12.0)
+                        .color(crate::ui::theme::text_strong()),
+                )
+                .width(control_width)
+                .truncate()
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
 
-            for (val, label) in options {
-                if !query_lower.is_empty() && !label.to_lowercase().contains(&query_lower) {
-                    continue;
+            combo.show_ui(ui, |ui| {
+                let is_more_than_3 = options.len() > 3;
+
+                let mut search_query = if is_more_than_3 {
+                    ui.memory(|m| m.data.get_temp::<String>(search_id).unwrap_or_default())
+                } else {
+                    String::new()
+                };
+
+                if is_more_than_3 {
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(2.0);
+                        let te = egui::TextEdit::singleline(&mut search_query)
+                            .hint_text("Search...")
+                            .desired_width(130.0)
+                            .margin(Margin::symmetric(6, 4));
+                        text_edit_ui(ui, search_id.with("inner_search_edit"), te);
+                        ui.add_space(2.0);
+                    });
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.add_space(2.0);
+
+                    ui.memory_mut(|m| m.data.insert_temp(search_id, search_query.clone()));
                 }
-                match_count += 1;
-                if ui.selectable_value(selected, val.clone(), label).clicked() {
-                    changed = true;
-                    if is_more_than_3 {
-                        ui.memory_mut(|m| m.data.insert_temp(search_id, String::new()));
+
+                let query_lower = search_query.trim().to_lowercase();
+                let mut match_count = 0;
+
+                for (val, label) in options {
+                    if !query_lower.is_empty() && !label.to_lowercase().contains(&query_lower) {
+                        continue;
+                    }
+                    match_count += 1;
+                    if ui.selectable_value(selected, val.clone(), label).clicked() {
+                        changed = true;
+                        if is_more_than_3 {
+                            ui.memory_mut(|m| m.data.insert_temp(search_id, String::new()));
+                        }
                     }
                 }
-            }
 
-            if is_more_than_3 && match_count == 0 {
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new("No matching items")
-                        .size(12.0)
-                        .color(crate::ui::theme::text_weak()),
-                );
-                ui.add_space(4.0);
-            }
-        })
-    });
+                if is_more_than_3 && match_count == 0 {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("No matching items")
+                            .size(12.0)
+                            .color(crate::ui::theme::text_weak()),
+                    );
+                    ui.add_space(4.0);
+                }
+            })
+        },
+    );
 
     let resp = inner_resp.inner;
     if let Some(target_text) = crate::ui::automation::record_combobox(
@@ -1336,7 +1398,7 @@ pub fn input_field(ui: &mut Ui, text: &mut String, hint: &str) -> egui::Response
 }
 
 pub fn error_notice(ui: &mut Ui, language: crate::i18n::UiLanguage, details: &str) {
-    render_error_notice(ui, language, details, false);
+    dismissible_error_notice(ui, language, details);
 }
 
 pub fn dismissible_error_notice(
@@ -1344,66 +1406,43 @@ pub fn dismissible_error_notice(
     language: crate::i18n::UiLanguage,
     details: &str,
 ) -> bool {
-    render_error_notice(ui, language, details, true)
+    error_dialog(ui.ctx(), ui.make_persistent_id("error_notice"), language, details)
 }
 
-fn render_error_notice(
-    ui: &mut Ui,
+pub(crate) fn error_dialog(
+    ctx: &egui::Context,
+    id: egui::Id,
     language: crate::i18n::UiLanguage,
     details: &str,
-    dismissible: bool,
 ) -> bool {
-    let mut dismissed = false;
-    Frame::new()
-        .fill(crate::ui::theme::modal_backdrop())
-        .stroke(Stroke::new(1.0, crate::ui::theme::danger()))
-        .corner_radius(CornerRadius::same(10))
-        .inner_margin(Margin::symmetric(12, 10))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(crate::i18n::tr(language, "Something went wrong"))
-                        .strong()
-                        .color(crate::ui::theme::text_strong()),
-                );
-                if dismissible {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        dismissed = ui
-                            .small_button("×")
-                            .on_hover_text(crate::i18n::tr(language, "Close"))
-                            .clicked();
-                    });
-                }
-            });
-            ui.label(
-                egui::RichText::new(crate::i18n::tr(
-                    language,
-                    "You can copy the details and report this on GitHub Issues or in QQ group 1009732148.",
-                ))
-                .size(12.5)
-                .color(crate::ui::theme::text_normal()),
-            );
-            ui.horizontal_wrapped(|ui| {
-                error_actions(ui, language, details);
-            });
-            egui::CollapsingHeader::new(crate::i18n::tr(language, "Error details"))
-                .id_salt(details)
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .max_height(160.0)
-                        .show(ui, |ui| {
-                            dark_container_frame(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(details)
-                                        .family(egui::FontFamily::Monospace)
-                                        .color(Color32::from_rgb(240, 244, 255))
-                                        .size(12.0),
-                                );
-                            });
-                        });
-                });
-        });
+    // Persistent errors can be acknowledged; a new failure after recovery opens again.
+    let frame = ctx.cumulative_frame_nr();
+    let (previous, mut dismissed, last_frame) = ctx.data_mut(|data| {
+        data.get_temp::<(String, bool, u64)>(id).unwrap_or_default()
+    });
+    if previous != details || frame > last_frame + 1 {
+        dismissed = false;
+    }
+    let acknowledged_id = egui::Id::new("acknowledged_error");
+    if ctx.data(|data| data.get_temp::<(String, u64)>(acknowledged_id))
+        .is_some_and(|(message, seen)| message == details && frame <= seen + 1)
+    {
+        dismissed = true;
+    }
+    let pass = ctx.cumulative_pass_nr();
+    let presented_id = egui::Id::new("error_presented_pass");
+    if !dismissed && ctx.data(|data| data.get_temp::<u64>(presented_id)) != Some(pass) {
+        ctx.data_mut(|data| data.insert_temp(presented_id, pass));
+        let mut modal = crate::ui::modal::ModalDialog::error(language, details, None);
+        modal.render_with_id(ctx, language, id);
+        dismissed = !modal.open;
+    }
+    ctx.data_mut(|data| {
+        data.insert_temp(id, (details.to_owned(), dismissed, frame));
+        if dismissed {
+            data.insert_temp(acknowledged_id, (details.to_owned(), frame));
+        }
+    });
     dismissed
 }
 
@@ -1500,6 +1539,9 @@ pub fn translation_language_selector(
             }
         }
         let pair = source == "auto" && target.contains(',');
+        if pair && ui.available_width() < 390.0 {
+            ui.end_row();
+        }
         if source != "auto"
             && ui
                 .push_id(id, |ui| {
@@ -1517,7 +1559,13 @@ pub fn translation_language_selector(
         };
         let mut targets: Vec<String> = target.split(',').map(str::to_owned).collect();
         for index in 0..targets.len() {
-            ui.label(if pair { "↔" } else { "→" });
+            if pair {
+                if index > 0 {
+                    ui.label("↔");
+                }
+            } else if index > 0 {
+                ui.label("→");
+            }
             let options: Vec<_> = available
                 .iter()
                 .filter(|item| {
@@ -1531,12 +1579,18 @@ pub fn translation_language_selector(
                 })
                 .map(|item| (item.code().to_owned(), tr(item.name())))
                 .collect();
-            if searchable_combobox(
+            let target_width = if pair && ui.available_width() < 420.0 {
+                Some(((ui.available_width() - 40.0) / targets.len() as f32).clamp(96.0, 160.0))
+            } else {
+                None
+            };
+            if searchable_combobox_with_width(
                 ui,
                 format!("{id}_target_{index}"),
                 label(&targets[index]),
                 &mut targets[index],
                 &options,
+                target_width,
             ) {
                 *target = targets.join(",");
                 changed = true;
@@ -1739,7 +1793,9 @@ pub fn pill_toggle(ui: &mut Ui, checked: &mut bool) -> egui::Response {
         crate::ui::animation::AnimationSystem::toggle(ui.ctx(), id.with("switch"), *checked);
 
     let (rect, mut response) = ui.allocate_exact_size(Vec2::new(36.0, 20.0), egui::Sense::click());
-    if response.clicked() {
+    let hit_rect = rect.expand2(Vec2::new(8.0, 8.0));
+    let hit_response = ui.interact(hit_rect, id.with("touch_hit"), egui::Sense::click());
+    if response.clicked() || hit_response.clicked() {
         *checked = !*checked;
         response.mark_changed();
     }
@@ -2101,8 +2157,26 @@ pub fn feature_checkbox(
     text: &str,
 ) -> egui::Response {
     let access = crate::feature_access::access(feature);
+    let label_size = ui
+        .painter()
+        .layout_no_wrap(
+            text.to_owned(),
+            egui::FontId::proportional(13.0),
+            theme::text_strong(),
+        )
+        .size();
     let mut response = ui
-        .add_enabled_ui(access.available, |ui| toggle_with_label(ui, checked, text))
+        .allocate_ui_with_layout(
+            egui::vec2(
+                40.0 + 2.0 * ui.spacing().item_spacing.x + label_size.x,
+                label_size.y.max(ui.spacing().interact_size.y).max(20.0),
+            ),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.add_enabled_ui(access.available, |ui| toggle_with_label(ui, checked, text))
+                    .inner
+            },
+        )
         .inner;
     response = decorate_unavailable(response, access, language);
     response
@@ -2146,11 +2220,13 @@ pub fn directory_path_input(
         .margin(egui::vec2(8.0, 6.0));
     let mut changed = text_edit_ui(ui, "path_picker_input", edit).changed();
 
-    if animated_button(ui, browse_label).clicked()
-        && let Some(path) = rfd::FileDialog::new().pick_folder()
-    {
-        *value = path.display().to_string();
-        changed = true;
+    if crate::file_dialog::folders_available() {
+        if animated_button(ui, browse_label).clicked()
+            && let Some(path) = crate::file_dialog::FileDialog::new().pick_folder()
+        {
+            *value = path.display().to_string();
+            changed = true;
+        }
     }
     changed
 }
@@ -2292,153 +2368,167 @@ pub fn sub_sidebar<T: Copy + PartialEq>(
     items: &[SubNavItem<T>],
     language: crate::i18n::UiLanguage,
 ) {
-    let width = 150.0;
-    let gap = 5.0;
-    let item_height = 42.0_f32;
+    let width = 160.0;
+    let gap = 4.0;
+    let item_height = 38.0_f32;
 
-    let border_id = ui.make_persistent_id("sub_sidebar_organic_border");
-    crate::ui::organic_border::show(
-        ui,
-        border_id,
-        Frame::new()
-            .fill(Color32::TRANSPARENT)
-            .corner_radius(CornerRadius::same(10))
-            .inner_margin(Margin::symmetric(10, 10)),
-        10.0,
-        theme::border(),
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, ui.available_height()),
+        egui::Layout::top_down(egui::Align::Min),
         |ui| {
             ui.set_width(width);
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new(crate::i18n::tr(language, "NAVIGATE"))
-                        .size(10.5)
-                        .color(crate::ui::theme::text_weak())
-                        .strong(),
-                );
-                ui.add_space(6.0);
-
-                for (idx, item) in items.iter().enumerate() {
-                    if idx > 0 {
-                        ui.add_space(gap);
-                    }
-
-                    let is_selected = *selected == item.id;
-                    let id = ui.make_persistent_id(item.label);
-
-                    let is_hovered = ui.memory(|m| {
-                        m.data
-                            .get_temp::<bool>(id.with("hover_state"))
-                            .unwrap_or(false)
-                    });
-                    let is_active = ui.memory(|m| {
-                        m.data
-                            .get_temp::<bool>(id.with("active_state"))
-                            .unwrap_or(false)
-                    });
-
-                    let select_factor = crate::ui::animation::AnimationSystem::selection(
-                        ui.ctx(),
-                        id.with("select"),
-                        is_selected,
-                    );
-
-                    let hover_factor = crate::ui::animation::AnimationSystem::hover(
-                        ui.ctx(),
-                        id.with("hover"),
-                        is_hovered && !is_selected,
-                    );
-
-                    let active_factor = crate::ui::animation::AnimationSystem::active(
-                        ui.ctx(),
-                        id.with("active"),
-                        is_active && !is_selected,
-                    );
-
-                    let bg_fill = Color32::TRANSPARENT;
-                    let text_color = crate::ui::animation::AnimationSystem::lerp_color(
-                        theme::text_normal(),
-                        theme::primary(),
-                        hover_factor,
-                    );
-                    let text_color = crate::ui::animation::AnimationSystem::lerp_color(
-                        text_color,
-                        theme::primary_dark(),
-                        active_factor,
-                    );
-                    let text_color = crate::ui::animation::AnimationSystem::lerp_color(
-                        text_color,
-                        theme::primary_dark(),
-                        select_factor,
-                    );
-
-                    let text = if item.icon.is_empty() {
-                        item.label.to_string()
-                    } else {
-                        format!("{} {}", item.icon, item.label)
-                    };
-
-                    let button_h = item_height;
-                    let v_padding = ((button_h - 18.0) / 2.0).max(8.0);
-
-                    let resp = Frame::new()
-                        .fill(bg_fill)
-                        .corner_radius(CornerRadius::same(8))
-                        .inner_margin(Margin::symmetric(12, v_padding as i8))
-                        .stroke(Stroke::NONE)
+            let border_id = ui.make_persistent_id("sub_sidebar_organic_border");
+            crate::ui::organic_border::show(
+                ui,
+                border_id,
+                Frame::new()
+                    .fill(Color32::TRANSPARENT)
+                    .corner_radius(CornerRadius::same(10))
+                    .inner_margin(Margin::symmetric(8, 10)),
+                10.0,
+                theme::border(),
+                |ui| {
+                    ui.set_width(width);
+                    egui::ScrollArea::vertical()
+                        .id_salt("sub_navigation_scroll")
+                        .auto_shrink([false, true])
+                        .min_scrolled_height(0.0)
                         .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                if select_factor > 0.1 {
-                                    let (bar_rect, _) = ui.allocate_exact_size(
-                                        Vec2::new(3.0, 14.0),
-                                        egui::Sense::hover(),
-                                    );
-                                    let accent = theme::primary_dark();
-                                    let bar_color = Color32::from_rgba_premultiplied(
-                                        accent.r(),
-                                        accent.g(),
-                                        accent.b(),
-                                        (255.0 * select_factor) as u8,
-                                    );
-                                    ui.painter().rect_filled(
-                                        bar_rect,
-                                        CornerRadius::same(2),
-                                        bar_color,
-                                    );
-                                    ui.add_space(4.0);
-                                }
-                                let mut rt =
-                                    egui::RichText::new(&text).size(13.5).color(text_color);
-                                if is_selected {
-                                    rt = rt.strong();
-                                }
-                                ui.label(rt)
-                            })
-                        })
-                        .response
-                        .interact(egui::Sense::click());
+                            ui.vertical(|ui| {
+                                ui.set_width(ui.available_width());
+                                ui.label(
+                                    egui::RichText::new(crate::i18n::tr(language, "NAVIGATE"))
+                                        .size(10.5)
+                                        .color(crate::ui::theme::text_weak())
+                                        .strong(),
+                                );
+                                ui.add_space(6.0);
 
-                    ui.memory_mut(|m| {
-                        m.data.insert_temp(id.with("hover_state"), resp.hovered());
-                        m.data
-                            .insert_temp(id.with("active_state"), resp.is_pointer_button_down_on());
-                    });
+                                for (idx, item) in items.iter().enumerate() {
+                                    if idx > 0 {
+                                        ui.add_space(gap);
+                                    }
 
-                    if resp.clicked() {
-                        *selected = item.id;
-                    }
-                    let simulated_click =
-                        crate::ui::automation::record_button(ui, id, &item.label, true, resp.rect);
-                    if simulated_click {
-                        *selected = item.id;
-                        simulate_click_on(ui, resp.rect);
-                        ui.ctx().request_repaint();
-                    }
-                    if resp.hovered() && !is_selected {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                }
-            });
+                                    let is_selected = *selected == item.id;
+                                    let id = ui.make_persistent_id(item.label);
+
+                                    let is_hovered = ui.memory(|m| {
+                                        m.data
+                                            .get_temp::<bool>(id.with("hover_state"))
+                                            .unwrap_or(false)
+                                    });
+                                    let is_active = ui.memory(|m| {
+                                        m.data
+                                            .get_temp::<bool>(id.with("active_state"))
+                                            .unwrap_or(false)
+                                    });
+
+                                    let select_factor = crate::ui::animation::AnimationSystem::selection(
+                                        ui.ctx(),
+                                        id.with("select"),
+                                        is_selected,
+                                    );
+
+                                    let hover_factor = crate::ui::animation::AnimationSystem::hover(
+                                        ui.ctx(),
+                                        id.with("hover"),
+                                        is_hovered && !is_selected,
+                                    );
+
+                                    let active_factor = crate::ui::animation::AnimationSystem::active(
+                                        ui.ctx(),
+                                        id.with("active"),
+                                        is_active && !is_selected,
+                                    );
+
+                                    let bg_fill = Color32::TRANSPARENT;
+                                    let text_color = crate::ui::animation::AnimationSystem::lerp_color(
+                                        theme::text_normal(),
+                                        theme::primary(),
+                                        hover_factor,
+                                    );
+                                    let text_color = crate::ui::animation::AnimationSystem::lerp_color(
+                                        text_color,
+                                        theme::primary_dark(),
+                                        active_factor,
+                                    );
+                                    let text_color = crate::ui::animation::AnimationSystem::lerp_color(
+                                        text_color,
+                                        theme::primary_dark(),
+                                        select_factor,
+                                    );
+
+                                    let text = if item.icon.is_empty() {
+                                        item.label.to_string()
+                                    } else {
+                                        format!("{} {}", item.icon, item.label)
+                                    };
+
+                                    let button_h = item_height;
+                                    let v_padding = ((button_h - 18.0) / 2.0).max(6.0);
+
+                                    let resp = Frame::new()
+                                        .fill(bg_fill)
+                                        .corner_radius(CornerRadius::same(8))
+                                        .inner_margin(Margin::symmetric(10, v_padding as i8))
+                                        .stroke(Stroke::NONE)
+                                        .show(ui, |ui| {
+                                            ui.set_width(ui.available_width());
+                                            ui.horizontal(|ui| {
+                                                if select_factor > 0.1 {
+                                                    let (bar_rect, _) = ui.allocate_exact_size(
+                                                        Vec2::new(3.0, 14.0),
+                                                        egui::Sense::hover(),
+                                                    );
+                                                    let accent = theme::primary_dark();
+                                                    let bar_color = Color32::from_rgba_premultiplied(
+                                                        accent.r(),
+                                                        accent.g(),
+                                                        accent.b(),
+                                                        (255.0 * select_factor) as u8,
+                                                    );
+                                                    ui.painter().rect_filled(
+                                                        bar_rect,
+                                                        CornerRadius::same(2),
+                                                        bar_color,
+                                                    );
+                                                    ui.add_space(4.0);
+                                                }
+                                                let mut rt =
+                                                    egui::RichText::new(&text).size(13.5).color(text_color);
+                                                if is_selected {
+                                                    rt = rt.strong();
+                                                }
+                                                ui.label(rt)
+                                            })
+                                        })
+                                        .response
+                                        .interact(egui::Sense::click());
+
+                                    ui.memory_mut(|m| {
+                                        m.data.insert_temp(id.with("hover_state"), resp.hovered());
+                                        m.data
+                                            .insert_temp(id.with("active_state"), resp.is_pointer_button_down_on());
+                                    });
+
+                                    if resp.clicked() {
+                                        *selected = item.id;
+                                    }
+                                    let simulated_click =
+                                        crate::ui::automation::record_button(ui, id, &item.label, true, resp.rect);
+                                    if simulated_click {
+                                        *selected = item.id;
+                                        simulate_click_on(ui, resp.rect);
+                                        ui.ctx().request_repaint();
+                                    }
+                                    if resp.hovered() && !is_selected {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    }
+                                }
+                            });
+                        });
+                },
+            );
         },
     );
 }
@@ -2867,6 +2957,8 @@ pub fn render_runtime_fallback_notice(
     }
 }
 
+pub const INPUT_TOGGLE_SIZE: f32 = 36.0;
+
 /// Compact, keyboard-accessible input controls beside the translation switch.
 pub fn input_toggle(
     ui: &mut Ui,
@@ -2878,7 +2970,7 @@ pub fn input_toggle(
     ui.push_id(id, |ui| {
         let mut response = ui.add(
             egui::Button::new("")
-                .min_size(egui::vec2(36.0, 36.0))
+                .min_size(egui::Vec2::splat(INPUT_TOGGLE_SIZE))
                 .corner_radius(CornerRadius::same(12))
                 .fill(if active {
                     theme::primary().gamma_multiply(0.15)

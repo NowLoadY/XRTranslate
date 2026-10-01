@@ -181,6 +181,16 @@ impl DownloadClient {
                     .map_err(|error| DownloadError::Client(error.to_string()))?,
             );
         }
+        #[cfg(target_os = "android")]
+        let builder = {
+            let roots = rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+            };
+            let config = rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            builder.use_preconfigured_tls(config)
+        };
         let client = builder
             .build()
             .map_err(|error| DownloadError::Client(error.to_string()))?;

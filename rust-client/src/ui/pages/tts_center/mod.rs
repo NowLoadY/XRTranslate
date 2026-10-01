@@ -91,17 +91,6 @@ pub fn render(
         ui.weak(controller.catalog.cards.len().to_string());
     });
     controller.catalog.filter_if_changed(language);
-    if let Some(error) = &controller.error
-        && controller.draft.is_none()
-        && !controller.catalog.visible.iter().any(|&index| {
-            controller.requested_voice.as_deref() == Some(&controller.catalog.cards[index].id)
-        })
-    {
-        ui.colored_label(
-            egui::Color32::from_rgb(165, 60, 65),
-            tr_dynamic(language, error),
-        );
-    }
     let mut selected_id = None;
     selection_card::grid(
         ui,
@@ -144,18 +133,12 @@ pub fn render(
                     let description = reference.map_or(card.description.as_str(), |voice| {
                         tr(language, voice.description)
                     });
-                    let description = error
-                        .map_or_else(|| description.into(), |error| tr_dynamic(language, error));
                     ui.allocate_ui(egui::vec2(ui.available_width(), 64.0), |ui| {
                         faded_scroll_text::show(
                             ui,
-                            &description,
+                            description,
                             egui::FontId::proportional(13.0),
-                            if error.is_some() {
-                                crate::ui::theme::danger()
-                            } else {
-                                ui.visuals().text_color()
-                            },
+                            ui.visuals().text_color(),
                         );
                     });
                     ui.horizontal(|ui| {
@@ -199,14 +182,7 @@ pub fn render(
     }
     let busy = controller.busy() || controller.catalog.busy();
     if let Some(draft) = &mut controller.draft {
-        let (open, save) = editor::show(
-            ui,
-            draft,
-            language,
-            asr_languages,
-            busy,
-            controller.error.as_deref(),
-        );
+        let (open, save) = editor::show(ui, draft, language, asr_languages, busy);
         let saved_draft = save.then(|| draft.clone());
         if !open {
             controller.draft = None;
@@ -214,6 +190,11 @@ pub fn render(
         if let Some(draft) = saved_draft {
             controller.import(draft, ui.ctx());
         }
+    }
+    if let Some(error) = &controller.error
+        && components::dismissible_error_notice(ui, language, &tr_dynamic(language, error))
+    {
+        controller.error = None;
     }
     action
 }

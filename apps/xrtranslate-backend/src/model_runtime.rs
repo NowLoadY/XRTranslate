@@ -169,7 +169,8 @@ impl NativeProviderPlan {
             matches!(
                 runtime.llama_cpp_backend,
                 Some(NativeRuntimeBackend::Cuda | NativeRuntimeBackend::Vulkan)
-            )
+            ) || (cfg!(target_os = "android")
+                && runtime.llama_cpp_backend == Some(NativeRuntimeBackend::Cpu))
         }) {
             return Err("Managed models require a verified CUDA or Vulkan runtime marker; CPU fallback is disabled.".into());
         }
@@ -551,6 +552,12 @@ fn apply_managed_runtime_environment(
     let Some(runtime) = runtime else {
         return Ok(());
     };
+    #[cfg(target_os = "android")]
+    if runtime.llama_cpp_backend == Some(NativeRuntimeBackend::Cpu) {
+        spec.gpu_layers = xrtranslate_supervisor::GpuLayers::None;
+        spec.extra_args.extend(["--device".into(), "none".into()]);
+        return Ok(());
+    }
     if runtime.llama_cpp_backend == Some(NativeRuntimeBackend::Vulkan) {
         let device = runtime
             .vulkan_device

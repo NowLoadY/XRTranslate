@@ -42,7 +42,7 @@ pub(super) fn render_minutes(
     if let Some(bundle) = controller.bundle.as_mut() {
         components::section(ui, tr(language, "User markers"), |ui| {
             for marker in &mut bundle.markers {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(
                         egui::RichText::new(marker_label(marker.kind, language))
                             .strong()
@@ -51,7 +51,8 @@ pub(super) fn render_minutes(
                     let response = crate::ui::components::text_edit_ui(
                         ui,
                         ("marker_text", &marker.id),
-                        egui::TextEdit::singleline(&mut marker.text).desired_width(420.0),
+                        egui::TextEdit::singleline(&mut marker.text)
+                            .desired_width(420.0_f32.min(ui.available_width())),
                     );
                     if response.lost_focus() && response.changed() {
                         *action = UiAction::SaveMarker(marker.clone());

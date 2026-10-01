@@ -1,110 +1,297 @@
-//! A reusable text conversation, independent of audio capture and media tasks.
+//! Finite text tasks use the same scoped result stream as audio translation.
 use crate::{
     CaptureSource,
     backend::{BackendManager, BackendStart, BackendStatus},
     network::{self, ExternalAudioGate, SessionConfig, SessionEvent, SessionHandle},
+    session_coordinator::{TranslationInput, TranslationSessionOwner, TranslationTask},
+    translation_service::{ChannelScope, TaskEvent},
 };
 use crossbeam_channel::{Receiver, Sender, bounded};
 use eframe::egui;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashSet,
+    sync::{Arc, atomic::Ordering},
+    time::{Duration, Instant},
+};
 use xrtranslate_engine::language::LanguageSelection;
 use xrtranslate_protocol::PromptGraphSet;
 
-pub(crate) enum TextEvent {
-    Accepted(String),
-    Result(SessionEvent),
-    Failed(String),
-}
-
-struct Request {
-    text: String,
-    languages: LanguageSelection,
-}
-
-pub(crate) struct TextTranslation {
+struct TextConnection {
     session: Option<SessionHandle>,
-    pending: Option<Request>,
-    connected: bool,
-    outstanding: usize,
-    backend_preparing: bool,
-    started: Option<Instant>,
-    next_poll: Instant,
     tx: Sender<SessionEvent>,
     rx: Receiver<SessionEvent>,
+    drained: bool,
 }
 
-impl Default for TextTranslation {
+impl Default for TextConnection {
     fn default() -> Self {
         let (tx, rx) = bounded(128);
         Self {
             session: None,
-            pending: None,
-            connected: false,
-            outstanding: 0,
-            backend_preparing: false,
-            started: None,
-            next_poll: Instant::now(),
             tx,
             rx,
+            drained: false,
+        }
+    }
+}
+
+impl TextConnection {
+    fn close(&mut self) {
+        if let Some(session) = self.session.take() {
+            session.cancel();
+        }
+    }
+}
+
+struct TextTask {
+    scope: Arc<ChannelScope>,
+    pending: Option<String>,
+    languages: LanguageSelection,
+    publish_to_host_outputs: bool,
+    connection: TextConnection,
+    started: Instant,
+    segments: HashSet<u32>,
+    segment_count: u32,
+    terminal: bool,
+}
+
+impl TextTask {
+    fn same_conversation(&self, other: &Self) -> bool {
+        self.scope.owner == other.scope.owner
+            && self.languages == other.languages
+            && self.publish_to_host_outputs == other.publish_to_host_outputs
+    }
+
+    fn send_pending(&mut self) -> Result<(), String> {
+        if let Some(text) = &self.pending {
+            let (source, destination) = self.languages.wire();
+            self.connection
+                .session
+                .as_ref()
+                .ok_or("Text session is unavailable")?
+                .translate_text(text, Some(source), Some(destination))?;
+            self.pending = None;
+            self.connection.drained = false;
+            self.started = Instant::now();
+        }
+        Ok(())
+    }
+
+    fn emit(&self, event: SessionEvent, target: &Sender<TaskEvent>) {
+        let _ = target.send(TaskEvent {
+            scope: self.scope.clone(),
+            event,
+        });
+    }
+
+    fn finish(&mut self, reason: String, target: &Sender<TaskEvent>) {
+        self.emit(SessionEvent::Disconnected(reason), target);
+        self.terminal = true;
+        // The event pump still needs this scope to deliver queued results.
+    }
+
+    fn fail(&mut self, error: String, target: &Sender<TaskEvent>, errors: &mut Vec<String>) {
+        self.connection.close();
+        self.emit(SessionEvent::Error(error.clone()), target);
+        self.finish(error.clone(), target);
+        if self.publish_to_host_outputs {
+            errors.push(error);
+        }
+    }
+
+    fn cancel(&self) {
+        self.scope.active.store(false, Ordering::Release);
+        if let Some(session) = &self.connection.session {
+            session.cancel();
+        }
+    }
+}
+
+pub(crate) struct TextTranslation {
+    tasks: Vec<TextTask>,
+    backend_preparing: bool,
+    next_poll: Instant,
+}
+
+impl Default for TextTranslation {
+    fn default() -> Self {
+        Self {
+            tasks: Vec::new(),
+            backend_preparing: false,
+            next_poll: Instant::now(),
         }
     }
 }
 
 impl TextTranslation {
     pub(crate) fn busy(&self) -> bool {
-        self.preparing() || self.outstanding > 0
+        self.tasks.iter().any(|task| !task.terminal)
     }
 
+    #[cfg(test)]
     pub(crate) fn preparing(&self) -> bool {
-        self.pending.is_some()
+        self.tasks
+            .iter()
+            .any(|task| !task.terminal && task.pending.is_some())
     }
 
-    /// A pending startup owns one captured request, never the later UI draft.
-    pub(crate) fn submit(
-        &mut self,
-        text: &str,
-        languages: LanguageSelection,
-    ) -> Result<bool, String> {
-        if self.pending.is_some() {
-            return Ok(false);
+    pub(crate) fn preparing_for(&self, plugin_id: &str) -> bool {
+        self.tasks.iter().any(|task| {
+            !task.terminal && task.pending.is_some() && task.scope.owner.is_plugin(plugin_id)
+        })
+    }
+
+    pub(crate) fn owner_active(&self, plugin_id: &str) -> bool {
+        self.tasks
+            .iter()
+            .any(|task| task.scope.owner.is_plugin(plugin_id) && task.scope.accepts_events())
+    }
+
+    pub(crate) fn scopes(&self) -> impl Iterator<Item = &Arc<ChannelScope>> {
+        self.tasks.iter().map(|task| &task.scope)
+    }
+
+    fn retire_finished(&mut self) {
+        for task in self.tasks.iter_mut().filter(|task| task.terminal) {
+            while let Ok(event) = task.connection.rx.try_recv() {
+                match event {
+                    SessionEvent::StreamEnded { .. } => task.connection.drained = true,
+                    SessionEvent::Error(_)
+                    | SessionEvent::BackendError { .. }
+                    | SessionEvent::Disconnected(_) => task.connection.close(),
+                    _ => {}
+                }
+            }
+            if !task.connection.drained && task.started.elapsed() > Duration::from_secs(180) {
+                task.connection.close();
+            }
         }
-        if self.connected {
-            let (source, target) = languages.wire();
-            self.session
-                .as_ref()
-                .ok_or("Text session is unavailable")?
-                .translate_text(text, Some(source), Some(target))?;
-            self.outstanding += 1;
-            return Ok(true);
-        }
-        self.pending = Some(Request {
-            text: text.to_owned(),
-            languages,
+        self.tasks.retain(|task| {
+            task.scope.accepts_events()
+                || (task.scope.active.load(Ordering::Acquire) && task.connection.session.is_some())
         });
-        self.started = Some(Instant::now());
+    }
+
+    fn reuse_connections(&mut self) {
+        for index in 0..self.tasks.len() {
+            let task = &self.tasks[index];
+            if task.terminal || task.connection.session.is_some() {
+                continue;
+            }
+            let Some(previous) = self.tasks[..index]
+                .iter()
+                .position(|previous| previous.same_conversation(task))
+            else {
+                continue;
+            };
+            let (earlier, waiting) = self.tasks.split_at_mut(index);
+            let previous = &mut earlier[previous];
+            let task = &mut waiting[0];
+            if previous.terminal
+                && previous.scope.finished.load(Ordering::Acquire)
+                && previous.connection.drained
+                && previous.connection.session.is_some()
+            {
+                std::mem::swap(&mut previous.connection, &mut task.connection);
+                task.scope.stream_id.store(
+                    task.connection.session.as_ref().unwrap().stream_id(),
+                    Ordering::Release,
+                );
+                let _ = task.connection.tx.send(SessionEvent::Connected);
+                if let Err(error) = task.send_pending() {
+                    let _ = task.connection.tx.send(SessionEvent::Error(error));
+                }
+            }
+        }
+        self.retire_finished();
+        // Keep a small bounded cache of conversations, most recently used last.
+        let mut idle = 0;
+        for index in (0..self.tasks.len()).rev() {
+            let task = &self.tasks[index];
+            if task.terminal && !task.scope.accepts_events() {
+                idle += 1;
+                if idle > 8 {
+                    self.tasks.remove(index);
+                }
+            }
+        }
+    }
+
+    fn needs_connection(&self, index: usize) -> bool {
+        let task = &self.tasks[index];
+        !task.terminal
+            && task.connection.session.is_none()
+            && !self.tasks[..index]
+                .iter()
+                .any(|previous| previous.same_conversation(task))
+    }
+
+    /// Each accepted request captures its owner and language pair permanently.
+    pub(crate) fn submit(&mut self, task: TranslationTask) -> Result<(), String> {
+        let owner = task.owner();
+        let TranslationInput::Text(text) = task.input else {
+            return Err("A text translation task requires text input".into());
+        };
+        if text.trim().is_empty() {
+            return Err("Text cannot be empty".into());
+        }
+        self.retire_finished();
+        if self
+            .tasks
+            .iter()
+            .filter(|task| !task.terminal || task.scope.accepts_events())
+            .count()
+            >= 32
+        {
+            return Err("Translation queue is full. Please try again.".into());
+        }
+        let publish_to_host_outputs = task
+            .plugin
+            .as_ref()
+            .is_none_or(|binding| binding.publish_to_host_outputs());
+        self.tasks.push(TextTask {
+            scope: ChannelScope::text(owner),
+            pending: Some(text),
+            languages: task.languages,
+            publish_to_host_outputs,
+            connection: TextConnection::default(),
+            started: Instant::now(),
+            segments: HashSet::new(),
+            segment_count: 0,
+            terminal: false,
+        });
+        self.reuse_connections();
         self.next_poll = Instant::now();
-        Ok(false)
+        Ok(())
     }
 
     pub(crate) fn update_prompts(&self, graphs: PromptGraphSet) {
-        if let Some(session) = &self.session {
-            session.update_prompt_templates(graphs);
+        for task in &self.tasks {
+            if let Some(session) = &task.connection.session {
+                session.update_prompt_templates(graphs.clone());
+            }
+        }
+    }
+
+    pub(crate) fn cancel_owner(&mut self, owner: &TranslationSessionOwner) {
+        self.tasks.retain(|task| {
+            if task.scope.owner == *owner {
+                task.cancel();
+                false
+            } else {
+                true
+            }
+        });
+        if self.tasks.is_empty() {
+            self.backend_preparing = false;
         }
     }
 
     pub(crate) fn reset(&mut self) {
-        if let Some(session) = self.session.take() {
-            session.cancel();
+        for task in self.tasks.drain(..) {
+            task.cancel();
         }
-        self.connected = false;
-        self.outstanding = 0;
         self.backend_preparing = false;
-        self.pending = None;
-        self.started = None;
-        // Detach old producers immediately, before a later request can connect.
-        let (tx, rx) = bounded(128);
-        self.tx = tx;
-        self.rx = rx;
     }
 
     pub(crate) fn poll(
@@ -113,9 +300,15 @@ impl TextTranslation {
         server_url: &str,
         graphs: PromptGraphSet,
         ctx: egui::Context,
-    ) -> Vec<TextEvent> {
-        let mut events = Vec::new();
-        if self.pending.is_some() && self.session.is_none() && Instant::now() >= self.next_poll {
+        target: &Sender<TaskEvent>,
+    ) -> Vec<String> {
+        self.retire_finished();
+        self.reuse_connections();
+        let mut errors = Vec::new();
+        let waiting: Vec<_> = (0..self.tasks.len())
+            .filter(|&index| self.needs_connection(index))
+            .collect();
+        if !waiting.is_empty() && Instant::now() >= self.next_poll {
             self.next_poll = Instant::now() + Duration::from_millis(250);
             let state = if self.backend_preparing {
                 match backend.status(server_url) {
@@ -128,94 +321,101 @@ impl TextTranslation {
             };
             match state {
                 Ok(BackendStart::Ready) => {
-                    let (tx, rx) = bounded(128);
-                    self.tx = tx;
-                    self.rx = rx;
-                    let request = self.pending.as_ref().unwrap();
-                    self.session = Some(network::start_text_session(
-                        self.tx.clone(),
-                        SessionConfig {
-                            server_url: server_url.to_owned(),
-                            languages: request.languages,
-                            external_audio_gate: ExternalAudioGate::default(),
-                            publish_to_host_outputs: false,
-                            tts: None,
-                            egui_ctx: Some(ctx.clone()),
-                            vad_threshold: 0.0,
-                            vad_silence_ms: 0,
-                            continuous_recognition: false,
-                            audio_source: CaptureSource::Microphone,
-                            finish_when_audio_ends: false,
-                            prompt_graphs: Some(graphs),
-                        },
-                    ));
+                    self.backend_preparing = false;
+                    for index in waiting {
+                        let task = &mut self.tasks[index];
+                        let session = network::start_text_session(
+                            task.connection.tx.clone(),
+                            SessionConfig {
+                                server_url: server_url.to_owned(),
+                                languages: task.languages,
+                                external_audio_gate: ExternalAudioGate::default(),
+                                publish_to_host_outputs: task.publish_to_host_outputs,
+                                tts: None,
+                                egui_ctx: Some(ctx.clone()),
+                                vad_threshold: 0.0,
+                                vad_silence_ms: 0,
+                                continuous_recognition: false,
+                                audio_source: CaptureSource::Microphone,
+                                finish_when_audio_ends: false,
+                                prompt_graphs: Some(graphs.clone()),
+                            },
+                        );
+                        task.scope
+                            .stream_id
+                            .store(session.stream_id(), Ordering::Release);
+                        task.connection.session = Some(session);
+                    }
                 }
                 Ok(BackendStart::Starting(_)) => self.backend_preparing = true,
                 Err(error) => {
-                    self.reset();
-                    events.push(TextEvent::Failed(error));
+                    self.backend_preparing = false;
+                    for index in waiting {
+                        let task = &mut self.tasks[index];
+                        task.fail(error.clone(), target, &mut errors);
+                    }
                 }
             }
         }
-        while let Ok(event) = self.rx.try_recv() {
-            match event {
-                SessionEvent::Connected => {
-                    self.connected = true;
-                    if let Some(request) = self.pending.take() {
-                        let (source, target) = request.languages.wire();
-                        match self.session.as_ref().unwrap().translate_text(
-                            &request.text,
-                            Some(source),
-                            Some(target),
-                        ) {
-                            Ok(()) => {
-                                self.outstanding += 1;
-                                events.push(TextEvent::Accepted(request.text));
-                            }
-                            Err(error) => events.push(TextEvent::Failed(error)),
+        for task in self.tasks.iter_mut().filter(|task| !task.terminal) {
+            while let Ok(event) = task.connection.rx.try_recv() {
+                match &event {
+                    SessionEvent::Connected => {
+                        task.emit(event, target);
+                        if let Err(error) = task.send_pending() {
+                            task.fail(error, target, &mut errors);
                         }
                     }
-                    self.started = None;
+                    SessionEvent::Error(error) => {
+                        task.fail(error.clone(), target, &mut errors);
+                    }
+                    SessionEvent::BackendError { message, .. } => {
+                        let error = message.clone();
+                        task.connection.close();
+                        task.emit(event, target);
+                        task.finish(error.clone(), target);
+                        if task.publish_to_host_outputs {
+                            errors.push(error);
+                        }
+                    }
+                    SessionEvent::Disconnected(reason) => {
+                        task.fail(reason.clone(), target, &mut errors);
+                    }
+                    SessionEvent::Translation {
+                        revisable,
+                        segment_index,
+                        segment_count,
+                        ..
+                    } => {
+                        task.segment_count = task.segment_count.max((*segment_count).max(1));
+                        if !revisable && *segment_index > 0 && *segment_index <= task.segment_count
+                        {
+                            task.segments.insert(*segment_index);
+                        }
+                        task.emit(event, target);
+                        if task.segments.len() == task.segment_count as usize {
+                            task.finish("Finished".into(), target);
+                        }
+                    }
+                    _ => task.emit(event, target),
                 }
-                SessionEvent::Error(error) | SessionEvent::BackendError { message: error, .. } => {
-                    self.reset();
-                    events.push(TextEvent::Failed(error));
+                if task.terminal {
                     break;
                 }
-                SessionEvent::Disconnected(reason) => {
-                    self.reset();
-                    if reason != "Cancelled" {
-                        events.push(TextEvent::Failed(reason));
-                    }
-                    break;
-                }
-                SessionEvent::Translation {
-                    revisable,
-                    segment_index,
-                    segment_count,
-                    ..
-                } => {
-                    if !revisable && segment_index >= segment_count.max(1) {
-                        self.outstanding = self.outstanding.saturating_sub(1);
-                    }
-                    events.push(TextEvent::Result(event));
-                }
-                _ => {}
+            }
+            if !task.terminal && task.started.elapsed() > Duration::from_secs(180) {
+                let error = if task.pending.is_some() {
+                    "Text translation startup timed out"
+                } else {
+                    "Text translation timed out"
+                };
+                task.fail(error.into(), target, &mut errors);
             }
         }
-        if self
-            .started
-            .is_some_and(|at| at.elapsed() > Duration::from_secs(180))
-        {
-            self.reset();
-            events.push(TextEvent::Failed(
-                "Text translation startup timed out".into(),
-            ));
-        }
-        if self.preparing() {
+        if self.busy() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
-        events
+        errors
     }
 }
 
@@ -228,24 +428,43 @@ impl Drop for TextTranslation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn reset_detaches_late_events_before_a_new_request() {
-        let mut text = TextTranslation::default();
-        let old = text.tx.clone();
-        text.reset();
-        assert!(old.send(SessionEvent::Connected).is_err());
-        assert!(!text.busy());
-        let languages = LanguageSelection::parse("en", "zh").unwrap();
-        text.submit("new", languages).unwrap();
-        assert_eq!(text.pending.as_ref().unwrap().text, "new");
-        assert!(!text.connected);
+
+    fn request(text: &str, languages: LanguageSelection) -> TranslationTask {
+        TranslationTask {
+            languages,
+            plugin: None,
+            input: TranslationInput::Text(text.into()),
+            profiles: Vec::new(),
+        }
     }
 
     #[test]
-    fn multipart_text_result_stays_busy_until_the_last_one_based_segment() {
+    fn reset_detaches_late_events_before_a_new_request() {
         let mut text = TextTranslation::default();
-        text.outstanding = 1;
+        let languages = LanguageSelection::parse("en", "zh").unwrap();
+        text.submit(request("old", languages)).unwrap();
+        let old = text.tasks[0].connection.tx.clone();
+        let old_scope = text.tasks[0].scope.clone();
+        text.reset();
+        assert!(old.send(SessionEvent::Connected).is_err());
+        assert!(!old_scope.accepts_events());
+        assert!(!text.busy());
+        text.submit(request("new", languages)).unwrap();
+        assert_eq!(text.tasks[0].pending.as_deref(), Some("new"));
+        assert!(!Arc::ptr_eq(&text.tasks[0].scope, &old_scope));
+    }
+
+    #[test]
+    fn multipart_text_result_stays_busy_until_all_one_based_segments_arrive() {
+        let mut text = TextTranslation::default();
+        text.submit(request(
+            "words",
+            LanguageSelection::parse("en", "zh").unwrap(),
+        ))
+        .unwrap();
+        text.next_poll = Instant::now() + Duration::from_secs(60);
         let mut backend = BackendManager::load();
+        let (target, events) = bounded(16);
         let make_segment = |segment_index| SessionEvent::Translation {
             stream_id: 1,
             audio_source: CaptureSource::Microphone,
@@ -268,37 +487,70 @@ mod tests {
             authoritative_snapshot: false,
             revision: 0,
         };
-        text.tx.send(make_segment(1)).unwrap();
-        text.poll(
-            &mut backend,
-            "",
-            PromptGraphSet {
-                graph: Default::default(),
-            },
-            egui::Context::default(),
+        for index in [2, 2, 1] {
+            text.tasks[0]
+                .connection
+                .tx
+                .send(make_segment(index))
+                .unwrap();
+            text.poll(
+                &mut backend,
+                "",
+                PromptGraphSet {
+                    graph: Default::default(),
+                },
+                egui::Context::default(),
+                &target,
+            );
+            assert_eq!(text.busy(), index != 1);
+        }
+        assert!(text.tasks[0].scope.accepts_events());
+        let delivered = events
+            .try_iter()
+            .map(|event| event.event)
+            .collect::<Vec<_>>();
+        assert_eq!(delivered.len(), 4);
+        assert!(
+            matches!(delivered.last(), Some(SessionEvent::Disconnected(reason)) if reason == "Finished")
         );
-        assert!(text.busy());
-        text.tx.send(make_segment(2)).unwrap();
-        text.poll(
-            &mut backend,
-            "",
-            PromptGraphSet {
-                graph: Default::default(),
-            },
-            egui::Context::default(),
-        );
-        assert!(!text.busy());
     }
 
     #[test]
-    fn preparation_keeps_the_first_request_and_its_language_pair() {
+    fn preparation_keeps_independent_requests_and_their_language_pairs() {
+        use crate::session_coordinator::{
+            PluginSessionBinding, PluginSessionOwner, SessionOutputPolicy,
+        };
+
         let mut controller = TextTranslation::default();
-        let languages = LanguageSelection::parse("en", "zh").unwrap();
-        assert!(!controller.submit("first", languages).unwrap());
-        assert!(!controller.submit("later draft", languages).unwrap());
-        let request = controller.pending.as_ref().unwrap();
-        assert_eq!(request.text, "first");
-        assert_eq!(request.languages, languages);
+        let first = LanguageSelection::parse("en", "zh").unwrap();
+        let second = LanguageSelection::parse("zh", "en").unwrap();
+        let mut plugin_request = request("first", first);
+        plugin_request.plugin = Some(PluginSessionBinding::text(
+            PluginSessionOwner::new("example", "first", "", "", ""),
+            SessionOutputPolicy::PluginOnly,
+        ));
+        controller.submit(plugin_request).unwrap();
+        controller.submit(request("second", second)).unwrap();
+        assert!(controller.owner_active("example"));
+        assert!(controller.preparing_for("example"));
+        assert!(!controller.preparing_for("other"));
+        assert!(!controller.tasks[0].publish_to_host_outputs);
+        assert!(controller.tasks[1].publish_to_host_outputs);
+        assert_eq!(controller.tasks[0].pending.as_deref(), Some("first"));
+        assert_eq!(controller.tasks[0].languages, first);
+        assert_eq!(controller.tasks[1].pending.as_deref(), Some("second"));
+        assert_eq!(controller.tasks[1].languages, second);
+        for _ in 2..32 {
+            controller.submit(request("queued", first)).unwrap();
+        }
+        assert!(controller.submit(request("overflow", first)).is_err());
+        let canceled_scope = controller.tasks[0].scope.clone();
+        controller.cancel_owner(&canceled_scope.owner);
+        assert!(!canceled_scope.accepts_events());
+        assert!(!controller.owner_active("example"));
+        assert!(!controller.preparing_for("example"));
+        assert_eq!(controller.tasks[0].pending.as_deref(), Some("second"));
+        assert_eq!(controller.tasks.len(), 31);
         controller.reset();
         assert!(!controller.preparing());
     }

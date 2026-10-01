@@ -221,7 +221,7 @@ pub fn content_backdrop(focused: bool) -> Color32 {
 }
 
 pub fn modal_backdrop() -> Color32 {
-    Color32::from_rgba_unmultiplied(255, 255, 255, 238)
+    Color32::from_rgb(255, 255, 255)
 }
 
 pub fn border() -> Color32 {

@@ -149,6 +149,7 @@ impl RuntimeLayout {
         runtime_directory: Option<impl AsRef<Path>>,
     ) -> Self {
         let project_root = project_root.as_ref().to_path_buf();
+        let runtime_directory = runtime_directory.filter(|_| !cfg!(target_os = "android"));
         let runtime_root = match runtime_directory {
             Some(dir) => {
                 let dir = normalized_runtime_root(dir.as_ref());

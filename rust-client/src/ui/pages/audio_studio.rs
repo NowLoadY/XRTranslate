@@ -59,7 +59,7 @@ struct AudioStudioCanvasState {
 impl Default for AudioStudioCanvasState {
     fn default() -> Self {
         Self {
-            show_graph: true,
+            show_graph: !cfg!(target_os = "android"),
             editor: Default::default(),
             history: Default::default(),
             rename_graph: None,
@@ -625,7 +625,9 @@ fn render_graph_canvas(
         });
 
         let mut canvas_ui = graph_canvas::canvas_viewport(ui, canvas);
-        state.handle_navigation(canvas, &response, &canvas_ui, true, !pointer_over_gain_node);
+        if state.handle_navigation(canvas, &response, &canvas_ui, true, !pointer_over_gain_node) {
+            canvas_ui.disable();
+        }
         graph_canvas::paint_grid(&canvas_ui, canvas, &state.canvas, GRID);
 
         let positions = endpoint_positions(graph, canvas, state, &snapshot.host_audio);
@@ -805,7 +807,7 @@ fn render_links(
             }
         }
     }
-    if canvas_response.clicked_by(egui::PointerButton::Primary) {
+    if !state.touch_navigating() && canvas_response.clicked_by(egui::PointerButton::Primary) {
         if let Some(link_id) = closest {
             let extend = ui.input(|input| input.modifiers.shift || input.modifiers.ctrl);
             state.select_link(link_id, extend);
@@ -2600,107 +2602,137 @@ fn render_header(
     let unlocked = snapshot.host_audio.translation_workflow_locked_by.is_none();
     let rename_id = ui.make_persistent_id("audio_graph_name");
     let mut focus_name = false;
-    ui.horizontal_wrapped(|ui| {
-        ui.heading(tr(language, "Audio Studio"));
-        ui.add_enabled_ui(unlocked, |ui| {
-            let name = if is_default {
-                tr(language, "Default")
-            } else {
-                &snapshot.selected_graph.name
-            };
-            crate::ui::components::combobox_ui_with_width(
-                ui,
-                "audio_graph",
-                name,
-                Some(190.0),
-                |ui| {
-                    for default_group in [true, false] {
-                        for (id, name) in &snapshot.graphs {
-                            if (id.0 == crate::audio_studio::DEFAULT_AUDIO_GRAPH_ID)
-                                != default_group
-                            {
-                                continue;
-                            }
-                            let label = if default_group {
-                                tr(language, "Default")
-                            } else {
-                                name
-                            };
-                            if ui
-                                .selectable_label(*id == snapshot.selected_graph.id, label)
-                                .clicked()
-                            {
-                                if *id != snapshot.selected_graph.id {
-                                    actions.push(AudioStudioUiAction::SelectGraph(id.clone()));
-                                }
-                                state.rename_graph = None;
-                                state.pending_graph_delete = false;
-                                state.pending_safe_reset = false;
-                                ui.close();
-                            }
+    let compact = ui.available_width() < 500.0;
+
+    let render_graph_selector = |ui: &mut egui::Ui, state: &mut AudioStudioCanvasState, actions: &mut Vec<AudioStudioUiAction>, focus_name: &mut bool| {
+        let name = if is_default {
+            tr(language, "Default")
+        } else {
+            &snapshot.selected_graph.name
+        };
+        crate::ui::components::combobox_ui_with_width(
+            ui,
+            "audio_graph",
+            name,
+            Some(if compact { 130.0 } else { 190.0 }),
+            |ui| {
+                for default_group in [true, false] {
+                    for (id, name) in &snapshot.graphs {
+                        if (id.0 == crate::audio_studio::DEFAULT_AUDIO_GRAPH_ID)
+                            != default_group
+                        {
+                            continue;
                         }
-                        if default_group && snapshot.graphs.len() > 1 {
-                            ui.separator();
+                        let label = if default_group {
+                            tr(language, "Default")
+                        } else {
+                            name
+                        };
+                        if ui
+                            .selectable_label(*id == snapshot.selected_graph.id, label)
+                            .clicked()
+                        {
+                            if *id != snapshot.selected_graph.id {
+                                actions.push(AudioStudioUiAction::SelectGraph(id.clone()));
+                            }
+                            state.rename_graph = None;
+                            state.pending_graph_delete = false;
+                            state.pending_safe_reset = false;
+                            ui.close();
                         }
                     }
-                },
-            );
-            ui.menu_button("⋯", |ui| {
-                if ui.button(tr(language, "New graph")).clicked() {
-                    actions.push(AudioStudioUiAction::NewGraph);
-                    state.show_graph = true;
-                    state.rename_graph = Some(String::new());
-                    state.pending_graph_delete = false;
-                    state.pending_safe_reset = false;
-                    focus_name = true;
-                    ui.close();
+                    if default_group && snapshot.graphs.len() > 1 {
+                        ui.separator();
+                    }
                 }
-                if ui.button(tr(language, "Duplicate graph")).clicked() {
-                    actions.push(AudioStudioUiAction::DuplicateGraph);
-                    state.rename_graph = None;
-                    state.pending_graph_delete = false;
-                    state.pending_safe_reset = false;
-                    ui.close();
-                }
-                if ui
-                    .add_enabled(!is_default, egui::Button::new(tr(language, "Rename")))
-                    .clicked()
-                {
-                    state.rename_graph = Some(snapshot.selected_graph.name.clone());
-                    state.pending_graph_delete = false;
-                    state.pending_safe_reset = false;
-                    focus_name = true;
-                    ui.close();
-                }
-                if ui
-                    .add_enabled(!is_default, egui::Button::new(tr(language, "Delete graph")))
-                    .clicked()
-                {
-                    state.pending_graph_delete = true;
-                    state.pending_safe_reset = false;
-                    state.rename_graph = None;
-                    ui.close();
-                }
-                ui.separator();
-                if ui.button(tr(language, "Reset graph")).clicked() {
-                    state.pending_safe_reset = true;
-                    state.pending_graph_delete = false;
-                    state.rename_graph = None;
-                    ui.close();
-                }
-            });
-        })
-        .response
-        .on_disabled_hover_text(tr(language, "Stop translation to switch graphs"));
-        route_lifecycle_chip(ui, &snapshot.lifecycle, language);
-        if snapshot.dirty {
-            if graph_style::command_button(ui, tr(language, "Save"), true).clicked() {
-                actions.push(AudioStudioUiAction::Save);
+            },
+        );
+        ui.menu_button("⋯", |ui| {
+            if ui.button(tr(language, "New graph")).clicked() {
+                actions.push(AudioStudioUiAction::NewGraph);
+                state.show_graph = true;
+                state.rename_graph = Some(String::new());
+                state.pending_graph_delete = false;
+                state.pending_safe_reset = false;
+                *focus_name = true;
+                ui.close();
             }
-        } else {
-            ui.label(RichText::new(tr(language, "Saved")).small().color(MUTED));
-        }
-    });
+            if ui.button(tr(language, "Duplicate graph")).clicked() {
+                actions.push(AudioStudioUiAction::DuplicateGraph);
+                state.rename_graph = None;
+                state.pending_graph_delete = false;
+                state.pending_safe_reset = false;
+                ui.close();
+            }
+            if ui
+                .add_enabled(!is_default, egui::Button::new(tr(language, "Rename")))
+                .clicked()
+            {
+                state.rename_graph = Some(snapshot.selected_graph.name.clone());
+                state.pending_graph_delete = false;
+                state.pending_safe_reset = false;
+                *focus_name = true;
+                ui.close();
+            }
+            if ui
+                .add_enabled(!is_default, egui::Button::new(tr(language, "Delete graph")))
+                .clicked()
+            {
+                state.pending_graph_delete = true;
+                state.pending_safe_reset = false;
+                state.rename_graph = None;
+                ui.close();
+            }
+            ui.separator();
+            if ui.button(tr(language, "Reset graph")).clicked() {
+                state.pending_safe_reset = true;
+                state.pending_graph_delete = false;
+                state.rename_graph = None;
+                ui.close();
+            }
+        });
+    };
+
+    if compact {
+        ui.horizontal(|ui| {
+            ui.heading(tr(language, "Audio Studio"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_enabled_ui(unlocked, |ui| {
+                    render_graph_selector(ui, state, actions, &mut focus_name);
+                })
+                .response
+                .on_disabled_hover_text(tr(language, "Stop translation to switch graphs"));
+            });
+        });
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            route_lifecycle_chip(ui, &snapshot.lifecycle, language);
+            if snapshot.dirty {
+                if graph_style::command_button(ui, tr(language, "Save"), true).clicked() {
+                    actions.push(AudioStudioUiAction::Save);
+                }
+            } else {
+                ui.label(RichText::new(tr(language, "Saved")).small().color(MUTED));
+            }
+        });
+    } else {
+        ui.horizontal_wrapped(|ui| {
+            ui.heading(tr(language, "Audio Studio"));
+            ui.add_enabled_ui(unlocked, |ui| {
+                render_graph_selector(ui, state, actions, &mut focus_name);
+            })
+            .response
+            .on_disabled_hover_text(tr(language, "Stop translation to switch graphs"));
+            route_lifecycle_chip(ui, &snapshot.lifecycle, language);
+            if snapshot.dirty {
+                if graph_style::command_button(ui, tr(language, "Save"), true).clicked() {
+                    actions.push(AudioStudioUiAction::Save);
+                }
+            } else {
+                ui.label(RichText::new(tr(language, "Saved")).small().color(MUTED));
+            }
+        });
+    }
     if let Some(mut name) = state.rename_graph.clone() {
         ui.horizontal(|ui| {
             let edit = ui.add(

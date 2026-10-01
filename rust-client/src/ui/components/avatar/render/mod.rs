@@ -61,8 +61,8 @@ struct Target {
     shadow: wgpu::TextureView,
     lighting: wgpu::BindGroup,
     composite: wgpu::BindGroup,
-    composite_uv: wgpu::Buffer,
-    last_uv: [f32; 4],
+    composite_params: wgpu::Buffer,
+    last_composite: [f32; 5],
     last_seen: Instant,
     last_parts: Vec<Instance>,
     last_camera: Option<glam::Mat4>,
@@ -160,9 +160,9 @@ impl Target {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let composite_uv = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("avatar composite UV"),
-            size: 16,
+        let composite_params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("avatar composite parameters"),
+            size: 20,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -177,8 +177,8 @@ impl Target {
             shadow,
             lighting,
             composite,
-            composite_uv,
-            last_uv: [0.0; 4],
+            composite_params,
+            last_composite: [0.0; 5],
             last_seen: Instant::now(),
             last_parts: Vec::new(),
             last_camera: None,
@@ -402,9 +402,9 @@ impl Renderer {
                 "composite_gamma"
             }),
             &[Some(wgpu::VertexBufferLayout {
-                array_stride: 16,
+                array_stride: 20,
                 step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &wgpu::vertex_attr_array![0 => Float32x4],
+                attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32],
             })],
             target_format,
             None,
@@ -480,7 +480,8 @@ pub fn install(
 }
 
 pub(super) fn paint(painter: &egui::Painter, id: Id, rect: Rect, model: Model) {
-    let callback = Draw::new(id.value(), rect, model);
+    let mut callback = Draw::new(id.value(), rect, model);
+    callback.opacity = painter.opacity();
     painter.add(egui_wgpu::Callback::new_paint_callback(rect, callback));
 }
 
@@ -490,6 +491,7 @@ struct Draw {
     batches: Vec<Batch>,
     parts: Vec<Instance>,
     projection: Option<glam::Mat4>,
+    opacity: f32,
 }
 
 #[derive(Clone, PartialEq)]
@@ -547,15 +549,20 @@ impl CallbackTrait for Draw {
         }
         .viewport_in_pixels();
         let rect_px = self.rect * screen.pixels_per_point;
-        let uv = [
+        let composite = [
             (viewport.left_px as f32 - rect_px.left()) / rect_px.width(),
             (viewport.top_px as f32 - rect_px.top()) / rect_px.height(),
             viewport.width_px as f32 / rect_px.width(),
             viewport.height_px as f32 / rect_px.height(),
+            self.opacity,
         ];
-        if target.last_uv != uv {
-            queue.write_buffer(&target.composite_uv, 0, bytemuck::cast_slice(&uv));
-            target.last_uv = uv;
+        if target.last_composite != composite {
+            queue.write_buffer(
+                &target.composite_params,
+                0,
+                bytemuck::cast_slice(&composite),
+            );
+            target.last_composite = composite;
         }
         if target.last_camera != self.projection {
             if let Some(matrix) = self.projection {
@@ -665,7 +672,7 @@ impl CallbackTrait for Draw {
         if let Some(target) = renderer.targets.get(&self.id) {
             pass.set_pipeline(&renderer.composite_pipeline);
             pass.set_bind_group(0, &target.composite, &[]);
-            pass.set_vertex_buffer(0, target.composite_uv.slice(..));
+            pass.set_vertex_buffer(0, target.composite_params.slice(..));
             pass.draw(0..3, 0..1);
         }
     }
@@ -694,6 +701,7 @@ impl Draw {
             batches,
             parts: model.parts.iter().map(Instance::from).collect(),
             projection: None,
+            opacity: 1.0,
         }
     }
 

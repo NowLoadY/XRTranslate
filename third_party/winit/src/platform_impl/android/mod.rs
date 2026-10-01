@@ -25,6 +25,7 @@ use crate::window::{
     WindowButtons, WindowLevel,
 };
 
+mod ime;
 mod keycodes;
 
 pub(crate) use crate::cursor::{
@@ -138,6 +139,7 @@ pub struct EventLoop<T: 'static> {
     user_events_sender: mpsc::Sender<T>,
     user_events_receiver: PeekableReceiver<T>, // must wake looper whenever something gets sent
     loop_running: bool,                        // Dispatched `NewEvents<Init>`
+    owns_event_loop_reservation: bool,
     running: bool,
     pending_redraw: bool,
     cause: StartCause,
@@ -157,7 +159,19 @@ impl Default for PlatformSpecificEventLoopAttributes {
     }
 }
 
+impl<T: 'static> Drop for EventLoop<T> {
+    fn drop(&mut self) {
+        self.release_event_loop();
+    }
+}
+
 impl<T: 'static> EventLoop<T> {
+    fn release_event_loop(&mut self) {
+        if std::mem::take(&mut self.owns_event_loop_reservation) {
+            crate::event_loop::release_android_event_loop();
+        }
+    }
+
     pub(crate) fn new(
         attributes: &PlatformSpecificEventLoopAttributes,
     ) -> Result<Self, EventLoopError> {
@@ -174,6 +188,7 @@ impl<T: 'static> EventLoop<T> {
             window_target: event_loop::ActiveEventLoop {
                 p: ActiveEventLoop {
                     app: android_app.clone(),
+                    ime: Arc::default(),
                     control_flow: Cell::new(ControlFlow::default()),
                     exit: Cell::new(false),
                     redraw_requester: RedrawRequester::new(
@@ -187,6 +202,7 @@ impl<T: 'static> EventLoop<T> {
             user_events_sender,
             user_events_receiver: PeekableReceiver::from_recv(user_events_receiver),
             loop_running: false,
+            owns_event_loop_reservation: true,
             running: false,
             pending_redraw: false,
             cause: StartCause::Init,
@@ -287,9 +303,14 @@ impl<T: 'static> EventLoop<T> {
                     warn!("TODO: forward onStop notification to application");
                 },
                 MainEvent::Destroy => {
-                    // XXX: maybe exit mainloop to drop things before being
-                    // killed by the OS?
-                    warn!("TODO: forward onDestroy notification to application");
+                    // GameActivity waits for android_main to return before a new
+                    // activity can start. Its input buffers are no longer valid.
+                    self.running = false;
+                    self.window_target.p.exit();
+                    // Frameworks may retain this loop in thread-local storage
+                    // until after the next activity starts. Release only once.
+                    self.release_event_loop();
+                    return;
                 },
                 MainEvent::InsetsChanged { .. } => {
                     // XXX: how to forward this state to applications?
@@ -320,6 +341,14 @@ impl<T: 'static> EventLoop<T> {
             Err(err) => {
                 tracing::warn!("Failed to get input events iterator: {err:?}");
             },
+        }
+
+        let ime_events = std::mem::take(&mut self.window_target.p.ime.lock().unwrap().events);
+        for event in ime_events {
+            callback(
+                event::Event::WindowEvent { window_id: window::WindowId(WindowId), event },
+                self.window_target(),
+            );
         }
 
         // Empty the user event buffer
@@ -472,6 +501,12 @@ impl<T: 'static> EventLoop<T> {
                         callback(event, self.window_target());
                     },
                 }
+            },
+            InputEvent::TextEvent(state) => {
+                self.window_target.p.ime.lock().unwrap().text(state);
+            },
+            InputEvent::TextAction(action) => {
+                self.window_target.p.ime.lock().unwrap().action(*action);
             },
             _ => {
                 warn!("Unknown android_activity input event {event:?}")
@@ -654,6 +689,7 @@ impl<T> EventLoopProxy<T> {
 
 pub struct ActiveEventLoop {
     pub(crate) app: AndroidApp,
+    ime: Arc<Mutex<ime::State>>,
     control_flow: Cell<ControlFlow>,
     exit: Cell<bool>,
     redraw_requester: RedrawRequester,
@@ -776,6 +812,7 @@ pub struct PlatformSpecificWindowAttributes;
 
 pub(crate) struct Window {
     app: AndroidApp,
+    ime: Arc<Mutex<ime::State>>,
     redraw_requester: RedrawRequester,
 }
 
@@ -786,7 +823,11 @@ impl Window {
     ) -> Result<Self, error::OsError> {
         // FIXME this ignores requested window attributes
 
-        Ok(Self { app: el.app.clone(), redraw_requester: el.redraw_requester.clone() })
+        Ok(Self {
+            app: el.app.clone(),
+            ime: el.ime.clone(),
+            redraw_requester: el.redraw_requester.clone(),
+        })
     }
 
     pub(crate) fn maybe_queue_on_main(&self, f: impl FnOnce(&Self) + Send + 'static) {
@@ -916,6 +957,11 @@ impl Window {
     pub fn set_ime_cursor_area(&self, _position: Position, _size: Size) {}
 
     pub fn set_ime_allowed(&self, allowed: bool) {
+        if !self.ime.lock().unwrap().set_allowed(allowed) {
+            return;
+        }
+        self.app.set_text_input_state(Default::default());
+        self.redraw_requester.request_redraw();
         if allowed {
             self.app.show_soft_input(true);
         } else {

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use xrtranslate_protocol::{SegmentBoundary, SegmentTiming};
@@ -35,7 +35,11 @@ pub struct TranslationCueInput {
 /// coordination; this function is deterministic and platform-independent.
 pub fn cue_from_translation(input: TranslationCueInput) -> (SubtitleCue, SubtitleMetadata) {
     let id = if !input.turn_id.is_empty() {
-        format!("turn_{}_segment_{}", input.turn_id, input.segment_index)
+        let turn = format!("turn_{}_segment_{}", input.turn_id, input.segment_index);
+        match input.stream_id {
+            Some(stream) => format!("stream_{stream}_{turn}"),
+            None => turn,
+        }
     } else if let Some(stream_id) = input.stream_id {
         format!("stream_{}_{}", stream_id, input.start_ms)
     } else {
@@ -88,6 +92,8 @@ pub struct SubtitleTimeline {
     cues: Vec<SubtitleCue>,
     #[serde(default)]
     metadata: BTreeMap<String, SubtitleMetadata>,
+    #[serde(skip)]
+    snapshot_cues: BTreeMap<u64, BTreeSet<String>>,
     pub enabled: bool,
 }
 
@@ -96,6 +102,7 @@ impl SubtitleTimeline {
         Self {
             cues: Vec::new(),
             metadata: BTreeMap::new(),
+            snapshot_cues: BTreeMap::new(),
             enabled: true,
         }
     }
@@ -103,6 +110,46 @@ impl SubtitleTimeline {
     pub fn clear(&mut self) {
         self.cues.clear();
         self.metadata.clear();
+        self.snapshot_cues.clear();
+    }
+
+    pub(crate) fn finalize_live_cues(&mut self, stream_id: u64) {
+        let prefix = format!("stream_{stream_id}_");
+        for (id, metadata) in &mut self.metadata {
+            if id.starts_with(&prefix) {
+                metadata.finalized = true;
+            }
+        }
+    }
+
+    pub(crate) fn finish_stream(&mut self, stream_id: u64) {
+        self.finalize_live_cues(stream_id);
+        self.snapshot_cues.remove(&stream_id);
+    }
+
+    pub(crate) fn replace_stream_cues(
+        &mut self,
+        stream_id: u64,
+        cues: impl IntoIterator<Item = (SubtitleCue, SubtitleMetadata)>,
+    ) {
+        let previous = self.snapshot_cues.remove(&stream_id).unwrap_or_default();
+        let prefix = format!("stream_{stream_id}_");
+        self.cues.retain(|cue| {
+            let metadata = self.metadata.get(&cue.id).copied().unwrap_or_default();
+            let replace = metadata.timing != SegmentTiming::Authored
+                && (previous.contains(&cue.id)
+                    || (cue.id.starts_with(&prefix) && !metadata.finalized));
+            if replace {
+                self.metadata.remove(&cue.id);
+            }
+            !replace
+        });
+        let mut ids = BTreeSet::new();
+        for (cue, metadata) in cues {
+            ids.insert(cue.id.clone());
+            self.add_cue_with_metadata(cue, metadata);
+        }
+        self.snapshot_cues.insert(stream_id, ids);
     }
 
     #[cfg(test)]
@@ -156,6 +203,11 @@ impl SubtitleTimeline {
 
     fn replace_cue(&mut self, index: usize, cue: SubtitleCue, metadata: SubtitleMetadata) -> bool {
         let previous_id = self.cues[index].id.clone();
+        if self.metadata_for(&previous_id).timing == SegmentTiming::Authored
+            && metadata.timing != SegmentTiming::Authored
+        {
+            return false;
+        }
         let cue_unchanged = self.cues[index] == cue;
         let metadata_unchanged =
             self.metadata.get(&previous_id).copied().unwrap_or_default() == metadata;
@@ -314,7 +366,7 @@ mod tests {
             revisable: true,
             finalized: false,
         });
-        assert_eq!(cue.id, "turn_turn-a_segment_2");
+        assert_eq!(cue.id, "stream_7_turn_turn-a_segment_2");
         assert_eq!(cue.speaker_name, None);
         assert_eq!(cue.translated_text.as_deref(), Some("你好"));
         assert!(metadata.revisable);

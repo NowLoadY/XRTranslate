@@ -3954,6 +3954,27 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Спокойный старт, шаг за шагом",
     ),
     ("Back", "上一步", "戻る", "이전", "Назад"),
+    (
+        "Fullscreen",
+        "全屏",
+        "全画面",
+        "전체 화면",
+        "Полный экран",
+    ),
+    (
+        "Exit Fullscreen",
+        "退出全屏",
+        "全画面を終了",
+        "전체 화면 종료",
+        "Выйти из полноэкранного режима",
+    ),
+    (
+        "Click to view full screen",
+        "点击全屏查看",
+        "全画面で表示",
+        "클릭하여 전체 화면 보기",
+        "Нажмите для полноэкранного режима",
+    ),
     ("Continue", "继续", "次へ", "계속", "Продолжить"),
     (
         "Finish later",
@@ -4605,10 +4626,10 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Выбранные модели ≈",
     ),
     (
-        "Estimated model VRAM includes weights and runtime overhead; actual use varies with context and concurrent workloads.",
-        "估算显存包含权重和运行开销；实际用量会随上下文和并行任务变化。",
-        "推定GPUメモリには重みと実行時の負荷を含みます。実際の使用量は設定により変わります。",
-        "추정 GPU 메모리에는 가중치와 실행 오버헤드가 포함되며 실제 사용량은 달라질 수 있습니다.",
+        "Estimated model memory includes weights and runtime overhead; actual use varies with context and concurrent workloads.",
+        "估算内存包含权重和运行开销；实际用量会随上下文和并行任务变化。",
+        "推定メモリには重みと実行時の負荷を含みます。実際の使用量は設定により変わります。",
+        "추정 메모리에는 가중치와 실행 오버헤드가 포함되며 실제 사용량은 달라질 수 있습니다.",
         "Оценка включает веса и накладные расходы; фактическое потребление зависит от нагрузки.",
     ),
     (
@@ -5166,6 +5187,13 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "上下にドラッグ · 角でサイズ変更",
         "위아래로 이동 · 모서리로 크기 조절",
         "Перетащите вверх или вниз · Угол меняет размер",
+    ),
+    (
+        "Position Controls",
+        "位置控制",
+        "位置コントロール",
+        "위치 제어",
+        "Управление положением",
     ),
     (
         "Precise Position",

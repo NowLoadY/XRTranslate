@@ -147,18 +147,14 @@ pub fn render_sidebar(
 ) {
     use egui::include_image;
 
-    let icon_tr = include_image!("../../resources/icons/translation.svg");
-    let icon_settings = include_image!("../../resources/icons/settings.svg");
     let icon_guide = include_image!("../../resources/icons/guide.svg");
-    let icon_tts = include_image!("../../resources/icons/tts-center.svg");
-    let icon_prompt = include_image!("../../resources/icons/prompt-studio.svg");
-    let icon_corpus = include_image!("../../resources/icons/corpus-studio.svg");
-    let icon_audio = include_image!("../../resources/icons/audio-studio.svg");
     let icon_expand = include_image!("../../resources/icons/chevron-right.svg");
     let icon_collapse = include_image!("../../resources/icons/chevron-left.svg");
 
+    let compact_height = ui.available_height() < 500.0;
+
     ui.vertical(|ui| {
-        ui.add_space(4.0);
+        ui.add_space(if compact_height { 2.0 } else { 4.0 });
 
         // Brand Header & Expand/Collapse Toggle
         ui.horizontal(|ui| {
@@ -175,22 +171,37 @@ pub fn render_sidebar(
                 });
             }
 
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let (toggle_icon, tooltip) = if navigation.collapsed {
-                    (icon_expand, "Expand sidebar")
-                } else {
-                    (icon_collapse, "Collapse sidebar")
-                };
+            let (toggle_icon, tooltip) = if navigation.collapsed {
+                (icon_expand, "Expand sidebar")
+            } else {
+                (icon_collapse, "Collapse sidebar")
+            };
 
-                let toggle_img = egui::Image::new(toggle_icon)
-                    .fit_to_exact_size(egui::vec2(14.0, 14.0))
-                    .tint(theme::text_strong());
+            let (toggle_size, btn_wh) = if compact_height {
+                (12.0, 24.0)
+            } else {
+                (14.0, 28.0)
+            };
 
+            let toggle_img = egui::Image::new(toggle_icon)
+                .fit_to_exact_size(egui::vec2(toggle_size, toggle_size))
+                .tint(theme::text_strong());
+
+            let layout = if expand_factor > 0.15 {
+                Layout::right_to_left(Align::Center)
+            } else {
+                Layout::top_down(Align::Center)
+            };
+
+            ui.with_layout(layout, |ui| {
+                if expand_factor <= 0.15 {
+                    ui.set_width(ui.available_width());
+                }
                 let toggle_btn = ui
                     .add(
                         egui::Button::image(toggle_img)
-                            .min_size(egui::vec2(28.0, 28.0))
-                            .corner_radius(CornerRadius::same(14)),
+                            .min_size(egui::vec2(btn_wh, btn_wh))
+                            .corner_radius(CornerRadius::same(btn_wh as u8 / 2)),
                     )
                     .on_hover_text(crate::i18n::tr(language, tooltip));
 
@@ -200,111 +211,59 @@ pub fn render_sidebar(
             });
         });
 
-        ui.add_space(16.0);
+        ui.add_space(if compact_height { 6.0 } else { 16.0 });
 
-        nav_item_animated(
-            ui,
-            navigation,
-            Page::Translation,
-            icon_tr,
-            crate::i18n::tr(language, "Translation"),
-            expand_factor,
-        );
-        ui.add_space(4.0);
-        let mut plugin_descriptors = crate::plugins::PluginRegistry::builtin()
-            .descriptors()
-            .iter()
-            .collect::<Vec<_>>();
-        plugin_descriptors.sort_by_key(|descriptor| descriptor.navigation_order);
-        for descriptor in &plugin_descriptors {
-            if !plugin_preferences.is_enabled(descriptor.id) {
-                continue;
-            }
-            nav_item_animated(
-                ui,
-                navigation,
-                Page::Plugin(descriptor.id),
-                descriptor.icon.image_source(),
-                crate::i18n::tr(language, descriptor.title_key),
-                expand_factor,
-            );
-            ui.add_space(4.0);
-        }
+        egui::ScrollArea::vertical()
+            .id_salt("sidebar_scroll")
+            .auto_shrink([false, false])
+            .min_scrolled_height(0.0)
+            .show(ui, |ui| {
+                for entry in navigation_entries(plugin_preferences, tts_configured) {
+                    if entry.page == Page::AudioStudio {
+                        ui.add_space(if compact_height { 3.0 } else { 8.0 });
+                        components::wavy_divider_black_shadow(ui);
+                        ui.add_space(if compact_height { 3.0 } else { 8.0 });
+                    }
+                    nav_item_animated(
+                        ui,
+                        navigation,
+                        entry.page,
+                        entry.icon,
+                        crate::i18n::tr(language, entry.title),
+                        expand_factor,
+                        compact_height,
+                    );
+                    if entry.page != Page::Settings {
+                        ui.add_space(if compact_height { 1.5 } else { 4.0 });
+                    }
+                }
 
-        ui.add_space(8.0);
-        components::wavy_divider_black_shadow(ui);
-        ui.add_space(8.0);
+                ui.add_space(if compact_height { 6.0 } else { 20.0 });
+                components::wavy_divider_black_shadow(ui);
+                ui.add_space(if compact_height { 4.0 } else { 12.0 });
 
-        nav_item_animated(
-            ui,
-            navigation,
-            Page::AudioStudio,
-            icon_audio,
-            crate::i18n::tr(language, "Audio Studio"),
-            expand_factor,
-        );
-        ui.add_space(4.0);
-        nav_item_animated(
-            ui,
-            navigation,
-            Page::PromptStudio,
-            icon_prompt,
-            crate::i18n::tr(language, "Prompt Studio"),
-            expand_factor,
-        );
-        ui.add_space(4.0);
-        if tts_configured {
-            nav_item_animated(
-                ui,
-                navigation,
-                Page::TtsCenter,
-                icon_tts,
-                crate::i18n::tr(language, "TTS Center"),
-                expand_factor,
-            );
-            ui.add_space(4.0);
-        }
-        nav_item_animated(
-            ui,
-            navigation,
-            Page::CorpusStudio,
-            icon_corpus,
-            crate::i18n::tr(language, "Vocabulary Graph"),
-            expand_factor,
-        );
-        ui.add_space(4.0);
-        nav_item_animated(
-            ui,
-            navigation,
-            Page::Settings,
-            icon_settings,
-            crate::i18n::tr(language, "Settings"),
-            expand_factor,
-        );
-
-        ui.add_space(20.0);
-        components::wavy_divider_black_shadow(ui);
-        ui.add_space(12.0);
-
-        guide_button_animated(
-            ui,
-            modal_dialog,
-            language,
-            icon_guide.clone(),
-            expand_factor,
-        );
-        ui.add_space(4.0);
-        if sidebar_text_button(
-            ui,
-            "sidebar_welcome_btn",
-            "Welcome Page",
-            icon_guide,
-            language,
-            expand_factor,
-        ) {
-            *onboarding_page = 0;
-            *first_run = true;
-        }
+                guide_button_animated(
+                    ui,
+                    modal_dialog,
+                    language,
+                    icon_guide.clone(),
+                    expand_factor,
+                    compact_height,
+                );
+                ui.add_space(if compact_height { 2.0 } else { 4.0 });
+                if sidebar_text_button(
+                    ui,
+                    "sidebar_welcome_btn",
+                    "Welcome Page",
+                    icon_guide,
+                    language,
+                    expand_factor,
+                    compact_height,
+                ) {
+                    *onboarding_page = 0;
+                    *first_run = true;
+                }
+            });
     });
 }
 
@@ -315,6 +274,7 @@ fn sidebar_text_button(
     icon: egui::ImageSource<'static>,
     language: crate::i18n::UiLanguage,
     expand_factor: f32,
+    compact_height: bool,
 ) -> bool {
     let id = ui.make_persistent_id(id_source);
     let hovered = ui.memory(|memory| {
@@ -339,12 +299,13 @@ fn sidebar_text_button(
     let foreground =
         animation::AnimationSystem::lerp_color(foreground, theme::primary_dark(), active_factor);
 
+    let v_padding = if compact_height { 3 } else { 8 };
     let response = Frame::new()
         .fill(bg_fill)
         .corner_radius(CornerRadius::same(8))
         .inner_margin(Margin::symmetric(
             (12.0 * expand_factor + 8.0 * (1.0 - expand_factor)).round() as i8,
-            8,
+            v_padding,
         ))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -413,6 +374,7 @@ fn nav_item_animated(
     icon: egui::ImageSource<'static>,
     label: &str,
     expand_factor: f32,
+    compact_height: bool,
 ) {
     let is_selected = navigation.page == page;
     let id = ui.make_persistent_id(label);
@@ -447,11 +409,12 @@ fn nav_item_animated(
         animation::AnimationSystem::lerp_color(text_color, theme::primary_dark(), select_factor);
 
     let inner_padding_x = (12.0 * expand_factor + 8.0 * (1.0 - expand_factor)).round();
+    let v_padding = if compact_height { 3 } else { 9 };
 
     let frame_response = Frame::new()
         .fill(bg_fill)
         .corner_radius(CornerRadius::same(8))
-        .inner_margin(Margin::symmetric(inner_padding_x as i8, 9))
+        .inner_margin(Margin::symmetric(inner_padding_x as i8, v_padding))
         .stroke(Stroke::NONE)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -539,6 +502,7 @@ fn guide_button_animated(
     language: crate::i18n::UiLanguage,
     icon: egui::ImageSource<'static>,
     expand_factor: f32,
+    compact_height: bool,
 ) {
     let guide_id = ui.make_persistent_id("sidebar_guide_btn");
     let is_hovered = ui.memory(|m| {
@@ -567,11 +531,12 @@ fn guide_button_animated(
         animation::AnimationSystem::lerp_color(foreground, theme::primary_dark(), active_factor);
 
     let inner_padding_x = (12.0 * expand_factor + 8.0 * (1.0 - expand_factor)).round();
+    let v_padding = if compact_height { 3 } else { 8 };
 
     let frame_response = Frame::new()
         .fill(bg_fill)
         .corner_radius(CornerRadius::same(8))
-        .inner_margin(Margin::symmetric(inner_padding_x as i8, 8))
+        .inner_margin(Margin::symmetric(inner_padding_x as i8, v_padding))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -624,4 +589,184 @@ fn guide_button_animated(
     if response.clicked() {
         open_guide_modal(modal_dialog, language);
     }
+}
+
+struct NavigationEntry {
+    page: Page,
+    title: &'static str,
+    icon: egui::ImageSource<'static>,
+}
+
+fn navigation_entries(
+    plugins: &crate::plugins::PluginPreferences,
+    tts_configured: bool,
+) -> Vec<NavigationEntry> {
+    use egui::include_image;
+    let mut entries = vec![NavigationEntry {
+        page: Page::Translation,
+        title: "Translation",
+        icon: include_image!("../../resources/icons/translation.svg"),
+    }];
+    let mut descriptors = crate::plugins::PluginRegistry::builtin()
+        .descriptors()
+        .iter()
+        .collect::<Vec<_>>();
+    descriptors.sort_by_key(|descriptor| descriptor.navigation_order);
+    entries.extend(
+        descriptors
+            .into_iter()
+            .filter(|descriptor| plugins.is_enabled(descriptor.id))
+            .map(|descriptor| NavigationEntry {
+                page: Page::Plugin(descriptor.id),
+                title: descriptor.title_key,
+                icon: descriptor.icon.image_source(),
+            }),
+    );
+    entries.push(NavigationEntry {
+        page: Page::AudioStudio,
+        title: "Audio Studio",
+        icon: include_image!("../../resources/icons/audio-studio.svg"),
+    });
+    entries.push(NavigationEntry {
+        page: Page::PromptStudio,
+        title: "Prompt Studio",
+        icon: include_image!("../../resources/icons/prompt-studio.svg"),
+    });
+    if tts_configured {
+        entries.push(NavigationEntry {
+            page: Page::TtsCenter,
+            title: "TTS Center",
+            icon: include_image!("../../resources/icons/tts-center.svg"),
+        });
+    }
+    entries.push(NavigationEntry {
+        page: Page::CorpusStudio,
+        title: "Vocabulary Graph",
+        icon: include_image!("../../resources/icons/corpus-studio.svg"),
+    });
+    entries.push(NavigationEntry {
+        page: Page::Settings,
+        title: "Settings",
+        icon: include_image!("../../resources/icons/settings.svg"),
+    });
+    entries
+}
+
+pub fn render_top_navigation(
+    ui: &mut egui::Ui,
+    navigation: &mut NavigationState,
+    plugins: &crate::plugins::PluginPreferences,
+    tts_configured: bool,
+    modal_dialog: &mut modal::ModalDialog,
+    first_run: &mut bool,
+    onboarding_page: &mut usize,
+    language: crate::i18n::UiLanguage,
+) {
+    let previous = ui
+        .ctx()
+        .data(|data| data.get_temp::<Page>(egui::Id::new("top_navigation_selected")));
+    let selected_before = navigation.page;
+    let icons_only = ui.available_width() < 600.0;
+    ui.horizontal(|ui| {
+        egui::ScrollArea::horizontal()
+            .id_salt("top_navigation")
+            .max_width((ui.available_width() - 48.0).max(0.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for entry in navigation_entries(plugins, tts_configured) {
+                        let selected = navigation.page == entry.page;
+                        let icon =
+                            egui::Image::new(entry.icon).fit_to_exact_size(egui::vec2(18.0, 18.0));
+                        let title = crate::i18n::tr(language, entry.title);
+                        let button = if icons_only {
+                            egui::Button::image(icon)
+                        } else {
+                            egui::Button::image_and_text(icon, title)
+                        };
+                        let response = ui
+                            .add(
+                                button
+                                    .selected(selected)
+                                    .min_size(egui::vec2(if icons_only { 40.0 } else { 0.0 }, 40.0))
+                                    .corner_radius(16),
+                            )
+                            .on_hover_text(title);
+                        if response.clicked() {
+                            navigation.page = entry.page;
+                        }
+                        if selected && previous != Some(entry.page) {
+                            response.scroll_to_me(Some(egui::Align::Center));
+                        }
+                    }
+                });
+            });
+        let menu_button = ui.add(
+            egui::Button::new(RichText::new("…").size(15.0).strong())
+                .min_size(egui::vec2(if icons_only { 40.0 } else { 0.0 }, 40.0))
+                .corner_radius(16),
+        );
+        let fill = if ui.visuals().dark_mode {
+            Color32::from_rgb(32, 33, 36)
+        } else {
+            Color32::WHITE
+        };
+        egui::Popup::menu(&menu_button)
+            .frame(
+                Frame::new()
+                    .fill(fill)
+                    .corner_radius(CornerRadius::same(12))
+                    .shadow(egui::Shadow {
+                        offset: [0, 6],
+                        blur: 20,
+                        spread: 0,
+                        color: Color32::from_black_alpha(50),
+                    })
+                    .stroke(Stroke::new(1.0, theme::border()))
+                    .inner_margin(Margin::same(12)),
+            )
+            .show(|ui| {
+                ui.set_min_width(170.0);
+                let guide_icon =
+                    egui::Image::new(egui::include_image!("../../resources/icons/guide.svg"))
+                        .fit_to_exact_size(egui::vec2(16.0, 16.0))
+                        .tint(theme::text_strong());
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 36.0],
+                        egui::Button::image_and_text(
+                            guide_icon,
+                            crate::i18n::tr(language, "User Guide"),
+                        )
+                        .corner_radius(8),
+                    )
+                    .clicked()
+                {
+                    open_guide_modal(modal_dialog, language);
+                    ui.close();
+                }
+                ui.add_space(4.0);
+                let home_icon =
+                    egui::Image::new(egui::include_image!("../../resources/icons/translation.svg"))
+                        .fit_to_exact_size(egui::vec2(16.0, 16.0))
+                        .tint(theme::text_strong());
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 36.0],
+                        egui::Button::image_and_text(
+                            home_icon,
+                            crate::i18n::tr(language, "Welcome Page"),
+                        )
+                        .corner_radius(8),
+                    )
+                    .clicked()
+                {
+                    *onboarding_page = 0;
+                    *first_run = true;
+                    ui.close();
+                }
+            });
+    });
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(egui::Id::new("top_navigation_selected"), selected_before)
+    });
 }

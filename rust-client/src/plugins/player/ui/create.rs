@@ -65,8 +65,10 @@ pub(super) fn render_create(
                                 .desired_width(text_width),
                         );
 
-                        if components::primary_button(ui, tr(language, "Browse...")).clicked() {
-                            if let Some(path) = rfd::FileDialog::new()
+                        let choose_file =
+                            components::primary_button(ui, tr(language, "Browse...")).clicked();
+                        {
+                            if let Some(path) = crate::file_dialog::FileDialog::new()
                                 .add_filter(
                                     "All Media Files",
                                     &[
@@ -86,7 +88,7 @@ pub(super) fn render_create(
                                         "ape", "alac",
                                     ],
                                 )
-                                .pick_file()
+                                .pick_file(ui.ctx(), "player_media_file", choose_file)
                             {
                                 controller.draft_source = path.to_string_lossy().to_string();
                             }

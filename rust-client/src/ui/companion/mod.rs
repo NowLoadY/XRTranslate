@@ -23,6 +23,7 @@ use std::{
 pub(crate) struct OnboardingLayout {
     pub features: Option<[Rect; 3]>,
     pub header: Rect,
+    pub content: Option<(Rect, egui::LayerId)>,
     pub next: Rect,
     pub footer: Rect,
     pub requirement: Option<&'static str>,
@@ -38,6 +39,7 @@ impl Default for OnboardingLayout {
         Self {
             features: None,
             header: Rect::NOTHING,
+            content: None,
             next: Rect::NOTHING,
             footer: Rect::NOTHING,
             requirement: None,
@@ -69,6 +71,8 @@ struct Guide {
     pending: Option<(Cue, f64)>,
     announced: u32,
     center: Pos2,
+    velocity: Vec2,
+    opacity: f32,
     placement: placement::Placement,
     parking: parking::Parking,
     candidate: Option<Attention>,
@@ -106,6 +110,8 @@ impl Guide {
                 .then_some((scene.cue, 0.0)),
             announced: 0,
             center: start,
+            velocity: Vec2::ZERO,
+            opacity: 1.0,
             placement: placement::Placement::default(),
             parking: parking::Parking::default(),
             candidate: None,
@@ -143,6 +149,7 @@ impl Guide {
         }
         if changed_page {
             self.route = scene.route;
+            self.velocity = Vec2::ZERO;
             self.parking = parking::Parking::default();
             self.enter(Stage::Ready);
             self.focus = None;
@@ -231,15 +238,14 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         ctx.request_repaint();
         return;
     }
-    let (layout, page) = match layout {
+    let (layout, mut page) = match layout {
         Layout::Onboarding(layout) => (Some(layout), None),
         Layout::Page { bounds, layer } => (None, Some((bounds, layer))),
     };
     let scene = dialogue::Context::read(app, layout.as_ref().and_then(|layout| layout.requirement));
     let language = app.ui_language;
     let screen = ctx.viewport_rect();
-    // Intro uses the welcome page's empty area. Dense steps share the clear
-    // space beside the step bar, outside their scrolling forms and buttons.
+    // The entrance has its own stage; settled companions share the page's gaps.
     let welcome = layout
         .as_ref()
         .and_then(|layout| {
@@ -254,11 +260,17 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
             })
         })
         .filter(|rect| rect.height() >= 180.0);
-    let bounds = welcome.unwrap_or_else(|| {
-        layout
-            .as_ref()
-            .map_or(screen.shrink(12.0), |layout| layout.header)
-    });
+    let bounds = welcome
+        .or_else(|| {
+            layout
+                .as_ref()
+                .map(|layout| layout.header)
+                .filter(|rect| rect.is_finite() && rect.is_positive())
+        })
+        .unwrap_or(screen.shrink(12.0));
+    if welcome.is_none() {
+        page = page.or_else(|| layout.as_ref().and_then(|layout| layout.content));
+    }
     let (wall, pointer, activity, focused, pressed) = ctx.input(|input| {
         (
             input.time,
@@ -269,14 +281,14 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         )
     });
     let radius = (screen.width().min(screen.height()) * 0.067).clamp(28.0, 48.0);
-    let small = (radius * 0.58).min(bounds.height() / 2.9).max(12.0);
+    let small = radius * 0.58;
     let intro = egui::pos2(
         bounds.right() - radius * 2.6,
         bounds.bottom() - radius * 1.6,
     );
     let home = egui::pos2(
         bounds.right() - small * 1.6,
-        if layout.is_some() {
+        if welcome.is_some() {
             bounds.top() + small * 1.8
         } else {
             bounds.bottom() - small * 2.0
@@ -340,15 +352,12 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     let dock = page
         .and_then(|(bounds, layer)| state.parking.locate(ctx, layer, bounds, small, state.clock));
     if page.is_some() && dock.is_none() && !vr_active {
+        state.velocity = Vec2::ZERO;
         ctx.request_repaint_after(Duration::from_millis(350));
         ctx.data_mut(|data| data.insert_temp(state_id(), state));
         return;
     }
     let small = dock.map_or(small, |spot| spot.radius);
-    // Constrain settled positions when the window or language changes the layout.
-    if state.stage == Stage::Ready {
-        state.center = placement::constrain(state.center, small, screen);
-    }
     if activity && !paused {
         state.last_activity = state.clock;
     }
@@ -366,6 +375,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         state.read_mail(&mut app.companion_inbox);
     }
     let elapsed = (state.clock - state.stage_started) as f32;
+    let previous_center = state.center;
     let mut size = radius;
     let mut yaw = None;
     let mut roll = 0.0;
@@ -435,9 +445,25 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
             }
         }
     };
-    let movement = (target - state.center) * (1.0 - (-dt / 0.20).exp());
-    state.center += movement.normalized() * movement.length().min(640.0 * dt);
     size = state.placement.radius(size, small, visual_dt);
+    // Clamp the destination as well as the body: an unreachable target otherwise
+    // keeps walking into the same window edge on every frame.
+    let target = if state.stage == Stage::Ready {
+        let center = placement::constrain(state.center, size, screen);
+        if center != state.center {
+            state.velocity = Vec2::ZERO;
+        }
+        state.center = center;
+        placement::constrain(target, size, screen)
+    } else {
+        target
+    };
+    if state.stage == Stage::Ready {
+        placement::approach(&mut state.center, &mut state.velocity, target, dt);
+    } else {
+        let movement = (target - state.center) * (1.0 - (-dt / 0.20).exp());
+        state.center += movement.normalized() * movement.length().min(640.0 * dt);
+    }
     let mut anchor = state.center + offset;
     let response = state
         .placement
@@ -452,6 +478,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
             state.enter(Stage::Ready);
         }
         state.center = anchor;
+        state.velocity = Vec2::ZERO;
         state.resume_at = state.clock + 1.2;
         state.focus = None;
         state.candidate = None;
@@ -494,9 +521,18 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     pose.speech = state.mouth;
 
     let layer = egui::LayerId::new(egui::Order::Foreground, state_id());
-    let painter = ctx.layer_painter(layer).with_clip_rect(screen);
+    let speed = if visual_dt > 0.0 {
+        anchor.distance(previous_center) / visual_dt
+    } else {
+        0.0
+    };
+    let opacity = placement::opacity_at_speed(speed);
+    let fade_time = if opacity < state.opacity { 0.08 } else { 0.3 };
+    state.opacity += (opacity - state.opacity) * (1.0 - (-visual_dt / fade_time).exp());
+    let mut painter = ctx.layer_painter(layer).with_clip_rect(screen);
+    painter.multiply_opacity(state.opacity);
     Classic::model().paint(&painter, state_id(), anchor, size, pose);
-    let talking = state.speech.paint(
+    let talking = state.speech.paint_avoiding(
         &painter,
         if state.stage == Stage::Ready {
             screen.shrink(12.0)
@@ -507,6 +543,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         size,
         state.clock,
         visual_dt,
+        state.parking.occupied(),
     );
     if interactive
         && (response.dragged() || (state.placement.was_dragged() && (size - small).abs() > 0.1))
@@ -519,13 +556,15 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         let dwelling = state.pending.is_some()
             || state.candidate != state.focus.map(|target| target.attention)
             || hovered.is_some_and(|topic| topic.bit() != 0 && state.mentioned & topic.bit() == 0);
-        ctx.request_repaint_after(if moving || talking {
-            Duration::from_millis(16)
-        } else if dwelling {
-            Duration::from_millis(80)
-        } else {
-            Duration::from_secs(1)
-        });
+        ctx.request_repaint_after(
+            if moving || talking || (state.opacity - opacity).abs() > 0.005 {
+                Duration::from_millis(16)
+            } else if dwelling {
+                Duration::from_millis(80)
+            } else {
+                Duration::from_secs(1)
+            },
+        );
     }
     app.vr_overlay_plugin
         .manager()

@@ -11,6 +11,7 @@ pub struct Speech {
     last_letter: Option<f64>,
     dismiss_at: f64,
     position: Option<Pos2>,
+    direction: Option<Vec2>,
     size: Vec2,
     opacity: f32,
 }
@@ -20,6 +21,7 @@ impl Speech {
     pub(crate) fn on_surface(&self, previous: &Self) -> Self {
         Self {
             position: previous.position,
+            direction: previous.direction,
             size: previous.size,
             opacity: previous.opacity,
             ..self.clone()
@@ -32,6 +34,7 @@ impl Speech {
         self.next_letter = now;
         self.last_letter = None;
         self.dismiss_at = f64::INFINITY;
+        self.direction = None;
     }
 
     pub fn finished(&self, now: f64) -> bool {
@@ -69,11 +72,25 @@ impl Speech {
         now: f64,
         dt: f32,
     ) -> bool {
+        self.paint_avoiding(painter, bounds, anchor, radius, now, dt, &[])
+    }
+
+    pub(crate) fn paint_avoiding(
+        &mut self,
+        painter: &Painter,
+        bounds: Rect,
+        anchor: Pos2,
+        radius: f32,
+        now: f64,
+        dt: f32,
+        occupied: &[Rect],
+    ) -> bool {
         let visible = !self.finished(now);
         let target_opacity = if visible { 1.0 } else { 0.0 };
         self.opacity += (target_opacity - self.opacity) * (1.0 - (-dt / 0.12).exp());
         if self.opacity < 0.005 && !visible {
             self.position = None;
+            self.direction = None;
             self.size = Vec2::ZERO;
             return false;
         }
@@ -94,17 +111,41 @@ impl Speech {
         }
         self.size += (desired_size - self.size) * (1.0 - (-dt / 0.09).exp());
         self.size = self.size.min(bounds.size());
-        // Reserve enough room for the whole line when choosing a side, so typing
-        // cannot make the bubble switch sides midway through a sentence.
-        let side = if anchor.x - bounds.left() > max_width + radius + 40.0 {
-            -1.0
-        } else {
-            1.0
-        };
-        let target = anchor + egui::vec2(side * (radius + 20.0 + self.size.x * 0.5), -10.0);
+        // Judge all four directions using the complete sentence, so typing does
+        // not change the choice. Prefer the current side until another is clearer.
+        let full_size = (painter
+            .layout(
+                self.text.to_owned(),
+                FontId::proportional(14.0),
+                theme::text_strong(),
+                max_width,
+            )
+            .size()
+            + egui::vec2(28.0, 22.0))
+        .max(egui::vec2(38.0, 40.0))
+        .min(bounds.size());
+        let body = Rect::from_min_max(
+            anchor - egui::vec2(radius * 1.3, radius * 1.7),
+            anchor + egui::vec2(radius * 1.3, radius * 1.1),
+        )
+        .expand(4.0);
+        let direction = bubble_direction(
+            bounds,
+            body,
+            anchor,
+            radius,
+            full_size,
+            occupied,
+            self.direction,
+        );
+        if self.direction != Some(direction) {
+            self.position = None;
+        }
+        self.direction = Some(direction);
+        let target = bubble_center(anchor, radius, self.size, direction);
         let position = self.position.get_or_insert(target);
         *position += (target - *position) * (1.0 - (-dt / 0.22).exp());
-        // Clamp after following: resize and scroll must never cover page controls.
+        // The chosen side and final position use the same visible bounds.
         *position = bounds.shrink2(self.size * 0.5).clamp(*position);
         let rect = Rect::from_center_size(*position, self.size);
         let mut painter = painter.with_clip_rect(bounds);
@@ -119,23 +160,27 @@ impl Speech {
             }
             .as_shape(rect, egui::CornerRadius::same(16)),
         );
-        let edge = egui::pos2(
-            if side < 0.0 {
-                rect.right()
+        if !rect.contains(anchor) {
+            let toward = anchor - rect.center();
+            let horizontal = toward.x.abs() / rect.width() > toward.y.abs() / rect.height();
+            let normal = if horizontal {
+                egui::vec2(toward.x.signum(), 0.0)
             } else {
-                rect.left()
-            },
-            rect.center().y,
-        );
-        painter.add(egui::Shape::convex_polygon(
-            vec![
-                edge + egui::vec2(0.0, -5.0),
-                edge + egui::vec2(-side * 10.0, 3.0),
-                edge + egui::vec2(0.0, 6.0),
-            ],
-            fill,
-            egui::Stroke::NONE,
-        ));
+                egui::vec2(0.0, toward.y.signum())
+            };
+            let edge =
+                rect.center() + egui::vec2(normal.x * rect.width(), normal.y * rect.height()) * 0.5;
+            let tangent = egui::vec2(-normal.y, normal.x) * 5.0;
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    edge - tangent,
+                    edge + toward.normalized() * 10.0,
+                    edge + tangent,
+                ],
+                fill,
+                egui::Stroke::NONE,
+            ));
+        }
         painter.rect_filled(rect, 16.0, fill);
         painter
             .with_clip_rect(rect.shrink2(egui::vec2(12.0, 9.0)))
@@ -146,6 +191,51 @@ impl Speech {
             );
         visible || (self.opacity - target_opacity).abs() > 0.005
     }
+}
+
+fn bubble_center(anchor: Pos2, radius: f32, size: Vec2, direction: Vec2) -> Pos2 {
+    anchor
+        + egui::vec2(
+            direction.x * (radius * 1.3 + 20.0 + size.x * 0.5),
+            direction.y
+                * (radius * if direction.y < 0.0 { 1.7 } else { 1.1 } + 20.0 + size.y * 0.5),
+        )
+}
+
+fn bubble_direction(
+    bounds: Rect,
+    body: Rect,
+    anchor: Pos2,
+    radius: f32,
+    size: Vec2,
+    occupied: &[Rect],
+    previous: Option<Vec2>,
+) -> Vec2 {
+    let score = |direction| {
+        let target = Rect::from_center_size(bubble_center(anchor, radius, size, direction), size);
+        let center = bounds.shrink2(size * 0.5).clamp(target.center());
+        let rect = Rect::from_center_size(center, size);
+        occupied
+            .iter()
+            .map(|obstacle| rect.intersect(*obstacle).area())
+            .sum::<f32>()
+            + rect.intersect(body).area() * 8.0
+            + (target.area() - target.intersect(bounds).area()) * 4.0
+            - if previous == Some(direction) {
+                rect.area() * 0.1
+            } else {
+                0.0
+            }
+    };
+    [
+        egui::vec2(-1.0, 0.0),
+        egui::vec2(1.0, 0.0),
+        egui::vec2(0.0, -1.0),
+        egui::vec2(0.0, 1.0),
+    ]
+    .into_iter()
+    .min_by(|a, b| score(*a).total_cmp(&score(*b)))
+    .unwrap()
 }
 
 fn letter_delay(letter: &str) -> f64 {

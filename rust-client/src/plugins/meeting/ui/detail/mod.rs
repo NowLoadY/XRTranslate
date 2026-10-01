@@ -50,7 +50,7 @@ pub(super) fn render_detail(
         }
     });
 
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         components::status_badge(
             ui,
             if waiting_for_microphone && meeting.status == MeetingStatus::Live {
@@ -95,7 +95,7 @@ pub(super) fn render_detail(
         .corner_radius(CornerRadius::same(10))
         .inner_margin(Margin::same(4))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let tabs = [
                     (MeetingPane::Timeline, "Timeline"),
                     (MeetingPane::Minutes, "Minutes"),
@@ -124,30 +124,28 @@ pub(super) fn render_detail(
                         text = text.strong();
                     }
 
-                    Frame::new()
-                        .fill(bg)
-                        .stroke(stroke)
-                        .corner_radius(CornerRadius::same(7))
-                        .inner_margin(Margin::symmetric(14, 6))
-                        .show(ui, |ui| {
-                            let resp = ui.selectable_label(false, text);
-                            if resp.clicked() {
-                                controller.pane = pane;
-                            }
-                        });
+                    if ui
+                        .add(
+                            egui::Button::new(text)
+                                .fill(bg)
+                                .stroke(stroke)
+                                .corner_radius(CornerRadius::same(7))
+                                .wrap_mode(egui::TextWrapMode::Extend),
+                        )
+                        .clicked()
+                    {
+                        controller.pane = pane;
+                    }
                 }
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if components::animated_button(ui, tr(language, "Export Markdown")).clicked() {
-                        action = UiAction::Export;
-                    }
-                    if meeting.can_reprocess
-                        && components::animated_button(ui, tr(language, "Reprocess audio"))
-                            .clicked()
-                    {
-                        action = UiAction::Reprocess;
-                    }
-                });
+                if components::animated_button(ui, tr(language, "Export Markdown")).clicked() {
+                    action = UiAction::Export;
+                }
+                if meeting.can_reprocess
+                    && components::animated_button(ui, tr(language, "Reprocess audio")).clicked()
+                {
+                    action = UiAction::Reprocess;
+                }
             });
         });
 

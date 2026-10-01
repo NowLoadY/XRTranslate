@@ -31,19 +31,61 @@ composes both sides.
 
 The neutral session contracts live under `session_coordinator`:
 
+- `TranslationTask` captures the input, language selection, and optional plugin
+  binding before startup. `TranslationInput` supports `Text`, live audio, and
+  an audio file; all enter the host's `start_translation_task` path.
 - `TranslationSessionPlugin` lets a plugin describe an active session through
   `PluginSessionBinding`; the binding carries an opaque owner, output policy,
-  and lifecycle requirements rather than a Meeting/Player enum variant.
-- `SessionEventSubscriber` receives the generic `SessionEvent` stream. A plugin
-  adapter must enqueue blocking persistence work on its own worker.
+  and lifecycle requirements. Text producers can use
+  `PluginSessionBinding::text` and `TranslationTask::text` without supplying
+  audio settings or implementing the active-audio-session trait.
+- `SessionEventSubscriber::on_translation_event` receives normalized
+  `TranslationEvent` results for an owner selected by `accepts_owner`. Blocking
+  persistence belongs on a plugin-owned worker.
 - `HostOutputSubscriber` receives captions after host history merging. External
   presentation plugins do not need a branch inside the event pump.
 - `TranslationSessionOwner::Plugin` stores opaque plugin metadata. Adding a new
   session-using plugin must not modify the owner enum or network protocol.
 
-The dependency rule is intentionally stronger than “the network happens not to
-call a plugin today”: concrete plugin imports are forbidden in shared
-infrastructure.
+Plugins supply content and language intent, then consume results. Backend
+startup, recognition, translation providers, prompts, and connections belong to
+the shared infrastructure. Plugins must neither import the network's
+`SessionEvent` nor reconstruct translation results by scanning host UI history.
+Concrete plugin imports are likewise forbidden in shared infrastructure.
+
+### Result and lifecycle contract
+
+`TranslationEvent` has four forms:
+
+- `Segment(TranslationSegment)` delivers source text and an optional translation
+  with stable segment identity and available recognition metadata.
+- `ReplaceSegments` delivers a complete, ordered replacement batch for a
+  stream's source or translation results. The shared adapter collects all
+  parts and rejects stale revisions before publishing the batch. Consumers
+  replace the relevant batch, including removing superseded rows.
+- `StreamEnded` seals the current stream span; it does not imply that the whole
+  task or conversation has finished.
+- `Finished` carries `TranslationOutcome::Completed`, `Cancelled`, or
+  `Failed(String)`. Plugins do not interpret connection-status strings.
+
+Each channel owns its result adapter and cancellation scope. Domain subscribers
+receive results before host presentation policy is applied, so `PluginOnly`
+tasks still receive complete results and terminal outcomes. `Host` additionally
+enables the normal host presentation path. Cancellation invalidates queued and
+late events; startup failures also use the same typed terminal contract.
+
+Text requests capture their owner and language pair when accepted. Requests in
+the same owner/language/output-policy conversation are serialized and can reuse
+its shared conversation context. Different owners remain isolated; acceptance
+does not mean translation has completed. Text consumers use the text and
+lifecycle fields without assigning meaning to audio timing or speaker fields.
+
+The current capability is composed through typed plugin actions and explicit
+host registration. There is no separately injected `Translator` handle or
+dynamic plugin runtime. A future OCR plugin can own image acquisition, OCR, and
+text-region presentation, submit the extracted text through
+`TranslationTask::text`, and consume `TranslationEvent` with its operation
+identity. OCR itself is not implemented by this contract.
 
 ### Recognition metadata is fact, not presentation policy
 
@@ -92,21 +134,19 @@ layers:
   revision, and source text surrounding the exact current segment. It must not
   store user templates, UI block ordering, arbitrary instructions, or
   provider-specific message roles.
-- Shared host/inference configuration owns the user's composition: enabled
-  block IDs, ordering, per-block limits such as the most recent N turns, and
-  editable text blocks. Meeting, Player, OSC, and future plugins all consume
-  the same resolved composition rather than maintaining separate prompt state.
-- `xrtranslate-inference::translation::profile` applies the resolved reference
-  context to each provider's required system/user message shape and retains the
-  non-editable current-input/output boundary. A custom block must never be able
-  to relabel historical or surrounding text as the current input.
+- `xrtranslate-prompt` owns the shared prompt graph, validation, composition,
+  and saved library. The host selects the active graph and passes it to text
+  and audio sessions. Prompt Studio edits this same domain; plugins keep no
+  separate prompt state.
+- `xrtranslate-inference::translation::profile` selects the provider target and
+  renders the graph with the current input, language pair, and shared context.
+  Plugins do not construct provider messages. Reference context must remain
+  distinct from the current input.
 
 The host default composes directly from the structured `context_data` and
 `prompt_terms` fields. The translation protocol does not carry a pre-rendered
 prompt, so new composition code cannot accidentally reintroduce provider or UI
 policy into XR Corpus.
-Do not introduce a template trait or editor abstraction until the shared
-composer and its first UI consumer are implemented together.
 
 ### Scheduling is a shared infrastructure policy
 
@@ -187,6 +227,9 @@ assets. The host may persist a plugin's settings value, but the plugin owns that
 value's meaning and migration. Plugin UI may update plugin-owned controller or
 draft state directly; effects requiring host capabilities must be returned as a
 typed action. Plugin UI must never receive `&mut XRTranslateApp`.
+Shared UI components and focused host snapshots remain reusable: result
+ownership does not require a plugin-specific copy of histories, controls, or
+visualizations.
 
 Graph-based plugin pages use `ui::graph_editor` as the single owner of editor
 interaction semantics: graph switching, node/link selection, multi-node drag,
@@ -199,17 +242,16 @@ different graph rules, but must not introduce a second editor state machine or
 copy the shared operations into a plugin-private controller.
 
 ```text
-audio/backend session
-        |
-        v
-typed SessionEvent -----> SessionEventSubscriber(s)
-        |
-        +---------------> host history / overlay
-                                  |
-                                  v
-                         HostOutputSubscriber(s)
-
-plugin UI --typed action--> host capability command
+plugin UI/controller --typed action--> TranslationTask (text / live / file)
+                                              |
+                                      shared translation
+                                              |
+                         +--------------------+-------------------+
+                         |                                        |
+                  TranslationEvent                      host history / overlay
+                         |                              (Host output policy)
+                SessionEventSubscriber                            |
+                                                         HostOutputSubscriber
 ```
 
 ## Metadata and runtime contracts
@@ -285,12 +327,20 @@ Current plugin ownership is:
 
 - `plugins::osc`: OSC settings, UDP listener/writer, caption formatting,
   preview/settings UI, mute-state capability, and a `HostOutputSubscriber`.
+  Typed text actions use the shared text-task path with a stable typing
+  conversation owner and `Host` output policy.
 - `plugins::meeting`: meeting store, controller, recording, meeting UI, a
   `TranslationSessionPlugin` binding, and a non-blocking
-  `SessionEventSubscriber`. It requests host-owned `media_import` for files.
+  `SessionEventSubscriber` that persists normalized results. It uses
+  `PluginOnly` output and requests host-owned `media_import` for files.
 - `plugins::player`: media tasks, playback, subtitles, player UI, and a
-  `TranslationSessionPlugin` binding. It uses the same host-owned
-  `media_import` capability for transcription.
+  `TranslationSessionPlugin` binding with `Host` output. Its
+  `SessionEventSubscriber` queues normalized results for subtitle updates,
+  filtered by the active operation. It uses the same host-owned `media_import`
+  capability for transcription.
+- `plugins::vr_overlay`: SteamVR overlay runtime, rendering, settings, and UI.
+  Its `HostOutputSubscriber` consumes shared captions; it does not start a
+  separate translation pipeline.
 
 Disabling always hides the plugin page and normalizes navigation. A plugin with
 in-flight exclusive work rejects disablement until the work ends. Runtime
@@ -307,12 +357,17 @@ worker remains alive and how shutdown joins or drains it.
    never be reused for a different feature.
 3. Expose host-dependent UI effects as typed actions. Accept only a focused
    snapshot or capability handle; never accept `&mut XRTranslateApp`.
-4. If it uses recognition/translation, implement `TranslationSessionPlugin` and
-   return a `PluginSessionBinding`. Do not add a plugin-specific session-owner
-   variant or field to `SessionConfig`/`SessionEvent`.
-5. If it consumes results, implement `SessionEventSubscriber` or
-   `HostOutputSubscriber` and register the adapter in the host composition
-   list. Do not add a concrete-plugin branch to the generic event pump.
+4. If it produces translation input, supply an opaque owner and
+   `PluginSessionBinding`, then have the host action adapter submit a
+   `TranslationTask`. Use the text constructors for extracted or typed text;
+   active audio-session plugins implement `TranslationSessionPlugin`. Choose
+   an operation identity that matches the intended conversation lifetime. Do
+   not add plugin-specific fields to shared requests or network events.
+5. For task results, implement `SessionEventSubscriber`, filter by owner, and
+   handle segment replacement and all terminal outcomes. For host captions,
+   implement `HostOutputSubscriber`. Register the adapter in the host
+   composition list; do not branch on concrete plugins in the generic event
+   pump or depend on a visible history panel.
 6. Register the statically typed runtime instance, page/settings renderer, and
    lifecycle hooks in the host adapter. These are currently explicit because
    plugin UI/action types are intentionally not erased behind `Any` or a broad

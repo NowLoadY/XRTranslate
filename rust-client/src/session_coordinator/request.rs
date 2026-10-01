@@ -1,4 +1,4 @@
-use super::PluginSessionBinding;
+use super::{PluginSessionBinding, TranslationSessionOwner};
 use crate::{
     client_settings::{CaptureSource, RecognitionSettings},
     media_import::AudioImportOptions,
@@ -15,10 +15,39 @@ pub(crate) struct TranslationTask {
 }
 
 pub(crate) enum TranslationInput {
+    Text(String),
     Live(CaptureSource),
     File {
         path: std::path::PathBuf,
         recognition: RecognitionSettings,
         options: AudioImportOptions,
     },
+}
+
+impl TranslationTask {
+    pub fn text(
+        text: String,
+        languages: LanguageSelection,
+        plugin: Option<PluginSessionBinding>,
+    ) -> Self {
+        Self {
+            languages,
+            plugin,
+            input: TranslationInput::Text(text),
+            profiles: Vec::new(),
+        }
+    }
+
+    pub fn owner(&self) -> TranslationSessionOwner {
+        self.plugin.as_ref().map_or_else(
+            || TranslationSessionOwner::Host {
+                capture_source: match &self.input {
+                    TranslationInput::Text(_) => CaptureSource::Microphone,
+                    TranslationInput::Live(source) => *source,
+                    TranslationInput::File { .. } => CaptureSource::SystemAudio,
+                },
+            },
+            |binding| TranslationSessionOwner::Plugin(binding.owner.clone()),
+        )
+    }
 }

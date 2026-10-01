@@ -37,6 +37,314 @@ fn header_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
     .inner
 }
 
+fn render_header(
+    ui: &mut egui::Ui,
+    context: VrOverlayPageContext<'_>,
+    actions: &mut Vec<VrOverlayUiAction>,
+) {
+    let lang = context.language;
+    let tr = |s| crate::i18n::tr(lang, s);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            egui::RichText::new("SteamVR")
+                .size(20.0)
+                .color(theme::text_strong())
+                .strong(),
+        );
+        ui.add_space(8.0);
+        if context.status.steamvr_connected {
+            crate::ui::components::status_badge(ui, &tr("SteamVR Connected"), true, false);
+            if context.status.avatar_available && header_button(ui, tr("Come here")).clicked() {
+                actions.push(VrOverlayUiAction::RecenterAvatar);
+            }
+            if header_button(ui, tr("Disconnect")).clicked() {
+                actions.push(VrOverlayUiAction::DisconnectSteamVr);
+            }
+        } else {
+            crate::ui::components::status_badge(ui, &tr("Not Connected"), false, false);
+            if crate::ui::components::animated_button(ui, tr("Connect SteamVR")).clicked() {
+                actions.push(VrOverlayUiAction::ConnectSteamVr);
+            }
+        }
+    });
+    if let Some(error) = &context.status.last_error {
+        crate::ui::components::error_notice(ui, lang, error);
+    }
+    if let Some(error) = &context.status.avatar_error {
+        ui.push_id("vr_avatar_error", |ui| {
+            crate::ui::components::error_notice(
+                ui,
+                lang,
+                &format!("{}: {error}", tr("Avatar unavailable")),
+            );
+        });
+    }
+}
+
+fn render_position_card(
+    settings: &mut VrOverlaySettings,
+    ui: &mut egui::Ui,
+    lang: crate::i18n::UiLanguage,
+) {
+    let tr = |s| crate::i18n::tr(lang, s);
+    card(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(tr("Position Controls")).strong());
+            if crate::ui::components::reset_button(ui, "vr_spatial_all_reset").clicked() {
+                settings.distance_meters = VrOverlaySettings::DEFAULT_DISTANCE;
+                settings.vertical_offset_meters = VrOverlaySettings::DEFAULT_VERTICAL_OFFSET;
+                settings.overlay_width_meters = VrOverlaySettings::DEFAULT_OVERLAY_WIDTH;
+            }
+        });
+        ui.add_space(6.0);
+        ModernSlider::new(
+            &tr("Distance in Front"),
+            &mut settings.distance_meters,
+            0.5..=2.5,
+            VrOverlaySettings::DEFAULT_DISTANCE,
+        )
+        .step(0.05)
+        .precision(2)
+        .suffix(" m")
+        .id_salt("vr_dist")
+        .label_width(92.0)
+        .show(ui);
+        egui::CollapsingHeader::new(tr("Precise Position"))
+            .id_salt("vr_precise_position")
+            .default_open(true)
+            .show(ui, |ui| {
+                ModernSlider::new(
+                    &tr("Height Offset"),
+                    &mut settings.vertical_offset_meters,
+                    -0.8..=0.4,
+                    VrOverlaySettings::DEFAULT_VERTICAL_OFFSET,
+                )
+                .step(0.02)
+                .precision(2)
+                .suffix(" m")
+                .id_salt("vr_v_offset")
+                .label_width(92.0)
+                .show(ui);
+                ModernSlider::new(
+                    &tr("Overlay Width"),
+                    &mut settings.overlay_width_meters,
+                    0.3..=1.5,
+                    VrOverlaySettings::DEFAULT_OVERLAY_WIDTH,
+                )
+                .step(0.02)
+                .precision(2)
+                .suffix(" m")
+                .id_salt("vr_width")
+                .label_width(92.0)
+                .show(ui);
+            });
+    });
+}
+
+fn render_display_card(
+    settings: &mut VrOverlaySettings,
+    ui: &mut egui::Ui,
+    lang: crate::i18n::UiLanguage,
+) {
+    let tr = |s| crate::i18n::tr(lang, s);
+    card(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(tr("Display Settings")).strong());
+            if crate::ui::components::reset_button(ui, "vr_display_all_reset").clicked() {
+                settings.max_items = VrOverlaySettings::DEFAULT_MAX_ITEMS;
+                settings.bilingual = true;
+                settings.font_size = VrOverlaySettings::DEFAULT_FONT_SIZE;
+                settings.opacity = VrOverlaySettings::DEFAULT_OPACITY;
+                settings.display_timeout_seconds = VrOverlaySettings::DEFAULT_TIMEOUT;
+            }
+        });
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(tr("Max Subtitle Count"));
+            for count in 1..=5 {
+                ui.selectable_value(&mut settings.max_items, count, count.to_string());
+            }
+            ui.add_space(8.0);
+            ui.checkbox(&mut settings.bilingual, tr("Bilingual Subtitles"));
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label(tr("Font Size"));
+            ui.add(
+                egui::DragValue::new(&mut settings.font_size)
+                    .range(12.0..=36.0)
+                    .speed(0.5)
+                    .suffix(" px"),
+            );
+            ui.add_space(8.0);
+            ui.label(tr("Display Duration"));
+            ui.add(
+                egui::DragValue::new(&mut settings.display_timeout_seconds)
+                    .range(3.0..=30.0)
+                    .speed(0.5)
+                    .suffix(" s"),
+            );
+        });
+        ModernSlider::new(
+            &tr("Opacity"),
+            &mut settings.opacity,
+            0.2..=1.0,
+            VrOverlaySettings::DEFAULT_OPACITY,
+        )
+        .step(0.01)
+        .percentage(true)
+        .id_salt("vr_opacity")
+        .label_width(92.0)
+        .show(ui);
+    });
+}
+
+fn render_preview_card(
+    settings: &mut VrOverlaySettings,
+    ui: &mut egui::Ui,
+    context: VrOverlayPageContext<'_>,
+    actions: &mut Vec<VrOverlayUiAction>,
+    preview_height: f32,
+) {
+    let lang = context.language;
+    let tr = |s| crate::i18n::tr(lang, s);
+    card(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(tr("Live Caption Preview")).strong());
+            if context.status.cards.is_empty() {
+                ui.label(
+                    egui::RichText::new(tr("Sample"))
+                        .small()
+                        .color(theme::text_weak()),
+                );
+            }
+            if !context.status.cards.is_empty()
+                && crate::ui::components::secondary_button(ui, tr("Clear Subtitles")).clicked()
+            {
+                actions.push(VrOverlayUiAction::ClearSubtitles);
+            }
+        });
+        ui.add_space(8.0);
+        let demo = [VrSubtitleCard {
+            source: if lang == crate::i18n::UiLanguage::English {
+                "天气真好。"
+            } else {
+                "It's a beautiful day."
+            }
+            .into(),
+            translated: tr("A beautiful day.").to_owned(),
+            speaker: String::new(),
+            live: true,
+        }];
+        let cards = if context.status.cards.is_empty() {
+            &demo[..]
+        } else {
+            &context.status.cards
+        };
+        spatial_preview(ui, settings, cards, preview_height);
+        ui.label(
+            egui::RichText::new(tr("Drag up or down · Drag a corner to resize"))
+                .small()
+                .color(theme::text_weak()),
+        );
+    });
+}
+
+fn render_combined_preview_and_position_card(
+    settings: &mut VrOverlaySettings,
+    ui: &mut egui::Ui,
+    context: VrOverlayPageContext<'_>,
+    actions: &mut Vec<VrOverlayUiAction>,
+    preview_height: f32,
+) {
+    let lang = context.language;
+    let tr = |s| crate::i18n::tr(lang, s);
+    card(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(tr("Live Caption Preview")).strong());
+            if context.status.cards.is_empty() {
+                ui.label(
+                    egui::RichText::new(tr("Sample"))
+                        .small()
+                        .color(theme::text_weak()),
+                );
+            }
+            if crate::ui::components::reset_button(ui, "vr_spatial_all_reset").clicked() {
+                settings.distance_meters = VrOverlaySettings::DEFAULT_DISTANCE;
+                settings.vertical_offset_meters = VrOverlaySettings::DEFAULT_VERTICAL_OFFSET;
+                settings.overlay_width_meters = VrOverlaySettings::DEFAULT_OVERLAY_WIDTH;
+            }
+            if !context.status.cards.is_empty()
+                && crate::ui::components::secondary_button(ui, tr("Clear Subtitles")).clicked()
+            {
+                actions.push(VrOverlayUiAction::ClearSubtitles);
+            }
+        });
+        ui.add_space(8.0);
+        let demo = [VrSubtitleCard {
+            source: if lang == crate::i18n::UiLanguage::English {
+                "天气真好。"
+            } else {
+                "It's a beautiful day."
+            }
+            .into(),
+            translated: tr("A beautiful day.").to_owned(),
+            speaker: String::new(),
+            live: true,
+        }];
+        let cards = if context.status.cards.is_empty() {
+            &demo[..]
+        } else {
+            &context.status.cards
+        };
+        spatial_preview(ui, settings, cards, preview_height);
+        ui.label(
+            egui::RichText::new(tr("Drag up or down · Drag a corner to resize"))
+                .small()
+                .color(theme::text_weak()),
+        );
+        ModernSlider::new(
+            &tr("Distance in Front"),
+            &mut settings.distance_meters,
+            0.5..=2.5,
+            VrOverlaySettings::DEFAULT_DISTANCE,
+        )
+        .step(0.05)
+        .precision(2)
+        .suffix(" m")
+        .id_salt("vr_dist")
+        .label_width(92.0)
+        .show(ui);
+        egui::CollapsingHeader::new(tr("Precise Position"))
+            .id_salt("vr_precise_position")
+            .show(ui, |ui| {
+                ModernSlider::new(
+                    &tr("Height Offset"),
+                    &mut settings.vertical_offset_meters,
+                    -0.8..=0.4,
+                    VrOverlaySettings::DEFAULT_VERTICAL_OFFSET,
+                )
+                .step(0.02)
+                .precision(2)
+                .suffix(" m")
+                .id_salt("vr_v_offset")
+                .label_width(92.0)
+                .show(ui);
+                ModernSlider::new(
+                    &tr("Overlay Width"),
+                    &mut settings.overlay_width_meters,
+                    0.3..=1.5,
+                    VrOverlaySettings::DEFAULT_OVERLAY_WIDTH,
+                )
+                .step(0.02)
+                .precision(2)
+                .suffix(" m")
+                .id_salt("vr_width")
+                .label_width(92.0)
+                .show(ui);
+            });
+    });
+}
+
 pub fn render(
     settings: &mut VrOverlaySettings,
     ui: &mut egui::Ui,
@@ -44,191 +352,62 @@ pub fn render(
 ) -> Vec<VrOverlayUiAction> {
     let mut actions = Vec::new();
     let lang = context.language;
-    let tr = |s| crate::i18n::tr(lang, s);
     let before = settings.clone();
     settings.normalize();
     if settings.vertical_offset_meters.abs() < 1e-6 {
         settings.vertical_offset_meters = 0.0;
     }
-    egui::ScrollArea::vertical()
-        .id_salt("vr_overlay_page_scroll")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    egui::RichText::new("SteamVR")
-                        .size(20.0)
-                        .color(theme::text_strong())
-                        .strong(),
-                );
-                ui.add_space(8.0);
-                if context.status.steamvr_connected {
-                    crate::ui::components::status_badge(ui, &tr("SteamVR Connected"), true, false);
-                    if context.status.avatar_available
-                        && header_button(ui, tr("Come here")).clicked()
-                    {
-                        actions.push(VrOverlayUiAction::RecenterAvatar);
-                    }
-                    if header_button(ui, tr("Disconnect")).clicked() {
-                        actions.push(VrOverlayUiAction::DisconnectSteamVr);
-                    }
-                } else {
-                    crate::ui::components::status_badge(ui, &tr("Not Connected"), false, false);
-                    if crate::ui::components::animated_button(ui, tr("Connect SteamVR")).clicked() {
-                        actions.push(VrOverlayUiAction::ConnectSteamVr);
-                    }
-                }
-            });
-            if let Some(error) = &context.status.last_error {
-                crate::ui::components::error_notice(ui, lang, error);
-            }
-            if let Some(error) = &context.status.avatar_error {
-                ui.label(
-                    egui::RichText::new(tr("Avatar unavailable"))
-                        .small()
-                        .color(theme::text_weak()),
-                )
-                .on_hover_text(error);
-            }
-            ui.add_space(12.0);
-            card(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new(tr("Live Caption Preview")).strong());
-                    if context.status.cards.is_empty() {
-                        ui.label(
-                            egui::RichText::new(tr("Sample"))
-                                .small()
-                                .color(theme::text_weak()),
-                        );
-                    }
-                    if crate::ui::components::reset_button(ui, "vr_spatial_all_reset").clicked() {
-                        settings.distance_meters = VrOverlaySettings::DEFAULT_DISTANCE;
-                        settings.vertical_offset_meters =
-                            VrOverlaySettings::DEFAULT_VERTICAL_OFFSET;
-                        settings.overlay_width_meters = VrOverlaySettings::DEFAULT_OVERLAY_WIDTH;
-                    }
-                    if !context.status.cards.is_empty()
-                        && crate::ui::components::secondary_button(ui, tr("Clear Subtitles"))
-                            .clicked()
-                    {
-                        actions.push(VrOverlayUiAction::ClearSubtitles);
-                    }
-                });
-                ui.add_space(8.0);
-                let demo = [VrSubtitleCard {
-                    source: if lang == crate::i18n::UiLanguage::English {
-                        "天气真好。"
-                    } else {
-                        "It's a beautiful day."
-                    }
-                    .into(),
-                    translated: tr("A beautiful day.").to_owned(),
-                    speaker: String::new(),
-                    live: true,
-                }];
-                let cards = if context.status.cards.is_empty() {
-                    &demo[..]
-                } else {
-                    &context.status.cards
-                };
-                spatial_preview(ui, settings, cards);
-                ui.label(
-                    egui::RichText::new(tr("Drag up or down · Drag a corner to resize"))
-                        .small()
-                        .color(theme::text_weak()),
-                );
-                ModernSlider::new(
-                    &tr("Distance in Front"),
-                    &mut settings.distance_meters,
-                    0.5..=2.5,
-                    VrOverlaySettings::DEFAULT_DISTANCE,
-                )
-                .step(0.05)
-                .precision(2)
-                .suffix(" m")
-                .id_salt("vr_dist")
-                .label_width(92.0)
-                .show(ui);
-                egui::CollapsingHeader::new(tr("Precise Position"))
-                    .id_salt("vr_precise_position")
-                    .show(ui, |ui| {
-                        ModernSlider::new(
-                            &tr("Height Offset"),
-                            &mut settings.vertical_offset_meters,
-                            -0.8..=0.4,
-                            VrOverlaySettings::DEFAULT_VERTICAL_OFFSET,
-                        )
-                        .step(0.02)
-                        .precision(2)
-                        .suffix(" m")
-                        .id_salt("vr_v_offset")
-                        .label_width(92.0)
-                        .show(ui);
-                        ModernSlider::new(
-                            &tr("Overlay Width"),
-                            &mut settings.overlay_width_meters,
-                            0.3..=1.5,
-                            VrOverlaySettings::DEFAULT_OVERLAY_WIDTH,
-                        )
-                        .step(0.02)
-                        .precision(2)
-                        .suffix(" m")
-                        .id_salt("vr_width")
-                        .label_width(92.0)
-                        .show(ui);
-                    });
-            });
-            ui.add_space(12.0);
-            card(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(tr("Display Settings")).strong());
-                    if crate::ui::components::reset_button(ui, "vr_display_all_reset").clicked() {
-                        settings.max_items = VrOverlaySettings::DEFAULT_MAX_ITEMS;
-                        settings.bilingual = true;
-                        settings.font_size = VrOverlaySettings::DEFAULT_FONT_SIZE;
-                        settings.opacity = VrOverlaySettings::DEFAULT_OPACITY;
-                        settings.display_timeout_seconds = VrOverlaySettings::DEFAULT_TIMEOUT;
-                    }
-                });
-                ui.add_space(6.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(tr("Max Subtitle Count"));
-                    for count in 1..=5 {
-                        ui.selectable_value(&mut settings.max_items, count, count.to_string());
-                    }
-                    ui.add_space(8.0);
-                    ui.checkbox(&mut settings.bilingual, tr("Bilingual Subtitles"));
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(tr("Font Size"));
-                    ui.add(
-                        egui::DragValue::new(&mut settings.font_size)
-                            .range(12.0..=36.0)
-                            .speed(0.5)
-                            .suffix(" px"),
-                    );
-                    ui.add_space(8.0);
-                    ui.label(tr("Display Duration"));
-                    ui.add(
-                        egui::DragValue::new(&mut settings.display_timeout_seconds)
-                            .range(3.0..=30.0)
-                            .speed(0.5)
-                            .suffix(" s"),
-                    );
-                });
-                ModernSlider::new(
-                    &tr("Opacity"),
-                    &mut settings.opacity,
-                    0.2..=1.0,
-                    VrOverlaySettings::DEFAULT_OPACITY,
-                )
-                .step(0.01)
-                .percentage(true)
-                .id_salt("vr_opacity")
-                .label_width(92.0)
-                .show(ui);
-            });
+
+    render_header(ui, context, &mut actions);
+    ui.add_space(10.0);
+
+    let is_wide = (ui.available_width() > ui.available_height() && ui.available_width() >= 540.0)
+        || ui.available_width() >= 800.0;
+
+    if is_wide {
+        let total_width = ui.available_width();
+        let left_width = (total_width * 0.46).clamp(300.0, 420.0);
+        let right_width = (total_width - left_width - ui.spacing().item_spacing.x).max(240.0);
+        let avail_h = ui.available_height();
+
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(left_width, avail_h),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("vr_overlay_landscape_controls_scroll")
+                        .show(ui, |ui| {
+                            render_position_card(settings, ui, lang);
+                            ui.add_space(10.0);
+                            render_display_card(settings, ui, lang);
+                        });
+                },
+            );
+            ui.allocate_ui_with_layout(
+                egui::vec2(right_width, avail_h),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("vr_overlay_landscape_preview_scroll")
+                        .show(ui, |ui| {
+                            let preview_h = (avail_h - 70.0).clamp(210.0, 380.0);
+                            render_preview_card(settings, ui, context, &mut actions, preview_h);
+                        });
+                },
+            );
         });
+    } else {
+        egui::ScrollArea::vertical()
+            .id_salt("vr_overlay_page_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                render_combined_preview_and_position_card(settings, ui, context, &mut actions, 230.0);
+                ui.add_space(12.0);
+                render_display_card(settings, ui, lang);
+            });
+    }
+
     if settings.vertical_offset_meters.abs() < 1e-6 {
         settings.vertical_offset_meters = 0.0;
     }
@@ -260,9 +439,14 @@ fn preview_geometry(view: egui::Rect, settings: &VrOverlaySettings) -> (egui::Re
     )
 }
 
-fn spatial_preview(ui: &mut egui::Ui, settings: &mut VrOverlaySettings, cards: &[VrSubtitleCard]) {
+fn spatial_preview(
+    ui: &mut egui::Ui,
+    settings: &mut VrOverlaySettings,
+    cards: &[VrSubtitleCard],
+    preview_height: f32,
+) {
     let (view, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), 230.0),
+        egui::vec2(ui.available_width(), preview_height),
         egui::Sense::hover(),
     );
     let painter = ui.painter().with_clip_rect(view);

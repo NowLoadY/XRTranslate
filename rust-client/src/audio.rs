@@ -1,7 +1,11 @@
 use crate::audio_processing::{SourceEffect, SourcePipeline, default_source_effects};
 use audioadapter_buffers::direct::InterleavedSlice;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Sample, Stream};
+use cpal::Sample;
+use cpal::traits::{DeviceTrait, HostTrait};
+#[cfg(not(target_os = "android"))]
+use cpal::{Stream, traits::StreamTrait};
+#[cfg(target_os = "android")]
+type Stream = crate::android::AudioStream;
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use parking_lot::Mutex;
 use rubato::{Fft, FixedSync, Indexing, Resampler};
@@ -851,6 +855,10 @@ impl AudioSystem {
             .collect()
     }
 
+    pub const fn supports_system_audio() -> bool {
+        cfg!(any(windows, target_os = "linux"))
+    }
+
     pub fn new() -> Self {
         Self {
             tts_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -869,6 +877,18 @@ impl AudioSystem {
         }
     }
 
+    fn device_by_id(&self, id: &cpal::DeviceId) -> Option<cpal::Device> {
+        self.host.device_by_id(id).or_else(|| {
+            [
+                self.host.default_input_device(),
+                self.host.default_output_device(),
+            ]
+            .into_iter()
+            .flatten()
+            .find(|device| device.id().as_ref() == Ok(id))
+        })
+    }
+
     /// List input devices that can still be resolved by the ID used for capture.
     pub fn available_devices(&self) -> Vec<InputDevice> {
         let mut devices = Vec::new();
@@ -879,7 +899,7 @@ impl AudioSystem {
                         // Some ALSA hints enumerate successfully but cannot be
                         // found again by ID. Capture uses device_by_id, so such
                         // entries must not be offered as selectable microphones.
-                        if self.host.device_by_id(&id).is_some() {
+                        if self.device_by_id(&id).is_some() {
                             devices.push(InputDevice {
                                 id: id.to_string(),
                                 name: description.name().to_owned(),
@@ -972,8 +992,7 @@ impl AudioSystem {
             let parsed_id = device_id
                 .parse()
                 .map_err(|error| format!("Invalid microphone ID '{device_id}': {error}"))?;
-            self.host
-                .device_by_id(&parsed_id)
+            self.device_by_id(&parsed_id)
                 .ok_or_else(|| format!("Microphone '{device_id}' is no longer available"))?
         };
         let config = device
@@ -1359,7 +1378,7 @@ impl AudioSystem {
                     "invalid render output ID '{device_id}': {error}"
                 ))
             })?;
-            self.host.device_by_id(&parsed_id).ok_or_else(|| {
+            self.device_by_id(&parsed_id).ok_or_else(|| {
                 AudioRouteError::DeviceUnavailable(format!(
                     "render output '{device_id}' is no longer available"
                 ))
@@ -1371,6 +1390,13 @@ impl AudioSystem {
         &self,
         device_id: &str,
     ) -> Result<MicrophoneFanout, AudioRouteError> {
+        #[cfg(target_os = "android")]
+        if !crate::android::microphone_allowed() {
+            let _ = crate::android::request_microphone(false);
+            return Err(AudioRouteError::DeviceUnavailable(
+                "Allow microphone access before recording.".into(),
+            ));
+        }
         let device = if device_id.is_empty() {
             self.host.default_input_device().ok_or_else(|| {
                 AudioRouteError::DeviceUnavailable(
@@ -1383,7 +1409,7 @@ impl AudioSystem {
                     "invalid microphone ID '{device_id}': {error}"
                 ))
             })?;
-            self.host.device_by_id(&parsed_id).ok_or_else(|| {
+            self.device_by_id(&parsed_id).ok_or_else(|| {
                 AudioRouteError::DeviceUnavailable(format!(
                     "microphone '{device_id}' is no longer available"
                 ))
@@ -1479,6 +1505,10 @@ impl AudioSystem {
         stream.play().map_err(|error| {
             AudioRouteError::StreamStart(format!("cannot start microphone node: {error}"))
         })?;
+        #[cfg(target_os = "android")]
+        if !crate::android::foreground() {
+            let _ = stream.pause();
+        }
         Ok(MicrophoneFanout {
             senders,
             sample_rate,
@@ -1543,7 +1573,7 @@ impl AudioSystem {
                     source.device_id
                 ))
             })?;
-            self.host.device_by_id(&parsed_id).ok_or_else(|| {
+            self.device_by_id(&parsed_id).ok_or_else(|| {
                 AudioRouteError::DeviceUnavailable(format!(
                     "microphone '{}' is no longer available",
                     source.device_id
@@ -1851,9 +1881,13 @@ where
     T: Sample + cpal::SizedSample,
     f32: cpal::FromSample<T>,
 {
-    device
-        .build_input_stream(
-            config,
+    let device = device.clone();
+    let create = move || {
+        let raw_tx = raw_tx.clone();
+        let source = source.clone();
+        let control = control.clone();
+        device.build_input_stream(
+            config.clone(),
             move |data: &[T], _: &cpal::InputCallbackInfo| {
                 let mono = data
                     .chunks(channels)
@@ -1876,9 +1910,14 @@ where
             },
             None,
         )
-        .map_err(|error| {
-            AudioRouteError::StreamStart(format!("cannot create microphone node: {error}"))
-        })
+    };
+    #[cfg(target_os = "android")]
+    let result = crate::android::input_stream(create);
+    #[cfg(not(target_os = "android"))]
+    let result = create();
+    result.map_err(|error| {
+        AudioRouteError::StreamStart(format!("cannot create microphone node: {error}"))
+    })
 }
 
 fn build_microphone_fanout_stream<T>(
@@ -1891,9 +1930,11 @@ where
     T: Sample + cpal::SizedSample,
     f32: cpal::FromSample<T>,
 {
-    device
-        .build_input_stream(
-            config,
+    let device = device.clone();
+    let create = move || {
+        let senders = senders.clone();
+        device.build_input_stream(
+            config.clone(),
             move |data: &[T], _: &cpal::InputCallbackInfo| {
                 let mono = data
                     .chunks(channels)
@@ -1910,9 +1951,14 @@ where
             },
             None,
         )
-        .map_err(|error| {
-            AudioRouteError::StreamStart(format!("cannot create shared microphone node: {error}"))
-        })
+    };
+    #[cfg(target_os = "android")]
+    let result = crate::android::input_stream(create);
+    #[cfg(not(target_os = "android"))]
+    let result = create();
+    result.map_err(|error| {
+        AudioRouteError::StreamStart(format!("cannot create shared microphone node: {error}"))
+    })
 }
 
 fn microphone_frame_to_mono<T>(frame: &[T]) -> f32
@@ -2215,6 +2261,11 @@ where
             },
             None,
         )
+        .map(|stream| {
+            #[cfg(target_os = "android")]
+            let stream = crate::android::AudioStream::Output(std::sync::Arc::new(stream));
+            stream
+        })
         .map_err(|error| {
             AudioRouteError::StreamStart(format!("cannot create output node: {error}"))
         })
@@ -2245,6 +2296,11 @@ where
             error_callback,
             None,
         )
+        .map(|stream| {
+            #[cfg(target_os = "android")]
+            let stream = crate::android::AudioStream::Output(std::sync::Arc::new(stream));
+            stream
+        })
         .map_err(|error| format!("Cannot create voice preview output stream: {error}"))
 }
 

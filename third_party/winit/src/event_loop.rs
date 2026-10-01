@@ -133,6 +133,11 @@ impl<T> EventLoopBuilder<T> {
     }
 }
 
+#[cfg(android_platform)]
+pub(crate) fn release_android_event_loop() {
+    EVENT_LOOP_CREATED.store(false, Ordering::Relaxed);
+}
+
 impl<T> fmt::Debug for EventLoop<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.pad("EventLoop { .. }")

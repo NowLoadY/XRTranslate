@@ -1,0 +1,43 @@
+plugins { id 'com.android.application' }
+
+def selectedAbis = providers.gradleProperty('androidAbis').getOrElse('arm64-v8a').split(',').toList()
+def pythonCommand = providers.gradleProperty('pythonCommand').getOrElse(System.getProperty('os.name').toLowerCase().contains('windows') ? 'python' : 'python3')
+android {
+    namespace = 'org.xrtranslate.app'
+    compileSdk = 36
+    ndkVersion = '29.0.14206865'
+    defaultConfig {
+        applicationId = 'org.xrtranslate.app'
+        minSdk = 29
+        targetSdk = 36
+        versionCode = 1
+        versionName = '0.2.11'
+        ndk { abiFilters.addAll(selectedAbis) }
+    }
+    packaging { jniLibs { useLegacyPackaging = true } }
+    buildTypes { release { minifyEnabled = false } }
+    sourceSets {
+        debug { jniLibs.srcDir layout.buildDirectory.dir('generated/rust/debug/jniLibs').get().asFile; assets.srcDir layout.buildDirectory.dir('generated/rust/debug/assets').get().asFile }
+        release { jniLibs.srcDir layout.buildDirectory.dir('generated/rust/release/jniLibs').get().asFile; assets.srcDir layout.buildDirectory.dir('generated/rust/release/assets').get().asFile }
+    }
+}
+dependencies {
+    implementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
+    implementation 'androidx.games:games-activity:4.4.0'
+    implementation 'androidx.appcompat:appcompat:1.7.1'
+    implementation files(layout.buildDirectory.file('generated/rust/rustls-platform-verifier.aar'))
+}
+['debug', 'release'].each { profile ->
+    def taskName = "buildRust${profile.capitalize()}"
+    tasks.register(taskName, Exec) {
+        workingDir rootProject.projectDir.parentFile
+        commandLine pythonCommand, 'scripts/android.py', 'native', '--profile', profile, '--abis', selectedAbis.join(',')
+        environment 'ANDROID_HOME', androidComponents.sdkComponents.sdkDirectory.get().asFile.absolutePath
+        inputs.property 'abis', selectedAbis.join(',')
+        inputs.property 'profile', profile
+        inputs.files(fileTree('../../rust-client/src'), fileTree('../../rust-client/resources'), file('../../rust-client/Cargo.toml'), file('../../rust-client/build.rs'), fileTree('../../crates'), fileTree('../../apps'), fileTree('../../third_party/winit'), file('../../Cargo.toml'), file('../../Cargo.lock'), file('../../config.json'), file('../../scripts/android.py'), file('../../XR-Corpus/Cargo.toml'), file('../../XR-Corpus/Cargo.lock'), fileTree('../../XR-Corpus/crates'), fileTree('../../XR-Corpus/apps'), file('../../XR-Corpus/corpora/default.sqlite'))
+        outputs.dir layout.buildDirectory.dir("generated/rust/${profile}")
+        outputs.file layout.buildDirectory.file('generated/rust/rustls-platform-verifier.aar')
+    }
+    tasks.configureEach { if (name == "pre${profile.capitalize()}Build") dependsOn taskName }
+}

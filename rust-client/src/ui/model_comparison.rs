@@ -72,7 +72,11 @@ pub(super) fn vram_budget(
         }
         | LocalModelAvailability::InsufficientVram {
             gpu, memory_bytes, ..
-        } => (gpu, *memory_bytes),
+        } => (gpu.as_str(), *memory_bytes),
+        #[cfg(target_os = "android")]
+        LocalModelAvailability::Cpu {
+            available_memory_bytes,
+        } => ("CPU · RAM", *available_memory_bytes),
         _ => return None,
     };
     let mut models = Vec::new();
@@ -87,7 +91,7 @@ pub(super) fn vram_budget(
     let estimated: u64 = models.iter().map(|model| model.estimated_vram_bytes).sum();
     let over = estimated > capacity;
     let mut selected_gpu_changed = None;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         let available_gpus = availability.available_gpus();
         if available_gpus.len() > 1 {
             egui::ComboBox::from_id_salt("vram_budget_gpu_select")
@@ -95,7 +99,7 @@ pub(super) fn vram_budget(
                 .show_ui(ui, |ui| {
                     for dev in available_gpus {
                         let text = format!("{} · {:.1} GiB", dev.name, dev.memory_bytes as f64 / GIB);
-                        let is_selected = dev.name == *gpu;
+                        let is_selected = dev.name == gpu;
                         if ui.selectable_label(is_selected, text).clicked() && !is_selected {
                             selected_gpu_changed = Some(dev.name.clone());
                         }
@@ -104,13 +108,15 @@ pub(super) fn vram_budget(
         } else {
             ui.label(RichText::new(gpu).size(11.5));
         }
-        let bar_width = (ui.available_width() * 0.65).clamp(200.0, 480.0);
+        let bar_width = (ui.max_rect().width() * 0.65)
+            .clamp(200.0, 480.0)
+            .min(ui.max_rect().width());
         let (bar, _) = ui.allocate_exact_size(Vec2::new(bar_width, 18.0), egui::Sense::hover());
         let painter = ui.painter_at(bar);
         let radius = egui::CornerRadius::same(5);
         painter.rect_filled(bar, radius, Color32::from_rgb(221, 228, 238));
         // Selected packages occupy the track from left to right; the gray tail
-        // remains visible up to the GPU's full reported capacity.
+        // remains visible up to the reported memory capacity.
         let mut left = bar.left();
         for (index, model) in models.iter().enumerate() {
             if capacity == 0 || left >= bar.right() {
@@ -140,7 +146,7 @@ pub(super) fn vram_budget(
                     "{} · {:.2} GiB\n{}",
                     model.label,
                     model.estimated_vram_bytes as f64 / GIB,
-                    i18n::tr(language, "Estimated model VRAM includes weights and runtime overhead; actual use varies with context and concurrent workloads."),
+                    i18n::tr(language, "Estimated model memory includes weights and runtime overhead; actual use varies with context and concurrent workloads."),
                 ));
             left = segment.right();
         }
@@ -157,21 +163,21 @@ pub(super) fn vram_budget(
             ),
             StrokeKind::Inside,
         );
-        ui.label(
-            RichText::new(format!(
-                "{} {:.2} / {:.1} GiB",
-                i18n::tr(language, "Selected models ≈"),
-                estimated as f64 / GIB,
-                capacity as f64 / GIB
-            ))
-            .size(11.5)
-            .color(if over {
-                Color32::from_rgb(185, 54, 48)
-            } else {
-                INK
-            }),
-        );
     });
+    ui.label(
+        RichText::new(format!(
+            "{} {:.2} / {:.1} GiB",
+            i18n::tr(language, "Selected models ≈"),
+            estimated as f64 / GIB,
+            capacity as f64 / GIB
+        ))
+        .size(11.5)
+        .color(if over {
+            Color32::from_rgb(185, 54, 48)
+        } else {
+            INK
+        }),
+    );
     selected_gpu_changed
 }
 

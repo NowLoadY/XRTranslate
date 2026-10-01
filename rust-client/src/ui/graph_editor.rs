@@ -457,6 +457,7 @@ where
     pub box_select_current: Option<Pos2>,
     pub add_node_center: Option<[f32; 2]>,
     secondary_action_suppressed: bool,
+    touch_navigating: bool,
 }
 
 impl<N, L, O, I> Default for GraphEditorState<N, L, O, I>
@@ -482,6 +483,7 @@ where
             box_select_current: None,
             add_node_center: None,
             secondary_action_suppressed: false,
+            touch_navigating: false,
         }
     }
 }
@@ -774,6 +776,7 @@ where
         self.box_select_current = None;
         self.add_node_center = None;
         self.secondary_action_suppressed = false;
+        self.touch_navigating = false;
     }
 
     pub fn cancel_current_operation(&mut self) {
@@ -781,26 +784,64 @@ where
         self.selected_links.clear();
     }
 
+    pub fn touch_navigating(&self) -> bool {
+        self.touch_navigating
+    }
+
+    /// Returns whether a multi-touch gesture owns the canvas, including its release frame.
+    /// `allow_scroll_zoom` only gates wheel zoom; pinch zoom also works over node controls.
     pub fn handle_navigation(
         &mut self,
         canvas: Rect,
         response: &Response,
         ui: &egui::Ui,
         allow_primary_pan: bool,
-        allow_zoom: bool,
-    ) {
+        allow_scroll_zoom: bool,
+    ) -> bool {
+        let (touch, any_touches, touch_event) = ui.input(|input| {
+            (
+                input.multi_touch(),
+                input.any_touches(),
+                input
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, egui::Event::Touch { .. })),
+            )
+        });
+        if !any_touches && !touch_event {
+            self.touch_navigating = false;
+        }
+        if !self.touch_navigating
+            && ui.is_enabled()
+            && touch.is_some_and(|touch| canvas.contains(touch.start_pos))
+        {
+            self.clear_interaction();
+            self.touch_navigating = true;
+        }
+        if self.touch_navigating {
+            if let Some(touch) = touch {
+                // Anchor at the previous centroid so translation is applied exactly once.
+                self.canvas.zoom_by(
+                    canvas,
+                    touch.center_pos - touch.translation_delta,
+                    touch.zoom_delta,
+                );
+                self.canvas.pan += touch.translation_delta;
+            }
+            return true;
+        }
         self.canvas
             .update_wire_dragging_navigation(canvas, ui, self.wire_active());
         let space_held = ui.input(|input| input.key_down(egui::Key::Space));
         if response.dragged_by(egui::PointerButton::Middle)
             || (allow_primary_pan
-                && space_held
+                && (space_held || any_touches)
                 && !self.wire_active()
                 && response.dragged_by(egui::PointerButton::Primary))
         {
             self.canvas.pan += ui.input(|input| input.pointer.delta());
         }
-        if allow_zoom
+        if allow_scroll_zoom
             && ui.input(|input| input.pointer.hover_pos().is_some_and(|p| canvas.contains(p)))
         {
             let scroll = ui.input(|input| input.smooth_scroll_delta.y);
@@ -811,6 +852,7 @@ where
                 self.canvas.zoom_at_pointer(canvas, pointer, scroll);
             }
         }
+        false
     }
 
     pub fn handle_canvas_selection(
@@ -822,9 +864,13 @@ where
         pointer_over_link: bool,
         nodes: impl IntoIterator<Item = (N, Rect)>,
     ) {
+        if self.touch_navigating {
+            return;
+        }
         let space_held = ui.input(|input| input.key_down(egui::Key::Space));
         if editable
             && !space_held
+            && !ui.input(|input| input.any_touches())
             && !pointer_over_node
             && !pointer_over_link
             && !self.wire_active()

@@ -9,7 +9,10 @@ use std::sync::{Arc, atomic::AtomicBool};
 use runtime::{OscHandle, OscManager, OscSettings};
 pub use ui::{OscPageContext, OscUiAction};
 
-use crate::session_coordinator::{CaptionUpdate, HostOutputEvent, HostOutputSubscriber};
+use crate::session_coordinator::{
+    CaptionUpdate, HostOutputEvent, HostOutputSubscriber, PluginSessionBinding, PluginSessionOwner,
+    SessionOutputPolicy,
+};
 
 impl HostOutputSubscriber for OscHandle {
     fn on_host_output(&self, event: HostOutputEvent<'_>) {
@@ -90,6 +93,19 @@ impl OscPlugin {
         self.translate_input = enabled;
     }
 
+    pub(crate) fn text_session_binding(&self) -> PluginSessionBinding {
+        PluginSessionBinding::text(
+            PluginSessionOwner::new(
+                super::PluginId::OSC.as_str(),
+                "typing",
+                "VRChat OSC",
+                "VRChat OSC Studio",
+                "Translating…",
+            ),
+            SessionOutputPolicy::Host,
+        )
+    }
+
     pub fn send_manual_message(&mut self, text: &str) {
         self.manager.send_manual_message(text);
     }
@@ -125,7 +141,7 @@ impl OscPlugin {
     pub fn render_page(
         &mut self,
         ui: &mut egui::Ui,
-        context: OscPageContext<'_>,
+        context: OscPageContext,
     ) -> Vec<OscUiAction> {
         ui::render(self, ui, context)
     }

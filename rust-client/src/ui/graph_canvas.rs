@@ -86,8 +86,14 @@ impl GraphCanvasState {
     }
 
     pub fn zoom_at_pointer(&mut self, canvas: Rect, pointer: Pos2, scroll: f32) {
+        self.zoom_by(canvas, pointer, (scroll * 0.0015).exp());
+    }
+
+    pub fn zoom_by(&mut self, canvas: Rect, pointer: Pos2, factor: f32) {
+        if !factor.is_finite() || factor <= 0.0 {
+            return;
+        }
         let old_zoom = self.zoom;
-        let factor = (scroll * 0.0015).exp();
         let new_zoom = (old_zoom * factor).clamp(self.min_zoom, self.max_zoom);
         if (new_zoom - old_zoom).abs() <= f32::EPSILON {
             return;

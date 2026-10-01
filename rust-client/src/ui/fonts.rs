@@ -59,7 +59,7 @@ const WINDOWS_FONTS: &[SystemFont] = &[
     },
 ];
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 const FONTCONFIG_FONTS: &[(&str, &str)] = &[
     ("noto_sans", "Noto Sans"),
     ("noto_cjk_sc", "Noto Sans CJK SC"),
@@ -106,7 +106,7 @@ fn system_fonts() -> Vec<(&'static str, PathBuf, u32, &'static str)> {
         .collect()
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "android")))]
 fn system_fonts() -> Vec<(&'static str, std::path::PathBuf, u32, &'static str)> {
     FONTCONFIG_FONTS
         .iter()
@@ -172,4 +172,36 @@ mod tests {
         output.textures_delta.clear();
         assert_eq!(coverage, Some((true, true, true)));
     }
+}
+
+#[cfg(target_os = "android")]
+fn system_fonts() -> Vec<(&'static str, std::path::PathBuf, u32, &'static str)> {
+    [
+        ("roboto", &["Roboto-Regular.ttf", "Roboto.ttf"][..]),
+        (
+            "noto_cjk",
+            &["NotoSansCJK-Regular.ttc", "NotoSansCJK-VF.ttc"][..],
+        ),
+        (
+            "noto_devanagari",
+            &[
+                "NotoSansDevanagari-Regular.ttf",
+                "NotoSansDevanagari-VF.ttf",
+            ][..],
+        ),
+        (
+            "noto_arabic",
+            &["NotoSansArabic-Regular.ttf", "NotoSansArabic-VF.ttf"][..],
+        ),
+        ("noto_symbols", &["NotoSansSymbols2-Regular.ttf"][..]),
+    ]
+    .into_iter()
+    .filter_map(|(name, candidates)| {
+        candidates
+            .iter()
+            .map(|file| std::path::Path::new("/system/fonts").join(file))
+            .find(|path| path.is_file())
+            .map(|path| (name, path, 0, name))
+    })
+    .collect()
 }

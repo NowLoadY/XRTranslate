@@ -11,6 +11,7 @@ use super::{
 };
 use crossbeam_channel::{Sender, unbounded};
 use std::{
+    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -18,7 +19,13 @@ use std::{
     thread::JoinHandle,
 };
 
-use crate::{CaptureSource, network::SessionEvent, session_coordinator::SessionEventSubscriber};
+use crate::{
+    CaptureSource,
+    session_coordinator::{
+        SessionEventSubscriber, TranslationEvent, TranslationOutcome, TranslationSegment,
+        TranslationSessionOwner,
+    },
+};
 
 #[derive(Clone, Copy, Debug)]
 pub enum MeetingSegmentSource {
@@ -40,7 +47,10 @@ pub struct MeetingSegmentEvent {
 }
 
 enum Command {
+    #[cfg(test)]
     Segment(ActiveMeetingCapture, MeetingSegmentEvent),
+    Results(ActiveMeetingCapture, Vec<TranslationSegment>, bool),
+    SealStream(u64),
     FinishActive(ActiveMeetingCapture),
     FailActive(ActiveMeetingCapture, String),
     #[cfg(test)]
@@ -80,9 +90,46 @@ impl MeetingEventSink {
         let worker = std::thread::Builder::new()
             .name("meeting-event-store".into())
             .spawn(move || {
+                let mut batches = HashMap::<(String, String, u64, bool), Vec<String>>::new();
                 while let Ok(command) = rx.recv() {
                     match command {
-                        Command::Segment(capture, event) => persist_segment(&store, capture, event),
+                        #[cfg(test)]
+                        Command::Segment(capture, event) => {
+                            persist_segments(&store, &capture, vec![event], &[]);
+                        }
+                        Command::Results(capture, segments, replace) => {
+                            let Some(first) = segments.first() else {
+                                continue;
+                            };
+                            let key = (
+                                capture.recognition_run_id.clone(),
+                                capture.topic_id.clone(),
+                                first.stream_id,
+                                first.translated.is_some(),
+                            );
+                            let live = segments.iter().any(|segment| segment.live);
+                            let events = segments
+                                .iter()
+                                .filter_map(MeetingSegmentEvent::from_translation)
+                                .collect();
+                            let previous = if replace {
+                                batches.get(&key).cloned().unwrap_or_default()
+                            } else {
+                                Vec::new()
+                            };
+                            if let Some(keys) =
+                                persist_segments(&store, &capture, events, &previous)
+                            {
+                                if replace || live {
+                                    batches.insert(key, keys);
+                                } else if let Some(batch) = batches.get_mut(&key) {
+                                    batch.retain(|key| !keys.contains(key));
+                                }
+                            }
+                        }
+                        Command::SealStream(stream) => {
+                            batches.retain(|(_, _, id, _), _| *id != stream);
+                        }
                         Command::FinishActive(capture) => {
                             finish_active(&store, &worker_active, &capture)
                         }
@@ -112,6 +159,7 @@ impl MeetingEventSink {
         self.inner.active.lock().ok()?.clone()
     }
 
+    #[cfg(test)]
     pub fn persist(&self, event: MeetingSegmentEvent) {
         if let Some(capture) = self.capture_snapshot() {
             self.send(Command::Segment(capture, event));
@@ -185,52 +233,28 @@ impl SessionEventSubscriber for MeetingEventSink {
                 .is_some_and(|capture| owner.operation_id() == Some(capture.meeting_id.as_str()))
     }
 
-    fn on_session_event(&self, event: &SessionEvent) {
+    fn on_translation_event(&self, _owner: &TranslationSessionOwner, event: &TranslationEvent) {
+        if let TranslationEvent::Finished { stream_id, .. } = event {
+            self.send(Command::SealStream(*stream_id));
+        }
         match event {
-            SessionEvent::SourceSegment {
-                audio_source,
-                text,
-                turn_id,
-                speaker_id,
-                source_start_ms,
-                source_end_ms,
-                segment_index,
-                revisable,
+            TranslationEvent::Segment(segment) => {
+                if let Some(capture) = self.capture_snapshot() {
+                    self.send(Command::Results(capture, vec![segment.clone()], false));
+                }
+            }
+            TranslationEvent::ReplaceSegments(segments) => {
+                if let Some(capture) = self.capture_snapshot() {
+                    self.send(Command::Results(capture, segments.clone(), true));
+                }
+            }
+            TranslationEvent::StreamEnded { stream_id } => {
+                self.send(Command::SealStream(*stream_id))
+            }
+            TranslationEvent::Finished {
+                outcome: TranslationOutcome::Completed,
                 ..
-            } if !text.is_empty() => self.persist_segment(
-                *audio_source,
-                turn_id,
-                *segment_index,
-                text,
-                None,
-                speaker_id,
-                *source_start_ms,
-                *source_end_ms,
-                !revisable,
-            ),
-            SessionEvent::Translation {
-                audio_source,
-                source,
-                translated,
-                turn_id,
-                speaker_id,
-                source_start_ms,
-                source_end_ms,
-                segment_index,
-                revisable,
-                ..
-            } => self.persist_segment(
-                *audio_source,
-                turn_id,
-                *segment_index,
-                source,
-                Some(translated),
-                speaker_id,
-                *source_start_ms,
-                *source_end_ms,
-                !revisable,
-            ),
-            SessionEvent::Disconnected(reason) if reason == "Finished" => {
+            } => {
                 let previous = self
                     .inner
                     .active_sessions
@@ -246,113 +270,119 @@ impl SessionEventSubscriber for MeetingEventSink {
                     self.inner.finish_requested.store(false, Ordering::Release);
                 }
             }
-            SessionEvent::Error(error) => {
+            TranslationEvent::Finished {
+                outcome: TranslationOutcome::Failed(error),
+                ..
+            } => {
                 self.fail_active(error.clone());
                 self.cancel_sessions();
             }
-            _ => {}
+            TranslationEvent::Finished {
+                outcome: TranslationOutcome::Cancelled,
+                ..
+            } => {
+                self.finish_active();
+                self.cancel_sessions();
+            }
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-impl MeetingEventSink {
-    fn persist_segment(
-        &self,
-        audio_source: CaptureSource,
-        turn_id: &str,
-        segment_index: u32,
-        source_text: &str,
-        translated_text: Option<&str>,
-        raw_speaker_id: &str,
-        source_start_ms: f64,
-        source_end_ms: f64,
-        is_final: bool,
-    ) {
-        let source = match audio_source {
-            CaptureSource::Microphone => MeetingSegmentSource::Microphone,
-            CaptureSource::SystemAudio => MeetingSegmentSource::SystemAudio,
-            CaptureSource::Both => return,
-        };
-        self.persist(MeetingSegmentEvent {
-            source,
-            turn_id: turn_id.to_owned(),
-            segment_index,
-            source_text: source_text.to_owned(),
-            translated_text: translated_text.map(ToOwned::to_owned),
-            raw_speaker_id: raw_speaker_id.to_owned(),
-            source_start_ms,
-            source_end_ms,
-            is_final,
-        });
+impl MeetingSegmentEvent {
+    fn from_translation(segment: &TranslationSegment) -> Option<Self> {
+        if segment.source.is_empty() {
+            return None;
+        }
+        Some(Self {
+            source: match segment.audio_source {
+                CaptureSource::Microphone => MeetingSegmentSource::Microphone,
+                CaptureSource::SystemAudio => MeetingSegmentSource::SystemAudio,
+                CaptureSource::Both => return None,
+            },
+            turn_id: segment.turn_id.clone(),
+            segment_index: segment.segment_index,
+            source_text: segment.source.clone(),
+            translated_text: segment.translated.clone(),
+            raw_speaker_id: segment.speaker_id.clone(),
+            source_start_ms: segment.source_start_ms,
+            source_end_ms: segment.source_end_ms,
+            is_final: !segment.revisable,
+        })
     }
 }
 
-fn persist_segment(
-    store: &MeetingStore,
-    capture: ActiveMeetingCapture,
-    event: MeetingSegmentEvent,
-) {
-    let source = if capture.imported_audio {
-        SegmentSource::ImportedAudio
+fn stored_segment(capture: &ActiveMeetingCapture, event: &MeetingSegmentEvent) -> NewSegment {
+    let (source, source_key) = if capture.imported_audio {
+        (SegmentSource::ImportedAudio, "import")
     } else {
         match event.source {
-            MeetingSegmentSource::Microphone => SegmentSource::Microphone,
-            MeetingSegmentSource::SystemAudio => SegmentSource::SystemAudio,
+            MeetingSegmentSource::Microphone => (SegmentSource::Microphone, "mic"),
+            MeetingSegmentSource::SystemAudio => (SegmentSource::SystemAudio, "system"),
         }
     };
-    let source_key = if capture.imported_audio {
-        "import"
+    let turn = if event.turn_id.is_empty() {
+        format!("time-{}", event.source_start_ms.max(0.0).round() as i64)
     } else {
-        match event.source {
-            MeetingSegmentSource::Microphone => "mic",
-            MeetingSegmentSource::SystemAudio => "system",
-        }
+        event.turn_id.clone()
     };
-    let speaker_token = (!event.raw_speaker_id.trim().is_empty())
-        .then(|| format!("{source_key}:{}", event.raw_speaker_id.trim()));
-    let external_key = format!(
-        "{}:{source_key}:{}:{}:{}",
-        capture.recognition_run_id,
-        if event.turn_id.is_empty() {
-            "turn"
-        } else {
-            &event.turn_id
-        },
-        event.source_start_ms.max(0.0).round() as i64,
-        event.segment_index,
-    );
-    let segment = NewSegment {
+    NewSegment {
         meeting_id: capture.meeting_id.clone(),
-        external_key,
+        external_key: format!(
+            "{}:{source_key}:{turn}:{}",
+            capture.recognition_run_id, event.segment_index
+        ),
         topic_id: capture.topic_id.clone(),
-        original_text: event.source_text,
-        translated_text: event.translated_text,
+        original_text: event.source_text.clone(),
+        translated_text: event.translated_text.clone(),
         start_ms: capture.timeline_offset_ms + event.source_start_ms.max(0.0).round() as i64,
         end_ms: capture.timeline_offset_ms
             + event.source_end_ms.max(event.source_start_ms).round() as i64,
         source,
         recognition_run_id: capture.recognition_run_id.clone(),
-        speaker_token: speaker_token.clone(),
+        speaker_token: (!event.raw_speaker_id.trim().is_empty())
+            .then(|| format!("{source_key}:{}", event.raw_speaker_id.trim())),
         is_final: event.is_final,
-    };
-    if let Err(error) = store.upsert_segment(segment) {
-        log::error!("Could not persist meeting segment: {error}");
-        return;
     }
-    if let Some(token) = speaker_token {
-        let suggested = speaker_label(&event.raw_speaker_id)
-            .map(|label| format!("{label} · automatic"))
-            .unwrap_or_else(|| "Automatic speaker".into());
-        if let Err(error) = store.assign_speaker_token(
-            &capture.meeting_id,
-            &capture.recognition_run_id,
-            &token,
-            &suggested,
-        ) {
-            log::error!("Could not persist provisional speaker: {error}");
+}
+
+fn persist_segments(
+    store: &MeetingStore,
+    capture: &ActiveMeetingCapture,
+    events: Vec<MeetingSegmentEvent>,
+    previous_keys: &[String],
+) -> Option<Vec<String>> {
+    let segments: Vec<_> = events
+        .iter()
+        .map(|event| stored_segment(capture, event))
+        .collect();
+    let keys = segments
+        .iter()
+        .map(|segment| segment.external_key.clone())
+        .collect();
+    let speakers: Vec<_> = segments
+        .iter()
+        .map(|segment| segment.speaker_token.clone())
+        .collect();
+    if let Err(error) = store.replace_segments(segments, previous_keys) {
+        log::error!("Could not persist meeting segment: {error}");
+        return None;
+    }
+    for (event, token) in events.iter().zip(speakers) {
+        if let Some(token) = token {
+            let suggested = speaker_label(&event.raw_speaker_id)
+                .map(|label| format!("{label} · automatic"))
+                .unwrap_or_else(|| "Automatic speaker".into());
+            if let Err(error) = store.assign_speaker_token(
+                &capture.meeting_id,
+                &capture.recognition_run_id,
+                &token,
+                &suggested,
+            ) {
+                log::error!("Could not persist provisional speaker: {error}");
+            }
         }
     }
+    Some(keys)
 }
 
 fn finish_active(
@@ -598,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn generic_session_events_are_adapted_inside_the_plugin() {
+    fn translation_results_are_stored_by_the_plugin() {
         let store = Arc::new(MeetingStore::open_in_memory().unwrap());
         let bundle = store
             .create_meeting(NewMeeting::live(
@@ -618,28 +648,25 @@ mod tests {
         })));
         let sink = MeetingEventSink::start(Arc::clone(&store), active);
 
-        sink.on_session_event(&SessionEvent::Translation {
-            stream_id: 1,
-            audio_source: CaptureSource::Microphone,
-            continuous: false,
-            publish_to_host_outputs: false,
-            source: "hello".into(),
-            translated: "你好".into(),
-            turn_id: "turn-generic".into(),
-            segment_index: 1,
-            segment_count: 1,
-            speaker_id: "speaker-03".into(),
-            source_start_ms: 100.0,
-            source_end_ms: 500.0,
-            timing: xrtranslate_protocol::SegmentTiming::UtteranceWindow,
-            boundary: xrtranslate_protocol::SegmentBoundary::Silence,
-            term_matches: Vec::new(),
-            prompt_trace: None,
-            revisable: false,
-            overlap_ratio: 0.0,
-            authoritative_snapshot: false,
-            revision: 0,
-        });
+        sink.on_translation_event(
+            &TranslationSessionOwner::None,
+            &TranslationEvent::Segment(crate::session_coordinator::TranslationSegment {
+                stream_id: 1,
+                audio_source: CaptureSource::Microphone,
+                live: false,
+                source: "hello".into(),
+                translated: Some("你好".into()),
+                turn_id: "turn-generic".into(),
+                segment_index: 1,
+                segment_count: 1,
+                speaker_id: "speaker-03".into(),
+                source_start_ms: 100.0,
+                source_end_ms: 500.0,
+                timing: xrtranslate_protocol::SegmentTiming::UtteranceWindow,
+                boundary: xrtranslate_protocol::SegmentBoundary::Silence,
+                revisable: false,
+            }),
+        );
         sink.flush();
 
         let stored = store.open_meeting(&bundle.meeting.id).unwrap();
@@ -671,11 +698,23 @@ mod tests {
         sink.begin_sessions(2);
         sink.request_finish();
 
-        sink.on_session_event(&SessionEvent::Disconnected("Finished".into()));
+        sink.on_translation_event(
+            &TranslationSessionOwner::None,
+            &TranslationEvent::Finished {
+                stream_id: 1,
+                outcome: TranslationOutcome::Completed,
+            },
+        );
         sink.flush();
         assert!(active.lock().unwrap().is_some());
 
-        sink.on_session_event(&SessionEvent::Disconnected("Finished".into()));
+        sink.on_translation_event(
+            &TranslationSessionOwner::None,
+            &TranslationEvent::Finished {
+                stream_id: 1,
+                outcome: TranslationOutcome::Completed,
+            },
+        );
         sink.flush();
         assert!(active.lock().unwrap().is_none());
         assert_eq!(

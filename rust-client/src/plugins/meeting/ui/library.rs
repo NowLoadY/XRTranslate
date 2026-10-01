@@ -8,7 +8,7 @@ use crate::plugins::meeting::{
     store::{MeetingSourceKind, MeetingStatus},
 };
 use crate::ui::components;
-use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Stroke};
+use eframe::egui::{self, Color32, CornerRadius, Frame, Margin};
 
 pub(super) fn render_library(
     controller: &mut MeetingController,
@@ -173,52 +173,40 @@ pub(super) fn render_library(
                                     action = UiAction::AskDelete(meeting.id.clone());
                                 }
                             });
-
-                            if controller.pending_delete.as_deref() == Some(&meeting.id) {
-                                ui.add_space(8.0);
-                                Frame::new()
-                                    .fill(Color32::from_rgb(254, 242, 242))
-                                    .stroke(Stroke::new(1.0, Color32::from_rgb(254, 202, 202)))
-                                    .corner_radius(CornerRadius::same(10))
-                                    .inner_margin(Margin::same(12))
-                                    .show(ui, |ui| {
-                                        ui.vertical(|ui| {
-                                            ui.label(
-                                                egui::RichText::new(tr(
-                                                    language,
-                                                    "Delete this meeting and all of its local records?",
-                                                ))
-                                                .color(Color32::from_rgb(185, 28, 28))
-                                                .strong()
-                                                .size(12.5),
-                                            );
-                                            ui.add_space(8.0);
-                                            ui.horizontal(|ui| {
-                                                if components::danger_button(
-                                                    ui,
-                                                    tr(language, "Delete permanently"),
-                                                )
-                                                .clicked()
-                                                {
-                                                    action = UiAction::Delete(meeting.id.clone());
-                                                }
-                                                if components::animated_button(
-                                                    ui,
-                                                    tr(language, "Cancel"),
-                                                )
-                                                .clicked()
-                                                {
-                                                    action = UiAction::CancelDelete;
-                                                }
-                                            });
-                                        });
-                                    });
-                            }
                         });
                     });
                     ui.add_space(10.0);
                 });
             }
         });
+    if let Some(meeting) = controller
+        .pending_delete
+        .as_ref()
+        .and_then(|id| controller.meetings.iter().find(|meeting| &meeting.id == id))
+    {
+        let message = format!(
+            "{}\n\n{}",
+            meeting.name,
+            tr(
+                language,
+                "Delete this meeting and all of its local records?"
+            ),
+        );
+        if let Some(confirmed) = crate::ui::modal::confirm(
+            ui.ctx(),
+            ui.make_persistent_id("meeting_delete_confirmation"),
+            language,
+            tr(language, "Delete permanently"),
+            &message,
+            tr(language, "Delete permanently"),
+            !controller.is_recording(&meeting.id),
+        ) {
+            action = if confirmed {
+                UiAction::Delete(meeting.id.clone())
+            } else {
+                UiAction::CancelDelete
+            };
+        }
+    }
     action
 }

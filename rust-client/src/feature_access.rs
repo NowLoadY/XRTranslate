@@ -34,7 +34,13 @@ impl FeatureAccess {
 
 const FEATURE_ACCESS: &[(Feature, FeatureAccess)] = &[
     (Feature::TtsPlayback, FeatureAccess::available()),
-    (Feature::FloatingSubtitles, FeatureAccess::available()),
+    (
+        Feature::FloatingSubtitles,
+        FeatureAccess {
+            available: !cfg!(target_os = "android"),
+            unavailable_reason: Some("Floating subtitles are available on desktop."),
+        },
+    ),
     (Feature::OscChatbox, FeatureAccess::available()),
     (Feature::SpeakerNumbers, FeatureAccess::available()),
     (Feature::MuteSync, FeatureAccess::available()),

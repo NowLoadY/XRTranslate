@@ -34,17 +34,48 @@ const DENOISE_RELATIVE_PATH: &str = RuntimeLayout::DENOISE_MODEL_PATH;
 const DENOISE_MODEL_BYTES: u64 = RuntimeLayout::DENOISE_MODEL_BYTES;
 const DENOISE_MODEL_SHA256: &str = RuntimeLayout::DENOISE_MODEL_SHA256;
 const INTERNAL_BIN_DIRECTORY: &str = "bin";
-const ONNX_CPU_CORE_RELATIVE_PATH: &str = "runtime/onnxruntime/cpu/onnxruntime.dll";
-const ONNX_CPU_CORE_BYTES: u64 = RuntimeLayout::ONNX_CPU_CORE_WIN_BYTES;
-const ONNX_CPU_CORE_SHA256: &str = RuntimeLayout::ONNX_CPU_CORE_WIN_SHA256;
 const ONNX_LICENSE_RELATIVE_PATH: &str = "licenses/onnxruntime/LICENSE";
-const ONNX_LICENSE_BYTES: u64 = 1_094;
-const ONNX_LICENSE_SHA256: &str =
-    "c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674";
 const ONNX_NOTICES_RELATIVE_PATH: &str = "licenses/onnxruntime/ThirdPartyNotices.txt";
-const ONNX_NOTICES_BYTES: u64 = 331_175;
-const ONNX_NOTICES_SHA256: &str =
-    "fb0af774b4d7cffc5b9d046f2aaeade2f37df2f80abf8033c95dfffcc77a8866";
+
+struct OnnxCpuMetadata {
+    path: &'static str,
+    bytes: u64,
+    sha256: &'static str,
+    source_archive: &'static str,
+    license_bytes: u64,
+    license_sha256: &'static str,
+    notices_bytes: u64,
+    notices_sha256: &'static str,
+}
+
+fn onnx_cpu_metadata(client: &Path) -> OnnxCpuMetadata {
+    if client
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+    {
+        OnnxCpuMetadata {
+            path: "runtime/onnxruntime/cpu/onnxruntime.dll",
+            bytes: RuntimeLayout::ONNX_CPU_CORE_WIN_BYTES,
+            sha256: RuntimeLayout::ONNX_CPU_CORE_WIN_SHA256,
+            source_archive: "onnxruntime-win-x64-gpu_cuda13-1.28.0.zip",
+            license_bytes: 1_094,
+            license_sha256: "c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674",
+            notices_bytes: 331_175,
+            notices_sha256: "fb0af774b4d7cffc5b9d046f2aaeade2f37df2f80abf8033c95dfffcc77a8866",
+        }
+    } else {
+        OnnxCpuMetadata {
+            path: "runtime/onnxruntime/cpu/libonnxruntime.so.1.28.0",
+            bytes: RuntimeLayout::ONNX_CPU_CORE_LINUX_BYTES,
+            sha256: RuntimeLayout::ONNX_CPU_CORE_LINUX_SHA256,
+            source_archive: "onnxruntime-linux-x64-1.28.0.tgz",
+            license_bytes: 1_073,
+            license_sha256: "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c",
+            notices_bytes: 325_054,
+            notices_sha256: "0e07b95f3a8d6230037707c5c4a2b554d12c4cb67369669ac255635528ffcee2",
+        }
+    }
+}
 const CORPUS_DATABASE_PATH: &str = "runtime/xr-corpus.sqlite";
 const CORPUS_SEED_PATH: &str = "corpora/default.sqlite";
 
@@ -187,6 +218,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let arguments = Arguments::parse();
     let check = arguments.check;
     let plan = ReleasePlan::from_arguments(arguments)?;
+    let onnx = onnx_cpu_metadata(&plan.rust_client_bin);
     verify_file_integrity(
         "--vad-model",
         &plan.vad_model,
@@ -208,20 +240,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     verify_file_integrity(
         "--onnx-runtime-cpu",
         &plan.onnx_runtime_cpu,
-        ONNX_CPU_CORE_BYTES,
-        ONNX_CPU_CORE_SHA256,
+        onnx.bytes,
+        onnx.sha256,
     )?;
     verify_file_integrity(
         "--onnx-runtime-license",
         &plan.onnx_runtime_license,
-        ONNX_LICENSE_BYTES,
-        ONNX_LICENSE_SHA256,
+        onnx.license_bytes,
+        onnx.license_sha256,
     )?;
     verify_file_integrity(
         "--onnx-runtime-notices",
         &plan.onnx_runtime_notices,
-        ONNX_NOTICES_BYTES,
-        ONNX_NOTICES_SHA256,
+        onnx.notices_bytes,
+        onnx.notices_sha256,
     )?;
     if plan.output.exists() {
         return Err(PackageError::InvalidInput(format!(
@@ -422,7 +454,7 @@ fn package(plan: &ReleasePlan) -> Result<PathBuf, PackageError> {
         copy_file_to(&plan.denoise_model, &staging.join(DENOISE_RELATIVE_PATH))?;
         copy_file_to(
             &plan.onnx_runtime_cpu,
-            &staging.join(ONNX_CPU_CORE_RELATIVE_PATH),
+            &staging.join(onnx_cpu_metadata(&plan.rust_client_bin).path),
         )?;
         copy_file_to(
             &plan.onnx_runtime_license,
@@ -548,6 +580,7 @@ fn release_manifest(
     assets: &ResolvedModelAssets,
     runtime_layout: &RuntimeLayout,
 ) -> Value {
+    let onnx = onnx_cpu_metadata(rust_client);
     let model_packages = assets
         .iter()
         .iter()
@@ -572,7 +605,7 @@ fn release_manifest(
         "runtime": {
             "included": true,
             "directory": runtime_directory,
-            "setup_required": "Choose the llama-server executable in the client welcome flow.",
+            "setup_required": "Download the selected models and compatible runtime in the client welcome flow.",
             "onnx_cuda": {
                 "included": false,
                 "selection_marker": RuntimeLayout::NATIVE_RUNTIME_SELECTION_FILE,
@@ -582,11 +615,11 @@ fn release_manifest(
             },
             "onnx_cpu": {
                 "included": true,
-                "path": ONNX_CPU_CORE_RELATIVE_PATH,
+                "path": onnx.path,
                 "release": "1.28.0",
-                "bytes": ONNX_CPU_CORE_BYTES,
-                "sha256": ONNX_CPU_CORE_SHA256,
-                "source_archive": "onnxruntime-win-x64-gpu_cuda13-1.28.0.zip",
+                "bytes": onnx.bytes,
+                "sha256": onnx.sha256,
+                "source_archive": onnx.source_archive,
                 "license": ONNX_LICENSE_RELATIVE_PATH,
                 "third_party_notices": ONNX_NOTICES_RELATIVE_PATH
             }
@@ -892,10 +925,11 @@ fn should_exclude_from_release_resources(path: &Path) -> bool {
         return false;
     };
     let lower = name.to_ascii_lowercase();
-    lower == "mpv-2.dll"
-        || lower == "libmpv-2.dll"
-        || lower == "mpv-2.zip"
+    lower == "mpv-2.zip"
         || lower.ends_with(".dll")
+        || lower.ends_with(".dylib")
+        || lower.ends_with(".so")
+        || lower.contains(".so.")
 }
 
 fn copy_native_directory(source: &Path, target: &Path) -> Result<(), PackageError> {
@@ -1223,7 +1257,7 @@ mod tests {
         assert!(output.join(VAD_RELATIVE_PATH).is_file());
         assert!(output.join(SPEAKER_RELATIVE_PATH).is_file());
         assert!(output.join(DENOISE_RELATIVE_PATH).is_file());
-        assert!(output.join(ONNX_CPU_CORE_RELATIVE_PATH).is_file());
+        assert!(output.join(onnx_cpu_metadata(&plan.rust_client_bin).path).is_file());
         assert!(output.join(ONNX_LICENSE_RELATIVE_PATH).is_file());
         assert!(output.join(ONNX_NOTICES_RELATIVE_PATH).is_file());
         assert!(output.join("release-manifest.json").is_file());
@@ -1262,7 +1296,7 @@ mod tests {
         assert_eq!(manifest["runtime"]["included"], true);
         assert_eq!(
             manifest["runtime"]["onnx_cpu"]["path"],
-            ONNX_CPU_CORE_RELATIVE_PATH
+            onnx_cpu_metadata(&plan.rust_client_bin).path
         );
         assert_eq!(manifest["runtime"]["onnx_cuda"]["included"], false);
         assert_eq!(

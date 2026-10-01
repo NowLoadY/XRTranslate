@@ -6,5 +6,5 @@ license.workspace = true
 repository.workspace = true
 description = "Lifecycle management for local llama.cpp services."
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 libc = "0.2"

@@ -30,9 +30,14 @@ pub(super) fn render_setup(
         },
     );
 
-    components::card(ui, |ui| {
-        ui.vertical(|ui| {
-            components::section_heading(ui, tr(language, "Meeting Details"));
+    egui::ScrollArea::vertical()
+        .id_salt("meeting_setup_scroll")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            components::card(ui, |ui| {
+                ui.vertical(|ui| {
+                    components::section_heading(ui, tr(language, "Meeting Details"));
 
             ui.label(
                 egui::RichText::new(tr(language, "Name"))
@@ -67,10 +72,10 @@ pub(super) fn render_setup(
                         },
                     );
                     ui.add_space(6.0);
-                    if components::animated_button(ui, tr(language, "Choose file")).clicked()
-                        && let Some(path) = rfd::FileDialog::new()
+                    let choose_file = components::animated_button(ui, tr(language, "Choose file")).clicked();
+                    if let Some(path) = crate::file_dialog::FileDialog::new()
                             .add_filter("Audio", &["wav", "mp3", "flac", "m4a", "aac", "ogg"])
-                            .pick_file()
+                            .pick_file(ui.ctx(), "meeting_source_file", choose_file)
                     {
                         controller.draft.import_path = path.display().to_string();
                         if controller.draft.name == "New meeting"
@@ -97,20 +102,19 @@ pub(super) fn render_setup(
                 );
                 ui.add_space(4.0);
 
+                let system_audio = crate::audio::AudioSystem::supports_system_audio();
+                if !system_audio {
+                    controller.draft.capture_source = MeetingAudioSource::Microphone;
+                }
                 let capture_options = [
-                    (
-                        MeetingAudioSource::Microphone,
-                        capture_label(MeetingAudioSource::Microphone, language).to_string(),
-                    ),
-                    (
-                        MeetingAudioSource::SystemAudio,
-                        capture_label(MeetingAudioSource::SystemAudio, language).to_string(),
-                    ),
-                    (
-                        MeetingAudioSource::Both,
-                        capture_label(MeetingAudioSource::Both, language).to_string(),
-                    ),
-                ];
+                    MeetingAudioSource::Microphone,
+                    MeetingAudioSource::SystemAudio,
+                    MeetingAudioSource::Both,
+                ]
+                .into_iter()
+                .filter(|source| system_audio || *source == MeetingAudioSource::Microphone)
+                .map(|source| (source, capture_label(source, language).to_owned()))
+                .collect::<Vec<_>>();
                 components::searchable_combobox(
                     ui,
                     "meeting_capture_source",
@@ -157,6 +161,7 @@ pub(super) fn render_setup(
                 action = UiAction::CreateAndStart;
             }
         });
+    });
     });
 
     action

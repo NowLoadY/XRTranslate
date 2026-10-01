@@ -15,7 +15,6 @@ xr-corpus-client = { path = "../XR-Corpus/crates/client" }
 bytemuck = { version = "1.25", features = ["derive"] }
 cpal = "0.18.1"
 crossbeam-channel = "0.5.16"
-eframe = "0.36.1"
 flate2 = "1.1.9"
 egui_extras = { version = "0.36.1", features = ["svg", "image"] }
 env_logger = "0.11.11"
@@ -24,7 +23,6 @@ glam = { version = "0.33.10", default-features = false, features = ["std"] }
 log = "0.4.33"
 parking_lot = "0.12.5"
 reqwest = { version = "0.13.4", features = ["json", "socks"] }
-rfd = "0.17.2"
 rubato = "4.0.0"
 audioadapter-buffers = "4.0.0"
 rosc = "0.11.4"
@@ -75,3 +73,15 @@ libloading = "0.8.9"
 
 [build-dependencies]
 winres = "0.1.12"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = "0.36.1"
+rfd = "0.17.2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { version = "0.36.1", default-features = false, features = ["default_fonts", "wgpu", "android-game-activity"] }
+winit = { version = "0.30.13", features = ["android-game-activity"] }
+android-activity = { version = "0.6.1", features = ["game-activity"] }
+android_logger = "0.15.1"
+libc = "0.2"
+jni = "0.21.1"

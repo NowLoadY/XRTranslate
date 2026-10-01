@@ -169,6 +169,9 @@ impl AutomationDriver {
                     "videoplayer" | "video_player" | "player" | "plugin:video_player" => {
                         Some(Page::Plugin(crate::plugins::PluginId::VIDEO_PLAYER))
                     }
+                    "corpus" | "corpus_studio" | "corpus-studio" | "vocabulary" => {
+                        Some(Page::CorpusStudio)
+                    }
                     _ => None,
                 };
                 if let Some(page) = page {

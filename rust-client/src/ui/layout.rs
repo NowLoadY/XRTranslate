@@ -108,6 +108,28 @@ pub fn should_stack(available_width: f32, column_count: usize, min_column_width:
     available_width + SIZE_EPSILON < column_count as f32 * min_column_width + gaps
 }
 
+pub fn responsive_columns(
+    ui: &mut egui::Ui,
+    count: usize,
+    min_width: f32,
+    mut render: impl FnMut(&mut egui::Ui, usize),
+) {
+    if should_stack(ui.available_width(), count, min_width) {
+        for index in 0..count {
+            ui.push_id(index, |ui| render(ui, index));
+            if index + 1 < count {
+                ui.add_space(12.0);
+            }
+        }
+    } else {
+        ui.columns(count, |columns| {
+            for (index, column) in columns.iter_mut().enumerate() {
+                render(column, index);
+            }
+        });
+    }
+}
+
 fn variable_row_offsets(row_heights: &[f32], row_gap: f32) -> Vec<f32> {
     let mut offsets = Vec::with_capacity(row_heights.len() + 1);
     let mut next = 0.0;
@@ -225,6 +247,9 @@ pub fn control_width(
 }
 
 pub fn finish_frame(ctx: &egui::Context) {
+    if cfg!(target_os = "android") {
+        return;
+    }
     let Some(current_size) = current_inner_size(ctx) else {
         return;
     };

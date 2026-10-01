@@ -416,8 +416,10 @@ pub(super) fn render_graph_editor(
             controller.canvas.fit_pending = false;
         }
         let mut canvas_ui = graph_canvas::canvas_viewport(ui, canvas);
-        if !over_panel {
-            controller.handle_navigation(canvas, &response, &canvas_ui, true, false);
+        if (!over_panel || controller.touch_navigating())
+            && controller.handle_navigation(canvas, &response, &canvas_ui, true, false)
+        {
+            canvas_ui.disable();
         }
         let pointer_over_node = response.interact_pointer_pos().is_some_and(|pointer| {
             draft
@@ -463,7 +465,7 @@ pub(super) fn render_graph_editor(
                 selectable_nodes,
             );
         }
-        if response.hovered() && !over_panel {
+        if response.hovered() && !over_panel && !controller.touch_navigating() {
             let scroll = canvas_ui.input(|input| input.smooth_scroll_delta.y);
             if scroll.abs() > f32::EPSILON {
                 let pointer = canvas_ui

@@ -2,33 +2,48 @@
 use crate::{
     CaptureSource, RecognitionSettings, SystemAudioInputSelection,
     network::{SessionEvent, SessionHandle},
-    session_coordinator::TranslationSessionOwner,
+    session_coordinator::{
+        SessionEventSubscriber, TranslationEvent, TranslationEventAdapter, TranslationOutcome,
+        TranslationSessionOwner,
+    },
 };
 use crossbeam_channel::{Sender, bounded};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use xrtranslate_engine::language::LanguageSelection;
 
 pub(crate) struct ChannelScope {
     pub owner: TranslationSessionOwner,
+    pub is_text: bool,
     pub active: AtomicBool,
     pub finished: AtomicBool,
     pub failed: AtomicBool,
     pub ready: AtomicBool,
     pub stream_id: AtomicU64,
+    results: Mutex<TranslationEventAdapter>,
 }
 
 impl ChannelScope {
     pub fn new(owner: TranslationSessionOwner) -> Arc<Self> {
+        Self::create(owner, false)
+    }
+
+    pub fn text(owner: TranslationSessionOwner) -> Arc<Self> {
+        Self::create(owner, true)
+    }
+
+    fn create(owner: TranslationSessionOwner, is_text: bool) -> Arc<Self> {
         Arc::new(Self {
             owner,
+            is_text,
             active: AtomicBool::new(true),
             finished: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             ready: AtomicBool::new(false),
             stream_id: AtomicU64::new(0),
+            results: Mutex::new(TranslationEventAdapter::default()),
         })
     }
     /// Capture groups use the existing network session number.
@@ -38,6 +53,43 @@ impl ChannelScope {
 
     pub fn accepts_events(&self) -> bool {
         self.active.load(Ordering::Acquire) && !self.finished.load(Ordering::Acquire)
+    }
+
+    pub fn publish(&self, event: &SessionEvent, subscribers: &[Box<dyn SessionEventSubscriber>]) {
+        let events = match self.results.lock() {
+            Ok(mut results) => results.push(event, self.id()),
+            Err(_) => return,
+        };
+        for event in events {
+            publish_result(&self.owner, &event, subscribers);
+            if let TranslationEvent::Finished { outcome, .. } = event {
+                self.failed.store(
+                    matches!(outcome, TranslationOutcome::Failed(_)),
+                    Ordering::Release,
+                );
+                self.finished.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    pub fn cancel(&self, subscribers: &[Box<dyn SessionEventSubscriber>]) {
+        if self.accepts_events() {
+            self.publish(&SessionEvent::Disconnected("Cancelled".into()), subscribers);
+        }
+        self.active.store(false, Ordering::Release);
+    }
+}
+
+pub(crate) fn publish_result(
+    owner: &TranslationSessionOwner,
+    event: &TranslationEvent,
+    subscribers: &[Box<dyn SessionEventSubscriber>],
+) {
+    for subscriber in subscribers
+        .iter()
+        .filter(|subscriber| subscriber.accepts_owner(owner))
+    {
+        subscriber.on_translation_event(owner, event);
     }
 }
 

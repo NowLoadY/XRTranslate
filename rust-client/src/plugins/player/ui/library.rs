@@ -249,23 +249,17 @@ pub(super) fn render_library(
     }
 
     if let Some((default_name, srt)) = srt_to_export {
-        if let Some(save_path) = rfd::FileDialog::new()
+        let _ = crate::file_dialog::FileDialog::new()
             .set_file_name(&default_name)
             .add_filter("Subtitles", &["srt"])
-            .save_file()
-        {
-            let _ = std::fs::write(save_path, srt);
-        }
+            .save(srt);
     }
 
     if let Some((default_name, lrc)) = lrc_to_export {
-        if let Some(save_path) = rfd::FileDialog::new()
+        let _ = crate::file_dialog::FileDialog::new()
             .set_file_name(&default_name)
             .add_filter("Lyrics", &["lrc"])
-            .save_file()
-        {
-            let _ = std::fs::write(save_path, lrc);
-        }
+            .save(lrc);
     }
 
     action

@@ -12,15 +12,19 @@ pub(super) fn page_header(
     right: impl FnOnce(&mut egui::Ui),
 ) {
     let title_text = tr(language, title);
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(title_text)
-                .size(22.0)
-                .color(crate::ui::theme::text_strong())
-                .strong(),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), right);
-    });
+    let title = egui::RichText::new(title_text)
+        .size(22.0)
+        .color(crate::ui::theme::text_strong())
+        .strong();
+    if ui.available_width() < 600.0 {
+        ui.add(egui::Label::new(title).wrap());
+        ui.horizontal_wrapped(right);
+    } else {
+        ui.horizontal(|ui| {
+            ui.label(title);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), right);
+        });
+    }
     ui.add_space(14.0);
 }
 

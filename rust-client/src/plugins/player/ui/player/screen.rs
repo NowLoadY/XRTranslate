@@ -61,28 +61,19 @@ pub(in crate::plugins::player::ui) fn render_player(
                     ui.add_space(8.0);
                     if components::animated_button(ui, tr(language, "Export LRC")).clicked() {
                         let lrc_name = format!("{}.lrc", stem);
-                        if let Some(save_path) = rfd::FileDialog::new()
+                        let _ = crate::file_dialog::FileDialog::new()
                             .set_file_name(&lrc_name)
                             .add_filter("Lyrics", &["lrc"])
-                            .save_file()
-                        {
-                            let _ = std::fs::write(
-                                save_path,
-                                controller.subtitles.export_lrc(Some(stem)),
-                            );
-                        }
+                            .save(controller.subtitles.export_lrc(Some(stem)));
                     }
 
                     ui.add_space(8.0);
                     if components::animated_button(ui, tr(language, "Export SRT")).clicked() {
                         let srt_name = format!("{}.srt", stem);
-                        if let Some(save_path) = rfd::FileDialog::new()
+                        let _ = crate::file_dialog::FileDialog::new()
                             .set_file_name(&srt_name)
                             .add_filter("Subtitles", &["srt"])
-                            .save_file()
-                        {
-                            let _ = std::fs::write(save_path, controller.subtitles.export_srt());
-                        }
+                            .save(controller.subtitles.export_srt());
                     }
                 }
 

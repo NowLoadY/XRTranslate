@@ -119,7 +119,7 @@ impl LlamaServerLauncher for StdLlamaServerLauncher {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             child_command.creation_flags(CREATE_NO_WINDOW);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         {
             use std::os::unix::process::CommandExt;
 

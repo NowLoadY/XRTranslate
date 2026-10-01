@@ -1,4 +1,4 @@
-use eframe::egui::{self, Align, Color32, CornerRadius, Frame, Layout, Margin, RichText};
+use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, RichText};
 
 #[derive(Clone, Debug)]
 pub struct ModalPage {
@@ -180,253 +180,319 @@ impl ModalDialog {
     }
 
     pub fn render(&mut self, ctx: &egui::Context, language: crate::i18n::UiLanguage) {
+        self.render_with_id(ctx, language, egui::Id::new("modal_dialog"));
+    }
+
+    pub(super) fn render_with_id(
+        &mut self,
+        ctx: &egui::Context,
+        language: crate::i18n::UiLanguage,
+        id: egui::Id,
+    ) {
         if !self.open || self.pages.is_empty() {
             return;
         }
-
-        let backdrop_response = egui::Area::new(egui::Id::new("modal_backdrop"))
-            .interactable(true)
-            .order(egui::Order::Middle)
-            .fixed_pos([0.0, 0.0])
-            .show(ctx, |ui| {
-                let screen = ctx
-                    .input(|i| i.raw.screen_rect)
-                    .unwrap_or_else(|| ui.max_rect());
-                ui.allocate_rect(screen, egui::Sense::click())
-            })
-            .inner;
-
-        let mut close_dialog = false;
-        if backdrop_response.clicked() {
-            close_dialog = true;
-        }
-
-        if self.current_page >= self.pages.len() {
-            self.current_page = 0;
-        }
+        self.current_page = self.current_page.min(self.pages.len() - 1);
         let page = self.pages[self.current_page].clone();
         let total_pages = self.pages.len();
-        let is_multi_page = total_pages > 1;
-
-        let is_hand_drawn = crate::ui::theme::is_hand_drawn(ctx);
-        let modal_window = egui::Window::new("modal_dialog_window")
-            .title_bar(false)
-            .resizable(false)
-            .order(egui::Order::Foreground)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .fixed_size([540.0, 380.0])
-            .frame(
-                Frame::new()
-                    .fill(if is_hand_drawn {
-                        Color32::TRANSPARENT
-                    } else {
-                        crate::ui::theme::modal_backdrop()
-                    })
-                    .corner_radius(CornerRadius::same(20))
-                    .inner_margin(Margin::same(20)),
-            )
-            .show(ctx, |ui| {
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(&page.title)
-                                .size(17.0)
-                                .color(crate::ui::theme::text_strong())
-                                .strong(),
+        let mut close = false;
+        let response = dialog(
+            ctx,
+            id,
+            language,
+            &page.title,
+            |ui| {
+                ui.label(&page.content);
+                if let Some(details) = &page.error_details {
+                    ui.add_space(10.0);
+                    crate::ui::components::dark_container_frame(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(details)
+                                    .monospace()
+                                    .size(12.0)
+                                    .color(Color32::from_rgb(240, 244, 255)),
+                            )
+                            .wrap(),
                         );
-
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let close_id = ui.make_persistent_id("modal_close_btn");
-                            let is_hovered = ui.memory(|m| {
-                                m.data
-                                    .get_temp::<bool>(close_id.with("hover_state"))
-                                    .unwrap_or(false)
-                            });
-                            let hover_factor = crate::ui::animation::AnimationSystem::hover(
-                                ui.ctx(),
-                                close_id.with("anim_hover"),
-                                is_hovered,
-                            );
-                            let bg_color = Color32::from_rgba_unmultiplied(
-                                188,
-                                198,
-                                201,
-                                ((0.18 * hover_factor) * 255.0) as u8,
-                            );
-                            let text_color = crate::ui::animation::AnimationSystem::lerp_color(
-                                crate::ui::theme::text_weak(),
-                                crate::ui::theme::text_strong(),
-                                hover_factor,
-                            );
-                            let close_btn = Frame::new()
-                                .fill(bg_color)
-                                .corner_radius(CornerRadius::same(13))
-                                .inner_margin(Margin::symmetric(7, 3))
-                                .show(ui, |ui| {
-                                    ui.label(
-                                        RichText::new("×")
-                                            .size(16.0)
-                                            .color(text_color)
-                                            .strong(),
-                                    )
-                                })
-                                .response
-                                .interact(egui::Sense::click());
-                            ui.memory_mut(|m| {
-                                m.data
-                                    .insert_temp(close_id.with("hover_state"), close_btn.hovered());
-                            });
-                            if close_btn.hovered() {
-                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                            }
-                            if close_btn.clicked() {
-                                close_dialog = true;
-                            }
-                        });
                     });
-
-                    ui.add_space(12.0);
-
-                    let body_height = if is_multi_page { 220.0 } else { 240.0 };
-                    egui::ScrollArea::vertical()
-                        .id_salt("modal_body_scroll")
-                        .max_height(body_height)
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.label(
-                                RichText::new(&page.content)
-                                    .size(13.5)
-                                    .color(crate::ui::theme::text_normal()),
-                            );
-                            if let Some(details) = &page.error_details {
-                                ui.add_space(10.0);
-                                crate::ui::components::dark_container_frame(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.label(
-                                        RichText::new(details)
-                                            .family(egui::FontFamily::Monospace)
-                                            .color(Color32::from_rgb(240, 244, 255))
-                                            .size(12.0),
-                                    );
-                                });
-                            }
-                            if let Some(footnote) = &page.footnote {
-                                ui.add_space(10.0);
-                                ui.label(
-                                    RichText::new(footnote)
-                                        .size(12.0)
-                                        .color(crate::ui::theme::text_weak()),
-                                );
-                            }
-                        });
-
-                    ui.add_space(14.0);
-
-                    ui.horizontal(|ui| {
-                        if let Some(details) = &page.error_details {
-                            crate::ui::components::error_actions(ui, language, details);
-                        }
-                        if is_multi_page {
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} {}/{}",
-                                    crate::i18n::tr(language, "Page"),
-                                    self.current_page + 1,
-                                    total_pages
-                                ))
-                                .size(12.0)
-                                .color(crate::ui::theme::text_weak())
-                                .strong(),
-                            );
-
-                            ui.add_space(12.0);
-
-                            if self.current_page > 0
-                                && crate::ui::components::secondary_button(
-                                    ui,
-                                    crate::i18n::tr(language, "Prev"),
-                                )
-                                .clicked()
-                            {
-                                self.current_page -= 1;
-                            }
-
-                            if self.current_page + 1 < total_pages
-                                && crate::ui::components::primary_button(
-                                    ui,
-                                    crate::i18n::tr(language, "Next"),
-                                )
-                                .clicked()
-                            {
-                                self.current_page += 1;
-                            }
-                        }
-
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if self.show_ok_button {
-                                let ok_text =
-                                    if is_multi_page && self.current_page + 1 < total_pages {
-                                        crate::i18n::tr(language, "Close")
-                                    } else {
-                                        &self.ok_label
-                                    };
-                                let is_final_or_single_page =
-                                    !is_multi_page || self.current_page + 1 == total_pages;
-                                let confirmed = if self.destructive_ok {
-                                    crate::ui::components::danger_button(ui, ok_text).clicked()
-                                } else if is_final_or_single_page {
-                                    crate::ui::components::primary_button(ui, ok_text).clicked()
-                                } else {
-                                    crate::ui::components::secondary_button(ui, ok_text).clicked()
-                                };
-                                if confirmed {
-                                    self.action = self.ok_action;
-                                    close_dialog = true;
-                                }
-                            }
-                            if self.show_cancel_button
-                                && crate::ui::components::secondary_button(ui, &self.cancel_label)
-                                    .clicked()
-                            {
-                                close_dialog = true;
-                            }
-                        });
+                }
+                if let Some(footnote) = &page.footnote {
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(footnote)
+                            .small()
+                            .color(crate::ui::theme::text_weak()),
+                    );
+                }
+            },
+            |ui| {
+                if let Some(details) = &page.error_details {
+                    ui.horizontal_wrapped(|ui| {
+                        crate::ui::components::error_actions(ui, language, details)
                     });
+                }
+                ui.horizontal_wrapped(|ui| {
+                    if total_pages > 1 {
+                        ui.label(format!("{}/{}", self.current_page + 1, total_pages));
+                        if self.current_page > 0
+                            && crate::ui::components::secondary_button(
+                                ui,
+                                crate::i18n::tr(language, "Prev"),
+                            )
+                            .clicked()
+                        {
+                            self.current_page -= 1;
+                        }
+                        if self.current_page + 1 < total_pages
+                            && crate::ui::components::primary_button(
+                                ui,
+                                crate::i18n::tr(language, "Next"),
+                            )
+                            .clicked()
+                        {
+                            self.current_page += 1;
+                        }
+                    }
+                    if self.show_cancel_button
+                        && crate::ui::components::secondary_button(ui, &self.cancel_label).clicked()
+                    {
+                        close = true;
+                    }
+                    if self.show_ok_button {
+                        let final_page = self.current_page + 1 == total_pages;
+                        let text = if final_page {
+                            &self.ok_label
+                        } else {
+                            crate::i18n::tr(language, "Close")
+                        };
+                        let button = if self.destructive_ok {
+                            crate::ui::components::danger_button(ui, text)
+                        } else {
+                            crate::ui::components::primary_button(ui, text)
+                        };
+                        if button.clicked() {
+                            if final_page {
+                                self.action = self.ok_action;
+                            }
+                            close = true;
+                        }
+                    }
                 });
-            });
-
-        if let Some(window_response) = modal_window {
-            if is_hand_drawn {
-                let fill_layer = egui::LayerId::new(
-                    egui::Order::Middle,
-                    egui::Id::new("modal_organic_fill_layer"),
-                );
-                crate::ui::organic_border::paint_with_id(
-                    ctx,
-                    fill_layer,
-                    egui::Id::new("modal_organic_fill"),
-                    window_response.response.rect,
-                    crate::ui::organic_border::OrganicBorderStyle {
-                        radius: 20.0,
-                        half_width: 0.0,
-                        displacement: 1.8,
-                        noise_scale: 0.034,
-                        seed: 41.0,
-                        color: crate::ui::theme::modal_backdrop(),
-                    },
-                );
-            }
-        }
-
-        if close_dialog {
+            },
+        );
+        if close || response {
             self.open = false;
         }
     }
 }
 
+pub(super) fn dialog(
+    ctx: &egui::Context,
+    id: egui::Id,
+    language: crate::i18n::UiLanguage,
+    title: &str,
+    body: impl FnOnce(&mut egui::Ui),
+    actions: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let available = ctx.content_rect().size();
+    let width = (available.x - 64.0).clamp(80.0, 500.0);
+    let mut close = false;
+    let response = egui::Modal::new(id).frame(Frame::NONE).show(ctx, |ui| {
+        crate::ui::organic_border::show(
+            ui,
+            id.with("border"),
+            Frame::new()
+                .fill(crate::ui::theme::modal_backdrop())
+                .corner_radius(CornerRadius::same(20))
+                .inner_margin(Margin::same(16)),
+            20.0,
+            crate::ui::theme::text_weak(),
+            |ui| {
+                ui.set_width(width);
+                // Area remembers its last size; allow the scroll viewport to grow.
+                ui.set_max_height((available.y - 64.0).max(24.0));
+                egui::ScrollArea::vertical()
+                    .id_salt("dialog")
+                    .max_height((available.y - 64.0).max(24.0))
+                    .min_scrolled_height(0.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add_sized(
+                                [width - 40.0, 24.0],
+                                egui::Label::new(RichText::new(title).size(17.0).strong()).wrap(),
+                            );
+                            close = crate::ui::components::secondary_button(ui, "×")
+                                .on_hover_text(crate::i18n::tr(language, "Close"))
+                                .clicked();
+                        });
+                        ui.add_space(8.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt("body")
+                            .max_height((available.y - 200.0).clamp(32.0, 440.0))
+                            .min_scrolled_height(0.0)
+                            .show(ui, |ui| {
+                                ui.set_width(width);
+                                body(ui);
+                            });
+                        ui.add_space(12.0);
+                        actions(ui);
+                    });
+            },
+        );
+    });
+    close || response.should_close()
+}
+
+/// Returns a decision only when the user confirms or dismisses the dialog.
+pub fn confirm(
+    ctx: &egui::Context,
+    id: egui::Id,
+    language: crate::i18n::UiLanguage,
+    title: &str,
+    message: &str,
+    confirm_label: &str,
+    enabled: bool,
+) -> Option<bool> {
+    let mut decision = None;
+    let close = dialog(
+        ctx,
+        id,
+        language,
+        title,
+        |ui| {
+            ui.label(message);
+        },
+        |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if crate::ui::components::secondary_button(ui, crate::i18n::tr(language, "Cancel"))
+                    .clicked()
+                {
+                    decision = Some(false);
+                }
+                if crate::ui::components::danger_button_enabled(ui, confirm_label, enabled)
+                    .clicked()
+                {
+                    decision = Some(true);
+                }
+            });
+        },
+    );
+    decision.or_else(|| close.then_some(false))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dialogs_fit_small_viewports_and_escape_cancels() {
+        for size in [
+            egui::vec2(320.0, 600.0),
+            egui::vec2(800.0, 300.0),
+            egui::vec2(360.0, 180.0),
+        ] {
+            let ctx = egui::Context::default();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let mut modal = ModalDialog::error(
+                crate::i18n::UiLanguage::Chinese,
+                &"A long failure message with details. ".repeat(100),
+                None,
+            );
+            for _ in 0..3 {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(screen),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        modal.render(ui.ctx(), crate::i18n::UiLanguage::Chinese);
+                    },
+                );
+                output.textures_delta.clear();
+            }
+            let rect = ctx
+                .memory(|memory| memory.area_rect(egui::Id::new("modal_dialog")))
+                .unwrap();
+            assert!(
+                screen.contains_rect(rect),
+                "dialog {rect:?} exceeds {screen:?}"
+            );
+            assert!(rect.center().distance(screen.center()) < 1.0);
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events: vec![egui::Event::Key {
+                        key: egui::Key::Escape,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                    ..Default::default()
+                },
+                |ui| {
+                    modal.render(ui.ctx(), crate::i18n::UiLanguage::Chinese);
+                },
+            );
+            output.textures_delta.clear();
+            assert!(!modal.open);
+            assert!(modal.take_action().is_none());
+        }
+    }
+
+    #[test]
+    fn persistent_errors_survive_relayout_and_reopen_after_recovery() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("persistent_failure");
+        for frame in 0..6 {
+            let mut closed = false;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(360.0, 600.0),
+                    )),
+                    events: if frame == 2 {
+                        vec![egui::Event::Key {
+                            key: egui::Key::Escape,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers::NONE,
+                        }]
+                    } else {
+                        vec![]
+                    },
+                    ..Default::default()
+                },
+                |ui| {
+                    if frame != 4 {
+                        closed = crate::ui::components::error_dialog(
+                            ui.ctx(),
+                            id,
+                            crate::i18n::UiLanguage::English,
+                            "Failure",
+                        );
+                    }
+                    if frame == 1 && ui.ctx().current_pass_index() == 0 {
+                        ui.ctx().request_discard("check relayout");
+                    }
+                },
+            );
+            if frame == 1 || frame == 5 {
+                assert!(output.shapes.iter().any(
+                    |shape| matches!(&shape.shape, egui::epaint::Shape::Text(text)
+                    if text.galley.job.text == "Something went wrong")
+                ));
+            }
+            if frame == 2 || frame == 3 {
+                assert!(closed);
+            }
+            output.textures_delta.clear();
+        }
+    }
 
     #[test]
     fn ready_update_modal_offers_install_with_a_settings_hint() {

@@ -11,9 +11,12 @@ pub enum SettingsSection {
 }
 
 pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
+    let compact = crate::ui::layout::should_stack(ui.available_width(), 2, 260.0);
     // The settings navigator and its active pane can wrap internally, but both
     // must retain a usable side-by-side editing area.
-    crate::ui::layout::require_content_size(ui, egui::vec2(520.0, 360.0));
+    if !compact {
+        crate::ui::layout::require_content_size(ui, egui::vec2(520.0, 360.0));
+    }
     ui.label(
         egui::RichText::new(crate::i18n::tr(app.ui_language, "Settings"))
             .size(22.0)
@@ -45,11 +48,7 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
         },
     ];
 
-    ui.horizontal_top(|ui| {
-        sub_sidebar(ui, &mut app.settings_section, &nav_items, app.ui_language);
-
-        ui.add_space(12.0);
-
+    let content = |ui: &mut egui::Ui, app: &mut crate::XRTranslateApp| {
         ui.vertical(|ui| {
             ui.set_min_width(ui.available_width());
             egui::ScrollArea::vertical()
@@ -80,7 +79,26 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     });
                 });
         });
-    });
+    };
+    if compact {
+        egui::ScrollArea::horizontal()
+            .id_salt("settings_navigation")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for item in &nav_items {
+                        ui.selectable_value(&mut app.settings_section, item.id, item.label);
+                    }
+                });
+            });
+        ui.add_space(12.0);
+        content(ui, app);
+    } else {
+        ui.horizontal_top(|ui| {
+            sub_sidebar(ui, &mut app.settings_section, &nav_items, app.ui_language);
+            ui.add_space(12.0);
+            content(ui, app);
+        });
+    }
 }
 
 fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
@@ -88,52 +106,103 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
         ui,
         crate::i18n::tr(app.ui_language, "Language & Theme"),
         |ui| {
-            crate::ui::layout::flow_row(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(crate::i18n::tr(app.ui_language, "Language"))
-                        .color(crate::ui::theme::text_strong())
-                        .strong(),
-                );
-                if components::language_selector(ui, "settings_ui_language", &mut app.ui_language) {
-                    app.set_ui_language(app.ui_language);
-                }
-                ui.add_space(18.0);
-                ui.label(
-                    egui::RichText::new(crate::i18n::tr(app.ui_language, "Theme"))
-                        .color(crate::ui::theme::text_strong())
-                        .strong(),
-                );
-                ui.label(crate::i18n::tr(app.ui_language, "Theme variant"));
-                let mut variant = app.ui_theme.variant;
-                let selected_variant_text = match variant {
-                    crate::ui::theme::ThemeVariant::Default => {
-                        crate::i18n::tr(app.ui_language, "Default")
+            let is_compact = ui.available_width() < 420.0;
+            if is_compact {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(crate::i18n::tr(app.ui_language, "Language"))
+                            .color(crate::ui::theme::text_strong())
+                            .strong(),
+                    );
+                    if components::language_selector(ui, "settings_ui_language", &mut app.ui_language) {
+                        app.set_ui_language(app.ui_language);
                     }
-                    crate::ui::theme::ThemeVariant::HandDrawn => {
-                        crate::i18n::tr(app.ui_language, "Hand-drawn")
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(crate::i18n::tr(app.ui_language, "Theme"))
+                            .color(crate::ui::theme::text_strong())
+                            .strong(),
+                    );
+                    let mut variant = app.ui_theme.variant;
+                    let selected_variant_text = match variant {
+                        crate::ui::theme::ThemeVariant::Default => {
+                            crate::i18n::tr(app.ui_language, "Default")
+                        }
+                        crate::ui::theme::ThemeVariant::HandDrawn => {
+                            crate::i18n::tr(app.ui_language, "Hand-drawn")
+                        }
+                    };
+                    crate::ui::components::combobox_ui(
+                        ui,
+                        "settings_theme_variant",
+                        selected_variant_text,
+                        |ui| {
+                            ui.selectable_value(
+                                &mut variant,
+                                crate::ui::theme::ThemeVariant::Default,
+                                crate::i18n::tr(app.ui_language, "Default"),
+                            );
+                            ui.selectable_value(
+                                &mut variant,
+                                crate::ui::theme::ThemeVariant::HandDrawn,
+                                crate::i18n::tr(app.ui_language, "Hand-drawn"),
+                            );
+                        },
+                    );
+                    if variant != app.ui_theme.variant {
+                        app.set_ui_theme(crate::ui::theme::UiTheme { variant });
                     }
-                };
-                crate::ui::components::combobox_ui(
-                    ui,
-                    "settings_theme_variant",
-                    selected_variant_text,
-                    |ui| {
-                        ui.selectable_value(
-                            &mut variant,
-                            crate::ui::theme::ThemeVariant::Default,
-                            crate::i18n::tr(app.ui_language, "Default"),
-                        );
-                        ui.selectable_value(
-                            &mut variant,
-                            crate::ui::theme::ThemeVariant::HandDrawn,
-                            crate::i18n::tr(app.ui_language, "Hand-drawn"),
-                        );
-                    },
-                );
-                if variant != app.ui_theme.variant {
-                    app.set_ui_theme(crate::ui::theme::UiTheme { variant });
-                }
-            });
+                });
+            } else {
+                crate::ui::layout::flow_row(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(crate::i18n::tr(app.ui_language, "Language"))
+                            .color(crate::ui::theme::text_strong())
+                            .strong(),
+                    );
+                    if components::language_selector(ui, "settings_ui_language", &mut app.ui_language) {
+                        app.set_ui_language(app.ui_language);
+                    }
+                    ui.add_space(18.0);
+                    ui.label(
+                        egui::RichText::new(crate::i18n::tr(app.ui_language, "Theme"))
+                            .color(crate::ui::theme::text_strong())
+                            .strong(),
+                    );
+                    ui.label(crate::i18n::tr(app.ui_language, "Theme variant"));
+                    let mut variant = app.ui_theme.variant;
+                    let selected_variant_text = match variant {
+                        crate::ui::theme::ThemeVariant::Default => {
+                            crate::i18n::tr(app.ui_language, "Default")
+                        }
+                        crate::ui::theme::ThemeVariant::HandDrawn => {
+                            crate::i18n::tr(app.ui_language, "Hand-drawn")
+                        }
+                    };
+                    crate::ui::components::combobox_ui(
+                        ui,
+                        "settings_theme_variant",
+                        selected_variant_text,
+                        |ui| {
+                            ui.selectable_value(
+                                &mut variant,
+                                crate::ui::theme::ThemeVariant::Default,
+                                crate::i18n::tr(app.ui_language, "Default"),
+                            );
+                            ui.selectable_value(
+                                &mut variant,
+                                crate::ui::theme::ThemeVariant::HandDrawn,
+                                crate::i18n::tr(app.ui_language, "Hand-drawn"),
+                            );
+                        },
+                    );
+                    if variant != app.ui_theme.variant {
+                        app.set_ui_theme(crate::ui::theme::UiTheme { variant });
+                    }
+                });
+            }
         },
     );
     ui.add_space(14.0);
@@ -351,6 +420,9 @@ fn render_social_link_chip(ui: &mut egui::Ui, label: &str, url: &str) {
 }
 
 pub(crate) fn render_update_action_button(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
+    if !crate::app_update::AppUpdateManager::is_supported() {
+        return;
+    }
     use crate::app_update::AppUpdateState;
 
     let language = app.ui_language;
@@ -419,6 +491,9 @@ pub(crate) fn render_update_action_button(app: &mut crate::XRTranslateApp, ui: &
 }
 
 fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
+    if !crate::app_update::AppUpdateManager::is_supported() {
+        return;
+    }
     use crate::app_update::AppUpdateState;
     use crate::client_settings::UpdateChannel;
 
@@ -518,44 +593,85 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 }
 
 fn render_server_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
+    let compact = ui.available_width() < 480.0;
     section(ui, crate::i18n::tr(app.ui_language, "Backend"), |ui| {
-        crate::ui::layout::flow_row(ui, |ui| {
-            ui.label(format!(
-                "{}:",
-                crate::i18n::tr(app.ui_language, "Runtime Directory")
-            ));
-            let dir_changed = components::directory_path_input(
-                ui,
-                &mut app.backend_manager.runtime_directory,
-                crate::i18n::tr(app.ui_language, "Choose runtime directory"),
-                crate::i18n::tr(app.ui_language, "Browse…"),
-                (ui.available_width() - 170.0).max(160.0),
-            );
-            if dir_changed {
-                match app.backend_manager.save_runtime_directory() {
-                    Ok(()) => app.last_error = None,
-                    Err(error) => app.last_error = Some(error),
+        if compact {
+            ui.vertical(|ui| {
+                ui.label(format!(
+                    "{}:",
+                    crate::i18n::tr(app.ui_language, "Runtime Directory")
+                ));
+                ui.add_space(4.0);
+                let dir_changed = components::directory_path_input(
+                    ui,
+                    &mut app.backend_manager.runtime_directory,
+                    crate::i18n::tr(app.ui_language, "Choose runtime directory"),
+                    crate::i18n::tr(app.ui_language, "Browse…"),
+                    ui.available_width(),
+                );
+                if dir_changed {
+                    match app.backend_manager.save_runtime_directory() {
+                        Ok(()) => app.last_error = None,
+                        Err(error) => app.last_error = Some(error),
+                    }
                 }
-            }
-        });
+            });
+        } else {
+            crate::ui::layout::flow_row(ui, |ui| {
+                ui.label(format!(
+                    "{}:",
+                    crate::i18n::tr(app.ui_language, "Runtime Directory")
+                ));
+                let dir_changed = components::directory_path_input(
+                    ui,
+                    &mut app.backend_manager.runtime_directory,
+                    crate::i18n::tr(app.ui_language, "Choose runtime directory"),
+                    crate::i18n::tr(app.ui_language, "Browse…"),
+                    (ui.available_width() - 170.0).max(160.0),
+                );
+                if dir_changed {
+                    match app.backend_manager.save_runtime_directory() {
+                        Ok(()) => app.last_error = None,
+                        Err(error) => app.last_error = Some(error),
+                    }
+                }
+            });
+        }
     });
 
     ui.add_space(14.0);
 
     section(ui, crate::i18n::tr(app.ui_language, "Server"), |ui| {
-        crate::ui::layout::flow_row(ui, |ui| {
-            ui.label("URL:");
-            if crate::ui::components::text_edit_ui(
-                ui,
-                "settings_server_url",
-                egui::TextEdit::singleline(&mut app.server_url)
-                    .desired_width((ui.available_width() - 100.0).clamp(240.0, 360.0)),
-            )
-            .changed()
-            {
-                app.save_settings();
-            }
-        });
+        if compact {
+            ui.vertical(|ui| {
+                ui.label("URL:");
+                ui.add_space(4.0);
+                if crate::ui::components::text_edit_ui(
+                    ui,
+                    "settings_server_url",
+                    egui::TextEdit::singleline(&mut app.server_url)
+                        .desired_width(ui.available_width()),
+                )
+                .changed()
+                {
+                    app.save_settings();
+                }
+            });
+        } else {
+            crate::ui::layout::flow_row(ui, |ui| {
+                ui.label("URL:");
+                if crate::ui::components::text_edit_ui(
+                    ui,
+                    "settings_server_url",
+                    egui::TextEdit::singleline(&mut app.server_url)
+                        .desired_width((ui.available_width() - 100.0).clamp(240.0, 360.0)),
+                )
+                .changed()
+                {
+                    app.save_settings();
+                }
+            });
+        }
     });
 }
 
@@ -578,7 +694,11 @@ fn render_plugins_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     );
     ui.add_space(16.0);
 
-    for descriptor in crate::plugins::PluginRegistry::builtin().descriptors() {
+    for descriptor in crate::plugins::PluginRegistry::builtin()
+        .descriptors()
+        .iter()
+        .filter(|descriptor| descriptor.id.is_supported())
+    {
         let mut enabled = app.plugin_enabled(descriptor.id);
         let disable_reason = enabled
             .then(|| app.plugin_disable_block_reason(descriptor.id))
@@ -601,31 +721,36 @@ fn render_plugins_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 
                     ui.add_space(10.0);
 
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new(crate::i18n::tr(language, descriptor.title_key))
-                                .size(14.5)
-                                .color(crate::ui::theme::text_strong())
-                                .strong(),
-                        );
-                        ui.add_space(2.0);
-                        ui.label(
-                            egui::RichText::new(crate::i18n::tr(
-                                language,
-                                descriptor.description_key,
-                            ))
-                            .size(12.0)
-                            .color(crate::ui::theme::text_weak()),
-                        );
-                        if let Some(reason) = &disable_reason {
+                    let available_for_text = (ui.available_width() - 56.0).max(80.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(available_for_text, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.label(
+                                egui::RichText::new(crate::i18n::tr(language, descriptor.title_key))
+                                    .size(14.5)
+                                    .color(crate::ui::theme::text_strong())
+                                    .strong(),
+                            );
                             ui.add_space(2.0);
                             ui.label(
-                                egui::RichText::new(reason)
-                                    .size(11.5)
-                                    .color(egui::Color32::from_rgb(220, 38, 38)),
+                                egui::RichText::new(crate::i18n::tr(
+                                    language,
+                                    descriptor.description_key,
+                                ))
+                                .size(12.0)
+                                .color(crate::ui::theme::text_weak()),
                             );
-                        }
-                    });
+                            if let Some(reason) = &disable_reason {
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new(reason)
+                                        .size(11.5)
+                                        .color(egui::Color32::from_rgb(220, 38, 38)),
+                                );
+                            }
+                        },
+                    );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let response = ui

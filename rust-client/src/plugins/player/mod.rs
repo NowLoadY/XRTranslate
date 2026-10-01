@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod controller;
+pub mod events;
 pub mod i18n;
 pub mod installer;
 pub mod subtitles;
@@ -15,7 +16,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 #[allow(unused_imports)]
 pub use task::MediaType;
-pub use task::VideoSubtitleMode;
 
 #[derive(Clone, Debug)]
 pub struct VideoPlayerUiSnapshot {
@@ -67,6 +67,7 @@ pub enum VideoPlayerAction {
 
 pub struct VideoPlayerPlugin {
     pub controller: VideoPlayerController,
+    pub event_sink: events::PlayerTranslationSink,
 }
 
 impl Default for VideoPlayerPlugin {
@@ -79,6 +80,7 @@ impl VideoPlayerPlugin {
     pub fn new() -> Self {
         Self {
             controller: VideoPlayerController::default(),
+            event_sink: events::PlayerTranslationSink::default(),
         }
     }
 
@@ -107,9 +109,6 @@ impl VideoPlayerPlugin {
             .add_cue_with_metadata(cue, metadata);
     }
 
-    pub fn active_task_id(&self) -> Option<String> {
-        self.controller.active_task_id.clone()
-    }
     pub fn has_active_task(&self) -> bool {
         self.controller.active_task_id.is_some()
     }
