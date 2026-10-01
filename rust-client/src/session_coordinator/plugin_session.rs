@@ -27,7 +27,7 @@ impl PluginSessionBinding {
     }
 }
 
-/// Implemented by plugins that acquire the exclusive translation capability.
+/// Implemented by plugins that acquire the translation capability.
 /// The infrastructure consumes only this neutral binding, never plugin types.
 pub trait TranslationSessionPlugin {
     fn translation_session_binding(&self) -> Option<PluginSessionBinding>;

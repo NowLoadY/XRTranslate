@@ -29,9 +29,15 @@ impl HostOutputSubscriber for VrOverlayHandle {
                 source,
                 translated,
                 speaker,
-                is_typing,
+                update,
                 ..
-            } => self.add_caption(stream_id, source, translated, speaker, is_typing),
+            } => self.add_caption(
+                stream_id,
+                source,
+                translated,
+                speaker,
+                matches!(update, CaptionUpdate::Replace),
+            ),
             HostOutputEvent::StreamEnded(stream_id) => self.end_stream(stream_id),
             HostOutputEvent::Clear => self.clear(),
         }
@@ -46,7 +52,8 @@ pub struct VrOverlayPlugin {
 }
 
 impl VrOverlayPlugin {
-    pub fn new(draft: VrOverlaySettings, host_enabled: bool) -> Self {
+    pub fn new(mut draft: VrOverlaySettings, host_enabled: bool) -> Self {
+        draft.normalize();
         let mut effective = draft.clone();
         if !host_enabled {
             effective.enabled = false;
@@ -83,6 +90,7 @@ impl VrOverlayPlugin {
     }
 
     pub fn sync_settings(&mut self) {
+        self.draft.normalize();
         let mut effective = self.draft.clone();
         if !self.host_enabled {
             effective.enabled = false;
@@ -120,6 +128,47 @@ mod tests {
 
         plugin.set_host_enabled(false);
         assert!(!plugin.host_enabled);
+    }
+
+    #[test]
+    fn host_audio_revisions_and_typed_results_reach_preview_without_dialogue_cooldown() {
+        use std::time::{Duration, Instant};
+        let plugin = VrOverlayPlugin::new(VrOverlaySettings::default(), true);
+        let handle = plugin.handle();
+        let send = |id, source, update, is_typing| {
+            handle.on_host_output(HostOutputEvent::Caption {
+                stream_id: id,
+                audio_source: CaptureSource::Microphone,
+                is_typing,
+                source,
+                translated: source,
+                speaker: "",
+                update,
+            })
+        };
+        for _ in 0..100 {
+            send(1, "draft", CaptionUpdate::Replace, false);
+        }
+        send(1, "final correction", CaptionUpdate::RollOver, false);
+        send(1, "next live", CaptionUpdate::Replace, false);
+        send(2, "typed", CaptionUpdate::Append, true);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let snapshot = loop {
+            let snapshot = plugin.manager().status();
+            if snapshot.cards.last().is_some_and(|c| c.source == "typed") {
+                break snapshot;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "caption worker did not consume queued output"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(snapshot.cards.len(), 3);
+        assert_eq!(snapshot.cards[0].source, "final correction");
+        assert!(!snapshot.cards[0].live);
+        assert!(snapshot.cards[1].live);
+        assert!(!snapshot.cards[2].live);
     }
 
     #[test]

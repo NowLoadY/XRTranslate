@@ -629,6 +629,7 @@ fn install_model(
 
 /// Filesystem-backed startup preflight. Unlike the task manager's live UI
 /// state, this does not report every package missing before discovery runs.
+#[cfg(test)]
 pub fn configured_models_are_present(project_root: &std::path::Path) -> Result<bool, String> {
     let packages = configured_model_packages(project_root)?;
     let assets = load_assets(project_root)?;

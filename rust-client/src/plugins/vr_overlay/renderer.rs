@@ -1,7 +1,6 @@
-//! High-performance Direct2D/DirectWrite subtitle card rasterizer for VR overlay.
-//!
-//! Renders bilingual subtitle entries with modern dark translucent cards,
-//! crisp typography, and speaker badges into a 32-bit BGRA/RGBA pixel buffer.
+//! One subtitle layout for the desktop preview and the RGBA OpenVR texture.
+
+use eframe::egui::{self, Color32, FontId, Painter, Pos2, Rect, Vec2};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct VrSubtitleCard {
@@ -11,530 +10,436 @@ pub struct VrSubtitleCard {
     pub live: bool,
 }
 
+/// Paint newest captions last. When space is tight, retain the newest cards and
+/// truncate individual paragraphs instead of letting an old paragraph hide them.
+pub fn paint_cards(
+    painter: &Painter,
+    rect: Rect,
+    cards: &[VrSubtitleCard],
+    bilingual: bool,
+    font_size: f32,
+) {
+    if cards.is_empty() || !rect.is_finite() || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let scale = rect.width() / 640.0;
+    let font = if font_size.is_finite() {
+        font_size.clamp(12.0, 36.0)
+    } else {
+        20.0
+    } * scale;
+    let padding = 12.0 * scale;
+    let gap = 8.0 * scale;
+    let min_height = font * if bilingual { 2.8 } else { 1.7 } + padding * 2.0;
+    let count = cards.len().min(
+        ((rect.height() - gap) / (min_height + gap))
+            .floor()
+            .max(1.0) as usize,
+    );
+    let cards = &cards[cards.len() - count..];
+    let budget = (rect.height() - gap * (count as f32 + 1.0)) / count as f32;
+    let width = (rect.width() - padding * 4.0).max(1.0);
+    let text = |value: &str, size: f32, rows: usize, color: Color32| {
+        let mut job = egui::text::LayoutJob::simple(
+            value.chars().take(4096).collect(),
+            FontId::proportional(size),
+            color,
+            width,
+        );
+        job.wrap.max_rows = rows.max(1);
+        job.wrap.break_anywhere = true;
+        painter.layout_job(job)
+    };
+    let mut layouts = Vec::new();
+    for card in cards {
+        let primary = if card.translated.trim().is_empty() {
+            &card.source
+        } else {
+            &card.translated
+        };
+        let secondary = bilingual
+            && !card.translated.trim().is_empty()
+            && !card.source.trim().is_empty()
+            && card.source.trim() != card.translated.trim();
+        let header = (!card.speaker.is_empty()).then(|| {
+            text(
+                &card.speaker,
+                font * 0.68,
+                1,
+                Color32::from_rgb(143, 191, 226),
+            )
+        });
+        let header_height = header.as_ref().map_or(0.0, |g| g.size().y + gap * 0.5);
+        let available = (budget - padding * 2.0 - header_height).max(font * 1.2);
+        let rows = ((available / if secondary { 2.3 } else { 1.2 }) / font)
+            .floor()
+            .max(1.0) as usize;
+        let main = text(primary, font, rows, Color32::from_rgb(240, 247, 252));
+        let source = secondary.then(|| {
+            text(
+                &card.source,
+                font * 0.84,
+                rows,
+                Color32::from_rgb(169, 190, 211),
+            )
+        });
+        let height = padding * 2.0
+            + header_height
+            + main.size().y
+            + source.as_ref().map_or(0.0, |g| g.size().y + gap * 0.5);
+        layouts.push((card, header, main, source, height.min(budget)));
+    }
+    let total = layouts.iter().map(|x| x.4 + gap).sum::<f32>() - gap;
+    let mut y = rect.center().y - total * 0.5;
+    for (card, header, main, source, height) in layouts {
+        let bounds = Rect::from_min_size(
+            Pos2::new(rect.left() + padding, y),
+            Vec2::new(rect.width() - padding * 2.0, height),
+        );
+        let p = painter.with_clip_rect(bounds.intersect(rect));
+        let accent = Color32::from_rgb(94, 187, 234);
+        p.rect_filled(
+            bounds,
+            8.0 * scale,
+            Color32::from_rgba_unmultiplied(13, 19, 29, 200),
+        );
+        p.rect_stroke(
+            bounds,
+            8.0 * scale,
+            egui::Stroke::new(
+                scale,
+                if card.live {
+                    accent
+                } else {
+                    Color32::from_rgb(57, 77, 97)
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
+        let mut position = bounds.min + Vec2::splat(padding);
+        if let Some(header) = header {
+            let h = header.size().y;
+            p.galley(position, header, Color32::WHITE);
+            position.y += h + gap * 0.5;
+        }
+        if card.live {
+            p.circle_filled(
+                Pos2::new(bounds.right() - padding * 0.6, bounds.top() + padding * 0.6),
+                2.0 * scale,
+                accent,
+            );
+        }
+        let h = main.size().y;
+        p.galley(position, main, Color32::WHITE);
+        if let Some(source) = source {
+            position.y += h + gap * 0.5;
+            p.galley(position, source, Color32::WHITE);
+        }
+        y += height + gap;
+    }
+}
+
+/// CPU rasterization keeps the exact subtitle layout testable without a headset,
+/// GPU context or Windows-only Direct2D fallback. The only texture is egui's atlas.
 pub struct VrOverlayRenderer {
-    pub width: u32,
-    pub height: u32,
-    #[cfg(windows)]
-    d2d_factory: Option<windows::Win32::Graphics::Direct2D::ID2D1Factory>,
-    #[cfg(windows)]
-    dwrite_factory: Option<windows::Win32::Graphics::DirectWrite::IDWriteFactory>,
+    width: u32,
+    height: u32,
+    ctx: egui::Context,
+    atlas: egui::ColorImage,
 }
 
 impl VrOverlayRenderer {
-    pub fn new(width: u32, height: u32) -> Self {
-        #[cfg(windows)]
-        {
-            use windows::Win32::Graphics::Direct2D::{
-                D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1CreateFactory, ID2D1Factory,
-            };
-            use windows::Win32::Graphics::DirectWrite::{
-                DWRITE_FACTORY_TYPE_SHARED, DWriteCreateFactory, IDWriteFactory,
-            };
-
-            let d2d_factory: Option<ID2D1Factory> = unsafe {
-                D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None).ok()
-            };
-            let dwrite_factory: Option<IDWriteFactory> = unsafe {
-                DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).ok()
-            };
-
-            Self {
-                width,
-                height,
-                d2d_factory,
-                dwrite_factory,
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            Self { width, height }
-        }
+    pub fn new(width: u32, height: u32) -> Result<Self, String> {
+        super::openvr::raw_rgba_len(width, height)?;
+        let ctx = egui::Context::default();
+        crate::ui::fonts::configure_multilingual_fonts(&ctx);
+        Ok(Self {
+            width,
+            height,
+            ctx,
+            atlas: egui::ColorImage::default(),
+        })
     }
 
-    /// Renders subtitle cards into a 32-bit pixel buffer of size `width * height * 4`.
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Returns straight-alpha RGBA. Global opacity is applied once by OpenVR.
     pub fn render(
-        &self,
-        cards: &[VrSubtitleCard],
-        _bilingual: bool,
-        _font_size: f32,
-        _opacity: f32,
-    ) -> Vec<u8> {
-        let buffer_size = (self.width * self.height * 4) as usize;
-        let mut buffer = vec![0u8; buffer_size];
-
-        if cards.is_empty() {
-            return buffer;
-        }
-
-        #[cfg(windows)]
-        {
-            if let (Some(d2d), Some(dwrite)) = (&self.d2d_factory, &self.dwrite_factory) {
-                match self.render_d2d(
-                    d2d,
-                    dwrite,
-                    cards,
-                    _bilingual,
-                    _font_size,
-                    _opacity,
-                    &mut buffer,
-                ) {
-                    Ok(()) => return buffer,
-                    Err(e) => {
-                        log::warn!("[VR Overlay] Direct2D render warning: {e:?}");
-                    }
-                }
-            }
-        }
-
-        // Software fallback if Direct2D initialization fails
-        self.render_fallback(cards, &mut buffer);
-        buffer
-    }
-
-    #[cfg(windows)]
-    fn render_d2d(
-        &self,
-        d2d: &windows::Win32::Graphics::Direct2D::ID2D1Factory,
-        dwrite: &windows::Win32::Graphics::DirectWrite::IDWriteFactory,
+        &mut self,
         cards: &[VrSubtitleCard],
         bilingual: bool,
         font_size: f32,
-        opacity: f32,
-        out_buffer: &mut [u8],
-    ) -> windows::core::Result<()> {
-        use windows::Win32::Foundation::RECT;
-        use windows::Win32::Graphics::Direct2D::Common::{
-            D2D_POINT_2F, D2D_RECT_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F,
-        };
-        use windows::Win32::Graphics::Direct2D::{
-            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_DRAW_TEXT_OPTIONS_NONE,
-            D2D1_FEATURE_LEVEL_DEFAULT, D2D1_RENDER_TARGET_PROPERTIES,
-            D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_ROUNDED_RECT,
-            D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE, ID2D1DCRenderTarget,
-        };
-        use windows::Win32::Graphics::DirectWrite::{
-            DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD,
-            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_METRICS,
-        };
-        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
-        use windows::Win32::Graphics::Gdi::{
-            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, CreateDIBSection,
-            DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, HDC, HGDIOBJ, ReleaseDC, SelectObject,
-        };
-        use windows::core::w;
-
-        // RAII guard for GDI objects to prevent handle exhaustion
-        struct GdiGuard {
-            hdc_screen: HDC,
-            hdc_mem: HDC,
-            hbitmap: windows::Win32::Graphics::Gdi::HBITMAP,
-            old_bitmap: HGDIOBJ,
-        }
-
-        impl Drop for GdiGuard {
-            fn drop(&mut self) {
-                unsafe {
-                    if !self.old_bitmap.is_invalid() && !self.hdc_mem.is_invalid() {
-                        SelectObject(self.hdc_mem, self.old_bitmap);
-                    }
-                    if !self.hbitmap.is_invalid() {
-                        let _ = DeleteObject(self.hbitmap.into());
-                    }
-                    if !self.hdc_mem.is_invalid() {
-                        let _ = DeleteDC(self.hdc_mem);
-                    }
-                    if !self.hdc_screen.is_invalid() {
-                        ReleaseDC(None, self.hdc_screen);
-                    }
-                }
-            }
-        }
-
-        unsafe {
-            let hdc_screen = GetDC(None);
-            let hdc_mem = CreateCompatibleDC(Some(hdc_screen));
-
-            let bmi = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: self.width as i32,
-                    biHeight: -(self.height as i32), // Top-down DIB
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    ..Default::default()
-                },
+    ) -> Result<Vec<u8>, String> {
+        let rect =
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(self.width as f32, self.height as f32));
+        let mut output = self.ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(rect),
                 ..Default::default()
-            };
-
-            let mut dib_bits = std::ptr::null_mut();
-            let hbitmap = CreateDIBSection(
-                Some(hdc_mem),
-                &bmi,
-                DIB_RGB_COLORS,
-                &mut dib_bits,
-                None,
-                0,
-            )?;
-            let old_bitmap = SelectObject(hdc_mem, hbitmap.into());
-
-            // Guarantee GDI cleanup on ANY return path
-            let _gdi_guard = GdiGuard {
-                hdc_screen,
-                hdc_mem,
-                hbitmap,
-                old_bitmap,
-            };
-
-            let props = D2D1_RENDER_TARGET_PROPERTIES {
-                r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
-                pixelFormat: windows::Win32::Graphics::Direct2D::Common::D2D1_PIXEL_FORMAT {
-                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-                },
-                dpiX: 96.0,
-                dpiY: 96.0,
-                usage: D2D1_RENDER_TARGET_USAGE_NONE,
-                minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
-            };
-
-            let target: ID2D1DCRenderTarget = d2d.CreateDCRenderTarget(&props)?;
-            let target_rect = RECT {
-                left: 0,
-                top: 0,
-                right: self.width as i32,
-                bottom: self.height as i32,
-            };
-            target.BindDC(hdc_mem, &target_rect)?;
-
-            target.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-            target.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
-
-            target.BeginDraw();
-            target.Clear(Some(&D2D1_COLOR_F {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 0.0,
-            }));
-
-            let font_size = font_size.clamp(12.0, 36.0);
-
-            // Text Formats
-            let primary_format = dwrite.CreateTextFormat(
-                w!("Segoe UI"),
-                None,
-                DWRITE_FONT_WEIGHT_BOLD,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                font_size,
-                w!("zh-CN"),
-            )?;
-            primary_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
-
-            let secondary_format = dwrite.CreateTextFormat(
-                w!("Segoe UI"),
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                (font_size * 0.84).max(11.0),
-                w!("zh-CN"),
-            )?;
-            secondary_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
-
-            let speaker_format = dwrite.CreateTextFormat(
-                w!("Segoe UI"),
-                None,
-                DWRITE_FONT_WEIGHT_BOLD,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                (font_size * 0.68).max(10.0),
-                w!("zh-CN"),
-            )?;
-
-            // Color Palette
-            let bg_alpha = (0.78 * opacity).clamp(0.1, 0.95);
-            let card_bg = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 0.05,
-                    g: 0.07,
-                    b: 0.11,
-                    a: bg_alpha,
-                },
-                None,
-            )?;
-            let history_card_bg = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 0.04,
-                    g: 0.06,
-                    b: 0.09,
-                    a: bg_alpha * 0.90,
-                },
-                None,
-            )?;
-            let border_brush = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 0.28,
-                    g: 0.38,
-                    b: 0.52,
-                    a: (0.50 * opacity).clamp(0.1, 1.0),
-                },
-                None,
-            )?;
-            let live_border_brush = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 0.22,
-                    g: 0.74,
-                    b: 0.97,
-                    a: (0.90 * opacity).clamp(0.2, 1.0),
-                },
-                None,
-            )?;
-            let live_dot_brush = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 0.22,
-                    g: 0.85,
-                    b: 0.98,
-                    a: opacity.clamp(0.2, 1.0),
-                },
-                None,
-            )?;
-            let primary_live_brush = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 1.0,
-                    g: 1.0,
-                    b: 1.0,
-                    a: opacity.clamp(0.2, 1.0),
-                },
-                None,
-            )?;
-            let primary_hist_brush = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 0.92,
-                    g: 0.95,
-                    b: 0.98,
-                    a: (0.90 * opacity).clamp(0.2, 1.0),
-                },
-                None,
-            )?;
-            let secondary_text_brush = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 0.70,
-                    g: 0.80,
-                    b: 0.92,
-                    a: (0.85 * opacity).clamp(0.2, 1.0),
-                },
-                None,
-            )?;
-            let speaker_bg_brush = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 0.15,
-                    g: 0.28,
-                    b: 0.45,
-                    a: (0.85 * opacity).clamp(0.2, 1.0),
-                },
-                None,
-            )?;
-
-            let padding_x = 20.0f32;
-            let card_width = (self.width as f32 - padding_x * 2.0).max(100.0);
-            let layout_max_width = (card_width - 32.0).max(64.0);
-            let layout_max_height = self.height as f32;
-            let mut curr_y = 16.0f32;
-
-            for card in cards {
-                let has_secondary = bilingual
-                    && !card.source.trim().is_empty()
-                    && card.source.trim() != card.translated.trim();
-
-                let primary_text = if card.translated.trim().is_empty() {
-                    if card.source.trim().is_empty() {
-                        " "
-                    } else {
-                        &card.source
-                    }
-                } else {
-                    &card.translated
-                };
-
-                let mut p_u16: Vec<u16> = primary_text.encode_utf16().collect();
-                if p_u16.is_empty() {
-                    p_u16 = vec![0x0020];
+            },
+            |ui| {
+                paint_cards(ui.painter(), rect, cards, bilingual, font_size);
+            },
+        );
+        let deltas = std::mem::take(&mut output.textures_delta.set);
+        output.textures_delta.clear();
+        for (id, deltas) in &deltas {
+            for delta in deltas {
+                if *id != egui::TextureId::Managed(0) {
+                    return Err("Unexpected subtitle texture".into());
                 }
-                let p_layout = dwrite.CreateTextLayout(
-                    &p_u16,
-                    &primary_format,
-                    layout_max_width,
-                    layout_max_height,
-                )?;
-                let mut p_metrics = DWRITE_TEXT_METRICS::default();
-                p_layout.GetMetrics(&mut p_metrics)?;
-
-                let mut card_height = p_metrics.height + 20.0;
-                let mut s_layout_opt = None;
-
-                if has_secondary {
-                    let mut s_u16: Vec<u16> = card.source.encode_utf16().collect();
-                    if s_u16.is_empty() {
-                        s_u16 = vec![0x0020];
-                    }
-                    let s_layout = dwrite.CreateTextLayout(
-                        &s_u16,
-                        &secondary_format,
-                        layout_max_width,
-                        layout_max_height,
-                    )?;
-                    let mut s_metrics = DWRITE_TEXT_METRICS::default();
-                    s_layout.GetMetrics(&mut s_metrics)?;
-                    card_height += s_metrics.height + 4.0;
-                    s_layout_opt = Some((s_layout, s_metrics.height));
-                }
-
-                if !card.speaker.is_empty() {
-                    card_height += 18.0;
-                }
-
-                // Draw card container
-                let card_rect = D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F {
-                        left: padding_x,
-                        top: curr_y,
-                        right: padding_x + card_width,
-                        bottom: curr_y + card_height,
-                    },
-                    radiusX: 8.0,
-                    radiusY: 8.0,
-                };
-                target.FillRoundedRectangle(
-                    &card_rect,
-                    if card.live {
-                        &card_bg
-                    } else {
-                        &history_card_bg
-                    },
-                );
-                target.DrawRoundedRectangle(
-                    &card_rect,
-                    if card.live {
-                        &live_border_brush
-                    } else {
-                        &border_brush
-                    },
-                    if card.live { 1.8 } else { 1.0 },
-                    None,
-                );
-
-                let mut text_y = curr_y + 10.0;
-
-                // Live status dot / speaker header
-                if card.live {
-                    let dot_rect = windows::Win32::Graphics::Direct2D::D2D1_ELLIPSE {
-                        point: D2D_POINT_2F {
-                            x: padding_x + 10.0,
-                            y: text_y + 8.0,
-                        },
-                        radiusX: 3.5,
-                        radiusY: 3.5,
-                    };
-                    target.FillEllipse(&dot_rect, &live_dot_brush);
-                }
-
-                // Speaker badge
-                if !card.speaker.is_empty() {
-                    let spk_u16: Vec<u16> = card.speaker.encode_utf16().collect();
-                    if let Ok(spk_layout) =
-                        dwrite.CreateTextLayout(&spk_u16, &speaker_format, 200.0, 24.0)
+                let egui::ImageData::Color(image) = &delta.image;
+                if let Some([x, y]) = delta.pos {
+                    if x.checked_add(image.width())
+                        .is_none_or(|end| end > self.atlas.width())
+                        || y.checked_add(image.height())
+                            .is_none_or(|end| end > self.atlas.height())
                     {
-                        let mut spk_metrics = DWRITE_TEXT_METRICS::default();
-                        let _ = spk_layout.GetMetrics(&mut spk_metrics);
-                        let badge_w = spk_metrics.width + 14.0;
-                        let badge_rect = D2D1_ROUNDED_RECT {
-                            rect: D2D_RECT_F {
-                                left: padding_x + 16.0,
-                                top: text_y,
-                                right: padding_x + 16.0 + badge_w,
-                                bottom: text_y + 16.0,
-                            },
-                            radiusX: 4.0,
-                            radiusY: 4.0,
-                        };
-                        target.FillRoundedRectangle(&badge_rect, &speaker_bg_brush);
-                        target.DrawTextLayout(
-                            D2D_POINT_2F {
-                                x: padding_x + 23.0,
-                                y: text_y + 1.0,
-                            },
-                            &spk_layout,
-                            &primary_live_brush,
-                            D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        );
-                        text_y += 18.0;
+                        return Err("Subtitle atlas update is out of bounds".into());
                     }
-                }
-
-                // Primary Translated Text
-                let text_x = if card.live {
-                    padding_x + 18.0
+                    for row in 0..image.height() {
+                        let start = (y + row) * self.atlas.width() + x;
+                        self.atlas.pixels[start..start + image.width()].copy_from_slice(
+                            &image.pixels[row * image.width()..(row + 1) * image.width()],
+                        );
+                    }
                 } else {
-                    padding_x + 16.0
-                };
-                target.DrawTextLayout(
-                    D2D_POINT_2F {
-                        x: text_x,
-                        y: text_y,
-                    },
-                    &p_layout,
-                    if card.live {
-                        &primary_live_brush
+                    self.atlas = (**image).clone();
+                }
+            }
+        }
+        let meshes = self.ctx.tessellate(output.shapes, output.pixels_per_point);
+        let pixel_count = super::openvr::raw_rgba_len(self.width, self.height)? / 4;
+        let mut pixels = vec![[0.0_f32; 4]; pixel_count];
+        if self.atlas.pixels.is_empty() {
+            return Ok(vec![0; pixel_count * 4]);
+        }
+        for primitive in meshes {
+            if let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive {
+                let clip = primitive.clip_rect.intersect(rect);
+                for triangle in mesh.indices.chunks_exact(3) {
+                    let v = std::array::from_fn(|i| mesh.vertices[triangle[i] as usize]);
+                    raster_triangle(&mut pixels, self.width as usize, clip, v, &self.atlas);
+                }
+            }
+        }
+        Ok(pixels
+            .into_iter()
+            .flat_map(|p| {
+                let alpha = p[3];
+                [
+                    if alpha > 0.0 {
+                        (p[0] / alpha * 255.0).round() as u8
                     } else {
-                        &primary_hist_brush
+                        0
                     },
-                    D2D1_DRAW_TEXT_OPTIONS_NONE,
-                );
-                text_y += p_metrics.height + 4.0;
+                    if alpha > 0.0 {
+                        (p[1] / alpha * 255.0).round() as u8
+                    } else {
+                        0
+                    },
+                    if alpha > 0.0 {
+                        (p[2] / alpha * 255.0).round() as u8
+                    } else {
+                        0
+                    },
+                    (alpha * 255.0).round() as u8,
+                ]
+            })
+            .collect())
+    }
+}
 
-                // Secondary Source Text
-                if let Some((s_layout, _)) = s_layout_opt {
-                    target.DrawTextLayout(
-                        D2D_POINT_2F {
-                            x: text_x,
-                            y: text_y,
-                        },
-                        &s_layout,
-                        &secondary_text_brush,
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                    );
-                }
-
-                curr_y += card_height + 8.0;
-                if curr_y >= self.height as f32 - 30.0 {
-                    break;
-                }
+fn raster_triangle(
+    pixels: &mut [[f32; 4]],
+    width: usize,
+    clip: Rect,
+    mut v: [egui::epaint::Vertex; 3],
+    atlas: &egui::ColorImage,
+) {
+    let edge = |a: Pos2, b: Pos2, p: Pos2| (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    let mut area = edge(v[0].pos, v[1].pos, v[2].pos);
+    if area < 0.0 {
+        v.swap(1, 2);
+        area = -area;
+    }
+    if area < 1e-6 {
+        return;
+    }
+    let bounds = Rect::from_min_max(
+        Pos2::new(
+            v.iter().map(|p| p.pos.x).fold(f32::INFINITY, f32::min),
+            v.iter().map(|p| p.pos.y).fold(f32::INFINITY, f32::min),
+        ),
+        Pos2::new(
+            v.iter().map(|p| p.pos.x).fold(f32::NEG_INFINITY, f32::max),
+            v.iter().map(|p| p.pos.y).fold(f32::NEG_INFINITY, f32::max),
+        ),
+    )
+    .intersect(clip);
+    for y in bounds.top().ceil() as usize..bounds.bottom().ceil() as usize {
+        for x in bounds.left().ceil() as usize..bounds.right().ceil() as usize {
+            let point = Pos2::new(x as f32 + 0.5, y as f32 + 0.5);
+            let e = [
+                edge(v[1].pos, v[2].pos, point),
+                edge(v[2].pos, v[0].pos, point),
+                edge(v[0].pos, v[1].pos, point),
+            ];
+            // Top-left fill rule: shared triangle edges must be blended only once.
+            let inside = (0..3).all(|i| {
+                let a = v[(i + 1) % 3].pos;
+                let b = v[(i + 2) % 3].pos;
+                e[i] > 0.0 || (e[i] == 0.0 && (b.y < a.y || (b.y == a.y && b.x > a.x)))
+            });
+            if !inside {
+                continue;
             }
-
-            target.EndDraw(None, None)?;
-
-            // Copy DIB pixels into output buffer (RGBA conversion)
-            if !dib_bits.is_null() {
-                let src_slice = std::slice::from_raw_parts(
-                    dib_bits as *const u8,
-                    (self.width * self.height * 4) as usize,
-                );
-                // Windows DIB is BGRA premultiplied; convert to RGBA
-                for (src, dst) in src_slice.chunks_exact(4).zip(out_buffer.chunks_exact_mut(4)) {
-                    dst[0] = src[2]; // R
-                    dst[1] = src[1]; // G
-                    dst[2] = src[0]; // B
-                    dst[3] = src[3]; // A
-                }
+            let weights = e.map(|e| e / area);
+            let uv = v[0].uv.to_vec2() * weights[0]
+                + v[1].uv.to_vec2() * weights[1]
+                + v[2].uv.to_vec2() * weights[2];
+            let tex = atlas.pixels[(uv.y * atlas.height() as f32)
+                .floor()
+                .clamp(0.0, atlas.height() as f32 - 1.0)
+                as usize
+                * atlas.width()
+                + (uv.x * atlas.width() as f32)
+                    .floor()
+                    .clamp(0.0, atlas.width() as f32 - 1.0) as usize]
+                .to_array();
+            let color: [f32; 4] = std::array::from_fn(|c| {
+                (0..3)
+                    .map(|i| v[i].color.to_array()[c] as f32 / 255.0 * weights[i])
+                    .sum::<f32>()
+                    * tex[c] as f32
+                    / 255.0
+            });
+            let dst = &mut pixels[y * width + x];
+            for c in 0..4 {
+                dst[c] = color[c] + dst[c] * (1.0 - color[3]);
             }
+        }
+    }
+}
 
-            Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn invalid_dimensions_and_nonfinite_font_never_reach_unbounded_allocations() {
+        for (w, h) in [(0, 320), (640, 0), (u32::MAX, u32::MAX), (2048, 2048)] {
+            assert!(VrOverlayRenderer::new(w, h).is_err());
+        }
+        let mut renderer = VrOverlayRenderer::new(640, 320).unwrap();
+        let card = VrSubtitleCard {
+            source: "text".into(),
+            translated: "字幕".into(),
+            speaker: String::new(),
+            live: true,
+        };
+        let expected = renderer.render(&[card.clone()], true, 20.0).unwrap();
+        for font in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(
+                renderer.render(&[card.clone()], true, font).unwrap(),
+                expected
+            );
         }
     }
 
-    fn render_fallback(&self, _cards: &[VrSubtitleCard], out_buffer: &mut [u8]) {
-        out_buffer.fill(0);
+    #[test]
+    fn repeated_count_font_language_and_empty_frames_keep_one_fixed_rgba_size() {
+        let mut renderer = VrOverlayRenderer::new(640, 320).unwrap();
+        let card = VrSubtitleCard {
+            source: "日本語 English العربية ".repeat(1000),
+            translated: "中文字幕".repeat(1000),
+            speaker: "Speaker".into(),
+            live: true,
+        };
+        for i in 0..30 {
+            let count = i % 6;
+            let cards = vec![card.clone(); count];
+            let buffer = renderer
+                .render(&cards, i % 2 == 0, if i % 2 == 0 { 12.0 } else { 36.0 })
+                .unwrap();
+            assert_eq!(buffer.len(), 819200);
+            if count == 0 {
+                assert!(buffer.iter().all(|x| *x == 0));
+            } else {
+                assert!(buffer.chunks_exact(4).any(|p| p[3] != 0));
+            }
+        }
+        assert_eq!(renderer.dimensions(), (640, 320));
+    }
+
+    #[test]
+    fn produces_text_pixels_and_transparency_on_every_platform() {
+        let mut renderer = VrOverlayRenderer::new(640, 320).unwrap();
+        let card = VrSubtitleCard {
+            source: "Hello world".into(),
+            translated: "你好，世界".into(),
+            speaker: "Alice".into(),
+            live: true,
+        };
+        let empty = renderer.render(&[], true, 20.0).unwrap();
+        assert!(empty.iter().all(|x| *x == 0));
+        let bilingual = renderer.render(&[card.clone()], true, 20.0).unwrap();
+        let mono = renderer.render(&[card], false, 20.0).unwrap();
+        assert_ne!(bilingual, mono);
+        assert!(bilingual.chunks_exact(4).any(|p| p[0] > 220 && p[3] > 100));
+        assert!(bilingual.chunks_exact(4).any(|p| p[3] == 0));
+        assert!(bilingual.chunks_exact(4).any(|p| p[3] == 200));
+    }
+    #[test]
+    fn latest_caption_survives_long_history_and_source_is_not_duplicated() {
+        let mut renderer = VrOverlayRenderer::new(640, 320).unwrap();
+        let old = VrSubtitleCard {
+            source: "old ".repeat(2000),
+            translated: "旧字幕".repeat(2000),
+            speaker: "Speaker ".repeat(50),
+            live: false,
+        };
+        let latest = VrSubtitleCard {
+            source: "LATEST".into(),
+            translated: String::new(),
+            speaker: String::new(),
+            live: true,
+        };
+        let bilingual = renderer.render(&[latest.clone()], true, 36.0).unwrap();
+        assert_eq!(
+            bilingual,
+            renderer.render(&[latest.clone()], false, 36.0).unwrap()
+        );
+        let mixed = renderer
+            .render(
+                &[
+                    old.clone(),
+                    old.clone(),
+                    old.clone(),
+                    old.clone(),
+                    latest.clone(),
+                ],
+                true,
+                36.0,
+            )
+            .unwrap();
+        let mixed_other = renderer
+            .render(
+                &[
+                    old.clone(),
+                    old.clone(),
+                    old.clone(),
+                    old,
+                    VrSubtitleCard {
+                        source: "OTHER".into(),
+                        ..latest
+                    },
+                ],
+                true,
+                36.0,
+            )
+            .unwrap();
+        assert_ne!(mixed, mixed_other);
     }
 }

@@ -38,6 +38,7 @@ pub(crate) struct PendingAuthoritativeRecognition {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PendingFinalAsr {
+    pub(crate) stream_id: u64,
     pub(crate) text: String,
     pub(crate) turn_id: String,
 }

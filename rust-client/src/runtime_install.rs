@@ -609,6 +609,41 @@ struct ManagedRuntimeAsset {
     required_files: Vec<String>,
 }
 
+fn persist_cpu_onnx_marker(
+    layout: &RuntimeLayout,
+    fallback_reason: Option<&str>,
+) -> Result<PathBuf, String> {
+    let existing = load_native_runtime_selection(layout)?;
+    let marker = NativeRuntimeSelection {
+        schema_version: 1,
+        backend: NativeRuntimeBackend::Cpu,
+        llama_cpp_backend: existing
+            .as_ref()
+            .and_then(|marker| marker.llama_cpp_backend),
+        vulkan_device: existing.as_ref().and_then(|marker| marker.vulkan_device),
+        onnx_backend: Some(NativeRuntimeBackend::Cpu),
+        cuda_version: existing
+            .as_ref()
+            .and_then(|marker| marker.cuda_version.clone()),
+        provider_dir: None,
+        onnx_core_library: Some(layout.config_path_for(layout.onnx_cpu_core_library())),
+        cuda_bin_dir: existing
+            .as_ref()
+            .and_then(|marker| marker.cuda_bin_dir.clone()),
+        cudnn_bin_dir: existing
+            .as_ref()
+            .and_then(|marker| marker.cudnn_bin_dir.clone()),
+        preload_libraries: Vec::new(),
+        fallback_reason: fallback_reason.map(str::to_owned).or_else(|| {
+            existing
+                .as_ref()
+                .and_then(|marker| marker.fallback_reason.clone())
+        }),
+    };
+    persist_native_runtime_selection(layout, &marker)?;
+    Ok(layout.native_runtime_selection_file())
+}
+
 async fn install_onnx_runtime(
     project_root: PathBuf,
     selection: OnnxRuntimeSelection,
@@ -621,31 +656,7 @@ async fn install_onnx_runtime(
 ) -> Result<PathBuf, String> {
     let layout = load_runtime_layout(&project_root);
     if selection.backend == RuntimeBackend::Cpu {
-        let existing = load_native_runtime_selection(&layout)?;
-        let marker = NativeRuntimeSelection {
-            schema_version: 1,
-            backend: NativeRuntimeBackend::Cpu,
-            llama_cpp_backend: existing
-                .as_ref()
-                .and_then(|marker| marker.llama_cpp_backend),
-            vulkan_device: existing.as_ref().and_then(|marker| marker.vulkan_device),
-            onnx_backend: Some(NativeRuntimeBackend::Cpu),
-            cuda_version: existing
-                .as_ref()
-                .and_then(|marker| marker.cuda_version.clone()),
-            provider_dir: None,
-            onnx_core_library: Some(layout.config_path_for(layout.onnx_cpu_core_library())),
-            cuda_bin_dir: existing
-                .as_ref()
-                .and_then(|marker| marker.cuda_bin_dir.clone()),
-            cudnn_bin_dir: existing
-                .as_ref()
-                .and_then(|marker| marker.cudnn_bin_dir.clone()),
-            preload_libraries: Vec::new(),
-            fallback_reason: selection.fallback_reason.clone(),
-        };
-        persist_native_runtime_selection(&layout, &marker)?;
-        return Ok(layout.native_runtime_selection_file());
+        return persist_cpu_onnx_marker(&layout, selection.fallback_reason.as_deref());
     }
 
     let provider = selection
@@ -874,6 +885,31 @@ async fn install_onnx_runtime(
     Ok(layout.native_runtime_selection_file())
 }
 
+async fn download_verified_file(
+    client: &DownloadClient,
+    label: &str,
+    url: &str,
+    bytes: u64,
+    sha256: &str,
+    destination: &Path,
+    completed: u64,
+    total: u64,
+    sender: &crossbeam_channel::Sender<Event>,
+) -> Result<(), String> {
+    let spec = DownloadSpec::verified(label, url, bytes, sha256);
+    let label_owned = label.to_owned();
+    client
+        .download_to(spec, destination, move |progress| {
+            let _ = sender.send(Event::Downloading {
+                asset: label_owned.clone(),
+                downloaded: completed.saturating_add(progress.downloaded_bytes),
+                total,
+            });
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
 async fn download_runtime_asset(
     client: &DownloadClient,
     asset: &ReleaseAsset,
@@ -882,25 +918,18 @@ async fn download_runtime_asset(
     total: u64,
     sender: &crossbeam_channel::Sender<Event>,
 ) -> Result<(), String> {
-    client
-        .download_to(
-            DownloadSpec::verified(
-                &asset.name,
-                &asset.browser_download_url,
-                asset.size,
-                &asset.sha256,
-            ),
-            archive,
-            |progress| {
-                let _ = sender.send(Event::Downloading {
-                    asset: asset.name.clone(),
-                    downloaded: completed.saturating_add(progress.downloaded_bytes),
-                    total,
-                });
-            },
-        )
-        .await
-        .map_err(|error| error.to_string())
+    download_verified_file(
+        client,
+        &asset.name,
+        &asset.browser_download_url,
+        asset.size,
+        &asset.sha256,
+        archive,
+        completed,
+        total,
+        sender,
+    )
+    .await
 }
 
 async fn download_managed_runtime_asset(
@@ -911,25 +940,176 @@ async fn download_managed_runtime_asset(
     total: u64,
     sender: &crossbeam_channel::Sender<Event>,
 ) -> Result<(), String> {
-    client
-        .download_to(
-            DownloadSpec::verified(
-                &asset.name,
-                &asset.browser_download_url,
-                asset.size,
-                &asset.sha256,
-            ),
-            archive,
-            |progress| {
-                let _ = sender.send(Event::Downloading {
-                    asset: asset.name.clone(),
-                    downloaded: completed.saturating_add(progress.downloaded_bytes),
+    download_verified_file(
+        client,
+        &asset.name,
+        &asset.browser_download_url,
+        asset.size,
+        &asset.sha256,
+        archive,
+        completed,
+        total,
+        sender,
+    )
+    .await
+}
+
+async fn install_base_bundled_resources(
+    project_root: &Path,
+    config: &AppConfig,
+    plan: &RuntimePlan,
+    client: &DownloadClient,
+    sender: &crossbeam_channel::Sender<Event>,
+    completed: &mut u64,
+    total: u64,
+) -> Result<(), String> {
+    let layout = config.runtime_layout(project_root);
+    let target = current_runtime_target();
+
+    if !layout.onnx_cpu_core_library().is_file() {
+        if let Some(archive) = config
+            .model_manager
+            .onnxruntime
+            .resolved_cpu_downloads()
+            .into_iter()
+            .find(|archive| archive.target.trim() == target)
+        {
+            if plan
+                .downloads
+                .iter()
+                .any(|d| d.archive_name == archive.name)
+            {
+                let staging = layout.runtime_root().join(".onnxruntime-cpu-staging");
+                let downloads_dir = staging.join("downloads");
+                fs::create_dir_all(&downloads_dir)
+                    .map_err(|e| format!("Cannot create CPU ONNX staging: {e}"))?;
+                let archive_file = downloads_dir.join(&archive.name);
+
+                download_verified_file(
+                    client,
+                    "ONNX Runtime (CPU)",
+                    &archive.url,
+                    archive.bytes,
+                    &archive.sha256,
+                    &archive_file,
+                    *completed,
                     total,
-                });
-            },
-        )
-        .await
-        .map_err(|error| error.to_string())
+                    sender,
+                )
+                .await?;
+                *completed = completed.saturating_add(archive.bytes);
+
+                let destination = layout.onnx_cpu_runtime_directory();
+                fs::create_dir_all(&destination)
+                    .map_err(|e| format!("Cannot create {}: {e}", destination.display()))?;
+                extract_declared_files(
+                    &archive_file,
+                    archive.archive_format,
+                    Path::new(&archive.archive_directory),
+                    &archive.required_files,
+                    &destination,
+                )?;
+
+                #[cfg(unix)]
+                {
+                    let link = destination.join("libonnxruntime.so");
+                    let symlink_target = Path::new(RuntimeLayout::ONNX_CORE_LIBRARY);
+                    if !link.exists() {
+                        let _ = std::os::unix::fs::symlink(symlink_target, &link);
+                    }
+                }
+
+                let _ = fs::remove_dir_all(&staging);
+            }
+        }
+    }
+
+    for bundled in config.model_manager.resolved_bundled_models() {
+        if !bundled
+            .target
+            .as_deref()
+            .map_or(true, |t| t.trim() == target)
+        {
+            continue;
+        }
+        if !plan
+            .downloads
+            .iter()
+            .any(|d| d.archive_name == bundled.name)
+        {
+            continue;
+        }
+        let destination = project_root.join(&bundled.relative_path);
+        if destination.is_file() {
+            continue;
+        }
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
+        }
+
+        if let Some(archive_format) = bundled.archive_format {
+            let archive_path = bundled
+                .archive_path
+                .as_deref()
+                .ok_or_else(|| format!("Bundled model {} missing archive_path", bundled.name))?;
+            let staging = layout.runtime_root().join(".model-staging");
+            fs::create_dir_all(&staging)
+                .map_err(|e| format!("Cannot create model staging: {e}"))?;
+            let archive_file = staging.join(format!("{}.zip", bundled.name));
+
+            download_verified_file(
+                client,
+                &bundled.label,
+                &bundled.url,
+                bundled.bytes,
+                &bundled.sha256,
+                &archive_file,
+                *completed,
+                total,
+                sender,
+            )
+            .await?;
+            *completed = completed.saturating_add(bundled.bytes);
+
+            let archive_entry = Path::new(archive_path);
+            let entry_dir = archive_entry.parent().unwrap_or(Path::new(""));
+            let entry_file = archive_entry
+                .file_name()
+                .and_then(|f| f.to_str())
+                .ok_or_else(|| {
+                    format!("Invalid archive_path in {}: {archive_path}", bundled.name)
+                })?;
+            let dest_dir = destination
+                .parent()
+                .ok_or_else(|| format!("Invalid destination: {}", destination.display()))?;
+
+            extract_declared_files(
+                &archive_file,
+                archive_format,
+                entry_dir,
+                &[entry_file.to_owned()],
+                dest_dir,
+            )?;
+            let _ = fs::remove_dir_all(&staging);
+        } else {
+            download_verified_file(
+                client,
+                &bundled.label,
+                &bundled.url,
+                bundled.bytes,
+                &bundled.sha256,
+                &destination,
+                *completed,
+                total,
+                sender,
+            )
+            .await?;
+            *completed = completed.saturating_add(bundled.bytes);
+        }
+    }
+
+    Ok(())
 }
 
 async fn install_runtime_plan(
@@ -940,12 +1120,36 @@ async fn install_runtime_plan(
     source: DownloadSource,
     cancellation: DownloadCancellation,
 ) -> Result<PathBuf, String> {
-    let progress_total =
-        missing_runtime_bytes(&project_root, plan.llama_cpp.as_ref(), plan.onnx.as_ref());
-    let llama_bytes = missing_runtime_bytes(&project_root, plan.llama_cpp.as_ref(), None);
+    let config = load_app_config(&project_root)?;
+    let layout = config.runtime_layout(&project_root);
+    let progress_total = plan.total_bytes();
+    let mut completed = 0_u64;
+
+    if progress_total > 0 && !plan.downloads.is_empty() {
+        let client = DownloadClient::with_proxy_source_and_cancellation(
+            "XRTranslate runtime installer",
+            proxy_url,
+            source,
+            cancellation.clone(),
+        )
+        .map_err(|error| error.to_string())?;
+
+        install_base_bundled_resources(
+            &project_root,
+            &config,
+            &plan,
+            &client,
+            &sender,
+            &mut completed,
+            progress_total,
+        )
+        .await?;
+    }
+
     let mut llama_executable = None;
     let mut runtime_marker = None;
     if let Some(selection) = plan.llama_cpp {
+        let llama_bytes = missing_runtime_bytes(&project_root, Some(&selection), None);
         llama_executable = Some(
             install(
                 project_root.clone(),
@@ -954,11 +1158,12 @@ async fn install_runtime_plan(
                 proxy_url,
                 source,
                 cancellation.clone(),
-                0,
+                completed,
                 progress_total,
             )
             .await?,
         );
+        completed = completed.saturating_add(llama_bytes);
     }
     if let Some(selection) = plan.onnx {
         runtime_marker = Some(
@@ -969,11 +1174,13 @@ async fn install_runtime_plan(
                 proxy_url,
                 source,
                 cancellation,
-                llama_bytes,
+                completed,
                 progress_total,
             )
             .await?,
         );
+    } else if layout.onnx_cpu_core_library().is_file() {
+        runtime_marker = Some(persist_cpu_onnx_marker(&layout, None)?);
     }
     llama_executable
         .or(runtime_marker)
@@ -1585,7 +1792,16 @@ fn persist_llama_runtime_marker(
             .and_then(|marker| marker.provider_dir.clone()),
         onnx_core_library: existing
             .as_ref()
-            .and_then(|marker| marker.onnx_core_library.clone()),
+            .and_then(|marker| marker.onnx_core_library.clone())
+            .filter(|path| layout.project_root().join(path).is_file() || Path::new(path).is_file())
+            .or_else(|| {
+                let cpu_core = layout.onnx_cpu_core_library();
+                if cpu_core.is_file() {
+                    Some(layout.config_path_for(&cpu_core))
+                } else {
+                    None
+                }
+            }),
         cuda_bin_dir: cuda_directory
             .map(|path| layout.config_path_for(path))
             .or_else(|| {
@@ -1690,6 +1906,7 @@ fn clear_runtime_staging(project_root: &Path) -> Result<(), String> {
 
 /// Filesystem-backed startup preflight. This avoids treating the installer's
 /// empty, not-yet-planned UI state as proof that the runtime is missing.
+#[cfg(test)]
 pub fn configured_runtime_is_ready(
     project_root: &Path,
     requirements: RuntimeRequirements,
@@ -1707,7 +1924,8 @@ fn configured_runtime_plan(
         .into_iter()
         .filter_map(|key| xrtranslate_assets::ModelAssetId::from_config_key(&key))
         .collect::<Vec<_>>();
-    let hardware = Hardware::detect();
+    let preferred_gpu = config.model_manager.preferred_gpu.as_deref();
+    let hardware = Hardware::detect(preferred_gpu);
     let local_models = hardware.availability;
     let requires_managed_model = requirements.llama_cpp || requirements.onnx_tts;
     let required_model_vram_bytes = required_local_model_vram_bytes(&config);
@@ -1765,7 +1983,12 @@ fn configured_runtime_plan(
     } else {
         None
     };
-    let downloads = missing_runtime_downloads(project_root, llama_cpp.as_ref(), onnx.as_ref());
+    let mut downloads = missing_base_bundled_downloads(project_root, &config);
+    downloads.extend(missing_runtime_downloads(
+        project_root,
+        llama_cpp.as_ref(),
+        onnx.as_ref(),
+    ));
     let marker_ready = runtime_marker_matches_plan(project_root, llama_cpp.as_ref(), onnx.as_ref());
     Ok(RuntimePlan {
         llama_cpp,
@@ -1802,10 +2025,17 @@ fn runtime_marker_matches_plan(
     llama: Option<&RuntimeSelection>,
     onnx: Option<&OnnxRuntimeSelection>,
 ) -> bool {
+    let layout = load_runtime_layout(project_root);
+    if onnx
+        .as_ref()
+        .map_or(true, |o| o.backend != RuntimeBackend::Cuda)
+        && !layout.onnx_cpu_core_library().is_file()
+    {
+        return false;
+    }
     if llama.is_none() && onnx.is_none() {
         return true;
     }
-    let layout = load_runtime_layout(project_root);
     let Ok(Some(marker)) = load_native_runtime_selection(&layout) else {
         return false;
     };
@@ -1889,6 +2119,47 @@ fn runtime_marker_matches_plan(
         }
     }
     true
+}
+
+fn missing_base_bundled_downloads(project_root: &Path, config: &AppConfig) -> Vec<RuntimeDownload> {
+    let layout = config.runtime_layout(project_root);
+    let target = current_runtime_target();
+    let mut downloads = Vec::new();
+
+    if !layout.onnx_cpu_core_library().is_file() {
+        if let Some(archive) = config
+            .model_manager
+            .onnxruntime
+            .resolved_cpu_downloads()
+            .into_iter()
+            .find(|archive| archive.target.trim() == target)
+        {
+            downloads.push(RuntimeDownload {
+                label: "ONNX Runtime (CPU)".to_owned(),
+                archive_name: archive.name,
+                bytes: archive.bytes,
+            });
+        }
+    }
+
+    for bundled in config.model_manager.resolved_bundled_models() {
+        if bundled
+            .target
+            .as_deref()
+            .map_or(true, |t| t.trim() == target)
+        {
+            let destination = project_root.join(&bundled.relative_path);
+            if !destination.is_file() {
+                downloads.push(RuntimeDownload {
+                    label: bundled.label,
+                    archive_name: bundled.name,
+                    bytes: bundled.bytes,
+                });
+            }
+        }
+    }
+
+    downloads
 }
 
 fn missing_runtime_downloads(
@@ -2436,7 +2707,7 @@ fn select_llama_assets(
         })
         .ok_or_else(|| {
             format!(
-                "No AMD Vulkan llama.cpp runtime is configured for {}.",
+                "No Vulkan llama.cpp runtime is configured for {}.",
                 current_runtime_target()
             )
         })?;
@@ -3001,6 +3272,7 @@ mod tests {
                 gpu: "test GPU".into(),
                 memory_bytes: 16 * 1024 * 1024 * 1024,
                 cuda_memory_bytes: 16 * 1024 * 1024 * 1024,
+                all_gpus: Vec::new(),
             },
             blocking_error: None,
         };
@@ -3380,6 +3652,96 @@ mod tests {
         assert_eq!(vulkan.assets[0].kind, LlamaCppAssetKind::ServerVulkan);
         assert!(vulkan.assets[0].cuda_version.is_none());
         assert!(select_llama_assets(&[], None, Some(&amd)).is_err());
+    }
+
+    #[test]
+    fn multi_gpu_selection_and_preference_behavior() {
+        use hardware::resolve_hardware_selection;
+
+        let nvidia = NvidiaCuda {
+            gpu: "NVIDIA GeForce RTX 3050 Laptop GPU".into(),
+            compute_capability: (8, 6),
+            driver_cuda: "13.0".into(),
+            memory_bytes: 4 * 1024 * 1024 * 1024,
+        };
+        let nvidia_vulkan = VulkanGpu {
+            gpu: "NVIDIA GeForce RTX 3050 Laptop GPU".into(),
+            memory_bytes: 4 * 1024 * 1024 * 1024,
+            index: 0,
+        };
+        let amd = VulkanGpu {
+            gpu: "AMD Radeon Graphics (RADV RENOIR)".into(),
+            memory_bytes: 6 * 1024 * 1024 * 1024,
+            index: 1,
+        };
+        let vulkan_gpus = vec![nvidia_vulkan, amd];
+
+        // 1. Without user preference, prioritize dedicated NVIDIA CUDA GPU even if integrated AMD has larger shared VRAM
+        let (selected_n, selected_a, avail) =
+            resolve_hardware_selection(&[nvidia.clone()], &vulkan_gpus, None);
+        assert!(selected_n.is_some());
+        assert!(selected_a.is_none());
+        assert_eq!(avail.available_gpus().len(), 3);
+        if let LocalModelAvailability::Available {
+            gpu,
+            memory_bytes,
+            cuda_memory_bytes,
+            all_gpus,
+        } = avail
+        {
+            assert_eq!(gpu, "NVIDIA GeForce RTX 3050 Laptop GPU (CUDA)");
+            assert_eq!(memory_bytes, 4 * 1024 * 1024 * 1024);
+            assert_eq!(cuda_memory_bytes, 4 * 1024 * 1024 * 1024);
+            assert_eq!(all_gpus.len(), 3);
+        } else {
+            panic!("Expected Available variant");
+        }
+
+        // 2. With user preference for NVIDIA Vulkan, select NVIDIA Vulkan GPU
+        let (selected_n, selected_a, avail) = resolve_hardware_selection(
+            &[nvidia.clone()],
+            &vulkan_gpus,
+            Some("NVIDIA GeForce RTX 3050 Laptop GPU (Vulkan)"),
+        );
+        assert!(selected_n.is_none());
+        assert!(selected_a.is_some());
+        assert_eq!(selected_a.as_ref().unwrap().index, 0);
+        if let LocalModelAvailability::Available {
+            gpu,
+            memory_bytes,
+            cuda_memory_bytes,
+            ..
+        } = avail
+        {
+            assert_eq!(gpu, "NVIDIA GeForce RTX 3050 Laptop GPU (Vulkan)");
+            assert_eq!(memory_bytes, 4 * 1024 * 1024 * 1024);
+            assert_eq!(cuda_memory_bytes, 0);
+        } else {
+            panic!("Expected Available variant");
+        }
+
+        // 3. With user preference for AMD (raw name fallback), select AMD Vulkan GPU
+        let (selected_n, selected_a, avail) = resolve_hardware_selection(
+            &[nvidia.clone()],
+            &vulkan_gpus,
+            Some("AMD Radeon Graphics (RADV RENOIR)"),
+        );
+        assert!(selected_n.is_none());
+        assert!(selected_a.is_some());
+        assert_eq!(selected_a.as_ref().unwrap().index, 1);
+        if let LocalModelAvailability::Available {
+            gpu,
+            memory_bytes,
+            cuda_memory_bytes,
+            ..
+        } = avail
+        {
+            assert_eq!(gpu, "AMD Radeon Graphics (RADV RENOIR) (Vulkan)");
+            assert_eq!(memory_bytes, 6 * 1024 * 1024 * 1024);
+            assert_eq!(cuda_memory_bytes, 0);
+        } else {
+            panic!("Expected Available variant");
+        }
     }
 
     #[test]

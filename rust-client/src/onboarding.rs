@@ -108,65 +108,37 @@ pub fn evaluate_step_requirement(
     }
 }
 
-/// Resolves the onboarding state when the application starts.
-/// If `first_run` was recorded or any required resource is missing,
-/// opens the onboarding flow at page 0 (Welcome page).
+/// Completed setup stays complete. Each task checks its own resources when
+/// started, so missing audio models do not block text or other independent inputs.
 #[must_use]
 pub fn resolve_startup_onboarding_state(
     is_first_run: bool,
-    project_root: &Path,
-    service_config: &ServiceConfigEditor,
-    backend_manager: &BackendManager,
+    _project_root: &Path,
+    _service_config: &ServiceConfigEditor,
+    _backend_manager: &BackendManager,
     _model_task_manager: &NativeModelTaskManager,
     _runtime_installer: &RuntimeInstaller,
 ) -> (bool, usize) {
-    if is_first_run
-        || has_unmet_startup_prerequisites(project_root, service_config, backend_manager)
-    {
-        (true, 0)
-    } else {
-        (false, 0)
-    }
-}
-
-/// Startup uses direct filesystem probes because both background managers are
-/// intentionally still `Idle` here. Reading their live state before discovery
-/// and runtime planning complete would make every local setup look missing.
-fn has_unmet_startup_prerequisites(
-    project_root: &Path,
-    service_config: &ServiceConfigEditor,
-    backend_manager: &BackendManager,
-) -> bool {
-    let requirements = service_config.runtime_requirements();
-    if requirements.missing_api_key {
-        return true;
-    }
-
-    if !model_install::configured_models_are_present(project_root).unwrap_or(false) {
-        return true;
-    }
-
-    if requirements.llama_cpp && !backend_manager.llama_server_path_is_valid() {
-        return true;
-    }
-    if requirements.onnx_tts {
-        let onnx_requirements = xrtranslate_config::RuntimeRequirements {
-            llama_cpp: false,
-            missing_api_key: false,
-            ..requirements
-        };
-        if !crate::runtime_install::configured_runtime_is_ready(project_root, onnx_requirements)
-            .unwrap_or(false)
-        {
-            return true;
-        }
-    }
-    false
+    (is_first_run, 0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_audio_resources_do_not_reopen_completed_setup() {
+        let root = std::env::temp_dir().join("xrtranslate-onboarding-no-audio-assets");
+        let (first_run, _) = resolve_startup_onboarding_state(
+            false,
+            &root,
+            &ServiceConfigEditor::load(),
+            &BackendManager::load(),
+            &NativeModelTaskManager::default(),
+            &RuntimeInstaller::default(),
+        );
+        assert!(!first_run);
+    }
 
     #[test]
     fn first_run_always_resolves_to_welcome_page() {

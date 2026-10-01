@@ -535,7 +535,7 @@ pub fn animated_button_enabled_with_id(
         CornerRadius::same(8)
     };
 
-    let resp = ui
+    let mut resp = ui
         .add_enabled_ui(enabled, |ui| {
             Frame::new()
                 .fill(fill)
@@ -590,7 +590,8 @@ pub fn animated_button_enabled_with_id(
         ui.memory_mut(|m| {
             m.data.insert_temp(id.with("click_time"), current_time);
         });
-        simulate_click_on(ui, resp.rect);
+        resp.flags
+            .set(egui::response::Flags::FAKE_PRIMARY_CLICKED, true);
         ui.ctx().request_repaint();
     }
     resp
@@ -598,18 +599,14 @@ pub fn animated_button_enabled_with_id(
 
 fn simulate_click_on(ui: &mut egui::Ui, rect: egui::Rect) {
     ui.ctx().input_mut(|i| {
-        i.events.push(egui::Event::PointerButton {
-            pos: rect.center(),
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: egui::Modifiers::default(),
-        });
-        i.events.push(egui::Event::PointerButton {
-            pos: rect.center(),
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: egui::Modifiers::default(),
-        });
+        for pressed in [true, false] {
+            i.events.push(egui::Event::PointerButton {
+                pos: rect.center(),
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
     });
 }
 
@@ -716,7 +713,7 @@ pub fn primary_button_enabled_with_id(
         CornerRadius::same(8)
     };
 
-    let resp = ui
+    let mut resp = ui
         .add_enabled_ui(enabled, |ui| {
             Frame::new()
                 .fill(fill)
@@ -761,24 +758,11 @@ pub fn primary_button_enabled_with_id(
     }
     let simulated_click = crate::ui::automation::record_button(ui, id, text, enabled, resp.rect);
     if simulated_click {
-        ui.ctx().memory_mut(|m| {
-            m.data
-                .insert_temp(id.with("click_time"), ui.ctx().input(|i| i.time));
-        });
-        ui.ctx().input_mut(|i| {
-            i.events.push(egui::Event::PointerButton {
-                pos: resp.rect.center(),
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: egui::Modifiers::default(),
-            });
-            i.events.push(egui::Event::PointerButton {
-                pos: resp.rect.center(),
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::default(),
-            });
-        });
+        let current_time = ui.ctx().input(|input| input.time);
+        ui.memory_mut(|m| m.data.insert_temp(id.with("click_time"), current_time));
+        resp.flags
+            .set(egui::response::Flags::FAKE_PRIMARY_CLICKED, true);
+        ui.ctx().request_repaint();
     }
     resp
 }
@@ -2880,5 +2864,159 @@ pub fn render_runtime_fallback_notice(
             crate::i18n::tr(language, "Open NVIDIA App driver download"),
             crate::runtime_install::NVIDIA_APP_URL,
         );
+    }
+}
+
+/// Compact, keyboard-accessible input controls beside the translation switch.
+pub fn input_toggle(
+    ui: &mut Ui,
+    id: &str,
+    active: bool,
+    microphone: bool,
+    label: &str,
+) -> egui::Response {
+    ui.push_id(id, |ui| {
+        let mut response = ui.add(
+            egui::Button::new("")
+                .min_size(egui::vec2(36.0, 36.0))
+                .corner_radius(CornerRadius::same(12))
+                .fill(if active {
+                    theme::primary().gamma_multiply(0.15)
+                } else {
+                    theme::surface_subtle()
+                }),
+        );
+        if crate::ui::automation::record_button(
+            ui,
+            response.id,
+            label,
+            ui.is_enabled(),
+            response.rect,
+        ) {
+            response
+                .flags
+                .set(egui::response::Flags::FAKE_PRIMARY_CLICKED, true);
+        }
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), active, label)
+        });
+        let center = response.rect.center();
+        let painter = ui.painter();
+        let color = if active {
+            theme::primary_dark()
+        } else {
+            theme::text_weak()
+        };
+        let stroke = Stroke::new(1.8, color);
+        if microphone {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(center + egui::vec2(0.0, -3.0), egui::vec2(8.0, 13.0)),
+                CornerRadius::same(4),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.add(egui::Shape::line(
+                vec![
+                    center + egui::vec2(-7.0, -3.0),
+                    center + egui::vec2(-7.0, 1.0),
+                    center + egui::vec2(-5.0, 5.0),
+                    center + egui::vec2(0.0, 7.0),
+                    center + egui::vec2(5.0, 5.0),
+                    center + egui::vec2(7.0, 1.0),
+                    center + egui::vec2(7.0, -3.0),
+                ],
+                stroke,
+            ));
+            painter.line_segment(
+                [
+                    center + egui::vec2(0.0, 7.0),
+                    center + egui::vec2(0.0, 11.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + egui::vec2(-4.0, 11.0),
+                    center + egui::vec2(4.0, 11.0),
+                ],
+                stroke,
+            );
+        } else {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(
+                    center + egui::vec2(0.0, -2.0),
+                    egui::vec2(20.0, 14.0),
+                ),
+                CornerRadius::same(4),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            for (x, height) in [(-4.0, 3.0), (0.0, 6.0), (4.0, 4.0)] {
+                painter.line_segment(
+                    [
+                        center + egui::vec2(x, -2.0 - height / 2.0),
+                        center + egui::vec2(x, -2.0 + height / 2.0),
+                    ],
+                    stroke,
+                );
+            }
+            painter.line_segment(
+                [center + egui::vec2(0.0, 5.0), center + egui::vec2(0.0, 9.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + egui::vec2(-5.0, 9.0),
+                    center + egui::vec2(5.0, 9.0),
+                ],
+                stroke,
+            );
+        }
+        if !active {
+            painter.line_segment(
+                [
+                    center + egui::vec2(-11.0, -11.0),
+                    center + egui::vec2(11.0, 11.0),
+                ],
+                Stroke::new(2.2, color),
+            );
+        }
+        response.on_hover_text(label)
+    })
+    .inner
+}
+
+#[cfg(test)]
+mod automation_button_tests {
+    use super::*;
+    use crate::ui::automation::driver::{CommandEnvelope, DirectorCommand};
+
+    #[test]
+    fn automated_buttons_click_once_without_injecting_pointer_events() {
+        let ctx = egui::Context::default();
+        for primary in [false, true] {
+            let (tx, _rx) = crossbeam_channel::bounded(1);
+            crate::ui::automation::driver()
+                .channel()
+                .send(CommandEnvelope {
+                    command: DirectorCommand::Click("fixture button".into()),
+                    responder: tx,
+                })
+                .unwrap();
+            for expected in [true, false] {
+                let mut output = ctx.run_ui(Default::default(), |ui| {
+                    crate::ui::automation::begin_frame("fixture");
+                    let response = if primary {
+                        primary_button(ui, "fixture button")
+                    } else {
+                        animated_button(ui, "fixture button")
+                    };
+                    assert_eq!(response.clicked(), expected);
+                    assert!(ui.ctx().input(|input| input.events.is_empty()));
+                    crate::ui::automation::finish_frame();
+                });
+                output.textures_delta.clear();
+            }
+        }
     }
 }

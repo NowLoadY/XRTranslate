@@ -42,8 +42,9 @@ pub struct MeetingUiSnapshot {
     pub default_source_language: String,
     pub default_target_language: String,
     pub languages: xrtranslate_engine::language::LanguageCapabilities,
-    /// True when another host feature owns the exclusive recognition session.
+    /// Compatibility snapshot; shared capture no longer blocks other tasks.
     pub host_session_busy: bool,
+    pub waiting_for_microphone: bool,
     pub language: crate::i18n::UiLanguage,
 }
 
@@ -55,6 +56,7 @@ impl Default for MeetingUiSnapshot {
             default_target_language: "zh".into(),
             languages: Default::default(),
             host_session_busy: false,
+            waiting_for_microphone: false,
             language: crate::i18n::UiLanguage::English,
         }
     }

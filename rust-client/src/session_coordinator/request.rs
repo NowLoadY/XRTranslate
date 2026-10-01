@@ -11,6 +11,7 @@ pub(crate) struct TranslationTask {
     pub languages: LanguageSelection,
     pub plugin: Option<PluginSessionBinding>,
     pub input: TranslationInput,
+    pub profiles: Vec<(CaptureSource, RecognitionSettings)>,
 }
 
 pub(crate) enum TranslationInput {

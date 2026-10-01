@@ -433,6 +433,7 @@ impl OscHandle {
         let _ = self.tx.send(Command::EndStream(stream_id));
     }
 
+    #[allow(dead_code)] // Legacy next-caption rollover API; host events finalize via Message.
     pub fn roll_stream_for(
         &self,
         stream_id: u64,
@@ -922,13 +923,15 @@ fn dispatch_loop(
     }
 }
 
-fn queue_message(pending: &mut Option<QueuedMessage>, message: QueuedMessage) {
-    if !message.final_priority
-        && pending
-            .as_ref()
-            .is_some_and(|pending| pending.final_priority)
+fn queue_message(pending: &mut Option<QueuedMessage>, mut message: QueuedMessage) {
+    // Each message is a complete history + live snapshot. Preserve a pending
+    // final notification, but never discard the next caption's fresher snapshot.
+    if let Some(previous) = pending.as_ref()
+        && previous.final_priority
+        && !message.final_priority
     {
-        return;
+        message.final_priority = true;
+        message.notify |= previous.notify;
     }
     *pending = Some(message);
 }

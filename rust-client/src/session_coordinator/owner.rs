@@ -53,7 +53,7 @@ impl PluginSessionOwner {
     }
 }
 
-/// Identifies who currently owns the exclusive translation session without
+/// Identifies who currently owns the translation task without
 /// teaching the session infrastructure about individual plugins.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum TranslationSessionOwner {

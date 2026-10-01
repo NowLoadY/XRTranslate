@@ -2,8 +2,11 @@
 mod attention;
 mod dialogue;
 mod feedback;
+mod inbox;
 mod parking;
 mod placement;
+
+pub(crate) use inbox::Inbox;
 
 use crate::{
     i18n::{self, UiLanguage},
@@ -160,6 +163,12 @@ impl Guide {
         self.say(cue.text());
     }
 
+    fn ready_to_speak(&self) -> bool {
+        self.pending.is_none()
+            && self.speech.finished(self.clock)
+            && self.clock - self.last_spoken >= 3.0
+    }
+
     fn attend(&mut self, target: Option<Target>, clicked: bool, scene: &dialogue::Context) {
         let hovered = target.map(|target| target.attention);
         if hovered != self.candidate {
@@ -173,10 +182,7 @@ impl Guide {
         if clicked && hovered == Some(Attention::Avatar) {
             self.focus = target;
         }
-        if self.pending.is_some()
-            || !self.speech.finished(self.clock)
-            || self.clock - self.last_spoken < 3.0
-        {
+        if !self.ready_to_speak() {
             return;
         }
         if clicked && hovered == Some(Attention::Avatar) {
@@ -196,7 +202,7 @@ fn state_id() -> Id {
     Id::new("application_companion")
 }
 
-pub(crate) fn show(ctx: &egui::Context, app: &crate::XRTranslateApp, layout: Layout) {
+pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout: Layout) {
     // Navigation can change while the old page is still being drawn. Wait for
     // the matching layout before consuming its companion entry transition.
     if app.first_run != matches!(&layout, Layout::Onboarding(_)) {
@@ -326,6 +332,15 @@ pub(crate) fn show(ctx: &egui::Context, app: &crate::XRTranslateApp, layout: Lay
     {
         state.pending = None;
         state.announce(cue);
+    }
+    // Read mail on the companion's own clock, without interrupting dialogue,
+    // entrance, dragging, hidden/modal states, or its existing speech cooldown.
+    if !paused
+        && state.stage == Stage::Ready
+        && state.ready_to_speak()
+        && let Some(message) = app.companion_inbox.read()
+    {
+        state.say(message);
     }
     let elapsed = (state.clock - state.stage_started) as f32;
     let mut size = radius;
@@ -495,4 +510,39 @@ pub(crate) fn show(ctx: &egui::Context, app: &crate::XRTranslateApp, layout: Lay
 fn smooth(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mail_waits_for_current_speech_and_cooldown() {
+        let scene = dialogue::Context {
+            route: Route::Page(crate::ui::Page::Translation),
+            cue: Cue::Translation,
+            blocked: None,
+        };
+        let mut guide = Guide::new(0.0, UiLanguage::English, Pos2::ZERO, &scene, false);
+        let mut inbox = Inbox::default();
+        guide.clock = 2.9;
+        assert!(!guide.ready_to_speak()); // Even an empty bubble respects the cooldown.
+        guide.clock = 3.0;
+        assert!(guide.ready_to_speak());
+        guide.say("Select audio and start.");
+        inbox.post("Translation session is not active. Please start translation first.");
+        inbox.post("Translation session is not active. Please start translation first.");
+        guide.clock = 6.0;
+        assert!(!guide.ready_to_speak()); // The current sentence is still being spoken.
+        guide.speech.advance(guide.clock);
+        guide.clock = 20.0;
+        assert!(guide.ready_to_speak());
+        guide.say(inbox.read().unwrap());
+        assert_eq!(
+            guide.line,
+            "Translation session is not active. Please start translation first."
+        );
+        assert_eq!(inbox.read(), None);
+        assert!(!guide.ready_to_speak());
+    }
 }

@@ -352,6 +352,38 @@ impl ServiceConfigEditor {
         self.message = None;
     }
 
+    pub(crate) fn preferred_gpu(&self) -> Option<String> {
+        self.document
+            .get("model_manager")
+            .and_then(|m| m.get("preferred_gpu"))
+            .and_then(|g| g.as_str())
+            .map(|s| s.to_string())
+    }
+
+    pub(crate) fn set_preferred_gpu(&mut self, gpu_name: Option<&str>) {
+        if let Some(root) = self.document.as_object_mut() {
+            let model_manager = root
+                .entry("model_manager")
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+                .as_object_mut();
+            if let Some(model_manager) = model_manager {
+                match gpu_name {
+                    Some(name) if !name.trim().is_empty() => {
+                        model_manager.insert(
+                            "preferred_gpu".into(),
+                            serde_json::Value::String(name.trim().to_string()),
+                        );
+                    }
+                    _ => {
+                        model_manager.remove("preferred_gpu");
+                    }
+                }
+                self.dirty = true;
+                self.message = None;
+            }
+        }
+    }
+
     pub(crate) fn save_onboarding_configuration(
         &mut self,
     ) -> Result<OnboardingSaveOutcome, String> {
@@ -496,8 +528,7 @@ impl ServiceConfigEditor {
 
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
-                            egui::RichText::new(crate::i18n::tr(language, "Provider:"))
-                                .strong(),
+                            egui::RichText::new(crate::i18n::tr(language, "Provider:")).strong(),
                         );
                         ui.label(
                             egui::RichText::new(provider_title)
@@ -616,10 +647,10 @@ impl ServiceConfigEditor {
                                                 ),
                                             )
                                             .on_hover_text(format!(
-                                                    "{} {}",
-                                                    crate::i18n::tr(language, "Restore default:"),
-                                                    default_value
-                                                ));
+                                                "{} {}",
+                                                crate::i18n::tr(language, "Restore default:"),
+                                                default_value
+                                            ));
                                             if reset.clicked() && field.value != default_value {
                                                 field.value = default_value;
                                                 self.dirty = true;
@@ -809,12 +840,12 @@ fn validate_native_provider_asset(
             capability,
             xrtranslate_assets::ModelLevel::Normal,
         )
-            .ok_or_else(|| {
-                format!(
-                    "Provider {} has no default local model package.",
-                    provider.provider
-                )
-            })?
+        .ok_or_else(|| {
+            format!(
+                "Provider {} has no default local model package.",
+                provider.provider
+            )
+        })?
     };
     if manifest.provider != provider.provider || manifest.capability != capability {
         return Err(format!(
@@ -1450,7 +1481,8 @@ mod tests {
         ConfigField, JsonFieldKind, OnboardingSaveOutcome, ProviderCard, ServiceConfigEditor,
         prompt_target_for_translation_provider, provider_field_is_visible, provider_model_names,
         provider_supported_languages, provider_voice_presets, runtime_parameter_default,
-        update_provider_model_selection, validate_native_provider_asset, validate_tts_provider_asset,
+        update_provider_model_selection, validate_native_provider_asset,
+        validate_tts_provider_asset,
     };
     use serde_json::Value;
     use xrtranslate_assets::{ModelAssetId, ModelCapability};
@@ -1510,7 +1542,10 @@ mod tests {
             "openai",
             &[("transport", "openai"), ("model", "gpt-4o-transcribe")],
         );
-        assert_eq!(provider_model_names(&remote, "asr"), vec!["gpt-4o-transcribe"]);
+        assert_eq!(
+            provider_model_names(&remote, "asr"),
+            vec!["gpt-4o-transcribe"]
+        );
 
         let tts = provider_card(
             "openvoice",
@@ -1586,24 +1621,25 @@ mod tests {
         let mut effective = base.clone();
         effective["asr"]["providers"]["qwen3-gguf"]["model_asset"] =
             Value::from("qwen3-asr-0.6b-q8-gguf");
-        effective["asr"]["providers"]["qwen3-gguf"]["context_window_tokens"] =
-            Value::from(2_048);
-        effective["asr"]["providers"]["qwen3-gguf"]["context_window_tokens"] =
-            Value::from(
-                runtime_parameter_default(Some(asr_defaults), "context_window_tokens")
-                    .unwrap()
-                    .parse::<u64>()
-                    .unwrap(),
-            );
+        effective["asr"]["providers"]["qwen3-gguf"]["context_window_tokens"] = Value::from(2_048);
+        effective["asr"]["providers"]["qwen3-gguf"]["context_window_tokens"] = Value::from(
+            runtime_parameter_default(Some(asr_defaults), "context_window_tokens")
+                .unwrap()
+                .parse::<u64>()
+                .unwrap(),
+        );
 
-        let override_document = xrtranslate_config::user_config_override(&base, &effective).unwrap();
+        let override_document =
+            xrtranslate_config::user_config_override(&base, &effective).unwrap();
         assert_eq!(
             override_document.pointer("/asr/providers/qwen3-gguf/model_asset"),
             Some(&Value::from("qwen3-asr-0.6b-q8-gguf"))
         );
-        assert!(override_document
-            .pointer("/asr/providers/qwen3-gguf/context_window_tokens")
-            .is_none());
+        assert!(
+            override_document
+                .pointer("/asr/providers/qwen3-gguf/context_window_tokens")
+                .is_none()
+        );
     }
 
     #[test]
@@ -1909,15 +1945,24 @@ mod tests {
         };
         assert_eq!(
             editor.selected_model_asset_ids(),
-            vec![ModelAssetId::Qwen3Asr06bQ8Gguf, ModelAssetId::HunyuanMtQ2kGguf]
+            vec![
+                ModelAssetId::Qwen3Asr06bQ8Gguf,
+                ModelAssetId::HunyuanMtQ2kGguf
+            ]
         );
         editor.select_onboarding_provider("asr", "openai");
         assert_eq!(
             editor.selected_model_asset_ids(),
-            vec![ModelAssetId::Qwen3Asr06bQ8Gguf, ModelAssetId::HunyuanMtQ2kGguf]
+            vec![
+                ModelAssetId::Qwen3Asr06bQ8Gguf,
+                ModelAssetId::HunyuanMtQ2kGguf
+            ]
         );
         editor.document["asr"]["provider"] = Value::from("openai");
-        assert_eq!(editor.selected_model_asset_ids(), vec![ModelAssetId::HunyuanMtQ2kGguf]);
+        assert_eq!(
+            editor.selected_model_asset_ids(),
+            vec![ModelAssetId::HunyuanMtQ2kGguf]
+        );
     }
 
     #[test]

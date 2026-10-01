@@ -120,6 +120,8 @@ pub struct ClientSettings {
     pub floating_subtitles_max_count: usize,
     #[serde(default = "default_floating_font_size")]
     pub floating_subtitles_font_size: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_gpu: Option<String>,
     #[serde(skip)]
     pub prompt_library: PromptTemplateLibrary,
 }
@@ -193,6 +195,7 @@ impl Default for ClientSettings {
             floating_subtitles_enabled: false,
             floating_subtitles_max_count: default_floating_max_count(),
             floating_subtitles_font_size: default_floating_font_size(),
+            preferred_gpu: None,
             prompt_library: PromptTemplateLibrary::default(),
         }
     }
@@ -462,10 +465,7 @@ mod tests {
             name: "USB Audio Device".into(),
         }];
         loaded.sanitize_devices(&deduplicated_mics, &available_loopbacks);
-        assert_eq!(
-            loaded.selected_device_id,
-            "alsa:plughw:CARD=Device,DEV=0"
-        );
+        assert_eq!(loaded.selected_device_id, "alsa:plughw:CARD=Device,DEV=0");
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -646,11 +646,7 @@ mod tests {
         std::fs::create_dir_all(root.join("runtime")).unwrap();
 
         // 1. Fresh start with first_run: true and no language specified in app_state.json
-        std::fs::write(
-            root.join("runtime/app_state.json"),
-            r#"{"first_run":true}"#,
-        )
-        .unwrap();
+        std::fs::write(root.join("runtime/app_state.json"), r#"{"first_run":true}"#).unwrap();
 
         let initial = ClientSettings::load(&root);
         assert!(initial.first_run);

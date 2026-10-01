@@ -6,6 +6,11 @@ use crate::{client_settings::CaptureSource, network::SessionEvent};
 /// on a plugin-owned worker queue.
 pub trait SessionEventSubscriber: Send + Sync {
     fn on_session_event(&self, event: &SessionEvent);
+
+    /// Domain consumers opt into events from their own task identity.
+    fn accepts_owner(&self, _owner: &super::TranslationSessionOwner) -> bool {
+        true
+    }
 }
 
 /// How a translated caption changes a consumer's current stream entry.
@@ -13,6 +18,8 @@ pub trait SessionEventSubscriber: Send + Sync {
 pub enum CaptionUpdate {
     Replace,
     Append,
+    /// Finalize the current caption with these contents. The next live caption
+    /// arrives separately as Replace, including for the legacy window protocol.
     RollOver,
 }
 

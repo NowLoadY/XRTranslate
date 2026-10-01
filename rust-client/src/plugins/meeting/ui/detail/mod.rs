@@ -23,6 +23,7 @@ use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Stroke};
 pub(super) fn render_detail(
     controller: &mut MeetingController,
     language: crate::i18n::UiLanguage,
+    waiting_for_microphone: bool,
     ui: &mut egui::Ui,
 ) -> UiAction {
     let Some(bundle) = controller.bundle.as_ref() else {
@@ -52,8 +53,12 @@ pub(super) fn render_detail(
     ui.horizontal(|ui| {
         components::status_badge(
             ui,
-            meeting_status_label(meeting.status),
-            meeting.status == MeetingStatus::Live,
+            if waiting_for_microphone && meeting.status == MeetingStatus::Live {
+                crate::i18n::tr(language, "Waiting for microphone")
+            } else {
+                meeting_status_label(meeting.status)
+            },
+            meeting.status == MeetingStatus::Live && !waiting_for_microphone,
             meeting.status == MeetingStatus::Failed,
         );
         ui.add_space(6.0);

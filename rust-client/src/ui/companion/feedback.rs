@@ -19,7 +19,7 @@ pub(super) struct Feedback {
 impl Feedback {
     pub fn update(&mut self, app: &crate::XRTranslateApp, now: f64) -> Option<Expression> {
         let current = Activity {
-            translating: app.is_translating,
+            translating: app.translation_enabled,
             completed: app
                 .translations
                 .last()

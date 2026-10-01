@@ -120,6 +120,24 @@ impl RuntimeLayout {
     pub const NATIVE_RUNTIME_SELECTION_FILE: &'static str = "runtime/native-runtime.json";
     pub const VOICE_CLONES_DIRECTORY: &'static str = "runtime/voice_clones";
 
+    pub const VAD_MODEL_PATH: &'static str = "models/silero-vad/src/silero_vad/data/silero_vad.onnx";
+    pub const VAD_MODEL_BYTES: u64 = 2_327_524;
+    pub const VAD_MODEL_SHA256: &'static str = "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3";
+
+    pub const SPEAKER_MODEL_PATH: &'static str = "models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx";
+    pub const SPEAKER_MODEL_BYTES: u64 = 71_964_309;
+    pub const SPEAKER_MODEL_SHA256: &'static str = "0dde34a7c212b7b4ece05b2a120409507971d1cc504e30ed05ec61c7e5dc5d9b";
+
+    pub const DENOISE_MODEL_PATH: &'static str = "models/gtcrn/gtcrn_simple.onnx";
+    pub const DENOISE_MODEL_BYTES: u64 = 535_638;
+    pub const DENOISE_MODEL_SHA256: &'static str = "e77603ac0c23dac3227dd2d7135b3a585cbee2679048aecfa886657d3ae1b534";
+
+    pub const ONNX_CPU_CORE_WIN_BYTES: u64 = 16_277_856;
+    pub const ONNX_CPU_CORE_WIN_SHA256: &'static str = "2462fe2d64ce063babefda3d9b1998380ffa74e99acf5d24d520ee67daa9e0f1";
+
+    pub const ONNX_CPU_CORE_LINUX_BYTES: u64 = 24_268_848;
+    pub const ONNX_CPU_CORE_LINUX_SHA256: &'static str = "1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab";
+
     #[must_use]
     pub fn for_project_root(project_root: impl AsRef<Path>) -> Self {
         Self::new(project_root, None::<&Path>)
@@ -194,6 +212,21 @@ impl RuntimeLayout {
     pub fn onnx_cpu_core_library(&self) -> PathBuf {
         self.onnx_cpu_runtime_directory()
             .join(Self::ONNX_CORE_LIBRARY)
+    }
+
+    #[must_use]
+    pub fn silero_vad_model_path(&self) -> PathBuf {
+        self.project_root.join(Self::VAD_MODEL_PATH)
+    }
+
+    #[must_use]
+    pub fn gtcrn_model_path(&self) -> PathBuf {
+        self.project_root.join(Self::DENOISE_MODEL_PATH)
+    }
+
+    #[must_use]
+    pub fn speaker_embedding_model_path(&self) -> PathBuf {
+        self.project_root.join(Self::SPEAKER_MODEL_PATH)
     }
 
     #[must_use]
@@ -1166,6 +1199,29 @@ pub struct ModelManagerConfig {
     pub qwen3_asr_gguf_directory: Option<PathBuf>,
     #[serde(default)]
     pub hunyuan_mt_gguf_directory: Option<PathBuf>,
+    /// Optional user preference for local inference GPU device name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_gpu: Option<String>,
+    /// Base bundled models (Silero VAD, GTCRN denoiser, 3D-Speaker diarization).
+    #[serde(default)]
+    pub bundled_models: Vec<BundledModelAsset>,
+}
+
+/// One verified base bundled model required by the native backend pipeline.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundledModelAsset {
+    pub name: String,
+    pub label: String,
+    pub relative_path: String,
+    pub bytes: u64,
+    pub sha256: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub archive_format: Option<LlamaCppArchiveFormat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_path: Option<String>,
 }
 
 /// A fixed llama.cpp release and its downloadable runtime archives.
@@ -1190,6 +1246,9 @@ pub struct OnnxRuntimeConfig {
     /// ONNX Runtime core and execution-provider archives.
     #[serde(default)]
     pub downloads: Vec<ManagedRuntimeArchive>,
+    /// Universal ONNX Runtime CPU core archive downloads.
+    #[serde(default)]
+    pub cpu_downloads: Vec<ManagedRuntimeArchive>,
     /// CUDA math-library archives not present in llama.cpp's compact runtime
     /// bundle but required to initialize the ONNX CUDA execution provider.
     #[serde(default)]
@@ -1295,6 +1354,108 @@ impl Default for ModelManagerConfig {
             models_directory: None,
             qwen3_asr_gguf_directory: None,
             hunyuan_mt_gguf_directory: None,
+            preferred_gpu: None,
+            bundled_models: Vec::new(),
+        }
+    }
+}
+
+impl ModelManagerConfig {
+    #[must_use]
+    pub fn resolved_bundled_models(&self) -> Vec<BundledModelAsset> {
+        if self.bundled_models.is_empty() {
+            Self::default_bundled_models()
+        } else {
+            self.bundled_models.clone()
+        }
+    }
+
+    #[must_use]
+    pub fn default_bundled_models() -> Vec<BundledModelAsset> {
+        vec![
+            BundledModelAsset {
+                name: "silero_vad.onnx".into(),
+                label: "Silero VAD".into(),
+                relative_path: RuntimeLayout::VAD_MODEL_PATH.into(),
+                bytes: RuntimeLayout::VAD_MODEL_BYTES,
+                sha256: RuntimeLayout::VAD_MODEL_SHA256.into(),
+                url: "https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx".into(),
+                target: None,
+                archive_format: None,
+                archive_path: None,
+            },
+            BundledModelAsset {
+                name: "gtcrn_simple.onnx".into(),
+                label: "GTCRN Speech Enhancement".into(),
+                relative_path: RuntimeLayout::DENOISE_MODEL_PATH.into(),
+                bytes: RuntimeLayout::DENOISE_MODEL_BYTES,
+                sha256: RuntimeLayout::DENOISE_MODEL_SHA256.into(),
+                url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx".into(),
+                target: None,
+                archive_format: None,
+                archive_path: None,
+            },
+            BundledModelAsset {
+                name: "speaker_embedding.onnx".into(),
+                label: "3D-Speaker Diarization".into(),
+                relative_path: RuntimeLayout::SPEAKER_MODEL_PATH.into(),
+                bytes: 129_865_511,
+                sha256: "0ad55dd88808d4d85838bc3774503921024ab21e0880ca7b3841e2034958a560".into(),
+                url: "https://github.com/NowLoadY/XRTranslate/releases/download/v0.2.11/XRTranslate-v0.2.11-linux-x64.zip".into(),
+                target: Some("linux-x86_64".into()),
+                archive_format: Some(LlamaCppArchiveFormat::Zip),
+                archive_path: Some("XRTranslate-v0.2.11-linux-x64/models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx".into()),
+            },
+            BundledModelAsset {
+                name: "speaker_embedding.onnx".into(),
+                label: "3D-Speaker Diarization".into(),
+                relative_path: RuntimeLayout::SPEAKER_MODEL_PATH.into(),
+                bytes: 121_632_051,
+                sha256: "dc19d6a533f1b7cc4f7586907ad0a8061f42d43184b83e0c1e03904e566db09c".into(),
+                url: "https://github.com/NowLoadY/XRTranslate/releases/download/v0.2.11/XRTranslate-v0.2.11-win-x64.zip".into(),
+                target: Some("windows-x86_64".into()),
+                archive_format: Some(LlamaCppArchiveFormat::Zip),
+                archive_path: Some("XRTranslate-v0.2.11-win-x64/models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx".into()),
+            },
+        ]
+    }
+}
+
+impl OnnxRuntimeConfig {
+    #[must_use]
+    pub fn default_cpu_downloads() -> Vec<ManagedRuntimeArchive> {
+        vec![
+            ManagedRuntimeArchive {
+                name: "onnxruntime-linux-x64-1.28.0.tgz".into(),
+                url: "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-1.28.0.tgz".into(),
+                archive_format: LlamaCppArchiveFormat::TarGz,
+                bytes: 9_125_960,
+                sha256: "a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407".into(),
+                target: "linux-x86_64".into(),
+                cuda_version: String::new(),
+                archive_directory: "onnxruntime-linux-x64-1.28.0/lib".into(),
+                required_files: vec!["libonnxruntime.so.1.28.0".into()],
+            },
+            ManagedRuntimeArchive {
+                name: "onnxruntime-win-x64-1.28.0.zip".into(),
+                url: "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-win-x64-1.28.0.zip".into(),
+                archive_format: LlamaCppArchiveFormat::Zip,
+                bytes: 78_796_801,
+                sha256: "abef733dacbe2f571547a7150b479b5cb9cc0df22f96c24983a42cadb1b4f8bc".into(),
+                target: "windows-x86_64".into(),
+                cuda_version: String::new(),
+                archive_directory: "onnxruntime-win-x64-1.28.0/lib".into(),
+                required_files: vec!["onnxruntime.dll".into()],
+            },
+        ]
+    }
+
+    #[must_use]
+    pub fn resolved_cpu_downloads(&self) -> Vec<ManagedRuntimeArchive> {
+        if self.cpu_downloads.is_empty() {
+            Self::default_cpu_downloads()
+        } else {
+            self.cpu_downloads.clone()
         }
     }
 }

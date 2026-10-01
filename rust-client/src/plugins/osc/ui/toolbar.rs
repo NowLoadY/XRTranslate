@@ -1,7 +1,10 @@
 use super::super::runtime::{
     BannerConfig, BannerContentType, MAX_PREFIX_LENGTH, OscFormatMode, OscMessageSeparator,
 };
-use crate::ui::components::{self, card};
+use crate::ui::{
+    components::{self, card},
+    layout,
+};
 use eframe::egui;
 
 pub fn render_toolbar(
@@ -177,27 +180,31 @@ pub fn render_toolbar(
                     });
                     ui.add_space(8.0);
 
-                    if render_banner_selector(
-                        ui,
-                        crate::i18n::tr(language, "Header:"),
-                        "header_type_combo",
-                        &mut plugin.draft_mut().header_config,
-                        language,
-                    ) {
-                        changed = true;
-                    }
-
-                    ui.add_space(8.0);
-
-                    if render_banner_selector(
-                        ui,
-                        crate::i18n::tr(language, "Footer:"),
-                        "footer_type_combo",
-                        &mut plugin.draft_mut().footer_config,
-                        language,
-                    ) {
-                        changed = true;
-                    }
+                    ui.with_layout(
+                        egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
+                        |ui| {
+                            for (label, id, header) in [
+                                ("Header:", "header_type_combo", true),
+                                ("Footer:", "footer_type_combo", false),
+                            ] {
+                                let banner = if header {
+                                    &mut plugin.draft_mut().header_config
+                                } else {
+                                    &mut plugin.draft_mut().footer_config
+                                };
+                                let label = crate::i18n::tr(language, label);
+                                let width = banner_field_width(ui, label, banner, language);
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(width, 0.0),
+                                    egui::Layout::top_down(egui::Align::LEFT),
+                                    |ui| {
+                                        changed |=
+                                            render_banner_selector(ui, label, id, banner, language);
+                                    },
+                                );
+                            }
+                        },
+                    );
 
                     ui.add_space(4.0);
                     let mut persistent_banners = plugin.draft().persistent_banners;
@@ -216,91 +223,59 @@ pub fn render_toolbar(
 
                     ui.add_space(8.0);
 
-                    for (label, value) in [
-                        ("Microphone prefix:", 0usize),
-                        ("System audio prefix:", 1usize),
-                        ("Typing prefix:", 2usize),
-                    ] {
-                        let row_changed = ui.horizontal(|ui| {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(100.0, 20.0),
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    ui.label(
-                                        egui::RichText::new(crate::i18n::tr(language, label))
-                                            .color(crate::ui::theme::text_strong())
-                                            .strong(),
-                                    );
-                                },
-                            );
-                            let mut local_changed = false;
-                            match value {
-                                0 => {
-                                    let edit_resp = components::text_edit_ui(
-                                        ui,
-                                        "osc_mic_prefix",
-                                        egui::TextEdit::singleline(
-                                            &mut plugin.draft_mut().microphone_prefix,
-                                        )
-                                        .hint_text("e.g. 🎤")
-                                        .desired_width(180.0)
-                                        .char_limit(MAX_PREFIX_LENGTH),
-                                    );
-                                    if edit_resp.changed() {
-                                        local_changed = true;
-                                    }
-                                    let reset_resp = components::reset_button(ui, "osc_mic_prefix");
-                                    if reset_resp.clicked() {
-                                        plugin.draft_mut().microphone_prefix = "🎤".into();
-                                        local_changed = true;
-                                    }
-                                }
-                                1 => {
-                                    let edit_resp = components::text_edit_ui(
-                                        ui,
-                                        "osc_sys_prefix",
-                                        egui::TextEdit::singleline(
-                                            &mut plugin.draft_mut().system_audio_prefix,
-                                        )
-                                        .hint_text("e.g. 🔊")
-                                        .desired_width(180.0)
-                                        .char_limit(MAX_PREFIX_LENGTH),
-                                    );
-                                    if edit_resp.changed() {
-                                        local_changed = true;
-                                    }
-                                    let reset_resp = components::reset_button(ui, "osc_sys_prefix");
-                                    if reset_resp.clicked() {
-                                        plugin.draft_mut().system_audio_prefix = "🔊".into();
-                                        local_changed = true;
-                                    }
-                                }
-                                _ => {
-                                    let edit_resp = components::text_edit_ui(
-                                        ui,
-                                        "osc_txt_prefix",
-                                        egui::TextEdit::singleline(
-                                            &mut plugin.draft_mut().typing_prefix,
-                                        )
-                                        .hint_text("e.g. 💬")
-                                        .desired_width(180.0)
-                                        .char_limit(MAX_PREFIX_LENGTH),
-                                    );
-                                    if edit_resp.changed() {
-                                        local_changed = true;
-                                    }
-                                    let reset_resp = components::reset_button(ui, "osc_txt_prefix");
-                                    if reset_resp.clicked() {
-                                        plugin.draft_mut().typing_prefix = "💬".into();
-                                        local_changed = true;
-                                    }
-                                }
-                            };
-                            local_changed
-                        }).inner;
-                        changed |= row_changed;
-                        ui.add_space(4.0);
-                    }
+                    ui.with_layout(
+                        egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
+                        |ui| {
+                            for (label, id, value, default) in [
+                                ("Microphone prefix:", "osc_mic_prefix", 0, "🎤"),
+                                ("System audio prefix:", "osc_sys_prefix", 1, "🔊"),
+                                ("Typing prefix:", "osc_txt_prefix", 2, "💬"),
+                            ] {
+                                let label = crate::i18n::tr(language, label);
+                                let font = egui::TextStyle::Body.resolve(ui.style());
+                                let width = ui
+                                    .painter()
+                                    .layout_no_wrap(
+                                        label.to_owned(),
+                                        font,
+                                        crate::ui::theme::text_strong(),
+                                    )
+                                    .size()
+                                    .x
+                                    .max(144.0);
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(width, 0.0),
+                                    egui::Layout::top_down(egui::Align::LEFT),
+                                    |ui| {
+                                        ui.label(
+                                            egui::RichText::new(label)
+                                                .color(crate::ui::theme::text_strong())
+                                                .strong(),
+                                        );
+                                        ui.horizontal(|ui| {
+                                            let prefix = match value {
+                                                0 => &mut plugin.draft_mut().microphone_prefix,
+                                                1 => &mut plugin.draft_mut().system_audio_prefix,
+                                                _ => &mut plugin.draft_mut().typing_prefix,
+                                            };
+                                            changed |= components::text_edit_ui(
+                                                ui,
+                                                id,
+                                                egui::TextEdit::singleline(prefix)
+                                                    .desired_width((width - 40.0).max(64.0))
+                                                    .char_limit(MAX_PREFIX_LENGTH),
+                                            )
+                                            .changed();
+                                            if components::reset_button(ui, id).clicked() {
+                                                *prefix = default.into();
+                                                changed = true;
+                                            }
+                                        });
+                                    },
+                                );
+                            }
+                        },
+                    );
 
                     ui.add_space(4.0);
 
@@ -336,24 +311,15 @@ fn render_banner_selector(
 ) -> bool {
     let mut changed = false;
 
-    ui.horizontal(|ui| {
-        ui.allocate_ui_with_layout(
-            egui::vec2(100.0, 20.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.label(
-                    egui::RichText::new(label)
-                        .color(crate::ui::theme::text_strong())
-                        .strong(),
-                );
-            },
+    layout::flow_row(ui, |ui| {
+        ui.label(
+            egui::RichText::new(label)
+                .color(crate::ui::theme::text_strong())
+                .strong(),
         );
 
-        let combo_resp = components::combobox_ui(
-            ui,
-            combo_id,
-            banner.content_type.label(language),
-            |ui| {
+        let combo_resp =
+            components::combobox_ui(ui, combo_id, banner.content_type.label(language), |ui| {
                 let r1 = ui.selectable_value(
                     &mut banner.content_type,
                     BannerContentType::None,
@@ -380,8 +346,7 @@ fn render_banner_selector(
                     BannerContentType::GpuStatus.label(language),
                 );
                 r1.changed() || r2.changed() || r3.changed() || r4.changed() || r5.changed()
-            },
-        );
+            });
 
         if combo_resp.inner.unwrap_or(false) {
             changed = true;
@@ -420,4 +385,36 @@ fn render_banner_selector(
     });
 
     changed
+}
+
+fn banner_field_width(
+    ui: &egui::Ui,
+    label: &str,
+    banner: &BannerConfig,
+    language: crate::i18n::UiLanguage,
+) -> f32 {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let label_width = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font, crate::ui::theme::text_strong())
+        .size()
+        .x;
+    let combo = layout::control_width(ui, banner.content_type.label(language), None, 96.0, 240.0);
+    let extra = match banner.content_type {
+        BannerContentType::CustomText => 150.0 + ui.spacing().item_spacing.x,
+        BannerContentType::CpuStatus | BannerContentType::GpuStatus => {
+            ui.painter()
+                .layout_no_wrap(
+                    crate::i18n::tr(language, "Full Name").to_owned(),
+                    egui::TextStyle::Body.resolve(ui.style()),
+                    crate::ui::theme::text_strong(),
+                )
+                .size()
+                .x
+                + ui.spacing().icon_width
+                + 2.0 * ui.spacing().item_spacing.x
+        }
+        _ => 0.0,
+    };
+    (label_width + combo + extra + ui.spacing().item_spacing.x + 4.0).min(ui.max_rect().width())
 }

@@ -23,23 +23,20 @@ use xrtranslate_assets::{
 use xrtranslate_config::{AppConfig, RuntimeLayout};
 
 const RELEASE_LAYOUT_VERSION: u32 = 4;
-const VAD_RELATIVE_PATH: &str = "models/silero-vad/src/silero_vad/data/silero_vad.onnx";
+const VAD_RELATIVE_PATH: &str = RuntimeLayout::VAD_MODEL_PATH;
 const VAD_MODEL_VERSION: &str = "v6.2.1";
-const VAD_MODEL_BYTES: u64 = 2_327_524;
-const VAD_MODEL_SHA256: &str = "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3";
-const SPEAKER_RELATIVE_PATH: &str = "models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx";
-const SPEAKER_MODEL_BYTES: u64 = 71_964_309;
-const SPEAKER_MODEL_SHA256: &str =
-    "0dde34a7c212b7b4ece05b2a120409507971d1cc504e30ed05ec61c7e5dc5d9b";
-const DENOISE_RELATIVE_PATH: &str = "models/gtcrn/gtcrn_simple.onnx";
-const DENOISE_MODEL_BYTES: u64 = 535_638;
-const DENOISE_MODEL_SHA256: &str =
-    "e77603ac0c23dac3227dd2d7135b3a585cbee2679048aecfa886657d3ae1b534";
+const VAD_MODEL_BYTES: u64 = RuntimeLayout::VAD_MODEL_BYTES;
+const VAD_MODEL_SHA256: &str = RuntimeLayout::VAD_MODEL_SHA256;
+const SPEAKER_RELATIVE_PATH: &str = RuntimeLayout::SPEAKER_MODEL_PATH;
+const SPEAKER_MODEL_BYTES: u64 = RuntimeLayout::SPEAKER_MODEL_BYTES;
+const SPEAKER_MODEL_SHA256: &str = RuntimeLayout::SPEAKER_MODEL_SHA256;
+const DENOISE_RELATIVE_PATH: &str = RuntimeLayout::DENOISE_MODEL_PATH;
+const DENOISE_MODEL_BYTES: u64 = RuntimeLayout::DENOISE_MODEL_BYTES;
+const DENOISE_MODEL_SHA256: &str = RuntimeLayout::DENOISE_MODEL_SHA256;
 const INTERNAL_BIN_DIRECTORY: &str = "bin";
 const ONNX_CPU_CORE_RELATIVE_PATH: &str = "runtime/onnxruntime/cpu/onnxruntime.dll";
-const ONNX_CPU_CORE_BYTES: u64 = 16_277_856;
-const ONNX_CPU_CORE_SHA256: &str =
-    "2462fe2d64ce063babefda3d9b1998380ffa74e99acf5d24d520ee67daa9e0f1";
+const ONNX_CPU_CORE_BYTES: u64 = RuntimeLayout::ONNX_CPU_CORE_WIN_BYTES;
+const ONNX_CPU_CORE_SHA256: &str = RuntimeLayout::ONNX_CPU_CORE_WIN_SHA256;
 const ONNX_LICENSE_RELATIVE_PATH: &str = "licenses/onnxruntime/LICENSE";
 const ONNX_LICENSE_BYTES: u64 = 1_094;
 const ONNX_LICENSE_SHA256: &str =

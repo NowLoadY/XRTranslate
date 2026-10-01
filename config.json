@@ -284,6 +284,31 @@
     },
     "onnxruntime": {
       "release": "1.28.0",
+      "cpu_downloads": [
+        {
+          "archive_directory": "onnxruntime-linux-x64-1.28.0/lib",
+          "archive_format": "tar-gz",
+          "bytes": 9125960,
+          "name": "onnxruntime-linux-x64-1.28.0.tgz",
+          "required_files": [
+            "libonnxruntime.so.1.28.0"
+          ],
+          "sha256": "a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407",
+          "target": "linux-x86_64",
+          "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-1.28.0.tgz"
+        },
+        {
+          "archive_directory": "onnxruntime-win-x64-1.28.0/lib",
+          "bytes": 78796801,
+          "name": "onnxruntime-win-x64-1.28.0.zip",
+          "required_files": [
+            "onnxruntime.dll"
+          ],
+          "sha256": "abef733dacbe2f571547a7150b479b5cb9cc0df22f96c24983a42cadb1b4f8bc",
+          "target": "windows-x86_64",
+          "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-win-x64-1.28.0.zip"
+        }
+      ],
       "downloads": [
         {
           "archive_directory": "onnxruntime-win-x64-gpu_cuda12-1.28.0/lib",
@@ -431,7 +456,47 @@
         }
       ]
     },
-    "llama_server_path": "runtime/llama.cpp/llama-server"
+    "llama_server_path": "runtime/llama.cpp/llama-server",
+    "bundled_models": [
+      {
+        "bytes": 2327524,
+        "label": "Silero VAD",
+        "name": "silero_vad.onnx",
+        "relative_path": "models/silero-vad/src/silero_vad/data/silero_vad.onnx",
+        "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+        "url": "https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx"
+      },
+      {
+        "bytes": 535638,
+        "label": "GTCRN Speech Enhancement",
+        "name": "gtcrn_simple.onnx",
+        "relative_path": "models/gtcrn/gtcrn_simple.onnx",
+        "sha256": "e77603ac0c23dac3227dd2d7135b3a585cbee2679048aecfa886657d3ae1b534",
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx"
+      },
+      {
+        "archive_format": "zip",
+        "archive_path": "XRTranslate-v0.2.11-linux-x64/models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx",
+        "bytes": 129865511,
+        "label": "3D-Speaker Diarization",
+        "name": "speaker_embedding.onnx",
+        "relative_path": "models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx",
+        "sha256": "0ad55dd88808d4d85838bc3774503921024ab21e0880ca7b3841e2034958a560",
+        "target": "linux-x86_64",
+        "url": "https://github.com/NowLoadY/XRTranslate/releases/download/v0.2.11/XRTranslate-v0.2.11-linux-x64.zip"
+      },
+      {
+        "archive_format": "zip",
+        "archive_path": "XRTranslate-v0.2.11-win-x64/models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx",
+        "bytes": 121632051,
+        "label": "3D-Speaker Diarization",
+        "name": "speaker_embedding.onnx",
+        "relative_path": "models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx",
+        "sha256": "dc19d6a533f1b7cc4f7586907ad0a8061f42d43184b83e0c1e03904e566db09c",
+        "target": "windows-x86_64",
+        "url": "https://github.com/NowLoadY/XRTranslate/releases/download/v0.2.11/XRTranslate-v0.2.11-win-x64.zip"
+      }
+    ]
   },
   "osc": {
     "enabled": true,

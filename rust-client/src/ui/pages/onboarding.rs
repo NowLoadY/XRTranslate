@@ -561,12 +561,14 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
             Vec::new()
         }
     };
-    model_comparison::vram_budget(
+    if let Some(new_gpu) = model_comparison::vram_budget(
         ui,
         language,
         &local_availability,
         &app.service_config.selected_model_asset_ids(),
-    );
+    ) {
+        app.set_preferred_gpu(&new_gpu);
+    }
     ui.add_space(12.0);
     let mut model_change = None;
     let mut provider_change = None;
@@ -716,6 +718,7 @@ fn local_model_warning_icon(
             gpu,
             memory_bytes,
             required_bytes,
+            ..
         } => format!(
             "{}\n\n{gpu}: {:.1} GiB / {:.0} GiB",
             i18n::tr(
@@ -744,7 +747,6 @@ fn local_model_warning_icon(
     .sense(egui::Sense::hover());
     ui.add(icon).on_hover_text(tooltip);
 }
-
 
 fn model_hardware_hint(
     language: i18n::UiLanguage,
@@ -1116,7 +1118,8 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                         let local_available = !choice.model_assets.is_empty()
                             && choice.model_assets.iter().all(|key| {
                                 ModelAssetId::from_config_key(key).is_some_and(|id| {
-                                    local_availability.supports(xrtranslate_assets::manifest_for(id).hardware)
+                                    local_availability
+                                        .supports(xrtranslate_assets::manifest_for(id).hardware)
                                 })
                             });
                         let response = ui.add_enabled_ui(
@@ -1130,11 +1133,19 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                                 }
                             },
                         );
-                        if let Some(model) = choice.model_assets.iter()
+                        if let Some(model) = choice
+                            .model_assets
+                            .iter()
                             .filter_map(|key| ModelAssetId::from_config_key(key))
                             .map(xrtranslate_assets::manifest_for)
-                            .find(|model| !local_availability.supports(model.hardware)) {
-                            response.response.on_disabled_hover_text(model_hardware_hint(language, model.hardware));
+                            .find(|model| !local_availability.supports(model.hardware))
+                        {
+                            response
+                                .response
+                                .on_disabled_hover_text(model_hardware_hint(
+                                    language,
+                                    model.hardware,
+                                ));
                         }
                     }
                 });

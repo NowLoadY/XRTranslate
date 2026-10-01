@@ -140,8 +140,12 @@ fn voice_name(selection: &VoiceSelection) -> String {
 
 pub(crate) async fn voice_status(
     axum::extract::State(state): axum::extract::State<crate::BackendState>,
-) -> axum::Json<VoiceStatus> {
-    axum::Json(state.voices.status())
+) -> Result<axum::Json<VoiceStatus>, (axum::http::StatusCode, String)> {
+    state
+        .prepare_speech()
+        .await
+        .map(|speech| axum::Json(speech.voices.status()))
+        .map_err(|error| (axum::http::StatusCode::BAD_GATEWAY, error))
 }
 
 pub(crate) async fn select_voice(
@@ -149,6 +153,9 @@ pub(crate) async fn select_voice(
     axum::Json(selection): axum::Json<VoiceSelection>,
 ) -> Result<axum::Json<VoiceStatus>, (axum::http::StatusCode, String)> {
     state
+        .prepare_speech()
+        .await
+        .map_err(|error| (axum::http::StatusCode::BAD_GATEWAY, error))?
         .voices
         .select(selection)
         .await

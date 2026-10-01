@@ -21,22 +21,6 @@ impl HostOutputSubscriber for OscHandle {
                 source,
                 translated,
                 speaker,
-                update: CaptionUpdate::RollOver,
-            } => self.roll_stream_for(
-                stream_id,
-                audio_source,
-                is_typing,
-                source,
-                translated,
-                speaker,
-            ),
-            HostOutputEvent::Caption {
-                stream_id,
-                audio_source,
-                is_typing,
-                source,
-                translated,
-                speaker,
                 update,
             } => self.add_message_for_stream(
                 stream_id,
@@ -201,5 +185,55 @@ mod tests {
         plugin.draft_mut().typing_target_lang = "zh".into();
         assert_eq!(plugin.draft().typing_source_lang, "ja");
         assert_eq!(plugin.draft().typing_target_lang, "zh");
+    }
+}
+
+#[cfg(test)]
+mod output_contract_tests {
+    use super::*;
+    use crate::client_settings::CaptureSource;
+    use std::{
+        net::UdpSocket,
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    fn finalized_host_rollover_replaces_the_live_draft_without_duplicate_history() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let manager = OscManager::new(OscSettings {
+            send_port: receiver.local_addr().unwrap().port(),
+            listen_port: 0,
+            ..Default::default()
+        });
+        let handle = manager.handle();
+        let send = |source, update| {
+            handle.on_host_output(HostOutputEvent::Caption {
+                stream_id: 1,
+                audio_source: CaptureSource::Microphone,
+                is_typing: false,
+                source,
+                translated: "",
+                speaker: "",
+                update,
+            })
+        };
+        send("draft", CaptionUpdate::Replace);
+        send("final", CaptionUpdate::RollOver);
+        send("next", CaptionUpdate::Replace);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let text = manager.chatbox_preview().text;
+            if text.contains("next") {
+                assert!(text.contains("final"));
+                assert!(!text.contains("draft"));
+                assert_eq!(text.matches("final").count(), 1);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "OSC output did not reach final state"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }

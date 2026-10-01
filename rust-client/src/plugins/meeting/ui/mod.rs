@@ -18,9 +18,12 @@ pub(super) fn render(
             library::render_library(&mut plugin.controller, snapshot.language, ui)
         }
         MeetingRoute::Create => setup::render_setup(&mut plugin.controller, snapshot, ui),
-        MeetingRoute::Detail => {
-            detail::render_detail(&mut plugin.controller, snapshot.language, ui)
-        }
+        MeetingRoute::Detail => detail::render_detail(
+            &mut plugin.controller,
+            snapshot.language,
+            snapshot.waiting_for_microphone,
+            ui,
+        ),
     };
     apply_action(&mut plugin.controller, action, snapshot)
 }

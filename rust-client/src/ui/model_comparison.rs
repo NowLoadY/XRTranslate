@@ -65,13 +65,15 @@ pub(super) fn vram_budget(
     language: i18n::UiLanguage,
     availability: &LocalModelAvailability,
     selected_assets: &[ModelAssetId],
-) {
+) -> Option<String> {
     let (gpu, capacity) = match availability {
-        LocalModelAvailability::Available { gpu, memory_bytes, .. }
+        LocalModelAvailability::Available {
+            gpu, memory_bytes, ..
+        }
         | LocalModelAvailability::InsufficientVram {
             gpu, memory_bytes, ..
         } => (gpu, *memory_bytes),
-        _ => return,
+        _ => return None,
     };
     let mut models = Vec::new();
     for id in selected_assets {
@@ -84,8 +86,24 @@ pub(super) fn vram_budget(
     }
     let estimated: u64 = models.iter().map(|model| model.estimated_vram_bytes).sum();
     let over = estimated > capacity;
+    let mut selected_gpu_changed = None;
     ui.horizontal(|ui| {
-        ui.label(RichText::new(gpu).size(11.5));
+        let available_gpus = availability.available_gpus();
+        if available_gpus.len() > 1 {
+            egui::ComboBox::from_id_salt("vram_budget_gpu_select")
+                .selected_text(RichText::new(gpu).size(11.5).strong())
+                .show_ui(ui, |ui| {
+                    for dev in available_gpus {
+                        let text = format!("{} · {:.1} GiB", dev.name, dev.memory_bytes as f64 / GIB);
+                        let is_selected = dev.name == *gpu;
+                        if ui.selectable_label(is_selected, text).clicked() && !is_selected {
+                            selected_gpu_changed = Some(dev.name.clone());
+                        }
+                    }
+                });
+        } else {
+            ui.label(RichText::new(gpu).size(11.5));
+        }
         let bar_width = (ui.available_width() * 0.65).clamp(200.0, 480.0);
         let (bar, _) = ui.allocate_exact_size(Vec2::new(bar_width, 18.0), egui::Sense::hover());
         let painter = ui.painter_at(bar);
@@ -154,6 +172,7 @@ pub(super) fn vram_budget(
             }),
         );
     });
+    selected_gpu_changed
 }
 
 fn compact_gib(bytes: u64) -> String {

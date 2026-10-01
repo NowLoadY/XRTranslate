@@ -138,6 +138,7 @@ pub enum SessionEvent {
 }
 
 pub struct SessionHandle {
+    stream_id: u64,
     stop_requested: Arc<AtomicBool>,
     cancel_requested: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
@@ -149,6 +150,7 @@ enum SessionCommand {
         source_lang: String,
         target_lang: String,
     },
+    #[allow(dead_code)]
     ResetAudioPipeline {
         source_lang: String,
         target_lang: String,
@@ -176,6 +178,7 @@ enum SessionCommand {
     },
     Pause,
     Resume,
+    #[allow(dead_code)]
     Finish,
     Cancel,
 }
@@ -212,7 +215,21 @@ impl SessionCommand {
     }
 }
 
+impl Drop for SessionHandle {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 impl SessionHandle {
+    #[cfg(test)]
+    pub(crate) fn paused_for_test(&self) -> bool {
+        self.paused.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn stream_id(&self) -> u64 {
+        self.stream_id
+    }
     /// Immediately cancels pending inference. Finite inputs use [`Self::finish`]
     /// at EOF when their complete ordered output is required.
     pub fn stop(&self) {
@@ -240,6 +257,7 @@ impl SessionHandle {
 
     /// Ends audio input and waits for the backend's ordered drain
     /// acknowledgement before closing the WebSocket.
+    #[allow(dead_code)]
     pub fn finish(&self) {
         if self.stop_requested.swap(true, Ordering::AcqRel) {
             return;
@@ -288,19 +306,27 @@ impl SessionHandle {
         text: impl Into<String>,
         source_lang: Option<String>,
         target_lang: Option<String>,
-    ) {
+    ) -> Result<(), String> {
         if self.stop_requested.load(Ordering::Acquire) {
-            return;
+            return Err("Translation session has stopped".into());
         }
-        let _ = self.command_tx.try_send(SessionCommand::TranslateText {
-            text: text.into(),
-            source_lang,
-            target_lang,
-        });
+        self.command_tx
+            .try_send(SessionCommand::TranslateText {
+                text: text.into(),
+                source_lang,
+                target_lang,
+            })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => {
+                    "Translation queue is full. Please try again.".into()
+                }
+                mpsc::error::TrySendError::Closed(_) => "Translation session has stopped".into(),
+            })
     }
 
     /// Reconfigure the backend audio stream after replacing the local capture
     /// source. This clears any partially accumulated VAD utterance.
+    #[allow(dead_code)]
     pub fn reset_audio_pipeline(
         &self,
         source_lang: String,
@@ -342,6 +368,25 @@ impl SessionHandle {
     }
 }
 
+#[cfg(test)]
+pub(crate) struct TestCommands {
+    _receiver: mpsc::Receiver<SessionCommand>,
+}
+#[cfg(test)]
+pub(crate) fn test_session() -> (SessionHandle, TestCommands) {
+    let (command_tx, rx) = mpsc::channel(16);
+    (
+        SessionHandle {
+            stream_id: NEXT_STREAM_ID.fetch_add(1, Ordering::Relaxed),
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+            paused: Arc::new(AtomicBool::new(false)),
+            command_tx,
+        },
+        TestCommands { _receiver: rx },
+    )
+}
+
 pub struct SessionConfig {
     pub server_url: String,
     pub languages: xrtranslate_engine::language::LanguageSelection,
@@ -364,6 +409,21 @@ pub struct SessionConfig {
 
 pub fn start_session(
     audio_rx: Receiver<Vec<f32>>,
+    event_tx: Sender<SessionEvent>,
+    config: SessionConfig,
+) -> SessionHandle {
+    spawn_session(Some(audio_rx), event_tx, config)
+}
+
+pub(crate) fn start_text_session(
+    event_tx: Sender<SessionEvent>,
+    config: SessionConfig,
+) -> SessionHandle {
+    spawn_session(None, event_tx, config)
+}
+
+fn spawn_session(
+    audio_rx: Option<Receiver<Vec<f32>>>,
     event_tx: Sender<SessionEvent>,
     config: SessionConfig,
 ) -> SessionHandle {
@@ -405,6 +465,7 @@ pub fn start_session(
         .expect("failed to start translation session thread");
 
     SessionHandle {
+        stream_id,
         stop_requested,
         cancel_requested,
         paused,
@@ -413,7 +474,7 @@ pub fn start_session(
 }
 
 async fn run_session(
-    audio_rx: Receiver<Vec<f32>>,
+    audio_rx: Option<Receiver<Vec<f32>>>,
     event_tx: Sender<SessionEvent>,
     config: SessionConfig,
     stop_requested: Arc<AtomicBool>,
@@ -443,6 +504,28 @@ async fn run_session(
         InferenceWorkload::Realtime
     };
     let _ = event_tx.send(SessionEvent::Status("Connecting to backend…".into()));
+    let text_only = audio_rx.is_none();
+    let server_url = if text_only {
+        let mut url = match reqwest::Url::parse(&server_url) {
+            Ok(url) => url,
+            Err(error) => {
+                let _ = event_tx.send(SessionEvent::Error(format!("Invalid backend URL: {error}")));
+                return;
+            }
+        };
+        let query: Vec<_> = url
+            .query_pairs()
+            .filter(|(key, _)| key != "text_only")
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect();
+        url.query_pairs_mut()
+            .clear()
+            .extend_pairs(query)
+            .append_pair("text_only", "true");
+        url.to_string()
+    } else {
+        server_url
+    };
     let (stream, _) = match connect_async(&server_url).await {
         Ok(connection) => connection,
         Err(error) => {
@@ -473,70 +556,79 @@ async fn run_session(
         )));
         return;
     }
-    if let Err(error) = send_json(
-        &mut write,
-        json!({
-            "action": "toggle_feature",
-            "feature": "speaker_recognition",
-            "enabled": true,
-        }),
-    )
-    .await
-    {
-        let _ = event_tx.send(SessionEvent::Error(format!(
-            "Cannot configure speaker recognition: {error}"
-        )));
-        return;
+    if !text_only {
+        if let Err(error) = send_json(
+            &mut write,
+            json!({
+                "action": "toggle_feature",
+                "feature": "speaker_recognition",
+                "enabled": true,
+            }),
+        )
+        .await
+        {
+            let _ = event_tx.send(SessionEvent::Error(format!(
+                "Cannot configure speaker recognition: {error}"
+            )));
+            return;
+        }
+        if let Err(error) = send_json(
+            &mut write,
+            json!({
+                "event": "config_audio",
+                "sample_rate": 16_000,
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "vad_threshold": vad_threshold,
+                "vad_silence_ms": vad_silence_ms,
+                "continuous_recognition": continuous_recognition,
+                "audio_source": audio_source_name(audio_source),
+                "workload": workload,
+            }),
+        )
+        .await
+        {
+            let _ = event_tx.send(SessionEvent::Error(format!(
+                "Cannot configure audio: {error}"
+            )));
+            return;
+        }
     }
-    if let Err(error) = send_json(
-        &mut write,
-        json!({
-            "event": "config_audio",
-            "sample_rate": 16_000,
-            "source_lang": source_lang,
-            "target_lang": target_lang,
-            "vad_threshold": vad_threshold,
-            "vad_silence_ms": vad_silence_ms,
-            "continuous_recognition": continuous_recognition,
-            "audio_source": audio_source_name(audio_source),
-            "workload": workload,
-        }),
-    )
-    .await
-    {
-        let _ = event_tx.send(SessionEvent::Error(format!(
-            "Cannot configure audio: {error}"
-        )));
-        return;
+    if !text_only {
+        let _ = event_tx.send(SessionEvent::Connected);
     }
-    let _ = event_tx.send(SessionEvent::Connected);
 
     let (pcm_tx, mut pcm_rx) = mpsc::channel::<Vec<u8>>(32);
     let producer_stop = Arc::clone(&stop_requested);
     let producer_paused = Arc::clone(&paused);
-    thread::spawn(move || {
-        while !producer_stop.load(Ordering::Acquire) {
-            match audio_rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(samples) => {
-                    if producer_paused.load(Ordering::Acquire) {
-                        continue;
+    if let Some(audio_rx) = audio_rx {
+        thread::spawn(move || {
+            while !producer_stop.load(Ordering::Acquire) {
+                match audio_rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(samples) => {
+                        if producer_paused.load(Ordering::Acquire) {
+                            continue;
+                        }
+                        let pcm = f32_to_pcm16le(samples);
+                        if pcm_tx.blocking_send(pcm).is_err() {
+                            break;
+                        }
                     }
-                    let pcm = f32_to_pcm16le(samples);
-                    if pcm_tx.blocking_send(pcm).is_err() {
-                        break;
-                    }
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
                 }
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             }
-        }
-    });
-
+        });
+    }
     let mut turn_started = false;
     let mut finish_sent = false;
     let mut pcm_input_closed = false;
     let mut ticker = tokio::time::interval(Duration::from_millis(100));
     loop {
+        if cancel_requested.load(Ordering::Acquire) {
+            let _ = write.close().await;
+            return;
+        }
         tokio::select! {
             _ = ticker.tick() => {
                 if cancel_requested.load(Ordering::Acquire) {
@@ -638,6 +730,11 @@ async fn run_session(
             message = read.next() => {
                 match message {
                     Some(Ok(Message::Text(text))) => {
+                        if cancel_requested.load(Ordering::Acquire){continue;}
+                        if text_only && serde_json::from_str::<Value>(&text).ok()
+                            .is_some_and(|payload| payload["action"] == "session_ready") {
+                            let _ = event_tx.send(SessionEvent::Connected);
+                        }
                         let drained = pipeline_drain_reason(&text);
                         forward_server_event(
                             &event_tx,
@@ -660,6 +757,7 @@ async fn run_session(
                         }
                     }
                     Some(Ok(Message::Binary(audio))) => {
+                        if cancel_requested.load(Ordering::Acquire){continue;}
                         if let Some(tts) = &tts_handle {
                             if let Err(error) = tts.play_pcm(&audio) {
                                 let _ = event_tx.send(SessionEvent::BackendError {
@@ -1111,6 +1209,32 @@ fn forward_server_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_submission_reports_full_or_stopped_queue() {
+        let (tx, _rx) = mpsc::channel(1);
+        let handle = SessionHandle {
+            stream_id: 1,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+            paused: Arc::new(AtomicBool::new(false)),
+            command_tx: tx,
+        };
+        assert!(handle.translate_text("one", None, None).is_ok());
+        assert!(
+            handle
+                .translate_text("two", None, None)
+                .unwrap_err()
+                .contains("full")
+        );
+        handle.cancel();
+        assert!(
+            handle
+                .translate_text("three", None, None)
+                .unwrap_err()
+                .contains("stopped")
+        );
+    }
 
     #[test]
     fn pipeline_drain_reason_distinguishes_pause_from_terminal_eof() {

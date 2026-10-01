@@ -246,42 +246,61 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 
         let tts_configured = app.service_config.tts_is_configured();
         crate::ui::layout::flow_row(ui, |ui| {
-            if app.is_translating {
-                match &app.session_owner {
-                    crate::session_coordinator::TranslationSessionOwner::Plugin(owner) => {
-                        let plugin_id = crate::plugins::PluginId::parse(owner.plugin_id());
-                        let open_label = owner.open_label(app.ui_language);
-                        let active_message = owner.active_message(app.ui_language);
-                        let open_clicked = components::primary_button(ui, open_label).clicked();
-                        ui.label(
-                            egui::RichText::new(active_message)
-                                .color(crate::ui::theme::text_weak())
-                                .size(11.5),
-                        );
-                        if open_clicked && let Some(plugin_id) = plugin_id {
-                            app.open_plugin(plugin_id);
-                        }
-                    }
-                    _ => {
-                        if danger_button(
-                            ui,
-                            crate::i18n::tr(app.ui_language, "Stop Translation"),
-                        )
+            ui.horizontal(|ui| {
+                if app.translation_enabled {
+                    if danger_button(ui, crate::i18n::tr(app.ui_language, "Stop Translation"))
                         .clicked()
-                        {
-                            app.stop();
-                        }
+                    {
+                        app.stop();
                     }
+                } else if components::primary_button(
+                    ui,
+                    crate::i18n::tr(app.ui_language, "Start Translation"),
+                )
+                .clicked()
+                {
+                    app.start(Some(ui.ctx().clone()));
                 }
-            } else if components::primary_button_enabled(
-                ui,
-                crate::i18n::tr(app.ui_language, "Start Translation"),
-                app.backend_start_deadline.is_none(),
-            )
-            .clicked()
-            {
-                app.start(Some(ui.ctx().clone()));
-            }
+                let mic_label = crate::i18n::tr(
+                    app.ui_language,
+                    if app.microphone_enabled {
+                        "Turn off microphone input (including meetings)"
+                    } else {
+                        "Turn on microphone input (including meetings)"
+                    },
+                );
+                if components::input_toggle(
+                    ui,
+                    "microphone_input",
+                    app.microphone_enabled,
+                    true,
+                    mic_label,
+                )
+                .clicked()
+                {
+                    app.set_microphone_enabled(!app.microphone_enabled, Some(ui.ctx().clone()));
+                }
+                let system_enabled = app.host_input_active(CaptureSource::SystemAudio);
+                let system_label = crate::i18n::tr(
+                    app.ui_language,
+                    if system_enabled {
+                        "Turn off system audio translation"
+                    } else {
+                        "Turn on system audio translation"
+                    },
+                );
+                if components::input_toggle(
+                    ui,
+                    "system_audio_input",
+                    system_enabled,
+                    false,
+                    system_label,
+                )
+                .clicked()
+                {
+                    app.set_system_audio_enabled(!system_enabled, Some(ui.ctx().clone()));
+                }
+            });
             ui.add_space(12.0);
             let mut tts_enabled = app.tts_enabled;
             let tts_response = ui.add_enabled_ui(tts_configured, |ui| {
@@ -336,12 +355,15 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 }
                 _ => crate::i18n::tr(app.ui_language, "Clone microphone voice").into(),
             };
-            let enabled = app.is_translating && mic_capturing && !busy && tts_configured;
+            let enabled = app
+                .host_channels()
+                .any(|channel| channel.source == CaptureSource::Microphone && channel.capturing)
+                && mic_capturing
+                && !busy
+                && tts_configured;
             let response = components::animated_button_enabled(ui, &label, enabled);
             let clicked = response.clicked();
-            if let Some(message) =
-                status.as_ref().and_then(|status| status.message.as_deref())
-            {
+            if let Some(message) = status.as_ref().and_then(|status| status.message.as_deref()) {
                 response.on_hover_text(message);
             } else if !tts_configured {
                 response.on_disabled_hover_text(crate::i18n::tr(
@@ -357,9 +379,10 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             if clicked {
                 app.begin_voice_clone();
             }
-            if status.as_ref().is_some_and(|status| {
-                status.state == xrtranslate_protocol::VoiceClonePhase::Ready
-            }) {
+            if status
+                .as_ref()
+                .is_some_and(|status| status.state == xrtranslate_protocol::VoiceClonePhase::Ready)
+            {
                 ui.label(egui::RichText::new("OK").color(egui::Color32::from_rgb(5, 150, 105)));
             }
 
@@ -884,7 +907,7 @@ fn render_capture_device_selector(
                 &app.loopback_vad_active,
             )
         };
-        render_audio_level(ui, id, level, vad, true, app.is_translating);
+        render_audio_level(ui, id, level, vad, true, app.input_capturing(source));
     });
     if microphone {
         let previous_device = app.selected_device_id.clone();

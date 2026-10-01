@@ -6,7 +6,7 @@
 //! all previously observed transcript events.
 
 use super::{
-    controller::SharedMeetingCapture,
+    controller::{ActiveMeetingCapture, SharedMeetingCapture},
     store::{MeetingStore, NewSegment, SegmentSource},
 };
 use crossbeam_channel::{Sender, unbounded};
@@ -40,9 +40,9 @@ pub struct MeetingSegmentEvent {
 }
 
 enum Command {
-    Segment(MeetingSegmentEvent),
-    FinishActive,
-    FailActive(String),
+    Segment(ActiveMeetingCapture, MeetingSegmentEvent),
+    FinishActive(ActiveMeetingCapture),
+    FailActive(ActiveMeetingCapture, String),
     #[cfg(test)]
     Flush(Sender<()>),
 }
@@ -82,9 +82,13 @@ impl MeetingEventSink {
             .spawn(move || {
                 while let Ok(command) = rx.recv() {
                     match command {
-                        Command::Segment(event) => persist_segment(&store, &worker_active, event),
-                        Command::FinishActive => finish_active(&store, &worker_active),
-                        Command::FailActive(error) => fail_active(&store, &worker_active, error),
+                        Command::Segment(capture, event) => persist_segment(&store, capture, event),
+                        Command::FinishActive(capture) => {
+                            finish_active(&store, &worker_active, &capture)
+                        }
+                        Command::FailActive(capture, error) => {
+                            fail_active(&store, &worker_active, &capture, error)
+                        }
                         #[cfg(test)]
                         Command::Flush(done) => {
                             let _ = done.send(());
@@ -104,16 +108,26 @@ impl MeetingEventSink {
         }
     }
 
+    fn capture_snapshot(&self) -> Option<ActiveMeetingCapture> {
+        self.inner.active.lock().ok()?.clone()
+    }
+
     pub fn persist(&self, event: MeetingSegmentEvent) {
-        self.send(Command::Segment(event));
+        if let Some(capture) = self.capture_snapshot() {
+            self.send(Command::Segment(capture, event));
+        }
     }
 
     pub fn finish_active(&self) {
-        self.send(Command::FinishActive);
+        if let Some(capture) = self.capture_snapshot() {
+            self.send(Command::FinishActive(capture));
+        }
     }
 
     pub fn fail_active(&self, error: impl Into<String>) {
-        self.send(Command::FailActive(error.into()));
+        if let Some(capture) = self.capture_snapshot() {
+            self.send(Command::FailActive(capture, error.into()));
+        }
     }
 
     pub fn active_is_imported(&self) -> bool {
@@ -132,6 +146,7 @@ impl MeetingEventSink {
     }
 
     /// Requests durable completion once every stream has drained.
+    #[cfg(test)]
     pub fn request_finish(&self) {
         self.inner.finish_requested.store(true, Ordering::Release);
     }
@@ -163,6 +178,13 @@ impl MeetingEventSink {
 }
 
 impl SessionEventSubscriber for MeetingEventSink {
+    fn accepts_owner(&self, owner: &crate::session_coordinator::TranslationSessionOwner) -> bool {
+        owner.is_plugin(super::super::PluginId::MEETING.as_str())
+            && self
+                .capture_snapshot()
+                .is_some_and(|capture| owner.operation_id() == Some(capture.meeting_id.as_str()))
+    }
+
     fn on_session_event(&self, event: &SessionEvent) {
         match event {
             SessionEvent::SourceSegment {
@@ -268,13 +290,9 @@ impl MeetingEventSink {
 
 fn persist_segment(
     store: &MeetingStore,
-    active: &SharedMeetingCapture,
+    capture: ActiveMeetingCapture,
     event: MeetingSegmentEvent,
 ) {
-    let capture = active.lock().ok().and_then(|capture| capture.clone());
-    let Some(capture) = capture else {
-        return;
-    };
     let source = if capture.imported_audio {
         SegmentSource::ImportedAudio
     } else {
@@ -337,28 +355,55 @@ fn persist_segment(
     }
 }
 
-fn finish_active(store: &MeetingStore, active: &SharedMeetingCapture) {
+fn finish_active(
+    store: &MeetingStore,
+    active: &SharedMeetingCapture,
+    target: &ActiveMeetingCapture,
+) {
     let Ok(mut capture) = active.lock() else {
         return;
     };
-    if let Some(current) = capture.as_ref()
-        && let Err(error) = store.end_meeting(&current.meeting_id)
-    {
+    if capture.as_ref().is_some_and(|current| {
+        current.meeting_id == target.meeting_id
+            && current.recognition_run_id != target.recognition_run_id
+    }) {
+        return;
+    }
+    if let Err(error) = store.end_meeting(&target.meeting_id) {
         log::error!("Could not finish meeting: {error}");
     }
-    *capture = None;
+    if capture.as_ref().is_some_and(|current| {
+        current.recognition_run_id == target.recognition_run_id
+            && current.meeting_id == target.meeting_id
+    }) {
+        *capture = None;
+    }
 }
 
-fn fail_active(store: &MeetingStore, active: &SharedMeetingCapture, error: String) {
+fn fail_active(
+    store: &MeetingStore,
+    active: &SharedMeetingCapture,
+    target: &ActiveMeetingCapture,
+    error: String,
+) {
     let Ok(mut capture) = active.lock() else {
         return;
     };
-    if let Some(current) = capture.as_ref()
-        && let Err(store_error) = store.fail_meeting(&current.meeting_id, error)
-    {
-        log::error!("Could not mark failed meeting: {store_error}");
+    if capture.as_ref().is_some_and(|current| {
+        current.meeting_id == target.meeting_id
+            && current.recognition_run_id != target.recognition_run_id
+    }) {
+        return;
     }
-    *capture = None;
+    if let Err(error) = store.fail_meeting(&target.meeting_id, error) {
+        log::error!("Could not mark failed meeting: {error}");
+    }
+    if capture.as_ref().is_some_and(|current| {
+        current.recognition_run_id == target.recognition_run_id
+            && current.meeting_id == target.meeting_id
+    }) {
+        *capture = None;
+    }
 }
 
 fn speaker_label(speaker_id: &str) -> Option<String> {
@@ -379,6 +424,122 @@ mod tests {
     use super::super::store::{MeetingStatus, NewMeeting};
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn meeting_subscriber_accepts_only_its_own_task() {
+        let store = Arc::new(MeetingStore::open_in_memory().unwrap());
+        let active = Arc::new(Mutex::new(Some(ActiveMeetingCapture {
+            meeting_id: "meeting-a".into(),
+            topic_id: "topic-a".into(),
+            recognition_run_id: "run-a".into(),
+            timeline_offset_ms: 0,
+            imported_audio: false,
+        })));
+        let sink = MeetingEventSink::start(store, active);
+        let owner = |plugin, operation| {
+            crate::session_coordinator::TranslationSessionOwner::Plugin(
+                crate::session_coordinator::PluginSessionOwner::new(
+                    plugin, operation, "Task", "Open", "Active",
+                ),
+            )
+        };
+        assert!(sink.accepts_owner(&owner("meeting", "meeting-a")));
+        assert!(!sink.accepts_owner(&owner("meeting", "meeting-b")));
+        assert!(!sink.accepts_owner(&owner("video_player", "meeting-a")));
+        assert!(
+            !sink.accepts_owner(&crate::session_coordinator::TranslationSessionOwner::Host {
+                capture_source: CaptureSource::Microphone
+            })
+        );
+    }
+
+    #[test]
+    fn queued_segments_keep_their_meeting_identity_after_a_new_meeting_opens() {
+        let store = Arc::new(MeetingStore::open_in_memory().unwrap());
+        let a = store
+            .create_meeting(NewMeeting::live("A", Some("microphone".into()), "en", "zh"))
+            .unwrap();
+        let b = store
+            .create_meeting(NewMeeting::live("B", Some("microphone".into()), "en", "zh"))
+            .unwrap();
+        store.start_meeting(&a.meeting.id).unwrap();
+        store.start_meeting(&b.meeting.id).unwrap();
+        let capture_a = ActiveMeetingCapture {
+            meeting_id: a.meeting.id.clone(),
+            topic_id: a.topics[0].id.clone(),
+            recognition_run_id: "run-a".into(),
+            timeline_offset_ms: 0,
+            imported_audio: false,
+        };
+        let capture_b = ActiveMeetingCapture {
+            meeting_id: b.meeting.id.clone(),
+            topic_id: b.topics[0].id.clone(),
+            recognition_run_id: "run-b".into(),
+            timeline_offset_ms: 0,
+            imported_audio: false,
+        };
+        let active = Arc::new(Mutex::new(Some(capture_a.clone())));
+        let sink = MeetingEventSink::start(store.clone(), active.clone());
+        sink.persist(MeetingSegmentEvent {
+            source: MeetingSegmentSource::Microphone,
+            turn_id: "native-1".into(),
+            segment_index: 1,
+            source_text: "A only".into(),
+            translated_text: Some("只属于A".into()),
+            raw_speaker_id: "speaker-1".into(),
+            source_start_ms: 0.0,
+            source_end_ms: 1000.0,
+            is_final: true,
+        });
+        *active.lock().unwrap() = Some(capture_b);
+        sink.send(Command::FinishActive(capture_a));
+        sink.flush();
+        assert_eq!(store.open_meeting(&a.meeting.id).unwrap().segments.len(), 1);
+        assert!(
+            store
+                .open_meeting(&b.meeting.id)
+                .unwrap()
+                .segments
+                .is_empty()
+        );
+        assert_eq!(
+            store.get_meeting(&b.meeting.id).unwrap().status,
+            MeetingStatus::Live
+        );
+        assert_eq!(
+            active.lock().unwrap().as_ref().unwrap().meeting_id,
+            b.meeting.id
+        );
+    }
+
+    #[test]
+    fn stale_finish_and_failure_cannot_close_a_new_run_of_the_same_meeting() {
+        let store = MeetingStore::open_in_memory().unwrap();
+        let bundle = store
+            .create_meeting(NewMeeting::live("A", Some("microphone".into()), "en", "zh"))
+            .unwrap();
+        store.start_meeting(&bundle.meeting.id).unwrap();
+        let old = ActiveMeetingCapture {
+            meeting_id: bundle.meeting.id.clone(),
+            topic_id: bundle.topics[0].id.clone(),
+            recognition_run_id: "old".into(),
+            timeline_offset_ms: 0,
+            imported_audio: false,
+        };
+        let mut new = old.clone();
+        new.recognition_run_id = "new".into();
+        let active = Arc::new(Mutex::new(Some(new)));
+        finish_active(&store, &active, &old);
+        fail_active(&store, &active, &old, "late error".into());
+        assert_eq!(
+            store.get_meeting(&bundle.meeting.id).unwrap().status,
+            MeetingStatus::Live
+        );
+        assert_eq!(
+            active.lock().unwrap().as_ref().unwrap().recognition_run_id,
+            "new"
+        );
+    }
 
     #[test]
     fn speaker_labels_stay_compact() {

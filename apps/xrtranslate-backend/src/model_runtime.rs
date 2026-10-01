@@ -15,8 +15,8 @@ use std::{
 };
 
 use xrtranslate_assets::{
-    ModelAssetId, ModelCapability, ModelFileRole, ModelRuntime,
-    ResolvedModelAsset, ResolvedModelAssets, TranslationPromptStyle,
+    ModelAssetId, ModelCapability, ModelFileRole, ModelRuntime, ResolvedModelAsset,
+    ResolvedModelAssets, TranslationPromptStyle,
 };
 use xrtranslate_config::{
     AppConfig, AsrPromptMode, LocalModelRuntimeConfig, NativeModelRouteConfig,
@@ -123,6 +123,58 @@ impl NativeProviderPlan {
             .check()
             .into_result()
             .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn check_capability_assets(
+        &self,
+        capability: ModelCapability,
+    ) -> Result<(), String> {
+        let diagnostics = self
+            .assets
+            .active_assets_for(capability)
+            .flat_map(ResolvedModelAsset::check)
+            .collect::<Vec<_>>();
+        if diagnostics.is_empty() {
+            Ok(())
+        } else {
+            Err(diagnostics
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
+    }
+
+    pub(crate) fn managed_server_for(
+        &self,
+        capability: ModelCapability,
+    ) -> Result<Option<LlamaServerSpec>, String> {
+        let (uses_llama, url, runtime) = match capability {
+            ModelCapability::Asr => (
+                self.asr_uses_llama_server(),
+                self.asr_url(),
+                self.asr_runtime(),
+            ),
+            ModelCapability::Translation => (
+                self.translation_uses_llama_server(),
+                self.translation_url(),
+                self.translation_runtime(),
+            ),
+            _ => return Ok(None),
+        };
+        if !uses_llama {
+            return Ok(None);
+        }
+        if !self.native_runtime.as_ref().is_some_and(|runtime| {
+            matches!(
+                runtime.llama_cpp_backend,
+                Some(NativeRuntimeBackend::Cuda | NativeRuntimeBackend::Vulkan)
+            )
+        }) {
+            return Err("Managed models require a verified CUDA or Vulkan runtime marker; CPU fallback is disabled.".into());
+        }
+        self.managed_server_spec(capability, crate::local_endpoint_port(url)?, runtime)
+            .map(Some)
     }
 
     pub(crate) fn uses_local_runtime(&self) -> bool {
@@ -373,6 +425,7 @@ impl NativeProviderPlan {
             .transpose()
     }
 
+    #[cfg(test)]
     pub(crate) fn managed_server_specs(
         &self,
         asr_port: u16,
@@ -380,8 +433,10 @@ impl NativeProviderPlan {
     ) -> Result<(Option<LlamaServerSpec>, Option<LlamaServerSpec>), String> {
         if (self.asr_uses_llama_server() || self.translation_uses_llama_server())
             && !self.native_runtime.as_ref().is_some_and(|runtime| {
-                matches!(runtime.llama_cpp_backend,
-                    Some(NativeRuntimeBackend::Cuda | NativeRuntimeBackend::Vulkan))
+                matches!(
+                    runtime.llama_cpp_backend,
+                    Some(NativeRuntimeBackend::Cuda | NativeRuntimeBackend::Vulkan)
+                )
             })
         {
             return Err(
@@ -497,11 +552,15 @@ fn apply_managed_runtime_environment(
         return Ok(());
     };
     if runtime.llama_cpp_backend == Some(NativeRuntimeBackend::Vulkan) {
-        let device = runtime.vulkan_device.ok_or("Managed Vulkan runtime has no selected GPU; run hardware detection again.")?;
-        spec.environment.push(("GGML_VK_VISIBLE_DEVICES".into(), device.to_string().into()));
+        let device = runtime
+            .vulkan_device
+            .ok_or("Managed Vulkan runtime has no selected GPU; run hardware detection again.")?;
+        spec.environment
+            .push(("GGML_VK_VISIBLE_DEVICES".into(), device.to_string().into()));
         // A required device makes llama.cpp fail clearly if the driver changes;
         // it must not silently run a GPU model on CPU. The visible list has one GPU.
-        spec.extra_args.extend(["--device".into(), "Vulkan0".into()]);
+        spec.extra_args
+            .extend(["--device".into(), "Vulkan0".into()]);
         return Ok(());
     }
     let Some(cuda_directory) = runtime.cuda_bin_dir.as_ref() else {
@@ -637,8 +696,14 @@ mod tests {
         runtime.vulkan_device = Some(2);
         spec.environment.clear();
         apply_managed_runtime_environment(&mut spec, Some(&runtime)).unwrap();
-        assert_eq!(spec.environment, vec![("GGML_VK_VISIBLE_DEVICES".into(), "2".into())]);
-        assert!(spec.extra_args.ends_with(&["--device".into(), "Vulkan0".into()]));
+        assert_eq!(
+            spec.environment,
+            vec![("GGML_VK_VISIBLE_DEVICES".into(), "2".into())]
+        );
+        assert!(
+            spec.extra_args
+                .ends_with(&["--device".into(), "Vulkan0".into()])
+        );
         runtime.vulkan_device = None;
         assert!(apply_managed_runtime_environment(&mut spec, Some(&runtime)).is_err());
     }

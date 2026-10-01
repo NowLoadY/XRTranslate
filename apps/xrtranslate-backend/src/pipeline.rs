@@ -447,7 +447,7 @@ enum FixedWindowEvent {
 #[derive(Clone)]
 pub(crate) struct NativeInference {
     languages: LanguageCapabilities,
-    asr: NativeAsrAdapter,
+    asr: Option<NativeAsrAdapter>,
     asr_prompt: AsrPromptPolicy,
     translation: TranslationAdapter<ReqwestClient>,
     translation_supports_reference_context: bool,
@@ -907,12 +907,29 @@ impl NativeInference {
         model_plan: &NativeProviderPlan,
         speaker: Option<SpeakerInferenceConfig>,
     ) -> Result<Self, String> {
-        let asr_http = model_plan
-            .asr_http_client()
-            .map_err(|error| error.to_string())?;
-        let asr = model_plan
-            .asr_adapter(asr_http)
-            .map_err(|error| error.to_string())?;
+        Self::build(model_plan, speaker, true)
+    }
+
+    pub(crate) fn for_text(model_plan: &NativeProviderPlan) -> Result<Self, String> {
+        Self::build(model_plan, None, false)
+    }
+
+    fn build(
+        model_plan: &NativeProviderPlan,
+        speaker: Option<SpeakerInferenceConfig>,
+        audio: bool,
+    ) -> Result<Self, String> {
+        let asr = if audio {
+            let asr_http = model_plan
+                .asr_http_client()
+                .map_err(|error| error.to_string())?;
+            let asr = model_plan
+                .asr_adapter(asr_http)
+                .map_err(|error| error.to_string())?;
+            Some(asr)
+        } else {
+            None
+        };
         let translation_http = model_plan
             .translation_http_client()
             .map_err(|error| error.to_string())?;
@@ -1184,6 +1201,8 @@ impl NativeInference {
         let prompt_trace = delivery.prompt_trace.clone();
         let mut transcript = self
             .asr
+            .as_ref()
+            .expect("ASR jobs require an audio session")
             .transcribe_pcm16(
                 pcm,
                 NativeAsrOptions {
@@ -1214,6 +1233,8 @@ impl NativeInference {
         let prompt_trace = context_free_delivery.prompt_trace.clone();
         transcript = self
             .asr
+            .as_ref()
+            .expect("ASR jobs require an audio session")
             .transcribe_pcm16(
                 pcm,
                 NativeAsrOptions {
@@ -1473,12 +1494,27 @@ mod tests {
     use super::{
         FRAME_SAMPLES, FixedWindow, FixedWindowEvent, MAX_INPUT_PCM_BYTES, RecognizedOutput,
         TimedUtterance, Utterance, UtteranceEndReason, asr_language, frames_for_ms,
-        is_context_window_error, is_recoverable_provider_error, translation_route, vad_is_active, validate_input_chunk_size,
-        validate_input_sample_rate,
+        is_context_window_error, is_recoverable_provider_error, translation_route, vad_is_active,
+        validate_input_chunk_size, validate_input_sample_rate,
     };
     use xrtranslate_engine::translation_segment_pairs_for_final_text_with_lang;
     use xrtranslate_inference::InferenceError;
     use xrtranslate_protocol::AudioSource;
+
+    #[test]
+    fn text_inference_does_not_load_missing_recognition_assets() {
+        let config =
+            xrtranslate_config::AppConfig::from_json_str(include_str!("../../../config.json"))
+                .unwrap();
+        let plan = crate::model_runtime::NativeProviderPlan::resolve(
+            &config,
+            std::path::Path::new("/tmp/xrtranslate-no-audio-assets"),
+        )
+        .unwrap();
+        let inference = super::NativeInference::for_text(&plan).unwrap();
+        assert!(inference.asr.is_none());
+        assert!(!inference.speaker_is_available());
+    }
 
     fn push_active_frames(window: &mut FixedWindow, frames: usize) -> Vec<FixedWindowEvent> {
         let frame = vec![1_i16; FRAME_SAMPLES];

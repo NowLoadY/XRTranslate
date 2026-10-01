@@ -566,11 +566,12 @@ impl AudioRouteHandle {
 pub struct AudioSystem {
     tts_enabled: Arc<AtomicBool>,
     host: cpal::Host,
-    active_captures: Vec<ActiveCapture>,
+    active_captures: Vec<(u64, ActiveCapture)>,
+    capture_group: u64,
     voice_preview: Option<VoicePreview>,
     audio_routes: Vec<AudioRouteHandle>,
     routed_tts_targets: Arc<Mutex<Vec<RoutedTtsTarget>>>,
-    microphone_fanout: Option<(String, Arc<MicrophoneFanout>)>,
+    microphone_fanouts: HashMap<String, Weak<MicrophoneFanout>>,
     microphone_effects: Arc<Mutex<Vec<SourceEffect>>>,
     loopback_effects: Arc<Mutex<Vec<SourceEffect>>>,
     studio_metering: Arc<AtomicBool>,
@@ -613,7 +614,11 @@ impl TtsPlayerHandle {
         }
         log::info!(
             "Queued TTS audio for {} routed outputs: input_bytes={}, output_samples={}, source_rate={}, route_rate={}",
-            targets.len(), pcm.len(), samples.len(), self.source_sample_rate, AUDIO_ROUTE_SAMPLE_RATE,
+            targets.len(),
+            pcm.len(),
+            samples.len(),
+            self.source_sample_rate,
+            AUDIO_ROUTE_SAMPLE_RATE,
         );
         Ok(())
     }
@@ -634,7 +639,11 @@ struct VoicePreview {
 }
 
 enum ActiveCapture {
-    MicrophoneSubscription(thread::JoinHandle<()>),
+    MicrophoneSubscription {
+        worker: thread::JoinHandle<()>,
+        stop: Arc<AtomicBool>,
+        _fanout: Arc<MicrophoneFanout>,
+    },
     #[cfg(any(windows, target_os = "linux"))]
     Loopback(LoopbackCapture),
 }
@@ -694,7 +703,13 @@ impl AudioRouteResources {
 impl ActiveCapture {
     fn stop(self) {
         match self {
-            Self::MicrophoneSubscription(worker) => {
+            Self::MicrophoneSubscription {
+                worker,
+                stop,
+                _fanout,
+            } => {
+                stop.store(true, Ordering::Release);
+                drop(_fanout);
                 let _ = thread::Builder::new()
                     .name("audio-subscription-reaper".into())
                     .spawn(move || {
@@ -838,16 +853,17 @@ impl AudioSystem {
 
     pub fn new() -> Self {
         Self {
-            tts_enabled: Arc::new(AtomicBool::new(false)),
+            tts_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             host: cpal::default_host(),
             active_captures: Vec::new(),
+            capture_group: 0,
             voice_preview: None,
             audio_routes: Vec::new(),
             routed_tts_targets: Arc::new(Mutex::new(Vec::new())),
-            microphone_fanout: None,
+            microphone_fanouts: HashMap::new(),
             microphone_effects: Arc::new(Mutex::new(default_source_effects())),
             loopback_effects: Arc::new(Mutex::new(default_source_effects())),
-            studio_metering: Arc::new(AtomicBool::new(false)),
+            studio_metering: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             microphone_input_meter: Arc::new(InputPeakMeter::default()),
             loopback_input_meter: Arc::new(InputPeakMeter::default()),
         }
@@ -971,14 +987,54 @@ impl AudioSystem {
     }
 
     /// Stop the currently active audio stream
+    pub(crate) fn set_capture_group(&mut self, id: u64) {
+        self.capture_group = id;
+    }
+
+    /// Release one translation input without interrupting other consumers.
+    pub(crate) fn stop_capture_group(&mut self, id: u64) {
+        let mut kept = Vec::new();
+        for (group, capture) in self.active_captures.drain(..) {
+            if group == id {
+                capture.stop();
+            } else {
+                kept.push((group, capture));
+            }
+        }
+        self.active_captures = kept;
+        self.microphone_fanouts
+            .retain(|_, fanout| fanout.strong_count() > 0);
+    }
+
     pub fn stop(&mut self) {
-        for capture in self.active_captures.drain(..) {
+        for (_, capture) in self.active_captures.drain(..) {
             capture.stop();
         }
         self.clear_tts_playback();
-        if self.audio_routes.is_empty() {
-            self.microphone_fanout = None;
+        self.microphone_fanouts
+            .retain(|_, fanout| fanout.strong_count() > 0);
+    }
+
+    fn shared_microphone(
+        &mut self,
+        device_id: &str,
+    ) -> Result<Arc<MicrophoneFanout>, AudioRouteError> {
+        // Canonicalize the default endpoint so explicit/default selections share it.
+        let key = if device_id.is_empty() {
+            self.host
+                .default_input_device()
+                .and_then(|device| device.id().ok())
+                .map(|id| id.to_string())
+                .unwrap_or_default()
+        } else {
+            device_id.to_owned()
+        };
+        if let Some(fanout) = self.microphone_fanouts.get(&key).and_then(Weak::upgrade) {
+            return Ok(fanout);
         }
+        let fanout = Arc::new(self.build_microphone_fanout(&key)?);
+        self.microphone_fanouts.insert(key, Arc::downgrade(&fanout));
+        Ok(fanout)
     }
 
     pub fn clear_tts_playback(&mut self) {
@@ -1041,15 +1097,8 @@ impl AudioSystem {
             }
         }
         let mut microphone_fanouts = HashMap::<String, Arc<MicrophoneFanout>>::new();
-        for (device_id, count) in microphone_counts {
-            if let Some((active_id, fanout)) = &self.microphone_fanout
-                && active_id == &device_id
-            {
-                microphone_fanouts.insert(device_id, Arc::clone(fanout));
-            } else if count > 1 {
-                let fanout = Arc::new(self.build_microphone_fanout(&device_id)?);
-                microphone_fanouts.insert(device_id, fanout);
-            }
+        for (device_id, _) in microphone_counts {
+            microphone_fanouts.insert(device_id.clone(), self.shared_microphone(&device_id)?);
         }
         let mut replacements = Vec::with_capacity(configs.len());
         for config in configs {
@@ -1078,17 +1127,13 @@ impl AudioSystem {
                 })
             })
             .collect::<Vec<_>>();
-        if let Some((device_id, fanout)) = microphone_fanouts.into_iter().next() {
-            self.microphone_fanout = Some((device_id, fanout));
-        }
         *self.routed_tts_targets.lock() = replacement_targets;
         let previous = std::mem::replace(&mut self.audio_routes, replacements.clone());
         for handle in previous {
             handle.stop();
         }
-        if replacements.is_empty() && self.active_captures.is_empty() {
-            self.microphone_fanout = None;
-        }
+        self.microphone_fanouts
+            .retain(|_, fanout| fanout.strong_count() > 0);
         for (index, handle) in replacements.iter().enumerate() {
             let status = handle.status();
             let levels = handle.levels();
@@ -1449,17 +1494,10 @@ impl AudioSystem {
         tx: Sender<Vec<f32>>,
         level: Arc<AtomicU32>,
     ) -> Result<(), String> {
-        let fanout = match &self.microphone_fanout {
-            Some((active_id, fanout)) if active_id == device_id => Arc::clone(fanout),
-            _ => {
-                let fanout = Arc::new(
-                    self.build_microphone_fanout(device_id)
-                        .map_err(|error| error.to_string())?,
-                );
-                self.microphone_fanout = Some((device_id.to_owned(), Arc::clone(&fanout)));
-                fanout
-            }
-        };
+        let fanout = self
+            .shared_microphone(device_id)
+            .map_err(|error| error.to_string())?;
+        let stop = Arc::new(AtomicBool::new(false));
         let worker = Self::spawn_processing_worker_with_level(
             fanout.attach(),
             fanout.sample_rate,
@@ -1469,9 +1507,14 @@ impl AudioSystem {
             Arc::clone(&self.microphone_effects),
             Arc::clone(&self.microphone_input_meter),
             Arc::clone(&self.studio_metering),
+            Arc::clone(&stop),
         )
         .map_err(|error| format!("Failed to start microphone processing: {error}"))?;
-        self.add_active_capture(ActiveCapture::MicrophoneSubscription(worker));
+        self.add_active_capture(ActiveCapture::MicrophoneSubscription {
+            worker,
+            stop,
+            _fanout: fanout,
+        });
         Ok(())
     }
 
@@ -1560,6 +1603,7 @@ impl AudioSystem {
         effects: Arc<Mutex<Vec<SourceEffect>>>,
         input_meter: Arc<InputPeakMeter>,
         studio_metering: Arc<AtomicBool>,
+        stop: Arc<AtomicBool>,
     ) -> Result<thread::JoinHandle<()>, String> {
         let mut resampler = if src_rate != target_rate {
             Some(
@@ -1582,7 +1626,15 @@ impl AudioSystem {
                 let mut config = effects.lock().clone();
                 let mut processing = SourcePipeline::new(&config, src_rate);
                 let mut pending = VecDeque::new();
-                'worker: while let Ok(mut samples) = raw_rx.recv() {
+                'worker: while !stop.load(Ordering::Acquire) {
+                    let mut samples = match raw_rx.recv_timeout(Duration::from_millis(50)) {
+                        Ok(samples) => samples,
+                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                    };
+                    if stop.load(Ordering::Acquire) {
+                        break;
+                    }
                     let current = effects.lock();
                     if *current != config {
                         config.clone_from(&current);
@@ -1639,7 +1691,7 @@ impl AudioSystem {
     }
 
     fn add_active_capture(&mut self, capture: ActiveCapture) {
-        self.active_captures.push(capture);
+        self.active_captures.push((self.capture_group, capture));
     }
 
     fn create_voice_preview(&self) -> Result<VoicePreview, String> {
@@ -2467,6 +2519,7 @@ impl AudioSystem {
             Arc::clone(&self.loopback_effects),
             Arc::clone(&self.loopback_input_meter),
             Arc::clone(&self.studio_metering),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )?;
         let stop_requested = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop_requested);
@@ -2753,6 +2806,7 @@ fn run_loopback_capture(
                 effects.unwrap_or_else(|| Arc::new(Mutex::new(default_source_effects()))),
                 input_meter.unwrap_or_else(|| Arc::new(InputPeakMeter::default())),
                 studio_metering,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
             )?;
             Some(raw_tx)
         }
@@ -2984,6 +3038,7 @@ mod tests {
             Arc::clone(&effects),
             Arc::new(super::InputPeakMeter::default()),
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .unwrap();
         tx.send(vec![0.05; 1600]).unwrap();
@@ -3126,7 +3181,9 @@ mod tests {
         drop(queue);
 
         // A session started without outputs follows later graph changes, with no fallback.
-        use super::{AudioRouteControl, AudioRouteState, Mutex, TtsPlayerHandle, encode_route_state};
+        use super::{
+            AudioRouteControl, AudioRouteState, Mutex, TtsPlayerHandle, encode_route_state,
+        };
         use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
         let routes = Arc::new(Mutex::new(Vec::new()));
         let player = TtsPlayerHandle {
@@ -3143,7 +3200,7 @@ mod tests {
             last_error: Mutex::new(None),
             dropped_samples: Arc::clone(&source.dropped_samples),
             output_level: Arc::new(AtomicU32::new(0)),
-            studio_metering: Arc::new(AtomicBool::new(false)),
+            studio_metering: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             output_sample_rate: super::AUDIO_ROUTE_SAMPLE_RATE,
             microphone: None,
             system_loopback: None,
@@ -3167,9 +3224,10 @@ mod tests {
         routes.lock().push(target);
         player.play_pcm(&pcm).unwrap();
         assert_eq!(source.queue.lock().len(), 96_000);
-        control
-            .state
-            .store(encode_route_state(AudioRouteState::Stopped), Ordering::Release);
+        control.state.store(
+            encode_route_state(AudioRouteState::Stopped),
+            Ordering::Release,
+        );
         player.play_pcm(&pcm).unwrap();
         assert_eq!(source.queue.lock().len(), 96_000);
         assert!(!player.is_playing());
@@ -3251,6 +3309,7 @@ mod tests {
             Arc::new(parking_lot::Mutex::new(super::default_source_effects())),
             Arc::new(super::InputPeakMeter::default()),
             studio_metering,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .expect("worker spawned");
 

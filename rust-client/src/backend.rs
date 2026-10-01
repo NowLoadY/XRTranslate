@@ -409,7 +409,12 @@ impl BackendManager {
             .native_model_route()
             .map_err(|error| error.to_string())?
             .uses_local_runtime();
-        if use_local_runtime {
+        if config
+            .native_model_route()
+            .map_err(|error| error.to_string())?
+            .translation
+            .uses_local_runtime()
+        {
             self.save_llama_server_path()?;
         }
         let (mut command, capture_output) = self.native_backend_command_with_log()?;
@@ -542,7 +547,10 @@ impl BackendManager {
             "release"
         };
         let candidates = [
-            self.project_root.join("target").join(profile).join(&executable),
+            self.project_root
+                .join("target")
+                .join(profile)
+                .join(&executable),
             self.project_root.join(&executable),
             self.project_root.join("bin").join(&executable),
             self.project_root.join("backend").join(&executable),

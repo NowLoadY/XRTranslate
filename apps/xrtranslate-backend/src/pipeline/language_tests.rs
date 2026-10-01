@@ -42,7 +42,7 @@ async fn inference(
     let plan = NativeProviderPlan::resolve(&config, &std::env::temp_dir()).unwrap();
     let mut inference = NativeInference::new(&plan, None).unwrap();
     let http = ReqwestClient::with_default_direct_timeout().unwrap();
-    inference.asr = if provider == "qwen" {
+    inference.asr = Some(if provider == "qwen" {
         NativeAsrAdapter::AudioChat(
             xrtranslate_inference::Qwen3AsrAdapter::new(http, &endpoint, "fixture").unwrap(),
         )
@@ -53,7 +53,7 @@ async fn inference(
             )
             .unwrap(),
         )
-    };
+    });
     (inference, requests, server)
 }
 

@@ -55,7 +55,7 @@ pub(crate) fn collect_recognition_window(
     window.segments.sort_by_key(|(index, _)| *index);
     let (_, first) = window.segments.first()?.clone();
     let mut combined = RecognitionHistoryEntry {
-        stream_id: window.continuous.then_some(window.stream_id),
+        stream_id: Some(window.stream_id),
         live: window.continuous,
         text: String::new(),
         source_start_ms: first.source_start_ms,
@@ -603,7 +603,8 @@ pub(crate) fn upsert_completed_translation(
 ) {
     if !fragment.turn_id.is_empty() {
         if let Some(existing) = history.iter_mut().rfind(|entry| {
-            entry.audio_source == fragment.audio_source
+            entry.stream_id == fragment.stream_id
+                && entry.audio_source == fragment.audio_source
                 && entry.turn_id == fragment.turn_id
                 && entry.segment_index == fragment.segment_index
         }) {
@@ -615,6 +616,7 @@ pub(crate) fn upsert_completed_translation(
     }
 
     if let Some(last) = history.last_mut()
+        && last.stream_id == fragment.stream_id
         && last.turn_id.is_empty()
         && last.source == fragment.source
         && (last.source_start_ms - fragment.source_start_ms).abs() <= 2500.0
@@ -813,6 +815,24 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].source, "First revised");
         assert_eq!(history[1].source, "Second");
+    }
+
+    #[test]
+    fn completed_translations_with_matching_turn_ids_stay_in_their_own_sessions() {
+        let mut history = Vec::new();
+        let mut a = fragment(1, "Meeting", "会议");
+        let mut b = fragment(2, "Video", "视频");
+        a.turn_id = "native-1".into();
+        b.turn_id = "native-1".into();
+        a.live = false;
+        b.live = false;
+        upsert_completed_translation(&mut history, a.clone());
+        upsert_completed_translation(&mut history, b);
+        assert_eq!(history.len(), 2);
+        a.translated = "更正".into();
+        upsert_completed_translation(&mut history, a);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[1].source, "Video");
     }
 
     #[test]

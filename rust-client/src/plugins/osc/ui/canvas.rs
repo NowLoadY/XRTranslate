@@ -87,9 +87,10 @@ pub fn render_bottom_input_bar(
     ui: &mut egui::Ui,
     language: crate::i18n::UiLanguage,
     capabilities: xrtranslate_engine::language::LanguageCapabilities,
+    preparing_text: bool,
     actions: &mut Vec<super::OscUiAction>,
 ) {
-    let is_enabled = plugin.draft().enabled;
+    let is_enabled = plugin.draft().enabled && !(plugin.translate_input() && preparing_text);
     let mut submit = false;
     let has_text = !plugin.draft_input().trim().is_empty();
     let translate_mode = plugin.translate_input();
@@ -112,6 +113,9 @@ pub fn render_bottom_input_bar(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let spacing = 4.0;
 
+                if plugin.translate_input() && preparing_text {
+                    ui.spinner();
+                }
                 let send_btn = if is_enabled && has_text {
                     let resp = ui.add(
                         egui::Button::new(
@@ -340,8 +344,8 @@ pub fn render_bottom_input_bar(
             });
         } else {
             plugin.send_manual_message(&text);
+            plugin.draft_input_mut().clear();
         }
-        plugin.draft_input_mut().clear();
         ui.ctx().request_repaint();
     }
 }

@@ -48,6 +48,7 @@ pub(crate) async fn transcribe_reference(
         return Err(invalid("No recognition language is available."));
     }
     let failed = |error: String| (StatusCode::BAD_GATEWAY, error);
+    state.prepare_audio().await.map_err(failed)?;
     let adapter = state
         .model_plan
         .asr_adapter(state.model_plan.asr_http_client().map_err(failed)?)

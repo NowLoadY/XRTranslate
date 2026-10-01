@@ -8,6 +8,7 @@ use eframe::egui;
 pub struct OscPageContext<'a> {
     pub language: crate::i18n::UiLanguage,
     pub last_error: Option<&'a str>,
+    pub preparing_text: bool,
     pub mute_gate_enabled: bool,
     pub languages: xrtranslate_engine::language::LanguageCapabilities,
 }
@@ -76,6 +77,7 @@ pub fn render(
         ui,
         context.language,
         context.languages,
+        context.preparing_text,
         &mut actions,
     );
 

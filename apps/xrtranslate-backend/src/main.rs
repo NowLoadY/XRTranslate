@@ -18,7 +18,7 @@ use std::{
 use axum::{
     Json, Router,
     extract::{
-        State, WebSocketUpgrade,
+        Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     response::IntoResponse,
@@ -26,7 +26,7 @@ use axum::{
 };
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::time::{Instant, sleep};
 use tokio::{
     net::TcpListener,
@@ -62,6 +62,7 @@ use crate::{
     terminology::{rewrite_recognition_terms, rewrite_translation_terms},
 };
 
+mod capabilities;
 mod conversation_context;
 mod diagnostics;
 mod language;
@@ -299,11 +300,12 @@ struct BackendState {
     model_plan: Arc<NativeProviderPlan>,
     corpus_client: CorpusClient,
     project_root: PathBuf,
-    voices: Arc<VoiceLibrary>,
+    audio_runtime: Arc<tokio::sync::OnceCell<Vec<LlamaServerProcess>>>,
+    speech_runtime: Arc<tokio::sync::OnceCell<capabilities::SpeechResources>>,
+    manage_models: bool,
+    model_start_timeout: u64,
     next_session_id: Arc<AtomicU64>,
     inference_scheduler: InferenceScheduler,
-    tts: Option<NativeTtsAdapter>,
-    tts_runtime: OnnxRuntimeDiagnostic,
 }
 
 #[derive(Serialize)]
@@ -339,9 +341,8 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| PathBuf::from("."));
     let project_root = std::path::absolute(&configured_root).unwrap_or(configured_root);
     let config = AppConfig::from_path_with_user_config(&args.config, &project_root)?;
-    initialize_managed_onnx_runtime(&project_root, &config)?;
     let mut model_plan = NativeProviderPlan::resolve(&config, &project_root)?;
-    validate_native_route(&config, &project_root, &model_plan)?;
+    model_plan.check_capability_assets(xrtranslate_assets::ModelCapability::Translation)?;
     let corpus_client = CorpusClient::new(&args.corpus_url)?;
     let corpus_health = corpus_client.ensure_compatible().await?;
     info!(
@@ -354,11 +355,15 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
     }
     let model_plan = Arc::new(model_plan);
     let _model_processes = if args.manage_llama_servers {
-        let mut processes = start_llama_servers(&model_plan)?;
+        let mut processes = start_llama_servers(
+            &model_plan,
+            xrtranslate_assets::ModelCapability::Translation,
+        )?;
         wait_for_model_servers(
             &model_plan,
             args.model_start_timeout_seconds,
             &mut processes,
+            xrtranslate_assets::ModelCapability::Translation,
         )
         .await?;
         info!("managed llama.cpp model servers are ready");
@@ -371,36 +376,17 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
         usize::from(model_plan.asr_runtime().parallel_slots),
         usize::from(model_plan.translation_runtime().parallel_slots),
     );
-    let tts = model_plan.tts_adapter(&config)?;
-    let tts_runtime = match &tts {
-        Some(adapter) => {
-            let device = adapter.prepare().await.map_err(|error| error.to_string())?;
-            runtime_diagnostic(&project_root, &config, device)
-        }
-        None => OnnxRuntimeDiagnostic::default(),
-    };
-    let voice_clones_dir =
-        RuntimeLayout::for_config(&project_root, &config.model_manager).voice_clones_directory();
-    let voices = Arc::new(
-        VoiceLibrary::open(voice_clones_dir, config.tts.provider.clone(), tts.clone()).await,
-    );
-    info!(
-        provider = %config.tts.provider,
-        configured = tts.is_some(),
-        backend = tts_runtime.backend.as_deref().unwrap_or("none"),
-        cuda = tts_runtime.cuda_version.as_deref().unwrap_or("none"),
-        "native TTS runtime configured"
-    );
     let state = BackendState {
         config,
         model_plan,
         corpus_client,
         project_root,
-        voices,
+        audio_runtime: Arc::new(tokio::sync::OnceCell::new()),
+        speech_runtime: Arc::new(tokio::sync::OnceCell::new()),
+        manage_models: args.manage_llama_servers,
+        model_start_timeout: args.model_start_timeout_seconds,
         next_session_id: Arc::new(AtomicU64::new(1)),
         inference_scheduler,
-        tts,
-        tts_runtime,
     };
     let app = Router::new()
         .route("/healthz", get(health))
@@ -446,14 +432,21 @@ async fn vrcx_status(State(state): State<BackendState>) -> impl IntoResponse {
     }
 }
 
+#[derive(Default, Deserialize)]
+struct SessionOptions {
+    #[serde(default)]
+    text_only: bool,
+}
+
 async fn websocket(
     State(state): State<BackendState>,
     upgrade: WebSocketUpgrade,
+    Query(options): Query<SessionOptions>,
 ) -> impl IntoResponse {
-    upgrade.on_upgrade(move |socket| serve_session(socket, state))
+    upgrade.on_upgrade(move |socket| serve_session(socket, state, options.text_only))
 }
 
-async fn serve_session(socket: WebSocket, state: BackendState) {
+async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) {
     let session_id = state.next_session_id.fetch_add(1, Ordering::Relaxed);
     let mut session = match SessionAdapter::new(
         &state.config.translation.source_lang,
@@ -477,22 +470,40 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
         outbound_receiver,
         generation_receiver.clone(),
     ));
-    let mut pipeline =
+    let mut pipeline = if text_only {
+        None
+    } else {
+        if let Err(error) = state.prepare_audio().await {
+            let _ = send_error(&outbound_sender, error).await;
+            return;
+        }
         match NativePipeline::new(&state.config, &state.project_root, &state.model_plan) {
-            Ok(pipeline) => pipeline,
+            Ok(pipeline) => Some(pipeline),
             Err(error) => {
-                warn!(%session_id, %error, "native pipeline initialization failed");
                 let _ = send_error(&outbound_sender, error).await;
                 return;
             }
-        };
-    let mut audio_route_valid = state
-        .model_plan
-        .language_capabilities
-        .select(session.source_lang(), session.target_lang())
-        .is_ok();
+        }
+    };
+    let inference = match &pipeline {
+        Some(pipeline) => Ok(pipeline.inference()),
+        None => NativeInference::for_text(&state.model_plan),
+    };
+    let inference = match inference {
+        Ok(inference) => inference,
+        Err(error) => {
+            let _ = send_error(&outbound_sender, error).await;
+            return;
+        }
+    };
+    let mut audio_route_valid = !text_only
+        && state
+            .model_plan
+            .language_capabilities
+            .select(session.source_lang(), session.target_lang())
+            .is_ok();
     let mut input_format = PcmFormat::mono_s16le(state.config.audio.sample_rate);
-    let speaker_available = pipeline.inference().speaker_is_available();
+    let speaker_available = inference.speaker_is_available();
     let speaker_recognition_enabled = Arc::new(AtomicBool::new(false));
     let speaker_state_revision = Arc::new(AtomicU64::new(0));
 
@@ -501,8 +512,19 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
     let prompt_graphs = Arc::new(tokio::sync::RwLock::new(PromptGraphSet {
         graph: PromptNodeGraph::builtin_default(),
     }));
+    let speech = if text_only {
+        None
+    } else {
+        match state.prepare_speech().await {
+            Ok(resources) => Some(resources),
+            Err(error) => {
+                let _ = send_error(&outbound_sender, error).await;
+                return;
+            }
+        }
+    };
     let worker = tokio::spawn(run_inference_worker(
-        pipeline.inference(),
+        inference,
         job_receiver,
         result_sender,
         generation_receiver,
@@ -518,7 +540,8 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
     let mut graceful_shutdown = false;
     let mut next_utterance_sequence = 1_u64;
     let mut workload = InferenceWorkload::Realtime;
-    let tts = state.tts.clone();
+    let voices = speech.map(|resources| &resources.voices);
+    let tts = speech.and_then(|resources| resources.tts.clone());
     let (tts_job_sender, tts_job_receiver) = mpsc::channel(TTS_QUEUE_CAPACITY);
     let (tts_result_sender, mut tts_result_receiver) = mpsc::channel(TTS_QUEUE_CAPACITY);
     let mut tts_worker = tts
@@ -539,8 +562,9 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
             session_id: format!("native-{session_id}"),
             source_lang: session.source_lang().into(),
             target_lang: session.target_lang().into(),
-            tts_backend: state.tts_runtime.backend.clone(),
-            tts_cuda_version: state.tts_runtime.cuda_version.clone(),
+            tts_backend: speech.and_then(|resources| resources.diagnostic.backend.clone()),
+            tts_cuda_version: speech
+                .and_then(|resources| resources.diagnostic.cuda_version.clone()),
         }),
     )
     .await
@@ -564,7 +588,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                     _ => None,
                 };
                 if let InferenceEvent::WindowObserved { text_units, .. } = &result {
-                    pipeline.observe_text_density(*text_units);
+                    if let Some(pipeline) = &mut pipeline { pipeline.observe_text_density(*text_units); }
                 }
                 if let InferenceEvent::Recognized { recognized, reference_samples: Some(samples), .. } = &result
                     && clone_capture.armed
@@ -590,7 +614,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                         if send_event(&outbound_sender, Some(generation), ServerEvent::VoiceCloneState(registering)).await.is_err() { break; }
                         let pcm = samples.into_iter().flat_map(i16::to_le_bytes).collect::<Vec<_>>();
                         let registration = match pcm16_mono_16khz_to_wav(&pcm) {
-                            Ok(wav) => state.voices.register_personal(wav, &transcript).await,
+                            Ok(wav) => match voices { Some(voices) => voices.register_personal(wav, &transcript).await, None => Err("Voice cloning requires an audio session".into()) },
                             Err(error) => Err(error.to_string()),
                         };
                         if registration.is_ok() {
@@ -612,7 +636,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                         if send_event(&outbound_sender, Some(generation), ServerEvent::VoiceCloneState(state)).await.is_err() { break; }
                     }
                 }
-                let (active_voice, voice_ready) = state.voices.active_voice();
+                let (active_voice, voice_ready) = voices.map_or((String::new(), false), |voices| voices.active_voice());
                 match handle_inference_event(
                     &outbound_sender,
                     &mut session,
@@ -751,21 +775,21 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                                 }
                                 input_format = PcmFormat::mono_s16le(sample_rate);
                             }
-                            if let Err(error) = state.model_plan.language_capabilities
+                            if let Err(error) = state.model_plan.language_capabilities.for_text()
                                 .select(&source, &target)
                                 .and_then(|selection| {
                                     let (source, target) = selection.wire();
                                     session.set_route(&source, &target)
                                 }) {
                                 audio_route_valid = false;
-                                pipeline.reset();
+                                if let Some(pipeline) = &mut pipeline { pipeline.reset(); }
                                 generation.audio_epoch.advance();
                                 generation_sender.send_replace(generation);
                                 if send_error(&outbound_sender, error).await.is_err() { break; }
                                 continue;
                             }
                             audio_route_valid = true;
-                            pipeline.reset();
+                            if let Some(pipeline) = &mut pipeline { pipeline.reset(); }
                             generation.route_epoch = session.route_epoch();
                             generation.audio_epoch.advance();
                             generation_sender.send_replace(generation);
@@ -804,6 +828,10 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                                 }
                                 continue;
                             }
+                            let Some(pipeline) = &mut pipeline else {
+                                let _ = send_error(&outbound_sender, "Audio input is unavailable in a text session".into()).await;
+                                continue;
+                            };
                             input_format = PcmFormat::mono_s16le(sample_rate);
                             if let Err(error) = pipeline.configure_segmentation(
                                 vad_threshold,
@@ -833,7 +861,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                             pipeline.reset();
                             workload = configured_workload;
                             audio_source = configured_audio_source;
-                            clone_capture.ready = state.voices.active_voice().1;
+                            clone_capture.ready = voices.map_or((String::new(), false), |voices| voices.active_voice()).1;
                             generation.route_epoch = session.route_epoch();
                             generation.audio_epoch.advance();
                             generation_sender.send_replace(generation);
@@ -842,7 +870,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                                 source_lang = session.source_lang(),
                                 target_lang = session.target_lang(),
                                 sample_rate,
-                                voice = %state.voices.active_voice().0,
+                                voice = %voices.map_or((String::new(), false), |voices| voices.active_voice()).0,
                                 voice_ready = clone_capture.ready,
                                 "audio configured"
                             );
@@ -876,7 +904,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                                     }
                                 }
                                 let mut send_failed = false;
-                                for active in pipeline.take_vad_transitions() {
+                                for active in pipeline.as_mut().map(NativePipeline::take_vad_transitions).unwrap_or_default() {
                                     if send_event(
                                         &outbound_sender,
                                         Some(generation),
@@ -924,7 +952,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                                 }
                             }
                             let mut send_failed = false;
-                            for active in pipeline.take_vad_transitions() {
+                            for active in pipeline.as_mut().map(NativePipeline::take_vad_transitions).unwrap_or_default() {
                                 if send_event(
                                     &outbound_sender,
                                     Some(generation),
@@ -964,7 +992,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                                     {
                                         speaker_state_revision.fetch_add(1, Ordering::AcqRel);
                                     }
-                                    pipeline.set_speaker_recognition_enabled(enabled);
+                                    if let Some(pipeline) = &mut pipeline { pipeline.set_speaker_recognition_enabled(enabled); }
                                 }
                             }
                             info!(%session_id, ?feature, enabled, "session feature configured");
@@ -1035,6 +1063,7 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
                         }
                     },
                     Message::Binary(audio) => {
+                        let Some(pipeline) = &mut pipeline else { continue; };
                         if !audio_route_valid || !input_state.accepts_audio() {
                             continue;
                         }
@@ -1132,78 +1161,19 @@ async fn serve_session(socket: WebSocket, state: BackendState) {
     }
 }
 
-fn validate_native_route(
-    config: &AppConfig,
-    project_root: &std::path::Path,
+fn start_llama_servers(
     model_plan: &NativeProviderPlan,
-) -> Result<(), String> {
-    validate_input_sample_rate(config.audio.sample_rate)?;
-    if model_plan.uses_local_runtime() {
-        model_plan.check_assets()?;
-    }
-    let vad_path = project_root.join("models/silero-vad/src/silero_vad/data/silero_vad.onnx");
-    if !vad_path.is_file() {
-        return Err(format!(
-            "native Silero VAD model is missing: {}",
-            vad_path.display()
-        ));
-    }
-    Ok(())
-}
-
-fn start_llama_servers(model_plan: &NativeProviderPlan) -> Result<Vec<LlamaServerProcess>, String> {
-    if (model_plan.asr_uses_llama_server() || model_plan.translation_uses_llama_server())
-        && !model_plan.llama_server_path().is_file()
-    {
-        return Err(format!(
-            "llama-server executable is missing: {}",
-            model_plan.llama_server_path().display()
-        ));
-    }
-
-    model_plan.check_assets()?;
-    let asr_port = model_plan
-        .asr_uses_llama_server()
-        .then(|| local_endpoint_port(model_plan.asr_url()))
-        .transpose()?;
-    let translation_port = model_plan
-        .translation_uses_llama_server()
-        .then(|| local_endpoint_port(model_plan.translation_url()))
-        .transpose()?;
-    if let (Some(asr_port), Some(translation_port)) = (asr_port, translation_port)
-        && asr_port == translation_port
-    {
-        return Err(format!(
-            "ASR and translation llama-server endpoints both use port {asr_port}"
-        ));
-    }
-
-    let (asr_spec, translation_spec) =
-        model_plan.managed_server_specs(asr_port.unwrap_or(0), translation_port.unwrap_or(0))?;
-
-    let launcher = StdLlamaServerLauncher;
-    let mut processes = Vec::new();
-    if let Some(spec) = asr_spec {
-        let alias = spec.model_alias.clone();
-        processes.push(
-            launcher
-                .launch(&spec)
-                .map_err(|error| format!("cannot start {alias} llama-server: {error}"))?,
-        );
-    }
-    if let Some(spec) = translation_spec {
-        let alias = spec.model_alias.clone();
-        processes.push(
-            launcher
-                .launch(&spec)
-                .map_err(|error| format!("cannot start {alias} llama-server: {error}"))?,
-        );
-    }
-    info!(
-        asr_port,
-        translation_port, "started managed llama.cpp model servers"
-    );
-    Ok(processes)
+    capability: xrtranslate_assets::ModelCapability,
+) -> Result<Vec<LlamaServerProcess>, String> {
+    model_plan.check_capability_assets(capability)?;
+    let Some(spec) = model_plan.managed_server_for(capability)? else {
+        return Ok(Vec::new());
+    };
+    let alias = spec.model_alias.clone();
+    StdLlamaServerLauncher
+        .launch(&spec)
+        .map(|process| vec![process])
+        .map_err(|error| format!("cannot start {alias} llama-server: {error}"))
 }
 
 fn assign_managed_ports(model_plan: &mut NativeProviderPlan) -> Result<(), String> {
@@ -1255,21 +1225,22 @@ async fn wait_for_model_servers(
     model_plan: &NativeProviderPlan,
     timeout_seconds: u64,
     processes: &mut [LlamaServerProcess],
+    capability: xrtranslate_assets::ModelCapability,
 ) -> Result<(), String> {
-    let asr_health = model_plan
-        .asr_uses_llama_server()
+    let asr_health = (model_plan.asr_uses_llama_server()
+        && capability == xrtranslate_assets::ModelCapability::Asr)
         .then(|| health_url(model_plan.asr_url()))
         .transpose()?;
-    let translation_health = model_plan
-        .translation_uses_llama_server()
+    let translation_health = (model_plan.translation_uses_llama_server()
+        && capability == xrtranslate_assets::ModelCapability::Translation)
         .then(|| health_url(model_plan.translation_url()))
         .transpose()?;
-    let asr_models = model_plan
-        .asr_uses_llama_server()
+    let asr_models = (model_plan.asr_uses_llama_server()
+        && capability == xrtranslate_assets::ModelCapability::Asr)
         .then(|| models_url(model_plan.asr_url()))
         .transpose()?;
-    let translation_models = model_plan
-        .translation_uses_llama_server()
+    let translation_models = (model_plan.translation_uses_llama_server()
+        && capability == xrtranslate_assets::ModelCapability::Translation)
         .then(|| models_url(model_plan.translation_url()))
         .transpose()?;
     let client =
@@ -1524,7 +1495,7 @@ fn inference_jobs(
 /// model work. Unlike live ingestion, this waits for bounded queue capacity so
 /// a pause or EOF cannot silently discard its final utterance.
 async fn queue_pipeline_drain(
-    pipeline: &mut NativePipeline,
+    pipeline: &mut Option<NativePipeline>,
     sender: &mpsc::Sender<InferenceJob>,
     session: &SessionAdapter,
     generation: PipelineGeneration,
@@ -1532,7 +1503,12 @@ async fn queue_pipeline_drain(
     reason: DrainReason,
     next_utterance_sequence: &mut u64,
 ) -> Result<(), String> {
-    let flush_error = match pipeline.flush() {
+    let flush_error = match pipeline
+        .as_mut()
+        .map(NativePipeline::flush)
+        .transpose()
+        .map(Option::flatten)
+    {
         Ok(Some(utterance)) => {
             for job in inference_jobs(
                 session,

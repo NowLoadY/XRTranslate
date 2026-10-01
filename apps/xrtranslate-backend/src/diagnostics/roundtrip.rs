@@ -133,10 +133,21 @@ async fn execute(args: &Arguments, options: &Options, report: &mut Value) -> Res
     }
     report["stage"] = json!("model_startup");
     let _processes = if args.manage_llama_servers {
-        let mut processes = crate::start_llama_servers(&plan).map_err(|e| e.to_string())?;
-        crate::wait_for_model_servers(&plan, args.model_start_timeout_seconds, &mut processes)
-            .await
-            .map_err(|e| e.to_string())?;
+        let mut processes = Vec::new();
+        for capability in [
+            xrtranslate_assets::ModelCapability::Asr,
+            xrtranslate_assets::ModelCapability::Translation,
+        ] {
+            let mut launched = crate::start_llama_servers(&plan, capability)?;
+            crate::wait_for_model_servers(
+                &plan,
+                args.model_start_timeout_seconds,
+                &mut launched,
+                capability,
+            )
+            .await?;
+            processes.extend(launched);
+        }
         Some(processes)
     } else {
         None
