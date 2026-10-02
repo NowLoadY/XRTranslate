@@ -14,20 +14,39 @@ async fn inference(
 ) {
     let requests = Arc::new(AtomicUsize::new(0));
     let count = requests.clone();
+    let transcription = provider == "openai";
+    let path = if transcription {
+        "/v1/audio/transcriptions"
+    } else {
+        "/v1/chat/completions"
+    };
     let router = axum::Router::new().route(
-        "/v1/chat/completions",
-        axum::routing::post(move || {
-            count.fetch_add(1, Ordering::Relaxed);
-            async move {
-                axum::Json(serde_json::json!({"choices": [{"message": {"content": content}}]}))
-            }
-        }),
+        path,
+        axum::routing::post(
+            move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+                count.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    if transcription {
+                        assert!(
+                            headers["content-type"]
+                                .to_str()
+                                .unwrap()
+                                .starts_with("multipart/form-data; boundary=")
+                        );
+                        assert_eq!(headers["authorization"], "Bearer test-key");
+                        assert!(body.windows(4).any(|bytes| bytes == b"RIFF"));
+                        axum::Json(serde_json::json!({"text": content}))
+                    } else {
+                        axum::Json(
+                            serde_json::json!({"choices": [{"message": {"content": content}}]}),
+                        )
+                    }
+                }
+            },
+        ),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = format!(
-        "http://{}/v1/chat/completions",
-        listener.local_addr().unwrap()
-    );
+    let endpoint = format!("http://{}{path}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });

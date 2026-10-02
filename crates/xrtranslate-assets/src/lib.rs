@@ -1,4 +1,4 @@
-//! Local model manifests, resolution, installation, and preflight checks.
+//! Local and remote model manifests, installation, and preflight checks.
 //!
 //! Backend startup remains read-only. Explicit installers may download the
 //! immutable assets declared by the catalog.
@@ -9,6 +9,7 @@ mod catalog;
 mod install;
 pub mod language;
 mod preflight;
+pub mod remote;
 mod resolve;
 pub mod voices;
 

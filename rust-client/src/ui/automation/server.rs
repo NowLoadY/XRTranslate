@@ -1,6 +1,6 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -15,6 +15,7 @@ pub const DEFAULT_DIRECTOR_PORT: u16 = 18920;
 pub struct DirectorServer {
     port: u16,
     running: Arc<std::sync::atomic::AtomicBool>,
+    egui_ctx: Arc<Mutex<Option<egui::Context>>>,
 }
 
 impl DirectorServer {
@@ -23,10 +24,21 @@ impl DirectorServer {
         Self {
             port,
             running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            egui_ctx: Arc::new(Mutex::new(None)),
         }
     }
 
-    pub fn start(&self, driver: Arc<AutomationDriver>, egui_ctx: egui::Context) -> Result<(), String> {
+    pub fn start(
+        &self,
+        driver: Arc<AutomationDriver>,
+        egui_ctx: egui::Context,
+    ) -> Result<(), String> {
+        // Android can recreate the UI while this process-wide server is alive.
+        let mut current_context = self.egui_ctx.lock().unwrap();
+        *current_context = Some(egui_ctx);
+        if self.running.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(());
+        }
         let addr = format!("127.0.0.1:{}", self.port);
         let listener = match TcpListener::bind(&addr) {
             Ok(l) => l,
@@ -35,15 +47,14 @@ impl DirectorServer {
                 return Err(format!("Could not bind Director Server on {addr}: {e}"));
             }
         };
-        listener
-            .set_nonblocking(true)
-            .map_err(|e| e.to_string())?;
+        listener.set_nonblocking(true).map_err(|e| e.to_string())?;
 
         let running = self.running.clone();
         running.store(true, std::sync::atomic::Ordering::Relaxed);
         let port = self.port;
+        let egui_ctx = self.egui_ctx.clone();
 
-        thread::Builder::new()
+        let started = thread::Builder::new()
             .name("ui-director-server".into())
             .spawn(move || {
                 log::info!("UI Director Server listening on http://127.0.0.1:{port}");
@@ -66,13 +77,22 @@ impl DirectorServer {
                     }
                 }
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string());
+        if let Err(error) = started {
+            self.running
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            return Err(error);
+        }
 
         Ok(())
     }
 }
 
-fn handle_client(mut stream: TcpStream, driver: Arc<AutomationDriver>, egui_ctx: egui::Context) {
+fn handle_client(
+    mut stream: TcpStream,
+    driver: Arc<AutomationDriver>,
+    egui_ctx: Arc<Mutex<Option<egui::Context>>>,
+) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
 
@@ -84,9 +104,15 @@ fn handle_client(mut stream: TcpStream, driver: Arc<AutomationDriver>, egui_ctx:
             line.clear();
             continue;
         }
+        let Some(egui_ctx) = egui_ctx.lock().unwrap().clone() else {
+            break;
+        };
 
         // Check if this is an HTTP request
-        if trimmed.starts_with("GET ") || trimmed.starts_with("POST ") || trimmed.starts_with("OPTIONS ") {
+        if trimmed.starts_with("GET ")
+            || trimmed.starts_with("POST ")
+            || trimmed.starts_with("OPTIONS ")
+        {
             handle_http_request(&mut stream, &mut reader, trimmed, &driver, &egui_ctx);
             break;
         }
@@ -193,7 +219,10 @@ fn parse_json_value_command(
         }
         "get_page" => execute_driver_command(DirectorCommand::GetPage, driver, egui_ctx),
         "list" => {
-            let filter = json.get("filter").and_then(|v| v.as_str()).map(str::to_owned);
+            let filter = json
+                .get("filter")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
             execute_driver_command(DirectorCommand::List { filter }, driver, egui_ctx)
         }
         "inspect" => {
@@ -202,7 +231,11 @@ fn parse_json_value_command(
                 .or_else(|| json.get("target"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            execute_driver_command(DirectorCommand::Inspect(target.to_string()), driver, egui_ctx)
+            execute_driver_command(
+                DirectorCommand::Inspect(target.to_string()),
+                driver,
+                egui_ctx,
+            )
         }
         "click" => {
             let target = json
@@ -218,12 +251,13 @@ fn parse_json_value_command(
                 .or_else(|| json.get("name"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let val = json.get("value").cloned().unwrap_or(serde_json::Value::Null);
+            let val = json
+                .get("value")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let elem_val = match val {
                 serde_json::Value::Bool(b) => ElementValue::Bool(b),
-                serde_json::Value::Number(n) => {
-                    ElementValue::Number(n.as_f64().unwrap_or(0.0))
-                }
+                serde_json::Value::Number(n) => ElementValue::Number(n.as_f64().unwrap_or(0.0)),
                 serde_json::Value::String(s) => ElementValue::Text(s),
                 _ => ElementValue::None,
             };
@@ -286,7 +320,11 @@ pub fn process_line_command(
             if tokens.len() < 2 {
                 DirectorResponse::err("Usage: inspect <target>")
             } else {
-                execute_driver_command(DirectorCommand::Inspect(tokens[1].clone()), driver, egui_ctx)
+                execute_driver_command(
+                    DirectorCommand::Inspect(tokens[1].clone()),
+                    driver,
+                    egui_ctx,
+                )
             }
         }
         "click" => {
@@ -311,7 +349,11 @@ pub fn process_line_command(
                 } else {
                     ElementValue::Text(raw_val)
                 };
-                execute_driver_command(DirectorCommand::Set { target, value: val }, driver, egui_ctx)
+                execute_driver_command(
+                    DirectorCommand::Set { target, value: val },
+                    driver,
+                    egui_ctx,
+                )
             }
         }
         "get" => {
@@ -323,11 +365,16 @@ pub fn process_line_command(
         }
         "status" => execute_driver_command(DirectorCommand::Status, driver, egui_ctx),
         "wait" => {
-            let ms = tokens.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(1000);
+            let ms = tokens
+                .get(1)
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(1000);
             thread::sleep(Duration::from_millis(ms));
             DirectorResponse::ok(format!("Waited {ms} ms"), None)
         }
-        _ => DirectorResponse::err(format!("Unknown command '{cmd}'. Available: page, get_page, list, inspect, click, set, get, status, wait")),
+        _ => DirectorResponse::err(format!(
+            "Unknown command '{cmd}'. Available: page, get_page, list, inspect, click, set, get, status, wait"
+        )),
     }
 }
 
@@ -337,10 +384,7 @@ fn execute_driver_command(
     egui_ctx: &egui::Context,
 ) -> DirectorResponse {
     let (responder, receiver) = bounded(1);
-    let envelope = CommandEnvelope {
-        command,
-        responder,
-    };
+    let envelope = CommandEnvelope { command, responder };
     if driver.channel().send(envelope).is_err() {
         return DirectorResponse::err("Automation driver channel closed");
     }

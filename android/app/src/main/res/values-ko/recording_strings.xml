@@ -1,0 +1,4 @@
+<resources>
+    <string name="recording_title">마이크 번역</string>
+    <string name="recording_message">녹음 및 번역 중</string>
+</resources>

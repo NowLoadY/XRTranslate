@@ -2,7 +2,9 @@
 
 XRTranslate supports Alibaba Cloud Model Studio's `qwen-mt-flash` (and other Qwen-MT models like `qwen-mt-plus` and `qwen-mt-lite`) as the cloud `qwen` translation provider.
 
-The integration uses the OpenAI-compatible HTTP Chat Completions endpoint, conforming to Alibaba Cloud Model Studio's machine translation specification while connecting directly with XRTranslate's Prompt Studio.
+The integration uses the OpenAI-compatible HTTP Chat Completions endpoint.
+Prompt Studio renders the translation text, and the Qwen provider profile
+packs that text into the model's single-user-message request format.
 
 ## Configure
 
@@ -12,14 +14,26 @@ The integration uses the OpenAI-compatible HTTP Chat Completions endpoint, confo
    - Default (China/Beijing): `https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions`
    - International (Singapore): `https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions`
 4. Enter your Model Studio API key in the welcome flow or **Settings -> Service Providers**.
-5. Default model: `qwen-mt-flash` (recommended for low latency and high quality). In the welcome flow, you can instead enter `qwen-mt-plus` for formal/domain precision or `qwen-mt-lite` for live subtitle scenarios.
+5. Default model: `qwen-mt-flash`, retained for game dialogue as the balance
+   between latency, language coverage, and translation quality. `qwen-mt-lite`
+   is an option for simpler exchanges when speed matters most and its language
+   coverage is sufficient; `qwen-mt-plus` is an option for more demanding
+   translation. These choices have not been benchmarked against game audio in
+   XRTranslate. ASR and translation model selections remain independent.
 
 ## Prompt Studio Integration
 
 - Qwen-MT enforces a strict single-turn message structure (`role: user`).
-- XRTranslate's `QwenRemote` translation profile maps directly to Prompt Studio's `OPENAI` translation graph.
-- The runtime automatically merges system instructions, reference context, bilingual terminology glossaries, and historical turns into the single-turn prompt payload.
-- As a result, custom Prompt Studio DAG flows, glossaries, and tone guidelines seamlessly guide Qwen-MT without triggering format rejection errors.
+- XRTranslate's `QwenRemote` translation profile selects Prompt Studio's
+  `OPENAI` translation graph.
+- The current provider adapter collects non-empty string message content,
+  places system content first, then joins the remaining content with blank
+  lines into one `role: user` message. Context, glossaries, and history are
+  included when rendered by the graph; their original message roles are not
+  retained in the provider request.
+- This is request-format adaptation. It does not establish identical prompt
+  semantics across providers or guarantee that every custom graph is accepted
+  by Qwen-MT.
 
 ## Official References
 

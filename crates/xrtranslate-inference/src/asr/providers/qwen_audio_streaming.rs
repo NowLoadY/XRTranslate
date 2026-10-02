@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::time::{Duration, MissedTickBehavior, timeout};
@@ -13,13 +11,13 @@ use tokio_tungstenite::{
 };
 use uuid::Uuid;
 
+use super::qwen_audio::validated_vocabulary;
 use crate::{AsrTranscript, AsrVocabularyBias, InferenceError, TransportError};
 
 const PCM_FRAME_BYTES: usize = 3_200;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const TASK_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_CONTEXT_CHARS: usize = 400;
-const MAX_VOCABULARY_ENTRIES: usize = 2_000;
 
 /// Options supported by Qwen Audio's streaming recognition transport.
 ///
@@ -245,69 +243,18 @@ fn build_run_task(
     ))
 }
 
-fn validated_vocabulary(
-    vocabulary: &[AsrVocabularyBias],
-) -> Result<BTreeMap<String, u8>, InferenceError> {
-    let mut result = BTreeMap::new();
-    let mut discarded_entries = 0usize;
-    for item in vocabulary {
-        let text = item.text.trim();
-        if text.is_empty() {
-            discarded_entries += 1;
-            continue;
-        }
-        if !matches!(item.weight, 1..=5 | 50) {
-            return Err(InferenceError::InvalidConfiguration {
-                field: "vocabulary_bias.weight",
-                message: "must be between 1 and 5, or exactly 50".into(),
-            });
-        }
-        if text.is_ascii() {
-            if text.split_ascii_whitespace().count() > 7 {
-                discarded_entries += 1;
-                continue;
-            }
-        } else if text.chars().count() > 15 {
-            discarded_entries += 1;
-            continue;
-        }
-        if !result.contains_key(text) && result.len() >= MAX_VOCABULARY_ENTRIES {
-            discarded_entries += 1;
-            continue;
-        }
-        result.insert(text.to_owned(), item.weight);
-    }
-    let mut super_hot_words = 0usize;
-    result.retain(|_, weight| {
-        if *weight != 50 {
-            return true;
-        }
-        super_hot_words += 1;
-        let keep = super_hot_words <= 50;
-        discarded_entries += usize::from(!keep);
-        keep
-    });
-    if discarded_entries > 0 {
-        tracing::warn!(
-            discarded_entries,
-            "discarded ASR vocabulary entries outside the provider contract"
-        );
-    }
-    Ok(result)
-}
-
 fn map_language(
     language: Option<&str>,
 ) -> Result<(Option<&'static str>, Option<String>), InferenceError> {
     let Some(language) = crate::asr::types::parse_language(language)? else {
         return Ok((None, None));
     };
-    // This API uses tl for Filipino and base codes for script variants.
+    // The native API uses fil for Filipino and base codes for script variants.
     let code = match language.base_code() {
-        "fil" => "tl",
+        "tl" => "fil",
         code => code,
     };
-    if !xrtranslate_assets::language::QWEN_AUDIO_STREAMING_LANGUAGES.contains(&code) {
+    if !xrtranslate_assets::remote::QWEN_AUDIO_LANGUAGES.contains(&code) {
         return Err(InferenceError::InvalidConfiguration {
             field: "asr.language",
             message: format!(
@@ -498,6 +445,7 @@ mod tests {
         tungstenite::{Message, handshake::server::Request},
     };
 
+    use super::super::qwen_audio::MAX_VOCABULARY_ENTRIES;
     use super::*;
 
     #[test]
@@ -543,7 +491,7 @@ mod tests {
         assert_eq!(map_language(Some("Portuguese")).unwrap().0, Some("pt"));
         assert_eq!(
             map_language(Some("fil-PH")).unwrap(),
-            (Some("tl"), Some("fil".into()))
+            (Some("fil"), Some("fil".into()))
         );
         assert_eq!(
             map_language(Some("Traditional Chinese")).unwrap(),

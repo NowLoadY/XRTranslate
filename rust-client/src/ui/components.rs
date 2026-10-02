@@ -1,6 +1,7 @@
 use crate::ui::theme;
 use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Stroke, Ui, Vec2};
 
+pub mod annotated_text;
 pub mod avatar;
 pub mod faded_scroll_text;
 pub mod selection_card;
@@ -768,6 +769,25 @@ pub fn primary_button_enabled_with_id(
         CornerRadius::same(8)
     };
 
+    let label = egui::RichText::new(text)
+        .color(text_color)
+        .size(13.0)
+        .strong();
+    let label_size = egui::WidgetText::from(label.clone())
+        .into_galley(
+            ui,
+            None,
+            (ui.available_width() - 28.0 - 2.0 * stroke.width).max(0.0),
+            egui::TextStyle::Body,
+        )
+        .size();
+    let content_size = egui::vec2(
+        label_size.x,
+        label_size
+            .y
+            .max(ui.spacing().interact_size.y - 12.0 - 2.0 * stroke.width),
+    );
+
     let mut resp = ui
         .add_enabled_ui(enabled, |ui| {
             Frame::new()
@@ -777,12 +797,7 @@ pub fn primary_button_enabled_with_id(
                 .inner_margin(Margin::symmetric(14, 6))
                 .shadow(egui::Shadow::NONE)
                 .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(text)
-                            .color(text_color)
-                            .size(13.0)
-                            .strong(),
-                    );
+                    ui.add_sized(content_size, egui::Label::new(label));
                 })
                 .response
                 .interact(egui::Sense::click())
@@ -1396,7 +1411,12 @@ pub fn dismissible_error_notice(
     language: crate::i18n::UiLanguage,
     details: &str,
 ) -> bool {
-    error_dialog(ui.ctx(), ui.make_persistent_id("error_notice"), language, details)
+    error_dialog(
+        ui.ctx(),
+        ui.make_persistent_id("error_notice"),
+        language,
+        details,
+    )
 }
 
 pub(crate) fn error_dialog(
@@ -1407,14 +1427,14 @@ pub(crate) fn error_dialog(
 ) -> bool {
     // Persistent errors can be acknowledged; a new failure after recovery opens again.
     let frame = ctx.cumulative_frame_nr();
-    let (previous, mut dismissed, last_frame) = ctx.data_mut(|data| {
-        data.get_temp::<(String, bool, u64)>(id).unwrap_or_default()
-    });
+    let (previous, mut dismissed, last_frame) =
+        ctx.data_mut(|data| data.get_temp::<(String, bool, u64)>(id).unwrap_or_default());
     if previous != details || frame > last_frame + 1 {
         dismissed = false;
     }
     let acknowledged_id = egui::Id::new("acknowledged_error");
-    if ctx.data(|data| data.get_temp::<(String, u64)>(acknowledged_id))
+    if ctx
+        .data(|data| data.get_temp::<(String, u64)>(acknowledged_id))
         .is_some_and(|(message, seen)| message == details && frame <= seen + 1)
     {
         dismissed = true;
@@ -2413,11 +2433,12 @@ pub fn sub_sidebar<T: Copy + PartialEq>(
                                             .unwrap_or(false)
                                     });
 
-                                    let select_factor = crate::ui::animation::AnimationSystem::selection(
-                                        ui.ctx(),
-                                        id.with("select"),
-                                        is_selected,
-                                    );
+                                    let select_factor =
+                                        crate::ui::animation::AnimationSystem::selection(
+                                            ui.ctx(),
+                                            id.with("select"),
+                                            is_selected,
+                                        );
 
                                     let hover_factor = crate::ui::animation::AnimationSystem::hover(
                                         ui.ctx(),
@@ -2425,28 +2446,32 @@ pub fn sub_sidebar<T: Copy + PartialEq>(
                                         is_hovered && !is_selected,
                                     );
 
-                                    let active_factor = crate::ui::animation::AnimationSystem::active(
-                                        ui.ctx(),
-                                        id.with("active"),
-                                        is_active && !is_selected,
-                                    );
+                                    let active_factor =
+                                        crate::ui::animation::AnimationSystem::active(
+                                            ui.ctx(),
+                                            id.with("active"),
+                                            is_active && !is_selected,
+                                        );
 
                                     let bg_fill = Color32::TRANSPARENT;
-                                    let text_color = crate::ui::animation::AnimationSystem::lerp_color(
-                                        theme::text_normal(),
-                                        theme::primary(),
-                                        hover_factor,
-                                    );
-                                    let text_color = crate::ui::animation::AnimationSystem::lerp_color(
-                                        text_color,
-                                        theme::primary_dark(),
-                                        active_factor,
-                                    );
-                                    let text_color = crate::ui::animation::AnimationSystem::lerp_color(
-                                        text_color,
-                                        theme::primary_dark(),
-                                        select_factor,
-                                    );
+                                    let text_color =
+                                        crate::ui::animation::AnimationSystem::lerp_color(
+                                            theme::text_normal(),
+                                            theme::primary(),
+                                            hover_factor,
+                                        );
+                                    let text_color =
+                                        crate::ui::animation::AnimationSystem::lerp_color(
+                                            text_color,
+                                            theme::primary_dark(),
+                                            active_factor,
+                                        );
+                                    let text_color =
+                                        crate::ui::animation::AnimationSystem::lerp_color(
+                                            text_color,
+                                            theme::primary_dark(),
+                                            select_factor,
+                                        );
 
                                     let text = if item.icon.is_empty() {
                                         item.label.to_string()
@@ -2471,12 +2496,13 @@ pub fn sub_sidebar<T: Copy + PartialEq>(
                                                         egui::Sense::hover(),
                                                     );
                                                     let accent = theme::primary_dark();
-                                                    let bar_color = Color32::from_rgba_premultiplied(
-                                                        accent.r(),
-                                                        accent.g(),
-                                                        accent.b(),
-                                                        (255.0 * select_factor) as u8,
-                                                    );
+                                                    let bar_color =
+                                                        Color32::from_rgba_premultiplied(
+                                                            accent.r(),
+                                                            accent.g(),
+                                                            accent.b(),
+                                                            (255.0 * select_factor) as u8,
+                                                        );
                                                     ui.painter().rect_filled(
                                                         bar_rect,
                                                         CornerRadius::same(2),
@@ -2484,8 +2510,9 @@ pub fn sub_sidebar<T: Copy + PartialEq>(
                                                     );
                                                     ui.add_space(4.0);
                                                 }
-                                                let mut rt =
-                                                    egui::RichText::new(&text).size(13.5).color(text_color);
+                                                let mut rt = egui::RichText::new(&text)
+                                                    .size(13.5)
+                                                    .color(text_color);
                                                 if is_selected {
                                                     rt = rt.strong();
                                                 }
@@ -2497,15 +2524,22 @@ pub fn sub_sidebar<T: Copy + PartialEq>(
 
                                     ui.memory_mut(|m| {
                                         m.data.insert_temp(id.with("hover_state"), resp.hovered());
-                                        m.data
-                                            .insert_temp(id.with("active_state"), resp.is_pointer_button_down_on());
+                                        m.data.insert_temp(
+                                            id.with("active_state"),
+                                            resp.is_pointer_button_down_on(),
+                                        );
                                     });
 
                                     if resp.clicked() {
                                         *selected = item.id;
                                     }
-                                    let simulated_click =
-                                        crate::ui::automation::record_button(ui, id, &item.label, true, resp.rect);
+                                    let simulated_click = crate::ui::automation::record_button(
+                                        ui,
+                                        id,
+                                        &item.label,
+                                        true,
+                                        resp.rect,
+                                    );
                                     if simulated_click {
                                         *selected = item.id;
                                         simulate_click_on(ui, resp.rect);

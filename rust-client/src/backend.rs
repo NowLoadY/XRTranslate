@@ -7,7 +7,7 @@ use std::{
     net::{TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::mpsc,
+    sync::{Arc, Mutex, mpsc},
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -52,12 +52,36 @@ pub struct BackendManager {
     pub llama_server_path: String,
     log_policy: BackendLogPolicy,
     corpus_log_policy: BackendLogPolicy,
+    processes: Option<Arc<Mutex<BackendProcesses>>>,
+}
+
+#[derive(Default)]
+struct BackendProcesses {
+    consumers: usize,
     log_capture: Option<BoundedLogCapture>,
     corpus_log_capture: Option<BoundedLogCapture>,
     child: Option<Child>,
     corpus_child: Option<Child>,
     #[cfg(windows)]
     job: Option<KillOnCloseJob>,
+}
+
+fn acquire_processes() -> Arc<Mutex<BackendProcesses>> {
+    #[cfg(target_os = "android")]
+    let processes = {
+        // Activity and background translation share startup and teardown under
+        // one lock; either consumer can leave while the other keeps working.
+        static SHARED: std::sync::OnceLock<Arc<Mutex<BackendProcesses>>> =
+            std::sync::OnceLock::new();
+        Arc::clone(SHARED.get_or_init(|| Arc::new(Mutex::new(BackendProcesses::default()))))
+    };
+    #[cfg(not(target_os = "android"))]
+    let processes = Arc::new(Mutex::new(BackendProcesses::default()));
+    processes
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .consumers += 1;
+    processes
 }
 
 impl BackendManager {
@@ -96,12 +120,7 @@ impl BackendManager {
             llama_server_path,
             log_policy,
             corpus_log_policy,
-            log_capture: None,
-            corpus_log_capture: None,
-            child: None,
-            corpus_child: None,
-            #[cfg(windows)]
-            job: None,
+            processes: Some(acquire_processes()),
         };
         if manager.llama_server_path != configured_path
             && !manager.llama_server_path.trim().is_empty()
@@ -267,247 +286,53 @@ impl BackendManager {
         xrtranslate_config::save_user_config_document(&config_path, project_root, &document)
     }
 
+    fn processes(&mut self) -> Arc<Mutex<BackendProcesses>> {
+        Arc::clone(self.processes.get_or_insert_with(acquire_processes))
+    }
+
     pub fn prepare(&mut self, server_url: &str) -> Result<BackendStart, String> {
-        if server_reachable(server_url) {
-            return Ok(BackendStart::Ready);
-        }
-        if !is_local_server(server_url) {
-            return Err(format!(
-                "Backend at {server_url} is unavailable. Automatic startup is only available for localhost."
-            ));
-        }
-        if let BackendStart::Starting(stage) = self.prepare_corpus()? {
-            return Ok(BackendStart::Starting(stage));
-        }
-        if self.child.is_some() {
-            return Ok(BackendStart::Starting(BackendStartupStage::Inference));
-        }
-        self.start_backend()?;
-        Ok(BackendStart::Starting(BackendStartupStage::Inference))
+        self.processes()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .prepare(self, server_url)
     }
 
     /// Starts only the local terminology service for Corpus Studio.
     pub fn prepare_corpus(&mut self) -> Result<BackendStart, String> {
-        if let Some(state) = self.corpus_state()? {
-            return Ok(state);
-        }
-        self.start_corpus()?;
-        Ok(BackendStart::Starting(BackendStartupStage::Corpus))
-    }
-
-    fn corpus_state(&mut self) -> Result<Option<BackendStart>, String> {
-        if server_reachable(CORPUS_SERVER_URL) {
-            return Ok(Some(BackendStart::Ready));
-        }
-        if let Some(child) = &mut self.corpus_child {
-            match child.try_wait() {
-                Ok(None) => {
-                    return Ok(Some(BackendStart::Starting(BackendStartupStage::Corpus)));
-                }
-                Ok(Some(status)) => {
-                    self.corpus_child = None;
-                    self.finish_corpus_log_capture();
-                    return Err(format!(
-                        "XR Corpus exited before it became ready ({status})\n\nLog Traceback:\n{}",
-                        self.corpus_log_policy
-                            .read_current(DIAGNOSTIC_READ_BYTES)
-                            .trim()
-                    ));
-                }
-                Err(error) => return Err(format!("Cannot inspect XR Corpus process: {error}")),
-            }
-        }
-        Ok(None)
+        self.processes()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .prepare_corpus(self)
     }
 
     pub fn status(&mut self, server_url: &str) -> BackendStatus {
-        if server_reachable(server_url) {
-            return BackendStatus::Ready;
-        }
-        match self.corpus_state() {
-            Ok(Some(BackendStart::Ready)) => {}
-            Ok(Some(BackendStart::Starting(stage))) => return BackendStatus::Starting(stage),
-            Ok(None) => return BackendStatus::Failed("XR Corpus is unavailable".into()),
-            Err(error) => return BackendStatus::Failed(error),
-        }
-        if self.child.is_none() {
-            if let Err(error) = self.start_backend() {
-                return BackendStatus::Failed(error);
-            }
-            return BackendStatus::Starting(BackendStartupStage::Inference);
-        }
-        let Some(child) = &mut self.child else {
-            return BackendStatus::Failed("Backend process is no longer running".into());
-        };
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                self.child = None;
-                #[cfg(windows)]
-                {
-                    self.job = None;
-                }
-                self.finish_log_capture();
-                let log = self.get_latest_log();
-                let detail = if log.trim().is_empty() {
-                    format!("Backend launcher exited before it became ready ({status})")
-                } else {
-                    let summary = startup_error_summary(&log).unwrap_or_else(|| {
-                        format!("Backend launcher exited before it became ready ({status})")
-                    });
-                    format!("{summary}\n\nLog Traceback:\n{}", log.trim())
-                };
-                BackendStatus::Failed(detail)
-            }
-            Ok(None) => BackendStatus::Starting(BackendStartupStage::Inference),
-            Err(error) => BackendStatus::Failed(format!("Cannot inspect backend process: {error}")),
-        }
+        self.processes()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .status(self, server_url)
     }
 
     pub fn get_latest_log(&self) -> String {
         self.log_policy.read_current(DIAGNOSTIC_READ_BYTES)
     }
 
+    /// An explicit model or runtime change invalidates every consumer's service.
+    pub(crate) fn invalidate_runtime(&mut self) {
+        self.processes()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .shutdown();
+    }
+
     pub fn shutdown(&mut self) {
-        #[cfg(windows)]
-        if let Some(job) = self.job.take() {
-            job.terminate();
+        let Some(processes) = self.processes.take() else {
+            return;
+        };
+        let mut processes = processes.lock().unwrap_or_else(|error| error.into_inner());
+        processes.consumers -= 1;
+        if processes.consumers == 0 {
+            processes.shutdown();
         }
-
-        if let Some(mut child) = self.child.take() {
-            if child.try_wait().ok().flatten().is_none() {
-                let _ = child.kill();
-            }
-            let _ = child.wait();
-        }
-        if let Some(mut child) = self.corpus_child.take() {
-            if child.try_wait().ok().flatten().is_none() {
-                let _ = child.kill();
-            }
-            let _ = child.wait();
-        }
-        self.finish_log_capture();
-        self.finish_corpus_log_capture();
-    }
-
-    fn finish_log_capture(&mut self) {
-        if let Some(capture) = self.log_capture.take() {
-            capture.finish();
-        }
-    }
-
-    fn finish_corpus_log_capture(&mut self) {
-        if let Some(capture) = self.corpus_log_capture.take() {
-            capture.finish();
-        }
-    }
-
-    fn start_backend(&mut self) -> Result<(), String> {
-        // Revalidate and persist immediately before the backend reads
-        // config.json. This also retries a recovery write that may have failed
-        // transiently during application startup.
-        let config = load_project_config(&self.project_root)
-            .map_err(|error| format!("Cannot read native route: {error}"))?;
-        let use_local_runtime = config
-            .native_model_route()
-            .map_err(|error| error.to_string())?
-            .uses_local_runtime();
-        if config
-            .native_model_route()
-            .map_err(|error| error.to_string())?
-            .translation
-            .uses_local_runtime()
-        {
-            self.save_llama_server_path()?;
-        }
-        let (mut command, capture_output) = self.native_backend_command_with_log()?;
-        command
-            .arg("--config")
-            .arg(self.project_root.join("config.json"))
-            .arg("--corpus-url")
-            .arg(CORPUS_SERVER_URL);
-        if use_local_runtime {
-            command.arg("--manage-llama-servers");
-        }
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("Cannot start backend: {error}"))?;
-        let log_capture = capture_output.then(|| {
-            BoundedLogCapture::start(
-                &mut child,
-                self.log_policy.clone(),
-                std::env::var_os("XRTRANSLATE_BACKEND_CONSOLE_LOG").is_some(),
-            )
-        });
-
-        #[cfg(windows)]
-        {
-            let job = KillOnCloseJob::new()?;
-            if let Err(error) = job.assign(&child) {
-                let mut child = child;
-                let _ = child.kill();
-                let _ = child.wait();
-                if let Some(capture) = log_capture {
-                    capture.finish();
-                }
-                return Err(error);
-            }
-            if let Some(corpus_child) = &self.corpus_child
-                && let Err(error) = job.assign(corpus_child)
-            {
-                let mut child = child;
-                let _ = child.kill();
-                let _ = child.wait();
-                if let Some(capture) = log_capture {
-                    capture.finish();
-                }
-                return Err(error);
-            }
-            self.job = Some(job);
-            self.child = Some(child);
-            self.log_capture = log_capture;
-        }
-        #[cfg(not(windows))]
-        {
-            self.child = Some(child);
-            self.log_capture = log_capture;
-        }
-        Ok(())
-    }
-
-    fn start_corpus(&mut self) -> Result<(), String> {
-        let executable = self.resolve_corpus_executable()?;
-        let mut command = Command::new(executable);
-        command
-            .current_dir(&self.project_root)
-            .stdin(Stdio::null())
-            .arg("--config")
-            .arg(self.project_root.join("config.json"));
-        let mirror_to_console = std::env::var_os("XRTRANSLATE_BACKEND_CONSOLE_LOG").is_some();
-        let capture_output = fs::create_dir_all(&self.corpus_log_policy.directory).is_ok();
-        if capture_output {
-            command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        } else if mirror_to_console {
-            command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
-        } else {
-            command.stdout(Stdio::null()).stderr(Stdio::null());
-        }
-        crate::child_process::hide_console(&mut command);
-        let mut child = command
-            .spawn()
-            .map_err(|error| format!("Cannot start XR Corpus: {error}"))?;
-        self.corpus_log_capture = capture_output.then(|| {
-            BoundedLogCapture::start(
-                &mut child,
-                self.corpus_log_policy.clone(),
-                mirror_to_console,
-            )
-        });
-        #[cfg(windows)]
-        if let Some(job) = &self.job {
-            job.assign(&child)?;
-        }
-        self.corpus_child = Some(child);
-        Ok(())
     }
 
     fn native_backend_command_with_log(&self) -> Result<(Command, bool), String> {
@@ -577,6 +402,250 @@ impl BackendManager {
                         .join("\n")
                 )
             })
+    }
+}
+
+impl BackendProcesses {
+    fn prepare(
+        &mut self,
+        manager: &mut BackendManager,
+        server_url: &str,
+    ) -> Result<BackendStart, String> {
+        if server_reachable(server_url) {
+            return Ok(BackendStart::Ready);
+        }
+        if !is_local_server(server_url) {
+            return Err(format!(
+                "Backend at {server_url} is unavailable. Automatic startup is only available for localhost."
+            ));
+        }
+        if let BackendStart::Starting(stage) = self.prepare_corpus(manager)? {
+            return Ok(BackendStart::Starting(stage));
+        }
+        if self.child.is_some() {
+            return Ok(BackendStart::Starting(BackendStartupStage::Inference));
+        }
+        self.start_backend(manager)?;
+        Ok(BackendStart::Starting(BackendStartupStage::Inference))
+    }
+
+    /// Starts only the local terminology service for Corpus Studio.
+    fn prepare_corpus(&mut self, manager: &BackendManager) -> Result<BackendStart, String> {
+        if let Some(state) = self.corpus_state(manager)? {
+            return Ok(state);
+        }
+        self.start_corpus(manager)?;
+        Ok(BackendStart::Starting(BackendStartupStage::Corpus))
+    }
+
+    fn corpus_state(&mut self, manager: &BackendManager) -> Result<Option<BackendStart>, String> {
+        if server_reachable(CORPUS_SERVER_URL) {
+            return Ok(Some(BackendStart::Ready));
+        }
+        if let Some(child) = &mut self.corpus_child {
+            match child.try_wait() {
+                Ok(None) => {
+                    return Ok(Some(BackendStart::Starting(BackendStartupStage::Corpus)));
+                }
+                Ok(Some(status)) => {
+                    self.corpus_child = None;
+                    self.finish_corpus_log_capture();
+                    return Err(format!(
+                        "XR Corpus exited before it became ready ({status})\n\nLog Traceback:\n{}",
+                        manager
+                            .corpus_log_policy
+                            .read_current(DIAGNOSTIC_READ_BYTES)
+                            .trim()
+                    ));
+                }
+                Err(error) => return Err(format!("Cannot inspect XR Corpus process: {error}")),
+            }
+        }
+        Ok(None)
+    }
+
+    fn status(&mut self, manager: &mut BackendManager, server_url: &str) -> BackendStatus {
+        if server_reachable(server_url) {
+            return BackendStatus::Ready;
+        }
+        match self.corpus_state(manager) {
+            Ok(Some(BackendStart::Ready)) => {}
+            Ok(Some(BackendStart::Starting(stage))) => return BackendStatus::Starting(stage),
+            Ok(None) => return BackendStatus::Failed("XR Corpus is unavailable".into()),
+            Err(error) => return BackendStatus::Failed(error),
+        }
+        if self.child.is_none() {
+            if let Err(error) = self.start_backend(manager) {
+                return BackendStatus::Failed(error);
+            }
+            return BackendStatus::Starting(BackendStartupStage::Inference);
+        }
+        let Some(child) = &mut self.child else {
+            return BackendStatus::Failed("Backend process is no longer running".into());
+        };
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                self.child = None;
+                #[cfg(windows)]
+                {
+                    self.job = None;
+                }
+                self.finish_log_capture();
+                let log = manager.get_latest_log();
+                let detail = if log.trim().is_empty() {
+                    format!("Backend launcher exited before it became ready ({status})")
+                } else {
+                    let summary = startup_error_summary(&log).unwrap_or_else(|| {
+                        format!("Backend launcher exited before it became ready ({status})")
+                    });
+                    format!("{summary}\n\nLog Traceback:\n{}", log.trim())
+                };
+                BackendStatus::Failed(detail)
+            }
+            Ok(None) => BackendStatus::Starting(BackendStartupStage::Inference),
+            Err(error) => BackendStatus::Failed(format!("Cannot inspect backend process: {error}")),
+        }
+    }
+
+    fn shutdown(&mut self) {
+        #[cfg(windows)]
+        if let Some(job) = self.job.take() {
+            job.terminate();
+        }
+
+        if let Some(mut child) = self.child.take() {
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+            }
+            let _ = child.wait();
+        }
+        if let Some(mut child) = self.corpus_child.take() {
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+            }
+            let _ = child.wait();
+        }
+        self.finish_log_capture();
+        self.finish_corpus_log_capture();
+    }
+
+    fn finish_log_capture(&mut self) {
+        if let Some(capture) = self.log_capture.take() {
+            capture.finish();
+        }
+    }
+
+    fn finish_corpus_log_capture(&mut self) {
+        if let Some(capture) = self.corpus_log_capture.take() {
+            capture.finish();
+        }
+    }
+
+    fn start_backend(&mut self, manager: &mut BackendManager) -> Result<(), String> {
+        // Revalidate and persist immediately before the backend reads
+        // config.json. This also retries a recovery write that may have failed
+        // transiently during application startup.
+        let config = load_project_config(&manager.project_root)
+            .map_err(|error| format!("Cannot read native route: {error}"))?;
+        let use_local_runtime = config
+            .native_model_route()
+            .map_err(|error| error.to_string())?
+            .uses_local_runtime();
+        if config
+            .native_model_route()
+            .map_err(|error| error.to_string())?
+            .translation
+            .uses_local_runtime()
+        {
+            manager.save_llama_server_path()?;
+        }
+        let (mut command, capture_output) = manager.native_backend_command_with_log()?;
+        command
+            .arg("--config")
+            .arg(manager.project_root.join("config.json"))
+            .arg("--corpus-url")
+            .arg(CORPUS_SERVER_URL);
+        if use_local_runtime {
+            command.arg("--manage-llama-servers");
+        }
+        let mut child = crate::child_process::spawn(command)
+            .map_err(|error| format!("Cannot start backend: {error}"))?;
+        let log_capture = capture_output.then(|| {
+            BoundedLogCapture::start(
+                &mut child,
+                manager.log_policy.clone(),
+                std::env::var_os("XRTRANSLATE_BACKEND_CONSOLE_LOG").is_some(),
+            )
+        });
+
+        #[cfg(windows)]
+        {
+            let job = KillOnCloseJob::new()?;
+            if let Err(error) = job.assign(&child) {
+                let mut child = child;
+                let _ = child.kill();
+                let _ = child.wait();
+                if let Some(capture) = log_capture {
+                    capture.finish();
+                }
+                return Err(error);
+            }
+            if let Some(corpus_child) = &self.corpus_child
+                && let Err(error) = job.assign(corpus_child)
+            {
+                let mut child = child;
+                let _ = child.kill();
+                let _ = child.wait();
+                if let Some(capture) = log_capture {
+                    capture.finish();
+                }
+                return Err(error);
+            }
+            self.job = Some(job);
+            self.child = Some(child);
+            self.log_capture = log_capture;
+        }
+        #[cfg(not(windows))]
+        {
+            self.child = Some(child);
+            self.log_capture = log_capture;
+        }
+        Ok(())
+    }
+
+    fn start_corpus(&mut self, manager: &BackendManager) -> Result<(), String> {
+        let executable = manager.resolve_corpus_executable()?;
+        let mut command = Command::new(executable);
+        command
+            .current_dir(&manager.project_root)
+            .stdin(Stdio::null())
+            .arg("--config")
+            .arg(manager.project_root.join("config.json"));
+        let mirror_to_console = std::env::var_os("XRTRANSLATE_BACKEND_CONSOLE_LOG").is_some();
+        let capture_output = fs::create_dir_all(&manager.corpus_log_policy.directory).is_ok();
+        if capture_output {
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        } else if mirror_to_console {
+            command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        } else {
+            command.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+        crate::child_process::hide_console(&mut command);
+        let mut child = crate::child_process::spawn(command)
+            .map_err(|error| format!("Cannot start XR Corpus: {error}"))?;
+        self.corpus_log_capture = capture_output.then(|| {
+            BoundedLogCapture::start(
+                &mut child,
+                manager.corpus_log_policy.clone(),
+                mirror_to_console,
+            )
+        });
+        #[cfg(windows)]
+        if let Some(job) = &self.job {
+            job.assign(&child)?;
+        }
+        self.corpus_child = Some(child);
+        Ok(())
     }
 }
 

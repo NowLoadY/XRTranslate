@@ -62,6 +62,37 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
         source_text: &str,
         options: TranslationOptions,
     ) -> Result<TranslationResult, InferenceError> {
+        self.translate_request(source_text, options, false, |_| std::future::ready(()))
+            .await
+    }
+
+    /// Publishes cleaned cumulative text while keeping final validation shared
+    /// with ordinary requests. The callback is awaited for bounded consumers.
+    pub async fn translate_streaming<F, Fut>(
+        &self,
+        source_text: &str,
+        options: TranslationOptions,
+        on_update: F,
+    ) -> Result<TranslationResult, InferenceError>
+    where
+        F: FnMut(String) -> Fut + Send,
+        Fut: Future<Output = ()> + Send,
+    {
+        self.translate_request(source_text, options, true, on_update)
+            .await
+    }
+
+    async fn translate_request<F, Fut>(
+        &self,
+        source_text: &str,
+        options: TranslationOptions,
+        streaming: bool,
+        mut on_update: F,
+    ) -> Result<TranslationResult, InferenceError>
+    where
+        F: FnMut(String) -> Fut + Send,
+        Fut: Future<Output = ()> + Send,
+    {
         let profile = registered(self.provider);
         let prompt = profile.build_prompt(source_text, &options)?;
         let mut payload = non_streaming_chat_payload(
@@ -72,7 +103,40 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
         );
         profile.apply_sampling(&mut payload, &options);
 
-        let completion = self.chat.chat_completion(payload).await?;
+        let completion = if streaming {
+            // These older Qwen-MT families stream complete snapshots, whereas
+            // Flash/Lite, llama.cpp and OpenAI stream appended deltas.
+            let cumulative = self.provider == TranslationProvider::Qwen
+                && ["qwen-mt-plus", "qwen-mt-turbo"]
+                    .iter()
+                    .any(|family| self.model.starts_with(family));
+            let mut previous = String::new();
+            self.chat
+                .chat_completion_streaming(payload, cumulative, |text| {
+                    let text = profile.clean_output(&text);
+                    let safe = translation_output_rejection(
+                        source_text,
+                        &text,
+                        &prompt.messages,
+                        &options.prompt_context,
+                    )
+                    .is_none();
+                    let callback = if safe && !text.is_empty() && text != previous {
+                        previous.clone_from(&text);
+                        Some(on_update(text))
+                    } else {
+                        None
+                    };
+                    async move {
+                        if let Some(callback) = callback {
+                            callback.await;
+                        }
+                    }
+                })
+                .await?
+        } else {
+            self.chat.chat_completion(payload).await?
+        };
         let text = profile.clean_output(&completion.text);
         if text.is_empty() {
             return Err(InferenceError::EmptyOutput {
@@ -197,10 +261,19 @@ mod tests {
             "test-token",
         )
         .unwrap();
+        let mut updates = Vec::new();
         adapter
-            .translate("hello", TranslationOptions::new("English", "French"))
+            .translate_streaming(
+                "hello",
+                TranslationOptions::new("English", "French"),
+                |text| {
+                    updates.push(text);
+                    std::future::ready(())
+                },
+            )
             .await
             .unwrap();
+        assert_eq!(updates, ["bonjour"]);
 
         let http = adapter.chat.into_inner();
         let request = http.requests.lock().unwrap().pop().unwrap();
@@ -210,6 +283,7 @@ mod tests {
                 .contains(&("authorization".into(), "Bearer test-token".into()))
         );
         assert_eq!(request.body["model"], "remote-model");
+        assert_eq!(request.body["stream"], true);
         assert!(request.body.get("authorization").is_none());
     }
 
@@ -282,5 +356,37 @@ mod tests {
         let content = messages[0]["content"].as_str().unwrap();
         assert!(content.contains("world,世界"));
         assert!(content.contains("hello world"));
+
+        let http = RecordingHttpClient::default();
+        http.respond_with(HttpResponse {
+            status: 200,
+            body: concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"你好世界\"}}]}\n\n",
+                "data: [DONE]\n\n",
+            )
+            .into(),
+        });
+        let adapter = TranslationAdapter::new(
+            http,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+            "qwen-mt-plus",
+            TranslationProvider::Qwen,
+        )
+        .unwrap();
+        let mut updates = Vec::new();
+        let result = adapter
+            .translate_streaming(
+                "hello world",
+                TranslationOptions::new("English", "Chinese"),
+                |text| {
+                    updates.push(text);
+                    std::future::ready(())
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.text, "你好世界");
+        assert_eq!(updates.last().unwrap(), "你好世界");
     }
 }

@@ -15,6 +15,10 @@ pub(super) fn render_setup(
 ) -> UiAction {
     let language = snapshot.language;
     let mut action = UiAction::None;
+    let import_notice = tr(
+        language,
+        "This meeting references the source file. Moving or deleting it prevents reprocessing.",
+    );
     page_header(
         ui,
         if controller.draft.import_audio {
@@ -36,46 +40,44 @@ pub(super) fn render_setup(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             components::card(ui, |ui| {
-                ui.vertical(|ui| {
-                    components::section_heading(ui, tr(language, "Meeting Details"));
-
-            ui.label(
-                egui::RichText::new(tr(language, "Name"))
-                    .strong()
-                    .color(crate::ui::theme::text_strong()),
-            );
-            ui.add_space(4.0);
-            components::input_field(
-                ui,
-                &mut controller.draft.name,
-                tr(language, "Meeting name (e.g. Weekly Sync)"),
-            );
-
-            ui.add_space(14.0);
-
-            if controller.draft.import_audio {
                 ui.label(
-                    egui::RichText::new(tr(language, "Audio File"))
+                    egui::RichText::new(tr(language, "Name"))
                         .strong()
                         .color(crate::ui::theme::text_strong()),
                 );
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.allocate_ui(
-                        egui::vec2((ui.available_width() - 110.0).max(200.0), 0.0),
-                        |ui| {
-                            components::input_field(
-                                ui,
-                                &mut controller.draft.import_path,
-                                tr(language, "Choose audio file path"),
-                            );
-                        },
+                let name_height = if ui.available_width() < 600.0 {
+                    44.0
+                } else {
+                    0.0
+                };
+                ui.add_sized([ui.available_width(), name_height], |ui: &mut egui::Ui| {
+                    components::input_field(
+                        ui,
+                        &mut controller.draft.name,
+                        tr(language, "Meeting name (e.g. Weekly Sync)"),
+                    )
+                });
+
+                ui.add_space(14.0);
+
+                if controller.draft.import_audio {
+                    ui.label(
+                        egui::RichText::new(tr(language, "Audio File"))
+                            .strong()
+                            .color(crate::ui::theme::text_strong()),
                     );
-                    ui.add_space(6.0);
-                    let choose_file = components::animated_button(ui, tr(language, "Choose file")).clicked();
+                    ui.add_space(4.0);
+                    components::input_field(
+                        ui,
+                        &mut controller.draft.import_path,
+                        tr(language, "Choose audio file path"),
+                    );
+                    let choose_file =
+                        components::animated_button(ui, tr(language, "Choose file")).clicked();
                     if let Some(path) = crate::file_dialog::FileDialog::new()
-                            .add_filter("Audio", &["wav", "mp3", "flac", "m4a", "aac", "ogg"])
-                            .pick_file(ui.ctx(), "meeting_source_file", choose_file)
+                        .add_filter("Audio", &["wav", "mp3", "flac", "m4a", "aac", "ogg"])
+                        .pick_file(ui.ctx(), "meeting_source_file", choose_file)
                     {
                         controller.draft.import_path = path.display().to_string();
                         if controller.draft.name == "New meeting"
@@ -84,85 +86,87 @@ pub(super) fn render_setup(
                             controller.draft.name = stem.to_owned();
                         }
                     }
-                });
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(tr(
-                        language,
-                        "This meeting references the source file. Moving or deleting it prevents reprocessing.",
-                    ))
-                    .color(crate::ui::theme::text_weak())
-                    .size(11.5),
-                );
-            } else {
-                ui.label(
-                    egui::RichText::new(tr(language, "Audio source"))
-                        .strong()
-                        .color(crate::ui::theme::text_strong()),
-                );
-                ui.add_space(4.0);
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(import_notice)
+                            .color(crate::ui::theme::text_weak())
+                            .size(11.5),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new(tr(language, "Audio source"))
+                            .strong()
+                            .color(crate::ui::theme::text_strong()),
+                    );
+                    ui.add_space(4.0);
 
-                let system_audio = crate::audio::AudioSystem::supports_system_audio();
-                if !system_audio {
-                    controller.draft.capture_source = MeetingAudioSource::Microphone;
+                    let system_audio = crate::audio::AudioSystem::supports_system_audio();
+                    if !system_audio {
+                        controller.draft.capture_source = MeetingAudioSource::Microphone;
+                    }
+                    let capture_options = [
+                        MeetingAudioSource::Microphone,
+                        MeetingAudioSource::SystemAudio,
+                        MeetingAudioSource::Both,
+                    ]
+                    .into_iter()
+                    .filter(|source| system_audio || *source == MeetingAudioSource::Microphone)
+                    .map(|source| (source, capture_label(source, language).to_owned()))
+                    .collect::<Vec<_>>();
+                    components::searchable_combobox(
+                        ui,
+                        "meeting_capture_source",
+                        capture_label(controller.draft.capture_source, language),
+                        &mut controller.draft.capture_source,
+                        &capture_options,
+                    );
+
+                    ui.add_space(8.0);
+                    ui.checkbox(
+                        &mut controller.draft.save_recording,
+                        tr(language, "Keep the recording"),
+                    );
                 }
-                let capture_options = [
-                    MeetingAudioSource::Microphone,
-                    MeetingAudioSource::SystemAudio,
-                    MeetingAudioSource::Both,
-                ]
-                .into_iter()
-                .filter(|source| system_audio || *source == MeetingAudioSource::Microphone)
-                .map(|source| (source, capture_label(source, language).to_owned()))
-                .collect::<Vec<_>>();
-                components::searchable_combobox(
+
+                ui.add_space(14.0);
+
+                components::translation_language_selector(
                     ui,
-                    "meeting_capture_source",
-                    capture_label(controller.draft.capture_source, language),
-                    &mut controller.draft.capture_source,
-                    &capture_options,
-                );
-
-                ui.add_space(8.0);
-                ui.checkbox(
-                    &mut controller.draft.save_recording,
-                    tr(language, "Save audio for reprocessing"),
-                );
-            }
-
-            ui.add_space(14.0);
-
-            components::translation_language_selector(ui, "meeting_setup", &mut controller.draft.source_language, &mut controller.draft.target_language, snapshot.languages, language);
-
-            ui.add_space(18.0);
-            ui.separator();
-            ui.add_space(14.0);
-
-            let validation_error = draft_validation_error(controller, snapshot);
-            if let Some(error) = validation_error.as_deref() {
-                components::validation_notice(ui, language, tr(language, error));
-                ui.add_space(12.0);
-            }
-
-            if components::primary_button_enabled(
-                ui,
-                tr(
+                    "meeting_setup",
+                    &mut controller.draft.source_language,
+                    &mut controller.draft.target_language,
+                    snapshot.languages,
                     language,
-                    if controller.draft.import_audio {
-                        "Create and process"
-                    } else {
-                        "Start meeting"
-                    },
-                ),
-                validation_error.is_none(),
-            )
-            .clicked()
-            {
-                action = UiAction::CreateAndStart;
-            }
+                );
+
+                ui.add_space(18.0);
+                ui.separator();
+                ui.add_space(14.0);
+
+                let validation_error = draft_validation_error(controller, snapshot);
+                if let Some(error) = validation_error.as_deref() {
+                    components::validation_notice(ui, language, tr(language, error));
+                    ui.add_space(12.0);
+                }
+
+                if components::primary_button_enabled(
+                    ui,
+                    tr(
+                        language,
+                        if controller.draft.import_audio {
+                            "Create and process"
+                        } else {
+                            "Start meeting"
+                        },
+                    ),
+                    validation_error.is_none(),
+                )
+                .clicked()
+                {
+                    action = UiAction::CreateAndStart;
+                }
+            });
         });
-    });
-    });
 
     action
 }

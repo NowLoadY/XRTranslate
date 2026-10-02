@@ -182,6 +182,21 @@ impl MeetingController {
     }
 
     pub fn poll_live_view(&mut self) {
+        if self.last_bundle_refresh.elapsed() < std::time::Duration::from_millis(400) {
+            return;
+        }
+        if self.route == MeetingRoute::Library
+            && self.meetings.iter().any(|meeting| {
+                matches!(
+                    meeting.status,
+                    MeetingStatus::Live | MeetingStatus::Processing
+                )
+            })
+        {
+            self.last_bundle_refresh = std::time::Instant::now();
+            self.refresh_library();
+            return;
+        }
         let waiting_for_terminal_refresh = self.bundle.as_ref().is_some_and(|bundle| {
             matches!(
                 bundle.meeting.status,
@@ -190,7 +205,6 @@ impl MeetingController {
         });
         if self.route == MeetingRoute::Detail
             && (self.active_meeting_id().is_some() || waiting_for_terminal_refresh)
-            && self.last_bundle_refresh.elapsed() >= std::time::Duration::from_millis(400)
         {
             self.last_bundle_refresh = std::time::Instant::now();
             self.reload_open_meeting();

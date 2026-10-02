@@ -42,9 +42,9 @@ const PROVIDER_FIELDS: &[ProviderFieldDescriptor] = &[
         name: "transport",
         label: "Transport",
         help: Some(
-            "local uses the managed llama.cpp model; openai uses an OpenAI-compatible HTTP API; websocket uses a provider-native WebSocket API.",
+            "local uses a managed model; openai uses an OpenAI-compatible HTTP API; dashscope uses the native audio HTTP API; websocket uses a provider-native WebSocket API.",
         ),
-        editor: ProviderFieldEditor::Options(&["local", "openai", "websocket"]),
+        editor: ProviderFieldEditor::Options(&["local", "openai", "dashscope", "websocket"]),
         visibility: ProviderFieldVisibility::Hidden,
     },
     ProviderFieldDescriptor {

@@ -1,0 +1,5 @@
+<resources>
+    <string name="widget_results_title">翻译结果</string>
+    <string name="widget_results_description">实时显示最近的翻译结果，点按打开 XRT。</string>
+    <string name="widget_results_empty">翻译好的内容会出现在这里\n点按打开 XRT</string>
+</resources>

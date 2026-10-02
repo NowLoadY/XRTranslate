@@ -917,12 +917,14 @@ mod tests {
         attach_test_cuda_runtime(&mut plan);
 
         assert!(!plan.asr_uses_llama_server());
-        assert_eq!(plan.asr_model_alias(), "qwen3-asr-flash");
+        assert_eq!(plan.asr_model_alias(), "qwen-audio-3.0-asr-flash");
         assert_eq!(plan.asr_prompt_mode(), AsrPromptMode::ContextBias);
+        assert_eq!(plan.asr_context_max_chars(), Some(400));
+        assert!(plan.asr_supports_vocabulary_bias());
         assert!(plan.managed_server_specs(8101, 8102).unwrap().0.is_none());
         assert!(matches!(
             plan.asr_adapter(plan.asr_http_client().unwrap()).unwrap(),
-            NativeAsrAdapter::AudioChat(_)
+            NativeAsrAdapter::QwenAudioFlash(_)
         ));
     }
 
@@ -1016,7 +1018,7 @@ mod tests {
     }
 
     #[test]
-    fn every_catalog_provider_has_a_backend_runtime_profile() {
+    fn every_backend_catalog_provider_has_a_runtime_profile() {
         for manifest in xrtranslate_assets::MODEL_ASSET_CATALOG {
             let registered = match manifest.capability {
                 ModelCapability::Asr => {
@@ -1026,6 +1028,8 @@ mod tests {
                     TranslationProfile::registered(manifest.provider, "local").is_some()
                 }
                 ModelCapability::Tts => TtsProfile::registered(manifest.provider, "onnx").is_some(),
+                // OCR is an input source hosted by the client.
+                ModelCapability::Ocr => continue,
             };
             assert!(
                 registered,

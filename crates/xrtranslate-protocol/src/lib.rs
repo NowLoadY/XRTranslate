@@ -330,6 +330,7 @@ pub enum ServerEvent {
     VadActivity(VadActivity),
     AsrResult(AsrResult),
     SourceSegmentReady(SourceSegmentReady),
+    TranslationPreview(TranslationPreview),
     TranslationReady(TranslationReady),
     RecognitionStreamEnded(RecognitionStreamEnded),
     PipelineDrained(PipelineDrained),
@@ -451,18 +452,31 @@ pub struct SourceSegmentReady {
     pub timing: SegmentTiming,
     #[serde(default)]
     pub boundary: SegmentBoundary,
-    /// True when this segment belongs to a revisable continuous window.
+    /// True while this source snapshot can change, including an unfinished
+    /// sentence retained across bounded audio chunks.
     pub revisable: bool,
     /// Fraction of this window which repeats audio from its predecessor.
     pub overlap_ratio: f32,
     /// This event contains the complete current logical-turn snapshot. A
-    /// consumer must replace its provisional value atomically instead of
-    /// attempting to merge the source or translation text independently.
+    /// consumer must replace this turn's provisional value atomically instead
+    /// of merging text or replacing other turns. A final (`revisable: false`)
+    /// snapshot may finalize a provisional snapshot at the same revision.
     #[serde(default)]
     pub authoritative_snapshot: bool,
     /// Monotonic backend-issued revision of the logical live turn.
     #[serde(default)]
     pub revision: u64,
+}
+
+/// A replaceable display preview. It never commits history or triggers speech.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranslationPreview {
+    pub source_text: String,
+    pub translated_text: String,
+    pub turn_id: String,
+    pub segment_index: u32,
+    pub revision: u64,
+    pub speaker_id: String,
 }
 
 /// A completed translation and its latency information.

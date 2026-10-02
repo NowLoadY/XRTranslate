@@ -113,6 +113,12 @@ pub enum SessionEvent {
         authoritative_snapshot: bool,
         revision: u64,
     },
+    TranslationPreview {
+        stream_id: u64,
+        audio_source: CaptureSource,
+        publish_to_host_outputs: bool,
+        preview: xrtranslate_protocol::TranslationPreview,
+    },
     StreamEnded {
         stream_id: u64,
         publish_to_host_outputs: bool,
@@ -1073,6 +1079,18 @@ fn forward_server_event(
                     .unwrap_or_default(),
             });
         }
+        Some("translation_preview") => {
+            if let Some(preview) =
+                data.and_then(|data| serde_json::from_value(Value::Object(data.clone())).ok())
+            {
+                let _ = event_tx.send(SessionEvent::TranslationPreview {
+                    stream_id,
+                    audio_source,
+                    publish_to_host_outputs,
+                    preview,
+                });
+            }
+        }
         Some("translation_ready") => {
             let source: String = data
                 .and_then(|d| d.get("source_text"))
@@ -1442,6 +1460,19 @@ mod tests {
     #[test]
     fn authoritative_translation_retains_its_backend_revision() {
         let (sender, receiver) = crossbeam_channel::unbounded();
+        forward_server_event(
+            &sender,
+            r#"{"action":"translation_preview","data":{"source_text":"corrected","translated_text":"正在","turn_id":"turn-1","segment_index":2,"revision":17,"speaker_id":"S1"}}"#,
+            42,
+            true,
+            true,
+            CaptureSource::Microphone,
+        );
+        assert!(matches!(
+            receiver.try_recv().unwrap(),
+            SessionEvent::TranslationPreview { stream_id: 42, preview, .. }
+                if preview.revision == 17 && preview.segment_index == 2 && preview.translated_text == "正在"
+        ));
         forward_server_event(
             &sender,
             r#"{"action":"translation_ready","data":{"source_text":"corrected","translated_text":"final","speaker_id":"","revisable":true,"overlap_ratio":0.34,"authoritative_snapshot":true,"revision":17}}"#,

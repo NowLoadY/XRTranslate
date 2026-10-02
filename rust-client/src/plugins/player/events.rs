@@ -32,10 +32,6 @@ impl SessionEventSubscriber for PlayerTranslationSink {
         if matches!(event, TranslationEvent::Segment(segment) if segment.translated.is_none()) {
             return;
         }
-        if matches!(event, TranslationEvent::ReplaceSegments(segments) if segments.iter().all(|segment| segment.translated.is_none()))
-        {
-            return;
-        }
         if self.accepts_owner(owner)
             && let Some(operation) = owner.operation_id()
         {
@@ -59,13 +55,21 @@ impl VideoPlayerPlugin {
                     }
                 }
                 TranslationEvent::ReplaceSegments(segments) => {
-                    if let Some(segment) = segments.first()
-                        && segment.translated.is_some()
-                    {
-                        self.controller.subtitles.replace_stream_cues(
-                            segment.stream_id,
-                            segments.into_iter().filter_map(translation_cue),
-                        );
+                    if let Some(segment) = segments.first() {
+                        if segment.translated.is_some() {
+                            self.controller.subtitles.replace_stream_cues(
+                                segment.stream_id,
+                                segments.into_iter().filter_map(translation_cue),
+                            );
+                        } else {
+                            self.controller.subtitles.retain_source_snapshot(
+                                segment.stream_id,
+                                &segment.turn_id,
+                                segments.iter().map(|segment| {
+                                    (segment.segment_index, segment.source.as_str())
+                                }),
+                            );
+                        }
                     }
                 }
                 TranslationEvent::StreamEnded { stream_id } => {

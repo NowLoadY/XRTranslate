@@ -40,18 +40,24 @@ pub(super) fn apply_action(
     match action {
         UiAction::None => {}
         UiAction::NewLive => {
+            controller.search.clear();
             controller.reset_draft(false, snapshot);
             controller.route = MeetingRoute::Create;
         }
         UiAction::NewImport => {
+            controller.search.clear();
             controller.reset_draft(true, snapshot);
             controller.route = MeetingRoute::Create;
         }
         UiAction::Back => {
+            controller.search.clear();
             controller.refresh_library();
             controller.route = MeetingRoute::Library;
         }
-        UiAction::Open(id) => controller.open_meeting(&id),
+        UiAction::Open(id) => {
+            controller.search.clear();
+            controller.open_meeting(&id);
+        }
         UiAction::CreateAndStart => {
             if let Some(error) = draft_validation_error(controller, snapshot) {
                 controller.error = Some(error);
@@ -78,6 +84,7 @@ pub(super) fn apply_action(
         UiAction::QuickNote => controller.add_quick_note(),
         UiAction::SaveMinutes => controller.save_minutes(),
         UiAction::JumpToEvidence(segment_id) => {
+            controller.search.clear();
             controller.pane = MeetingPane::Timeline;
             controller.evidence_target = Some(segment_id);
         }

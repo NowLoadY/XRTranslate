@@ -1,0 +1,4 @@
+<resources>
+    <string name="recording_title">Перевод с микрофона</string>
+    <string name="recording_message">Запись и перевод</string>
+</resources>

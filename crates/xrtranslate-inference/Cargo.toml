@@ -18,7 +18,7 @@ half = "2.7.1"
 jieba-rs = "0.11.0"
 ndarray = "0.17"
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "download-binaries", "tls-rustls", "api-27", "half", "cuda", "preload-dylibs"] }
-reqwest = { version = "0.13.4", features = ["json"] }
+reqwest = { version = "0.13.4", features = ["json", "multipart"] }
 rustfft = "6.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

@@ -1,16 +1,7 @@
 <resources>
     <string name="text_action_title">XRT 翻訳</string>
-    <string name="text_action_input">テキストを入力</string>
-    <string name="text_action_hint">翻訳が完了すると、訳文がクリップボードにコピーされます。</string>
-    <string name="text_action_translate">翻訳</string>
-    <string name="text_action_settings">設定</string>
     <string name="text_action_translating">翻訳中…</string>
-    <string name="text_action_setup">XRT で翻訳の設定を完了してください。テキストは保存されています。</string>
+    <string name="text_action_setup">XRT で翻訳を設定してから、もう一度テキストを選択してください。</string>
     <string name="text_action_failed">翻訳できませんでした。設定を確認して再試行してください。</string>
-    <string name="text_action_copied">訳文をコピーしました</string>
     <string name="text_action_too_long">テキストが長すぎます。短い範囲を選択してください。</string>
-    <string name="text_action_empty_clipboard">クリップボードにテキストがありません。ここに入力できます。</string>
-    <string name="text_action_write">文字を入力</string>
-    <string name="text_action_clipboard">クリップボード</string>
-    <string name="text_action_widget_description">入力した文字やクリップボードの内容を XRT で翻訳します。</string>
 </resources>

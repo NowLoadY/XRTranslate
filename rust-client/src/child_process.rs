@@ -1,5 +1,41 @@
 use std::process::Command;
 
+pub(crate) fn spawn(command: Command) -> std::io::Result<std::process::Child> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let mut command = command;
+        command.spawn()
+    }
+    #[cfg(target_os = "android")]
+    {
+        use std::sync::{OnceLock, mpsc};
+        type Request = (
+            Command,
+            mpsc::SyncSender<std::io::Result<std::process::Child>>,
+        );
+        static LAUNCHER: OnceLock<mpsc::SyncSender<Request>> = OnceLock::new();
+        let launcher = LAUNCHER.get_or_init(|| {
+            let (sender, receiver) = mpsc::sync_channel::<Request>(1);
+            // PR_SET_PDEATHSIG follows the spawning thread. Keep that thread
+            // alive when an activity or background translation worker exits.
+            std::thread::Builder::new()
+                .name("native-process-launcher".into())
+                .spawn(move || {
+                    while let Ok((mut command, reply)) = receiver.recv() {
+                        let _ = reply.send(command.spawn());
+                    }
+                })
+                .expect("native process launcher must start");
+            sender
+        });
+        let (reply, result) = mpsc::sync_channel(1);
+        launcher
+            .send((command, reply))
+            .map_err(std::io::Error::other)?;
+        result.recv().map_err(std::io::Error::other)?
+    }
+}
+
 pub fn hide_console(command: &mut Command) -> &mut Command {
     #[cfg(windows)]
     {

@@ -1,16 +1,7 @@
 <resources>
     <string name="text_action_title">Перевод XRT</string>
-    <string name="text_action_input">Введите текст</string>
-    <string name="text_action_hint">Готовый перевод будет скопирован в буфер обмена.</string>
-    <string name="text_action_translate">Перевести</string>
-    <string name="text_action_settings">Настройки</string>
     <string name="text_action_translating">Переводим…</string>
-    <string name="text_action_setup">Сначала настройте перевод в XRT. Ваш текст сохранён.</string>
+    <string name="text_action_setup">Настройте перевод в XRT и выберите текст ещё раз.</string>
     <string name="text_action_failed">Не удалось перевести. Проверьте настройки и повторите попытку.</string>
-    <string name="text_action_copied">Перевод скопирован</string>
     <string name="text_action_too_long">Текст слишком длинный. Выберите более короткий фрагмент.</string>
-    <string name="text_action_empty_clipboard">В буфере обмена нет текста. Его можно ввести здесь.</string>
-    <string name="text_action_write">Ввести текст</string>
-    <string name="text_action_clipboard">Буфер обмена</string>
-    <string name="text_action_widget_description">Переводите текст или содержимое буфера обмена с XRT.</string>
 </resources>

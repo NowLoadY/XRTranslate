@@ -1,0 +1,4 @@
+<resources>
+    <string name="recording_title">マイク翻訳</string>
+    <string name="recording_message">録音・翻訳中</string>
+</resources>

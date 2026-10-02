@@ -152,6 +152,42 @@ impl SubtitleTimeline {
         self.snapshot_cues.insert(stream_id, ids);
     }
 
+    /// Keeps completed translations only while their recognized sentence still
+    /// belongs to this turn. Other turns and authored subtitles are independent.
+    pub(crate) fn retain_source_snapshot<'a>(
+        &mut self,
+        stream_id: u64,
+        turn_id: &str,
+        sources: impl IntoIterator<Item = (u32, &'a str)>,
+    ) {
+        let sources = sources.into_iter().collect::<BTreeMap<_, _>>();
+        let prefix = format!("stream_{stream_id}_turn_{turn_id}_segment_");
+        self.cues.retain(|cue| {
+            let Some(index) = cue
+                .id
+                .strip_prefix(&prefix)
+                .and_then(|index| index.parse::<u32>().ok())
+            else {
+                return true;
+            };
+            if self
+                .metadata
+                .get(&cue.id)
+                .is_some_and(|metadata| metadata.timing == SegmentTiming::Authored)
+                || sources
+                    .get(&index)
+                    .is_some_and(|source| *source == cue.original_text)
+            {
+                return true;
+            }
+            self.metadata.remove(&cue.id);
+            if let Some(snapshot) = self.snapshot_cues.get_mut(&stream_id) {
+                snapshot.remove(&cue.id);
+            }
+            false
+        });
+    }
+
     #[cfg(test)]
     fn add_cue(&mut self, cue: SubtitleCue) -> bool {
         self.add_cue_with_metadata(cue, SubtitleMetadata::default())
@@ -352,7 +388,7 @@ fn format_timestamp_srt(ms: i64) -> String {
 mod tests {
     #[test]
     fn translation_cue_identity_prefers_turn_and_segment() {
-        let (cue, metadata) = super::cue_from_translation(super::TranslationCueInput {
+        let base = super::TranslationCueInput {
             turn_id: "turn-a".into(),
             segment_index: 2,
             stream_id: Some(7),
@@ -365,12 +401,51 @@ mod tests {
             boundary: xrtranslate_protocol::SegmentBoundary::Silence,
             revisable: true,
             finalized: false,
-        });
+        };
+        let (cue, metadata) = super::cue_from_translation(base.clone());
         assert_eq!(cue.id, "stream_7_turn_turn-a_segment_2");
         assert_eq!(cue.speaker_name, None);
         assert_eq!(cue.translated_text.as_deref(), Some("你好"));
         assert!(metadata.revisable);
         assert!(!metadata.finalized);
+
+        let mut timeline = SubtitleTimeline::new();
+        for (turn, stream, index, source) in [
+            ("turn-a", 7, 1, "first"),
+            ("turn-a", 7, 2, "hello"),
+            ("turn-a", 7, 3, "removed"),
+            ("turn-b", 7, 1, "another turn"),
+            ("turn-a", 8, 1, "another stream"),
+        ] {
+            let (cue, metadata) = cue_from_translation(TranslationCueInput {
+                turn_id: turn.into(),
+                stream_id: Some(stream),
+                segment_index: index,
+                source: source.into(),
+                revisable: false,
+                finalized: true,
+                ..base.clone()
+            });
+            timeline.add_cue_with_metadata(cue, metadata);
+        }
+        timeline.retain_source_snapshot(7, "turn-a", [(1, "merged first"), (2, "hello")]);
+        assert_eq!(timeline.count(), 3);
+        assert!(timeline.cues().iter().any(|cue| {
+            cue.id == "stream_7_turn_turn-a_segment_2"
+                && cue.translated_text.as_deref() == Some("你好")
+        }));
+        assert!(
+            timeline
+                .cues()
+                .iter()
+                .any(|cue| cue.original_text == "another turn")
+        );
+        assert!(
+            timeline
+                .cues()
+                .iter()
+                .any(|cue| cue.original_text == "another stream")
+        );
     }
 
     #[test]

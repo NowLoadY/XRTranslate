@@ -5,10 +5,10 @@ use super::{
 use crate::plugins::meeting::{
     controller::{MeetingController, can_continue, meeting_status_label},
     i18n::tr,
-    store::{MeetingSourceKind, MeetingStatus},
+    store::MeetingStatus,
 };
 use crate::ui::components;
-use eframe::egui::{self, Color32, CornerRadius, Frame, Margin};
+use eframe::egui;
 
 pub(super) fn render_library(
     controller: &mut MeetingController,
@@ -70,109 +70,70 @@ pub(super) fn render_library(
             {
                 ui.push_id(("meeting-card", &meeting.id), |ui| {
                     components::card(ui, |ui| {
-                        ui.vertical(|ui| {
-                            ui.horizontal(|ui| {
-                                let (badge_bg, badge_fg, badge_text) = match meeting.source_kind {
-                                    MeetingSourceKind::LiveCapture => (
-                                        Color32::from_rgb(236, 253, 245),
-                                        Color32::from_rgb(5, 150, 105),
-                                        "LIVE",
-                                    ),
-                                    MeetingSourceKind::ImportedAudio => (
-                                        Color32::from_rgb(238, 242, 255),
-                                        Color32::from_rgb(79, 70, 229),
-                                        "FILE",
-                                    ),
-                                };
-
-                                Frame::new()
-                                    .fill(badge_bg)
-                                    .corner_radius(CornerRadius::same(6))
-                                    .inner_margin(Margin::symmetric(6, 3))
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            egui::RichText::new(badge_text)
-                                                .color(badge_fg)
-                                                .strong()
-                                                .size(11.0),
-                                        );
-                                    });
-
-                                ui.add_space(8.0);
-
-                                ui.vertical(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(&meeting.name)
-                                            .size(15.5)
-                                            .strong()
-                                            .color(crate::ui::theme::text_strong()),
-                                    );
-                                    ui.add_space(2.0);
-                                    ui.label(
-                                        egui::RichText::new(format!(
-                                            "{} · {} → {} · {}",
-                                            source_label(meeting, language),
-                                            meeting_language_label(&meeting.source_language, language),
-                                            meeting_language_label(&meeting.target_language, language),
-                                            format_timestamp(meeting.last_activity_at_ms)
-                                        ))
-                                        .color(crate::ui::theme::text_weak())
-                                        .size(11.5),
-                                    );
-                                });
-
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        let status_text = meeting_status_label(meeting.status);
-                                        components::status_badge(
-                                            ui,
-                                            status_text,
-                                            meeting.status == MeetingStatus::Live,
-                                            meeting.status == MeetingStatus::Failed,
-                                        );
-                                    },
-                                );
-                            });
-
-                            ui.add_space(10.0);
-
-                            ui.horizontal_wrapped(|ui| {
-                                if components::primary_button(ui, tr(language, "Open")).clicked() {
-                                    action = UiAction::Open(meeting.id.clone());
-                                }
+                        ui.set_width(ui.available_width());
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&meeting.name)
+                                    .size(16.0)
+                                    .strong()
+                                    .color(crate::ui::theme::text_strong()),
+                            )
+                            .wrap(),
+                        );
+                        ui.horizontal_wrapped(|ui| {
+                            components::status_badge(
+                                ui,
+                                tr(language, meeting_status_label(meeting.status)),
+                                meeting.status == MeetingStatus::Live,
+                                meeting.status == MeetingStatus::Failed,
+                            );
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} · {}",
+                                    source_label(meeting, language),
+                                    format_timestamp(meeting.last_activity_at_ms)
+                                ))
+                                .size(11.5)
+                                .color(crate::ui::theme::text_weak()),
+                            );
+                        });
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} → {}",
+                                meeting_language_label(&meeting.source_language, language),
+                                meeting_language_label(&meeting.target_language, language)
+                            ))
+                            .size(12.0)
+                            .color(crate::ui::theme::text_weak()),
+                        );
+                        ui.horizontal_wrapped(|ui| {
+                            if components::primary_button(ui, tr(language, "Open")).clicked() {
+                                action = UiAction::Open(meeting.id.clone());
+                            }
+                            ui.menu_button("⋯", |ui| {
                                 if can_continue(meeting)
-                                    && components::animated_button(
-                                        ui,
-                                        tr(language, "Continue recording"),
+                                    && ui.button(tr(language, "Continue recording")).clicked()
+                                {
+                                    action = UiAction::Continue(meeting.id.clone());
+                                    ui.close();
+                                }
+                                if ui.button(tr(language, "Export Markdown")).clicked() {
+                                    action = UiAction::ExportMeeting(meeting.id.clone());
+                                    ui.close();
+                                }
+                                if ui
+                                    .add_enabled(
+                                        !controller.is_recording(&meeting.id),
+                                        egui::Button::new(tr(language, "Delete")),
                                     )
                                     .clicked()
                                 {
-                                    action = UiAction::Continue(meeting.id.clone());
-                                }
-                                if components::animated_button(
-                                    ui,
-                                    tr(language, "Export Markdown"),
-                                )
-                                .clicked()
-                                {
-                                    action = UiAction::ExportMeeting(meeting.id.clone());
-                                }
-                                let active = controller.is_recording(&meeting.id);
-                                let delete = ui
-                                    .add_enabled_ui(!active, |ui| {
-                                        components::danger_button(ui, tr(language, "Delete"))
-                                    })
-                                    .inner;
-                                if active {
-                                    delete.on_hover_text(tr(
-                                        language,
-                                        "Finish the active meeting before deleting it",
-                                    ));
-                                } else if delete.clicked() {
                                     action = UiAction::AskDelete(meeting.id.clone());
+                                    ui.close();
                                 }
-                            });
+                            })
+                            .response
+                            .on_hover_text(tr(language, "More"));
                         });
                     });
                     ui.add_space(10.0);

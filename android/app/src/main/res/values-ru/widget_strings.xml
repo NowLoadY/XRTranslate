@@ -1,0 +1,5 @@
+<resources>
+    <string name="widget_results_title">Результаты перевода</string>
+    <string name="widget_results_description">Последние переводы обновляются автоматически. Нажмите, чтобы открыть XRT.</string>
+    <string name="widget_results_empty">Здесь появятся ваши переводы\nНажмите, чтобы открыть XRT</string>
+</resources>

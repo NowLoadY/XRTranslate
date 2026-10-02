@@ -27,6 +27,9 @@ if [[ -e "${TARGET_DIR}" ]]; then
   exit 2
 fi
 
+source "${ROOT_DIR}/scripts/linux-build-env.sh"
+prepare_linux_build_env "${ROOT_DIR}"
+
 cargo_args=(build --locked --target-dir "${ROOT_DIR}/target" -p rust-client -p xrtranslate-backend -p xrtranslate-installer -p xrtranslate-updater -p xrtranslate-packager --features xrtranslate-backend/managed-ort --release)
 if [[ -n "${FEATURES}" ]]; then
   cargo_args+=(--features "${FEATURES}")

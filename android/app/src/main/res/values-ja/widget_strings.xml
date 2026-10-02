@@ -1,0 +1,5 @@
+<resources>
+    <string name="widget_results_title">翻訳結果</string>
+    <string name="widget_results_description">最近の翻訳をリアルタイムで表示。タップして XRT を開きます。</string>
+    <string name="widget_results_empty">翻訳結果がここに表示されます\nタップして XRT を開く</string>
+</resources>

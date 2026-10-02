@@ -13,8 +13,24 @@ use std::{
     sync::{Arc, atomic::Ordering},
     time::{Duration, Instant},
 };
-use xrtranslate_engine::language::LanguageSelection;
+use xrtranslate_engine::language::{LanguageCapabilities, LanguageSelection};
 use xrtranslate_protocol::PromptGraphSet;
+
+pub(crate) fn select_languages(
+    text: &str,
+    source: &str,
+    target: &str,
+    capabilities: LanguageCapabilities,
+) -> Result<LanguageSelection, String> {
+    let capabilities = capabilities.for_text();
+    if let Some((source, target)) =
+        xrtranslate_engine::auto_route_language_pair(text, source, target)
+        && let Ok(selection) = capabilities.select(source, target)
+    {
+        return Ok(selection);
+    }
+    capabilities.select(source, target)
+}
 
 struct TextConnection {
     session: Option<SessionHandle>,
@@ -57,7 +73,7 @@ struct TextTask {
 
 impl TextTask {
     fn same_conversation(&self, other: &Self) -> bool {
-        self.scope.owner == other.scope.owner
+        self.scope.owner.same_conversation(&other.scope.owner)
             && self.languages == other.languages
             && self.publish_to_host_outputs == other.publish_to_host_outputs
     }
@@ -136,9 +152,9 @@ impl TextTranslation {
     }
 
     pub(crate) fn preparing_host(&self) -> bool {
-        self.tasks.iter().any(|task| {
-            !task.terminal && task.pending.is_some() && task.scope.owner.is_host()
-        })
+        self.tasks
+            .iter()
+            .any(|task| !task.terminal && task.pending.is_some() && task.scope.owner.is_host())
     }
 
     #[cfg(test)]
@@ -306,7 +322,7 @@ impl TextTranslation {
         backend: &mut BackendManager,
         server_url: &str,
         graphs: PromptGraphSet,
-        ctx: egui::Context,
+        ctx: Option<egui::Context>,
         target: &Sender<TaskEvent>,
     ) -> Vec<String> {
         self.retire_finished();
@@ -339,7 +355,7 @@ impl TextTranslation {
                                 external_audio_gate: ExternalAudioGate::default(),
                                 publish_to_host_outputs: task.publish_to_host_outputs,
                                 tts: None,
-                                egui_ctx: Some(ctx.clone()),
+                                egui_ctx: ctx.clone(),
                                 vad_threshold: 0.0,
                                 vad_silence_ms: 0,
                                 continuous_recognition: false,
@@ -419,7 +435,9 @@ impl TextTranslation {
                 task.fail(error.into(), target, &mut errors);
             }
         }
-        if self.busy() {
+        if self.busy()
+            && let Some(ctx) = ctx
+        {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         errors
@@ -506,7 +524,7 @@ mod tests {
                 PromptGraphSet {
                     graph: Default::default(),
                 },
-                egui::Context::default(),
+                Some(egui::Context::default()),
                 &target,
             );
             assert_eq!(text.busy(), index != 1);

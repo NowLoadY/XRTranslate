@@ -1,16 +1,24 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x00401000" android:required="true" />
     <uses-feature android:name="android.hardware.vulkan.level" android:version="0" android:required="true" />
     <application android:label="XRTranslate" android:icon="@drawable/app_icon" android:theme="@style/AppTheme" android:allowBackup="false" android:usesCleartextTraffic="true">
+        <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.exports" android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/shared_files" />
+        </provider>
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask" android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|uiMode|density" android:windowSoftInputMode="adjustResize">
             <meta-data android:name="android.app.lib_name" android:value="rust_client" />
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity>
-        <activity-alias android:name=".TextTranslation" android:targetActivity=".MainActivity" android:exported="true" android:label="XRT">
-            <meta-data android:name="android.app.lib_name" android:value="rust_client" />
+        <activity android:name=".textactions.TextActions" android:exported="false" android:theme="@android:style/Theme.NoDisplay" android:taskAffinity="" android:excludeFromRecents="true" />
+        <activity-alias android:name=".TextTranslation" android:targetActivity=".textactions.TextActions" android:exported="true" android:label="XRT">
             <intent-filter>
                 <action android:name="android.intent.action.PROCESS_TEXT" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -22,9 +30,14 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity-alias>
-        <receiver android:name=".textactions.TextActionsWidget" android:exported="false" android:label="@string/text_action_title">
+        <service android:name=".textactions.TextTranslationService" android:exported="false" android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="On-device model inference for text explicitly selected or shared by the user; stops when translation completes or after 165 seconds." />
+        </service>
+        <service android:name=".textactions.TranslationResultsService" android:permission="android.permission.BIND_REMOTEVIEWS" android:exported="false" />
+        <service android:name=".audio.MicrophoneService" android:exported="false" android:foregroundServiceType="microphone" android:stopWithTask="true" />
+        <receiver android:name=".textactions.TextActionsWidget" android:exported="false" android:label="@string/widget_results_title">
             <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
-            <meta-data android:name="android.appwidget.provider" android:resource="@xml/text_actions_widget" />
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/translation_results_widget" />
         </receiver>
     </application>
 </manifest>

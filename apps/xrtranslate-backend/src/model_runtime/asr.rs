@@ -6,14 +6,14 @@ use xrtranslate_assets::{
 };
 use xrtranslate_inference::{
     AsrTranscript, AsrVocabularyBias, InferenceError, OpenAiAsrAdapter, OpenAiAsrOptions,
-    Qwen3AsrAdapter, Qwen3AsrOptions, QwenAudioStreamingAdapter, QwenAudioStreamingOptions,
-    ReqwestClient, SenseVoiceAdapter,
+    Qwen3AsrAdapter, Qwen3AsrOptions, QwenAudioFlashAdapter, QwenAudioFlashOptions,
+    QwenAudioStreamingAdapter, QwenAudioStreamingOptions, ReqwestClient, SenseVoiceAdapter,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum AsrProfile {
     LocalCatalog,
-    Qwen3Remote,
+    QwenAudioFlash,
     OpenAiAudio,
     QwenAudioStreaming,
 }
@@ -35,6 +35,7 @@ pub(crate) struct NativeAsrOptions {
 pub(crate) enum NativeAsrAdapter {
     AudioChat(Qwen3AsrAdapter<ReqwestClient>),
     OpenAi(OpenAiAsrAdapter<ReqwestClient>),
+    QwenAudioFlash(QwenAudioFlashAdapter<ReqwestClient>),
     QwenAudioStreaming(QwenAudioStreamingAdapter),
     SenseVoice(SenseVoiceAdapter),
 }
@@ -50,7 +51,7 @@ impl AsrProfile {
             return Some(Self::QwenAudioStreaming);
         }
         if provider == "qwen" || provider == "qwen-intl" {
-            return Some(Self::Qwen3Remote);
+            return (transport == "dashscope").then_some(Self::QwenAudioFlash);
         }
         if transport == "openai" {
             return Some(Self::OpenAiAudio);
@@ -70,13 +71,10 @@ impl AsrProfile {
                 field: "asr.model_asset.runtime",
                 message: "local ASR adapters must be constructed from the model card".into(),
             }),
-            Self::Qwen3Remote => Qwen3AsrAdapter::with_bearer_token(
-                http,
-                endpoint,
-                model,
-                api_key.unwrap_or_default(),
-            )
-            .map(NativeAsrAdapter::AudioChat),
+            Self::QwenAudioFlash => {
+                QwenAudioFlashAdapter::new(http, endpoint, model, api_key.unwrap_or_default())
+                    .map(NativeAsrAdapter::QwenAudioFlash)
+            }
             Self::OpenAiAudio => OpenAiAsrAdapter::with_bearer_token(
                 http,
                 endpoint,
@@ -152,7 +150,20 @@ impl NativeAsrAdapter {
                         OpenAiAsrOptions {
                             language: options.language,
                             instruction_prompt: options.instruction_prompt,
+                            context_bias: options.context_bias,
                             max_tokens: options.max_tokens,
+                        },
+                    )
+                    .await
+            }
+            Self::QwenAudioFlash(adapter) => {
+                adapter
+                    .transcribe_pcm16(
+                        pcm,
+                        QwenAudioFlashOptions {
+                            language: options.language,
+                            context_bias: options.context_bias,
+                            vocabulary_bias: options.vocabulary_bias,
                         },
                     )
                     .await
@@ -182,6 +193,17 @@ impl NativeAsrAdapter {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn qwen_cloud_requires_the_native_audio_protocol() {
+        for provider in ["qwen", "qwen-intl"] {
+            assert_eq!(
+                AsrProfile::registered(provider, "dashscope"),
+                Some(AsrProfile::QwenAudioFlash)
+            );
+            assert_eq!(AsrProfile::registered(provider, "openai"), None);
+        }
+    }
 
     /// Exercises the same language codes sent by the pipeline, including its
     /// constrained recovery after an automatic recognition attempt.

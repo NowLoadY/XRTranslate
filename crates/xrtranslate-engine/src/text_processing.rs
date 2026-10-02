@@ -8,8 +8,8 @@
 
 mod sentence_boundary;
 
-pub use sentence_boundary::ends_at_sentence_boundary;
 use sentence_boundary::is_translation_boundary;
+pub use sentence_boundary::{ends_at_sentence_boundary, sentence_end_offsets};
 
 /// Maximum number of Unicode scalar values held before a comma may split an
 /// otherwise unfinished translation segment.
@@ -530,18 +530,22 @@ pub fn translation_segment_pairs_for_final_text_with_lang(
 
 /// Produces bounded live-caption segments from a revisable transcript.
 ///
-/// Completed sentence boundaries and long comma-delimited clauses are emitted
-/// as stable display units while the final unterminated tail remains a normal
-/// segment that may be replaced by the next ASR revision. The caller keeps the
-/// whole returned list as one authoritative snapshot, so segment indices can
-/// be reconciled atomically by downstream consumers.
+/// Complete sentences remain separate from the unfinished tail, including
+/// short sentences. The caller displays the whole snapshot immediately and
+/// waits for sentence stability before submitting any segment for translation.
 pub fn translation_segment_pairs_for_live_text_with_lang(
     text: &str,
     source_lang: &str,
 ) -> Vec<TranslationSegmentPair> {
-    split_translation_segments_internal(text, true)
+    let mut start = 0;
+    sentence_end_offsets(text)
         .into_iter()
-        .filter_map(|source_text| translation_pair_with_lang(&source_text, source_lang))
+        .chain(std::iter::once(text.len()))
+        .filter_map(|end| {
+            let source = &text[start..end];
+            start = end;
+            translation_pair_with_lang(source.trim(), source_lang)
+        })
         .collect()
 }
 
@@ -1437,6 +1441,22 @@ mod tests {
             .map(|pair| pair.source_text)
             .collect::<String>();
         assert_eq!(rebuilt, long);
+
+        let live = translation_segment_pairs_for_live_text_with_lang(
+            "Okay. A clause: still speaking, with more to come",
+            "en",
+        );
+        assert_eq!(live.len(), 2);
+        assert_eq!(live[0].source_text, "Okay.");
+        assert_eq!(
+            live[1].source_text,
+            "A clause: still speaking, with more to come"
+        );
+        let quoted = "她说：“好了。”继续";
+        let ends = sentence_end_offsets(quoted);
+        assert_eq!(&quoted[..ends[0]], "她说：“好了。”");
+        assert!(ends_at_sentence_boundary("The answer is ‘ready!’"));
+        assert!(!ends_at_sentence_boundary("The time is 3 p.m."));
     }
 
     #[test]
@@ -1495,7 +1515,9 @@ mod tests {
             split_translation_segments(
                 "We train a generative prior to model temporal dependencies between the F SQ codes."
             ),
-            vec!["We train a generative prior to model temporal dependencies between the F SQ codes."]
+            vec![
+                "We train a generative prior to model temporal dependencies between the F SQ codes."
+            ]
         );
     }
 

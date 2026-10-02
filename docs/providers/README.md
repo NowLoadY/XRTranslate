@@ -67,13 +67,19 @@ using a generic `supports_prompt` assumption.
 
 `asr_context_max_chars` applies only to lexical context.
 
-The cloud `qwen` provider uses `qwen3-asr-flash` with lexical context bias over an OpenAI-compatible endpoint; see [Qwen ASR](qwen-asr.md).
+The cloud `qwen` and `qwen-intl` providers default to
+`qwen-audio-3.0-asr-flash` over DashScope's native HTTP API. They declare lexical
+context bias and structured weighted vocabulary independently; see
+[Qwen ASR](qwen-asr.md). Remote model languages and capabilities belong in
+`xrtranslate-assets/src/remote.rs`, separately from downloadable model assets.
 
 ## Adding an ASR provider
 
 1. Add declarative defaults and capabilities under `asr.providers` in
    `config.json`. Extend `xrtranslate-config` only for a genuinely shared,
-   typed capability; keep vendor-only fields in the provider object.
+   typed capability; keep vendor-only fields in the provider object. Register
+   known remote model languages and capabilities in the remote model registry
+   rather than borrowing the manifest of a similarly named local model.
 2. Add the transport adapter under
    `crates/xrtranslate-inference/src/asr/providers/` and re-export it through
    that directory's `mod.rs`. Keep neutral results and vocabulary types in
@@ -183,6 +189,7 @@ runtime and resource lifecycle, consult
 ## Provider-specific notes
 
 - [Qwen ASR](qwen-asr.md)
+- [Qwen Audio WebSocket ASR](qwen-audio-streaming-asr.md)
 - [Qwen Translation](qwen-translation.md)
 - [OpenVoice TTS](openvoice-tts.md)
 - [OpenVoice language-pack recipe](openvoice-language-packs.md)

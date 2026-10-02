@@ -605,6 +605,59 @@ impl ServiceConfigEditor {
                     }
                     ui.add_space(10.0);
                     render_provider_capabilities(ui, language, category_key, &supported_languages);
+                    if category_key == "asr"
+                        && let Some(card) =
+                            provider_remote_asr_model(&self.categories[cat_idx].providers[idx])
+                    {
+                        ui.label(
+                            egui::RichText::new(crate::i18n::tr(
+                                language,
+                                if card.supports_incremental_results {
+                                    "Incremental recognition results"
+                                } else {
+                                    "Complete audio windows; final recognition results"
+                                },
+                            ))
+                            .color(crate::ui::theme::text_weak())
+                            .size(12.0),
+                        );
+                        ui.label(
+                            egui::RichText::new(crate::i18n::tr(
+                                language,
+                                match card.native_text_polishing {
+                                    Some(true) => "Native text polishing",
+                                    Some(false) => "No native text polishing",
+                                    None => "Native text polishing: not documented",
+                                },
+                            ))
+                            .color(crate::ui::theme::text_weak())
+                            .size(12.0),
+                        );
+                        if let Some(limit) = card.context_max_chars {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} {limit}",
+                                    crate::i18n::tr(
+                                        language,
+                                        "Recognition context character limit:"
+                                    )
+                                ))
+                                .color(crate::ui::theme::text_weak())
+                                .size(12.0),
+                            );
+                        }
+                        if card.vocabulary_bias {
+                            ui.label(
+                                egui::RichText::new(crate::i18n::tr(
+                                    language,
+                                    "Weighted vocabulary supported",
+                                ))
+                                .color(crate::ui::theme::text_weak())
+                                .size(12.0),
+                            );
+                        }
+                        ui.add_space(8.0);
+                    }
                     if category_key == "tts"
                         && render_tts_voice_selection(
                             ui,
@@ -1164,7 +1217,7 @@ fn provider_is_remote(provider: &ProviderCard) -> bool {
         .is_some_and(|field| {
             matches!(
                 field.value.trim().to_ascii_lowercase().as_str(),
-                "openai" | "websocket"
+                "openai" | "dashscope" | "websocket"
             )
         })
 }
@@ -1178,7 +1231,31 @@ fn provider_supported_languages(provider: &ProviderCard) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn provider_remote_asr_model(
+    provider: &ProviderCard,
+) -> Option<&'static xrtranslate_assets::remote::RemoteAsrModelManifest> {
+    let field = |name| {
+        provider
+            .fields
+            .iter()
+            .find(|field| field.name == name)
+            .map(|field| field.value.trim())
+    };
+    xrtranslate_assets::remote::remote_asr_model(
+        &provider.name,
+        field("transport")?,
+        field("model")?,
+    )
+}
+
 fn provider_model_languages(provider: &ProviderCard) -> Vec<String> {
+    if let Some(card) = provider_remote_asr_model(provider) {
+        return card
+            .languages
+            .iter()
+            .map(|code| (*code).to_owned())
+            .collect();
+    }
     let mut languages = provider_model_assets(provider)
         .into_iter()
         .filter_map(|key| xrtranslate_assets::ModelAssetId::from_config_key(&key))
@@ -1204,13 +1281,18 @@ fn render_provider_capabilities(
     category_key: &str,
     supported_languages: &[String],
 ) {
-    if category_key != "tts" || supported_languages.is_empty() {
+    if supported_languages.is_empty() {
         return;
     }
+    let label = match category_key {
+        "asr" => "Supported recognition languages:",
+        "tts" => "Supported synthesis languages:",
+        _ => return,
+    };
     ui.label(
         eframe::egui::RichText::new(format!(
             "{} {}",
-            crate::i18n::tr(language, "Supported synthesis languages:"),
+            crate::i18n::tr(language, label),
             supported_languages.join(", ")
         ))
         .color(crate::ui::theme::text_weak())
@@ -1573,6 +1655,27 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn native_cloud_asr_is_remote_and_displays_the_shared_model_languages() {
+        let card = provider_card(
+            "qwen",
+            &[
+                ("transport", "dashscope"),
+                ("model", "qwen-audio-3.0-asr-flash"),
+            ],
+        );
+        assert!(super::provider_is_remote(&card));
+        let languages = super::provider_model_languages(&card);
+        assert_eq!(languages.len(), 30);
+        assert!(languages.iter().any(|code| code == "fil"));
+        assert!(!languages.iter().any(|code| code == "tr" || code == "tl"));
+        let model = super::provider_remote_asr_model(&card).unwrap();
+        assert!(model.vocabulary_bias);
+        assert!(!model.supports_incremental_results);
+        assert_eq!(model.native_text_polishing, Some(false));
+        assert_eq!(model.context_max_chars, Some(400));
     }
 
     #[test]

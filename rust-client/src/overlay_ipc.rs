@@ -20,7 +20,6 @@ pub struct OverlayEntry {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct OcrOverlayState {
     pub source: String,
-    pub translated: String,
     pub status: Option<String>,
     pub busy: bool,
 }

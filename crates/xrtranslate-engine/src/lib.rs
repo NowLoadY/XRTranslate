@@ -21,8 +21,8 @@ pub use language::{
 pub use text_processing::{
     RevisableTranscript, TranslationSegmentPair, collapse_asr_split_words,
     ends_at_sentence_boundary, is_filler_segment, is_split_word_pair, remove_asr_stutters,
-    remove_transcript_overlap, split_translation_segments, strip_filler_edges,
-    strip_filler_edges_for_lang, translation_segment_pairs_for_final_text,
+    remove_transcript_overlap, sentence_end_offsets, split_translation_segments,
+    strip_filler_edges, strip_filler_edges_for_lang, translation_segment_pairs_for_final_text,
     translation_segment_pairs_for_final_text_with_lang, translation_segment_pairs_for_live_text,
     translation_segment_pairs_for_live_text_with_lang, translation_segment_pairs_for_text,
     translation_segment_pairs_for_text_with_lang, translation_segments_for_text,

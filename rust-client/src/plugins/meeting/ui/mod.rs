@@ -13,6 +13,9 @@ pub(super) fn render(
     snapshot: &MeetingUiSnapshot,
     ui: &mut egui::Ui,
 ) -> MeetingAction {
+    if ui.available_width() < 600.0 {
+        ui.spacing_mut().interact_size = ui.spacing().interact_size.max(egui::Vec2::splat(44.0));
+    }
     let action = match plugin.controller.route {
         MeetingRoute::Library => {
             library::render_library(&mut plugin.controller, snapshot.language, ui)

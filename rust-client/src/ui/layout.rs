@@ -165,58 +165,53 @@ fn visible_variable_row_range(
 
 /// Virtualizes a dynamic text list whose wrapped rows do not share one height.
 ///
-/// Callers measure rows against the current content width before invoking this
-/// function. Keeping the geometry here ensures scrolling, clipping, and
-/// scroll-to-end all use the same measured layout.
-pub fn show_variable_virtual_rows(
+/// Prepare text after the scrollbar has reserved its width, then reuse that
+/// layout for measurement and rendering.
+pub fn show_variable_virtual_rows<T>(
     ui: &mut egui::Ui,
     id_salt: &'static str,
-    row_heights: &[f32],
     row_gap: f32,
     scroll_to_end: bool,
-    mut render_row: impl FnMut(&mut egui::Ui, usize, f32),
+    prepare_rows: impl FnOnce(&egui::Ui) -> Vec<(f32, T)>,
+    mut render_row: impl FnMut(&mut egui::Ui, usize, f32, &T),
 ) {
-    let offsets = variable_row_offsets(row_heights, row_gap);
-    let content_height = offsets.last().copied().unwrap_or_default();
-    let viewport_height_id = ui.make_persistent_id((id_salt, "viewport_height"));
-    let viewport_height = ui
-        .memory(|memory| memory.data.get_temp::<f32>(viewport_height_id))
-        .unwrap_or_else(|| ui.available_height())
-        .max(0.0);
-    let mut scroll_area = egui::ScrollArea::vertical()
+    egui::ScrollArea::vertical()
         .id_salt(id_salt)
         .animated(false)
-        .auto_shrink([false, false]);
-    if scroll_to_end {
-        scroll_area =
-            scroll_area.vertical_scroll_offset((content_height - viewport_height).max(0.0));
-    }
+        .auto_shrink([false, false])
+        .show_viewport(ui, |ui, viewport| {
+            let rows = prepare_rows(ui);
+            let row_heights = rows.iter().map(|(height, _)| *height).collect::<Vec<_>>();
+            let offsets = variable_row_offsets(&row_heights, row_gap);
+            let content_height = offsets.last().copied().unwrap_or_default();
+            let content_top = ui.max_rect().top();
+            let content_left = ui.max_rect().left();
+            let content_width = ui.available_width();
+            ui.set_height(content_height);
 
-    let output = scroll_area.show_viewport(ui, |ui, viewport| {
-        let content_top = ui.max_rect().top();
-        let content_left = ui.max_rect().left();
-        let content_width = ui.available_width();
-        ui.set_height(content_height);
-
-        for index in visible_variable_row_range(viewport, row_heights, &offsets) {
-            let row_height = row_heights[index].max(0.0);
-            let row_rect = egui::Rect::from_min_size(
-                egui::pos2(content_left, content_top + offsets[index]),
-                egui::vec2(content_width, row_height),
-            );
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .id_salt((id_salt, index))
-                    .max_rect(row_rect),
-                |ui| render_row(ui, index, row_height),
-            );
-        }
-    });
-    ui.memory_mut(|memory| {
-        memory
-            .data
-            .insert_temp(viewport_height_id, output.inner_rect.height());
-    });
+            for index in visible_variable_row_range(viewport, &row_heights, &offsets) {
+                let row_height = row_heights[index].max(0.0);
+                let row_rect = egui::Rect::from_min_size(
+                    egui::pos2(content_left, content_top + offsets[index]),
+                    egui::vec2(content_width, row_height),
+                );
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .id_salt((id_salt, index))
+                        .max_rect(row_rect),
+                    |ui| render_row(ui, index, row_height, &rows[index].1),
+                );
+            }
+            if scroll_to_end {
+                ui.scroll_to_rect(
+                    egui::Rect::from_min_size(
+                        egui::pos2(content_left, content_top + content_height),
+                        Vec2::ZERO,
+                    ),
+                    Some(egui::Align::Max),
+                );
+            }
+        });
 }
 
 /// Sizes a single-line control from its rendered label while respecting the

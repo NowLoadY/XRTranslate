@@ -18,6 +18,12 @@ sudo apt install build-essential pkg-config libx11-dev libxcursor-dev \
 git submodule update --init XR-Corpus
 ```
 
+On Debian/Ubuntu with PipeWire and libclang already installed, both Linux
+scripts can download missing PipeWire/SPA development files and libclang C
+headers into `target/linux-build-deps/`, without sudo. This build cache is
+reused on later runs and excluded from release packages. Other distributions
+need the equivalent development packages installed through their package manager.
+
 ## Run from source
 
 ```sh

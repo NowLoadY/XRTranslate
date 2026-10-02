@@ -1505,10 +1505,6 @@ impl AudioSystem {
         stream.play().map_err(|error| {
             AudioRouteError::StreamStart(format!("cannot start microphone node: {error}"))
         })?;
-        #[cfg(target_os = "android")]
-        if !crate::android::foreground() {
-            let _ = stream.pause();
-        }
         Ok(MicrophoneFanout {
             senders,
             sample_rate,

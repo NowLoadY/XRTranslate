@@ -1,0 +1,4 @@
+<resources>
+    <string name="recording_title">麦克风翻译</string>
+    <string name="recording_message">正在录音和翻译</string>
+</resources>

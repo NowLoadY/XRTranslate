@@ -13,6 +13,8 @@ use std::sync::{
 mod android;
 #[cfg(target_os = "android")]
 mod android_text_actions;
+#[cfg(target_os = "android")]
+mod android_translation_history;
 mod app_update;
 mod audio;
 #[cfg(target_os = "linux")]
@@ -30,22 +32,22 @@ mod i18n;
 pub(crate) mod media_import;
 mod model_install;
 mod network;
+#[cfg(any(windows, target_os = "linux"))]
+mod ocr_capture;
+#[cfg(any(windows, target_os = "linux"))]
+mod ocr_host;
+#[cfg(any(windows, target_os = "linux"))]
+mod ocr_runtime;
 mod onboarding;
 mod overlay_ipc;
 mod overlay_manager;
 #[cfg(any(windows, target_os = "linux"))]
 mod overlay_native;
-#[cfg(any(windows, target_os = "linux"))]
-mod screen_capture;
-#[cfg(any(windows, target_os = "linux"))]
-mod ocr_capture;
-#[cfg(any(windows, target_os = "linux"))]
-mod ocr_runtime;
-#[cfg(any(windows, target_os = "linux"))]
-mod ocr_host;
 mod plugins;
 mod presentation;
 mod runtime_install;
+#[cfg(any(windows, target_os = "linux"))]
+mod screen_capture;
 mod service_config;
 pub mod session_coordinator;
 mod streaming;
@@ -651,8 +653,6 @@ struct XRTranslateApp {
     last_error: Option<String>,
     companion_inbox: ui::companion::Inbox,
     text_translation: text_translation::TextTranslation,
-    #[cfg(target_os = "android")]
-    android_text_actions: android_text_actions::TextActions,
     text_composer: ui::components::text_composer::TextComposer,
     server_url: String,
     download_proxy_url: String,
@@ -728,6 +728,7 @@ struct SharedSessionState {
     pending_recognition_windows: Vec<PendingRecognitionWindow>,
     recognition_history: Vec<RecognitionHistoryEntry>,
     translations: Vec<TranslationHistoryEntry>,
+    translation_previews: Vec<TranslationHistoryEntry>,
     last_error: Option<String>,
     translation_enabled: bool,
     pending_route_change: Option<(String, String)>,
@@ -744,6 +745,8 @@ struct SharedSessionState {
 impl SharedSessionState {
     fn retire_stream(&mut self, stream: u64) {
         self.retired_streams.push(stream);
+        self.translation_previews
+            .retain(|entry| entry.stream_id != Some(stream));
         for entry in &mut self.translations {
             if entry.stream_id == Some(stream) {
                 entry.live = false;
@@ -770,7 +773,11 @@ impl SharedSessionState {
         let visible_entries = self
             .translations
             .iter()
-            .skip(self.translations.len().saturating_sub(max_items))
+            .chain(&self.translation_previews)
+            .skip(
+                (self.translations.len() + self.translation_previews.len())
+                    .saturating_sub(max_items),
+            )
             .map(|translation| overlay_ipc::OverlayEntry {
                 source: translation.source.clone(),
                 translated: translation.translated.clone(),
@@ -847,8 +854,6 @@ impl Default for XRTranslateApp {
             }
         };
         let player_plugin = plugins::player::VideoPlayerPlugin::new();
-        #[cfg(target_os = "android")]
-        let android_text_actions = android_text_actions::TextActions::default();
         #[cfg(any(windows, target_os = "linux"))]
         let ocr = ocr_host::OcrHost::default();
         let mut model_task_manager = model_install::NativeModelTaskManager::default();
@@ -898,14 +903,14 @@ impl Default for XRTranslateApp {
         let session_event_subscribers: Arc<Vec<Box<dyn SessionEventSubscriber>>> = Arc::new(vec![
             Box::new(meeting_plugin.event_sink.clone()),
             Box::new(player_plugin.event_sink.clone()),
-            #[cfg(target_os = "android")]
-            Box::new(android_text_actions.event_sink.clone()),
             #[cfg(any(windows, target_os = "linux"))]
             Box::new(ocr.plugin.event_sink.clone()),
         ]);
         let host_output_subscribers: Arc<Vec<Box<dyn HostOutputSubscriber>>> = Arc::new(vec![
             Box::new(osc_plugin.publisher()),
             Box::new(vr_overlay_plugin.handle()),
+            #[cfg(target_os = "android")]
+            Box::new(android_translation_history::ResultSubscriber::default()),
         ]);
         let result_subscribers = Arc::clone(&session_event_subscribers);
         let output_subscribers = Arc::clone(&host_output_subscribers);
@@ -942,6 +947,9 @@ impl Default for XRTranslateApp {
                             state.tts_runtime_cuda_version = None;
                         }
                         SessionEvent::Disconnected(_) => {
+                            state
+                                .translation_previews
+                                .retain(|entry| entry.stream_id != Some(scoped_stream));
                             for entry in &mut state.translations {
                                 if entry.stream_id == Some(scoped_stream) {
                                     entry.live = false;
@@ -1071,6 +1079,14 @@ impl Default for XRTranslateApp {
                                 continue;
                             }
                             state.latest_asr_prompt_trace = prompt_trace;
+                            state.translation_previews.retain(|entry| {
+                                entry.stream_id != Some(stream_id)
+                                    || entry.turn_id != turn_id
+                                    || entry.revision_id > revision
+                                    || (entry.segment_index <= segment_count
+                                        && (entry.segment_index != segment_index
+                                            || entry.source == text))
+                            });
                             if segment_index == 1 {
                                 let pending_index = state
                                     .pending_final_asr
@@ -1133,11 +1149,28 @@ impl Default for XRTranslateApp {
                                     entry,
                                 );
                                 if let Some(entries) = complete {
-                                    merge_authoritative_recognition_snapshot(
+                                    let snapshot_turn = entries[0].turn_id.clone();
+                                    let sources: Vec<_> =
+                                        entries.iter().map(|entry| entry.text.clone()).collect();
+                                    if merge_authoritative_recognition_snapshot(
                                         &mut state.recognition_history,
                                         stream_id,
                                         entries,
-                                    );
+                                    ) {
+                                        let still_matches = |entry: &TranslationHistoryEntry| {
+                                            entry.stream_id != Some(stream_id)
+                                                || entry.turn_id != snapshot_turn
+                                                || entry.revision_id > revision
+                                                || entry.segment_index.checked_sub(1).is_some_and(
+                                                    |index| {
+                                                        sources.get(index as usize)
+                                                            == Some(&entry.source)
+                                                    },
+                                                )
+                                        };
+                                        state.translations.retain(still_matches);
+                                        state.translation_previews.retain(still_matches);
+                                    }
                                 }
                             } else {
                                 let complete = collect_recognition_window(
@@ -1162,6 +1195,46 @@ impl Default for XRTranslateApp {
                             }
                             if state.recognition_history.len() > 100 {
                                 state.recognition_history.remove(0);
+                            }
+                        }
+                        SessionEvent::TranslationPreview {
+                            stream_id,
+                            audio_source,
+                            publish_to_host_outputs,
+                            preview,
+                        } => {
+                            if !publish_to_host_outputs {
+                                continue;
+                            }
+                            let matches = |entry: &TranslationHistoryEntry| {
+                                entry.stream_id == Some(stream_id)
+                                    && entry.turn_id == preview.turn_id
+                                    && entry.segment_index == preview.segment_index
+                            };
+                            if state
+                                .translations
+                                .iter()
+                                .chain(&state.translation_previews)
+                                .any(|entry| matches(entry) && entry.revision_id > preview.revision)
+                            {
+                                continue;
+                            }
+                            if preview.translated_text.is_empty() {
+                                state.translation_previews.retain(|entry| !matches(entry));
+                            } else {
+                                if state.translation_previews.len() >= 32
+                                    && !state.translation_previews.iter().any(matches)
+                                {
+                                    state.translation_previews.remove(0);
+                                }
+                                upsert_completed_translation(
+                                    &mut state.translation_previews,
+                                    TranslationHistoryEntry::preview(
+                                        stream_id,
+                                        audio_source,
+                                        preview,
+                                    ),
+                                );
                             }
                         }
                         SessionEvent::Translation {
@@ -1190,12 +1263,18 @@ impl Default for XRTranslateApp {
                                 continue;
                             }
                             state.latest_translation_prompt_trace = prompt_trace;
+                            state.translation_previews.retain(|entry| {
+                                !(entry.stream_id == Some(stream_id)
+                                    && entry.turn_id == turn_id
+                                    && entry.segment_index == segment_index
+                                    && entry.revision_id <= revision)
+                            });
                             let fragment = TranslationHistoryEntry {
                                 turn_id: turn_id.clone(),
                                 segment_index,
                                 stream_id: Some(stream_id),
                                 audio_source,
-                                live: continuous,
+                                live: continuous && (revisable || authoritative_snapshot),
                                 source,
                                 translated,
                                 speaker_id,
@@ -1259,7 +1338,7 @@ impl Default for XRTranslateApp {
                                         }
                                     }
                                 }
-                            } else if continuous {
+                            } else if continuous && revisable {
                                 let merged = merge_stream_translation(
                                     &mut state.translations,
                                     stream_id,
@@ -1336,6 +1415,9 @@ impl Default for XRTranslateApp {
                             if !publish_to_host_outputs {
                                 continue;
                             }
+                            state
+                                .translation_previews
+                                .retain(|entry| entry.stream_id != Some(stream_id));
                             for entry in &mut state.translations {
                                 if entry.stream_id == Some(stream_id) {
                                     entry.live = false;
@@ -1384,10 +1466,16 @@ impl Default for XRTranslateApp {
                             message,
                             configuration_required,
                         } => {
+                            state
+                                .translation_previews
+                                .retain(|entry| entry.stream_id != Some(scoped_stream));
                             state.last_error = Some(message);
                             state.provider_configuration_required |= configuration_required;
                         }
                         SessionEvent::Error(error) => {
+                            state
+                                .translation_previews
+                                .retain(|entry| entry.stream_id != Some(scoped_stream));
                             state.last_error = Some(error);
                             state.connection_status = "Connection error".into();
                         }
@@ -1459,8 +1547,6 @@ impl Default for XRTranslateApp {
             last_error: None,
             companion_inbox: ui::companion::Inbox::default(),
             text_translation: text_translation::TextTranslation::default(),
-            #[cfg(target_os = "android")]
-            android_text_actions,
             text_composer: ui::components::text_composer::TextComposer::default(),
             server_url: settings.server_url,
             download_proxy_url: settings.download_proxy_url,
@@ -1578,7 +1664,7 @@ impl XRTranslateApp {
     fn delete_resource(&mut self, resource: PendingResourceDeletion) {
         let project_root = self.project_root();
         self.cancel_text_tasks(None);
-        self.backend_manager.shutdown();
+        self.backend_manager.invalidate_runtime();
         let result = match resource {
             PendingResourceDeletion::Model(asset_id) => {
                 self.model_task_manager.delete(&project_root, asset_id)
@@ -1625,7 +1711,8 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn plugin_enabled(&self, id: PluginId) -> bool {
-        self.plugin_available(id) && PluginRegistry::builtin().is_enabled(&self.plugin_preferences, id)
+        self.plugin_available(id)
+            && PluginRegistry::builtin().is_enabled(&self.plugin_preferences, id)
     }
 
     /// Selects the first plugin currently requesting the exclusive translation
@@ -3107,7 +3194,7 @@ impl XRTranslateApp {
         self.stop();
         self.backend_start_deadline = None;
         self.cancel_text_tasks(None);
-        self.backend_manager.shutdown();
+        self.backend_manager.invalidate_runtime();
         if let Ok(mut overlay) = self.overlay_manager.lock() {
             overlay.stop();
         }
@@ -3765,8 +3852,6 @@ impl XRTranslateApp {
         } else {
             self.set_connection_status("Ready");
         }
-        #[cfg(target_os = "android")]
-        self.android_text_actions.configuration_applied();
     }
 
     fn start_session(&mut self, task: TranslationTask, ctx: Option<egui::Context>) {
@@ -4513,6 +4598,7 @@ impl XRTranslateApp {
         self.partial_text.clear();
         if let Ok(mut state) = self.shared_session_state.lock() {
             state.translations.clear();
+            state.translation_previews.clear();
             state.recognition_history.clear();
             state.partial_text.clear();
             state.pending_final_asr.clear();
@@ -4546,17 +4632,9 @@ impl XRTranslateApp {
         match self
             .service_config
             .language_capabilities()
-            .and_then(|caps| {
-                let caps = caps.for_text();
-                if let Some((detected_source, detected_target)) =
-                    xrtranslate_engine::auto_route_language_pair(trimmed, &source, &target)
-                    && let Ok(selection) = caps.select(detected_source, detected_target)
-                {
-                    return Ok(selection);
-                }
-                caps.select(&source, &target)
-            })
-        {
+            .and_then(|capabilities| {
+                text_translation::select_languages(trimmed, &source, &target, capabilities)
+            }) {
             Ok(languages) => self.start_translation_task(
                 TranslationTask::text(trimmed.to_owned(), languages, plugin),
                 None,
@@ -4611,7 +4689,11 @@ impl XRTranslateApp {
         self.enable_translation_service();
         let mut task = self.audio_tasks.remove(index);
         for source in CaptureSource::Both.routes() {
-            if task.channels.iter().any(|channel| channel.source == *source) {
+            if task
+                .channels
+                .iter()
+                .any(|channel| channel.source == *source)
+            {
                 self.set_live_input(*source, true, None, false, &mut capture);
             }
         }
@@ -4690,6 +4772,7 @@ impl XRTranslateApp {
                 entry.live = false;
             }
             state.partial_text.clear();
+            state.translation_previews.clear();
             state.pending_final_asr.clear();
             state.pending_recognition_windows.clear();
             state.pending_route_change = None;
@@ -4726,7 +4809,7 @@ impl XRTranslateApp {
             PromptGraphSet {
                 graph: self.prompt_library.active_graph(),
             },
-            ctx.clone(),
+            Some(ctx.clone()),
             &self.event_tx,
         ) {
             self.last_error = Some(error);
@@ -4748,12 +4831,16 @@ impl XRTranslateApp {
 
         let overlay_controls = overlay_ipc::OverlayControls {
             translation_enabled: self.translation_enabled,
-            microphone_enabled: self.input_control_visible(CaptureSource::Microphone, false)
+            microphone_enabled: self
+                .input_control_visible(CaptureSource::Microphone, false)
                 .then_some(self.microphone_enabled),
-            system_audio_enabled: self.input_control_visible(CaptureSource::SystemAudio, false)
+            system_audio_enabled: self
+                .input_control_visible(CaptureSource::SystemAudio, false)
                 .then_some(self.system_audio_enabled),
             #[cfg(any(windows, target_os = "linux"))]
-            ocr_enabled: self.plugin_enabled(PluginId::OCR).then_some(self.ocr.enabled),
+            ocr_enabled: self
+                .plugin_enabled(PluginId::OCR)
+                .then_some(self.ocr.enabled),
             #[cfg(not(any(windows, target_os = "linux")))]
             ocr_enabled: None,
         };
@@ -4842,6 +4929,8 @@ impl XRTranslateApp {
             self.partial_text = state.partial_text.clone();
             self.recognition_history = state.recognition_history.clone();
             self.translations = state.translations.clone();
+            self.translations
+                .extend(state.translation_previews.iter().cloned());
             let prev_microphone_clone_state = self.microphone_clone_state.clone();
             let prev_loopback_clone_state = self.loopback_clone_state.clone();
             self.microphone_clone_state = state.microphone_clone_state.clone();
@@ -5020,6 +5109,12 @@ impl eframe::App for XRTranslateApp {
             }
         }
         #[cfg(target_os = "android")]
+        if android::take_capture_stop_request() {
+            self.set_microphone_enabled(false, Some(ui.ctx().clone()));
+            self.last_error =
+                Some("Microphone recording stopped. Start it again to continue.".into());
+        }
+        #[cfg(target_os = "android")]
         if let Some(granted) = android::take_microphone_result() {
             if granted {
                 self.set_microphone_enabled(true, Some(ui.ctx().clone()));
@@ -5039,7 +5134,8 @@ impl eframe::App for XRTranslateApp {
             self.first_run = true;
         }
         if let Page::Plugin(id) = self.navigation.page
-            && !self.plugin_enabled(id) {
+            && !self.plugin_enabled(id)
+        {
             self.navigation.page = Page::Translation;
         }
         if self.navigation.page == Page::TtsCenter && !self.service_config.tts_is_configured() {
@@ -5511,6 +5607,8 @@ pub fn run() -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
+            #[cfg(target_os = "android")]
+            android::install_clipboard(&cc.egui_ctx);
             ui::fonts::configure_multilingual_fonts(&cc.egui_ctx);
             ui::theme::apply_theme(&cc.egui_ctx);
             file_dialog::set_context(cc.egui_ctx.clone());
@@ -6325,7 +6423,11 @@ mod tests {
             target_lang: "zh".into(),
         }]);
         assert_eq!(app.osc_plugin.draft_input(), "");
-        assert!(app.text_translation.scopes().all(|scope| scope.owner.is_host()));
+        assert!(
+            app.text_translation
+                .scopes()
+                .all(|scope| scope.owner.is_host())
+        );
         assert!(app.translation_enabled);
         assert!(!app.microphone_enabled);
         assert!(app.audio_tasks.is_empty());

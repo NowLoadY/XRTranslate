@@ -1,21 +1,47 @@
 # Qwen Audio streaming ASR
 
-XRTranslate exposes Alibaba Model Studio's
+XRTranslate includes an optional adapter for Alibaba Model Studio's
 `qwen-audio-3.0-asr-flash-streaming` as the `qwen-audio-streaming` ASR
 provider. The integration uses DashScope's native duplex WebSocket protocol,
 not an OpenAI-compatible HTTP emulation.
 
-## Configure
+The default cloud Qwen preset uses the [native HTTP adapter](qwen-asr.md).
+The WebSocket adapter described here consumes completed audio windows; it
+does not provide continuous live-audio recognition in the current pipeline.
 
-1. Create an Alibaba Model Studio API key in the region that owns the model.
-2. In the welcome flow, select `qwen-audio-streaming` for ASR and enter
-   the API key. The API key can also be updated in Service Configuration.
-3. Keep the endpoint on `wss://`. The shipped Beijing-compatible endpoint is
-   `wss://dashscope.aliyuncs.com/api-ws/v1/inference`. A workspace endpoint is
-   preferred when available:
-   `wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference`.
-4. Optionally choose a vocabulary weight from 1 through 5, or 50. Weight 50 is
-   the provider's super-hot-word setting and is intentionally not the default.
+## Optional manual configuration
+
+This provider is registered in the runtime but is not a shipped welcome-flow
+preset. To evaluate it, add an `asr.providers.qwen-audio-streaming` object to
+`runtime/user-config.json` and select it through `asr.provider`. Merge these
+fields into the existing override document:
+
+```json
+{
+  "asr": {
+    "provider": "qwen-audio-streaming",
+    "providers": {
+      "qwen-audio-streaming": {
+        "transport": "websocket",
+        "url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+        "model": "qwen-audio-3.0-asr-flash-streaming",
+        "api_key": "YOUR_BEIJING_API_KEY",
+        "asr_prompt_mode": "context_bias",
+        "asr_context_max_chars": 400,
+        "supports_vocabulary_bias": true,
+        "vocabulary_weight": 4,
+        "parallel_slots": 2
+      }
+    }
+  }
+}
+```
+
+The API key must belong to the endpoint's region. A workspace endpoint can
+also be used:
+`wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference`.
+Remote endpoints must use `wss://`. Vocabulary weights may be 1 through 5 or
+50; weight 50 is the provider's super-hot-word setting.
 
 The adapter waits for `task-started`, sends mono PCM16 at 16 kHz in 3,200-byte
 frames paced at 100 ms, sends `finish-task`, then aggregates final sentences
@@ -49,23 +75,27 @@ and must declare structured vocabulary support separately.
 
 ## Service limits and current behavior
 
-As documented on 2026-08-22, the Beijing deployment grants new users 36,000
-seconds (10 hours) of free usage for 90 days; subsequent Beijing usage is
-billed at CNY 0.00033 per second. Singapore is CNY 0.00066 per second and has
-no corresponding free quota. Immediate and precompiled hot-word features do
-not add a separate charge. Verify the current price and quota before relying on
-them.
+The Beijing price checked on 2026-10-02 was CNY 0.00033 per submitted audio
+second, or CNY 1.188 per hour of submitted audio. Overlap and retries can
+increase submitted duration. Region-specific pricing and free quotas must be
+checked against the current pricing page.
 
-XRTranslate currently sends each completed VAD-delimited utterance through the
+XRTranslate currently sends each completed audio window through the
 streaming protocol at real-time pace. It consumes final sentences only; Qwen's
 intermediate partial results are not yet published through the session
 protocol. Therefore this provider is usable without changing the existing
-utterance pipeline, but its request latency includes paced audio replay.
+utterance pipeline, but its request latency includes paced audio replay. A
+five-second audio window takes approximately another five seconds to send
+after recording, before considering connection and server processing time.
+It should not be selected merely because its model name contains `streaming`.
+Sentence stability, incremental translation, and final TTS delivery remain
+the responsibility of the shared pipeline. An audio duration limit does not
+finish an incomplete sentence; source text carries across windows until the
+shared sentence gate can release it. See [Qwen ASR](qwen-asr.md) for the common
+sentence and resource-boundary behavior.
 
 Official references:
 
-- <https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api>
-- <https://help.aliyun.com/zh/model-studio/fun-asr-client-events>
-- <https://help.aliyun.com/zh/model-studio/fun-asr-server-events>
+- <https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events>
 - <https://help.aliyun.com/zh/model-studio/improve-asr-accuracy>
-- <https://help.aliyun.com/zh/model-studio/model-pricing>
+- <https://docs.bailian.console.aliyun.com/zh/model-studio/model-pricing>

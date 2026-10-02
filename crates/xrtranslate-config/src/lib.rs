@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod asr_migration;
 mod language;
 mod models;
 
@@ -120,23 +121,30 @@ impl RuntimeLayout {
     pub const NATIVE_RUNTIME_SELECTION_FILE: &'static str = "runtime/native-runtime.json";
     pub const VOICE_CLONES_DIRECTORY: &'static str = "runtime/voice_clones";
 
-    pub const VAD_MODEL_PATH: &'static str = "models/silero-vad/src/silero_vad/data/silero_vad.onnx";
+    pub const VAD_MODEL_PATH: &'static str =
+        "models/silero-vad/src/silero_vad/data/silero_vad.onnx";
     pub const VAD_MODEL_BYTES: u64 = 2_327_524;
-    pub const VAD_MODEL_SHA256: &'static str = "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3";
+    pub const VAD_MODEL_SHA256: &'static str =
+        "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3";
 
-    pub const SPEAKER_MODEL_PATH: &'static str = "models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx";
+    pub const SPEAKER_MODEL_PATH: &'static str =
+        "models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx";
     pub const SPEAKER_MODEL_BYTES: u64 = 71_964_309;
-    pub const SPEAKER_MODEL_SHA256: &'static str = "0dde34a7c212b7b4ece05b2a120409507971d1cc504e30ed05ec61c7e5dc5d9b";
+    pub const SPEAKER_MODEL_SHA256: &'static str =
+        "0dde34a7c212b7b4ece05b2a120409507971d1cc504e30ed05ec61c7e5dc5d9b";
 
     pub const DENOISE_MODEL_PATH: &'static str = "models/gtcrn/gtcrn_simple.onnx";
     pub const DENOISE_MODEL_BYTES: u64 = 535_638;
-    pub const DENOISE_MODEL_SHA256: &'static str = "e77603ac0c23dac3227dd2d7135b3a585cbee2679048aecfa886657d3ae1b534";
+    pub const DENOISE_MODEL_SHA256: &'static str =
+        "e77603ac0c23dac3227dd2d7135b3a585cbee2679048aecfa886657d3ae1b534";
 
     pub const ONNX_CPU_CORE_WIN_BYTES: u64 = 16_277_856;
-    pub const ONNX_CPU_CORE_WIN_SHA256: &'static str = "2462fe2d64ce063babefda3d9b1998380ffa74e99acf5d24d520ee67daa9e0f1";
+    pub const ONNX_CPU_CORE_WIN_SHA256: &'static str =
+        "2462fe2d64ce063babefda3d9b1998380ffa74e99acf5d24d520ee67daa9e0f1";
 
     pub const ONNX_CPU_CORE_LINUX_BYTES: u64 = 24_268_848;
-    pub const ONNX_CPU_CORE_LINUX_SHA256: &'static str = "1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab";
+    pub const ONNX_CPU_CORE_LINUX_SHA256: &'static str =
+        "1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab";
 
     #[must_use]
     pub fn for_project_root(project_root: impl AsRef<Path>) -> Self {
@@ -378,6 +386,7 @@ fn load_user_config_document_with_legacy(
         source,
     })?;
     let mut document: Value = serde_json::from_str(&contents).map_err(ConfigError::InvalidJson)?;
+    asr_migration::migrate_qwen_asr_defaults(&mut document);
     let override_path = RuntimeLayout::user_config_path(&project_root);
     let migrate_from = legacy_path
         .as_ref()
@@ -394,9 +403,11 @@ fn load_user_config_document_with_legacy(
             let mut overlay: Value =
                 serde_json::from_str(&contents).map_err(ConfigError::InvalidJson)?;
             migrate_legacy_openai_asr_model(&mut overlay);
+            asr_migration::migrate_qwen_asr_defaults(&mut overlay);
             merge_config_values(&mut document, overlay);
         }
     }
+    migrate_legacy_openai_asr_model(&mut document);
     if let Some(legacy_path) = legacy_path
         .as_ref()
         .filter(|path| path.is_file() && *path != &override_path)
@@ -414,14 +425,36 @@ fn load_user_config_document_with_legacy(
 }
 
 fn migrate_legacy_openai_asr_model(document: &mut Value) -> bool {
-    let path = "/asr/providers/openai/model";
-    if document.pointer(path).and_then(Value::as_str) != Some("gpt-4o-audio-preview") {
+    let Some(provider) = document
+        .pointer_mut("/asr/providers/openai")
+        .and_then(Value::as_object_mut)
+    else {
         return false;
+    };
+    let deprecated = provider.get("model").and_then(Value::as_str) == Some("gpt-4o-audio-preview");
+    if deprecated {
+        provider.insert("model".into(), Value::from("gpt-4o-transcribe"));
     }
-    *document
-        .pointer_mut(path)
-        .expect("model path was resolved above") = Value::from("gpt-4o-transcribe");
-    true
+    let transcription = provider
+        .get("model")
+        .and_then(Value::as_str)
+        .is_some_and(|model| {
+            model.starts_with("gpt-4o-transcribe")
+                || model.starts_with("gpt-4o-mini-transcribe")
+                || model == "gpt-transcribe"
+                || model == "whisper-1"
+        });
+    let legacy_endpoint = provider.get("url").and_then(Value::as_str)
+        == Some("https://api.openai.com/v1/chat/completions");
+    if deprecated || (transcription && legacy_endpoint) {
+        provider.insert(
+            "url".into(),
+            Value::from("https://api.openai.com/v1/audio/transcriptions"),
+        );
+        provider.insert("asr_prompt_mode".into(), Value::from("context_bias"));
+        return true;
+    }
+    false
 }
 
 /// Computes the minimal recursive override needed to represent `effective`
@@ -1522,8 +1555,8 @@ pub enum AsrPromptMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeProviderConfig {
     pub provider: String,
-    /// `local` selects a managed llama.cpp route; `openai` selects a remote
-    /// OpenAI Chat Completions-compatible endpoint.
+    /// Wire protocol: local runtime, OpenAI-compatible HTTP, native DashScope
+    /// HTTP, or a provider-native WebSocket.
     pub transport: String,
     pub url: String,
     /// Remote model identifier. Local routes may leave this empty and use the
@@ -1724,10 +1757,10 @@ fn active_native_provider(
         .to_owned();
     if !matches!(
         transport.as_str(),
-        "local" | "onnx-cpu" | "openai" | "websocket"
+        "local" | "onnx-cpu" | "openai" | "dashscope" | "websocket"
     ) {
         issues.push(format!(
-            "{path}.transport must be \"local\", \"onnx-cpu\", \"openai\", or \"websocket\""
+            "{path}.transport must be \"local\", \"onnx-cpu\", \"openai\", \"dashscope\", or \"websocket\""
         ));
     }
     if let Some(url) = url.as_deref() {
@@ -1770,9 +1803,28 @@ fn active_native_provider(
         ));
     }
     if transport == "openai" && provider == "openai" {
-        if url.as_deref() != Some("https://api.openai.com/v1/chat/completions") {
+        let official_endpoint = if section == "asr" {
+            matches!(
+                url.as_deref(),
+                Some(
+                    "https://api.openai.com/v1/audio/transcriptions"
+                        | "https://api.openai.com/v1/chat/completions"
+                )
+            )
+        } else {
+            url.as_deref() == Some("https://api.openai.com/v1/chat/completions")
+        };
+        if !official_endpoint {
             issues.push(format!(
-                "{path}.url must use the official OpenAI Chat Completions endpoint"
+                "{path}.url must use an official OpenAI endpoint for {section}"
+            ));
+        }
+        if section == "asr"
+            && (model.contains("transcribe") || model == "whisper-1")
+            && url.as_deref() == Some("https://api.openai.com/v1/chat/completions")
+        {
+            issues.push(format!(
+                "{path}.url must use /v1/audio/transcriptions for {model}"
             ));
         }
     }
@@ -1783,6 +1835,25 @@ fn active_native_provider(
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
     let runtime = provider_runtime_config(providers, provider, &path, defaults, issues);
+    let remote_asr = (section == "asr")
+        .then(|| xrtranslate_assets::remote::remote_asr_model(provider, &transport, &model))
+        .flatten();
+    if section == "asr" && matches!(provider, "qwen" | "qwen-intl") {
+        if transport != "dashscope" {
+            issues.push(format!("{path}.transport must use dashscope for Qwen Audio ASR; reselect the online preset or configure a native audio endpoint"));
+        }
+        if model.starts_with("qwen3-asr-") {
+            issues.push(format!("{path}.model uses the retired Qwen3 cloud contract; select qwen-audio-3.0-asr-flash with its native DashScope endpoint"));
+        }
+        if url
+            .as_deref()
+            .is_some_and(|url| url.trim_end_matches('/').ends_with("/chat/completions"))
+        {
+            issues.push(format!(
+                "{path}.url must use the native multimodal-generation endpoint for Qwen Audio ASR"
+            ));
+        }
+    }
     let supports_prompt_context = object
         .and_then(|provider| provider.get("supports_prompt_context"))
         .and_then(Value::as_bool)
@@ -1808,18 +1879,45 @@ fn active_native_provider(
             AsrPromptMode::None
         }
     };
-    let supports_vocabulary_bias = object
-        .and_then(|provider| provider.get("supports_vocabulary_bias"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let asr_context_max_chars = object
-        .and_then(|provider| provider.get("asr_context_max_chars"))
-        .and_then(Value::as_u64)
-        .and_then(|value| usize::try_from(value).ok());
+    // Known model contracts override stale capability flags in user settings.
+    let supports_prompt_context = remote_asr.map_or(supports_prompt_context, |card| {
+        card.context_bias || card.instruction
+    });
+    let asr_prompt_mode = remote_asr.map_or(asr_prompt_mode, |card| {
+        if card.context_bias {
+            AsrPromptMode::ContextBias
+        } else if card.instruction {
+            AsrPromptMode::Instruction
+        } else {
+            AsrPromptMode::None
+        }
+    });
+    let supports_vocabulary_bias = remote_asr.map_or_else(
+        || {
+            object
+                .and_then(|provider| provider.get("supports_vocabulary_bias"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        },
+        |card| card.vocabulary_bias,
+    );
+    let asr_context_max_chars = remote_asr.map_or_else(
+        || {
+            object
+                .and_then(|provider| provider.get("asr_context_max_chars"))
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+        },
+        |card| card.context_max_chars,
+    );
     if object
         .and_then(|provider| provider.get("asr_context_max_chars"))
-        .is_some()
-        && asr_context_max_chars.is_none_or(|limit| limit == 0)
+        .is_some_and(|value| {
+            value
+                .as_u64()
+                .and_then(|limit| usize::try_from(limit).ok())
+                .is_none_or(|limit| limit == 0)
+        })
     {
         issues.push(format!(
             "{path}.asr_context_max_chars must be a positive integer"
@@ -2115,13 +2213,55 @@ mod tests {
         let route = config.native_model_route().unwrap();
 
         assert!(!route.asr.uses_local_runtime());
-        assert_eq!(route.asr.transport, "openai");
+        assert_eq!(route.asr.transport, "dashscope");
         assert_eq!(route.asr.asr_prompt_mode, AsrPromptMode::ContextBias);
-        assert_eq!(route.asr.model, "qwen3-asr-flash");
+        assert_eq!(route.asr.model, "qwen-audio-3.0-asr-flash");
+        assert_eq!(route.asr.asr_context_max_chars, Some(400));
+        assert!(route.asr.supports_vocabulary_bias);
         assert_eq!(
             route.asr.url,
-            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+            "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
         );
+    }
+
+    #[test]
+    fn known_qwen_models_resolve_capabilities_from_the_model_card() {
+        let mut document: Value =
+            serde_json::from_str(include_str!("../../../config.json")).unwrap();
+        document["asr"]["provider"] = Value::from("qwen-intl");
+        let provider = &mut document["asr"]["providers"]["qwen-intl"];
+        provider["api_key"] = Value::from("test-key");
+        provider["model"] = Value::from("qwen-audio-3.1-asr-flash");
+        provider["asr_prompt_mode"] = Value::from("instruction");
+        provider["asr_context_max_chars"] = Value::from(9999);
+        provider["supports_vocabulary_bias"] = Value::from(false);
+        let route = AppConfig::from_value(document)
+            .unwrap()
+            .native_model_route()
+            .unwrap();
+        assert_eq!(route.asr.asr_prompt_mode, AsrPromptMode::ContextBias);
+        assert_eq!(route.asr.asr_context_max_chars, Some(400));
+        assert!(route.asr.supports_vocabulary_bias);
+        assert!(route.asr.url.contains("dashscope-intl"));
+    }
+
+    #[test]
+    fn qwen_cloud_rejects_the_obsolete_chat_contract() {
+        let mut document: Value =
+            serde_json::from_str(include_str!("../../../config.json")).unwrap();
+        document["asr"]["provider"] = Value::from("qwen");
+        let provider = &mut document["asr"]["providers"]["qwen"];
+        provider["api_key"] = Value::from("test-key");
+        provider["model"] = Value::from("qwen3-asr-flash");
+        provider["url"] = Value::from("https://private.example/v1/chat/completions");
+        provider["transport"] = Value::from("openai");
+        let error = AppConfig::from_value(document)
+            .unwrap()
+            .native_model_route()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("native multimodal-generation"));
+        assert!(error.contains("qwen-audio-3.0-asr-flash"));
     }
 
     #[test]
@@ -2415,7 +2555,7 @@ mod tests {
     }
 
     #[test]
-    fn user_config_migrates_only_the_deprecated_openai_asr_default() {
+    fn user_config_migrates_openai_asr_contract_and_preserves_custom_models() {
         let root = std::env::temp_dir().join(format!(
             "xrtranslate-config-openai-migration-{}",
             std::process::id()
@@ -2439,6 +2579,25 @@ mod tests {
         assert_eq!(
             migrated.pointer("/asr/providers/openai/model"),
             Some(&Value::from("gpt-4o-transcribe"))
+        );
+        assert_eq!(
+            migrated.pointer("/asr/providers/openai/url"),
+            Some(&Value::from(
+                "https://api.openai.com/v1/audio/transcriptions"
+            ))
+        );
+        fs::write(&override_path,
+            r#"{"asr":{"providers":{"openai":{"model":"gpt-4o-transcribe","url":"https://api.openai.com/v1/chat/completions","asr_prompt_mode":"instruction"}}}}"#).unwrap();
+        let migrated = load_user_config_document(&base_path, &root).unwrap();
+        assert_eq!(
+            migrated.pointer("/asr/providers/openai/url"),
+            Some(&Value::from(
+                "https://api.openai.com/v1/audio/transcriptions"
+            ))
+        );
+        assert_eq!(
+            migrated.pointer("/asr/providers/openai/asr_prompt_mode"),
+            Some(&Value::from("context_bias"))
         );
         saved_custom_model_is_preserved(&base_path, &root, &override_path);
         fs::remove_dir_all(root).unwrap();

@@ -1,0 +1,5 @@
+<resources>
+    <string name="widget_results_title">Translation results</string>
+    <string name="widget_results_description">Your recent translations, updated live. Tap to open XRT.</string>
+    <string name="widget_results_empty">Your translations will appear here.\nTap to open XRT.</string>
+</resources>

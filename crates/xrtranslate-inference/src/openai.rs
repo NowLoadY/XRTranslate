@@ -1,6 +1,8 @@
 use serde_json::{Value, json};
 
-use crate::{AsyncHttpClient, HttpRequest, InferenceError, error::preview};
+mod stream;
+
+use crate::{AsyncHttpClient, HttpRequest, InferenceError, MultipartBody, error::preview};
 
 /// Text extracted from the first OpenAI chat-completions choice.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8,9 +10,9 @@ pub struct ChatCompletion {
     pub text: String,
 }
 
-/// Shared OpenAI chat-completions request adapter.
+/// Shared authenticated OpenAI HTTP adapter.
 ///
-/// `endpoint` must be the full `.../v1/chat/completions` URL. Requiring the
+/// `endpoint` must be the full chat-completions or audio-transcriptions URL. Requiring the
 /// exact endpoint avoids silently choosing a wrong API version when external
 /// providers are configured.
 #[derive(Debug, Clone)]
@@ -40,10 +42,10 @@ impl<C> OpenAiCompatibleClient<C> {
                 message: "must start with http:// or https://".into(),
             });
         }
-        if !endpoint.contains("/chat/completions") {
+        if !endpoint.contains("/chat/completions") && !endpoint.contains("/audio/transcriptions") {
             return Err(InferenceError::InvalidConfiguration {
                 field: "endpoint",
-                message: "must point to an OpenAI-compatible /chat/completions endpoint".into(),
+                message: "must point to /chat/completions or /audio/transcriptions".into(),
             });
         }
         Ok(Self {
@@ -85,8 +87,7 @@ impl<C> OpenAiCompatibleClient<C> {
 impl<C: AsyncHttpClient> OpenAiCompatibleClient<C> {
     /// Posts a complete, non-streaming chat-completions JSON payload.
     pub async fn chat_completion(&self, payload: Value) -> Result<ChatCompletion, InferenceError> {
-        let response = self
-            .http
+        let body = self
             .execute(HttpRequest {
                 headers: self
                     .headers
@@ -98,6 +99,44 @@ impl<C: AsyncHttpClient> OpenAiCompatibleClient<C> {
                     )))
                     .collect(),
                 ..HttpRequest::post_json(self.endpoint.clone(), payload)
+            })
+            .await?;
+        parse_chat_completion(&self.endpoint, &body)
+    }
+
+    pub(crate) async fn chat_completion_streaming<F, Fut>(
+        &self,
+        mut payload: Value,
+        cumulative: bool,
+        mut on_update: F,
+    ) -> Result<ChatCompletion, InferenceError>
+    where
+        F: FnMut(String) -> Fut + Send,
+        Fut: Future<Output = ()> + Send,
+    {
+        payload["stream"] = Value::Bool(true);
+        let mut request = HttpRequest::post_json(self.endpoint.clone(), payload);
+        request.headers.extend(self.headers.iter().cloned());
+        request
+            .headers
+            .push(("accept".into(), "text/event-stream".into()));
+        let mut stream = stream::ChatStream::new(cumulative);
+        let response = self
+            .http
+            .execute_streaming(request, |chunk| {
+                let update = stream.push(&chunk);
+                let callback = update
+                    .as_ref()
+                    .ok()
+                    .and_then(|value| value.clone())
+                    .map(&mut on_update);
+                async move {
+                    update?;
+                    if let Some(callback) = callback {
+                        callback.await;
+                    }
+                    Ok(())
+                }
             })
             .await
             .map_err(|source| InferenceError::Transport {
@@ -111,7 +150,63 @@ impl<C: AsyncHttpClient> OpenAiCompatibleClient<C> {
                 body_preview: preview(&response.body),
             });
         }
-        parse_chat_completion(&self.endpoint, &response.body)
+        let completion = stream.finish(&self.endpoint)?;
+        on_update(completion.text.clone()).await;
+        Ok(completion)
+    }
+
+    pub async fn audio_transcription(
+        &self,
+        fields: Vec<(String, String)>,
+        wav: Vec<u8>,
+    ) -> Result<String, InferenceError> {
+        let body = self
+            .execute(HttpRequest {
+                method: "POST".into(),
+                url: self.endpoint.clone(),
+                headers: self.headers.clone(),
+                body: Value::Null,
+                multipart: Some(MultipartBody {
+                    fields,
+                    file_name: "speech.wav".into(),
+                    file: wav,
+                    mime_type: "audio/wav".into(),
+                }),
+            })
+            .await?;
+        let value: Value =
+            serde_json::from_str(&body).map_err(|error| InferenceError::InvalidResponse {
+                endpoint: self.endpoint.clone(),
+                message: error.to_string(),
+                body_preview: preview(&body),
+            })?;
+        value["text"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| InferenceError::InvalidResponse {
+                endpoint: self.endpoint.clone(),
+                message: "missing transcription text".into(),
+                body_preview: preview(&body),
+            })
+    }
+
+    async fn execute(&self, request: HttpRequest) -> Result<String, InferenceError> {
+        let response =
+            self.http
+                .execute(request)
+                .await
+                .map_err(|source| InferenceError::Transport {
+                    endpoint: self.endpoint.clone(),
+                    source,
+                })?;
+        if !(200..300).contains(&response.status) {
+            return Err(InferenceError::HttpStatus {
+                endpoint: self.endpoint.clone(),
+                status: response.status,
+                body_preview: preview(&response.body),
+            });
+        }
+        Ok(response.body)
     }
 }
 
@@ -210,5 +305,39 @@ mod tests {
         let parts = parse_chat_completion("http://test/v1/chat/completions", r#"{"choices":[{"message":{"content":[{"type":"text","text":"he"},{"type":"text","text":"llo"}]}}]}"#)
             .unwrap();
         assert_eq!(parts.text, "hello");
+
+        let wire = concat!(
+            ": keepalive\r\n\r\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\r\n\r\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"好。\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let mut stream = stream::ChatStream::new(false);
+        let mut updates = Vec::new();
+        for byte in wire.bytes() {
+            if let Some(text) = stream.push(&[byte]).unwrap() {
+                updates.push(text);
+            }
+        }
+        assert_eq!(updates, ["你", "你好。"]);
+        assert_eq!(stream.finish("http://test").unwrap().text, "你好。");
+
+        let mut cumulative = stream::ChatStream::new(true);
+        cumulative
+            .push(wire.replace("好。", "你好。").as_bytes())
+            .unwrap();
+        assert_eq!(cumulative.finish("http://test").unwrap().text, "你好。");
+        let mut unfinished = stream::ChatStream::new(false);
+        unfinished
+            .push(b"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
+            .unwrap();
+        assert!(unfinished.finish("http://test").is_err());
+        let mut truncated = stream::ChatStream::new(false);
+        assert!(
+            truncated
+                .push(b"data: {\"choices\":[{\"finish_reason\":\"length\"}]}\n\n")
+                .is_err()
+        );
     }
 }

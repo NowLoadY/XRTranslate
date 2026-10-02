@@ -1268,6 +1268,30 @@ impl NativeInference {
         prompt_graph: PromptNodeGraph,
         prompt_context: TranslationPromptContext,
     ) -> Result<TranslationOutput, InferenceFailure> {
+        self.translate_segment_streaming(
+            segment,
+            source_language,
+            target_language,
+            prompt_graph,
+            prompt_context,
+            |_| std::future::ready(()),
+        )
+        .await
+    }
+
+    pub(crate) async fn translate_segment_streaming<F, Fut>(
+        &self,
+        segment: &TranslationSegmentPair,
+        source_language: &str,
+        target_language: &str,
+        prompt_graph: PromptNodeGraph,
+        prompt_context: TranslationPromptContext,
+        mut on_update: F,
+    ) -> Result<TranslationOutput, InferenceFailure>
+    where
+        F: FnMut(String) -> Fut + Send,
+        Fut: Future<Output = ()> + Send,
+    {
         self.languages
             .for_text()
             .select(source_language, target_language)
@@ -1276,6 +1300,7 @@ impl NativeInference {
         if route.source_code == "zh" && is_traditional_chinese(&route.target_code) {
             let mt_started = Instant::now();
             let converted = to_traditional_chinese(&segment.translation_text);
+            on_update(converted.clone()).await;
             return Ok(TranslationOutput {
                 source_text: segment.source_text.clone(),
                 translated_text: converted,
@@ -1301,7 +1326,13 @@ impl NativeInference {
         let translated = loop {
             match self
                 .translation
-                .translate(&segment.translation_text, options.clone())
+                .translate_streaming(&segment.translation_text, options.clone(), |text| {
+                    on_update(if is_traditional_chinese(&route.target_code) {
+                        to_traditional_chinese(&text)
+                    } else {
+                        text
+                    })
+                })
                 .await
             {
                 Ok(translated) => break translated,
@@ -1316,6 +1347,7 @@ impl NativeInference {
                     );
                     context_window_retried = true;
                     options.prompt_context = options.prompt_context.without_reference_context();
+                    on_update(String::new()).await;
                 }
                 Err(error) if !rejected_output_retried && error.is_rejected_output() => {
                     warn!(
@@ -1324,8 +1356,10 @@ impl NativeInference {
                     );
                     rejected_output_retried = true;
                     options.prompt_context = options.prompt_context.without_reference_context();
+                    on_update(String::new()).await;
                 }
                 Err(error) if error.is_rejected_output() => {
+                    on_update(String::new()).await;
                     warn!(
                         %error,
                         "suppressing translation after regenerated output failed prompt-aware quality checks"
@@ -1335,6 +1369,7 @@ impl NativeInference {
                     )));
                 }
                 Err(error) => {
+                    on_update(String::new()).await;
                     let context = if rejected_output_retried || context_window_retried {
                         "translation retry failed"
                     } else {

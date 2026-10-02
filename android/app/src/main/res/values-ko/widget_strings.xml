@@ -1,0 +1,5 @@
+<resources>
+    <string name="widget_results_title">번역 결과</string>
+    <string name="widget_results_description">최근 번역 결과를 실시간으로 표시합니다. 탭하여 XRT를 여세요.</string>
+    <string name="widget_results_empty">번역 결과가 여기에 표시됩니다\n탭하여 XRT 열기</string>
+</resources>

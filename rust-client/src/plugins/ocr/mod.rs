@@ -44,24 +44,24 @@ pub struct OcrPlugin {
     pub event_sink: OcrTranslationSink,
     pub state: OcrOverlayState,
     owner: Option<PluginSessionOwner>,
+    conversation: Option<String>,
     recognizing: bool,
     translating: bool,
     capture_error: Option<String>,
     translation_error: Option<String>,
+    translated: String,
     translated_segments: BTreeMap<u32, String>,
 }
 
 impl OcrPlugin {
-    pub fn owner(&self) -> Option<TranslationSessionOwner> {
-        self.owner.clone().map(TranslationSessionOwner::Plugin)
-    }
-
     pub fn clear(&mut self) {
         self.owner = None;
+        self.conversation = None;
         self.recognizing = false;
         self.translating = false;
         self.capture_error = None;
         self.translation_error = None;
+        self.translated.clear();
         self.translated_segments.clear();
         self.state = OcrOverlayState::default();
     }
@@ -103,25 +103,26 @@ impl OcrPlugin {
         self.translation_error = None;
         self.refresh_status();
         self.state.source = text;
-        self.state.translated.clear();
+        self.translated.clear();
         self.translated_segments.clear();
         if self.state.source.is_empty() {
             return None;
         }
+        let conversation = self
+            .conversation
+            .get_or_insert_with(|| uuid::Uuid::new_v4().to_string());
         let owner = PluginSessionOwner::new(
             super::PluginId::OCR.as_str(),
             uuid::Uuid::new_v4().to_string(),
             "Screen Translation",
             "Screen Translation",
             "Translating screen text",
-        );
+        )
+        .in_conversation(conversation.clone());
         self.owner = Some(owner.clone());
         self.translating = true;
         self.refresh_status();
-        Some(PluginSessionBinding::text(
-            owner,
-            SessionOutputPolicy::PluginOnly,
-        ))
+        Some(PluginSessionBinding::text(owner, SessionOutputPolicy::Host))
     }
 
     pub fn poll(&mut self) {
@@ -177,7 +178,7 @@ impl OcrPlugin {
     }
 
     fn refresh_translation(&mut self) {
-        self.state.translated = self
+        self.translated = self
             .translated_segments
             .values()
             .map(String::as_str)
@@ -224,10 +225,10 @@ impl OcrPlugin {
                 ui.label(&self.state.source);
             });
         }
-        if !self.state.translated.is_empty() {
+        if !self.translated.is_empty() {
             ui.add_space(8.0);
             components::card(ui, |ui| {
-                ui.label(&self.state.translated);
+                ui.label(&self.translated);
             });
         }
         changed.then_some(enabled)

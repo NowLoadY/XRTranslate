@@ -99,13 +99,18 @@ pub(crate) fn collect_authoritative_recognition_snapshot(
     }
     let index = pending
         .iter()
-        .position(|snapshot| snapshot.stream_id == stream_id && snapshot.revision_id == revision_id)
+        .position(|snapshot| {
+            snapshot.stream_id == stream_id
+                && snapshot.turn_id == entry.turn_id
+                && snapshot.revision_id == revision_id
+        })
         .unwrap_or_else(|| {
             if pending.len() >= 32 {
                 pending.remove(0);
             }
             pending.push(PendingAuthoritativeRecognition {
                 stream_id,
+                turn_id: entry.turn_id.clone(),
                 revision_id,
                 segment_count,
                 segments: Vec::new(),
@@ -155,25 +160,49 @@ pub(crate) fn merge_authoritative_recognition_snapshot(
     if entries.is_empty() {
         return false;
     }
-    entries.sort_by_key(|entry| entry.revision_id);
+    // A snapshot replaces one logical turn. Other completed turns from the
+    // same audio stream must remain in history.
+    let turn_id = entries[0].turn_id.clone();
     let revision = entries[0].revision_id;
-    if history.iter().any(|entry| {
-        entry.stream_id == Some(stream_id)
-            && entry.authoritative_snapshot
-            && entry.revision_id >= revision
-    }) {
+    if entries
+        .iter()
+        .any(|entry| entry.turn_id != turn_id || entry.revision_id != revision)
+    {
         return false;
     }
-    history.retain(|entry| {
-        !(entry.stream_id == Some(stream_id) && (entry.authoritative_snapshot || entry.live))
-    });
-    let entry_count = entries.len();
-    for (index, entry) in entries.iter_mut().enumerate() {
+    let same_turn = |entry: &RecognitionHistoryEntry| {
+        entry.stream_id == Some(stream_id) && entry.turn_id == turn_id
+    };
+    let previous_revision = history
+        .iter()
+        .filter(|entry| same_turn(entry) && entry.authoritative_snapshot)
+        .map(|entry| entry.revision_id)
+        .max();
+    let finalizes_preview = !entries.iter().any(|entry| entry.revisable)
+        && history.iter().any(|entry| {
+            same_turn(entry)
+                && entry.authoritative_snapshot
+                && entry.revision_id == revision
+                && entry.revisable
+        });
+    if previous_revision
+        .is_some_and(|previous| previous > revision || (previous == revision && !finalizes_preview))
+    {
+        return false;
+    }
+    let insertion_index = history
+        .iter()
+        .position(|entry| same_turn(entry) && (entry.authoritative_snapshot || entry.live))
+        .unwrap_or(history.len());
+    history.retain(|entry| !(same_turn(entry) && (entry.authoritative_snapshot || entry.live)));
+    for entry in &mut entries {
         entry.stream_id = Some(stream_id);
-        entry.live = index + 1 == entry_count;
+        // Draining a buffered sentence finalizes the same recognition revision;
+        // it must retire the live row instead of requiring another ASR call.
+        entry.live = entry.revisable;
         entry.revision = None;
     }
-    history.extend(entries);
+    history.splice(insertion_index..insertion_index, entries);
     true
 }
 
@@ -184,24 +213,7 @@ pub(crate) fn merge_stream_recognition(
 ) {
     retain_recognition_tail(&mut fragment);
     if fragment.authoritative_snapshot {
-        if history.iter().any(|entry| {
-            entry.stream_id == Some(stream_id)
-                && entry.authoritative_snapshot
-                && entry.revision_id >= fragment.revision_id
-        }) {
-            return;
-        }
-        if let Some(current) = history
-            .iter_mut()
-            .rfind(|entry| entry.stream_id == Some(stream_id) && entry.live)
-        {
-            let source_start_ms = current.source_start_ms.min(fragment.source_start_ms);
-            *current = fragment;
-            current.source_start_ms = source_start_ms;
-            current.timing = xrtranslate_protocol::SegmentTiming::MergedWindows;
-        } else {
-            history.push(fragment);
-        }
+        merge_authoritative_recognition_snapshot(history, stream_id, vec![fragment]);
         return;
     }
     let Some(current) = history
@@ -755,6 +767,160 @@ mod tests {
             revision_id: 0,
             revision: None,
         }
+    }
+
+    fn authoritative_source(
+        stream_id: u64,
+        turn_id: &str,
+        text: &str,
+        revision: u64,
+        revisable: bool,
+    ) -> RecognitionHistoryEntry {
+        RecognitionHistoryEntry {
+            authoritative_snapshot: true,
+            revision_id: revision,
+            revisable,
+            ..recognition_snapshot(stream_id, turn_id, text)
+        }
+    }
+
+    #[test]
+    fn authoritative_source_finalizes_same_revision_and_keeps_other_turns() {
+        let mut history = Vec::new();
+        let preview = authoritative_source(7, "turn-a", "The contract", 9, true);
+        assert!(merge_authoritative_recognition_snapshot(
+            &mut history,
+            7,
+            vec![preview.clone()],
+        ));
+        assert!(history[0].live);
+
+        // A drain finalizes the retained text without a new recognition pass.
+        let final_source = authoritative_source(7, "turn-a", "The contract", 9, false);
+        assert!(merge_authoritative_recognition_snapshot(
+            &mut history,
+            7,
+            vec![final_source.clone()],
+        ));
+        assert_eq!(history.len(), 1);
+        assert!(!history[0].live);
+        assert!(!history[0].revisable);
+        assert!(!merge_authoritative_recognition_snapshot(
+            &mut history,
+            7,
+            vec![final_source],
+        ));
+        assert!(!merge_authoritative_recognition_snapshot(
+            &mut history,
+            7,
+            vec![preview],
+        ));
+
+        // Revisions belong to a turn, so another turn may begin at a smaller
+        // revision while retaining the prior turn's completed source.
+        assert!(merge_authoritative_recognition_snapshot(
+            &mut history,
+            7,
+            vec![authoritative_source(7, "turn-b", "Next speaker", 1, true)],
+        ));
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].text, "The contract");
+        assert_eq!(history[1].text, "Next speaker");
+        assert!(!history[0].live);
+        assert!(history[1].live);
+        assert!(!merge_authoritative_recognition_snapshot(
+            &mut history,
+            7,
+            vec![authoritative_source(7, "turn-a", "Stale source", 8, false)],
+        ));
+        assert_eq!(history[0].text, "The contract");
+    }
+
+    #[test]
+    fn authoritative_source_replaces_only_its_turn_and_preserves_sentence_stability() {
+        let mut history = vec![recognition_snapshot(8, "other-stream", "Other audio")];
+        assert!(merge_authoritative_recognition_snapshot(
+            &mut history,
+            7,
+            vec![
+                authoritative_source(7, "turn-a", "Ready.", 1, false),
+                authoritative_source(7, "turn-a", "The contract", 1, true),
+            ],
+        ));
+        assert!(!history[1].live);
+        assert!(history[2].live);
+        assert!(merge_authoritative_recognition_snapshot(
+            &mut history,
+            7,
+            vec![authoritative_source(7, "turn-b", "A later turn.", 2, false)],
+        ));
+        assert!(merge_authoritative_recognition_snapshot(
+            &mut history,
+            7,
+            vec![
+                authoritative_source(7, "turn-a", "Ready.", 2, false),
+                authoritative_source(7, "turn-a", "The contract is ready.", 2, false),
+            ],
+        ));
+        assert_eq!(history.len(), 4);
+        assert_eq!(history[0].text, "Other audio");
+        assert_eq!(history[1].text, "Ready.");
+        assert_eq!(history[2].text, "The contract is ready.");
+        assert_eq!(history[3].text, "A later turn.");
+        assert!(
+            history[1..]
+                .iter()
+                .all(|entry| !entry.live && !entry.revisable)
+        );
+    }
+
+    #[test]
+    fn authoritative_source_collector_keeps_interleaved_turns_separate() {
+        let mut pending = Vec::new();
+        for (turn, text) in [("turn-a", "A first."), ("turn-b", "B first.")] {
+            assert!(
+                collect_authoritative_recognition_snapshot(
+                    &mut pending,
+                    7,
+                    3,
+                    1,
+                    2,
+                    authoritative_source(7, turn, text, 3, false),
+                )
+                .is_none()
+            );
+        }
+        let a = collect_authoritative_recognition_snapshot(
+            &mut pending,
+            7,
+            3,
+            2,
+            2,
+            authoritative_source(7, "turn-a", "A last.", 3, false),
+        )
+        .unwrap();
+        let b = collect_authoritative_recognition_snapshot(
+            &mut pending,
+            7,
+            3,
+            2,
+            2,
+            authoritative_source(7, "turn-b", "B last.", 3, false),
+        )
+        .unwrap();
+        assert_eq!(
+            a.iter()
+                .map(|entry| entry.text.as_str())
+                .collect::<Vec<_>>(),
+            ["A first.", "A last."]
+        );
+        assert_eq!(
+            b.iter()
+                .map(|entry| entry.text.as_str())
+                .collect::<Vec<_>>(),
+            ["B first.", "B last."]
+        );
+        assert!(pending.is_empty());
     }
 
     #[test]

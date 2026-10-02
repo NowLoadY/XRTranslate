@@ -5,13 +5,22 @@ use serde_json::Value;
 
 use crate::TransportError;
 
-/// A JSON HTTP request made by an OpenAI-compatible adapter.
+/// An HTTP request made by an inference adapter.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HttpRequest {
     pub method: String,
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Value,
+    pub multipart: Option<MultipartBody>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MultipartBody {
+    pub fields: Vec<(String, String)>,
+    pub file_name: String,
+    pub file: Vec<u8>,
+    pub mime_type: String,
 }
 
 impl HttpRequest {
@@ -21,6 +30,7 @@ impl HttpRequest {
             url: url.into(),
             headers: vec![("content-type".into(), "application/json".into())],
             body,
+            multipart: None,
         }
     }
 }
@@ -41,6 +51,26 @@ pub trait AsyncHttpClient: Send + Sync {
         &self,
         request: HttpRequest,
     ) -> impl Future<Output = Result<HttpResponse, TransportError>> + Send;
+
+    /// Reads a successful response incrementally. The awaited consumer provides
+    /// backpressure; dropping this future cancels the request without a worker.
+    fn execute_streaming<F, Fut>(
+        &self,
+        request: HttpRequest,
+        mut on_chunk: F,
+    ) -> impl Future<Output = Result<HttpResponse, TransportError>> + Send
+    where
+        F: FnMut(Vec<u8>) -> Fut + Send,
+        Fut: Future<Output = Result<(), TransportError>> + Send,
+    {
+        async move {
+            let mut response = self.execute(request).await?;
+            if (200..300).contains(&response.status) {
+                on_chunk(std::mem::take(&mut response.body).into_bytes()).await?;
+            }
+            Ok(response)
+        }
+    }
 }
 
 /// `reqwest` implementation used by the native backend.
@@ -98,8 +128,8 @@ impl Default for ReqwestClient {
     }
 }
 
-impl AsyncHttpClient for ReqwestClient {
-    async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, TransportError> {
+impl ReqwestClient {
+    async fn send(&self, request: &HttpRequest) -> Result<reqwest::Response, TransportError> {
         let method = Method::from_bytes(request.method.as_bytes())
             .map_err(|error| TransportError::new("method", error.to_string()))?;
 
@@ -108,7 +138,17 @@ impl AsyncHttpClient for ReqwestClient {
 
         for attempt in 0..MAX_ATTEMPTS {
             let mut builder = self.client.request(method.clone(), &request.url);
-            if !request.body.is_null() {
+            if let Some(body) = &request.multipart {
+                let file = reqwest::multipart::Part::bytes(body.file.clone())
+                    .file_name(body.file_name.clone())
+                    .mime_str(&body.mime_type)
+                    .map_err(|error| TransportError::new("multipart", error.to_string()))?;
+                let mut form = reqwest::multipart::Form::new().part("file", file);
+                for (name, value) in &body.fields {
+                    form = form.text(name.clone(), value.clone());
+                }
+                builder = builder.multipart(form);
+            } else if !request.body.is_null() {
                 builder = builder.json(&request.body);
             }
             for (name, value) in &request.headers {
@@ -116,14 +156,7 @@ impl AsyncHttpClient for ReqwestClient {
             }
 
             match builder.send().await {
-                Ok(response) => {
-                    let status = response.status().as_u16();
-                    let body = response
-                        .text()
-                        .await
-                        .map_err(|error| TransportError::new("response_body", error.to_string()))?;
-                    return Ok(HttpResponse { status, body });
-                }
+                Ok(response) => return Ok(response),
                 Err(error) => {
                     let kind = request_error_kind(&error);
                     let should_retry =
@@ -138,6 +171,49 @@ impl AsyncHttpClient for ReqwestClient {
         }
 
         Err(last_error.unwrap_or_else(|| TransportError::new("transport", "request failed")))
+    }
+}
+
+impl AsyncHttpClient for ReqwestClient {
+    async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, TransportError> {
+        let response = self.send(&request).await?;
+        let status = response.status().as_u16();
+        let body = response
+            .text()
+            .await
+            .map_err(|error| TransportError::new("response_body", error.to_string()))?;
+        Ok(HttpResponse { status, body })
+    }
+
+    async fn execute_streaming<F, Fut>(
+        &self,
+        request: HttpRequest,
+        mut on_chunk: F,
+    ) -> Result<HttpResponse, TransportError>
+    where
+        F: FnMut(Vec<u8>) -> Fut + Send,
+        Fut: Future<Output = Result<(), TransportError>> + Send,
+    {
+        let mut response = self.send(&request).await?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let body = response
+                .text()
+                .await
+                .map_err(|error| TransportError::new("response_body", error.to_string()))?;
+            return Ok(HttpResponse { status, body });
+        }
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| TransportError::new("response_body", error.to_string()))?
+        {
+            on_chunk(chunk.to_vec()).await?;
+        }
+        Ok(HttpResponse {
+            status,
+            body: String::new(),
+        })
     }
 }
 
@@ -187,6 +263,40 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(response.body, "{\"status\":\"ok\"}");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!(
+            "http://{}/v1/chat/completions",
+            listener.local_addr().unwrap()
+        );
+        let (first_seen, wait_for_first) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            socket.read(&mut request).await.unwrap();
+            let first = "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n";
+            let final_chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"好。\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+            socket.write_all(format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{first}",
+                first.len() + final_chunk.len(),
+            ).as_bytes()).await.unwrap();
+            // The server cannot finish until the caller sees its first token.
+            wait_for_first.await.unwrap();
+            socket.write_all(final_chunk.as_bytes()).await.unwrap();
+        });
+        let chat = crate::OpenAiCompatibleClient::new(client, endpoint).unwrap();
+        let mut first_seen = Some(first_seen);
+        let result = chat
+            .chat_completion_streaming(serde_json::json!({}), false, |text| {
+                if text == "你" {
+                    first_seen.take().unwrap().send(()).unwrap();
+                }
+                std::future::ready(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.text, "你好。");
+        server.await.unwrap();
     }
 }
 

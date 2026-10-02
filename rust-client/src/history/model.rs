@@ -31,6 +31,7 @@ pub(crate) struct PendingRecognitionWindow {
 
 pub(crate) struct PendingAuthoritativeRecognition {
     pub(crate) stream_id: u64,
+    pub(crate) turn_id: String,
     pub(crate) revision_id: u64,
     pub(crate) segment_count: u32,
     pub(crate) segments: Vec<(u32, RecognitionHistoryEntry)>,
@@ -64,6 +65,36 @@ pub(crate) struct TranslationHistoryEntry {
     pub(crate) revision_id: u64,
     pub(crate) source_revision: Option<RevisableText>,
     pub(crate) translated_revision: Option<RevisableText>,
+}
+
+impl TranslationHistoryEntry {
+    pub(crate) fn preview(
+        stream_id: u64,
+        audio_source: CaptureSource,
+        preview: xrtranslate_protocol::TranslationPreview,
+    ) -> Self {
+        Self {
+            turn_id: preview.turn_id,
+            segment_index: preview.segment_index,
+            stream_id: Some(stream_id),
+            audio_source,
+            live: true,
+            source: preview.source_text,
+            translated: preview.translated_text,
+            speaker_id: preview.speaker_id,
+            source_start_ms: 0.0,
+            source_end_ms: 0.0,
+            timing: SegmentTiming::default(),
+            boundary: SegmentBoundary::default(),
+            term_matches: Vec::new(),
+            revisable: true,
+            overlap_ratio: 0.0,
+            authoritative_snapshot: false,
+            revision_id: preview.revision,
+            source_revision: None,
+            translated_revision: None,
+        }
+    }
 }
 
 pub(crate) struct StreamMerge {

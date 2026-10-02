@@ -1,8 +1,5 @@
 use crate::NativeModelRouteConfig;
-use xrtranslate_assets::{
-    ModelCapability,
-    language::{provider_model, remote_asr_languages},
-};
+use xrtranslate_assets::{ModelCapability, language::provider_model};
 use xrtranslate_engine::language::{LanguageCapabilities, LanguageSet};
 
 impl NativeModelRouteConfig {
@@ -21,7 +18,20 @@ impl NativeModelRouteConfig {
                         .languages,
                     )
                 } else if capability == ModelCapability::Asr {
-                    remote_asr_languages(&provider.provider, &provider.transport)
+                    if let Some(card) = xrtranslate_assets::remote::remote_asr_model(
+                        &provider.provider,
+                        &provider.transport,
+                        &provider.model,
+                    ) {
+                        let codes = card
+                            .languages
+                            .iter()
+                            .copied()
+                            .chain(card.language_aliases.iter().map(|(alias, _)| *alias))
+                            .collect::<Vec<_>>();
+                        return Ok(Some(LanguageSet::from_codes(&codes, true)));
+                    }
+                    None
                 } else {
                     None
                 };
@@ -63,6 +73,7 @@ mod tests {
         assert!(languages.select("zh", "zh-TW").is_err());
         route.asr.transport = "websocket".into();
         route.asr.provider = "qwen-audio-streaming".into();
+        route.asr.model = "qwen-audio-3.0-asr-flash-streaming".into();
         route.translation.transport = "openai".into();
         let languages = route.language_capabilities().unwrap();
         assert!(languages.select("no", "fr").is_ok());
@@ -86,5 +97,33 @@ mod tests {
                 );
             }
         }
+        for model in xrtranslate_assets::remote::REMOTE_ASR_MODEL_CATALOG {
+            for code in model.languages {
+                assert!(
+                    xrtranslate_engine::language::SupportedLanguage::parse(code).is_some(),
+                    "{}: {code}",
+                    model.model
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_qwen_language_constraints_match_the_remote_card() {
+        let mut document: serde_json::Value =
+            serde_json::from_str(include_str!("../../../config.json")).unwrap();
+        document["asr"]["provider"] = "qwen".into();
+        document["asr"]["providers"]["qwen"]["api_key"] = "test-key".into();
+        let mut route = crate::AppConfig::from_value(document)
+            .unwrap()
+            .native_model_route()
+            .unwrap();
+        route.translation.transport = "openai".into();
+        let languages = route.language_capabilities().unwrap();
+        assert!(languages.select("no", "en").is_ok());
+        assert!(languages.select("fil", "en").is_ok());
+        assert!(languages.select("tl", "en").is_ok());
+        assert!(languages.select("tr", "en").is_err());
+        assert!(languages.select("uk", "en").is_err());
     }
 }

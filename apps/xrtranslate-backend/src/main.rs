@@ -5,7 +5,7 @@
 //! lets the remaining engine work land without another client protocol change.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
     path::PathBuf,
     sync::{
@@ -70,6 +70,8 @@ mod model_runtime;
 mod pipeline;
 mod prompt_context;
 mod scheduler;
+mod sentence_assembly;
+mod sentence_gate;
 mod session;
 mod terminology;
 mod tts_session;
@@ -134,6 +136,7 @@ struct PipelineGeneration {
     audio_epoch: AudioEpoch,
 }
 
+#[derive(Clone)]
 struct UtteranceJob {
     utterance: Utterance,
     source_start_ms: f64,
@@ -163,6 +166,15 @@ struct TextJob {
     revision: u64,
 }
 
+#[derive(Hash, PartialEq, Eq)]
+struct SentenceTranslationKey {
+    turn_id: String,
+    segment_index: u32,
+    source_language: String,
+    target_language: String,
+    prompt_graph: String,
+}
+
 fn validate_prompt_graph_set(
     graphs: &PromptGraphSet,
 ) -> Result<(), xrtranslate_prompt::PromptGraphError> {
@@ -184,16 +196,45 @@ enum InferenceJob {
     },
 }
 
+/// Prepared sentences reuse the normal corpus/translation path without
+/// sending already recognized audio to ASR a second time.
+enum InferenceWork {
+    Queued(InferenceJob),
+    Prepared(sentence_assembly::PreparedRecognition),
+    Unfinished(sentence_assembly::PreparedRecognition),
+    AssemblyLimit(sentence_assembly::PreparedRecognition),
+    /// A terminal error follows all source/translation output already accepted
+    /// from this input. Consumers may retire the session when it arrives.
+    ErrorFence {
+        generation: PipelineGeneration,
+        message: String,
+        configuration_required: bool,
+    },
+}
+
 enum InferenceEvent {
     WindowObserved {
         generation: PipelineGeneration,
         text_units: usize,
+    },
+    /// Original ASR text and PCM, captured once before sentence assembly.
+    /// This internal event never produces an extra user-visible transcript.
+    RecognitionReference {
+        generation: PipelineGeneration,
+        source_text: String,
+        samples: Vec<i16>,
     },
     Recognized {
         generation: PipelineGeneration,
         recognized: RecognizedOutput,
         segments: Vec<SegmentContext>,
         reference_samples: Option<Vec<i16>>,
+    },
+    TranslationPreview {
+        generation: PipelineGeneration,
+        source_text: String,
+        translated_text: String,
+        context: SegmentContext,
     },
     Translation {
         generation: PipelineGeneration,
@@ -223,11 +264,29 @@ impl InferenceEvent {
     const fn generation(&self) -> PipelineGeneration {
         match self {
             Self::WindowObserved { generation, .. }
+            | Self::RecognitionReference { generation, .. }
             | Self::Recognized { generation, .. }
+            | Self::TranslationPreview { generation, .. }
             | Self::Translation { generation, .. }
             | Self::StreamEnded { generation, .. }
             | Self::Drained { generation, .. }
             | Self::Error { generation, .. } => *generation,
+        }
+    }
+
+    fn clone_reference(&self) -> Option<(&str, &[i16])> {
+        match self {
+            Self::RecognitionReference {
+                source_text,
+                samples,
+                ..
+            } => Some((source_text, samples)),
+            Self::Recognized {
+                recognized,
+                reference_samples: Some(samples),
+                ..
+            } => Some((&recognized.source_text, samples)),
+            _ => None,
         }
     }
 }
@@ -535,6 +594,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
         Arc::clone(&prompt_graphs),
     ));
     let mut job_sender = Some(job_sender);
+    let mut queued_inference_jobs = VecDeque::new();
     let mut input_state = SessionInputState::Running;
     let mut result_open = true;
     let mut graceful_shutdown = false;
@@ -550,6 +610,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
     let tts_job_sender = tts.as_ref().map(|_| tts_job_sender);
     let mut tts_result_open = tts_worker.is_some();
     let mut pending_tts_jobs = 0_usize;
+    let mut queued_tts_jobs = VecDeque::new();
     let mut pending_drain = None;
     let mut clone_capture = VoiceCloneCapture::from_config(&state.config);
     let tts_max_input_chars = tts_max_input_chars(&state.config);
@@ -574,11 +635,29 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
     }
 
     'session: loop {
+        if input_state == SessionInputState::Draining && queued_inference_jobs.is_empty() {
+            job_sender.take();
+        }
         tokio::select! {
-            result = result_receiver.recv(), if result_open => {
+            permit = async { job_sender.as_ref().unwrap().reserve().await },
+                if job_sender.is_some() && !queued_inference_jobs.is_empty() => {
+                let Ok(permit) = permit else {
+                    // A worker can close its input after queuing a final source
+                    // preview and diagnostic. Drain those results before closing
+                    // the socket; a full input queue must not hide the error.
+                    queued_inference_jobs.clear();
+                    input_state = SessionInputState::Draining;
+                    continue;
+                };
+                permit.send(queued_inference_jobs.pop_front().unwrap());
+            }
+            result = result_receiver.recv(), if result_open && queued_tts_jobs.len() < TTS_QUEUE_CAPACITY => {
                 let Some(result) = result else {
                     result_open = false;
+                    queued_inference_jobs.clear();
+                    input_state = SessionInputState::Draining;
                     if pending_tts_jobs == 0 {
+                        graceful_shutdown = true;
                         break;
                     }
                     continue;
@@ -590,14 +669,15 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                 if let InferenceEvent::WindowObserved { text_units, .. } = &result {
                     if let Some(pipeline) = &mut pipeline { pipeline.observe_text_density(*text_units); }
                 }
-                if let InferenceEvent::Recognized { recognized, reference_samples: Some(samples), .. } = &result
+                if result.generation() == generation
+                    && let Some((source_text, samples)) = result.clone_reference()
                     && clone_capture.armed
                     && audio_source == AudioSource::Microphone
                 {
                     let remaining = clone_capture.maximum_samples.saturating_sub(clone_capture.samples.len());
                     clone_capture.samples.extend_from_slice(&samples[..samples.len().min(remaining)]);
-                    if !recognized.source_text.trim().is_empty() {
-                        clone_capture.transcript.push(recognized.source_text.trim().to_owned());
+                    if !source_text.trim().is_empty() {
+                        clone_capture.transcript.push(source_text.trim().to_owned());
                     }
                     let collected = clone_capture.collected_seconds();
                     if send_event(&outbound_sender, Some(generation), ServerEvent::VoiceCloneState(VoiceCloneState {
@@ -643,7 +723,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                     generation,
                     result,
                     tts.as_ref(),
-                    tts_job_sender.as_ref(),
+                    tts_job_sender.as_ref().map(|_| &mut queued_tts_jobs),
                     &active_voice,
                     voice_ready,
                     tts_max_input_chars,
@@ -672,6 +752,13 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                         pending_drain = Some(reason);
                     }
                 }
+            }
+            // Reserving in the event pump keeps TTS results flowing even when
+            // synthesis is slower than translation and its input queue is full.
+            permit = async { tts_job_sender.as_ref().unwrap().reserve().await },
+                if tts_job_sender.is_some() && !queued_tts_jobs.is_empty() => {
+                let Ok(permit) = permit else { break };
+                permit.send(queued_tts_jobs.pop_front().unwrap());
             }
             tts_result = tts_result_receiver.recv(), if tts_result_open => {
                 let Some(tts_result) = tts_result else {
@@ -735,8 +822,15 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                         break;
                     }
                 }
+                if !result_open && pending_tts_jobs == 0 {
+                    graceful_shutdown = true;
+                    break;
+                }
             }
-            frame = reader.next(), if input_state.accepts_controls() => {
+            // One validated audio frame can produce a small batch; consume it
+            // atomically, then stop reading until bounded worker capacity returns.
+            frame = reader.next(), if input_state.accepts_controls()
+                && queued_inference_jobs.len() < INFERENCE_QUEUE_CAPACITY => {
                 let Some(frame) = frame else {
                     break;
                 };
@@ -784,7 +878,8 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                                 audio_route_valid = false;
                                 if let Some(pipeline) = &mut pipeline { pipeline.reset(); }
                                 generation.audio_epoch.advance();
-                                generation_sender.send_replace(generation);
+                                queued_inference_jobs.clear();
+                            generation_sender.send_replace(generation);
                                 if send_error(&outbound_sender, error).await.is_err() { break; }
                                 continue;
                             }
@@ -792,6 +887,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                             if let Some(pipeline) = &mut pipeline { pipeline.reset(); }
                             generation.route_epoch = session.route_epoch();
                             generation.audio_epoch.advance();
+                            queued_inference_jobs.clear();
                             generation_sender.send_replace(generation);
                             info!(%session_id, source_lang = session.source_lang(), target_lang = session.target_lang(), "session route configured");
                         }
@@ -853,7 +949,8 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                                 audio_route_valid = false;
                                 pipeline.reset();
                                 generation.audio_epoch.advance();
-                                generation_sender.send_replace(generation);
+                                queued_inference_jobs.clear();
+                            generation_sender.send_replace(generation);
                                 if send_error(&outbound_sender, error).await.is_err() { break; }
                                 continue;
                             }
@@ -864,6 +961,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                             clone_capture.ready = voices.map_or((String::new(), false), |voices| voices.active_voice()).1;
                             generation.route_epoch = session.route_epoch();
                             generation.audio_epoch.advance();
+                            queued_inference_jobs.clear();
                             generation_sender.send_replace(generation);
                             info!(
                                 %session_id,
@@ -887,18 +985,15 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                         }
                         Ok(ClientControl::Event(EventControl::Pause)) => {
                             if input_state == SessionInputState::Running {
-                                let Some(sender) = job_sender.as_ref() else { break };
                                 if let Err(error) = queue_pipeline_drain(
                                     &mut pipeline,
-                                    sender,
+                                    &mut queued_inference_jobs,
                                     &session,
                                     generation,
                                     workload,
                                     DrainReason::Paused,
                                     &mut next_utterance_sequence,
-                                )
-                                .await
-                                {
+                                ) {
                                     if send_error(&outbound_sender, error).await.is_err() {
                                         break;
                                     }
@@ -935,18 +1030,15 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                                 EventControl::Stop => DrainReason::Stopped,
                                 _ => unreachable!(),
                             };
-                            let Some(sender) = job_sender.as_ref() else { break };
                             if let Err(error) = queue_pipeline_drain(
                                 &mut pipeline,
-                                sender,
+                                &mut queued_inference_jobs,
                                 &session,
-                                    generation,
-                                    workload,
-                                    reason,
+                                generation,
+                                workload,
+                                reason,
                                 &mut next_utterance_sequence,
-                            )
-                            .await
-                            {
+                            ) {
                                 if send_error(&outbound_sender, error).await.is_err() {
                                     break;
                                 }
@@ -968,7 +1060,6 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                             if send_failed {
                                 break;
                             }
-                            job_sender.take();
                             input_state = SessionInputState::Draining;
                         }
                         Ok(ClientControl::Action(ActionControl::ToggleFeature { feature, enabled })) => {
@@ -1022,7 +1113,6 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                         })) => {
                             let trimmed = text.trim();
                             if !trimmed.is_empty() && input_state != SessionInputState::Draining {
-                                let Some(sender) = job_sender.as_ref() else { break };
                                 let source_language = source_lang
                                     .filter(|s| !s.trim().is_empty())
                                     .unwrap_or_else(|| session.source_lang().to_string());
@@ -1045,9 +1135,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                                     enqueued_at: Instant::now(),
                                     revision,
                                 };
-                                if sender.send(InferenceJob::Text(job)).await.is_err() {
-                                    break;
-                                }
+                                queued_inference_jobs.push_back(InferenceJob::Text(job));
                             }
                         }
                         Ok(ClientControl::Event(EventControl::TurnStarted { turn_id })) => {
@@ -1093,19 +1181,16 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                                     if vad_send_failed {
                                         break;
                                     }
-                                    if let Some(sender) = job_sender.as_ref()
-                                        && let Err(error) = enqueue_utterances(
-                                            sender,
-                                            &session,
-                                            generation,
-                                            workload,
-                                            utterances,
-                                            &mut next_utterance_sequence,
-                                        )
-                                        .await
-                                        && send_error(&outbound_sender, error).await.is_err() {
-                                            break;
-                                        }
+                                    if let Err(error) = enqueue_utterances(
+                                        &mut queued_inference_jobs,
+                                        &session,
+                                        generation,
+                                        workload,
+                                        utterances,
+                                        &mut next_utterance_sequence,
+                                    ) && send_error(&outbound_sender, error).await.is_err() {
+                                        break;
+                                    }
                                 }
                                 Err(error) => {
                                     if send_error(&outbound_sender, error).await.is_err() {
@@ -1136,6 +1221,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
         }
     }
 
+    queued_inference_jobs.clear();
     job_sender.take();
     if !graceful_shutdown {
         worker.abort();
@@ -1311,6 +1397,7 @@ async fn check_model_ready(
             url: health_url.into(),
             headers: Vec::new(),
             body: serde_json::Value::Null,
+            multipart: None,
         })
         .await
         .map_err(|error| error.to_string())?;
@@ -1324,6 +1411,7 @@ async fn check_model_ready(
             url: models_url.into(),
             headers: Vec::new(),
             body: serde_json::Value::Null,
+            multipart: None,
         })
         .await
         .map_err(|error| error.to_string())?;
@@ -1401,8 +1489,8 @@ fn local_model_url(chat_url: &str, path: &str) -> Result<String, String> {
     Ok(parsed.into())
 }
 
-async fn enqueue_utterances(
-    sender: &mpsc::Sender<InferenceJob>,
+fn enqueue_utterances(
+    pending: &mut VecDeque<InferenceJob>,
     session: &SessionAdapter,
     generation: PipelineGeneration,
     workload: InferenceWorkload,
@@ -1410,19 +1498,13 @@ async fn enqueue_utterances(
     next_utterance_sequence: &mut u64,
 ) -> Result<(), String> {
     debug_assert_eq!(generation.route_epoch, session.route_epoch());
-    let jobs = inference_jobs(
+    pending.extend(inference_jobs(
         session,
         generation,
         workload,
         utterances,
         next_utterance_sequence,
-    )?;
-    for job in jobs {
-        sender
-            .send(job)
-            .await
-            .map_err(|_| "native inference worker has stopped".to_owned())?;
-    }
+    )?);
     Ok(())
 }
 
@@ -1492,11 +1574,10 @@ fn inference_jobs(
 }
 
 /// Flushes the current VAD turn and places an ordered fence behind all queued
-/// model work. Unlike live ingestion, this waits for bounded queue capacity so
-/// a pause or EOF cannot silently discard its final utterance.
-async fn queue_pipeline_drain(
+/// model work. The event pump sends this batch without blocking result delivery.
+fn queue_pipeline_drain(
     pipeline: &mut Option<NativePipeline>,
-    sender: &mpsc::Sender<InferenceJob>,
+    pending: &mut VecDeque<InferenceJob>,
     session: &SessionAdapter,
     generation: PipelineGeneration,
     workload: InferenceWorkload,
@@ -1510,28 +1591,46 @@ async fn queue_pipeline_drain(
         .map(Option::flatten)
     {
         Ok(Some(utterance)) => {
-            for job in inference_jobs(
+            enqueue_utterances(
+                pending,
                 session,
                 generation,
                 workload,
                 vec![utterance],
                 next_utterance_sequence,
-            )? {
-                sender
-                    .send(job)
-                    .await
-                    .map_err(|_| "native inference worker has stopped".to_owned())?;
-            }
+            )?;
             None
         }
         Ok(None) => None,
         Err(error) => Some(error),
     };
-    sender
-        .send(InferenceJob::Drain { generation, reason })
-        .await
-        .map_err(|_| "native inference worker has stopped".to_owned())?;
+    pending.push_back(InferenceJob::Drain { generation, reason });
     flush_error.map_or(Ok(()), Err)
+}
+
+/// Keep an input-end fence behind the source tail and its translation work.
+fn flush_sentence_before_boundary(
+    work: InferenceWork,
+    assembler: &mut sentence_assembly::SentenceAssembler,
+    prepared: &mut VecDeque<InferenceWork>,
+    current_generation: PipelineGeneration,
+) -> InferenceWork {
+    let boundary_generation = match &work {
+        InferenceWork::Queued(InferenceJob::Text(job)) => Some(job.generation),
+        InferenceWork::Queued(
+            InferenceJob::StreamEnded { generation, .. } | InferenceJob::Drain { generation, .. },
+        )
+        | InferenceWork::ErrorFence { generation, .. } => Some(*generation),
+        _ => None,
+    };
+    if boundary_generation == Some(current_generation)
+        && let Some(tail) = assembler.take_pending()
+    {
+        prepared.push_front(work);
+        InferenceWork::Prepared(tail)
+    } else {
+        work
+    }
 }
 
 async fn run_inference_worker(
@@ -1546,6 +1645,8 @@ async fn run_inference_worker(
     prompt_graphs: Arc<tokio::sync::RwLock<PromptGraphSet>>,
 ) {
     let mut previous_transcript: Option<(PipelineGeneration, String)> = None;
+    let mut sentence_assembler = sentence_assembly::SentenceAssembler::default();
+    let mut prepared_work = VecDeque::new();
     let mut active_revisable_transcript: Option<(PipelineGeneration, String, RevisableTranscript)> =
         None;
     let mut adaptive_route = AdaptiveLanguageRoute::default();
@@ -1568,43 +1669,128 @@ async fn run_inference_worker(
             return;
         }
     };
-    let mut pending_translation: Option<tokio::task::JoinHandle<Vec<InferenceEvent>>> = None;
-    // Stable sentence translations are reusable across revisions of one
-    // logical stream. The cache is bounded and excludes the revisable tail,
-    // which must always be regenerated.
-    let stable_translation_cache = Arc::new(tokio::sync::Mutex::new(HashMap::<
+    let mut pending_translation: Option<tokio::task::JoinHandle<()>> = None;
+    let mut active_sentence_gate: Option<(
+        PipelineGeneration,
         String,
+        sentence_gate::SentenceGate,
+    )> = None;
+    // Keep one completed translation per sentence position for the current
+    // logical stream. Revisions reuse it without translating or speaking again;
+    // the stream boundary releases the whole cache.
+    let stable_translation_cache = Arc::new(tokio::sync::Mutex::new(HashMap::<
+        SentenceTranslationKey,
         TranslationOutput,
     >::new()));
     loop {
-        let job = if let Some(pending) = pending_translation.as_mut() {
+        let work = if let Some(work) = prepared_work.pop_front() {
+            Some(work)
+        } else if let Some(pending) = pending_translation.as_mut() {
             tokio::select! {
-                job = jobs.recv() => job,
+                job = jobs.recv() => job.map(InferenceWork::Queued),
                 completed = pending => {
                     pending_translation = None;
-                    let Ok(batch) = completed else { break };
-                    if !send_inference_batch(&events, batch).await {
+                    if completed.is_err() {
                         break;
                     }
                     continue;
                 }
             }
         } else {
-            jobs.recv().await
+            jobs.recv().await.map(InferenceWork::Queued)
         };
-        let Some(job) = job else {
+        sentence_assembler.reset_unless_generation(*generation.borrow());
+        let work = work.or_else(|| {
+            sentence_assembler
+                .take_pending()
+                .map(InferenceWork::Prepared)
+        });
+        let Some(work) = work else {
+            if let Some((_, _, gate)) = &active_sentence_gate {
+                gate.finish();
+            }
             if let Some(pending) = pending_translation.take() {
-                let Ok(batch) = pending.await else { break };
-                let _ = send_inference_batch(&events, batch).await;
+                let _ = pending.await;
             }
             break;
         };
-        let job = match job {
-            InferenceJob::Utterance(job) => job,
-            InferenceJob::Text(job) => {
+        let work = flush_sentence_before_boundary(
+            work,
+            &mut sentence_assembler,
+            &mut prepared_work,
+            *generation.borrow(),
+        );
+        let (mut job, prepared_recognition) = match work {
+            InferenceWork::Queued(InferenceJob::Utterance(job)) => (job, None),
+            InferenceWork::Prepared(prepared) => (
+                prepared.job,
+                Some((
+                    prepared.recognized,
+                    prepared.asr_context,
+                    prepared.prompt_graph,
+                )),
+            ),
+            InferenceWork::Unfinished(pending) => {
+                if pending.job.generation == *generation.borrow()
+                    && !emit_unfinished_recognition(&events, &pending).await
+                {
+                    break;
+                }
+                continue;
+            }
+            InferenceWork::ErrorFence {
+                generation: event_generation,
+                message,
+                configuration_required,
+            } => {
+                if event_generation != *generation.borrow() {
+                    continue;
+                }
+                if let Some((_, _, gate)) = &active_sentence_gate {
+                    gate.finish();
+                }
                 if let Some(pending) = pending_translation.take() {
-                    let Ok(batch) = pending.await else { break };
-                    if !send_inference_batch(&events, batch).await {
+                    let _ = pending.await;
+                }
+                if event_generation != *generation.borrow() {
+                    continue;
+                }
+                let _ = events
+                    .send(InferenceEvent::Error {
+                        generation: event_generation,
+                        message,
+                        configuration_required,
+                    })
+                    .await;
+                break;
+            }
+            InferenceWork::AssemblyLimit(visible) => {
+                if visible.job.generation != *generation.borrow() {
+                    continue;
+                }
+                let _ = emit_unfinished_recognition(&events, &visible).await;
+                if let Some((_, _, gate)) = &active_sentence_gate {
+                    gate.finish();
+                }
+                if let Some(pending) = pending_translation.take() {
+                    let _ = pending.await;
+                }
+                let _ = events.send(InferenceEvent::Error {
+                    generation: visible.job.generation,
+                    message: format!(
+                        "Recognition paused: an unfinished sentence exceeded {} characters. The source text is preserved; restart the session or choose a model that restores sentence punctuation.",
+                        sentence_assembly::MAX_PENDING_CHARACTERS,
+                    ),
+                    configuration_required: false,
+                }).await;
+                break;
+            }
+            InferenceWork::Queued(InferenceJob::Text(job)) => {
+                if let Some((_, _, gate)) = &active_sentence_gate {
+                    gate.finish();
+                }
+                if let Some(pending) = pending_translation.take() {
+                    if pending.await.is_err() {
                         break;
                     }
                 }
@@ -1717,7 +1903,11 @@ async fn run_inference_worker(
                         &context.source_corrections,
                     );
                     segment.translation_text = rewrite.corrected_text;
-                    segment.source_text.clone_from(&segment.translation_text);
+                    segment.source_text = rewrite_recognition_terms(
+                        &segment.source_text,
+                        &context.source_corrections,
+                    )
+                    .corrected_text;
                 }
                 let asr_elapsed = Duration::ZERO;
                 let source_language = recognized.source_language.clone();
@@ -1765,6 +1955,7 @@ async fn run_inference_worker(
                 let history_target_language = target_language.clone();
                 let prompt_graph_for_turn = prompt_graphs.read().await.graph.clone();
                 let turn_id_for_end = job.turn_id.clone();
+                let translation_events = events.clone();
                 pending_translation = Some(tokio::spawn(async move {
                     let translations = futures_util::stream::iter(
                         segments
@@ -1780,6 +1971,10 @@ async fn run_inference_worker(
                         let source_for_terms = segment.translation_text.clone();
                         let prompt_terms = corpus_context.prompt_terms.clone();
                         let prompt_graph = prompt_graph_for_turn.clone();
+                        let preview_events = translation_events.clone();
+                        let preview_generation = translation_generation.clone();
+                        let preview_context = segment_context.clone();
+                        let preview_source = segment.source_text.clone();
                         async move {
                             let _permit = scheduler.acquire_translation(workload).await;
                             let prompt_context = prompt_context_for_segment(
@@ -1788,12 +1983,30 @@ async fn run_inference_worker(
                                 &corpus_context,
                             );
                             let output = inference
-                                .translate_segment(
+                                .translate_segment_streaming(
                                     &segment,
                                     &source_language,
                                     &target_language,
                                     prompt_graph,
                                     prompt_context,
+                                    move |translated_text| {
+                                        let events = preview_events.clone();
+                                        let generation = preview_generation.clone();
+                                        let context = preview_context.clone();
+                                        let source_text = preview_source.clone();
+                                        async move {
+                                            if *generation.borrow() == event_generation {
+                                                let _ = events
+                                                    .send(InferenceEvent::TranslationPreview {
+                                                        generation: event_generation,
+                                                        source_text,
+                                                        translated_text,
+                                                        context,
+                                                    })
+                                                    .await;
+                                            }
+                                        }
+                                    },
                                 )
                                 .await;
                             (segment_context, source_for_terms, prompt_terms, output)
@@ -1801,7 +2014,6 @@ async fn run_inference_worker(
                     })
                     .buffered(TRANSLATION_CONCURRENCY_PER_SESSION);
                     tokio::pin!(translations);
-                    let mut batch = Vec::new();
                     let mut completed_pairs = Vec::new();
                     let mut cancelled = false;
                     while let Some((segment_context, source_for_terms, prompt_terms, mut output)) =
@@ -1825,15 +2037,21 @@ async fn run_inference_worker(
                                 translated.translated_text.clone(),
                             ));
                         }
-                        batch.push(InferenceEvent::Translation {
-                            generation: event_generation,
-                            target_language: target_language.clone(),
-                            queue_elapsed,
-                            asr_elapsed,
-                            total_elapsed: turn_started_at.elapsed(),
-                            context: segment_context,
-                            output,
-                        });
+                        if translation_events
+                            .send(InferenceEvent::Translation {
+                                generation: event_generation,
+                                target_language: target_language.clone(),
+                                queue_elapsed,
+                                asr_elapsed,
+                                total_elapsed: turn_started_at.elapsed(),
+                                context: segment_context,
+                                output,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
                     }
                     if !cancelled
                         && let Some(request) = (LogicalTurnRecord {
@@ -1850,21 +2068,27 @@ async fn run_inference_worker(
                             warn!(%message, "could not record XR Corpus translation context");
                         }
                     }
-                    batch.push(InferenceEvent::StreamEnded {
-                        generation: event_generation,
-                        turn_id: turn_id_for_end,
-                    });
-                    batch
+                    let _ = translation_events
+                        .send(InferenceEvent::StreamEnded {
+                            generation: event_generation,
+                            turn_id: turn_id_for_end,
+                        })
+                        .await;
                 }));
                 continue;
             }
-            InferenceJob::StreamEnded {
+            InferenceWork::Queued(InferenceJob::StreamEnded {
                 generation: event_generation,
                 turn_id,
-            } => {
+            }) => {
+                if *generation.borrow() != event_generation {
+                    continue;
+                }
+                if let Some((_, _, gate)) = &active_sentence_gate {
+                    gate.finish();
+                }
                 if let Some(pending) = pending_translation.take() {
-                    let Ok(batch) = pending.await else { break };
-                    if !send_inference_batch(&events, batch).await {
+                    if pending.await.is_err() {
                         break;
                     }
                 }
@@ -1880,16 +2104,22 @@ async fn run_inference_worker(
                     break;
                 }
                 active_revisable_transcript = None;
+                active_sentence_gate = None;
                 stable_translation_cache.lock().await.clear();
                 continue;
             }
-            InferenceJob::Drain {
+            InferenceWork::Queued(InferenceJob::Drain {
                 generation: event_generation,
                 reason,
-            } => {
+            }) => {
+                if *generation.borrow() != event_generation {
+                    continue;
+                }
+                if let Some((_, _, gate)) = &active_sentence_gate {
+                    gate.finish();
+                }
                 if let Some(pending) = pending_translation.take() {
-                    let Ok(batch) = pending.await else { break };
-                    if !send_inference_batch(&events, batch).await {
+                    if pending.await.is_err() {
                         break;
                     }
                 }
@@ -1960,88 +2190,104 @@ async fn run_inference_worker(
         };
         adaptive_route.configure(&job.source_language, &job.target_language);
         let active_target_language = adaptive_route.active_targets(&job.target_language);
-        let asr_context = match corpus_session
-            .prepare_asr(&PrepareAsrRequest {
-                source_language: job.source_language.clone(),
-                target_language: active_target_language,
-                budgets: context_budgets,
-            })
-            .await
-        {
-            Ok(prompt) => prompt,
-            Err(message) => {
-                if events
-                    .send(InferenceEvent::Error {
+        let (prepared_recognition, prepared_context, prepared_graph) = match prepared_recognition {
+            Some((recognized, context, graph)) => (Some(recognized), Some(context), Some(graph)),
+            None => (None, None, None),
+        };
+        let asr_context = if let Some(context) = prepared_context {
+            context
+        } else {
+            match corpus_session
+                .prepare_asr(&PrepareAsrRequest {
+                    source_language: job.source_language.clone(),
+                    target_language: active_target_language,
+                    budgets: context_budgets,
+                })
+                .await
+            {
+                Ok(prompt) => prompt,
+                Err(message) => {
+                    prepared_work.push_back(InferenceWork::ErrorFence {
                         generation: job.generation,
                         message: message.to_string(),
                         configuration_required: false,
-                    })
-                    .await
-                    .is_err()
-                {
-                    break;
+                    });
+                    continue;
                 }
-                continue;
             }
         };
-        let current_generation = *generation.borrow_and_update();
-        if current_generation != job.generation {
-            continue;
-        }
-        let asr_slot_started = Instant::now();
-        let asr_permit = tokio::select! {
-            permit = scheduler.acquire_asr(job.workload) => permit,
-            changed = generation.changed() => {
-                if changed.is_err() {
-                    break;
-                }
+        let prompt_graph_for_revision = match prepared_graph {
+            Some(graph) => graph,
+            None => prompt_graphs.read().await.graph.clone(),
+        };
+        let is_prepared = prepared_recognition.is_some();
+        let recognized_result = if let Some(recognized) = prepared_recognition {
+            Ok(Some(recognized))
+        } else {
+            let current_generation = *generation.borrow_and_update();
+            if current_generation != job.generation {
                 continue;
             }
-        };
-        let asr_slot_wait = asr_slot_started.elapsed();
-        if asr_slot_wait >= Duration::from_millis(25) {
-            info!(
-                wait_ms = asr_slot_wait.as_millis(),
-                workload = ?job.workload,
-                "ASR waited for a scheduled model slot"
-            );
-        }
-        let prompt_graph_set = prompt_graphs.read().await.clone();
-        let prompt_graph_for_revision = prompt_graph_set.graph;
-        let current_generation = *generation.borrow_and_update();
-        if current_generation != job.generation {
-            drop(asr_permit);
-            continue;
-        }
-        let recognized_result = tokio::select! {
-            result = inference.transcribe(
-                &job.utterance.samples,
-                &job.source_language,
-                &job.target_language,
-                &mut adaptive_route,
-                &prompt_graph_for_revision,
-                AsrPromptContext {
-                    vocabulary: asr_context.vocabulary.clone(),
-                    mode: if job.revisable {
-                        PromptMode::PseudoStreaming
-                    } else {
-                        PromptMode::Ordinary
-                    },
-                },
-                &asr_context.echo_guard,
-            ) => result,
-            changed = generation.changed() => {
+            let asr_slot_started = Instant::now();
+            let asr_permit = tokio::select! {
+                permit = scheduler.acquire_asr(job.workload) => permit,
+                changed = generation.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+            };
+            let asr_slot_wait = asr_slot_started.elapsed();
+            if asr_slot_wait >= Duration::from_millis(25) {
+                info!(
+                    wait_ms = asr_slot_wait.as_millis(),
+                    workload = ?job.workload,
+                    "ASR waited for a scheduled model slot"
+                );
+            }
+            let current_generation = *generation.borrow_and_update();
+            if current_generation != job.generation {
                 drop(asr_permit);
-                if changed.is_err() {
-                    break;
-                }
                 continue;
             }
+            let recognized_result = tokio::select! {
+                result = inference.transcribe(
+                    &job.utterance.samples,
+                    &job.source_language,
+                    &job.target_language,
+                    &mut adaptive_route,
+                    &prompt_graph_for_revision,
+                    AsrPromptContext {
+                        vocabulary: asr_context.vocabulary.clone(),
+                        mode: if job.revisable {
+                            PromptMode::PseudoStreaming
+                        } else {
+                            PromptMode::Ordinary
+                        },
+                    },
+                    &asr_context.echo_guard,
+                ) => result,
+                changed = generation.changed() => {
+                    drop(asr_permit);
+                    if changed.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+            };
+            drop(asr_permit);
+            recognized_result
         };
-        drop(asr_permit);
         let mut recognized = match recognized_result {
             Ok(Some(recognized)) => recognized,
             Ok(None) => {
+                if !job.revisable
+                    && job.utterance.end_reason != UtteranceEndReason::MaxActiveFrames
+                    && let Some(tail) = sentence_assembler.take_pending()
+                {
+                    prepared_work.push_back(InferenceWork::Prepared(tail));
+                }
                 if events
                     .send(InferenceEvent::WindowObserved {
                         generation: job.generation,
@@ -2055,21 +2301,29 @@ async fn run_inference_worker(
                 continue;
             }
             Err(failure) => {
-                if events
-                    .send(InferenceEvent::Error {
-                        generation: job.generation,
-                        message: failure.message,
-                        configuration_required: failure.configuration_required,
-                    })
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
+                prepared_work.push_back(InferenceWork::ErrorFence {
+                    generation: job.generation,
+                    message: failure.message,
+                    configuration_required: failure.configuration_required,
+                });
                 continue;
             }
         };
-        if !job.revisable
+        if !is_prepared
+            && !job.revisable
+            && events
+                .send(InferenceEvent::RecognitionReference {
+                    generation: job.generation,
+                    source_text: recognized.source_text.clone(),
+                    samples: job.utterance.samples.clone(),
+                })
+                .await
+                .is_err()
+        {
+            break;
+        }
+        if !is_prepared
+            && !job.revisable
             && overlap_frames > 0
             && let Some((_, previous)) = &previous_transcript
             && !recognized.remove_overlap_with(previous)
@@ -2078,6 +2332,11 @@ async fn run_inference_worker(
                 overlap_frames,
                 "ASR overlap contained no new text; suppressing duplicate result"
             );
+            if job.utterance.end_reason != UtteranceEndReason::MaxActiveFrames
+                && let Some(tail) = sentence_assembler.take_pending()
+            {
+                prepared_work.push_back(InferenceWork::Prepared(tail));
+            }
             if events
                 .send(InferenceEvent::WindowObserved {
                     generation: job.generation,
@@ -2112,13 +2371,14 @@ async fn run_inference_worker(
         if *generation.borrow() != job.generation {
             continue;
         }
-        if events
-            .send(InferenceEvent::WindowObserved {
-                generation: job.generation,
-                text_units: text_density_units(&recognized.source_text),
-            })
-            .await
-            .is_err()
+        if !is_prepared
+            && events
+                .send(InferenceEvent::WindowObserved {
+                    generation: job.generation,
+                    text_units: text_density_units(&recognized.source_text),
+                })
+                .await
+                .is_err()
         {
             break;
         }
@@ -2173,12 +2433,71 @@ async fn run_inference_worker(
         } else {
             String::new()
         };
+        if !is_prepared && !job.revisable {
+            if let Some((_, _, gate)) = &active_sentence_gate {
+                gate.finish();
+            }
+            previous_transcript = Some((job.generation, recognized.source_text.clone()));
+            job.source_start_ms = (job.source_start_ms
+                + overlap_frames as f64 * FRAME_SAMPLES as f64 * 1000.0
+                    / f64::from(SAMPLE_RATE_HZ))
+            .min(job.source_end_ms);
+            job.utterance.overlap_frames = 0;
+            job.speaker_id = Some(speaker_id);
+            let prepared = sentence_assembly::PreparedRecognition {
+                job,
+                recognized,
+                asr_context,
+                prompt_graph: prompt_graph_for_revision,
+            };
+            match sentence_assembler.push(prepared) {
+                Ok(ready) => {
+                    prepared_work.extend(ready.into_iter().map(InferenceWork::Prepared));
+                    if let Some(tail) = sentence_assembler.pending() {
+                        prepared_work.push_back(InferenceWork::Unfinished(tail.clone()));
+                    }
+                }
+                Err(overflow) => {
+                    prepared_work.extend(overflow.ready.into_iter().map(InferenceWork::Prepared));
+                    prepared_work.push_back(InferenceWork::AssemblyLimit(overflow.visible));
+                }
+            }
+            continue;
+        }
+        let standalone_gate;
+        let sentence_gate = if job.revisable {
+            if active_sentence_gate
+                .as_ref()
+                .is_none_or(|(epoch, turn, _)| {
+                    *epoch != job.generation || *turn != job.topic_turn_id
+                })
+            {
+                if let Some((_, _, gate)) = &active_sentence_gate {
+                    gate.finish();
+                }
+                active_sentence_gate = Some((
+                    job.generation,
+                    job.topic_turn_id.clone(),
+                    sentence_gate::SentenceGate::new(),
+                ));
+            }
+            &active_sentence_gate
+                .as_ref()
+                .expect("active sentence gate")
+                .2
+        } else {
+            if let Some((_, _, gate)) = &active_sentence_gate {
+                gate.finish();
+            }
+            standalone_gate = sentence_gate::SentenceGate::new();
+            &standalone_gate
+        };
+        sentence_gate.observe(job.revision, &recognized.segments, !job.revisable);
         // ASR for this turn ran while the previous turn translated. Commit the
         // prior translation before selecting this turn's corpus context so
         // prompt history and emitted events retain strict stream order.
         if let Some(pending) = pending_translation.take() {
-            let Ok(batch) = pending.await else { break };
-            if !send_inference_batch(&events, batch).await {
+            if pending.await.is_err() {
                 break;
             }
         }
@@ -2199,7 +2518,7 @@ async fn run_inference_worker(
             revisable: job.revisable,
             overlap_ratio,
             boundary,
-            authoritative_snapshot: job.revisable,
+            authoritative_snapshot: job.revisable || is_prepared,
             revision: job.revision,
         };
         let wire_turn_id = if job.revisable {
@@ -2226,13 +2545,18 @@ async fn run_inference_worker(
         {
             Ok(context) => context,
             Err(message) => {
-                let fallback_segments = segment_contexts(
+                let mut fallback_segments = segment_contexts(
                     &recognized.segments,
                     &[],
                     wire_turn_id.clone(),
                     speaker_id.clone(),
                     stream_window,
                 );
+                if is_prepared {
+                    for context in &mut fallback_segments {
+                        context.timing = SegmentTiming::EstimatedTextPartition;
+                    }
+                }
                 // Corpus is optional enrichment. Preserve successful ASR even
                 // when context selection is temporarily unavailable.
                 let _ = events
@@ -2240,7 +2564,7 @@ async fn run_inference_worker(
                         generation: job.generation,
                         recognized,
                         segments: fallback_segments,
-                        reference_samples: Some(job.utterance.samples.clone()),
+                        reference_samples: (!is_prepared).then(|| job.utterance.samples.clone()),
                     })
                     .await;
                 if events
@@ -2282,9 +2606,22 @@ async fn run_inference_worker(
             let rewrite =
                 rewrite_recognition_terms(&segment.translation_text, &context.source_corrections);
             segment.translation_text = rewrite.corrected_text;
-            segment.source_text.clone_from(&segment.translation_text);
+            segment.source_text =
+                rewrite_recognition_terms(&segment.source_text, &context.source_corrections)
+                    .corrected_text;
         }
-        previous_transcript = Some((job.generation, recognized.source_text.clone()));
+        let sentence_readiness =
+            sentence_gate.observe(job.revision, &recognized.segments, !job.revisable);
+        stable_translation_cache.lock().await.retain(|key, output| {
+            key.turn_id == job.topic_turn_id
+                && recognized
+                    .segments
+                    .get(key.segment_index.saturating_sub(1) as usize)
+                    .is_some_and(|segment| segment.source_text == output.source_text)
+        });
+        if !is_prepared {
+            previous_transcript = Some((job.generation, recognized.source_text.clone()));
+        }
         info!(
             asr_ms = recognized.asr_elapsed.as_millis(),
             segments = recognized.segments.len(),
@@ -2294,19 +2631,24 @@ async fn run_inference_worker(
         let source_language = recognized.source_language.clone();
         let target_language = recognized.target_language.clone();
         let segments = recognized.segments.clone();
-        let segment_contexts = segment_contexts(
+        let mut segment_contexts = segment_contexts(
             &segments,
             &translation_context_segments,
             wire_turn_id,
             speaker_id.clone(),
             stream_window,
         );
+        if is_prepared {
+            for context in &mut segment_contexts {
+                context.timing = SegmentTiming::EstimatedTextPartition;
+            }
+        }
         if events
             .send(InferenceEvent::Recognized {
                 generation: job.generation,
                 recognized,
                 segments: segment_contexts.clone(),
-                reference_samples: Some(job.utterance.samples.clone()),
+                reference_samples: (!is_prepared).then(|| job.utterance.samples.clone()),
             })
             .await
             .is_err()
@@ -2336,6 +2678,8 @@ async fn run_inference_worker(
         let prompt_graph_fingerprint = prompt_graph_for_turn.fingerprint();
         let stable_translation_cache = Arc::clone(&stable_translation_cache);
         let cache_turn_id = logical_turn_id.clone();
+        let translation_events = events.clone();
+        let asr_revision = job.revision;
         pending_translation = Some(tokio::spawn(async move {
             let translations = futures_util::stream::iter(
                 segments
@@ -2343,7 +2687,7 @@ async fn run_inference_worker(
                     .zip(segment_contexts)
                     .zip(translation_context_segments),
             )
-            .map(|((segment, segment_context), corpus_context)| {
+            .map(|((segment, mut segment_context), corpus_context)| {
                 let inference = inference.clone();
                 let scheduler = scheduler.clone();
                 let source_language = source_language.clone();
@@ -2351,81 +2695,143 @@ async fn run_inference_worker(
                 let source_for_terms = segment.translation_text.clone();
                 let prompt_terms = corpus_context.prompt_terms.clone();
                 let prompt_graph = prompt_graph_for_turn.clone();
+                let preview_events = translation_events.clone();
+                let preview_generation = translation_generation.clone();
+                let preview_source = segment.source_text.clone();
                 let stable_translation_cache = Arc::clone(&stable_translation_cache);
                 let cache_turn_id = cache_turn_id.clone();
                 let prompt_graph_fingerprint = prompt_graph_fingerprint.clone();
+                let readiness = sentence_readiness.clone();
+                let mut gate_generation = translation_generation.clone();
                 async move {
-                    let _permit = scheduler.acquire_translation(workload).await;
+                    if *gate_generation.borrow_and_update() != event_generation { return None; }
+                    let ready = tokio::select! {
+                        ready = readiness.clone().wait(asr_revision, segment_context.segment_index.saturating_sub(1) as usize) => ready,
+                        _ = gate_generation.changed() => false,
+                    };
+                    if !ready { return None; }
+                    segment_context.revisable = false;
+                    segment_context.authoritative_snapshot = false;
+                    let preview_context = segment_context.clone();
                     let mut prompt_context = prompt_context_for_segment(
                         &source_language,
                         &target_language,
                         &corpus_context,
                     );
                     prompt_context.mode = prompt_mode_for_turn;
-                    let cache_key = format!(
-                        "{}\x1f{}\x1f{}\x1f{}\x1f{}\x1f{:?}\x1f{:?}\x1f{:?}\x1f{:?}",
-                        cache_turn_id,
-                        source_for_terms,
-                        source_language,
-                        target_language,
-                        prompt_graph_fingerprint,
-                        prompt_context.language_order,
-                        prompt_context.terminology_rows,
-                        prompt_context.recent_turns,
-                        prompt_context.mode,
-                    );
-                    let cached = if prompt_mode_for_turn == PromptMode::PseudoStreaming
-                        && !segment_context.revisable
-                    {
-                        stable_translation_cache
-                            .lock()
-                            .await
-                            .get(&cache_key)
+                    let cache_key = SentenceTranslationKey {
+                        turn_id: cache_turn_id,
+                        segment_index: segment_context.segment_index,
+                        source_language: source_language.clone(),
+                        target_language: target_language.clone(),
+                        prompt_graph: prompt_graph_fingerprint,
+                    };
+                    let cached = if prompt_mode_for_turn == PromptMode::PseudoStreaming {
+                        stable_translation_cache.lock().await.get(&cache_key)
+                            .filter(|output| output.source_text == segment.source_text)
                             .cloned()
                     } else {
                         None
                     };
+                    let already_translated = cached.is_some();
                     let output = if let Some(output) = cached {
                         Ok(output)
                     } else {
+                        let _permit = tokio::select! {
+                            permit = scheduler.acquire_translation(workload) => permit,
+                            _ = gate_generation.changed() => return None,
+                            () = readiness.revised(asr_revision) => return None,
+                        };
+                        if !readiness.is_current(asr_revision)
+                            || *gate_generation.borrow() != event_generation {
+                            return None;
+                        }
+                        let preview_readiness = readiness.clone();
+                        let sentence_index = segment_context.segment_index.saturating_sub(1) as usize;
                         let output = inference
-                            .translate_segment(
+                            .translate_segment_streaming(
                                 &segment,
                                 &source_language,
                                 &target_language,
                                 prompt_graph,
                                 prompt_context,
+                                move |translated_text| {
+                                    let events = preview_events.clone();
+                                    let generation = preview_generation.clone();
+                                    let context = preview_context.clone();
+                                    let source_text = preview_source.clone();
+                                    let readiness = preview_readiness.clone();
+                                    async move {
+                                        if *generation.borrow() == event_generation
+                                            && readiness.contains(sentence_index, &source_text) {
+                                            let _ = events.send(InferenceEvent::TranslationPreview {
+                                                generation: event_generation, source_text, translated_text, context,
+                                            }).await;
+                                        }
+                                    }
+                                },
                             )
                             .await;
-                        if prompt_mode_for_turn == PromptMode::PseudoStreaming
-                            && !segment_context.revisable
-                        {
-                            if let Ok(translated) = &output {
-                                let mut cache = stable_translation_cache.lock().await;
-                                if cache.len() >= 128 {
-                                    if let Some(oldest) = cache.keys().next().cloned() {
-                                        cache.remove(&oldest);
-                                    }
-                                }
-                                cache.insert(cache_key, translated.clone());
-                            }
+                        if !readiness.contains(sentence_index, &segment.source_text)
+                            || *gate_generation.borrow() != event_generation {
+                            return None;
                         }
                         output
                     };
-                    (segment_context, source_for_terms, prompt_terms, output)
+                    Some((segment_context, source_for_terms, prompt_terms, output, already_translated, cache_key))
                 }
             })
             .buffered(TRANSLATION_CONCURRENCY_PER_SESSION);
             tokio::pin!(translations);
-            let mut batch = Vec::new();
             let mut completed_pairs = Vec::new();
             let mut cancelled = false;
-            while let Some((segment_context, source_for_terms, prompt_terms, mut output)) =
-                translations.next().await
-            {
+            while let Some(result) = translations.next().await {
+                let Some((
+                    segment_context,
+                    source_for_terms,
+                    prompt_terms,
+                    mut output,
+                    already_translated,
+                    cache_key,
+                )) = result
+                else {
+                    continue;
+                };
                 if *translation_generation.borrow() != event_generation {
                     cancelled = true;
                     break;
+                }
+                if output.as_ref().is_ok_and(|translated| {
+                    !sentence_readiness.contains(
+                        segment_context.segment_index.saturating_sub(1) as usize,
+                        &translated.source_text,
+                    )
+                }) {
+                    continue;
+                }
+                if already_translated {
+                    if let Ok(translated) = &output {
+                        completed_pairs.push((
+                            translated.source_text.clone(),
+                            translated.translated_text.clone(),
+                        ));
+                    }
+                    continue;
+                }
+                let Ok(permit) = translation_events.reserve().await else {
+                    return;
+                };
+                if *translation_generation.borrow() != event_generation {
+                    cancelled = true;
+                    break;
+                }
+                if output.as_ref().is_ok_and(|translated| {
+                    !sentence_readiness.contains(
+                        segment_context.segment_index.saturating_sub(1) as usize,
+                        &translated.source_text,
+                    )
+                }) {
+                    continue;
                 }
                 if let Ok(translated) = &mut output {
                     let rewrite = rewrite_translation_terms(
@@ -2441,7 +2847,12 @@ async fn run_inference_worker(
                         translated.translated_text.clone(),
                     ));
                 }
-                batch.push(InferenceEvent::Translation {
+                let cache_output = if prompt_mode_for_turn == PromptMode::PseudoStreaming {
+                    output.as_ref().ok().cloned()
+                } else {
+                    None
+                };
+                permit.send(InferenceEvent::Translation {
                     generation: event_generation,
                     target_language: target_language.clone(),
                     queue_elapsed,
@@ -2450,6 +2861,12 @@ async fn run_inference_worker(
                     context: segment_context,
                     output,
                 });
+                if let Some(output) = cache_output {
+                    stable_translation_cache
+                        .lock()
+                        .await
+                        .insert(cache_key, output);
+                }
             }
             if !cancelled
                 && let Some(request) = (LogicalTurnRecord {
@@ -2466,21 +2883,45 @@ async fn run_inference_worker(
                     warn!(%message, "could not record XR Corpus translation context");
                 }
             }
-            batch
         }));
     }
 }
 
-async fn send_inference_batch(
+/// Show retained source immediately, while its unfinished sentence remains
+/// ineligible for translation. The same turn identity is finalized later.
+async fn emit_unfinished_recognition(
     events: &mpsc::Sender<InferenceEvent>,
-    batch: Vec<InferenceEvent>,
+    pending: &sentence_assembly::PreparedRecognition,
 ) -> bool {
-    for event in batch {
-        if events.send(event).await.is_err() {
-            return false;
-        }
+    let mut recognized = pending.recognized.clone();
+    recognized.prepare_revisable_snapshot();
+    let mut segments = segment_contexts(
+        &recognized.segments,
+        &[],
+        pending.job.turn_id.clone(),
+        pending.job.speaker_id.clone().unwrap_or_default(),
+        StreamWindowContext {
+            start_ms: pending.job.source_start_ms,
+            end_ms: pending.job.source_end_ms,
+            revisable: true,
+            overlap_ratio: 0.0,
+            boundary: SegmentBoundary::DurationLimit,
+            authoritative_snapshot: true,
+            revision: pending.job.revision,
+        },
+    );
+    for context in &mut segments {
+        context.timing = SegmentTiming::EstimatedTextPartition;
     }
-    true
+    events
+        .send(InferenceEvent::Recognized {
+            generation: pending.job.generation,
+            recognized,
+            segments,
+            reference_samples: None,
+        })
+        .await
+        .is_ok()
 }
 
 async fn handle_inference_event(
@@ -2489,7 +2930,7 @@ async fn handle_inference_event(
     current_generation: PipelineGeneration,
     event: InferenceEvent,
     tts: Option<&NativeTtsAdapter>,
-    tts_jobs: Option<&mpsc::Sender<TtsSynthesisJob>>,
+    tts_jobs: Option<&mut VecDeque<TtsSynthesisJob>>,
     voice_name: &str,
     voice_ready: bool,
     max_input_chars: usize,
@@ -2499,7 +2940,7 @@ async fn handle_inference_event(
     }
     let mut tts_queued = false;
     match event {
-        InferenceEvent::WindowObserved { .. } => {}
+        InferenceEvent::WindowObserved { .. } | InferenceEvent::RecognitionReference { .. } => {}
         InferenceEvent::Recognized {
             generation,
             recognized,
@@ -2546,6 +2987,26 @@ async fn handle_inference_event(
                 )
                 .await?;
             }
+        }
+        InferenceEvent::TranslationPreview {
+            generation,
+            source_text,
+            translated_text,
+            context,
+        } => {
+            send_event(
+                writer,
+                Some(generation),
+                ServerEvent::TranslationPreview(xrtranslate_protocol::TranslationPreview {
+                    source_text,
+                    translated_text,
+                    turn_id: context.turn_id,
+                    segment_index: context.segment_index,
+                    revision: context.revision,
+                    speaker_id: context.speaker_id,
+                }),
+            )
+            .await?;
         }
         InferenceEvent::Translation {
             generation,
@@ -2606,16 +3067,13 @@ async fn handle_inference_event(
                             chunk_count = text_chunks.len(),
                             "TTS synthesis queued"
                         );
-                        tts_jobs
-                            .send(TtsSynthesisJob {
-                                generation,
-                                tts_epoch: session.tts_epoch(),
-                                text_chunks,
-                                voice_name: voice_name.to_owned(),
-                                target_language,
-                            })
-                            .await
-                            .map_err(axum::Error::new)?;
+                        tts_jobs.push_back(TtsSynthesisJob {
+                            generation,
+                            tts_epoch: session.tts_epoch(),
+                            text_chunks,
+                            voice_name: voice_name.to_owned(),
+                            target_language,
+                        });
                         tts_queued = true;
                     }
                 }
@@ -2904,6 +3362,61 @@ mod tests {
             graph: PromptNodeGraph::builtin_default(),
         };
         graphs.graph.validate_for_activation().unwrap();
+    }
+
+    #[tokio::test]
+    async fn asr_sentences_wait_for_stability_and_flush_only_at_input_end() {
+        use std::time::Duration;
+        use tokio::time::{Instant, timeout};
+        use xrtranslate_engine::translation_segment_pairs_for_live_text_with_lang;
+
+        let gate = super::sentence_gate::SentenceGate::new();
+        let first = gate.observe(
+            1,
+            &translation_segment_pairs_for_live_text_with_lang("The result is ready.", "en"),
+            false,
+        );
+        let changed_at = Instant::now();
+        let revised = gate.observe(
+            2,
+            &translation_segment_pairs_for_live_text_with_lang(
+                "The result is revised. still speaking",
+                "en",
+            ),
+            false,
+        );
+        assert!(!first.wait(1, 0).await);
+        assert!(
+            timeout(Duration::from_millis(100), revised.clone().wait(2, 0))
+                .await
+                .is_err()
+        );
+        assert!(revised.clone().wait(2, 0).await);
+        assert!(changed_at.elapsed() >= Duration::from_millis(300));
+        assert!(
+            timeout(Duration::from_millis(20), revised.clone().wait(2, 1))
+                .await
+                .is_err()
+        );
+
+        let next = gate.observe(
+            3,
+            &translation_segment_pairs_for_live_text_with_lang(
+                "The result is revised. still speaking clearly",
+                "en",
+            ),
+            false,
+        );
+        assert!(!revised.wait(2, 1).await);
+        assert!(
+            timeout(Duration::from_millis(20), next.clone().wait(3, 0))
+                .await
+                .unwrap()
+        );
+        let finished_at = Instant::now();
+        gate.finish();
+        assert!(next.wait(3, 1).await);
+        assert!(finished_at.elapsed() >= Duration::from_millis(300));
     }
 
     #[test]

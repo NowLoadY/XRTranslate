@@ -19,11 +19,11 @@ mod wav;
 pub use asr::SenseVoiceAdapter;
 pub use asr::{
     AsrTranscript, AsrVocabularyBias, OpenAiAsrAdapter, OpenAiAsrOptions, Qwen3AsrAdapter,
-    Qwen3AsrOptions, QwenAudioStreamingAdapter, QwenAudioStreamingOptions,
-    is_probable_asr_hallucination,
+    Qwen3AsrOptions, QwenAudioFlashAdapter, QwenAudioFlashOptions, QwenAudioStreamingAdapter,
+    QwenAudioStreamingOptions, is_probable_asr_hallucination,
 };
 pub use error::{InferenceError, TransportError};
-pub use http::{AsyncHttpClient, HttpRequest, HttpResponse, ReqwestClient};
+pub use http::{AsyncHttpClient, HttpRequest, HttpResponse, MultipartBody, ReqwestClient};
 pub use openai::{ChatCompletion, OpenAiCompatibleClient};
 pub use translation::{
     PromptCondition, PromptGraphError, PromptLink, PromptMessage, PromptMessageRole, PromptNode,

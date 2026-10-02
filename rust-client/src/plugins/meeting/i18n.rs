@@ -2,28 +2,118 @@ use crate::i18n::UiLanguage;
 
 /// Plugin-local i18n lookup for Meeting Notes plugin.
 pub fn tr<'a>(language: UiLanguage, english: &'a str) -> &'a str {
-    match language {
-        UiLanguage::English => english,
-        UiLanguage::Chinese => DICTIONARY
-            .iter()
-            .find_map(|(key, zh, _ja, _ko, _ru)| (*key == english).then_some(*zh))
-            .unwrap_or(english),
-        UiLanguage::Japanese => DICTIONARY
-            .iter()
-            .find_map(|(key, _zh, ja, _ko, _ru)| (*key == english).then_some(*ja))
-            .unwrap_or(english),
-        UiLanguage::Korean => DICTIONARY
-            .iter()
-            .find_map(|(key, _zh, _ja, ko, _ru)| (*key == english).then_some(*ko))
-            .unwrap_or(english),
-        UiLanguage::Russian => DICTIONARY
-            .iter()
-            .find_map(|(key, _zh, _ja, _ko, ru)| (*key == english).then_some(*ru))
-            .unwrap_or(english),
+    if language == UiLanguage::English {
+        return english;
     }
+    DICTIONARY
+        .iter()
+        .find_map(|(key, zh, ja, ko, ru)| {
+            (*key == english).then_some(match language {
+                UiLanguage::English => english,
+                UiLanguage::Chinese => *zh,
+                UiLanguage::Japanese => *ja,
+                UiLanguage::Korean => *ko,
+                UiLanguage::Russian => *ru,
+            })
+        })
+        .or_else(|| crate::i18n::translation(language, english))
+        .unwrap_or(english)
 }
 
 const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
+    ("Transcript", "记录", "記録", "기록", "Запись"),
+    ("Organize", "整理", "まとめ", "정리", "Итоги"),
+    ("More", "更多", "その他", "더보기", "Ещё"),
+    (
+        "Finish recording",
+        "结束录音",
+        "録音を終了",
+        "녹음 종료",
+        "Завершить запись",
+    ),
+    (
+        "Keep the recording",
+        "保留录音",
+        "録音を保存",
+        "녹음 보관",
+        "Сохранить аудиозапись",
+    ),
+    (
+        "Topics and speakers",
+        "议题和说话人",
+        "話題と話者",
+        "주제 및 화자",
+        "Темы и участники",
+    ),
+    (
+        "Give speakers a name or combine labels for the same person.",
+        "为说话人命名，也可以合并同一人的标签。",
+        "話者に名前を付けたり、同じ人のラベルをまとめたりできます。",
+        "화자에게 이름을 붙이거나 같은 사람의 레이블을 합칠 수 있습니다.",
+        "Назовите участников или объедините метки одного человека.",
+    ),
+    (
+        "Write a summary and the points you want to keep.",
+        "整理摘要和需要保留的要点…",
+        "要約や残しておきたいポイントをまとめましょう。",
+        "요약과 보관할 요점을 정리하세요.",
+        "Запишите итоги и важные моменты.",
+    ),
+    (
+        "View original",
+        "查看原文",
+        "元の発言へ",
+        "원문 보기",
+        "К исходному тексту",
+    ),
+    (
+        "Add annotation",
+        "添加标注",
+        "注釈を追加",
+        "주석 추가",
+        "Добавить пометку",
+    ),
+    (
+        "Untitled topic",
+        "未命名议题",
+        "無題の話題",
+        "제목 없는 주제",
+        "Тема без названия",
+    ),
+    (
+        "Waiting for conversation…",
+        "等待发言…",
+        "発言を待っています…",
+        "발언을 기다리는 중…",
+        "Ожидание речи…",
+    ),
+    (
+        "Imported audio",
+        "导入音频",
+        "読み込んだ音声",
+        "가져온 오디오",
+        "Импортированное аудио",
+    ),
+    ("Draft", "未开始", "未開始", "시작 전", "Не начато"),
+    ("Recording", "录音中", "録音中", "녹음 중", "Запись идёт"),
+    (
+        "Paused",
+        "已暂停",
+        "一時停止中",
+        "일시정지됨",
+        "Приостановлено",
+    ),
+    ("Ended", "已结束", "終了", "종료됨", "Завершено"),
+    ("Interrupted", "已中断", "中断", "중단됨", "Прервано"),
+    (
+        "Imported",
+        "已导入",
+        "取り込み済み",
+        "가져옴",
+        "Импортировано",
+    ),
+    ("Processing", "处理中", "処理中", "처리 중", "Обработка"),
+    ("Failed", "未完成", "失敗", "실패", "Ошибка"),
     (
         "Meeting storage is unavailable; recording is disabled",
         "会议存储不可用，暂时无法录音",

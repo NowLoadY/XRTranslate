@@ -605,12 +605,12 @@ fn upsert_segment_in(
     validate_segment(&new_segment)?;
     ensure_meeting_exists(&transaction, &new_segment.meeting_id)?;
     ensure_topic_belongs_to(&transaction, &new_segment.topic_id, &new_segment.meeting_id)?;
-    let existing: Option<(String, String, i64, i64, String, Option<String>)> = transaction
+    let existing: Option<(String, String, i64, i64, String, Option<String>, bool)> = transaction
         .query_row(
-            "SELECT id, topic_id, sequence, created_at_ms, original_text, translated_text FROM meeting_segments
+            "SELECT id, topic_id, sequence, created_at_ms, original_text, translated_text, is_final FROM meeting_segments
              WHERE meeting_id = ?1 AND external_key = ?2",
             params![new_segment.meeting_id, new_segment.external_key],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
         )
         .optional()?;
     if let Some((_, existing_topic_id, ..)) = &existing {
@@ -622,10 +622,11 @@ fn upsert_segment_in(
         }
     }
     if new_segment.translated_text.is_none()
-        && let Some((_, _, _, _, source, translated)) = &existing
+        && let Some((_, _, _, _, source, translated, is_final)) = &existing
         && *source == new_segment.original_text
     {
         new_segment.translated_text = translated.clone();
+        new_segment.is_final |= *is_final;
     }
     let segment_id = existing
         .as_ref()
@@ -1210,13 +1211,26 @@ mod tests {
         partial.translated_text = Some("发布吧".to_owned());
         partial.end_ms = 800;
         partial.is_final = true;
-        let revised = store.upsert_segment(partial).unwrap();
+        let revised = store.upsert_segment(partial.clone()).unwrap();
         assert_eq!(revised.id, first.id);
         assert_eq!(revised.sequence, first.sequence);
         assert_eq!(revised.created_at_ms, first.created_at_ms);
         assert_eq!(store.list_segments(&bundle.meeting.id).unwrap().len(), 1);
         assert_eq!(revised.original_text, "Ship it");
         assert!(revised.is_final);
+
+        partial.translated_text = None;
+        partial.is_final = false;
+        let repeated = store.upsert_segment(partial.clone()).unwrap();
+        assert_eq!(repeated.id, first.id);
+        assert_eq!(repeated.translated_text.as_deref(), Some("发布吧"));
+        assert!(repeated.is_final);
+
+        partial.original_text = "Ship it tomorrow".into();
+        let corrected = store.upsert_segment(partial).unwrap();
+        assert_eq!(corrected.id, first.id);
+        assert!(corrected.translated_text.is_none());
+        assert!(!corrected.is_final);
     }
 
     #[test]

@@ -4,15 +4,55 @@
 /// provisional here. Consumers with no lookahead, such as live captions,
 /// should wait for more text instead of rolling at `O.K.` or `p.m.`.
 pub fn ends_at_sentence_boundary(text: &str) -> bool {
-    let characters = text.trim_end().chars().collect::<Vec<_>>();
-    let Some(index) = characters.len().checked_sub(1) else {
-        return false;
-    };
-    match characters[index] {
-        '.' => period_is_boundary(&characters, index, false),
-        '!' | '?' | '。' | '！' | '？' => true,
-        _ => false,
+    let text = text.trim_end();
+    sentence_end_offsets(text).last().copied() == Some(text.len())
+}
+
+/// Byte offsets immediately after reliable sentence endings, including closing
+/// quotes or brackets. The unfinished tail is deliberately excluded.
+pub fn sentence_end_offsets(text: &str) -> Vec<usize> {
+    let characters = text.chars().collect::<Vec<_>>();
+    let offsets = text
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .collect::<Vec<_>>();
+    let mut endings = Vec::new();
+    let mut index = 0;
+    while index < characters.len() {
+        let boundary = match characters[index] {
+            '.' => period_is_boundary(&characters, index, false),
+            '!' | '?' | '。' | '！' | '？' => true,
+            _ => false,
+        };
+        if boundary {
+            index += 1;
+            while characters.get(index).is_some_and(|character| {
+                matches!(
+                    character,
+                    '!' | '?'
+                        | '。'
+                        | '！'
+                        | '？'
+                        | '"'
+                        | '\''
+                        | '”'
+                        | '’'
+                        | '」'
+                        | '』'
+                        | '）'
+                        | ')'
+                        | ']'
+                        | '】'
+                )
+            }) {
+                index += 1;
+            }
+            endings.push(offsets.get(index).copied().unwrap_or(text.len()));
+        } else {
+            index += 1;
+        }
     }
+    endings
 }
 
 pub(super) fn is_translation_boundary(characters: &[char], index: usize) -> bool {

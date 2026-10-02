@@ -1,5 +1,0 @@
-<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
-    android:minWidth="220dp" android:minHeight="110dp" android:minResizeWidth="180dp" android:minResizeHeight="110dp"
-    android:initialLayout="@layout/text_actions_widget" android:previewLayout="@layout/text_actions_widget"
-    android:description="@string/text_action_widget_description" android:resizeMode="horizontal|vertical"
-    android:updatePeriodMillis="0" android:widgetCategory="home_screen" />

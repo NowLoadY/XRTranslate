@@ -95,7 +95,7 @@ pub fn tr_dynamic<'a>(language: UiLanguage, english: &'a str) -> Cow<'a, str> {
     Cow::Borrowed(translation(language, english).unwrap_or(english))
 }
 
-fn translation(language: UiLanguage, english: &str) -> Option<&'static str> {
+pub(crate) fn translation(language: UiLanguage, english: &str) -> Option<&'static str> {
     if language == UiLanguage::English {
         return None;
     }
@@ -1786,8 +1786,20 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     ("Send", "发送", "送信", "전송", "Отправить"),
     ("Translate", "翻译", "翻訳", "번역", "Перевод"),
     ("Direct", "直接发送", "直接送信", "직접 전송", "Напрямую"),
-    ("Type text to translate…", "输入需要翻译的文字…", "翻訳するテキストを入力…", "번역할 텍스트 입력…", "Введите текст для перевода…"),
-    ("Enter to send · Shift+Enter for a new line", "Enter 发送 · Shift+Enter 换行", "Enterで送信 · Shift+Enterで改行", "Enter로 전송 · Shift+Enter로 줄 바꿈", "Enter — отправить · Shift+Enter — новая строка"),
+    (
+        "Type text to translate…",
+        "输入需要翻译的文字…",
+        "翻訳するテキストを入力…",
+        "번역할 텍스트 입력…",
+        "Введите текст для перевода…",
+    ),
+    (
+        "Enter to send · Shift+Enter for a new line",
+        "Enter 发送 · Shift+Enter 换行",
+        "Enterで送信 · Shift+Enterで改行",
+        "Enter로 전송 · Shift+Enter로 줄 바꿈",
+        "Enter — отправить · Shift+Enter — новая строка",
+    ),
     (
         "Type a message to Chatbox (Press Enter to send)...",
         "输入发送到 Chatbox 的临时消息 (按 Enter 发送)...",
@@ -4063,13 +4075,7 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Спокойный старт, шаг за шагом",
     ),
     ("Back", "上一步", "戻る", "이전", "Назад"),
-    (
-        "Fullscreen",
-        "全屏",
-        "全画面",
-        "전체 화면",
-        "Полный экран",
-    ),
+    ("Fullscreen", "全屏", "全画面", "전체 화면", "Полный экран"),
     (
         "Exit Fullscreen",
         "退出全屏",
@@ -4867,6 +4873,62 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "TTSが無効です。翻訳字幕は音声再生なしで画面に表示されます。",
         "TTS가 비활성화되었습니다. 번역 자막은 음성 재생 없이 화면에 표시됩니다.",
         "TTS отключен. Переведенные субтитры будут отображаться на экране без озвучивания.",
+    ),
+    (
+        "Supported recognition languages:",
+        "支持的识别语言：",
+        "対応する認識言語:",
+        "지원되는 인식 언어:",
+        "Поддерживаемые языки распознавания:",
+    ),
+    (
+        "Complete audio windows; final recognition results",
+        "完整音频窗口输入，返回最终识别结果",
+        "音声ウィンドウ全体を入力し、最終認識結果を返します",
+        "전체 오디오 구간 입력, 최종 인식 결과 반환",
+        "Полные аудиоокна; окончательные результаты распознавания",
+    ),
+    (
+        "Incremental recognition results",
+        "增量识别结果",
+        "逐次認識結果",
+        "증분 인식 결과",
+        "Промежуточные результаты распознавания",
+    ),
+    (
+        "Recognition context character limit:",
+        "识别上下文字数上限：",
+        "認識コンテキストの文字数上限:",
+        "인식 문맥 최대 문자 수:",
+        "Лимит символов контекста распознавания:",
+    ),
+    (
+        "Native text polishing",
+        "模型原生转写润色",
+        "モデル内蔵の書き起こし推敲",
+        "모델 자체 전사문 다듬기",
+        "Встроенное редактирование текста расшифровки",
+    ),
+    (
+        "No native text polishing",
+        "无模型原生转写润色",
+        "モデル内蔵の書き起こし推敲なし",
+        "모델 자체 전사문 다듬기 없음",
+        "Без встроенного редактирования текста расшифровки",
+    ),
+    (
+        "Native text polishing: not documented",
+        "模型原生转写润色：文档未明确",
+        "モデル内蔵の書き起こし推敲：文書に記載なし",
+        "모델 자체 전사문 다듬기: 문서에 명시되지 않음",
+        "Встроенное редактирование расшифровки: не указано в документации",
+    ),
+    (
+        "Weighted vocabulary supported",
+        "支持加权热词",
+        "重み付き語彙に対応",
+        "가중치 어휘 지원",
+        "Поддерживается взвешенный словарь",
     ),
     (
         "Supported synthesis languages:",

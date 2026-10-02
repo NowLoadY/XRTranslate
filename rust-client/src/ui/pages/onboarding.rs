@@ -725,7 +725,7 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
                 }
                 app.apply_language_route();
                 app.model_task_manager.invalidate_discovery();
-                app.backend_manager.shutdown();
+                app.backend_manager.invalidate_runtime();
                 let requirements = app.service_config.runtime_requirements();
                 if let Err(error) = app
                     .runtime_installer
@@ -1515,9 +1515,7 @@ fn render_onboarding_ocr(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 "paddle-ocr" => {
                     "Lightweight recognition suited to continuous subtitles, without a dedicated graphics card."
                 }
-                _ => {
-                    "A local vision model suited to static text and complex layouts."
-                }
+                _ => "A local vision model suited to static text and complex layouts.",
             };
             ui.label(
                 RichText::new(i18n::tr(language, description))

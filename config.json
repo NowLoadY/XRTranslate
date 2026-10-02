@@ -4,7 +4,7 @@
     "providers": {
       "openai": {
         "api_key": "",
-        "asr_prompt_mode": "instruction",
+        "asr_prompt_mode": "context_bias",
         "context_window_tokens": 8192,
         "guide_url": "https://platform.openai.com/api-keys",
         "max_tokens": 256,
@@ -12,7 +12,7 @@
         "parallel_slots": 2,
         "supports_prompt_context": true,
         "transport": "openai",
-        "url": "https://api.openai.com/v1/chat/completions"
+        "url": "https://api.openai.com/v1/audio/transcriptions"
       },
       "qwen3-gguf": {
         "asr_prompt_mode": "context_bias",
@@ -29,27 +29,29 @@
       },
       "qwen": {
         "api_key": "",
+        "asr_context_max_chars": 400,
         "asr_prompt_mode": "context_bias",
-        "context_window_tokens": 8192,
         "guide_url": "https://help.aliyun.com/zh/model-studio/developer-reference/get-api-key",
-        "max_tokens": 256,
-        "model": "qwen3-asr-flash",
+        "model": "qwen-audio-3.0-asr-flash",
         "parallel_slots": 2,
         "supports_prompt_context": true,
-        "transport": "openai",
-        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        "supports_vocabulary_bias": true,
+        "transport": "dashscope",
+        "url": "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+        "vocabulary_weight": 4
       },
       "qwen-intl": {
         "api_key": "",
+        "asr_context_max_chars": 400,
         "asr_prompt_mode": "context_bias",
-        "context_window_tokens": 8192,
         "guide_url": "https://www.alibabacloud.com/help/en/model-studio/get-api-key",
-        "max_tokens": 256,
-        "model": "qwen3-asr-flash",
+        "model": "qwen-audio-3.0-asr-flash",
         "parallel_slots": 2,
         "supports_prompt_context": true,
-        "transport": "openai",
-        "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
+        "supports_vocabulary_bias": true,
+        "transport": "dashscope",
+        "url": "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+        "vocabulary_weight": 4
       }
     },
     "vad_adaptive_after_ms": 4000,

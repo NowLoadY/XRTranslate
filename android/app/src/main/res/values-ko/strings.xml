@@ -1,16 +1,7 @@
 <resources>
     <string name="text_action_title">XRT 번역</string>
-    <string name="text_action_input">텍스트 입력</string>
-    <string name="text_action_hint">번역이 완료되면 클립보드에 복사됩니다.</string>
-    <string name="text_action_translate">번역</string>
-    <string name="text_action_settings">설정</string>
     <string name="text_action_translating">번역 중…</string>
-    <string name="text_action_setup">XRT에서 번역 설정을 완료해 주세요. 입력한 텍스트는 보관됩니다.</string>
+    <string name="text_action_setup">XRT에서 번역을 설정한 다음 텍스트를 다시 선택해 주세요.</string>
     <string name="text_action_failed">번역하지 못했습니다. 설정을 확인하고 다시 시도해 주세요.</string>
-    <string name="text_action_copied">번역을 복사했습니다</string>
     <string name="text_action_too_long">텍스트가 너무 깁니다. 더 짧은 부분을 선택해 주세요.</string>
-    <string name="text_action_empty_clipboard">클립보드에 텍스트가 없습니다. 여기에 입력할 수 있습니다.</string>
-    <string name="text_action_write">텍스트 입력</string>
-    <string name="text_action_clipboard">클립보드</string>
-    <string name="text_action_widget_description">입력한 텍스트나 클립보드 내용을 XRT로 번역합니다.</string>
 </resources>

@@ -68,6 +68,17 @@ Concrete plugin imports are likewise forbidden in shared infrastructure.
 - `Finished` carries `TranslationOutcome::Completed`, `Cancelled`, or
   `Failed(String)`. Plugins do not interpret connection-status strings.
 
+Live ASR, including overlapping-window recognition, submits a sentence for
+translation only after its ending and contents stay unchanged for 300 ms.
+An unfinished tail remains recognition preview until the input ends. Source
+snapshots invalidate superseded segment identities; unchanged completed
+translations are retained without being requested or spoken again.
+The host can display incremental translation previews, but only validated
+completed translations enter plugin results, conversation context, and TTS.
+Speech synthesis runs independently and sends each generated audio chunk to
+playback immediately. Providers without streaming audio keep their normal
+bounded text-chunk synthesis.
+
 Each channel owns its result adapter and cancellation scope. Domain subscribers
 receive results before host presentation policy is applied, so `PluginOnly`
 tasks still receive complete results and terminal outcomes. `Host` additionally
@@ -75,17 +86,22 @@ enables the normal host presentation path. Cancellation invalidates queued and
 late events; startup failures also use the same typed terminal contract.
 
 Text requests capture their owner and language pair when accepted. Requests in
-the same owner/language/output-policy conversation are serialized and can reuse
-its shared conversation context. Different owners remain isolated; acceptance
-does not mean translation has completed. Text consumers use the text and
+the same conversation/language/output-policy scope are serialized and reuse
+shared context. A plugin can use `PluginSessionOwner::in_conversation` to keep
+continuity across independently identified requests; otherwise each operation
+is its own conversation. Context stays isolated between plugins and conversation
+IDs. Acceptance does not mean translation has completed. Text consumers use the text and
 lifecycle fields without assigning meaning to audio timing or speaker fields.
 
 The capability is composed through typed plugin actions and explicit host
 registration. The screen translation plugin receives recognized text, submits
 it through `TranslationTask::text`, and consumes `TranslationEvent` with its
 operation identity. It does not select translation providers, build prompts,
-or manage connections. A new capture region or language selection cancels the
-previous operation so late results cannot replace the current translation.
+or manage connections. Successive OCR requests retain the same conversation;
+new observations do not cancel accepted translations. A new capture region or
+language selection cancels that conversation's requests and starts a fresh one.
+OCR translations use host presentation and join the shared result bubbles;
+the result window's OCR header contains only the current recognized text.
 
 Screen capture and local text recognition live in `screen_capture`,
 `ocr_capture`, and `ocr_runtime`. Their worker reuses the configured model,
@@ -116,12 +132,23 @@ recognition; an occluded empty result preserves the previous translation.
 OCR is an independent input switch. Editing or confirming its range changes
 the frame presentation without changing OCR enablement or the other inputs.
 
-Android text selection, text sharing, and home-screen widget actions enter
-through `android_text_actions`. The platform adapter owns the input draft and
-foreground clipboard interaction; translation uses the same owner-scoped text
-task and normalized results as plugins. Only a matching, successfully completed
-request is copied. Setup can defer the request without losing its input, and
-canceling an Android action leaves other translation tasks untouched.
+Android text selection and sharing enter through a windowless Activity and a
+bounded foreground service. `android_text_actions` drives the same text-task
+capability without a rendering loop, with conversation scope supplied by the
+calling application. Only a matching, completed request is copied, without a
+completion notification. Missing configuration reports a setup message without opening
+the main UI. MainActivity and the service share leased native processes. Completed
+background conversations retain a short, bounded idle lifetime; their connections
+and backend lease are released together after inactivity.
+Home-screen widgets consume completed host output through `HostOutputSubscriber`
+and the same bounded result store used by the background service. They display
+recent results; tapping opens the main translation page.
+
+Active Android microphone streams share a microphone foreground service and
+release it when the last input stops. Once recording has started, leaving the
+UI does not interrupt capture, recognition, translation, or meeting storage.
+The session event pump and meeting writers run independently of rendering;
+the foreground service supplies the required system notification and wake lock.
 
 ### Recognition metadata is fact, not presentation policy
 

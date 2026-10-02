@@ -54,9 +54,7 @@ impl XRTranslateApp {
     }
 
     fn cancel_ocr_translation(&mut self) {
-        if let Some(owner) = self.ocr.plugin.owner() {
-            self.stop_task_owner(&owner);
-        }
+        self.stop_plugin_task(PluginId::OCR);
         self.ocr.plugin.clear();
     }
 
@@ -229,11 +227,7 @@ impl XRTranslateApp {
                     self.ocr.plugin.set_recognizing(false);
                 }
                 CaptureEvent::Text(revision, text) if revision == self.ocr.revision => {
-                    let previous_owner = self.ocr.plugin.owner();
                     if let Some(binding) = self.ocr.plugin.recognized(text.clone()) {
-                        if let Some(owner) = previous_owner {
-                            self.stop_task_owner(&owner);
-                        }
                         if !self.submit_text_translation(&text, None, None, Some(binding)) {
                             self.ocr
                                 .plugin

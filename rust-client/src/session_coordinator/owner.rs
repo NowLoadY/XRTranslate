@@ -10,6 +10,7 @@ use crate::i18n::UiLanguage;
 pub struct PluginSessionOwner {
     plugin_id: &'static str,
     operation_id: String,
+    conversation_id: Option<String>,
     display_name_key: &'static str,
     open_label_key: &'static str,
     active_message_key: &'static str,
@@ -26,6 +27,7 @@ impl PluginSessionOwner {
         Self {
             plugin_id,
             operation_id: operation_id.into(),
+            conversation_id: None,
             display_name_key,
             open_label_key,
             active_message_key,
@@ -38,6 +40,19 @@ impl PluginSessionOwner {
 
     pub fn operation_id(&self) -> &str {
         &self.operation_id
+    }
+
+    /// Groups successive requests into one dialogue while keeping their results
+    /// and cancellation identities independent.
+    pub fn in_conversation(mut self, conversation_id: impl Into<String>) -> Self {
+        self.conversation_id = Some(conversation_id.into());
+        self
+    }
+
+    fn conversation_id(&self) -> &str {
+        self.conversation_id
+            .as_deref()
+            .unwrap_or(&self.operation_id)
     }
 
     pub fn display_name(&self, language: UiLanguage) -> &'static str {
@@ -92,6 +107,16 @@ impl TranslationSessionOwner {
 
     pub fn operation_id(&self) -> Option<&str> {
         self.plugin().map(PluginSessionOwner::operation_id)
+    }
+
+    pub(crate) fn same_conversation(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Plugin(left), Self::Plugin(right)) => {
+                left.plugin_id == right.plugin_id
+                    && left.conversation_id() == right.conversation_id()
+            }
+            _ => self == other,
+        }
     }
 
     pub fn display_name(&self, language: UiLanguage) -> &'static str {

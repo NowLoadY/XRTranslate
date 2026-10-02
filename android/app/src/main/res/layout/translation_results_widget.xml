@@ -1,0 +1,20 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_surface" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:padding="14dp" android:background="@drawable/text_widget_background">
+    <LinearLayout android:id="@+id/widget_header" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:gravity="center_vertical" android:paddingBottom="10dp">
+        <ImageView android:layout_width="28dp" android:layout_height="28dp" android:src="@drawable/text_widget_face"
+            android:importantForAccessibility="no" />
+        <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:layout_marginStart="8dp" android:text="@string/widget_results_title" android:textColor="#303238"
+            android:textSize="15sp" android:textStyle="bold" android:maxLines="1" android:ellipsize="end" />
+    </LinearLayout>
+    <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
+        <ListView android:id="@+id/widget_results" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:divider="#EDEEF1" android:dividerHeight="1dp" android:scrollbars="vertical"
+            android:clipToPadding="false" android:drawSelectorOnTop="false" />
+        <TextView android:id="@+id/widget_empty" android:layout_width="match_parent" android:layout_height="match_parent"
+            android:gravity="center" android:padding="12dp" android:text="@string/widget_results_empty"
+            android:textColor="#81848D" android:textSize="13sp" android:lineSpacingExtra="3dp" />
+    </FrameLayout>
+</LinearLayout>

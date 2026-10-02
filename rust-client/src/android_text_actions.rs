@@ -1,259 +1,370 @@
-//! Android's user-initiated text entry points consume the shared translator.
-use std::{collections::BTreeMap, sync::Mutex};
-
-use crossbeam_channel::{Receiver, Sender, unbounded};
-use jni::{
-    JNIEnv,
-    objects::{JClass, JString, JValue},
-    sys::jboolean,
+//! Android's selected-text action drives the shared translator without a window.
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicI32, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
-use crate::session_coordinator::{
-    PluginSessionBinding, PluginSessionOwner, SessionEventSubscriber, SessionOutputPolicy,
-    TranslationEvent, TranslationOutcome, TranslationSessionOwner,
+use crossbeam_channel::bounded;
+use jni::{
+    JNIEnv,
+    objects::{JClass, JObject, JString, JValue},
+    sys::jint,
+};
+use xrtranslate_protocol::PromptGraphSet;
+
+use crate::{
+    backend::BackendManager,
+    client_settings::ClientSettings,
+    session_coordinator::{
+        PluginSessionBinding, PluginSessionOwner, SessionEventSubscriber, SessionOutputPolicy,
+        TranslationEvent, TranslationOutcome, TranslationSegment, TranslationSessionOwner,
+        TranslationTask,
+    },
+    text_translation::TextTranslation,
 };
 
 const OWNER: &str = "android_text_actions";
-const TRANSLATING: i32 = 1;
-const SETUP: i32 = 2;
-const COMPLETED: i32 = 3;
-const FAILED: i32 = 4;
+static CANCELLED_THROUGH: AtomicI32 = AtomicI32::new(0);
+static OPEN_TRANSLATION: AtomicBool = AtomicBool::new(false);
+const CONTEXT_IDLE: Duration = Duration::from_secs(90);
+static RUNTIME: (Mutex<Option<BackgroundRuntime>>, Condvar) = (Mutex::new(None), Condvar::new());
 
-struct Request {
-    id: String,
-    text: String,
-    configure: bool,
+struct BackgroundRuntime {
+    translator: TextTranslation,
+    backend: BackendManager,
+    server_url: String,
+    idle_deadline: Instant,
 }
 
-enum Command {
-    Translate(Request),
-    Cancel,
-}
-
-// Only the latest user intent matters; replacing it cancels this adapter's owner.
-static COMMAND: Mutex<Option<Command>> = Mutex::new(None);
-static CONTEXT: Mutex<Option<eframe::egui::Context>> = Mutex::new(None);
-
-fn enqueue(command: Command) {
-    *COMMAND.lock().unwrap() = Some(command);
-    if let Some(ctx) = CONTEXT.lock().unwrap().as_ref() {
-        ctx.request_repaint();
+fn start_idle_cleanup() -> bool {
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    if RUNNING.swap(true, Ordering::AcqRel) {
+        return true;
     }
+    let started = std::thread::Builder::new()
+        .name("text-context-idle".into())
+        .spawn(|| {
+            let (runtime, changed) = &RUNTIME;
+            let mut state = runtime.lock().unwrap();
+            loop {
+                let Some(current) = state.as_ref() else {
+                    RUNNING.store(false, Ordering::Release);
+                    return;
+                };
+                let remaining = current
+                    .idle_deadline
+                    .saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    let expired = state.take();
+                    RUNNING.store(false, Ordering::Release);
+                    drop(state);
+                    drop(expired);
+                    return;
+                }
+                state = changed.wait_timeout(state, remaining).unwrap().0;
+            }
+        })
+        .is_ok();
+    if !started {
+        RUNNING.store(false, Ordering::Release);
+    }
+    started
 }
+static COMPLETED: Mutex<VecDeque<TranslationSegment>> = Mutex::new(VecDeque::new());
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_xrtranslate_app_textactions_TextActions_submit(
-    mut env: JNIEnv,
-    _class: JClass,
-    id: JString,
-    text: JString,
-    configure: jboolean,
-) {
-    let (Ok(id), Ok(text)) = (env.get_string(&id), env.get_string(&text)) else {
-        return;
-    };
-    let id: String = id.into();
-    let text: String = text.into();
-    if !id.is_empty() && !text.trim().is_empty() && text.chars().count() <= 32_768 {
-        enqueue(Command::Translate(Request {
-            id,
-            text,
-            configure: configure != 0,
-        }));
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_xrtranslate_app_textactions_TextActions_cancel(
+pub extern "system" fn Java_org_xrtranslate_app_MainActivity_openTranslation(
     _env: JNIEnv,
     _class: JClass,
 ) {
-    enqueue(Command::Cancel);
+    OPEN_TRANSLATION.store(true, Ordering::Release);
 }
 
-#[derive(Clone)]
-pub struct EventSink {
-    tx: Sender<(String, TranslationEvent)>,
-    rx: Receiver<(String, TranslationEvent)>,
+pub(crate) fn take_open_translation() -> bool {
+    OPEN_TRANSLATION.swap(false, Ordering::AcqRel)
 }
 
-impl Default for EventSink {
-    fn default() -> Self {
-        let (tx, rx) = unbounded();
-        Self { tx, rx }
-    }
+pub(crate) fn take_completed() -> Vec<TranslationSegment> {
+    COMPLETED.lock().unwrap().drain(..).collect()
 }
 
-impl SessionEventSubscriber for EventSink {
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_xrtranslate_app_textactions_TextTranslationService_cancel(
+    _env: JNIEnv,
+    _class: JClass,
+    id: jint,
+) {
+    CANCELLED_THROUGH.fetch_max(id, Ordering::AcqRel);
+}
+
+#[derive(Default)]
+struct Results {
+    segments: BTreeMap<u32, TranslationSegment>,
+    outcome: Option<TranslationOutcome>,
+}
+struct ResultSink(Arc<Mutex<Results>>);
+impl SessionEventSubscriber for ResultSink {
     fn accepts_owner(&self, owner: &TranslationSessionOwner) -> bool {
         owner.is_plugin(OWNER)
     }
-
-    fn on_translation_event(&self, owner: &TranslationSessionOwner, event: &TranslationEvent) {
-        if self.accepts_owner(owner)
-            && let Some(id) = owner.operation_id()
-        {
-            let _ = self.tx.send((id.to_owned(), event.clone()));
+    fn on_translation_event(&self, _owner: &TranslationSessionOwner, event: &TranslationEvent) {
+        let mut result = self.0.lock().unwrap();
+        match event {
+            TranslationEvent::Segment(segment) if segment.translated.is_some() => {
+                result
+                    .segments
+                    .insert(segment.segment_index, segment.clone());
+            }
+            TranslationEvent::ReplaceSegments(segments)
+                if segments.iter().any(|s| s.translated.is_some()) =>
+            {
+                result.segments = segments
+                    .iter()
+                    .filter(|s| s.translated.is_some())
+                    .map(|s| (s.segment_index, s.clone()))
+                    .collect();
+            }
+            TranslationEvent::Finished { outcome, .. } => result.outcome = Some(outcome.clone()),
+            _ => {}
         }
     }
 }
 
-#[derive(Default)]
-pub struct TextActions {
-    pub event_sink: EventSink,
-    request: Option<Request>,
-    owner: Option<PluginSessionOwner>,
-    segments: BTreeMap<u32, String>,
-    waiting_for_setup: bool,
-    submitted: bool,
-}
-
-impl TextActions {
-    pub(crate) fn configuration_applied(&mut self) {
-        self.waiting_for_setup = false;
+fn translate(id: i32, text: String, conversation: String) -> (i32, String) {
+    if CANCELLED_THROUGH.load(Ordering::Acquire) >= id {
+        return (4, String::new());
     }
-}
-
-fn notify(id: &str, state: i32, result: &str) {
-    let _ = crate::android::with_activity(|env, activity| {
-        env.with_local_frame(4, |env| {
-            let id = env.new_string(id)?;
-            let result = env.new_string(result)?;
-            env.call_method(
-                activity,
-                "updateTextAction",
-                "(Ljava/lang/String;ILjava/lang/String;)V",
-                &[
-                    JValue::Object(&id),
-                    JValue::Int(state),
-                    JValue::Object(&result),
-                ],
-            )?;
-            Ok::<_, jni::errors::Error>(())
-        })
+    let Ok(directory) = std::env::current_dir() else {
+        return (4, String::new());
+    };
+    let settings = ClientSettings::load(&directory);
+    if settings.first_run {
+        return (2, String::new());
+    }
+    let languages = crate::service_config::ServiceConfigEditor::load()
+        .language_capabilities()
+        .and_then(|capabilities| {
+            crate::text_translation::select_languages(
+                &text,
+                &settings.source_lang,
+                &settings.target_lang,
+                capabilities,
+            )
+        });
+    let Ok(languages) = languages else {
+        return (2, String::new());
+    };
+    let (runtime, changed) = &RUNTIME;
+    let mut state = runtime.lock().unwrap();
+    if state.as_ref().is_some_and(|current| {
+        current.idle_deadline <= Instant::now() || current.server_url != settings.server_url
+    }) {
+        state.take();
+    }
+    let runtime = state.get_or_insert_with(|| BackgroundRuntime {
+        translator: TextTranslation::default(),
+        backend: BackendManager::load(),
+        server_url: settings.server_url.clone(),
+        idle_deadline: Instant::now() + CONTEXT_IDLE,
     });
+    let outcome = translate_request(runtime, id, text, conversation, settings, languages);
+    if outcome.0 == 3 && CANCELLED_THROUGH.load(Ordering::Acquire) < id {
+        runtime.idle_deadline = Instant::now() + CONTEXT_IDLE;
+        if !start_idle_cleanup() {
+            state.take();
+        }
+    } else {
+        state.take();
+    }
+    changed.notify_one();
+    outcome
 }
 
-impl Drop for TextActions {
-    fn drop(&mut self) {
-        *CONTEXT.lock().unwrap() = None;
+fn translate_request(
+    runtime: &mut BackgroundRuntime,
+    id: i32,
+    text: String,
+    conversation: String,
+    settings: ClientSettings,
+    languages: xrtranslate_engine::language::LanguageSelection,
+) -> (i32, String) {
+    let BackgroundRuntime {
+        translator,
+        backend,
+        ..
+    } = runtime;
+    let diagnostic_input = text.clone();
+    let graphs = PromptGraphSet {
+        graph: settings.prompt_library.active_graph(),
+    };
+    let owner = PluginSessionOwner::new(
+        OWNER,
+        id.to_string(),
+        "Translation",
+        "Translation",
+        "Translating…",
+    )
+    .in_conversation(conversation);
+    let session_owner = TranslationSessionOwner::Plugin(owner.clone());
+    translator.update_prompts(graphs.clone());
+    if let Err(error) = translator.submit(TranslationTask::text(
+        text,
+        languages,
+        Some(PluginSessionBinding::text(
+            owner,
+            SessionOutputPolicy::PluginOnly,
+        )),
+    )) {
+        log::warn!(
+            "Selected-text request {id} was rejected: {}",
+            error.replace(&diagnostic_input, "[selected text]")
+        );
+        return (4, String::new());
+    }
+    let (events, received) = bounded(256);
+    let results = Arc::new(Mutex::new(Results::default()));
+    let subscribers: Vec<Box<dyn SessionEventSubscriber>> =
+        vec![Box::new(ResultSink(results.clone()))];
+    let started = Instant::now();
+    while CANCELLED_THROUGH.load(Ordering::Acquire) < id
+        && started.elapsed() < Duration::from_secs(160)
+    {
+        translator.poll(backend, &settings.server_url, graphs.clone(), None, &events);
+        for event in received.try_iter() {
+            if event.scope.accepts_events() {
+                event.scope.publish(&event.event, &subscribers);
+            }
+        }
+        let mut result = results.lock().unwrap();
+        if let Some(outcome) = result.outcome.take() {
+            let text = result
+                .segments
+                .values()
+                .filter_map(|s| s.translated.as_deref())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if matches!(outcome, TranslationOutcome::Completed) && !text.trim().is_empty() {
+                let mut completed = COMPLETED.lock().unwrap();
+                completed.extend(std::mem::take(&mut result.segments).into_values());
+                while completed.len() > 32 {
+                    completed.pop_front();
+                }
+                return (3, text);
+            }
+            match outcome {
+                TranslationOutcome::Failed(error) => log::warn!(
+                    "Selected-text request {id} failed after {:.1}s: {}",
+                    started.elapsed().as_secs_f32(),
+                    error.replace(&diagnostic_input, "[selected text]"),
+                ),
+                TranslationOutcome::Cancelled => {}
+                TranslationOutcome::Completed => {
+                    log::warn!("Selected-text request {id} completed without translated text")
+                }
+            }
+            translator.cancel_owner(&session_owner);
+            return (4, String::new());
+        }
+        drop(result);
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    if CANCELLED_THROUGH.load(Ordering::Acquire) < id {
+        log::warn!(
+            "Selected-text request {id} timed out after {:.1}s",
+            started.elapsed().as_secs_f32()
+        );
+    }
+    translator.cancel_owner(&session_owner);
+    (4, String::new())
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_xrtranslate_app_textactions_TextTranslationService_translate(
+    mut env: JNIEnv,
+    service: JObject,
+    id: jint,
+    text: JString,
+    directory: JString,
+    libraries: JString,
+    conversation: JString,
+) {
+    let outcome = (|| {
+        let text: String = env.get_string(&text).ok()?.into();
+        let directory: String = env.get_string(&directory).ok()?.into();
+        let libraries: String = env.get_string(&libraries).ok()?.into();
+        let conversation: String = env.get_string(&conversation).ok()?.into();
+        if text.trim().is_empty() || text.chars().count() > 32768 {
+            return None;
+        }
+        if let Err(error) = crate::android::initialize_storage(directory.into(), libraries.into()) {
+            log::warn!("Cannot prepare selected-text translation: {error}");
+            return None;
+        }
+        Some(translate(id, text, conversation))
+    })()
+    .unwrap_or((4, String::new()));
+    if let Ok(result) = env.new_string(outcome.1) {
+        let _ = env.call_method(
+            service,
+            "complete",
+            "(IILjava/lang/String;)V",
+            &[
+                JValue::Int(id),
+                JValue::Int(outcome.0),
+                JValue::Object(&result),
+            ],
+        );
     }
 }
 
 impl crate::XRTranslateApp {
     pub(crate) fn poll_android_text_actions(&mut self, ctx: &eframe::egui::Context) {
-        *CONTEXT.lock().unwrap() = Some(ctx.clone());
-        let command = COMMAND.lock().unwrap().take();
-        if let Some(command) = command {
-            let duplicate = matches!(&command, Command::Translate(request)
-                if self.android_text_actions.request.as_ref().is_some_and(|current| current.id == request.id));
-            if !duplicate {
-                if let Some(owner) = self.android_text_actions.owner.take() {
-                    self.stop_task_owner(&TranslationSessionOwner::Plugin(owner));
-                }
-                let state = &mut self.android_text_actions;
-                state.segments.clear();
-                state.submitted = false;
-                state.request = match command {
-                    Command::Translate(request) => Some(request),
-                    Command::Cancel => None,
+        if take_open_translation() {
+            self.navigation.page = crate::ui::Page::Translation;
+            self.fullscreen_history = None;
+            ctx.request_repaint();
+        }
+        let completed = take_completed();
+        if completed.is_empty() {
+            return;
+        }
+        if let Ok(mut state) = self.shared_session_state.lock() {
+            for segment in completed {
+                let Some(translated) = segment.translated else {
+                    continue;
                 };
-                state.waiting_for_setup = self.first_run
-                    || state
-                        .request
-                        .as_ref()
-                        .is_some_and(|request| request.configure);
-                if let Some(request) = state.request.as_ref() {
-                    if request.configure && !self.first_run {
-                        self.navigation.page = crate::ui::Page::Settings;
-                        self.settings_section =
-                            crate::ui::pages::settings::SettingsSection::ServiceProviders;
-                    }
-                    if state.waiting_for_setup {
-                        notify(&request.id, SETUP, "");
-                    }
-                }
+                crate::history::upsert_completed_translation(
+                    &mut state.translations,
+                    crate::history::TranslationHistoryEntry {
+                        turn_id: segment.turn_id,
+                        segment_index: segment.segment_index,
+                        stream_id: Some(segment.stream_id),
+                        audio_source: segment.audio_source,
+                        live: false,
+                        source: segment.source,
+                        translated,
+                        speaker_id: segment.speaker_id,
+                        source_start_ms: segment.source_start_ms,
+                        source_end_ms: segment.source_end_ms,
+                        timing: segment.timing,
+                        boundary: segment.boundary,
+                        term_matches: Vec::new(),
+                        revisable: false,
+                        overlap_ratio: 0.0,
+                        authoritative_snapshot: false,
+                        revision_id: 0,
+                        source_revision: None,
+                        translated_revision: None,
+                    },
+                );
             }
+            let excess = state.translations.len().saturating_sub(100);
+            state.translations.drain(..excess);
         }
-
-        let state = &mut self.android_text_actions;
-        while let Ok((id, event)) = state.event_sink.rx.try_recv() {
-            if state
-                .owner
-                .as_ref()
-                .is_none_or(|owner| owner.operation_id() != id)
-            {
-                continue;
-            }
-            match event {
-                TranslationEvent::Segment(segment) => {
-                    if let Some(text) = segment.translated {
-                        state.segments.insert(segment.segment_index, text);
-                    }
-                }
-                TranslationEvent::ReplaceSegments(segments) => {
-                    state.segments = segments
-                        .into_iter()
-                        .filter_map(|segment| {
-                            segment.translated.map(|text| (segment.segment_index, text))
-                        })
-                        .collect();
-                }
-                TranslationEvent::Finished { outcome, .. } => {
-                    let text = state
-                        .segments
-                        .values()
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    let completed =
-                        matches!(outcome, TranslationOutcome::Completed) && !text.trim().is_empty();
-                    notify(
-                        &id,
-                        if completed { COMPLETED } else { FAILED },
-                        if completed { &text } else { "" },
-                    );
-                    state.owner = None;
-                    state.segments.clear();
-                }
-                TranslationEvent::StreamEnded { .. } => {}
-            }
-        }
-        if state.waiting_for_setup {
-            if self.first_run || self.navigation.page == crate::ui::Page::Settings {
-                return;
-            }
-            state.waiting_for_setup = false;
-        }
-        if self.first_run || state.submitted {
-            return;
-        }
-        let Some(request) = state.request.as_ref() else {
-            return;
-        };
-        let id = request.id.clone();
-        let text = request.text.clone();
-        let owner = PluginSessionOwner::new(
-            OWNER,
-            id.clone(),
-            "Translation",
-            "Translation",
-            "Translating…",
-        );
-        state.owner = Some(owner.clone());
-        state.submitted = true;
-        notify(&id, TRANSLATING, "");
-        if !self.submit_text_translation(
-            &text,
-            None,
-            None,
-            Some(PluginSessionBinding::text(
-                owner,
-                SessionOutputPolicy::PluginOnly,
-            )),
-        ) {
-            self.android_text_actions.owner = None;
-            notify(&id, FAILED, "");
-        }
+        ctx.request_repaint();
     }
 }

@@ -137,6 +137,7 @@ pub fn run_native_overlay() -> eframe::Result<()> {
                 sent_region: None,
                 closing: false,
                 shown: false,
+                stacking: WindowStacking::default(),
                 result: ResultWindow::default(),
             }))
         }),
@@ -155,7 +156,34 @@ struct OverlayWindow {
     sent_region: Option<OverlayRegion>,
     closing: bool,
     shown: bool,
+    stacking: WindowStacking,
     result: ResultWindow,
+}
+
+#[derive(Default)]
+struct WindowStacking {
+    state: Option<(bool, bool)>,
+}
+
+impl WindowStacking {
+    fn update(&mut self, ctx: &egui::Context) {
+        let state = ctx.input(|input| {
+            let viewport = input.viewport();
+            (
+                viewport.focused.unwrap_or(false),
+                viewport.minimized.unwrap_or(false),
+            )
+        });
+        if self.state != Some(state) {
+            // A hidden X11 window is not managed yet, so its initial stacking
+            // request can be ignored. Reassert after showing or changing focus
+            // without activating the window or repeatedly raising it.
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                egui::viewport::WindowLevel::AlwaysOnTop,
+            ));
+            self.state = Some(state);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -165,6 +193,7 @@ struct ResultWindow {
     pending: Option<(OverlayRegion, Instant)>,
     reported: Option<OverlayRegion>,
     changing: bool,
+    stacking: WindowStacking,
 }
 
 impl ResultWindow {
@@ -212,6 +241,7 @@ impl ResultWindow {
         self.pending = None;
         self.reported = None;
         self.changing = false;
+        self.stacking = WindowStacking::default();
     }
 }
 
@@ -446,9 +476,7 @@ impl OverlayWindow {
     fn result(&mut self, ctx: &egui::Context, frame: &eframe::Frame, anchor: Rect) {
         let ocr = self.ocr.as_ref().filter(|ocr| {
             self.controls.ocr_enabled == Some(true)
-                && (!ocr.source.is_empty()
-                    || !ocr.translated.is_empty()
-                    || ocr.status.is_some())
+                && (!ocr.source.is_empty() || ocr.status.is_some() || ocr.busy)
         });
         let waiting = self.controls.microphone_enabled == Some(true)
             || self.controls.system_audio_enabled == Some(true);
@@ -568,6 +596,7 @@ impl OverlayWindow {
                 if result.shown
                     && let Some(actual) = actual
                 {
+                    result.stacking.update(ui.ctx());
                     result.observe(actual * child_scale);
                 }
             },
@@ -702,6 +731,7 @@ impl eframe::App for OverlayWindow {
             window.set_visible(true);
             self.shown = true;
         }
+        self.stacking.update(ui.ctx());
         if let Some(selection) = selection {
             let Ok(position) = window.inner_position() else {
                 return;
@@ -748,13 +778,15 @@ fn result_contents(
 ) {
     let size = subtitles.font_size.clamp(10, 32) as f32;
     if let Some(ocr) = ocr {
-        let (text, color) = if ocr.translated.is_empty() {
-            (&ocr.source, theme::text_weak())
-        } else {
-            (&ocr.translated, theme::text_strong())
-        };
-        if !text.is_empty() {
-            ui.add(egui::Label::new(RichText::new(text).size(size).color(color)).selectable(true));
+        if !ocr.source.is_empty() {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(&ocr.source)
+                        .size(size)
+                        .color(theme::text_weak()),
+                )
+                .selectable(true),
+            );
         }
         if let Some(status) = &ocr.status {
             ui.label(RichText::new(status).color(theme::text_weak()));

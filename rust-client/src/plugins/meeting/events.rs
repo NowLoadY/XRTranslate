@@ -90,7 +90,8 @@ impl MeetingEventSink {
         let worker = std::thread::Builder::new()
             .name("meeting-event-store".into())
             .spawn(move || {
-                let mut batches = HashMap::<(String, String, u64, bool), Vec<String>>::new();
+                let mut batches =
+                    HashMap::<(String, String, u64, String, bool), Vec<String>>::new();
                 while let Ok(command) = rx.recv() {
                     match command {
                         #[cfg(test)]
@@ -105,9 +106,10 @@ impl MeetingEventSink {
                                 capture.recognition_run_id.clone(),
                                 capture.topic_id.clone(),
                                 first.stream_id,
+                                first.turn_id.clone(),
                                 first.translated.is_some(),
                             );
-                            let live = segments.iter().any(|segment| segment.live);
+                            let revisable = segments.iter().any(|segment| segment.revisable);
                             let events = segments
                                 .iter()
                                 .filter_map(MeetingSegmentEvent::from_translation)
@@ -120,7 +122,11 @@ impl MeetingEventSink {
                             if let Some(keys) =
                                 persist_segments(&store, &capture, events, &previous)
                             {
-                                if replace || live {
+                                if replace && !revisable {
+                                    // Final rows remain durable, but no longer belong to a
+                                    // replaceable live batch.
+                                    batches.remove(&key);
+                                } else if replace || revisable {
                                     batches.insert(key, keys);
                                 } else if let Some(batch) = batches.get_mut(&key) {
                                     batch.retain(|key| !keys.contains(key));
@@ -128,7 +134,7 @@ impl MeetingEventSink {
                             }
                         }
                         Command::SealStream(stream) => {
-                            batches.retain(|(_, _, id, _), _| *id != stream);
+                            batches.retain(|(_, _, id, _, _), _| *id != stream);
                         }
                         Command::FinishActive(capture) => {
                             finish_active(&store, &worker_active, &capture)
@@ -673,6 +679,82 @@ mod tests {
         assert_eq!(stored.segments.len(), 1);
         assert_eq!(stored.segments[0].original_text, "hello");
         assert_eq!(stored.segments[0].translated_text.as_deref(), Some("你好"));
+    }
+
+    #[test]
+    fn final_snapshot_survives_the_next_dense_chunk_tail() {
+        use crate::{network::SessionEvent, session_coordinator::TranslationEventAdapter};
+
+        let store = Arc::new(MeetingStore::open_in_memory().unwrap());
+        let bundle = store
+            .create_meeting(NewMeeting::live(
+                "Dense speech",
+                Some("default".into()),
+                "en",
+                "zh",
+            ))
+            .unwrap();
+        store.start_meeting(&bundle.meeting.id).unwrap();
+        let active = Arc::new(Mutex::new(Some(ActiveMeetingCapture {
+            meeting_id: bundle.meeting.id.clone(),
+            topic_id: bundle.topics[0].id.clone(),
+            recognition_run_id: "run-dense".into(),
+            timeline_offset_ms: 0,
+            imported_audio: false,
+        })));
+        let sink = MeetingEventSink::start(Arc::clone(&store), active);
+        let mut adapter = TranslationEventAdapter::default();
+        let mut publish = |turn: &str, revision, text: &str, revisable| {
+            let event = SessionEvent::SourceSegment {
+                stream_id: 1,
+                audio_source: CaptureSource::Microphone,
+                continuous: false,
+                publish_to_host_outputs: false,
+                text: text.into(),
+                prompt_trace: None,
+                activation_matches: Vec::new(),
+                context_matches: Vec::new(),
+                turn_id: turn.into(),
+                speaker_id: "speaker-1".into(),
+                source_start_ms: 0.0,
+                source_end_ms: 1000.0,
+                timing: xrtranslate_protocol::SegmentTiming::UtteranceWindow,
+                boundary: xrtranslate_protocol::SegmentBoundary::DurationLimit,
+                segment_index: 1,
+                segment_count: 1,
+                revisable,
+                overlap_ratio: 0.0,
+                authoritative_snapshot: true,
+                revision,
+            };
+            let results = adapter.push(&event, 1);
+            assert_eq!(results.len(), 1);
+            for result in results {
+                sink.on_translation_event(&TranslationSessionOwner::None, &result);
+            }
+            sink.flush();
+        };
+
+        publish("a", 7, "First sentence.", true);
+        assert!(!store.open_meeting(&bundle.meeting.id).unwrap().segments[0].is_final);
+        publish("a", 7, "First sentence.", false);
+        assert!(store.open_meeting(&bundle.meeting.id).unwrap().segments[0].is_final);
+        publish("b", 1, "Next unfinished", true);
+        publish("b", 2, "Next corrected", true);
+        let stored = store.open_meeting(&bundle.meeting.id).unwrap();
+        assert_eq!(stored.segments.len(), 2);
+        assert!(
+            stored
+                .segments
+                .iter()
+                .any(|segment| segment.original_text == "First sentence." && segment.is_final)
+        );
+        assert!(
+            stored
+                .segments
+                .iter()
+                .any(|segment| segment.original_text == "Next corrected" && !segment.is_final)
+        );
     }
 
     #[test]
