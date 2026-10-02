@@ -30,10 +30,6 @@ pub(super) fn approach(center: &mut Pos2, velocity: &mut Vec2, target: Pos2, dt:
     *velocity = (*velocity - offset * omega) * decay;
 }
 
-pub(super) fn opacity_at_speed(speed: f32) -> f32 {
-    0.16 + 0.84 / (1.0 + (speed / 160.0).powi(2))
-}
-
 #[derive(Clone, Default)]
 pub(super) struct Placement {
     radius: Option<f32>,

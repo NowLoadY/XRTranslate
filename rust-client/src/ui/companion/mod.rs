@@ -73,6 +73,7 @@ struct Guide {
     center: Pos2,
     velocity: Vec2,
     opacity: f32,
+    relocating: bool,
     placement: placement::Placement,
     parking: parking::Parking,
     candidate: Option<Attention>,
@@ -111,7 +112,8 @@ impl Guide {
             announced: 0,
             center: start,
             velocity: Vec2::ZERO,
-            opacity: 1.0,
+            opacity: if intro { 1.0 } else { 0.0 },
+            relocating: false,
             placement: placement::Placement::default(),
             parking: parking::Parking::default(),
             candidate: None,
@@ -131,6 +133,25 @@ impl Guide {
     fn enter(&mut self, stage: Stage) {
         self.stage = stage;
         self.stage_started = self.clock;
+    }
+
+    fn move_to(&mut self, target: Pos2, radius: f32, dt: f32) {
+        // Long trips cover more than two body diameters.
+        if self.center.distance(target) > radius * 4.0 {
+            self.relocating = true;
+        }
+        if self.relocating {
+            self.velocity = Vec2::ZERO;
+            self.opacity = (self.opacity - dt / 0.18).max(0.0);
+            if self.opacity == 0.0 {
+                self.center = target;
+                self.relocating = false;
+                self.speech = self.speech.on_surface(&Speech::default());
+            }
+        } else {
+            self.opacity = (self.opacity + dt / 0.24).min(1.0);
+            placement::approach(&mut self.center, &mut self.velocity, target, dt);
+        }
     }
 
     fn say(&mut self, line: &'static str) {
@@ -351,7 +372,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     }
     let dock = page
         .and_then(|(bounds, layer)| state.parking.locate(ctx, layer, bounds, small, state.clock));
-    if page.is_some() && dock.is_none() && !vr_active {
+    if page.is_some() && dock.is_none() && state.opacity == 0.0 && !vr_active {
         state.velocity = Vec2::ZERO;
         ctx.request_repaint_after(Duration::from_millis(350));
         ctx.data_mut(|data| data.insert_temp(state_id(), state));
@@ -433,6 +454,9 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
                 state.center
             } else if let Some(spot) = dock {
                 spot.center
+            } else if page.is_some() {
+                // Keep the current position until the next page's gap is stable.
+                state.center
             } else if !layout
                 .as_ref()
                 .is_some_and(|layout| layout.features.is_some())
@@ -459,15 +483,19 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         target
     };
     if state.stage == Stage::Ready {
-        placement::approach(&mut state.center, &mut state.velocity, target, dt);
+        state.move_to(target, size, dt);
     } else {
         let movement = (target - state.center) * (1.0 - (-dt / 0.20).exp());
         state.center += movement.normalized() * movement.length().min(640.0 * dt);
     }
     let mut anchor = state.center + offset;
-    let response = state
-        .placement
-        .interact(ctx, state_id(), &mut anchor, size, interactive);
+    let response = state.placement.interact(
+        ctx,
+        state_id(),
+        &mut anchor,
+        size,
+        interactive && state.opacity > 0.0,
+    );
     if state.stage == Stage::Ready {
         state.center = anchor;
     }
@@ -479,6 +507,8 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         }
         state.center = anchor;
         state.velocity = Vec2::ZERO;
+        state.relocating = false;
+        state.opacity = 1.0;
         state.resume_at = state.clock + 1.2;
         state.focus = None;
         state.candidate = None;
@@ -526,11 +556,8 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     } else {
         0.0
     };
-    let opacity = placement::opacity_at_speed(speed);
-    let fade_time = if opacity < state.opacity { 0.08 } else { 0.3 };
-    state.opacity += (opacity - state.opacity) * (1.0 - (-visual_dt / fade_time).exp());
     let mut painter = ctx.layer_painter(layer).with_clip_rect(screen);
-    painter.multiply_opacity(state.opacity);
+    painter.multiply_opacity(smooth(state.opacity));
     Classic::model().paint(&painter, state_id(), anchor, size, pose);
     let talking = state.speech.paint_avoiding(
         &painter,
@@ -557,15 +584,13 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         let dwelling = state.pending.is_some()
             || state.candidate != state.focus.map(|target| target.attention)
             || hovered.is_some_and(|topic| topic.bit() != 0 && state.mentioned & topic.bit() == 0);
-        ctx.request_repaint_after(
-            if moving || talking || (state.opacity - opacity).abs() > 0.005 {
-                Duration::from_millis(16)
-            } else if dwelling {
-                Duration::from_millis(80)
-            } else {
-                Duration::from_secs(1)
-            },
-        );
+        ctx.request_repaint_after(if moving || talking || state.opacity < 1.0 {
+            Duration::from_millis(16)
+        } else if dwelling {
+            Duration::from_millis(80)
+        } else {
+            Duration::from_secs(1)
+        });
     }
     app.vr_overlay_plugin
         .manager()
