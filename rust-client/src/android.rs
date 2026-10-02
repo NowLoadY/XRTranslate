@@ -1,6 +1,8 @@
 use android_activity::AndroidApp;
 use std::{path::PathBuf, sync::Mutex};
 
+pub(crate) mod ime;
+
 static APP: Mutex<Option<AndroidApp>> = Mutex::new(None);
 static NATIVE_LIBRARIES: Mutex<Option<PathBuf>> = Mutex::new(None);
 
@@ -125,6 +127,7 @@ fn android_main(activity: AndroidApp) {
     let result = initialize(&activity)
         .map_err(|error| error.to_string())
         .and_then(|()| crate::run().map_err(|error| error.to_string()));
+    ime::uninstall();
     if let Err(error) = result {
         log::error!("Application stopped: {error}");
         let shown = with_activity(|env, activity| {

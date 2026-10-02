@@ -2277,9 +2277,31 @@ pub fn text_edit_ui(
                 ui.style_mut().visuals.widgets.open.corner_radius = egui::CornerRadius::ZERO;
             }
 
-            let resp = ui.add(text_edit);
-            let rect = resp.rect;
-            (resp, rect)
+            // A salt stabilizes the default ID while preserving an explicit
+            // TextEdit::id supplied by its caller.
+            let output = text_edit.id_salt(id).show(ui);
+            #[cfg(target_os = "android")]
+            if output.response.has_focus() {
+                let cursor_rect = output.cursor_range.map_or(output.response.rect, |cursor| {
+                    output
+                        .galley
+                        .pos_from_cursor(cursor.primary)
+                        .translate(output.galley_pos.to_vec2())
+                        .expand(2.0)
+                });
+                if !ui.clip_rect().contains_rect(cursor_rect) {
+                    // Follow the caret, not a multiline field taller than the
+                    // available space, when the keyboard reduces the viewport.
+                    ui.scroll_to_rect_animation(
+                        cursor_rect,
+                        None,
+                        egui::style::ScrollAnimation::none(),
+                    );
+                }
+            }
+            let response = output.response.response;
+            let rect = response.rect;
+            (response, rect)
         })
         .inner;
 
@@ -3007,24 +3029,20 @@ pub fn input_toggle(
     input_toggle_with_accent(ui, id, active, icon, label, None)
 }
 
-pub fn input_toggle_with_accent(
+/// Shared compact button surface for input sources and floating controls.
+pub fn compact_icon_button(
     ui: &mut Ui,
     id: &str,
     active: bool,
-    icon: InputIcon,
     label: &str,
     accent: Option<Color32>,
 ) -> egui::Response {
+    use crate::ui::animation::AnimationSystem;
     ui.push_id(id, |ui| {
         let mut response = ui.add(
             egui::Button::new("")
                 .min_size(egui::Vec2::splat(INPUT_TOGGLE_SIZE))
-                .corner_radius(CornerRadius::same(12))
-                .fill(if active {
-                    accent.unwrap_or_else(theme::primary).gamma_multiply(0.15)
-                } else {
-                    theme::surface_subtle()
-                }),
+                .frame(false),
         );
         if crate::ui::automation::record_button(
             ui,
@@ -3040,112 +3058,174 @@ pub fn input_toggle_with_accent(
         response.widget_info(|| {
             egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), active, label)
         });
-        let center = response.rect.center();
-        let painter = ui.painter();
-        let color = if active {
-            accent.unwrap_or_else(theme::primary_dark)
+        let accent = accent.unwrap_or_else(theme::primary);
+        let hover = AnimationSystem::hover(
+            ui.ctx(),
+            response.id.with("hover"),
+            response.hovered() || response.has_focus(),
+        );
+        let pressed = AnimationSystem::active(
+            ui.ctx(),
+            response.id.with("pressed"),
+            response.is_pointer_button_down_on(),
+        );
+        let base = if active {
+            accent.gamma_multiply(0.15)
         } else {
-            theme::text_weak()
+            theme::surface_subtle()
         };
-        let stroke = Stroke::new(1.8, color);
-        match icon {
-            InputIcon::Microphone => {
-                painter.rect_stroke(
-                    egui::Rect::from_center_size(
-                        center + egui::vec2(0.0, -3.0),
-                        egui::vec2(8.0, 13.0),
-                    ),
-                    CornerRadius::same(4),
-                    stroke,
-                    egui::StrokeKind::Middle,
-                );
-                painter.add(egui::Shape::line(
-                    vec![
-                        center + egui::vec2(-7.0, -3.0),
-                        center + egui::vec2(-7.0, 1.0),
-                        center + egui::vec2(-5.0, 5.0),
-                        center + egui::vec2(0.0, 7.0),
-                        center + egui::vec2(5.0, 5.0),
-                        center + egui::vec2(7.0, 1.0),
-                        center + egui::vec2(7.0, -3.0),
-                    ],
-                    stroke,
-                ));
-                painter.line_segment(
-                    [
-                        center + egui::vec2(0.0, 7.0),
-                        center + egui::vec2(0.0, 11.0),
-                    ],
-                    stroke,
-                );
-                painter.line_segment(
-                    [
-                        center + egui::vec2(-4.0, 11.0),
-                        center + egui::vec2(4.0, 11.0),
-                    ],
-                    stroke,
-                );
-            }
-            InputIcon::SystemAudio => {
-                painter.rect_stroke(
-                    egui::Rect::from_center_size(
-                        center + egui::vec2(0.0, -2.0),
-                        egui::vec2(20.0, 14.0),
-                    ),
-                    CornerRadius::same(4),
-                    stroke,
-                    egui::StrokeKind::Middle,
-                );
-                for (x, height) in [(-4.0, 3.0), (0.0, 6.0), (4.0, 4.0)] {
-                    painter.line_segment(
-                        [
-                            center + egui::vec2(x, -2.0 - height / 2.0),
-                            center + egui::vec2(x, -2.0 + height / 2.0),
-                        ],
-                        stroke,
-                    );
-                }
-                painter.line_segment(
-                    [center + egui::vec2(0.0, 5.0), center + egui::vec2(0.0, 9.0)],
-                    stroke,
-                );
-                painter.line_segment(
-                    [
-                        center + egui::vec2(-5.0, 9.0),
-                        center + egui::vec2(5.0, 9.0),
-                    ],
-                    stroke,
-                );
-            }
-            #[cfg(any(target_os = "linux", windows))]
-            InputIcon::Text => {
-                painter.rect_stroke(
-                    egui::Rect::from_center_size(center, egui::vec2(23.0, 22.0)),
-                    CornerRadius::same(4),
-                    stroke,
-                    egui::StrokeKind::Middle,
-                );
-                painter.text(
-                    center,
-                    egui::Align2::CENTER_CENTER,
-                    "文",
-                    egui::FontId::proportional(15.0),
-                    color,
-                );
-            }
+        let fill = AnimationSystem::lerp_color(
+            base,
+            accent.gamma_multiply(if active { 0.24 } else { 0.10 }),
+            hover,
+        );
+        let fill = AnimationSystem::lerp_color(fill, accent.gamma_multiply(0.30), pressed);
+        let border = AnimationSystem::lerp_color(
+            if active {
+                accent.gamma_multiply(0.55)
+            } else {
+                theme::border()
+            },
+            accent,
+            hover * 0.65 + pressed * 0.35,
+        );
+        ui.painter().rect(
+            response.rect,
+            CornerRadius::same(12),
+            fill,
+            Stroke::new(1.0, border),
+            egui::StrokeKind::Inside,
+        );
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        // Skip creation as well as delay: an already-open tooltip otherwise
+        // stays visible when a capture surface disables tooltips.
+        if ui
+            .ctx()
+            .global_style()
+            .interaction
+            .tooltip_delay
+            .is_finite()
+        {
+            response.on_hover_text(label)
+        } else {
+            response
         }
-        if !active {
-            painter.line_segment(
-                [
-                    center + egui::vec2(-11.0, -11.0),
-                    center + egui::vec2(11.0, 11.0),
-                ],
-                Stroke::new(2.2, color),
-            );
-        }
-        response.on_hover_text(label)
     })
     .inner
+}
+
+pub fn input_toggle_with_accent(
+    ui: &mut Ui,
+    id: &str,
+    active: bool,
+    icon: InputIcon,
+    label: &str,
+    accent: Option<Color32>,
+) -> egui::Response {
+    let response = compact_icon_button(ui, id, active, label, accent);
+    let center = response.rect.center();
+    let painter = ui.painter();
+    let color = if active {
+        accent.unwrap_or_else(theme::primary_dark)
+    } else if response.hovered() || response.has_focus() {
+        theme::text_strong()
+    } else {
+        theme::text_weak()
+    };
+    let stroke = Stroke::new(1.8, color);
+    match icon {
+        InputIcon::Microphone => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(center + egui::vec2(0.0, -3.0), egui::vec2(8.0, 13.0)),
+                CornerRadius::same(4),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.add(egui::Shape::line(
+                vec![
+                    center + egui::vec2(-7.0, -3.0),
+                    center + egui::vec2(-7.0, 1.0),
+                    center + egui::vec2(-5.0, 5.0),
+                    center + egui::vec2(0.0, 7.0),
+                    center + egui::vec2(5.0, 5.0),
+                    center + egui::vec2(7.0, 1.0),
+                    center + egui::vec2(7.0, -3.0),
+                ],
+                stroke,
+            ));
+            painter.line_segment(
+                [
+                    center + egui::vec2(0.0, 7.0),
+                    center + egui::vec2(0.0, 11.0),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + egui::vec2(-4.0, 11.0),
+                    center + egui::vec2(4.0, 11.0),
+                ],
+                stroke,
+            );
+        }
+        InputIcon::SystemAudio => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(
+                    center + egui::vec2(0.0, -2.0),
+                    egui::vec2(20.0, 14.0),
+                ),
+                CornerRadius::same(4),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            for (x, height) in [(-4.0, 3.0), (0.0, 6.0), (4.0, 4.0)] {
+                painter.line_segment(
+                    [
+                        center + egui::vec2(x, -2.0 - height / 2.0),
+                        center + egui::vec2(x, -2.0 + height / 2.0),
+                    ],
+                    stroke,
+                );
+            }
+            painter.line_segment(
+                [center + egui::vec2(0.0, 5.0), center + egui::vec2(0.0, 9.0)],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    center + egui::vec2(-5.0, 9.0),
+                    center + egui::vec2(5.0, 9.0),
+                ],
+                stroke,
+            );
+        }
+        #[cfg(any(target_os = "linux", windows))]
+        InputIcon::Text => {
+            painter.rect_stroke(
+                egui::Rect::from_center_size(center, egui::vec2(23.0, 22.0)),
+                CornerRadius::same(4),
+                stroke,
+                egui::StrokeKind::Middle,
+            );
+            painter.text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                "文",
+                egui::FontId::proportional(15.0),
+                color,
+            );
+        }
+    }
+    if !active {
+        painter.line_segment(
+            [
+                center + egui::vec2(-11.0, -11.0),
+                center + egui::vec2(11.0, 11.0),
+            ],
+            Stroke::new(2.2, color),
+        );
+    }
+    response
 }
 
 #[cfg(test)]

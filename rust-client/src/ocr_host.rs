@@ -255,30 +255,4 @@ impl XRTranslateApp {
             manager.send_ocr(available.then(|| self.ocr.plugin.state.clone()));
         }
     }
-
-    pub(crate) fn render_ocr_plugin_page(&mut self, ui: &mut eframe::egui::Ui) {
-        ui.heading(crate::i18n::tr(self.ui_language, "Screen Translation"));
-        if let Ok(capabilities) = self.service_config.language_capabilities()
-            && crate::ui::components::translation_language_selector(
-                ui,
-                "ocr_languages",
-                &mut self.source_lang,
-                &mut self.target_lang,
-                capabilities.for_text(),
-                self.ui_language,
-            )
-        {
-            self.save_settings();
-        }
-        if let Some(enabled) = self.ocr.plugin.render(
-            ui,
-            self.ui_language,
-            self.floating_subtitles_enabled && self.ocr.enabled,
-        ) {
-            if enabled && !self.floating_subtitles_enabled {
-                self.set_floating_subtitles_enabled(true);
-            }
-            self.set_ocr_enabled(enabled);
-        }
-    }
 }

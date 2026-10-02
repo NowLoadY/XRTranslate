@@ -1711,8 +1711,10 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn plugin_enabled(&self, id: PluginId) -> bool {
+        // Embedded OCR is configured with its model, without a second switch.
         self.plugin_available(id)
-            && PluginRegistry::builtin().is_enabled(&self.plugin_preferences, id)
+            && (id == PluginId::OCR
+                || PluginRegistry::builtin().is_enabled(&self.plugin_preferences, id))
     }
 
     /// Selects the first plugin currently requesting the exclusive translation
@@ -2891,8 +2893,6 @@ impl XRTranslateApp {
             PluginId::VIDEO_PLAYER => self.render_player_plugin_page(ui),
             PluginId::VR_OVERLAY => self.render_vr_overlay_plugin_page(ui),
             PluginId::OSC => self.render_osc_plugin_page(ui),
-            #[cfg(any(windows, target_os = "linux"))]
-            PluginId::OCR => self.render_ocr_plugin_page(ui),
             _ => self.navigation.page = Page::Translation,
         }
     }
@@ -3223,23 +3223,17 @@ impl XRTranslateApp {
         self.release_unused_inputs();
     }
 
-    pub fn start(&mut self, _ctx: Option<egui::Context>) {
+    pub fn start(&mut self, ctx: Option<egui::Context>) {
         if self.translation_enabled {
             return;
         }
         self.enable_translation_service();
-        #[cfg(any(windows, target_os = "linux"))]
-        if self.ocr.enabled {
-            return;
+        let sources = self.capture_source.routes();
+        if sources.contains(&CaptureSource::Microphone) {
+            self.set_microphone_enabled(true, ctx.clone());
         }
-        match self.backend_manager.prepare(&self.server_url) {
-            Ok(backend::BackendStart::Ready) => self.set_connection_status("Ready"),
-            Ok(backend::BackendStart::Starting(stage)) => {
-                self.backend_start_deadline =
-                    Some(std::time::Instant::now() + std::time::Duration::from_secs(180));
-                self.set_connection_status(stage.message());
-            }
-            Err(error) => self.set_startup_error("Startup failed", error),
+        if sources.contains(&CaptureSource::SystemAudio) && AudioSystem::supports_system_audio() {
+            self.set_system_audio_enabled(true, ctx);
         }
     }
 
@@ -3820,6 +3814,7 @@ impl XRTranslateApp {
             self.audio_system.clear_tts_playback();
         }
         let resume_translation = self.translation_enabled;
+        let resume_inputs = (self.microphone_enabled, self.system_audio_enabled);
         if resume_translation {
             self.stop();
         }
@@ -3848,7 +3843,9 @@ impl XRTranslateApp {
             return;
         }
         if resume_translation {
-            self.start(ctx);
+            self.enable_translation_service();
+            self.set_microphone_enabled(resume_inputs.0, ctx.clone());
+            self.set_system_audio_enabled(resume_inputs.1, ctx);
         } else {
             self.set_connection_status("Ready");
         }
@@ -4749,6 +4746,8 @@ impl XRTranslateApp {
     }
 
     fn stop(&mut self) {
+        #[cfg(target_os = "android")]
+        android::cancel_microphone_request();
         #[cfg(any(windows, target_os = "linux"))]
         self.stop_ocr();
         self.translation_enabled = false;
@@ -5075,6 +5074,11 @@ impl Drop for XRTranslateApp {
 }
 
 impl eframe::App for XRTranslateApp {
+    #[cfg(target_os = "android")]
+    fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
+        android::ime::apply_input(ctx, input);
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "android")]
         self.poll_android_text_actions(ctx);
@@ -5133,6 +5137,8 @@ impl eframe::App for XRTranslateApp {
             self.onboarding_page = step;
             self.first_run = true;
         }
+        PluginRegistry::builtin()
+            .normalize_active_page(&self.plugin_preferences, &mut self.navigation.page);
         if let Page::Plugin(id) = self.navigation.page
             && !self.plugin_enabled(id)
         {
@@ -5286,7 +5292,6 @@ impl eframe::App for XRTranslateApp {
                             &mut self.navigation,
                             &self.plugin_preferences,
                             self.service_config.tts_is_configured(),
-                            self.service_config.ocr_is_configured(),
                             &mut self.modal_dialog,
                             &mut self.first_run,
                             &mut self.onboarding_page,
@@ -5312,7 +5317,6 @@ impl eframe::App for XRTranslateApp {
                             &mut self.navigation,
                             &self.plugin_preferences,
                             self.service_config.tts_is_configured(),
-                            self.service_config.ocr_is_configured(),
                             &mut self.modal_dialog,
                             &mut self.first_run,
                             &mut self.onboarding_page,
@@ -5609,6 +5613,8 @@ pub fn run() -> eframe::Result<()> {
             egui_extras::install_image_loaders(&cc.egui_ctx);
             #[cfg(target_os = "android")]
             android::install_clipboard(&cc.egui_ctx);
+            #[cfg(target_os = "android")]
+            android::ime::install(&cc.egui_ctx);
             ui::fonts::configure_multilingual_fonts(&cc.egui_ctx);
             ui::theme::apply_theme(&cc.egui_ctx);
             file_dialog::set_context(cc.egui_ctx.clone());

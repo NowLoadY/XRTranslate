@@ -1,7 +1,9 @@
 package org.xrtranslate.app;
 
 import android.os.Bundle;
-import android.view.WindowInsets;
+import android.view.WindowManager;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
@@ -11,6 +13,27 @@ import org.xrtranslate.app.textactions.TranslationResults;
 public final class MainActivity extends GameActivity {
     static { System.loadLibrary("rust_client"); }
     private static native void openTranslation();
+    private static native void keyboardInsetChanged(int bottom);
+
+    @Override protected void onSetUpWindow() {
+        super.onSetUpWindow();
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);
+        }
+    }
+
+    @Override public void onImeInsetsChanged(Insets insets) {
+        keyboardInsetChanged(insets.bottom);
+    }
+
+    @Override public void onGlobalLayout() {
+        super.onGlobalLayout();
+        // Android 10 reports keyboard occlusion through the visible frame.
+        if (android.os.Build.VERSION.SDK_INT < 30 && mSurfaceView != null) {
+            WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(mSurfaceView);
+            if (insets != null) onImeInsetsChanged(insets.getInsets(WindowInsetsCompat.Type.ime()));
+        }
+    }
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -23,16 +46,6 @@ public final class MainActivity extends GameActivity {
             getWindow().setAttributes(lp);
         }
         applyImmersiveFullscreen();
-        getWindow().getDecorView().setOnApplyWindowInsetsListener((view, insets) -> {
-            applyImmersiveFullscreen();
-            if (android.os.Build.VERSION.SDK_INT >= 30) {
-                android.graphics.Insets keyboard = insets.getInsets(WindowInsets.Type.ime());
-                view.setPadding(0, 0, 0, keyboard.bottom);
-            } else {
-                view.setPadding(0, 0, 0, 0);
-            }
-            return insets;
-        });
     }
 
     private void applyImmersiveFullscreen() {
@@ -141,6 +154,7 @@ public final class MainActivity extends GameActivity {
     public void commitFileSave(long id) { documents.share(id); }
 
     @Override protected void onDestroy() {
+        keyboardInsetChanged(0);
         stopService(new android.content.Intent(this, org.xrtranslate.app.audio.MicrophoneService.class));
         documents.close();
         super.onDestroy();

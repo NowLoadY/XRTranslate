@@ -116,8 +116,10 @@ retaining the capture session and loaded model. The host composes these
 capabilities with the plugin; model resources use the
 same catalogue, setup, download, and deletion lifecycle as other models.
 Disabling OCR releases its worker, and resource deletion waits for release
-without blocking the UI. OCR settings and navigation are available only when
-an OCR model is enabled on a supported desktop platform.
+without blocking the UI. OCR has no standalone page or separate plugin switch.
+Enabling an OCR model on a supported desktop platform exposes its input and
+region controls in the shared floating window. The translation page supplies
+the language selection; translated results use the same host presentation.
 
 Desktop subtitles and screen translation share `overlay_manager`,
 `overlay_ipc`, and `overlay_native`. The window presents host state and emits
@@ -323,8 +325,11 @@ plugin UI/controller --typed action--> TranslationTask (text / live / file)
 settings. It contains the stable ID, translated label key, ordering, icon, page
 scroll policy, settings contribution, and default enablement.
 
-`plugins::PluginRegistry` is a catalogue plus persisted enablement preferences;
-it is not a polymorphic runtime container. Concrete plugin instances remain in
+`plugins::PluginRegistry` catalogues standalone plugin pages and their persisted
+enablement preferences. Embedded inputs retain stable plugin IDs and translation
+bindings, but use their shared capability's configuration and UI instead of a
+page entry or a duplicate enablement switch. The registry is not a polymorphic
+runtime container. Concrete plugin instances remain in
 their modules and the statically linked host adapter still registers page
 rendering, settings rendering, session bindings, subscribers, and lifecycle
 hooks explicitly. This explicit composition is intentional until all plugins
@@ -406,9 +411,10 @@ Current plugin ownership is:
 - `plugins::vr_overlay`: SteamVR overlay runtime, rendering, settings, and UI.
   Its `HostOutputSubscriber` consumes shared captions; it does not start a
   separate translation pipeline.
-- `plugins::ocr`: screen-text presentation and an owner-filtered
-  `SessionEventSubscriber`. The host supplies recognized content and submits
-  its text binding with `PluginOnly` output to the shared translator. Capture
+- `plugins::ocr`: screen-text state and an owner-filtered
+  `SessionEventSubscriber` for completion and failure. The host supplies recognized
+  content and submits its text binding with `Host` output to the shared translator,
+  which publishes translations to the shared result bubbles. Capture
   and local recognition use the shared resource and worker lifecycle described
   above.
 

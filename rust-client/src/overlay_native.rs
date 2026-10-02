@@ -255,6 +255,16 @@ impl OverlayWindow {
     }
 
     fn header(&mut self, ui: &mut egui::Ui) -> Rect {
+        // Tooltips must never be painted over the area being captured.
+        ui.ctx().all_styles_mut(|style| {
+            style.interaction.tooltip_delay =
+                if self.edit_region || self.controls.ocr_enabled == Some(true) {
+                    f32::INFINITY
+                } else {
+                    0.5
+                };
+            style.interaction.tooltip_grace_time = 0.0;
+        });
         panel(6)
             .show(ui, |ui| {
                 ui.spacing_mut().button_padding = Vec2::splat(4.0);
@@ -275,6 +285,13 @@ impl OverlayWindow {
                         egui::Sense::drag(),
                     )
                     .on_hover_cursor(egui::CursorIcon::Grab);
+                if drag.hovered() || drag.dragged() {
+                    ui.painter().rect_filled(
+                        drag.rect.shrink2(egui::vec2(1.0, 2.0)),
+                        8,
+                        theme::text_strong().gamma_multiply(0.08),
+                    );
+                }
                 for x in [10.0, 15.0] {
                     for y in [-5.0, 0.0, 5.0] {
                         ui.painter().circle_filled(
@@ -297,9 +314,22 @@ impl OverlayWindow {
                             "Adjust recognition area"
                         },
                     );
-                    let response = icon_button(ui, slot(bar.left() + 50.0), label);
+                    let response = icon_button(
+                        ui,
+                        slot(bar.left() + 50.0),
+                        "recognition_area",
+                        self.edit_region,
+                        label,
+                    );
                     let center = response.rect.center();
-                    let stroke = Stroke::new(1.6, theme::text_normal());
+                    let stroke = Stroke::new(
+                        1.6,
+                        if self.edit_region || response.hovered() {
+                            theme::text_strong()
+                        } else {
+                            theme::text_weak()
+                        },
+                    );
                     if self.edit_region {
                         ui.painter().add(egui::Shape::line(
                             vec![
@@ -326,16 +356,6 @@ impl OverlayWindow {
                         self.edit_region = !self.edit_region;
                     }
                 }
-                // Tooltips must never be painted over the area being captured.
-                ui.ctx().all_styles_mut(|style| {
-                    style.interaction.tooltip_delay =
-                        if self.edit_region || self.controls.ocr_enabled == Some(true) {
-                            f32::INFINITY
-                        } else {
-                            0.5
-                        };
-                    style.interaction.tooltip_grace_time = 0.0;
-                });
                 let active = self.controls.translation_enabled;
                 let label = tr(
                     self.language,
@@ -345,45 +365,20 @@ impl OverlayWindow {
                         "Start Translation"
                     },
                 );
-                let response = ui
-                    .scope_builder(
-                        egui::UiBuilder::new().max_rect(slot(bar.center().x)),
-                        |ui| {
-                            ui.add(
-                                egui::Button::image(
-                                    egui::Image::new(egui::include_image!(
-                                        "../resources/icons/translation.svg"
-                                    ))
-                                    .fit_to_exact_size(Vec2::splat(22.0)),
-                                )
-                                .min_size(Vec2::splat(components::INPUT_TOGGLE_SIZE))
-                                .corner_radius(12)
-                                .fill(if active {
-                                    theme::text_strong().gamma_multiply(0.16)
-                                } else {
-                                    theme::surface_subtle()
-                                })
-                                .stroke(if active {
-                                    Stroke::new(1.5, theme::text_strong())
-                                } else {
-                                    Stroke::new(1.0, theme::border())
-                                }),
-                            )
-                        },
-                    )
-                    .inner;
-                response.widget_info(|| {
-                    egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, label)
-                });
-                if response.on_hover_text(label).clicked() {
+                let response = icon_button(ui, slot(bar.center().x), "translation", active, label);
+                egui::Image::new(egui::include_image!("../resources/icons/translation.svg"))
+                    .tint(theme::text_strong())
+                    .paint_at(ui, response.rect.shrink(7.0));
+                if response.clicked() {
                     send_event(OverlayEvent::TranslationEnabled(!active));
                 }
                 use components::InputIcon;
+                let step = components::INPUT_TOGGLE_SIZE + 8.0;
                 for (icon, enabled, x, id) in [
                     (
                         InputIcon::Microphone,
                         self.controls.microphone_enabled,
-                        bar.center().x - 44.0,
+                        bar.center().x - step,
                         "microphone_input",
                     ),
                     (
@@ -391,9 +386,9 @@ impl OverlayWindow {
                         self.controls.system_audio_enabled,
                         bar.center().x
                             + if self.controls.microphone_enabled.is_some() {
-                                44.0
+                                step
                             } else {
-                                -44.0
+                                -step
                             },
                         "system_audio_input",
                     ),
@@ -404,9 +399,9 @@ impl OverlayWindow {
                             + if self.controls.microphone_enabled.is_some()
                                 && self.controls.system_audio_enabled.is_some()
                             {
-                                88.0
+                                step * 2.0
                             } else {
-                                44.0
+                                step
                             },
                         "screen_text_input",
                     ),
@@ -428,7 +423,7 @@ impl OverlayWindow {
                         },
                     );
                     let response = ui
-                        .scope_builder(egui::UiBuilder::new().max_rect(slot(x)), |ui| {
+                        .scope_builder(egui::UiBuilder::new().id_salt(id).max_rect(slot(x)), |ui| {
                             components::input_toggle_with_accent(
                                 ui,
                                 id,
@@ -454,7 +449,13 @@ impl OverlayWindow {
                         });
                     }
                 }
-                let close = icon_button(ui, slot(bar.right() - 18.0), tr(self.language, "Close"));
+                let close = icon_button(
+                    ui,
+                    slot(bar.right() - components::INPUT_TOGGLE_SIZE * 0.5),
+                    "close",
+                    false,
+                    tr(self.language, "Close"),
+                );
                 let center = close.rect.center();
                 for y in [-1.0, 1.0] {
                     ui.painter().line_segment(
@@ -462,7 +463,14 @@ impl OverlayWindow {
                             center + egui::vec2(-5.0, y * 5.0),
                             center + egui::vec2(5.0, -y * 5.0),
                         ],
-                        Stroke::new(1.6, theme::text_weak()),
+                        Stroke::new(
+                            1.6,
+                            if close.hovered() {
+                                theme::text_strong()
+                            } else {
+                                theme::text_weak()
+                            },
+                        ),
                     );
                 }
                 if close.clicked() {
@@ -474,13 +482,13 @@ impl OverlayWindow {
     }
 
     fn result(&mut self, ctx: &egui::Context, frame: &eframe::Frame, anchor: Rect) {
-        let ocr = self.ocr.as_ref().filter(|ocr| {
-            self.controls.ocr_enabled == Some(true)
-                && (!ocr.source.is_empty() || ocr.status.is_some() || ocr.busy)
-        });
+        let ocr_enabled = self.controls.ocr_enabled == Some(true);
+        let ocr = self.ocr.as_ref().filter(|_| ocr_enabled);
         let waiting = self.controls.microphone_enabled == Some(true)
             || self.controls.system_audio_enabled == Some(true);
-        if ocr.is_none()
+        // Keep the viewport alive between recognition passes, including empty
+        // results. Recreating it also disrupts the capture exclusion region.
+        if !ocr_enabled
             && self.subtitles.visible_entries.is_empty()
             && self.subtitles.partial_text.is_none()
             && !waiting
@@ -564,6 +572,13 @@ impl OverlayWindow {
                         let drag = ui
                             .interact(handle, ui.id().with("drag_results"), egui::Sense::drag())
                             .on_hover_cursor(egui::CursorIcon::Grab);
+                        if drag.hovered() || drag.dragged() {
+                            ui.painter().rect_filled(
+                                Rect::from_center_size(handle.center(), egui::vec2(32.0, 12.0)),
+                                6,
+                                theme::text_strong().gamma_multiply(0.08),
+                            );
+                        }
                         for x in [-8.0, -4.0, 0.0, 4.0, 8.0] {
                             ui.painter().circle_filled(
                                 handle.center() + egui::vec2(x, 0.0),
@@ -621,6 +636,10 @@ impl eframe::App for OverlayWindow {
                     if controls.ocr_enabled != self.controls.ocr_enabled {
                         self.edit_region = controls.ocr_enabled == Some(true);
                     }
+                    if controls.ocr_enabled.is_none() {
+                        self.pending_region = None;
+                        self.sent_region = None;
+                    }
                     self.controls = controls;
                 }
                 OverlayCommand::Subtitles(state) => self.subtitles = state,
@@ -647,9 +666,10 @@ impl eframe::App for OverlayWindow {
                 regions.push((header, CORNER as f32));
                 anchor = header;
                 ui.add_space(GAP);
-                if self.edit_region
-                    || self.controls.ocr_enabled == Some(true)
-                    || (self.pending_region.is_some() && self.sent_region.is_none())
+                if self.controls.ocr_enabled.is_some()
+                    && (self.edit_region
+                        || self.controls.ocr_enabled == Some(true)
+                        || (self.pending_region.is_some() && self.sent_region.is_none()))
                 {
                     let rect = ui.available_rect_before_wrap().shrink(2.0);
                     selection = Some(rect.shrink(12.0));
@@ -829,20 +849,17 @@ fn panel(margin: i8) -> egui::Frame {
         .inner_margin(margin)
 }
 
-fn icon_button(ui: &mut egui::Ui, rect: Rect, label: &str) -> egui::Response {
-    let response = ui
-        .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-            ui.add(
-                egui::Button::new("")
-                    .min_size(rect.size())
-                    .corner_radius(12)
-                    .frame(false),
-            )
-        })
-        .inner;
-    response
-        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, false, label));
-    response.on_hover_text(label)
+fn icon_button(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    id: &str,
+    active: bool,
+    label: &str,
+) -> egui::Response {
+    ui.scope_builder(egui::UiBuilder::new().id_salt(id).max_rect(rect), |ui| {
+        components::compact_icon_button(ui, id, active, label, Some(theme::text_strong()))
+    })
+    .inner
 }
 
 fn card(

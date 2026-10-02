@@ -139,7 +139,6 @@ pub fn render_sidebar(
     navigation: &mut NavigationState,
     plugin_preferences: &crate::plugins::PluginPreferences,
     tts_configured: bool,
-    ocr_configured: bool,
     modal_dialog: &mut modal::ModalDialog,
     first_run: &mut bool,
     onboarding_page: &mut usize,
@@ -219,8 +218,7 @@ pub fn render_sidebar(
             .auto_shrink([false, false])
             .min_scrolled_height(0.0)
             .show(ui, |ui| {
-                for entry in navigation_entries(plugin_preferences, tts_configured, ocr_configured)
-                {
+                for entry in navigation_entries(plugin_preferences, tts_configured) {
                     if entry.page == Page::AudioStudio {
                         ui.add_space(if compact_height { 3.0 } else { 8.0 });
                         components::wavy_divider_black_shadow(ui);
@@ -602,7 +600,6 @@ struct NavigationEntry {
 fn navigation_entries(
     plugins: &crate::plugins::PluginPreferences,
     tts_configured: bool,
-    ocr_configured: bool,
 ) -> Vec<NavigationEntry> {
     use egui::include_image;
     let mut entries = vec![NavigationEntry {
@@ -618,10 +615,7 @@ fn navigation_entries(
     entries.extend(
         descriptors
             .into_iter()
-            .filter(|descriptor| {
-                plugins.is_enabled(descriptor.id)
-                    && (descriptor.id != crate::plugins::PluginId::OCR || ocr_configured)
-            })
+            .filter(|descriptor| plugins.is_enabled(descriptor.id))
             .map(|descriptor| NavigationEntry {
                 page: Page::Plugin(descriptor.id),
                 title: descriptor.title_key,
@@ -663,7 +657,6 @@ pub fn render_top_navigation(
     navigation: &mut NavigationState,
     plugins: &crate::plugins::PluginPreferences,
     tts_configured: bool,
-    ocr_configured: bool,
     modal_dialog: &mut modal::ModalDialog,
     first_run: &mut bool,
     onboarding_page: &mut usize,
@@ -680,7 +673,7 @@ pub fn render_top_navigation(
             .max_width((ui.available_width() - 48.0).max(0.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    for entry in navigation_entries(plugins, tts_configured, ocr_configured) {
+                    for entry in navigation_entries(plugins, tts_configured) {
                         let selected = navigation.page == entry.page;
                         let icon =
                             egui::Image::new(entry.icon).fit_to_exact_size(egui::vec2(18.0, 18.0));
@@ -752,10 +745,11 @@ pub fn render_top_navigation(
                     ui.close();
                 }
                 ui.add_space(4.0);
-                let home_icon =
-                    egui::Image::new(egui::include_image!("../../resources/icons/translation.svg"))
-                        .fit_to_exact_size(egui::vec2(16.0, 16.0))
-                        .tint(theme::text_strong());
+                let home_icon = egui::Image::new(egui::include_image!(
+                    "../../resources/icons/translation.svg"
+                ))
+                .fit_to_exact_size(egui::vec2(16.0, 16.0))
+                .tint(theme::text_strong());
                 if ui
                     .add_sized(
                         [ui.available_width(), 36.0],

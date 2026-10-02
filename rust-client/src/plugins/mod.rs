@@ -1,7 +1,8 @@
-//! Built-in plugin catalogue and persisted enablement preferences.
+//! Built-in plugin identities, page catalogue and enablement preferences.
 //!
-//! Plugins are linked into the client, but their navigation, settings and
-//! runtime lifecycles are selected through stable IDs. This catalogue removes
+//! Plugins are linked into the client and identified through stable IDs.
+//! Plugins with standalone pages contribute navigation and settings here;
+//! embedded inputs follow their shared capability's configuration. The catalogue removes
 //! repeated navigation/settings metadata; statically typed runtime composition
 //! remains explicit in the host adapter.
 
@@ -120,7 +121,7 @@ pub struct PluginDescriptor {
     pub default_enabled: bool,
 }
 
-const PLUGIN_DESCRIPTORS: [PluginDescriptor; 5] = [
+const PLUGIN_DESCRIPTORS: [PluginDescriptor; 4] = [
     PluginDescriptor {
         id: PluginId::MEETING,
         title_key: "Meeting notes",
@@ -146,19 +147,6 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 5] = [
         scroll_policy: PluginScrollPolicy::Plugin,
         settings_contribution: PluginSettingsContribution::EnablementOnly,
         default_enabled: false,
-    },
-    PluginDescriptor {
-        id: PluginId::OCR,
-        title_key: "Screen Translation",
-        description_key: "Move and resize the OCR frame over text. Translation appears beside it as the text changes.",
-        navigation_order: 160,
-        icon: PluginIcon {
-            uri: "bytes://plugins/ocr/icon.svg",
-            bytes: include_bytes!("../../resources/plugins/ocr/icon.svg"),
-        },
-        scroll_policy: PluginScrollPolicy::Host,
-        settings_contribution: PluginSettingsContribution::EnablementOnly,
-        default_enabled: true,
     },
     PluginDescriptor {
         id: PluginId::VR_OVERLAY,
@@ -188,7 +176,7 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 5] = [
     },
 ];
 
-/// Catalogue for plugins compiled into this build.
+/// Catalogue for standalone plugin pages compiled into this build.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PluginRegistry;
 
