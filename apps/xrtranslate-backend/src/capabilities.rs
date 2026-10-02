@@ -14,12 +14,21 @@ pub(crate) struct SpeechResources {
 }
 
 impl BackendState {
+    async fn prepare_onnx(&self) -> Result<(), String> {
+        self.onnx_runtime
+            .get_or_try_init(|| async {
+                initialize_managed_onnx_runtime(&self.project_root, &self.config)
+            })
+            .await
+            .copied()
+    }
+
     pub(crate) async fn prepare_audio(&self) -> Result<(), String> {
         self.audio_runtime
             .get_or_try_init(|| async {
                 self.model_plan
                     .check_capability_assets(ModelCapability::Asr)?;
-                initialize_managed_onnx_runtime(&self.project_root, &self.config)?;
+                self.prepare_onnx().await?;
                 let mut processes = if self.manage_models {
                     start_llama_servers(&self.model_plan, ModelCapability::Asr)?
                 } else {
@@ -47,7 +56,7 @@ impl BackendState {
                 let diagnostic = if let Some(adapter) = &tts {
                     self.model_plan
                         .check_capability_assets(ModelCapability::Tts)?;
-                    initialize_managed_onnx_runtime(&self.project_root, &self.config)?;
+                    self.prepare_onnx().await?;
                     let device = adapter.prepare().await.map_err(|error| error.to_string())?;
                     runtime_diagnostic(&self.project_root, &self.config, device)
                 } else {

@@ -359,6 +359,7 @@ struct BackendState {
     model_plan: Arc<NativeProviderPlan>,
     corpus_client: CorpusClient,
     project_root: PathBuf,
+    onnx_runtime: Arc<tokio::sync::OnceCell<()>>,
     audio_runtime: Arc<tokio::sync::OnceCell<Vec<LlamaServerProcess>>>,
     speech_runtime: Arc<tokio::sync::OnceCell<capabilities::SpeechResources>>,
     manage_models: bool,
@@ -440,6 +441,7 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
         model_plan,
         corpus_client,
         project_root,
+        onnx_runtime: Arc::new(tokio::sync::OnceCell::new()),
         audio_runtime: Arc::new(tokio::sync::OnceCell::new()),
         speech_runtime: Arc::new(tokio::sync::OnceCell::new()),
         manage_models: args.manage_llama_servers,
@@ -533,13 +535,13 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
         None
     } else {
         if let Err(error) = state.prepare_audio().await {
-            let _ = send_error(&outbound_sender, error).await;
+            reject_session(error, outbound_sender, reader, writer_task).await;
             return;
         }
         match NativePipeline::new(&state.config, &state.project_root, &state.model_plan) {
             Ok(pipeline) => Some(pipeline),
             Err(error) => {
-                let _ = send_error(&outbound_sender, error).await;
+                reject_session(error, outbound_sender, reader, writer_task).await;
                 return;
             }
         }
@@ -551,7 +553,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
     let inference = match inference {
         Ok(inference) => inference,
         Err(error) => {
-            let _ = send_error(&outbound_sender, error).await;
+            reject_session(error, outbound_sender, reader, writer_task).await;
             return;
         }
     };
@@ -577,7 +579,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
         match state.prepare_speech().await {
             Ok(resources) => Some(resources),
             Err(error) => {
-                let _ = send_error(&outbound_sender, error).await;
+                reject_session(error, outbound_sender, reader, writer_task).await;
                 return;
             }
         }
@@ -3267,6 +3269,7 @@ async fn send_error(
     writer: &mpsc::Sender<OutboundMessage>,
     message: String,
 ) -> Result<(), axum::Error> {
+    warn!(%message, "session error");
     send_event(
         writer,
         None,
@@ -3310,6 +3313,28 @@ async fn send_event(
         .map_err(axum::Error::new)
 }
 
+/// Drain queued client controls until the close handshake completes, so Windows
+/// does not reset the socket with unread input and hide the startup diagnostic.
+async fn reject_session(
+    error: String,
+    sender: mpsc::Sender<OutboundMessage>,
+    mut reader: futures_util::stream::SplitStream<WebSocket>,
+    mut writer: tokio::task::JoinHandle<()>,
+) {
+    let _ = send_error(&sender, error).await;
+    drop(sender);
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(Ok(message)) = reader.next().await {
+            if matches!(message, Message::Close(_)) {
+                break;
+            }
+        }
+        let _ = (&mut writer).await;
+    })
+    .await;
+    writer.abort();
+}
+
 /// The only task allowed to write to this session's WebSocket sink.
 async fn run_websocket_writer(
     mut writer: futures_util::stream::SplitSink<WebSocket, Message>,
@@ -3324,6 +3349,7 @@ async fn run_websocket_writer(
             break;
         }
     }
+    let _ = writer.close().await;
 }
 
 fn outbound_is_current(

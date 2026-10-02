@@ -600,10 +600,6 @@ async fn run_session(
             return;
         }
     }
-    if !text_only {
-        let _ = event_tx.send(SessionEvent::Connected);
-    }
-
     let (pcm_tx, mut pcm_rx) = mpsc::channel::<Vec<u8>>(32);
     let producer_stop = Arc::clone(&stop_requested);
     let producer_paused = Arc::clone(&paused);
@@ -629,6 +625,7 @@ async fn run_session(
     let mut turn_started = false;
     let mut finish_sent = false;
     let mut pcm_input_closed = false;
+    let mut session_ready = false;
     let mut ticker = tokio::time::interval(Duration::from_millis(100));
     loop {
         if cancel_requested.load(Ordering::Acquire) {
@@ -695,7 +692,7 @@ async fn run_session(
                     let _ = event_tx.send(SessionEvent::Status("Connected — listening".into()));
                 }
             }
-            pcm = pcm_rx.recv(), if !pcm_input_closed => {
+            pcm = pcm_rx.recv(), if session_ready && !pcm_input_closed => {
                 let Some(pcm) = pcm else {
                     pcm_input_closed = true;
                     if finish_when_audio_ends && !finish_sent {
@@ -737,8 +734,9 @@ async fn run_session(
                 match message {
                     Some(Ok(Message::Text(text))) => {
                         if cancel_requested.load(Ordering::Acquire){continue;}
-                        if text_only && serde_json::from_str::<Value>(&text).ok()
-                            .is_some_and(|payload| payload["action"] == "session_ready") {
+                        let payload = serde_json::from_str::<Value>(&text).ok();
+                        if payload.as_ref().is_some_and(|payload| payload["action"] == "session_ready") {
+                            session_ready = true;
                             let _ = event_tx.send(SessionEvent::Connected);
                         }
                         let drained = pipeline_drain_reason(&text);
@@ -750,6 +748,13 @@ async fn run_session(
                             publish_to_host_outputs,
                             audio_source,
                         );
+                        if !session_ready && payload.as_ref().is_some_and(|payload| payload["action"] == "error") {
+                            // Keep the initialization error instead of replacing it with a socket reset.
+                            let _ = event_tx.send(SessionEvent::Disconnected("Session initialization failed".into()));
+                            if let Some(ctx) = &egui_ctx { ctx.request_repaint(); }
+                            let _ = write.close().await;
+                            return;
+                        }
                         if let Some(reason) = drained {
                             if reason == DrainReason::Paused {
                                 if paused.load(Ordering::Acquire) {
