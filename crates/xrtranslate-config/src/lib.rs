@@ -507,6 +507,7 @@ pub struct AppConfig {
     pub storage: StorageConfig,
     pub translation: TranslationConfig,
     pub tts: TtsConfig,
+    pub ocr: OcrConfig,
     pub model_manager: ModelManagerConfig,
     /// The unmodified parsed document, including sections unknown to this
     /// crate and frontend preferences.
@@ -520,6 +521,8 @@ pub struct RuntimeRequirements {
     pub llama_cpp: bool,
     /// The selected TTS provider uses the in-process ONNX runtime.
     pub onnx_tts: bool,
+    /// A selected model uses the shared CPU ONNX runtime.
+    pub onnx_cpu: bool,
     /// Managed ONNX model packages require the shared CUDA/cuDNN closure.
     /// Bundled small ONNX components do not participate in this requirement.
     pub onnx_cuda: bool,
@@ -536,7 +539,13 @@ impl AppConfig {
         let Some(root) = self.raw.as_object() else {
             return requirements;
         };
-        for section in root.values().filter_map(Value::as_object) {
+        for (key, section) in root {
+            if cfg!(target_os = "android") && key == "ocr" {
+                continue;
+            }
+            let Some(section) = section.as_object() else {
+                continue;
+            };
             let Some(selected) = section.get("provider").and_then(Value::as_str) else {
                 continue;
             };
@@ -553,7 +562,7 @@ impl AppConfig {
             };
             match provider.get("transport").and_then(Value::as_str) {
                 Some("local") | None => requirements.llama_cpp = true,
-                Some("onnx-cpu") => {}
+                Some("onnx-cpu") => requirements.onnx_cpu = true,
                 Some("onnx") => {
                     requirements.onnx_tts = true;
                     requirements.onnx_cuda = true;
@@ -620,6 +629,7 @@ impl AppConfig {
             storage: typed.storage,
             translation: typed.translation,
             tts: typed.tts,
+            ocr: typed.ocr,
             model_manager: typed.model_manager,
             raw,
             source_path: None,
@@ -755,7 +765,7 @@ impl AppConfig {
     }
 
     /// Returns the ordered native model-asset keys used by the currently
-    /// selected ASR, translation, and TTS provider objects. Plural
+    /// selected provider objects. Plural
     /// `model_assets` takes precedence over the singular compatibility key.
     /// The UI and installer never hard-code a model name or provider pair.
     #[must_use]
@@ -765,6 +775,8 @@ impl AppConfig {
             (&self.asr.provider, &self.asr.providers),
             (&self.translation.provider, &self.translation.providers),
             (&self.tts.provider, &self.tts.providers),
+            #[cfg(not(target_os = "android"))]
+            (&self.ocr.provider, &self.ocr.providers),
         ] {
             let Some(model) = providers.get(provider.trim()).and_then(Value::as_object) else {
                 continue;
@@ -866,6 +878,8 @@ struct TypedConfig {
     translation: TranslationConfig,
     #[serde(default)]
     tts: TtsConfig,
+    #[serde(default)]
+    ocr: OcrConfig,
     #[serde(default)]
     model_manager: ModelManagerConfig,
 }
@@ -1146,25 +1160,28 @@ impl TranslationConfig {
     }
 }
 
-/// TTS selection and optional future-provider options.
+/// Optional capability selection, disabled until the user chooses a provider.
+pub type TtsConfig = OptionalProviderConfig;
+pub type OcrConfig = OptionalProviderConfig;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TtsConfig {
-    #[serde(default = "default_tts_provider")]
+pub struct OptionalProviderConfig {
+    #[serde(default = "default_optional_provider")]
     pub provider: String,
     #[serde(default)]
     pub providers: ProviderConfigs,
 }
 
-impl Default for TtsConfig {
+impl Default for OptionalProviderConfig {
     fn default() -> Self {
         Self {
-            provider: default_tts_provider(),
+            provider: default_optional_provider(),
             providers: ProviderConfigs::new(),
         }
     }
 }
 
-impl TtsConfig {
+impl OptionalProviderConfig {
     pub fn provider_config(&self, provider: &str) -> Option<&Value> {
         self.providers.get(provider)
     }
@@ -1871,7 +1888,7 @@ fn default_source_lang() -> String {
 fn default_target_lang() -> String {
     "zh,en".into()
 }
-fn default_tts_provider() -> String {
+fn default_optional_provider() -> String {
     "none".into()
 }
 fn default_hunyuan_gguf_repo() -> String {

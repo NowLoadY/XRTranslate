@@ -11,6 +11,8 @@ use std::sync::{
 
 #[cfg(target_os = "android")]
 mod android;
+#[cfg(target_os = "android")]
+mod android_text_actions;
 mod app_update;
 mod audio;
 #[cfg(target_os = "linux")]
@@ -31,8 +33,16 @@ mod network;
 mod onboarding;
 mod overlay_ipc;
 mod overlay_manager;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 mod overlay_native;
+#[cfg(any(windows, target_os = "linux"))]
+mod screen_capture;
+#[cfg(any(windows, target_os = "linux"))]
+mod ocr_capture;
+#[cfg(any(windows, target_os = "linux"))]
+mod ocr_runtime;
+#[cfg(any(windows, target_os = "linux"))]
+mod ocr_host;
 mod plugins;
 mod presentation;
 mod runtime_install;
@@ -624,6 +634,7 @@ struct XRTranslateApp {
     selected_input_config: Option<InputConfigInfo>,
     translation_enabled: bool,
     microphone_enabled: bool,
+    system_audio_enabled: bool,
     audio_tasks: Vec<translation_service::AudioTask>,
     input_level: Arc<AtomicU32>,
     loopback_level: Arc<AtomicU32>,
@@ -640,6 +651,9 @@ struct XRTranslateApp {
     last_error: Option<String>,
     companion_inbox: ui::companion::Inbox,
     text_translation: text_translation::TextTranslation,
+    #[cfg(target_os = "android")]
+    android_text_actions: android_text_actions::TextActions,
+    text_composer: ui::components::text_composer::TextComposer,
     server_url: String,
     download_proxy_url: String,
     update_channel: client_settings::UpdateChannel,
@@ -659,6 +673,8 @@ struct XRTranslateApp {
     audio_studio_started_voicemeeter: bool,
     meeting_plugin: MeetingPlugin,
     player_plugin: plugins::player::VideoPlayerPlugin,
+    #[cfg(any(windows, target_os = "linux"))]
+    ocr: ocr_host::OcrHost,
     host_audio_import: Option<media_import::AudioImportHandle>,
     pending_translations: Vec<TranslationTask>,
     active_languages: Option<LanguageSelection>,
@@ -831,6 +847,10 @@ impl Default for XRTranslateApp {
             }
         };
         let player_plugin = plugins::player::VideoPlayerPlugin::new();
+        #[cfg(target_os = "android")]
+        let android_text_actions = android_text_actions::TextActions::default();
+        #[cfg(any(windows, target_os = "linux"))]
+        let ocr = ocr_host::OcrHost::default();
         let mut model_task_manager = model_install::NativeModelTaskManager::default();
         model_task_manager.set_proxy_url(&settings.download_proxy_url);
         let mut runtime_installer = runtime_install::RuntimeInstaller::default();
@@ -878,6 +898,10 @@ impl Default for XRTranslateApp {
         let session_event_subscribers: Arc<Vec<Box<dyn SessionEventSubscriber>>> = Arc::new(vec![
             Box::new(meeting_plugin.event_sink.clone()),
             Box::new(player_plugin.event_sink.clone()),
+            #[cfg(target_os = "android")]
+            Box::new(android_text_actions.event_sink.clone()),
+            #[cfg(any(windows, target_os = "linux"))]
+            Box::new(ocr.plugin.event_sink.clone()),
         ]);
         let host_output_subscribers: Arc<Vec<Box<dyn HostOutputSubscriber>>> = Arc::new(vec![
             Box::new(osc_plugin.publisher()),
@@ -1418,6 +1442,7 @@ impl Default for XRTranslateApp {
             selected_input_config,
             translation_enabled: false,
             microphone_enabled: false,
+            system_audio_enabled: false,
             audio_tasks: Vec::new(),
             input_level,
             loopback_level,
@@ -1434,6 +1459,9 @@ impl Default for XRTranslateApp {
             last_error: None,
             companion_inbox: ui::companion::Inbox::default(),
             text_translation: text_translation::TextTranslation::default(),
+            #[cfg(target_os = "android")]
+            android_text_actions,
+            text_composer: ui::components::text_composer::TextComposer::default(),
             server_url: settings.server_url,
             download_proxy_url: settings.download_proxy_url,
             update_channel: settings.update_channel,
@@ -1453,6 +1481,8 @@ impl Default for XRTranslateApp {
             audio_studio_started_voicemeeter: false,
             meeting_plugin,
             player_plugin,
+            #[cfg(any(windows, target_os = "linux"))]
+            ocr,
             host_audio_import: None,
             pending_translations: Vec::new(),
             active_languages: None,
@@ -1534,6 +1564,18 @@ impl XRTranslateApp {
         let Some(resource) = self.pending_resource_deletion.take() else {
             return;
         };
+        #[cfg(any(windows, target_os = "linux"))]
+        {
+            self.stop_ocr();
+            if self.ocr.is_stopping() {
+                self.ocr.resource_deletion = Some(resource);
+                return;
+            }
+        }
+        self.delete_resource(resource);
+    }
+
+    fn delete_resource(&mut self, resource: PendingResourceDeletion) {
         let project_root = self.project_root();
         self.cancel_text_tasks(None);
         self.backend_manager.shutdown();
@@ -1578,8 +1620,12 @@ impl XRTranslateApp {
         }
     }
 
+    pub(crate) fn plugin_available(&self, id: PluginId) -> bool {
+        id.is_supported() && (id != PluginId::OCR || self.service_config.ocr_is_configured())
+    }
+
     pub(crate) fn plugin_enabled(&self, id: PluginId) -> bool {
-        PluginRegistry::builtin().is_enabled(&self.plugin_preferences, id)
+        self.plugin_available(id) && PluginRegistry::builtin().is_enabled(&self.plugin_preferences, id)
     }
 
     /// Selects the first plugin currently requesting the exclusive translation
@@ -2393,13 +2439,18 @@ impl XRTranslateApp {
                     source_lang,
                     target_lang,
                 } => {
-                    let binding = self.osc_plugin.text_session_binding();
                     if self.submit_text_translation(
                         &text,
                         Some(source_lang),
                         Some(target_lang),
-                        Some(binding),
+                        None,
                     ) {
+                        self.osc_plugin.draft_input_mut().clear();
+                    }
+                }
+                OscUiAction::DirectInput(text) => {
+                    if self.osc_plugin.draft().enabled && self.plugin_enabled(PluginId::OSC) {
+                        self.osc_plugin.send_manual_message(&text);
                         self.osc_plugin.draft_input_mut().clear();
                     }
                 }
@@ -2414,12 +2465,39 @@ impl XRTranslateApp {
             ui,
             OscPageContext {
                 language: self.ui_language,
-                preparing_text: self.text_translation.preparing_for(PluginId::OSC.as_str()),
+                preparing_text: self.text_translation.preparing_host(),
                 mute_gate_enabled,
                 languages,
             },
         );
         self.apply_osc_actions(actions);
+    }
+
+    fn render_text_composer(&mut self, ui: &mut egui::Ui) {
+        use ui::components::text_composer::{ComposerContext, TextAction};
+        let capabilities = self.language_capabilities().for_text();
+        let action = self.text_composer.render(
+            ui,
+            "host_text_composer",
+            (&mut self.source_lang, &mut self.target_lang),
+            ComposerContext {
+                language: self.ui_language,
+                capabilities,
+                preparing: self.text_translation.preparing_host(),
+                allow_direct: false,
+                direct_enabled: false,
+                show_languages: false,
+            },
+        );
+        if let Some(TextAction::Translate {
+            text,
+            source_lang,
+            target_lang,
+        }) = action
+            && self.submit_text_translation(&text, Some(source_lang), Some(target_lang), None)
+        {
+            self.text_composer.text.clear();
+        }
     }
 
     fn render_audio_studio_page(&mut self, ui: &mut egui::Ui) {
@@ -2726,6 +2804,8 @@ impl XRTranslateApp {
             PluginId::VIDEO_PLAYER => self.render_player_plugin_page(ui),
             PluginId::VR_OVERLAY => self.render_vr_overlay_plugin_page(ui),
             PluginId::OSC => self.render_osc_plugin_page(ui),
+            #[cfg(any(windows, target_os = "linux"))]
+            PluginId::OCR => self.render_ocr_plugin_page(ui),
             _ => self.navigation.page = Page::Translation,
         }
     }
@@ -2887,6 +2967,8 @@ impl XRTranslateApp {
     }
 
     pub fn set_preferred_gpu(&mut self, gpu_name: &str) {
+        #[cfg(any(windows, target_os = "linux"))]
+        self.stop_ocr();
         let name = gpu_name.trim();
         let value = if name.is_empty() {
             None
@@ -2902,6 +2984,8 @@ impl XRTranslateApp {
         let _ = self
             .runtime_installer
             .prepare_for(project_root, requirements);
+        #[cfg(any(windows, target_os = "linux"))]
+        self.refresh_ocr();
     }
 
     pub fn finish_onboarding(&mut self) {
@@ -2939,6 +3023,8 @@ impl XRTranslateApp {
         }
         self.first_run = false;
         self.save_settings();
+        #[cfg(any(windows, target_os = "linux"))]
+        self.refresh_ocr();
     }
 
     pub fn set_ui_language(&mut self, language: UiLanguage) {
@@ -3047,7 +3133,7 @@ impl XRTranslateApp {
         self.backend_start_deadline = None;
         self.set_connection_status(status);
         self.last_error = Some(error);
-        self.release_unused_microphone();
+        self.release_unused_inputs();
     }
 
     pub fn start(&mut self, _ctx: Option<egui::Context>) {
@@ -3055,6 +3141,10 @@ impl XRTranslateApp {
             return;
         }
         self.enable_translation_service();
+        #[cfg(any(windows, target_os = "linux"))]
+        if self.ocr.enabled {
+            return;
+        }
         match self.backend_manager.prepare(&self.server_url) {
             Ok(backend::BackendStart::Ready) => self.set_connection_status("Ready"),
             Ok(backend::BackendStart::Starting(stage)) => {
@@ -3067,11 +3157,18 @@ impl XRTranslateApp {
     }
 
     fn enable_translation_service(&mut self) {
+        if self.translation_enabled {
+            return;
+        }
         self.translation_enabled = true;
         if let Ok(mut state) = self.shared_session_state.lock() {
             state.translation_enabled = true;
         }
         self.set_connection_status("Ready");
+        #[cfg(any(windows, target_os = "linux"))]
+        if self.ocr.enabled {
+            self.refresh_ocr();
+        }
     }
 
     fn plugin_task_active(&self, id: &str) -> bool {
@@ -3111,6 +3208,38 @@ impl XRTranslateApp {
         }) || self.pending_translations.iter().any(|task| {
             matches!(task.input, TranslationInput::Live(input) if input.routes().contains(&source))
         })
+    }
+
+    fn input_control_visible(&self, source: CaptureSource, show_selected: bool) -> bool {
+        if source == CaptureSource::SystemAudio && !AudioSystem::supports_system_audio() {
+            return false;
+        }
+        #[cfg(any(windows, target_os = "linux"))]
+        let ocr_enabled = self.ocr.enabled;
+        #[cfg(not(any(windows, target_os = "linux")))]
+        let ocr_enabled = false;
+        let has_work = ocr_enabled
+            || !self.audio_tasks.is_empty()
+            || !self.pending_translations.is_empty()
+            || self.text_translation.busy();
+        self.live_input_requested(source, true)
+            || ((show_selected || !has_work) && self.capture_source.routes().contains(&source))
+    }
+
+    fn input_enabled(&self, source: CaptureSource) -> bool {
+        match source {
+            CaptureSource::Microphone => self.microphone_enabled,
+            CaptureSource::SystemAudio => self.system_audio_enabled,
+            CaptureSource::Both => unreachable!("Input controls use individual sources"),
+        }
+    }
+
+    fn input_enabled_mut(&mut self, source: CaptureSource) -> &mut bool {
+        match source {
+            CaptureSource::Microphone => &mut self.microphone_enabled,
+            CaptureSource::SystemAudio => &mut self.system_audio_enabled,
+            CaptureSource::Both => unreachable!("Input controls use individual sources"),
+        }
     }
 
     fn input_capturing(&self, source: CaptureSource) -> bool {
@@ -3162,23 +3291,41 @@ impl XRTranslateApp {
         enabled: bool,
         ctx: Option<egui::Context>,
         start_host_if_idle: bool,
+        capture: impl FnMut(&mut Self, &translation_service::TaskChannel) -> Result<(), String>,
+    ) {
+        self.set_live_input(
+            CaptureSource::Microphone,
+            enabled,
+            ctx,
+            start_host_if_idle,
+            capture,
+        );
+    }
+
+    fn set_live_input(
+        &mut self,
+        source: CaptureSource,
+        enabled: bool,
+        ctx: Option<egui::Context>,
+        start_host_if_idle: bool,
         mut capture: impl FnMut(&mut Self, &translation_service::TaskChannel) -> Result<(), String>,
     ) {
-        if self.microphone_enabled == enabled {
+        if self.input_enabled(source) == enabled {
             return;
         }
-        self.microphone_enabled = enabled;
+        *self.input_enabled_mut(source) = enabled;
         if enabled {
             self.enable_translation_service();
         }
-        let demand = self.live_input_requested(CaptureSource::Microphone, false);
+        let demand = self.live_input_requested(source, true);
+        let active_demand = self.live_input_requested(source, false);
         let mut tasks = std::mem::take(&mut self.audio_tasks);
         for task in &mut tasks {
             if !task.is_live() {
                 continue;
             }
             for channel in &mut task.channels {
-                if channel.source != CaptureSource::Microphone {
+                if channel.source != source {
                     continue;
                 }
                 if !enabled {
@@ -3198,26 +3345,28 @@ impl XRTranslateApp {
         }
         self.audio_tasks = tasks;
         if enabled && !demand && start_host_if_idle {
-            self.start_host_input(CaptureSource::Microphone, ctx);
+            self.start_host_input(source, ctx);
         }
-        if enabled && demand && !self.input_capturing(CaptureSource::Microphone) &&
-            !self.pending_translations.iter().any(|task|matches!(task.input,TranslationInput::Live(source) if source.routes().contains(&CaptureSource::Microphone))) {
-            self.microphone_enabled=false;
+        if enabled && active_demand && !self.input_capturing(source)
+            && !self.pending_translations.iter().any(|task| {
+                matches!(task.input, TranslationInput::Live(input) if input.routes().contains(&source))
+            })
+        {
+            *self.input_enabled_mut(source) = false;
         }
         if !enabled {
-            self.input_level.store(0f32.to_bits(), Ordering::Relaxed);
-            self.microphone_vad_active.store(false, Ordering::Relaxed);
+            self.reset_input_level(source);
         }
     }
 
     fn set_system_audio_enabled(&mut self, enabled: bool, ctx: Option<egui::Context>) {
-        if enabled {
-            self.start_host_input(CaptureSource::SystemAudio, ctx);
-        } else {
-            self.stop_task_owner(&TranslationSessionOwner::Host {
-                capture_source: CaptureSource::SystemAudio,
-            });
-        }
+        self.set_live_input(
+            CaptureSource::SystemAudio,
+            enabled,
+            ctx,
+            true,
+            Self::start_task_capture,
+        );
     }
 
     fn cancel_text_tasks(&mut self, owner: Option<&TranslationSessionOwner>) {
@@ -3283,7 +3432,7 @@ impl XRTranslateApp {
             }
             task.cancel();
         }
-        self.release_unused_microphone();
+        self.release_unused_inputs();
     }
 
     fn stop_plugin_task(&mut self, id: PluginId) {
@@ -3334,10 +3483,12 @@ impl XRTranslateApp {
         }
     }
 
-    fn release_unused_microphone(&mut self) {
-        if !self.live_input_requested(CaptureSource::Microphone, false) {
-            self.microphone_enabled = false;
-            self.input_level.store(0f32.to_bits(), Ordering::Relaxed);
+    fn release_unused_inputs(&mut self) {
+        for source in CaptureSource::Both.routes() {
+            if !self.live_input_requested(*source, false) {
+                *self.input_enabled_mut(*source) = false;
+                self.reset_input_level(*source);
+            }
         }
     }
 
@@ -3377,7 +3528,7 @@ impl XRTranslateApp {
             }
             task.cancel();
         }
-        self.release_unused_microphone();
+        self.release_unused_inputs();
         if !self.translation_enabled {
             self.set_connection_status("Stopped");
         } else if self.backend_start_deadline.is_none()
@@ -3407,7 +3558,11 @@ impl XRTranslateApp {
                 .iter()
                 .any(|task| !task.paused && task.is_live())
             {
-                "Waiting for microphone"
+                if self.live_input_requested(CaptureSource::Microphone, false) {
+                    "Waiting for microphone"
+                } else {
+                    "Waiting for audio"
+                }
             } else {
                 "Ready"
             };
@@ -3451,8 +3606,8 @@ impl XRTranslateApp {
         }
         self.enable_translation_service();
         if let TranslationInput::Live(source) = task.input {
-            if source.routes().contains(&CaptureSource::Microphone) {
-                self.set_microphone_input(true, ctx.clone(), false, Self::start_task_capture);
+            for source in source.routes() {
+                self.set_live_input(*source, true, ctx.clone(), false, Self::start_task_capture);
             }
             task.profiles = source
                 .routes()
@@ -3475,7 +3630,7 @@ impl XRTranslateApp {
             Err(error) => {
                 self.fail_task_startup(&owner, &error);
                 self.last_error = Some(error);
-                self.release_unused_microphone();
+                self.release_unused_inputs();
                 return false;
             }
         }
@@ -3610,6 +3765,8 @@ impl XRTranslateApp {
         } else {
             self.set_connection_status("Ready");
         }
+        #[cfg(target_os = "android")]
+        self.android_text_actions.configuration_applied();
     }
 
     fn start_session(&mut self, task: TranslationTask, ctx: Option<egui::Context>) {
@@ -3683,7 +3840,7 @@ impl XRTranslateApp {
                 .begin_sessions(active.channels.len());
         }
         for channel in &mut active.channels {
-            if channel.source == CaptureSource::Microphone && !self.microphone_enabled {
+            if !self.input_enabled(channel.source) {
                 channel.session.pause();
                 continue;
             }
@@ -3699,7 +3856,7 @@ impl XRTranslateApp {
                         self.meeting_plugin.set_error(error.to_string());
                     }
                 }
-                self.release_unused_microphone();
+                self.release_unused_inputs();
                 return;
             }
             channel.capturing = true;
@@ -4147,11 +4304,19 @@ impl XRTranslateApp {
     }
 
     fn reset_audio_levels(&self) {
-        self.input_level.store(0.0_f32.to_bits(), Ordering::Relaxed);
-        self.loopback_level
-            .store(0.0_f32.to_bits(), Ordering::Relaxed);
-        self.microphone_vad_active.store(false, Ordering::Relaxed);
-        self.loopback_vad_active.store(false, Ordering::Relaxed);
+        for source in CaptureSource::Both.routes() {
+            self.reset_input_level(*source);
+        }
+    }
+
+    fn reset_input_level(&self, source: CaptureSource) {
+        let (level, vad) = match source {
+            CaptureSource::Microphone => (&self.input_level, &self.microphone_vad_active),
+            CaptureSource::SystemAudio => (&self.loopback_level, &self.loopback_vad_active),
+            CaptureSource::Both => unreachable!("Input controls use individual sources"),
+        };
+        level.store(0f32.to_bits(), Ordering::Relaxed);
+        vad.store(false, Ordering::Relaxed);
     }
 
     fn switch_capture_device(&mut self, source: CaptureSource, previous_device_id: String) {
@@ -4285,6 +4450,11 @@ impl XRTranslateApp {
     }
 
     fn set_floating_subtitles_enabled(&mut self, enabled: bool) {
+        #[cfg(any(windows, target_os = "linux"))]
+        if !enabled {
+            self.stop_ocr();
+            self.ocr.reset_window();
+        }
         self.floating_subtitles_enabled = enabled
             && crate::feature_access::is_available(
                 crate::feature_access::Feature::FloatingSubtitles,
@@ -4376,7 +4546,16 @@ impl XRTranslateApp {
         match self
             .service_config
             .language_capabilities()
-            .and_then(|caps| caps.for_text().select(&source, &target))
+            .and_then(|caps| {
+                let caps = caps.for_text();
+                if let Some((detected_source, detected_target)) =
+                    xrtranslate_engine::auto_route_language_pair(trimmed, &source, &target)
+                    && let Ok(selection) = caps.select(detected_source, detected_target)
+                {
+                    return Ok(selection);
+                }
+                caps.select(&source, &target)
+            })
         {
             Ok(languages) => self.start_translation_task(
                 TranslationTask::text(trimmed.to_owned(), languages, plugin),
@@ -4411,7 +4590,7 @@ impl XRTranslateApp {
             self.meeting_plugin.set_error(error.to_string());
         }
         let _ = self.meeting_plugin.controller.pause_capture();
-        self.release_unused_microphone();
+        self.release_unused_inputs();
     }
 
     pub(crate) fn resume_active_meeting(&mut self) -> bool {
@@ -4431,12 +4610,10 @@ impl XRTranslateApp {
         };
         self.enable_translation_service();
         let mut task = self.audio_tasks.remove(index);
-        if task
-            .channels
-            .iter()
-            .any(|channel| channel.source == CaptureSource::Microphone)
-        {
-            self.set_microphone_input(true, None, false, &mut capture);
+        for source in CaptureSource::Both.routes() {
+            if task.channels.iter().any(|channel| channel.source == *source) {
+                self.set_live_input(*source, true, None, false, &mut capture);
+            }
         }
         let mut ok = true;
         for channel in &mut task.channels {
@@ -4464,6 +4641,7 @@ impl XRTranslateApp {
         }
         self.audio_tasks.insert(index, task);
         self.microphone_enabled = self.input_capturing(CaptureSource::Microphone);
+        self.system_audio_enabled = self.input_capturing(CaptureSource::SystemAudio);
         if ok {
             if let Err(error) = self.meeting_plugin.controller.resume_active_meeting() {
                 self.meeting_plugin.set_error(error.to_string());
@@ -4489,8 +4667,11 @@ impl XRTranslateApp {
     }
 
     fn stop(&mut self) {
+        #[cfg(any(windows, target_os = "linux"))]
+        self.stop_ocr();
         self.translation_enabled = false;
         self.microphone_enabled = false;
+        self.system_audio_enabled = false;
         self.backend_start_deadline = None;
         self.cancel_pending_tasks(None);
         self.cancel_text_tasks(None);
@@ -4565,30 +4746,94 @@ impl XRTranslateApp {
         self.overlay_font_size_atomic
             .store(self.floating_subtitles_font_size as u32, Ordering::Relaxed);
 
-        if self.floating_subtitles_enabled {
-            if let Ok(mut mgr) = self.overlay_manager.lock() {
-                mgr.start();
-                for event in mgr.poll_events() {
-                    match event {
-                        overlay_ipc::OverlayEvent::CloseRequested => {
-                            self.floating_subtitles_enabled = false;
-                            self.overlay_enabled_atomic.store(false, Ordering::Relaxed);
-                            mgr.stop();
-                        }
-                        overlay_ipc::OverlayEvent::MaxCountChanged(new_max) => {
-                            let clamped = new_max.clamp(1, 10);
-                            self.floating_subtitles_max_count = clamped;
-                            self.overlay_max_count_atomic
-                                .store(clamped, Ordering::Relaxed);
-                        }
+        let overlay_controls = overlay_ipc::OverlayControls {
+            translation_enabled: self.translation_enabled,
+            microphone_enabled: self.input_control_visible(CaptureSource::Microphone, false)
+                .then_some(self.microphone_enabled),
+            system_audio_enabled: self.input_control_visible(CaptureSource::SystemAudio, false)
+                .then_some(self.system_audio_enabled),
+            #[cfg(any(windows, target_os = "linux"))]
+            ocr_enabled: self.plugin_enabled(PluginId::OCR).then_some(self.ocr.enabled),
+            #[cfg(not(any(windows, target_os = "linux")))]
+            ocr_enabled: None,
+        };
+        let overlay_state = self
+            .floating_subtitles_enabled
+            .then(|| {
+                self.shared_session_state.lock().ok().map(|state| {
+                    state.overlay_state(
+                        self.floating_subtitles_max_count,
+                        self.floating_subtitles_font_size as u32,
+                        self.microphone_vad_active.load(Ordering::Relaxed),
+                        self.loopback_vad_active.load(Ordering::Relaxed),
+                    )
+                })
+            })
+            .flatten();
+        let overlay_events = if let Ok(mut manager) = self.overlay_manager.lock() {
+            if self.floating_subtitles_enabled {
+                manager.set_language(self.ui_language);
+                manager.set_controls(overlay_controls);
+                // Consume close/failure events before considering another launch.
+                let events = manager.poll_events();
+                if events.iter().any(|event| {
+                    matches!(
+                        event,
+                        overlay_ipc::OverlayEvent::CloseRequested
+                            | overlay_ipc::OverlayEvent::Failed(_)
+                    )
+                }) {
+                    manager.stop();
+                } else {
+                    if let Some(state) = overlay_state {
+                        manager.send_state(&state);
                     }
+                    manager.start();
                 }
+                events
+            } else {
+                manager.stop();
+                Vec::new()
             }
         } else {
-            if let Ok(mut mgr) = self.overlay_manager.lock() {
-                mgr.stop();
+            Vec::new()
+        };
+        for event in overlay_events {
+            match event {
+                overlay_ipc::OverlayEvent::CloseRequested
+                | overlay_ipc::OverlayEvent::Failed(_) => {
+                    self.overlay_enabled_atomic.store(false, Ordering::Relaxed);
+                    self.set_floating_subtitles_enabled(false);
+                    if let overlay_ipc::OverlayEvent::Failed(error) = event {
+                        self.last_error = Some(error);
+                    }
+                    break;
+                }
+                overlay_ipc::OverlayEvent::TranslationEnabled(enabled) => {
+                    if enabled {
+                        self.start(None);
+                    } else {
+                        self.stop();
+                    }
+                }
+                overlay_ipc::OverlayEvent::MicrophoneEnabled(enabled) => {
+                    self.set_microphone_enabled(enabled, None);
+                }
+                overlay_ipc::OverlayEvent::SystemAudioEnabled(enabled) => {
+                    self.set_system_audio_enabled(enabled, None);
+                }
+                event => {
+                    #[cfg(any(windows, target_os = "linux"))]
+                    self.handle_ocr_event(event);
+                    #[cfg(not(any(windows, target_os = "linux")))]
+                    let _ = event;
+                }
             }
         }
+
+        // Apply window invalidation before accepting recognition from its old area.
+        #[cfg(any(windows, target_os = "linux"))]
+        self.poll_ocr();
 
         // Copy latest shared state into self for local rendering when main UI is visible
         let mut open_provider_configuration = false;
@@ -4742,6 +4987,8 @@ impl Drop for XRTranslateApp {
 
 impl eframe::App for XRTranslateApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(target_os = "android")]
+        self.poll_android_text_actions(ctx);
         if !self.first_run && !ctx.input(|input| input.viewport().visible().unwrap_or(true)) {
             self.poll_backend_startup(Some(ctx.clone()));
             self.poll_text_translation(ctx);
@@ -4756,6 +5003,10 @@ impl eframe::App for XRTranslateApp {
         ui::theme::install_context(ui.ctx(), self.ui_theme);
         ui::layout::begin_frame(ui.ctx());
         self.poll_file_dialogs();
+        #[cfg(target_os = "android")]
+        self.poll_android_text_actions(ui.ctx());
+        #[cfg(any(windows, target_os = "linux"))]
+        self.poll_ocr_cleanup();
         #[cfg(target_os = "android")]
         if let Some(result) = android::take_resources_result() {
             match result {
@@ -4786,6 +5037,10 @@ impl eframe::App for XRTranslateApp {
         if let Some(step) = ui::automation::take_pending_onboarding_step() {
             self.onboarding_page = step;
             self.first_run = true;
+        }
+        if let Page::Plugin(id) = self.navigation.page
+            && !self.plugin_enabled(id) {
+            self.navigation.page = Page::Translation;
         }
         if self.navigation.page == Page::TtsCenter && !self.service_config.tts_is_configured() {
             self.navigation.page = Page::Translation;
@@ -4935,6 +5190,7 @@ impl eframe::App for XRTranslateApp {
                             &mut self.navigation,
                             &self.plugin_preferences,
                             self.service_config.tts_is_configured(),
+                            self.service_config.ocr_is_configured(),
                             &mut self.modal_dialog,
                             &mut self.first_run,
                             &mut self.onboarding_page,
@@ -4960,6 +5216,7 @@ impl eframe::App for XRTranslateApp {
                             &mut self.navigation,
                             &self.plugin_preferences,
                             self.service_config.tts_is_configured(),
+                            self.service_config.ocr_is_configured(),
                             &mut self.modal_dialog,
                             &mut self.first_run,
                             &mut self.onboarding_page,
@@ -5004,6 +5261,14 @@ impl eframe::App for XRTranslateApp {
         let content = egui::CentralPanel::default()
             .frame(central_frame)
             .show(ui, |ui| {
+                if self.navigation.page == Page::Translation {
+                    ui::animation::AnimationSystem::render_animated_page(
+                        ui,
+                        Page::Translation,
+                        |ui| ui::pages::translation::render(self, ui),
+                    );
+                    return;
+                }
                 let plugin_owned_scroll = match self.navigation.page {
                     Page::Plugin(id) => {
                         PluginRegistry::builtin()
@@ -5108,13 +5373,7 @@ impl eframe::App for XRTranslateApp {
                     .id_salt("main_scroll_area")
                     .auto_shrink([false, false])
                     .show(ui, |ui| match self.navigation.page {
-                        Page::Translation => {
-                            ui::animation::AnimationSystem::render_animated_page(
-                                ui,
-                                Page::Translation,
-                                |ui| ui::pages::translation::render(self, ui),
-                            );
-                        }
+                        Page::Translation => unreachable!(),
                         Page::Plugin(id) => {
                             ui::animation::AnimationSystem::render_animated_page(
                                 ui,
@@ -5218,8 +5477,9 @@ pub fn run() -> eframe::Result<()> {
     cleanup_runtime_cache();
 
     if std::env::args().any(|a| a == "--overlay") {
-        #[cfg(windows)]
-        overlay_native::run_native_overlay();
+        #[cfg(any(windows, target_os = "linux"))]
+        return overlay_native::run_native_overlay();
+        #[cfg(not(any(windows, target_os = "linux")))]
         return Ok(());
     }
 
@@ -6065,6 +6325,7 @@ mod tests {
             target_lang: "zh".into(),
         }]);
         assert_eq!(app.osc_plugin.draft_input(), "");
+        assert!(app.text_translation.scopes().all(|scope| scope.owner.is_host()));
         assert!(app.translation_enabled);
         assert!(!app.microphone_enabled);
         assert!(app.audio_tasks.is_empty());

@@ -694,11 +694,10 @@ fn render_plugins_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     );
     ui.add_space(16.0);
 
-    for descriptor in crate::plugins::PluginRegistry::builtin()
-        .descriptors()
-        .iter()
-        .filter(|descriptor| descriptor.id.is_supported())
-    {
+    for descriptor in crate::plugins::PluginRegistry::builtin().descriptors() {
+        if !app.plugin_available(descriptor.id) {
+            continue;
+        }
         let mut enabled = app.plugin_enabled(descriptor.id);
         let disable_reason = enabled
             .then(|| app.plugin_disable_block_reason(descriptor.id))

@@ -33,7 +33,7 @@ fn temporary_project_root() -> PathBuf {
 
 #[test]
 fn static_catalog_declares_every_native_model_package() {
-    assert_eq!(MODEL_ASSET_CATALOG.len(), 12);
+    assert_eq!(MODEL_ASSET_CATALOG.len(), 14);
     assert_eq!(QWEN3_ASR_GGUF.required_files.len(), 2);
     assert_eq!(crate::CONFUCIUS4_R2T2_Q8_GGUF.level, ModelLevel::Normal);
     assert!(!crate::CONFUCIUS4_R2T2_Q8_GGUF.tier_default);
@@ -121,7 +121,10 @@ fn static_catalog_declares_every_native_model_package() {
         assert!(
             manifest.required_files.iter().any(|file| matches!(
                 file.role,
-                ModelFileRole::Weights | ModelFileRole::SlowArGraph | ModelFileRole::BaseTtsGraph
+                ModelFileRole::Weights
+                    | ModelFileRole::SlowArGraph
+                    | ModelFileRole::BaseTtsGraph
+                    | ModelFileRole::TextRecognitionGraph
             )),
             "{} must declare model weights",
             manifest.id

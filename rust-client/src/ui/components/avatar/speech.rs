@@ -12,6 +12,7 @@ pub struct Speech {
     dismiss_at: f64,
     position: Option<Pos2>,
     direction: Option<Vec2>,
+    settled_for: f32,
     size: Vec2,
     opacity: f32,
 }
@@ -22,6 +23,7 @@ impl Speech {
         Self {
             position: previous.position,
             direction: previous.direction,
+            settled_for: previous.settled_for,
             size: previous.size,
             opacity: previous.opacity,
             ..self.clone()
@@ -34,7 +36,7 @@ impl Speech {
         self.next_letter = now;
         self.last_letter = None;
         self.dismiss_at = f64::INFINITY;
-        self.direction = None;
+        self.settled_for = 0.0;
     }
 
     pub fn finished(&self, now: f64) -> bool {
@@ -72,7 +74,7 @@ impl Speech {
         now: f64,
         dt: f32,
     ) -> bool {
-        self.paint_avoiding(painter, bounds, anchor, radius, now, dt, &[])
+        self.paint_avoiding(painter, bounds, anchor, radius, now, dt, &[], true)
     }
 
     pub(crate) fn paint_avoiding(
@@ -84,6 +86,7 @@ impl Speech {
         now: f64,
         dt: f32,
         occupied: &[Rect],
+        settled: bool,
     ) -> bool {
         let visible = !self.finished(now);
         let target_opacity = if visible { 1.0 } else { 0.0 };
@@ -129,15 +132,26 @@ impl Speech {
             anchor + egui::vec2(radius * 1.3, radius * 1.1),
         )
         .expand(4.0);
-        let direction = bubble_direction(
-            bounds,
-            body,
-            anchor,
-            radius,
-            full_size,
-            occupied,
-            self.direction,
-        );
+        self.settled_for = if settled {
+            (self.settled_for + dt).min(0.25)
+        } else {
+            0.0
+        };
+        // Passing page elements must not swing the bubble from side to side.
+        // Its first appearance can choose immediately; later changes wait for rest.
+        let direction = if self.direction.is_none() || self.settled_for >= 0.25 {
+            bubble_direction(
+                bounds,
+                body,
+                anchor,
+                radius,
+                full_size,
+                occupied,
+                self.direction,
+            )
+        } else {
+            self.direction.unwrap()
+        };
         if self.direction != Some(direction) {
             self.position = None;
         }

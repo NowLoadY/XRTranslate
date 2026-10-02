@@ -1377,5 +1377,165 @@
       ],
       "archive": null
     }
+  },
+  {
+    "capability": "ocr",
+    "tier_default": true,
+    "parameters_millions": null,
+    "benchmark": null,
+    "voice_presets": [],
+    "audio_output": null,
+    "id": "pp-ocrv6-small-onnx",
+    "rust_variant": "PpOcrv6SmallOnnx",
+    "const_name": "PP_OCRV6_SMALL_ONNX",
+    "label": "PP-OCRv6 small · CPU",
+    "level": "small",
+    "estimated_vram_bytes": 0,
+    "provider": "paddle-ocr",
+    "languages": [
+      "zh",
+      "en",
+      "ja"
+    ],
+    "hardware": {
+      "accelerator": "Cpu",
+      "minimum_memory_bytes": 0
+    },
+    "relative_directory": "paddle-ocr/pp-ocrv6-small-onnx",
+    "required_files": [
+      {
+        "role": "TextDetectionGraph",
+        "relative_path": "det.onnx",
+        "purpose": "PP-OCRv6 text detection",
+        "bytes": 9880512,
+        "sha256": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e"
+      },
+      {
+        "role": "TextRecognitionGraph",
+        "relative_path": "rec.onnx",
+        "purpose": "PP-OCRv6 text recognition",
+        "bytes": 21159378,
+        "sha256": "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634"
+      },
+      {
+        "role": "ModelConfig",
+        "relative_path": "inference.yml",
+        "purpose": "Recognition configuration and character dictionary",
+        "bytes": 150579,
+        "sha256": "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1"
+      },
+      {
+        "role": "License",
+        "relative_path": "LICENSE",
+        "purpose": "PaddleOCR Apache-2.0 license",
+        "bytes": 11376,
+        "sha256": "3840c5c0c61c294264d2dd77b8777be6ddd90121ef4e0e64abcd22edea581d6e"
+      }
+    ],
+    "source": {
+      "repository": "PaddlePaddle/PP-OCRv6_small_rec_onnx",
+      "revision": "b8f84f0b80c529de40b4fbb3544b84fa7233a513",
+      "remote_directory": "",
+      "include_patterns": [
+        "inference.onnx",
+        "inference.yml"
+      ],
+      "file_overrides": [
+        {
+          "HuggingFace": {
+            "relative_path": "det.onnx",
+            "repository": "PaddlePaddle/PP-OCRv6_small_det_onnx",
+            "revision": "28fe5895c24fd108c19eb3e8479f4ab385fbfc62",
+            "remote_path": "inference.onnx"
+          }
+        },
+        {
+          "HuggingFace": {
+            "relative_path": "rec.onnx",
+            "repository": "PaddlePaddle/PP-OCRv6_small_rec_onnx",
+            "revision": "b8f84f0b80c529de40b4fbb3544b84fa7233a513",
+            "remote_path": "inference.onnx"
+          }
+        },
+        {
+          "DirectUrl": {
+            "relative_path": "LICENSE",
+            "url": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/0006f7874c334ce9c0f497d8b6cce9cdc0b7363d/LICENSE"
+          }
+        }
+      ],
+      "archive": null
+    },
+    "runtime": {
+      "kind": "paddle-ocr-onnx"
+    }
+  },
+  {
+    "capability": "ocr",
+    "tier_default": true,
+    "parameters_millions": null,
+    "benchmark": null,
+    "voice_presets": [],
+    "audio_output": null,
+    "id": "paddle-ocr-vl-1.6-gguf",
+    "rust_variant": "PaddleOcrVl16Gguf",
+    "const_name": "PADDLE_OCR_VL_16_GGUF",
+    "label": "PaddleOCR-VL 1.6 · F16",
+    "level": "normal",
+    "estimated_vram_bytes": 4294967296,
+    "provider": "paddle-ocr-vl",
+    "languages": [
+      "zh",
+      "en"
+    ],
+    "hardware": {
+      "accelerator": "LlamaGpu",
+      "minimum_memory_bytes": 3221225472
+    },
+    "relative_directory": "paddle-ocr-vl/PaddleOCR-VL-1.6",
+    "required_files": [
+      {
+        "role": "Weights",
+        "relative_path": "PaddleOCR-VL-1.6-GGUF.gguf",
+        "purpose": "PaddleOCR-VL 1.6 F16 model",
+        "bytes": 935769056,
+        "sha256": "f3ae46ec885050acf4b3d31944431e1fd90d50664fb09126af4a3c050ba14ee8"
+      },
+      {
+        "role": "MultimodalProjection",
+        "relative_path": "PaddleOCR-VL-1.6-GGUF-mmproj.gguf",
+        "purpose": "PaddleOCR-VL 1.6 vision projection",
+        "bytes": 881770560,
+        "sha256": "204d757d7610d9b3faab10d506d69e5b244e32bf765e2bab2d0167e65e0a058a"
+      },
+      {
+        "role": "License",
+        "relative_path": "LICENSE",
+        "purpose": "PaddleOCR Apache-2.0 license",
+        "bytes": 11376,
+        "sha256": "3840c5c0c61c294264d2dd77b8777be6ddd90121ef4e0e64abcd22edea581d6e"
+      }
+    ],
+    "source": {
+      "repository": "PaddlePaddle/PaddleOCR-VL-1.6-GGUF",
+      "revision": "511b09642bb324401f15f97cc23bc67e8f0a291d",
+      "remote_directory": "",
+      "include_patterns": [
+        "*.gguf"
+      ],
+      "file_overrides": [
+        {
+          "DirectUrl": {
+            "relative_path": "LICENSE",
+            "url": "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/0006f7874c334ce9c0f497d8b6cce9cdc0b7363d/LICENSE"
+          }
+        }
+      ],
+      "archive": null
+    },
+    "runtime": {
+      "kind": "llama-vision-chat",
+      "model_alias": "ocr"
+    }
   }
 ]

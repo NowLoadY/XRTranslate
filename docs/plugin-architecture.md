@@ -80,12 +80,48 @@ its shared conversation context. Different owners remain isolated; acceptance
 does not mean translation has completed. Text consumers use the text and
 lifecycle fields without assigning meaning to audio timing or speaker fields.
 
-The current capability is composed through typed plugin actions and explicit
-host registration. There is no separately injected `Translator` handle or
-dynamic plugin runtime. A future OCR plugin can own image acquisition, OCR, and
-text-region presentation, submit the extracted text through
-`TranslationTask::text`, and consume `TranslationEvent` with its operation
-identity. OCR itself is not implemented by this contract.
+The capability is composed through typed plugin actions and explicit host
+registration. The screen translation plugin receives recognized text, submits
+it through `TranslationTask::text`, and consumes `TranslationEvent` with its
+operation identity. It does not select translation providers, build prompts,
+or manage connections. A new capture region or language selection cancels the
+previous operation so late results cannot replace the current translation.
+
+Screen capture and local text recognition live in `screen_capture`,
+`ocr_capture`, and `ocr_runtime`. Their worker reuses the configured model,
+deduplicates unchanged content, and publishes bounded revision-tagged results.
+The latest identical image reuses its recognized text, including across region
+revisions. Whitespace-only differences do not create a new translation, and a
+brief empty observation does not clear the displayed subtitle. Recognition runs
+on its own worker, samples the latest screen, and never blocks or gates the
+shared translation queue. Its sampling interval includes recognition time.
+Moving or resizing the frame pauses capture and invalidates old results while
+retaining the capture session and loaded model. The host composes these
+capabilities with the plugin; model resources use the
+same catalogue, setup, download, and deletion lifecycle as other models.
+Disabling OCR releases its worker, and resource deletion waits for release
+without blocking the UI. OCR settings and navigation are available only when
+an OCR model is enabled on a supported desktop platform.
+
+Desktop subtitles and screen translation share `overlay_manager`,
+`overlay_ipc`, and `overlay_native`. The window presents host state and emits
+typed actions; it does not run capture or translation. The host applies the
+same translation and input controls used by the main UI. Platform adapters
+provide positioning and input regions, leaving transparent areas interactive
+for the applications underneath. The capture frame excludes controls. Audio
+captions and OCR results share a separate movable result window, initially
+placed beside the controls. Its position and size stay where the user puts
+them. If it overlaps the capture area, those pixels are excluded from
+recognition; an occluded empty result preserves the previous translation.
+OCR is an independent input switch. Editing or confirming its range changes
+the frame presentation without changing OCR enablement or the other inputs.
+
+Android text selection, text sharing, and home-screen widget actions enter
+through `android_text_actions`. The platform adapter owns the input draft and
+foreground clipboard interaction; translation uses the same owner-scoped text
+task and normalized results as plugins. Only a matching, successfully completed
+request is copied. Setup can defer the request without losing its input, and
+canceling an Android action leaves other translation tasks untouched.
 
 ### Recognition metadata is fact, not presentation policy
 
@@ -327,8 +363,10 @@ Current plugin ownership is:
 
 - `plugins::osc`: OSC settings, UDP listener/writer, caption formatting,
   preview/settings UI, mute-state capability, and a `HostOutputSubscriber`.
-  Typed text actions use the shared text-task path with a stable typing
-  conversation owner and `Host` output policy.
+  The Translation and OSC pages reuse the same text composer. Translation
+  requests from either page belong to the host's shared text task; OSC does not
+  create a separate translation session. Its optional direct-message mode
+  sends the typed text through the OSC output without translation.
 - `plugins::meeting`: meeting store, controller, recording, meeting UI, a
   `TranslationSessionPlugin` binding, and a non-blocking
   `SessionEventSubscriber` that persists normalized results. It uses
@@ -341,6 +379,11 @@ Current plugin ownership is:
 - `plugins::vr_overlay`: SteamVR overlay runtime, rendering, settings, and UI.
   Its `HostOutputSubscriber` consumes shared captions; it does not start a
   separate translation pipeline.
+- `plugins::ocr`: screen-text presentation and an owner-filtered
+  `SessionEventSubscriber`. The host supplies recognized content and submits
+  its text binding with `PluginOnly` output to the shared translator. Capture
+  and local recognition use the shared resource and worker lifecycle described
+  above.
 
 Disabling always hides the plugin page and normalizes navigation. A plugin with
 in-flight exclusive work rejects disablement until the work ends. Runtime
@@ -357,12 +400,14 @@ worker remains alive and how shutdown joins or drains it.
    never be reused for a different feature.
 3. Expose host-dependent UI effects as typed actions. Accept only a focused
    snapshot or capability handle; never accept `&mut XRTranslateApp`.
-4. If it produces translation input, supply an opaque owner and
-   `PluginSessionBinding`, then have the host action adapter submit a
-   `TranslationTask`. Use the text constructors for extracted or typed text;
-   active audio-session plugins implement `TranslationSessionPlugin`. Choose
-   an operation identity that matches the intended conversation lifetime. Do
-   not add plugin-specific fields to shared requests or network events.
+4. Have the host action adapter submit a `TranslationTask` for translation
+   input. Supply an opaque owner and `PluginSessionBinding` when the plugin
+   owns the operation; inputs contributing to the main translation task use
+   host ownership, as the shared text composer does. Use the text constructors
+   for extracted or typed text; active audio-session plugins implement
+   `TranslationSessionPlugin`. Choose an operation identity that matches the
+   intended conversation lifetime. Do not add plugin-specific fields to shared
+   requests or network events.
 5. For task results, implement `SessionEventSubscriber`, filter by owner, and
    handle segment replacement and all terminal outcomes. For host captions,
    implement `HostOutputSubscriber`. Register the adapter in the host

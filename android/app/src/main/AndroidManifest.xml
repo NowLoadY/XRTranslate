@@ -4,10 +4,27 @@
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x00401000" android:required="true" />
     <uses-feature android:name="android.hardware.vulkan.level" android:version="0" android:required="true" />
-    <application android:label="XRTranslate" android:icon="@drawable/app_icon" android:theme="@style/AppTheme" android:allowBackup="false" android:usesCleartextTraffic="true" android:extractNativeLibs="true">
+    <application android:label="XRTranslate" android:icon="@drawable/app_icon" android:theme="@style/AppTheme" android:allowBackup="false" android:usesCleartextTraffic="true">
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask" android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|uiMode|density" android:windowSoftInputMode="adjustResize">
             <meta-data android:name="android.app.lib_name" android:value="rust_client" />
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity>
+        <activity-alias android:name=".TextTranslation" android:targetActivity=".MainActivity" android:exported="true" android:label="XRT">
+            <meta-data android:name="android.app.lib_name" android:value="rust_client" />
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity-alias>
+        <receiver android:name=".textactions.TextActionsWidget" android:exported="false" android:label="@string/text_action_title">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/text_actions_widget" />
+        </receiver>
     </application>
 </manifest>

@@ -2,16 +2,25 @@ package org.xrtranslate.app;
 
 import android.os.Bundle;
 import android.view.WindowInsets;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import com.google.androidgamesdk.GameActivity;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import org.xrtranslate.app.textactions.TextActions;
 
 public final class MainActivity extends GameActivity {
     static { System.loadLibrary("rust_client"); }
+    private TextActions textActions;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        textActions = new TextActions(this);
+        textActions.create(getIntent(), state != null);
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
             android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
             lp.layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
@@ -31,30 +40,28 @@ public final class MainActivity extends GameActivity {
     }
 
     private void applyImmersiveFullscreen() {
-        if (android.os.Build.VERSION.SDK_INT >= 30) {
-            getWindow().setDecorFitsSystemWindows(false);
-            android.view.WindowInsetsController controller = getWindow().getInsetsController();
-            if (controller != null) {
-                controller.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
-                controller.setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-            }
-        } else {
-            getWindow().getDecorView().setSystemUiVisibility(
-                android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                | android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                | android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                | android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
-                | android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                | android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            );
-        }
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        WindowInsetsControllerCompat controller = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        controller.hide(WindowInsetsCompat.Type.systemBars());
+        controller.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
     }
 
     @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) {
             applyImmersiveFullscreen();
+            if (textActions != null) textActions.focused();
         }
+    }
+
+    @Override protected void onNewIntent(android.content.Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        textActions.accept(intent);
+    }
+
+    public void updateTextAction(String id, int state, String result) {
+        runOnUiThread(() -> { if (textActions != null) textActions.update(id, state, result); });
     }
 
     public void showStartupError(String message) {
@@ -96,8 +103,8 @@ public final class MainActivity extends GameActivity {
         }
     }
 
-    @Override protected void onResume() { super.onResume(); foregroundChanged(true); }
-    @Override protected void onPause() { foregroundChanged(false); super.onPause(); }
+    @Override protected void onResume() { super.onResume(); foregroundChanged(true); textActions.resume(); }
+    @Override protected void onPause() { textActions.pause(); foregroundChanged(false); super.onPause(); }
 
     public void prepareConfiguration() throws java.io.IOException { copyAssets("application/config.json", new File(getFilesDir(), "config.json")); }
 
@@ -109,7 +116,10 @@ public final class MainActivity extends GameActivity {
     private long pickerId = 0;
     private boolean pickerSave;
     private String pickerName;
-    private static final int DOCUMENT_REQUEST = 7101;
+    private final ActivityResultLauncher<android.content.Intent> documentPicker = registerForActivityResult(
+        new ActivityResultContracts.StartActivityForResult(),
+        result -> onDocumentResult(result.getResultCode(), result.getData())
+    );
     private static final class SaveDocument {
         final android.net.Uri uri; final File file;
         SaveDocument(android.net.Uri uri, File file) { this.uri = uri; this.file = file; }
@@ -123,14 +133,13 @@ public final class MainActivity extends GameActivity {
             intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);
             intent.setType(extensions.equals("json") ? "application/json" : save ? "application/octet-stream" : "*/*");
             if (save) intent.putExtra(android.content.Intent.EXTRA_TITLE, name);
-            try { startActivityForResult(intent, DOCUMENT_REQUEST); }
+            try { documentPicker.launch(intent); }
             catch (RuntimeException error) { pickerId = 0; fileDialogCompleted(id, null, "Cannot open the file picker."); }
         });
     }
 
-    @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
-        super.onActivityResult(request, result, data);
-        if (request != DOCUMENT_REQUEST || pickerId == 0) return;
+    private void onDocumentResult(int result, android.content.Intent data) {
+        if (pickerId == 0) return;
         final long id = pickerId; final boolean save = pickerSave; final String fallback = pickerName;
         pickerId = 0;
         if (result != RESULT_OK || data == null || data.getData() == null) { fileDialogCompleted(id, null, null); return; }
@@ -182,6 +191,7 @@ public final class MainActivity extends GameActivity {
     }
 
     @Override protected void onDestroy() {
+        if (textActions != null) textActions.destroy();
         if (pickerId != 0) { fileDialogCompleted(pickerId, null, null); pickerId = 0; }
         documents.shutdownNow();
         super.onDestroy();

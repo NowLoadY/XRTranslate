@@ -1,923 +1,923 @@
-#![cfg(windows)]
+//! Shared desktop surfaces: subtitles and a transparent screen-translation frame.
+mod platform;
+#[cfg(target_os = "linux")]
+pub(crate) use platform::configure_software_environment;
 
-use std::io::{BufRead, BufReader};
-use std::sync::Mutex;
-use std::thread;
+use crate::i18n::{UiLanguage, tr};
+use crate::overlay_ipc::{
+    OcrOverlayState, OverlayCommand, OverlayControls, OverlayEvent, OverlayRegion, OverlayState,
+};
+use crate::ui::{components, theme};
+use eframe::egui::{self, Color32, Rect, RichText, Stroke, Vec2};
+use std::{
+    io::{BufRead, Write},
+    sync::mpsc::{self, Receiver},
+    time::{Duration, Instant},
+};
 
-use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Direct2D::Common::*;
-use windows::Win32::Graphics::Direct2D::*;
-use windows::Win32::Graphics::DirectWrite::*;
-use windows::Win32::Graphics::Dwm::*;
-use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::MARGINS;
-use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::*;
+const GAP: f32 = 6.0;
+const CORNER: u8 = 16;
 
-use crate::overlay_ipc::{OverlayEvent, OverlayState};
-
-const WM_APP_UPDATE_STATE: u32 = WM_APP + 1;
-
-static STATE: Mutex<Option<OverlayState>> = Mutex::new(None);
-
-fn send_event(event: &OverlayEvent) {
-    if let Ok(json) = serde_json::to_string(event) {
-        println!("{}", json);
-    }
-}
-
-pub fn run_native_overlay() {
-    unsafe {
-        let instance = GetModuleHandleW(None).unwrap();
-        let class_name = w!("XRTranslateNativeOverlayClass");
-
-        let wnd_class = WNDCLASSEXW {
-            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-            style: CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(wnd_proc),
-            hInstance: instance.into(),
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap(),
-            lpszClassName: class_name,
-            ..Default::default()
-        };
-
-        RegisterClassExW(&wnd_class);
-
-        // Screen positioning (Top Right default)
-        let screen_w = GetSystemMetrics(SM_CXSCREEN);
-        let window_w = 460;
-        let window_h = 360;
-        let x = screen_w - window_w - 40;
-        let y = 60;
-
-        let hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW,
-            class_name,
-            w!("XRTranslate Overlay"),
-            WS_POPUP | WS_VISIBLE,
-            x,
-            y,
-            window_w,
-            window_h,
-            None,
-            None,
-            Some(HINSTANCE(instance.0)),
-            None,
-        )
-        .unwrap();
-
-        // Initialize layered window attributes so Windows displays the alpha layer
-        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
-
-        // Enable 100% per-pixel DWM transparency
-        let margins = MARGINS {
-            cxLeftWidth: -1,
-            cxRightWidth: -1,
-            cyTopHeight: -1,
-            cyBottomHeight: -1,
-        };
-        let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
-
-        // Spawn Stdin reader thread
-        let hwnd_raw = hwnd.0 as usize;
-        thread::spawn(move || {
-            let hwnd = HWND(hwnd_raw as *mut _);
-            let stdin = std::io::stdin();
-            let reader = BufReader::new(stdin.lock());
-            for line in reader.lines().map_while(|line| line.ok()) {
-                if let Ok(new_state) = serde_json::from_str::<OverlayState>(&line) {
-                    if let Ok(mut state_guard) = STATE.lock() {
-                        *state_guard = Some(new_state);
-                    }
-                    let _ = PostMessageW(Some(hwnd), WM_APP_UPDATE_STATE, WPARAM(0), LPARAM(0));
-                }
-            }
-            // Stdin closed -> exit overlay
-            let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
-        });
-
-        let _ = ShowWindow(hwnd, SW_SHOW);
-        let _ = UpdateWindow(hwnd);
-
-        let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-}
-
-struct RenderResources {
-    d2d_factory: ID2D1Factory,
-    dwrite_factory: IDWriteFactory,
-    render_target: Option<ID2D1HwndRenderTarget>,
-    brush_header_bg: Option<ID2D1SolidColorBrush>,
-    brush_card_bg: Option<ID2D1SolidColorBrush>,
-    brush_active_card_bg: Option<ID2D1SolidColorBrush>,
-    brush_live_bg: Option<ID2D1SolidColorBrush>,
-    brush_text_white: Option<ID2D1SolidColorBrush>,
-    brush_text_gray: Option<ID2D1SolidColorBrush>,
-    brush_text_sub: Option<ID2D1SolidColorBrush>,
-    brush_btn_bg: Option<ID2D1SolidColorBrush>,
-    text_format_title: Option<IDWriteTextFormat>,
-    text_format_body: Option<IDWriteTextFormat>,
-    text_format_sub: Option<IDWriteTextFormat>,
-}
-
-impl RenderResources {
-    fn new() -> Result<Self> {
-        unsafe {
-            let d2d_factory: ID2D1Factory =
-                D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
-            let dwrite_factory: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
-
-            Ok(Self {
-                d2d_factory,
-                dwrite_factory,
-                render_target: None,
-                brush_header_bg: None,
-                brush_card_bg: None,
-                brush_active_card_bg: None,
-                brush_live_bg: None,
-                brush_text_white: None,
-                brush_text_gray: None,
-                brush_text_sub: None,
-                brush_btn_bg: None,
-                text_format_title: None,
-                text_format_body: None,
-                text_format_sub: None,
-            })
-        }
-    }
-
-    fn ensure_target(&mut self, hwnd: HWND) -> Result<()> {
-        unsafe {
-            if self.render_target.is_some() {
-                return Ok(());
-            }
-
-            let mut rect = RECT::default();
-            let _ = GetClientRect(hwnd, &mut rect);
-            let size = D2D_SIZE_U {
-                width: (rect.right - rect.left) as u32,
-                height: (rect.bottom - rect.top) as u32,
-            };
-
-            let rt_props = D2D1_RENDER_TARGET_PROPERTIES {
-                r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
-                pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
-                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-                },
-                dpiX: 0.0,
-                dpiY: 0.0,
-                usage: D2D1_RENDER_TARGET_USAGE_NONE,
-                minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
-            };
-
-            let hwnd_rt_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
-                hwnd,
-                pixelSize: size,
-                presentOptions: D2D1_PRESENT_OPTIONS_NONE,
-            };
-
-            let target = self
-                .d2d_factory
-                .CreateHwndRenderTarget(&rt_props, &hwnd_rt_props)?;
-
-            // Brushes
-            let brush_header_bg = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 0.08,
-                    g: 0.08,
-                    b: 0.10,
-                    a: 0.85,
-                },
-                None,
-            )?;
-            let brush_card_bg = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 0.14,
-                    g: 0.15,
-                    b: 0.18,
-                    a: 0.85,
-                },
-                None,
-            )?;
-            let brush_active_card_bg = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 0.10,
-                    g: 0.24,
-                    b: 0.16,
-                    a: 0.88,
-                },
-                None,
-            )?;
-            let brush_live_bg = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 0.12,
-                    g: 0.28,
-                    b: 0.55,
-                    a: 0.90,
-                },
-                None,
-            )?;
-            let brush_text_white = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 1.0,
-                    g: 1.0,
-                    b: 1.0,
-                    a: 1.0,
-                },
-                None,
-            )?;
-            let brush_text_gray = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 0.70,
-                    g: 0.73,
-                    b: 0.78,
-                    a: 1.0,
-                },
-                None,
-            )?;
-            let brush_text_sub = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 0.50,
-                    g: 0.53,
-                    b: 0.58,
-                    a: 1.0,
-                },
-                None,
-            )?;
-            let brush_btn_bg = target.CreateSolidColorBrush(
-                &D2D1_COLOR_F {
-                    r: 0.20,
-                    g: 0.22,
-                    b: 0.26,
-                    a: 0.80,
-                },
-                None,
-            )?;
-
-            // Text Formats
-            let font_name = w!("Microsoft YaHei");
-            let text_format_title = self.dwrite_factory.CreateTextFormat(
-                font_name,
-                None,
-                DWRITE_FONT_WEIGHT_BOLD,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                12.0,
-                w!("zh-cn"),
-            )?;
-
-            let text_format_body = self.dwrite_factory.CreateTextFormat(
-                font_name,
-                None,
-                DWRITE_FONT_WEIGHT_BOLD,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                15.0,
-                w!("zh-cn"),
-            )?;
-
-            let text_format_sub = self.dwrite_factory.CreateTextFormat(
-                font_name,
-                None,
-                DWRITE_FONT_WEIGHT_NORMAL,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                11.0,
-                w!("zh-cn"),
-            )?;
-
-            self.render_target = Some(target);
-            self.brush_header_bg = Some(brush_header_bg);
-            self.brush_card_bg = Some(brush_card_bg);
-            self.brush_active_card_bg = Some(brush_active_card_bg);
-            self.brush_live_bg = Some(brush_live_bg);
-            self.brush_text_white = Some(brush_text_white);
-            self.brush_text_gray = Some(brush_text_gray);
-            self.brush_text_sub = Some(brush_text_sub);
-            self.brush_btn_bg = Some(brush_btn_bg);
-            self.text_format_title = Some(text_format_title);
-            self.text_format_body = Some(text_format_body);
-            self.text_format_sub = Some(text_format_sub);
-
-            Ok(())
-        }
-    }
-}
-
-static RESOURCES: Mutex<Option<RenderResources>> = Mutex::new(None);
-
-unsafe extern "system" fn wnd_proc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    match msg {
-        WM_CREATE => {
-            if let Ok(res) = RenderResources::new()
-                && let Ok(mut guard) = RESOURCES.lock()
-            {
-                *guard = Some(res);
-            }
-            LRESULT(0)
-        }
-        WM_SIZE => {
-            if let Ok(mut guard) = RESOURCES.lock()
-                && let Some(res) = guard.as_mut()
-                && let Some(target) = &res.render_target
-            {
-                let width = (lparam.0 & 0xFFFF) as u32;
-                let height = ((lparam.0 >> 16) & 0xFFFF) as u32;
-                let _ = unsafe { target.Resize(&D2D_SIZE_U { width, height }) };
-            }
-            LRESULT(0)
-        }
-        WM_APP_UPDATE_STATE => {
-            unsafe {
-                adjust_window_height_if_needed(hwnd);
-                let _ = InvalidateRect(Some(hwnd), None, false);
-            }
-            LRESULT(0)
-        }
-        WM_PAINT => {
-            draw_overlay(hwnd);
-            unsafe {
-                let _ = ValidateRect(Some(hwnd), None);
-            }
-            LRESULT(0)
-        }
-        WM_LBUTTONDOWN => {
-            let x = (lparam.0 & 0xFFFF) as i16 as f32;
-            let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
-            handle_click(hwnd, x, y);
-            LRESULT(0)
-        }
-        WM_NCHITTEST => {
-            unsafe {
-                let res = DefWindowProcW(hwnd, msg, wparam, lparam);
-                if res == LRESULT(HTCLIENT as isize) {
-                    let mut point = POINT {
-                        x: (lparam.0 & 0xFFFF) as i16 as i32,
-                        y: ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
-                    };
-                    let _ = ScreenToClient(hwnd, &mut point);
-                    // Top bar drag zone (x: 0..280, y: 0..32)
-                    if point.y >= 0 && point.y <= 32 && point.x >= 0 && point.x <= 280 {
-                        return LRESULT(HTCAPTION as isize);
-                    }
-                }
-                res
-            }
-        }
-        WM_DESTROY => {
-            unsafe {
-                PostQuitMessage(0);
-            }
-            LRESULT(0)
-        }
-        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
-    }
-}
-
-fn handle_click(hwnd: HWND, x: f32, y: f32) {
-    let mut rect = RECT::default();
-    unsafe {
-        let _ = GetClientRect(hwnd, &mut rect);
-    }
-    let width = (rect.right - rect.left) as f32;
-
-    // Header buttons (Y: 4..28)
-    if (4.0..=28.0).contains(&y) {
-        // Close button (Top right: width-28 .. width-8)
-        if x >= width - 28.0 && x <= width - 8.0 {
-            send_event(&OverlayEvent::CloseRequested);
-            unsafe {
-                DestroyWindow(hwnd).ok();
-            }
-            return;
-        }
-
-        // Plus button (Top right: width-60 .. width-40)
-        if x >= width - 60.0 && x <= width - 40.0 {
-            if let Ok(state_guard) = STATE.lock()
-                && let Some(state) = state_guard.as_ref()
-                && state.max_items < 10
-            {
-                send_event(&OverlayEvent::MaxCountChanged(state.max_items + 1));
-            }
-            return;
-        }
-
-        // Minus button (Top right: width-110 .. width-90)
-        if x >= width - 110.0
-            && x <= width - 90.0
-            && let Ok(state_guard) = STATE.lock()
-            && let Some(state) = state_guard.as_ref()
-            && state.max_items > 1
-        {
-            send_event(&OverlayEvent::MaxCountChanged(state.max_items - 1));
-        }
-    }
-}
-
-fn measure_text_height(
-    factory: &IDWriteFactory,
-    text: &str,
-    format: &IDWriteTextFormat,
-    max_width: f32,
-) -> f32 {
-    unsafe {
-        let utf16: Vec<u16> = text.encode_utf16().collect();
-        if utf16.is_empty() {
-            return 0.0;
-        }
-        if let Ok(layout) = factory.CreateTextLayout(&utf16, format, max_width, 2000.0) {
-            let mut metrics = DWRITE_TEXT_METRICS::default();
-            if layout.GetMetrics(&mut metrics).is_ok() {
-                return metrics.height.max(12.0);
-            }
-        }
-        0.0
-    }
-}
-
-fn adjust_window_height_if_needed(hwnd: HWND) {
-    let required_h = unsafe {
-        let guard = match RESOURCES.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        let res = match guard.as_ref() {
-            Some(r) => r,
-            None => return,
-        };
-        let state_opt = STATE.lock().ok().and_then(|s| s.clone());
-        let Some(state) = state_opt else { return };
-
-        let mut rect = RECT::default();
-        if GetClientRect(hwnd, &mut rect).is_err() {
-            return;
-        }
-        let width = (rect.right - rect.left) as f32;
-        let padding_x = 12.0;
-        let max_text_w = (width - padding_x * 2.0).max(50.0);
-
-        let mut curr_y = 36.0;
-        if state.visible_entries.is_empty() && state.partial_text.is_none() {
-            curr_y += 36.0 + 6.0;
-        } else {
-            for entry in &state.visible_entries {
-                let h_src = if let Some(format) = &res.text_format_sub {
-                    measure_text_height(&res.dwrite_factory, &entry.source, format, max_text_w)
-                } else {
-                    0.0
-                };
-                let h_trans = if let Some(format) = &res.text_format_body {
-                    measure_text_height(&res.dwrite_factory, &entry.translated, format, max_text_w)
-                } else {
-                    0.0
-                };
-                let top_pad = 8.0;
-                let spacing = if h_src > 0.0 && h_trans > 0.0 {
-                    4.0
-                } else {
-                    0.0
-                };
-                let bot_pad = 8.0;
-                let card_h = top_pad + h_src + spacing + h_trans + bot_pad;
-                curr_y += card_h + 6.0;
-            }
-
-            if let Some(partial) = &state.partial_text {
-                let h_partial = if let Some(format) = &res.text_format_body {
-                    measure_text_height(&res.dwrite_factory, partial, format, max_text_w)
-                } else {
-                    20.0
-                };
-                let card_h = 8.0 + h_partial + 8.0;
-                curr_y += card_h + 6.0;
-            }
-        }
-
-        ((curr_y + 8.0) as i32).clamp(120, 900)
+pub fn run_native_overlay() -> eframe::Result<()> {
+    #[cfg(target_os = "linux")]
+    platform::validate_software_environment().map_err(eframe::Error::AppCreation)?;
+    let mut options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("XRTranslate Floating Window")
+            .with_inner_size([460.0, 360.0])
+            .with_min_inner_size([320.0, 160.0])
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_always_on_top()
+            .with_active(false)
+            .with_taskbar(false)
+            .with_visible(false),
+        #[cfg(target_os = "linux")]
+        renderer: eframe::Renderer::Glow,
+        #[cfg(windows)]
+        renderer: eframe::Renderer::Wgpu,
+        persist_window: false,
+        ..Default::default()
     };
-
-    unsafe {
-        let mut window_rect = RECT::default();
-        if GetWindowRect(hwnd, &mut window_rect).is_ok() {
-            let current_h = window_rect.bottom - window_rect.top;
-            if (current_h - required_h).abs() > 4 {
-                let _ = SetWindowPos(
-                    hwnd,
-                    None,
-                    0,
-                    0,
-                    window_rect.right - window_rect.left,
-                    required_h,
-                    SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOZORDER,
-                );
-            }
-        }
-    }
-}
-
-fn measure_and_create_layout(
-    factory: &IDWriteFactory,
-    text: &str,
-    format: &IDWriteTextFormat,
-    max_width: f32,
-) -> Option<(IDWriteTextLayout, f32, f32)> {
-    unsafe {
-        let utf16: Vec<u16> = text.encode_utf16().collect();
-        if utf16.is_empty() {
-            return None;
-        }
-        let layout = factory
-            .CreateTextLayout(&utf16, format, max_width, 2000.0)
-            .ok()?;
-        let mut metrics = DWRITE_TEXT_METRICS::default();
-        if layout.GetMetrics(&mut metrics).is_ok() {
-            let width = metrics.width.max(10.0);
-            let height = metrics.height.max(12.0);
-            Some((layout, width, height))
-        } else {
-            None
-        }
-    }
-}
-
-fn draw_overlay(hwnd: HWND) {
-    unsafe {
-        let mut guard = match RESOURCES.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-
-        let res = match guard.as_mut() {
-            Some(r) => r,
-            None => return,
-        };
-
-        if res.ensure_target(hwnd).is_err() {
-            return;
-        }
-
-        let target = match &res.render_target {
-            Some(t) => t,
-            None => return,
-        };
-
-        let mut rect = RECT::default();
-        let _ = GetClientRect(hwnd, &mut rect);
-        let width = (rect.right - rect.left) as f32;
-
-        target.BeginDraw();
-        target.Clear(Some(&D2D1_COLOR_F {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 0.0,
+    #[cfg(target_os = "linux")]
+    {
+        // XWayland supplies the positioning and stacking needed by a desktop
+        // overlay, while the main application can keep its native Wayland UI.
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        options.event_loop_builder = Some(Box::new(|builder| {
+            builder.with_x11();
         }));
-
-        let state_opt = STATE.lock().ok().and_then(|s| s.clone());
-
-        // 1. Slim Header Bar
-        let header_rect = D2D1_ROUNDED_RECT {
-            rect: D2D_RECT_F {
-                left: 0.0,
-                top: 0.0,
-                right: width,
-                bottom: 30.0,
-            },
-            radiusX: 6.0,
-            radiusY: 6.0,
-        };
-
-        if let Some(brush) = &res.brush_header_bg {
-            target.FillRoundedRectangle(&header_rect, brush);
-        }
-
-        // Header Title
-        let max_items = state_opt.as_ref().map(|s| s.max_items).unwrap_or(5);
-        let count = state_opt
-            .as_ref()
-            .map(|s| s.visible_entries.len())
-            .unwrap_or(0);
-        let title = format!("≡ Subtitles · {count}");
-        let title_utf16: Vec<u16> = title.encode_utf16().collect();
-
-        if let (Some(format), Some(brush)) = (&res.text_format_title, &res.brush_text_white) {
-            target.DrawText(
-                &title_utf16,
-                format,
-                &D2D_RECT_F {
-                    left: 10.0,
-                    top: 6.0,
-                    right: 200.0,
-                    bottom: 26.0,
-                },
-                brush,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-        }
-
-        // Header Controls: [ - ] N [ + ] [ × ]
-        // Close button
-        if let (Some(brush_btn), Some(brush_txt), Some(format)) = (
-            &res.brush_btn_bg,
-            &res.brush_text_white,
-            &res.text_format_title,
-        ) {
-            let close_rect = D2D1_ROUNDED_RECT {
-                rect: D2D_RECT_F {
-                    left: width - 28.0,
-                    top: 4.0,
-                    right: width - 8.0,
-                    bottom: 26.0,
-                },
-                radiusX: 4.0,
-                radiusY: 4.0,
-            };
-            target.FillRoundedRectangle(&close_rect, brush_btn);
-            let close_str: Vec<u16> = "×".encode_utf16().collect();
-            target.DrawText(
-                &close_str,
-                format,
-                &D2D_RECT_F {
-                    left: width - 22.0,
-                    top: 5.0,
-                    right: width - 8.0,
-                    bottom: 26.0,
-                },
-                brush_txt,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-
-            // Plus button
-            let plus_rect = D2D1_ROUNDED_RECT {
-                rect: D2D_RECT_F {
-                    left: width - 60.0,
-                    top: 4.0,
-                    right: width - 40.0,
-                    bottom: 26.0,
-                },
-                radiusX: 4.0,
-                radiusY: 4.0,
-            };
-            target.FillRoundedRectangle(&plus_rect, brush_btn);
-            let plus_str: Vec<u16> = "+".encode_utf16().collect();
-            target.DrawText(
-                &plus_str,
-                format,
-                &D2D_RECT_F {
-                    left: width - 54.0,
-                    top: 5.0,
-                    right: width - 40.0,
-                    bottom: 26.0,
-                },
-                brush_txt,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-
-            // Max count number
-            let num_str: Vec<u16> = format!("{}", max_items).encode_utf16().collect();
-            target.DrawText(
-                &num_str,
-                format,
-                &D2D_RECT_F {
-                    left: width - 82.0,
-                    top: 6.0,
-                    right: width - 64.0,
-                    bottom: 26.0,
-                },
-                brush_txt,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-
-            // Minus button
-            let minus_rect = D2D1_ROUNDED_RECT {
-                rect: D2D_RECT_F {
-                    left: width - 110.0,
-                    top: 4.0,
-                    right: width - 90.0,
-                    bottom: 26.0,
-                },
-                radiusX: 4.0,
-                radiusY: 4.0,
-            };
-            target.FillRoundedRectangle(&minus_rect, brush_btn);
-            let minus_str: Vec<u16> = "-".encode_utf16().collect();
-            target.DrawText(
-                &minus_str,
-                format,
-                &D2D_RECT_F {
-                    left: width - 104.0,
-                    top: 5.0,
-                    right: width - 90.0,
-                    bottom: 26.0,
-                },
-                brush_txt,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
-            );
-        }
-
-        // 2. Render Subtitle Cards with Smart Dynamic Auto-Sizing
-        let mut curr_y = 36.0;
-        let padding_x = 12.0;
-        let max_text_w = (width - padding_x * 2.0).max(50.0);
-
-        if let Some(state) = state_opt {
-            if state.visible_entries.is_empty() && state.partial_text.is_none() {
-                // Empty placeholder card
-                let card_h = 36.0;
-                let card_rect = D2D1_ROUNDED_RECT {
-                    rect: D2D_RECT_F {
-                        left: 0.0,
-                        top: curr_y,
-                        right: width,
-                        bottom: curr_y + card_h,
-                    },
-                    radiusX: 8.0,
-                    radiusY: 8.0,
-                };
-                let card_brush = if state.vad_active {
-                    &res.brush_active_card_bg
-                } else {
-                    &res.brush_card_bg
-                };
-                if let Some(brush) = card_brush {
-                    target.FillRoundedRectangle(&card_rect, brush);
+    }
+    #[cfg(windows)]
+    {
+        options = crate::configure_transparent_wgpu(
+            options,
+            crate::window_backdrop::WindowBackdrop::Transparent,
+        );
+    }
+    eframe::run_native(
+        "XRTranslate Floating Window",
+        options,
+        Box::new(|context| {
+            #[cfg(target_os = "linux")]
+            {
+                use eframe::glow::HasContext;
+                let gl = context
+                    .gl
+                    .as_ref()
+                    .ok_or("Software rendering is unavailable.")?;
+                let renderer = unsafe { gl.get_parameter_string(eframe::glow::RENDERER) };
+                if !renderer.to_ascii_lowercase().contains("llvmpipe") {
+                    return Err("Software rendering is unavailable.".into());
                 }
-                if let (Some(brush_txt), Some(format)) = (&res.brush_text_sub, &res.text_format_sub)
-                {
-                    let waiting_str: Vec<u16> = "Listening".encode_utf16().collect();
-                    target.DrawText(
-                        &waiting_str,
-                        format,
-                        &D2D_RECT_F {
-                            left: padding_x,
-                            top: curr_y + 10.0,
-                            right: width - padding_x,
-                            bottom: curr_y + 30.0,
+                log::info!("Floating window software renderer: {renderer}");
+            }
+            crate::ui::fonts::configure_multilingual_fonts(&context.egui_ctx);
+            theme::apply_theme(&context.egui_ctx);
+            context.egui_ctx.all_styles_mut(|style| {
+                for widget in [
+                    &mut style.visuals.widgets.hovered,
+                    &mut style.visuals.widgets.active,
+                    &mut style.visuals.widgets.open,
+                ] {
+                    widget.fg_stroke.color = theme::text_strong();
+                }
+                style.visuals.hyperlink_color = theme::text_strong();
+            });
+            egui_extras::install_image_loaders(&context.egui_ctx);
+            #[cfg(windows)]
+            crate::window_backdrop::apply(
+                context,
+                crate::window_backdrop::WindowBackdrop::Transparent,
+            )?;
+            let window = context
+                .winit_window()
+                .ok_or("Unable to open the floating window.")?;
+            let input = platform::InputRegion::new(window)?;
+            let work = input.work_area(window);
+            let size = window.inner_size();
+            window.set_outer_position(winit::dpi::PhysicalPosition::new(
+                (work.right() - size.width as f32 - 36.0).max(work.left()) as i32,
+                (work.top() + 36.0) as i32,
+            ));
+            let (sender, receiver) = mpsc::sync_channel(2);
+            let ctx = context.egui_ctx.clone();
+            std::thread::spawn(move || {
+                for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+                    let command = if line == "HIDE" {
+                        Ok(OverlayCommand::Hide)
+                    } else {
+                        serde_json::from_str(&line)
+                    };
+                    if let Ok(command) = command {
+                        if sender.send(command).is_err() {
+                            return;
+                        }
+                        ctx.request_repaint();
+                    }
+                }
+                let _ = sender.send(OverlayCommand::Hide);
+                ctx.request_repaint();
+            });
+            Ok(Box::new(OverlayWindow {
+                receiver,
+                input,
+                language: UiLanguage::English,
+                controls: OverlayControls::default(),
+                subtitles: OverlayState {
+                    font_size: 14,
+                    max_items: 5,
+                    visible_entries: Vec::new(),
+                    partial_text: None,
+                    vad_active: false,
+                },
+                ocr: None,
+                edit_region: false,
+                pending_region: None,
+                sent_region: None,
+                closing: false,
+                shown: false,
+                result: ResultWindow::default(),
+            }))
+        }),
+    )
+}
+
+struct OverlayWindow {
+    receiver: Receiver<OverlayCommand>,
+    input: platform::InputRegion,
+    language: UiLanguage,
+    controls: OverlayControls,
+    subtitles: OverlayState,
+    ocr: Option<OcrOverlayState>,
+    edit_region: bool,
+    pending_region: Option<(OverlayRegion, Instant)>,
+    sent_region: Option<OverlayRegion>,
+    closing: bool,
+    shown: bool,
+    result: ResultWindow,
+}
+
+#[derive(Default)]
+struct ResultWindow {
+    geometry: Option<Rect>,
+    shown: bool,
+    pending: Option<(OverlayRegion, Instant)>,
+    reported: Option<OverlayRegion>,
+    changing: bool,
+}
+
+impl ResultWindow {
+    fn moving(&mut self) {
+        if !self.changing {
+            send_event(OverlayEvent::ResultChanging);
+            self.changing = true;
+        }
+        self.reported = None;
+        if let Some((_, changed)) = &mut self.pending {
+            *changed = Instant::now();
+        }
+    }
+
+    fn observe(&mut self, rect: Rect) {
+        self.geometry = Some(rect);
+        // Cover the complete result window, including its antialiased edges.
+        let region = OverlayRegion {
+            x: rect.left().floor() as i32,
+            y: rect.top().floor() as i32,
+            width: (rect.right().ceil() - rect.left().floor()) as u32,
+            height: (rect.bottom().ceil() - rect.top().floor()) as u32,
+        };
+        let now = Instant::now();
+        if self.pending.is_none_or(|(previous, _)| previous != region) {
+            self.moving();
+            self.pending = Some((region, now));
+        }
+        if self.reported != Some(region)
+            && self.pending.is_some_and(|(_, changed)| {
+                now.duration_since(changed) >= Duration::from_millis(300)
+            })
+        {
+            self.reported = Some(region);
+            self.changing = false;
+            send_event(OverlayEvent::ResultRegionChanged(Some(region)));
+        }
+    }
+
+    fn hide(&mut self) {
+        if self.shown || self.changing {
+            send_event(OverlayEvent::ResultRegionChanged(None));
+        }
+        self.shown = false;
+        self.pending = None;
+        self.reported = None;
+        self.changing = false;
+    }
+}
+
+impl OverlayWindow {
+    fn close(&mut self, ctx: &egui::Context) {
+        if !self.closing {
+            send_event(OverlayEvent::CloseRequested);
+        }
+        self.closing = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    fn header(&mut self, ui: &mut egui::Ui) -> Rect {
+        panel(6)
+            .show(ui, |ui| {
+                ui.spacing_mut().button_padding = Vec2::splat(4.0);
+                let (bar, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), components::INPUT_TOGGLE_SIZE),
+                    egui::Sense::hover(),
+                );
+                let slot = |x| {
+                    Rect::from_center_size(
+                        egui::pos2(x, bar.center().y),
+                        Vec2::splat(components::INPUT_TOGGLE_SIZE),
+                    )
+                };
+                let drag = ui
+                    .interact(
+                        Rect::from_min_size(bar.min, egui::vec2(26.0, bar.height())),
+                        ui.id().with("drag"),
+                        egui::Sense::drag(),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::Grab);
+                for x in [10.0, 15.0] {
+                    for y in [-5.0, 0.0, 5.0] {
+                        ui.painter().circle_filled(
+                            egui::pos2(bar.left() + x, bar.center().y + y),
+                            1.2,
+                            theme::text_weak(),
+                        );
+                    }
+                }
+                if drag.drag_started() {
+                    self.edit_region |= self.controls.ocr_enabled == Some(true);
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                if self.controls.ocr_enabled.is_some() {
+                    let label = tr(
+                        self.language,
+                        if self.edit_region {
+                            "Confirm recognition area"
+                        } else {
+                            "Adjust recognition area"
                         },
-                        brush_txt,
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                    let response = icon_button(ui, slot(bar.left() + 50.0), label);
+                    let center = response.rect.center();
+                    let stroke = Stroke::new(1.6, theme::text_normal());
+                    if self.edit_region {
+                        ui.painter().add(egui::Shape::line(
+                            vec![
+                                center + egui::vec2(-7.0, 0.0),
+                                center + egui::vec2(-2.0, 5.0),
+                                center + egui::vec2(8.0, -6.0),
+                            ],
+                            stroke,
+                        ));
+                    } else {
+                        for (x, y) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                            let corner = center + egui::vec2(x, y) * 9.0;
+                            ui.painter().add(egui::Shape::line(
+                                vec![
+                                    corner - egui::vec2(x * 5.0, 0.0),
+                                    corner,
+                                    corner - egui::vec2(0.0, y * 5.0),
+                                ],
+                                stroke,
+                            ));
+                        }
+                    }
+                    if response.clicked() {
+                        self.edit_region = !self.edit_region;
+                    }
+                }
+                // Tooltips must never be painted over the area being captured.
+                ui.ctx().all_styles_mut(|style| {
+                    style.interaction.tooltip_delay =
+                        if self.edit_region || self.controls.ocr_enabled == Some(true) {
+                            f32::INFINITY
+                        } else {
+                            0.5
+                        };
+                    style.interaction.tooltip_grace_time = 0.0;
+                });
+                let active = self.controls.translation_enabled;
+                let label = tr(
+                    self.language,
+                    if active {
+                        "Stop Translation"
+                    } else {
+                        "Start Translation"
+                    },
+                );
+                let response = ui
+                    .scope_builder(
+                        egui::UiBuilder::new().max_rect(slot(bar.center().x)),
+                        |ui| {
+                            ui.add(
+                                egui::Button::image(
+                                    egui::Image::new(egui::include_image!(
+                                        "../resources/icons/translation.svg"
+                                    ))
+                                    .fit_to_exact_size(Vec2::splat(22.0)),
+                                )
+                                .min_size(Vec2::splat(components::INPUT_TOGGLE_SIZE))
+                                .corner_radius(12)
+                                .fill(if active {
+                                    theme::text_strong().gamma_multiply(0.16)
+                                } else {
+                                    theme::surface_subtle()
+                                })
+                                .stroke(if active {
+                                    Stroke::new(1.5, theme::text_strong())
+                                } else {
+                                    Stroke::new(1.0, theme::border())
+                                }),
+                            )
+                        },
+                    )
+                    .inner;
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, label)
+                });
+                if response.on_hover_text(label).clicked() {
+                    send_event(OverlayEvent::TranslationEnabled(!active));
+                }
+                use components::InputIcon;
+                for (icon, enabled, x, id) in [
+                    (
+                        InputIcon::Microphone,
+                        self.controls.microphone_enabled,
+                        bar.center().x - 44.0,
+                        "microphone_input",
+                    ),
+                    (
+                        InputIcon::SystemAudio,
+                        self.controls.system_audio_enabled,
+                        bar.center().x
+                            + if self.controls.microphone_enabled.is_some() {
+                                44.0
+                            } else {
+                                -44.0
+                            },
+                        "system_audio_input",
+                    ),
+                    (
+                        InputIcon::Text,
+                        self.controls.ocr_enabled,
+                        bar.center().x
+                            + if self.controls.microphone_enabled.is_some()
+                                && self.controls.system_audio_enabled.is_some()
+                            {
+                                88.0
+                            } else {
+                                44.0
+                            },
+                        "screen_text_input",
+                    ),
+                ] {
+                    let Some(enabled) = enabled else { continue };
+                    let label = tr(
+                        self.language,
+                        match (icon, enabled) {
+                            (InputIcon::Microphone, true) => {
+                                "Turn off microphone input (including meetings)"
+                            }
+                            (InputIcon::Microphone, false) => {
+                                "Turn on microphone input (including meetings)"
+                            }
+                            (InputIcon::SystemAudio, true) => "Turn off system audio translation",
+                            (InputIcon::SystemAudio, false) => "Turn on system audio translation",
+                            (InputIcon::Text, true) => "Turn off screen text translation",
+                            (InputIcon::Text, false) => "Turn on screen text translation",
+                        },
+                    );
+                    let response = ui
+                        .scope_builder(egui::UiBuilder::new().max_rect(slot(x)), |ui| {
+                            components::input_toggle_with_accent(
+                                ui,
+                                id,
+                                enabled,
+                                icon,
+                                label,
+                                Some(theme::text_strong()),
+                            )
+                        })
+                        .inner;
+                    if response.clicked() {
+                        if matches!(icon, InputIcon::Text) && !enabled {
+                            self.edit_region = true;
+                            self.pending_region = None;
+                            if self.sent_region.take().is_some() {
+                                send_event(OverlayEvent::RegionChanging);
+                            }
+                        }
+                        send_event(match icon {
+                            InputIcon::Microphone => OverlayEvent::MicrophoneEnabled(!enabled),
+                            InputIcon::SystemAudio => OverlayEvent::SystemAudioEnabled(!enabled),
+                            InputIcon::Text => OverlayEvent::OcrEnabled(!enabled),
+                        });
+                    }
+                }
+                let close = icon_button(ui, slot(bar.right() - 18.0), tr(self.language, "Close"));
+                let center = close.rect.center();
+                for y in [-1.0, 1.0] {
+                    ui.painter().line_segment(
+                        [
+                            center + egui::vec2(-5.0, y * 5.0),
+                            center + egui::vec2(5.0, -y * 5.0),
+                        ],
+                        Stroke::new(1.6, theme::text_weak()),
                     );
                 }
-                let _ = card_h;
-            } else {
-                // Render finished history items with dynamic DirectWrite height calculation
-                for entry in &state.visible_entries {
-                    let layout_src = if let Some(format) = &res.text_format_sub {
-                        measure_and_create_layout(
-                            &res.dwrite_factory,
-                            &entry.source,
-                            format,
-                            max_text_w,
-                        )
-                    } else {
-                        None
-                    };
-
-                    let layout_trans = if let Some(format) = &res.text_format_body {
-                        measure_and_create_layout(
-                            &res.dwrite_factory,
-                            &entry.translated,
-                            format,
-                            max_text_w,
-                        )
-                    } else {
-                        None
-                    };
-
-                    let h_src = layout_src.as_ref().map(|(_, _, h)| *h).unwrap_or(0.0);
-                    let h_trans = layout_trans.as_ref().map(|(_, _, h)| *h).unwrap_or(0.0);
-
-                    let top_pad = 8.0;
-                    let spacing = if h_src > 0.0 && h_trans > 0.0 {
-                        4.0
-                    } else {
-                        0.0
-                    };
-                    let bot_pad = 8.0;
-                    let card_h = top_pad + h_src + spacing + h_trans + bot_pad;
-
-                    let card_rect = D2D1_ROUNDED_RECT {
-                        rect: D2D_RECT_F {
-                            left: 0.0,
-                            top: curr_y,
-                            right: width,
-                            bottom: curr_y + card_h,
-                        },
-                        radiusX: 8.0,
-                        radiusY: 8.0,
-                    };
-
-                    let card_brush = if entry.vad_active && entry.live {
-                        &res.brush_active_card_bg
-                    } else {
-                        &res.brush_card_bg
-                    };
-                    if let Some(brush) = card_brush {
-                        target.FillRoundedRectangle(&card_rect, brush);
-                    }
-
-                    // Render source text layout
-                    let mut text_y = curr_y + top_pad;
-                    if let (Some((layout, _, _)), Some(brush)) = (&layout_src, &res.brush_text_gray)
-                    {
-                        target.DrawTextLayout(
-                            D2D_POINT_2F {
-                                x: padding_x,
-                                y: text_y,
-                            },
-                            layout,
-                            brush,
-                            D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        );
-                        text_y += h_src + spacing;
-                    }
-
-                    // Render translation text layout
-                    if let (Some((layout, _, _)), Some(brush)) =
-                        (&layout_trans, &res.brush_text_white)
-                    {
-                        target.DrawTextLayout(
-                            D2D_POINT_2F {
-                                x: padding_x,
-                                y: text_y,
-                            },
-                            layout,
-                            brush,
-                            D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        );
-                    }
-
-                    curr_y += card_h + 6.0;
+                if close.clicked() {
+                    self.close(ui.ctx());
                 }
+            })
+            .response
+            .rect
+    }
 
-                // Render live streaming partial text with dynamic height
-                if let Some(partial) = &state.partial_text {
-                    let layout_partial = if let Some(format) = &res.text_format_body {
-                        measure_and_create_layout(&res.dwrite_factory, partial, format, max_text_w)
-                    } else {
-                        None
-                    };
-
-                    let h_partial = layout_partial.as_ref().map(|(_, _, h)| *h).unwrap_or(20.0);
-                    let card_h = 8.0 + h_partial + 8.0;
-
-                    let card_rect = D2D1_ROUNDED_RECT {
-                        rect: D2D_RECT_F {
-                            left: 0.0,
-                            top: curr_y,
-                            right: width,
-                            bottom: curr_y + card_h,
-                        },
-                        radiusX: 8.0,
-                        radiusY: 8.0,
-                    };
-
-                    let live_brush = if state.vad_active {
-                        &res.brush_active_card_bg
-                    } else {
-                        &res.brush_live_bg
-                    };
-                    if let Some(brush) = live_brush {
-                        target.FillRoundedRectangle(&card_rect, brush);
+    fn result(&mut self, ctx: &egui::Context, frame: &eframe::Frame, anchor: Rect) {
+        let ocr = self.ocr.as_ref().filter(|ocr| {
+            self.controls.ocr_enabled == Some(true)
+                && (!ocr.source.is_empty()
+                    || !ocr.translated.is_empty()
+                    || ocr.status.is_some())
+        });
+        let waiting = self.controls.microphone_enabled == Some(true)
+            || self.controls.system_audio_enabled == Some(true);
+        if ocr.is_none()
+            && self.subtitles.visible_entries.is_empty()
+            && self.subtitles.partial_text.is_none()
+            && !waiting
+        {
+            self.result.hide();
+            return;
+        }
+        let Some(window) = frame.winit_window() else {
+            return;
+        };
+        let Ok(position) = window.inner_position() else {
+            return;
+        };
+        let scale = ctx.pixels_per_point();
+        let work = (self.input.work_area(window) / scale).shrink(8.0);
+        let anchor = anchor.translate(egui::vec2(position.x as f32, position.y as f32) / scale);
+        let default = beside(anchor, work, |_| 240.0).unwrap_or_else(|| {
+            let size = egui::vec2(320.0_f32.min(work.width()), 240.0_f32.min(work.height()));
+            fit_rect(size, anchor.center(), work)
+        }) * scale;
+        let result = &mut self.result;
+        let desired = result.geometry.unwrap_or(default);
+        let subtitles = &self.subtitles;
+        let language = self.language;
+        let mut close_requested = false;
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("translation_results"),
+            egui::ViewportBuilder::default()
+                .with_title(tr(language, "Translation"))
+                .with_inner_size([320.0, 240.0])
+                .with_min_inner_size([120.0, 80.0])
+                .with_decorations(false)
+                .with_transparent(false)
+                .with_resizable(true)
+                .with_always_on_top()
+                .with_active(false)
+                .with_taskbar(false)
+                .with_visible(false),
+            |ui, _| {
+                // Initial placement uses this window's DPI, which can differ from the bar's.
+                let child_scale = ui.ctx().pixels_per_point();
+                let actual = ui.ctx().input(|input| input.viewport().inner_rect);
+                close_requested = ui.ctx().input(|input| input.viewport().close_requested());
+                if !result.shown {
+                    let desired = desired / child_scale;
+                    let aligned = actual
+                        .is_some_and(|actual| rect_matches(actual, desired, 1.0 / child_scale));
+                    if aligned != result.shown {
+                        ui.ctx()
+                            .send_viewport_cmd(egui::ViewportCommand::Visible(aligned));
+                        result.shown = aligned;
                     }
-
-                    if let (Some((layout, _, _)), Some(brush)) =
-                        (&layout_partial, &res.brush_text_white)
-                    {
-                        target.DrawTextLayout(
-                            D2D_POINT_2F {
-                                x: padding_x,
-                                y: curr_y + 8.0,
-                            },
-                            layout,
-                            brush,
-                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    if !aligned {
+                        if actual.is_none_or(|actual| {
+                            actual.min.distance(desired.min) > 1.0 / child_scale
+                        }) {
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::OuterPosition(
+                                    desired.min,
+                                ));
+                        }
+                        if actual.is_none_or(|actual| {
+                            (actual.size() - desired.size()).length() > 1.0 / child_scale
+                        }) {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                                desired.size(),
+                            ));
+                        }
+                        ui.ctx().request_repaint_after(Duration::from_millis(16));
+                    }
+                }
+                ui.painter()
+                    .rect_filled(ui.max_rect().expand(1.0), 0, Color32::from_gray(250));
+                egui::CentralPanel::default()
+                    .frame(panel(10).fill(Color32::from_gray(250)).corner_radius(0))
+                    .show(ui, |ui| {
+                        let (handle, _) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), 12.0),
+                            egui::Sense::hover(),
                         );
-                    }
+                        let drag = ui
+                            .interact(handle, ui.id().with("drag_results"), egui::Sense::drag())
+                            .on_hover_cursor(egui::CursorIcon::Grab);
+                        for x in [-8.0, -4.0, 0.0, 4.0, 8.0] {
+                            ui.painter().circle_filled(
+                                handle.center() + egui::vec2(x, 0.0),
+                                1.0,
+                                theme::text_weak(),
+                            );
+                        }
+                        if drag.drag_started() {
+                            result.moving();
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                        }
+                        ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                result_contents(ui, language, subtitles, ocr, waiting);
+                            });
+                        let corner = Rect::from_min_size(
+                            ui.max_rect().right_bottom() - Vec2::splat(12.0),
+                            Vec2::splat(12.0),
+                        );
+                        ui.painter().line_segment(
+                            [corner.left_bottom(), corner.right_top()],
+                            Stroke::new(1.5, theme::text_weak()),
+                        );
+                        if resize(ui, corner, egui::viewport::ResizeDirection::SouthEast) {
+                            result.moving();
+                        }
+                    });
+                if result.shown
+                    && let Some(actual) = actual
+                {
+                    result.observe(actual * child_scale);
+                }
+            },
+        );
+        if close_requested {
+            self.close(ctx);
+        }
+        ctx.request_repaint_after(Duration::from_millis(100));
+    }
+}
 
-                    let _ = card_h;
+impl eframe::App for OverlayWindow {
+    fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        while let Ok(command) = self.receiver.try_recv() {
+            match command {
+                OverlayCommand::Language(language) => self.language = language,
+                OverlayCommand::Controls(controls) => {
+                    if controls.ocr_enabled != self.controls.ocr_enabled {
+                        self.edit_region = controls.ocr_enabled == Some(true);
+                    }
+                    self.controls = controls;
+                }
+                OverlayCommand::Subtitles(state) => self.subtitles = state,
+                OverlayCommand::Ocr(state) => self.ocr = state,
+                OverlayCommand::Hide => {
+                    self.closing = true;
+                    self.close(ui.ctx());
                 }
             }
         }
+        if ui.ctx().input(|input| input.viewport().close_requested()) {
+            self.close(ui.ctx());
+        }
+        if self.closing {
+            return;
+        }
+        let mut regions = Vec::new();
+        let mut selection = None;
+        let mut anchor = Rect::NOTHING;
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.inner_margin(4))
+            .show(ui, |ui| {
+                let header = self.header(ui);
+                regions.push((header, CORNER as f32));
+                anchor = header;
+                ui.add_space(GAP);
+                if self.edit_region
+                    || self.controls.ocr_enabled == Some(true)
+                    || (self.pending_region.is_some() && self.sent_region.is_none())
+                {
+                    let rect = ui.available_rect_before_wrap().shrink(2.0);
+                    selection = Some(rect.shrink(12.0));
+                    anchor = header.union(rect);
+                    if self.edit_region {
+                        let color = Color32::WHITE;
+                        ui.painter().rect_stroke(
+                            rect.translate(egui::vec2(0.0, 1.0)),
+                            0.0,
+                            Stroke::new(5.0, Color32::from_black_alpha(112)),
+                            egui::StrokeKind::Inside,
+                        );
+                        ui.painter().rect_stroke(
+                            rect,
+                            0.0,
+                            Stroke::new(2.0, color),
+                            egui::StrokeKind::Inside,
+                        );
+                        use egui::viewport::ResizeDirection::*;
+                        for (edge, direction) in [
+                            (
+                                Rect::from_min_max(
+                                    rect.left_top(),
+                                    rect.right_top() + egui::vec2(0.0, GAP),
+                                ),
+                                North,
+                            ),
+                            (
+                                Rect::from_min_max(
+                                    rect.left_bottom() - egui::vec2(0.0, GAP),
+                                    rect.right_bottom(),
+                                ),
+                                South,
+                            ),
+                            (
+                                Rect::from_min_max(
+                                    rect.left_top(),
+                                    rect.left_bottom() + egui::vec2(GAP, 0.0),
+                                ),
+                                West,
+                            ),
+                            (
+                                Rect::from_min_max(
+                                    rect.right_top() - egui::vec2(GAP, 0.0),
+                                    rect.right_bottom(),
+                                ),
+                                East,
+                            ),
+                        ] {
+                            resize(ui, edge, direction);
+                            regions.push((edge, 0.0));
+                        }
+                        for (point, direction) in [
+                            (rect.left_top(), NorthWest),
+                            (rect.right_top() - egui::vec2(12.0, 0.0), NorthEast),
+                            (rect.left_bottom() - egui::vec2(0.0, 12.0), SouthWest),
+                            (rect.right_bottom() - egui::vec2(12.0, 12.0), SouthEast),
+                        ] {
+                            let corner = Rect::from_min_size(point, Vec2::splat(12.0));
+                            ui.painter().rect_filled(corner, 2.0, color);
+                            resize(ui, corner, direction);
+                            regions.push((corner, 2.0));
+                        }
+                    }
+                }
+            });
+        let Some(window) = frame.winit_window() else {
+            return;
+        };
+        if self
+            .input
+            .update(&regions, ui.ctx().pixels_per_point())
+            .is_err()
+        {
+            self.close(ui.ctx());
+            return;
+        }
+        if !self.shown {
+            window.set_visible(true);
+            self.shown = true;
+        }
+        if let Some(selection) = selection {
+            let Ok(position) = window.inner_position() else {
+                return;
+            };
+            let scale = ui.ctx().pixels_per_point();
+            let rect = selection * scale;
+            let region = OverlayRegion {
+                x: position.x + rect.left().ceil() as i32,
+                y: position.y + rect.top().ceil() as i32,
+                width: (rect.right().floor() - rect.left().ceil()).max(1.0) as u32,
+                height: (rect.bottom().floor() - rect.top().ceil()).max(1.0) as u32,
+            };
+            let now = Instant::now();
+            if self
+                .pending_region
+                .as_ref()
+                .is_none_or(|(pending, _)| *pending != region)
+            {
+                if self.sent_region.take().is_some() {
+                    send_event(OverlayEvent::RegionChanging);
+                }
+                self.pending_region = Some((region, now));
+            }
+            if self.sent_region != Some(region)
+                && self.pending_region.is_some_and(|(_, changed)| {
+                    now.duration_since(changed) >= Duration::from_millis(300)
+                })
+            {
+                self.sent_region = Some(region);
+                send_event(OverlayEvent::RegionChanged(region));
+            }
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        }
+        self.result(ui.ctx(), frame, anchor);
+    }
+}
 
-        let _ = target.EndDraw(None, None);
+fn result_contents(
+    ui: &mut egui::Ui,
+    language: UiLanguage,
+    subtitles: &OverlayState,
+    ocr: Option<&OcrOverlayState>,
+    waiting: bool,
+) {
+    let size = subtitles.font_size.clamp(10, 32) as f32;
+    if let Some(ocr) = ocr {
+        let (text, color) = if ocr.translated.is_empty() {
+            (&ocr.source, theme::text_weak())
+        } else {
+            (&ocr.translated, theme::text_strong())
+        };
+        if !text.is_empty() {
+            ui.add(egui::Label::new(RichText::new(text).size(size).color(color)).selectable(true));
+        }
+        if let Some(status) = &ocr.status {
+            ui.label(RichText::new(status).color(theme::text_weak()));
+        }
+        if ocr.busy {
+            ui.add(egui::Spinner::new().size(14.0).color(theme::text_weak()));
+        }
+        ui.add_space(GAP);
+    }
+    for entry in &subtitles.visible_entries {
+        card(
+            ui,
+            &entry.source,
+            &entry.translated,
+            size,
+            entry.vad_active,
+            entry.live,
+        );
+        ui.add_space(GAP);
+    }
+    if let Some(partial) = &subtitles.partial_text {
+        card(ui, "", partial, size, subtitles.vad_active, true);
+    } else if waiting && subtitles.visible_entries.is_empty() {
+        card(
+            ui,
+            "",
+            tr(language, "Waiting for speech"),
+            size,
+            subtitles.vad_active,
+            false,
+        );
+    }
+}
+
+fn panel(margin: i8) -> egui::Frame {
+    egui::Frame::new()
+        .fill(theme::content_backdrop(true))
+        .stroke(Stroke::new(1.0, theme::border().gamma_multiply(0.35)))
+        .corner_radius(CORNER)
+        .inner_margin(margin)
+}
+
+fn icon_button(ui: &mut egui::Ui, rect: Rect, label: &str) -> egui::Response {
+    let response = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+            ui.add(
+                egui::Button::new("")
+                    .min_size(rect.size())
+                    .corner_radius(12)
+                    .frame(false),
+            )
+        })
+        .inner;
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, false, label));
+    response.on_hover_text(label)
+}
+
+fn card(
+    ui: &mut egui::Ui,
+    source: &str,
+    translated: &str,
+    size: f32,
+    active: bool,
+    live: bool,
+) -> Rect {
+    let border = if active {
+        theme::text_strong()
+    } else if live {
+        theme::text_normal()
+    } else {
+        theme::border()
+    };
+    panel(10)
+        .stroke(Stroke::new(1.0, border.gamma_multiply(0.35)))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if !source.is_empty() {
+                ui.label(
+                    RichText::new(source)
+                        .size(size * 0.8)
+                        .color(theme::text_weak()),
+                );
+            }
+            if !translated.is_empty() {
+                ui.label(
+                    RichText::new(translated)
+                        .size(size)
+                        .color(theme::text_strong()),
+                );
+            }
+        })
+        .response
+        .rect
+        .intersect(ui.clip_rect())
+}
+
+fn resize(ui: &mut egui::Ui, rect: Rect, direction: egui::viewport::ResizeDirection) -> bool {
+    use egui::viewport::ResizeDirection::*;
+    let cursor = match direction {
+        North | South => egui::CursorIcon::ResizeVertical,
+        East | West => egui::CursorIcon::ResizeHorizontal,
+        NorthWest | SouthEast => egui::CursorIcon::ResizeNwSe,
+        NorthEast | SouthWest => egui::CursorIcon::ResizeNeSw,
+    };
+    let response = ui
+        .interact(
+            rect,
+            ui.id().with(("resize", direction as u8)),
+            egui::Sense::drag(),
+        )
+        .on_hover_cursor(cursor);
+    if response.drag_started() {
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
+    }
+    response.drag_started()
+}
+
+fn rect_matches(a: Rect, b: Rect, tolerance: f32) -> bool {
+    a.min.distance(b.min) <= tolerance && (a.size() - b.size()).length() <= tolerance
+}
+
+fn fit_rect(size: Vec2, center: egui::Pos2, bounds: Rect) -> Rect {
+    // Equal sizes can invert the clamp range by a fraction at noninteger DPI.
+    let max = (bounds.max - size).max(bounds.min);
+    Rect::from_min_size((center - size * 0.5).clamp(bounds.min, max), size)
+}
+
+fn side_spaces(anchor: Rect, bounds: Rect) -> [Rect; 4] {
+    let gap = 8.0;
+    [
+        Rect::from_min_max(egui::pos2(anchor.right() + gap, bounds.top()), bounds.max),
+        Rect::from_min_max(bounds.min, egui::pos2(anchor.left() - gap, bounds.bottom())),
+        Rect::from_min_max(bounds.min, egui::pos2(bounds.right(), anchor.top() - gap)),
+        Rect::from_min_max(egui::pos2(bounds.left(), anchor.bottom() + gap), bounds.max),
+    ]
+    .map(|space| space.intersect(bounds))
+}
+
+fn beside(anchor: Rect, bounds: Rect, height_for_width: impl Fn(f32) -> f32) -> Option<Rect> {
+    side_spaces(anchor, bounds)
+        .into_iter()
+        .filter(|space| space.width() >= 120.0 && space.height() >= 80.0)
+        .map(|space| {
+            let width = 320.0_f32.min(space.width());
+            let height = height_for_width(width).clamp(80.0, 360.0);
+            let size = egui::vec2(width, height.min(space.height()));
+            let rect = fit_rect(size, anchor.center(), space);
+            (
+                rect,
+                (height - size.y) / height,
+                rect.center().distance_sq(anchor.center()),
+            )
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.2.total_cmp(&b.2)))
+        .map(|(rect, _, _)| rect)
+}
+
+fn send_event(event: OverlayEvent) {
+    let mut stdout = std::io::stdout().lock();
+    if serde_json::to_writer(&mut stdout, &event).is_ok() {
+        let _ = stdout.write_all(b"\n");
+        let _ = stdout.flush();
     }
 }

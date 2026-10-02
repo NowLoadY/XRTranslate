@@ -209,6 +209,23 @@ fn runtime(card: &Value) -> String {
                 boolean(field(value, "allow_reference_context"))
             )
         }
+        "paddle-ocr-onnx" => {
+            assert_eq!(capability, "ocr");
+            assert!(
+                has_role("TextDetectionGraph")
+                    && has_role("TextRecognitionGraph")
+                    && has_role("ModelConfig")
+            );
+            "ModelRuntime::PaddleOcrOnnx".into()
+        }
+        "llama-vision-chat" => {
+            assert_eq!(capability, "ocr");
+            assert!(has_role("Weights") && has_role("MultimodalProjection"));
+            format!(
+                "ModelRuntime::LlamaVisionChat {{ model_alias: {}, extra_args: {extra_args} }}",
+                alias()
+            )
+        }
         other => panic!("unknown model runtime kind {other}"),
     };
     format!("Some({variant})")
@@ -225,6 +242,7 @@ fn manifest(value: &Value, variant: &str) -> String {
         "asr" => "ModelCapability::Asr",
         "translation" => "ModelCapability::Translation",
         "tts" => "ModelCapability::Tts",
+        "ocr" => "ModelCapability::Ocr",
         capability => panic!("unknown model capability {capability}"),
     };
     let hardware = field(value, "hardware");

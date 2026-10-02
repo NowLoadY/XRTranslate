@@ -197,7 +197,9 @@ const PROVIDER_FIELDS: &[ProviderFieldDescriptor] = &[
     ProviderFieldDescriptor {
         name: "guide_url",
         label: "API Key Guide",
-        help: Some("Official documentation or API key registration link for this online service provider."),
+        help: Some(
+            "Official documentation or API key registration link for this online service provider.",
+        ),
         editor: ProviderFieldEditor::Default,
         visibility: ProviderFieldVisibility::Hidden,
     },
@@ -225,15 +227,21 @@ mod tests {
 
     #[test]
     fn native_visibility_matches_the_existing_provider_form() {
-        assert!(!provider_field_descriptor("transport")
-            .unwrap()
-            .is_visible(false));
-        assert!(!provider_field_descriptor("model_asset")
-            .unwrap()
-            .is_visible(true));
-        assert!(!provider_field_descriptor("model")
-            .unwrap()
-            .is_visible(false));
+        assert!(
+            !provider_field_descriptor("transport")
+                .unwrap()
+                .is_visible(false)
+        );
+        assert!(
+            !provider_field_descriptor("model_asset")
+                .unwrap()
+                .is_visible(true)
+        );
+        assert!(
+            !provider_field_descriptor("model")
+                .unwrap()
+                .is_visible(false)
+        );
         assert!(
             provider_field_descriptor("context_window_tokens")
                 .unwrap()

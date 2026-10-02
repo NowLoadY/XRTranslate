@@ -179,6 +179,21 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
         return;
     }
 
+    egui::Panel::bottom("translation_text_composer")
+        .show_separator_line(false)
+        .frame(egui::Frame::NONE)
+        .show(ui, |ui| {
+            ui.add_space(10.0);
+            app.render_text_composer(ui);
+        });
+
+    egui::ScrollArea::vertical()
+        .id_salt("translation_page_scroll")
+        .auto_shrink([false, false])
+        .show(ui, |ui| render_content(app, ui));
+}
+
+fn render_content(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new(crate::i18n::tr(app.ui_language, "Translation"))
@@ -307,15 +322,10 @@ fn render_translation_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::U
             details
         });
         crate::ui::layout::flow_row(ui, |ui| {
-            render_capture_control(app, ui, CaptureSource::Microphone);
-            if crate::audio::AudioSystem::supports_system_audio()
-                && (app
-                    .capture_source
-                    .routes()
-                    .contains(&CaptureSource::SystemAudio)
-                    || app.live_input_requested(CaptureSource::SystemAudio, true))
-            {
-                render_capture_control(app, ui, CaptureSource::SystemAudio);
+            for source in CaptureSource::Both.routes() {
+                if app.input_control_visible(*source, true) {
+                    render_capture_control(app, ui, *source);
+                }
             }
         });
         details.show_body_unindented(ui, |ui| {
@@ -1225,11 +1235,7 @@ fn render_capture_control(
     source: CaptureSource,
 ) {
     let microphone = source == CaptureSource::Microphone;
-    let enabled = if microphone {
-        app.microphone_enabled
-    } else {
-        app.host_input_active(source)
-    };
+    let enabled = app.input_enabled(source);
     let (id, label) = match (microphone, enabled) {
         (true, true) => (
             "microphone_input",

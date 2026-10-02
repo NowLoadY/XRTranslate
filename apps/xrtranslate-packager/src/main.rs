@@ -564,8 +564,10 @@ fn rewrite_config(config_path: &Path) -> Result<String, PackageError> {
         "seed_database_path".into(),
         Value::String(CORPUS_SEED_PATH.into()),
     );
-    if let Some(tts) = root_object.get_mut("tts").and_then(Value::as_object_mut) {
-        tts.insert("provider".into(), Value::String("none".into()));
+    for optional in ["tts", "ocr"] {
+        if let Some(section) = root_object.get_mut(optional).and_then(Value::as_object_mut) {
+            section.insert("provider".into(), Value::String("none".into()));
+        }
     }
     Ok(format!("{}\n", serde_json::to_string_pretty(&root)?))
 }
@@ -926,6 +928,7 @@ fn should_exclude_from_release_resources(path: &Path) -> bool {
     };
     let lower = name.to_ascii_lowercase();
     lower == "mpv-2.zip"
+        || lower.ends_with(".def")
         || lower.ends_with(".dll")
         || lower.ends_with(".dylib")
         || lower.ends_with(".so")
@@ -1091,7 +1094,7 @@ mod tests {
     fn rewrite_config_clears_runtime_path_and_makes_models_release_relative() {
         let root = temp_directory("config");
         let config = root.join("config.json");
-        write(&config, br#"{"model_manager":{"llama_server_path":"C:/old/llama-server.exe","models_directory":"C:/old/models","qwen3_asr_gguf_directory":"C:/old/qwen"},"tts":{"provider":"openvoice"}}"#);
+        write(&config, br#"{"model_manager":{"llama_server_path":"C:/old/llama-server.exe","models_directory":"C:/old/models","qwen3_asr_gguf_directory":"C:/old/qwen"},"tts":{"provider":"openvoice"},"ocr":{"provider":"paddle-ocr-vl"}}"#);
 
         let rewritten: Value = serde_json::from_str(&rewrite_config(&config).unwrap()).unwrap();
         assert_eq!(rewritten["model_manager"]["llama_server_path"], "");
@@ -1113,6 +1116,7 @@ mod tests {
                 .is_none()
         );
         assert_eq!(rewritten["tts"]["provider"], "none");
+        assert_eq!(rewritten["ocr"]["provider"], "none");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1158,6 +1162,7 @@ mod tests {
         write(&installer, b"installer");
         write(&updater, b"updater");
         write(&resources.join("docs/welcome.md"), b"native resource");
+        write(&resources.join("mpv.def"), b"build-time exports");
         write(&resources.join("bin/mpv-2.dll"), b"runtime download");
         write(
             &resources.join("bin/future-runtime.dll"),
@@ -1174,7 +1179,11 @@ mod tests {
         write(&onnx_runtime_cpu, b"onnx runtime");
         write(&onnx_runtime_license, b"onnx license");
         write(&onnx_runtime_notices, b"onnx notices");
-        write(&config, br#"{"model_manager":{"llama_server_path":"old"}}"#);
+        write(&config, br#"{"model_manager":{"llama_server_path":"old"},"ocr":{"provider":"paddle-ocr-vl","providers":{"paddle-ocr-vl":{"transport":"local","model_asset":"paddle-ocr-vl-1.6-gguf"}}}}"#);
+        write(
+            &source.join("models/paddle-ocr-vl/PaddleOCR-VL-1.6/PaddleOCR-VL-1.6-GGUF.gguf"),
+            b"optional OCR model",
+        );
         write(&license, b"AGPL-3.0-only");
         write(&source.join("runtime/debug.md"), b"hello\nlocal only");
         write(
@@ -1217,7 +1226,10 @@ mod tests {
         .unwrap();
         package(&plan).unwrap();
 
-        assert!(output.join("config.json").is_file());
+        let packaged: Value =
+            serde_json::from_slice(&fs::read(output.join("config.json")).unwrap()).unwrap();
+        assert_eq!(packaged["ocr"]["provider"], "none");
+        assert!(!output.join("models/paddle-ocr-vl").exists());
         assert!(output.join("LICENSE").is_file());
         let version = env!("CARGO_PKG_VERSION");
         assert!(
@@ -1250,6 +1262,7 @@ mod tests {
                 .is_file()
         );
         assert!(output.join("resources/docs/welcome.md").is_file());
+        assert!(!output.join("resources/mpv.def").exists());
         assert!(!output.join("resources/bin/mpv-2.dll").exists());
         assert!(!output.join("resources/bin/future-runtime.dll").exists());
         assert!(output.join(CORPUS_SEED_PATH).is_file());

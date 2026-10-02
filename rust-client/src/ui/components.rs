@@ -4,6 +4,7 @@ use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Stroke, Ui, Vec2}
 pub mod avatar;
 pub mod faded_scroll_text;
 pub mod selection_card;
+pub mod text_composer;
 
 #[cfg(test)]
 mod language_tests;
@@ -1079,17 +1080,6 @@ pub fn searchable_combobox_with_width<T: PartialEq + Clone>(
     width: Option<f32>,
 ) -> bool {
     searchable_combobox_with_options(ui, id, selected_text, selected, options, width, true)
-}
-
-pub fn searchable_combobox_frameless<T: PartialEq + Clone>(
-    ui: &mut Ui,
-    id: impl std::hash::Hash + std::fmt::Debug,
-    selected_text: impl Into<String>,
-    selected: &mut T,
-    options: &[(T, String)],
-    width: Option<f32>,
-) -> bool {
-    searchable_combobox_with_options(ui, id, selected_text, selected, options, width, false)
 }
 
 pub fn searchable_combobox_with_options<T: PartialEq + Clone>(
@@ -2959,6 +2949,14 @@ pub fn render_runtime_fallback_notice(
 
 pub const INPUT_TOGGLE_SIZE: f32 = 36.0;
 
+#[derive(Clone, Copy)]
+pub enum InputIcon {
+    Microphone,
+    SystemAudio,
+    #[cfg(any(target_os = "linux", windows))]
+    Text,
+}
+
 /// Compact, keyboard-accessible input controls beside the translation switch.
 pub fn input_toggle(
     ui: &mut Ui,
@@ -2967,13 +2965,29 @@ pub fn input_toggle(
     microphone: bool,
     label: &str,
 ) -> egui::Response {
+    let icon = if microphone {
+        InputIcon::Microphone
+    } else {
+        InputIcon::SystemAudio
+    };
+    input_toggle_with_accent(ui, id, active, icon, label, None)
+}
+
+pub fn input_toggle_with_accent(
+    ui: &mut Ui,
+    id: &str,
+    active: bool,
+    icon: InputIcon,
+    label: &str,
+    accent: Option<Color32>,
+) -> egui::Response {
     ui.push_id(id, |ui| {
         let mut response = ui.add(
             egui::Button::new("")
                 .min_size(egui::Vec2::splat(INPUT_TOGGLE_SIZE))
                 .corner_radius(CornerRadius::same(12))
                 .fill(if active {
-                    theme::primary().gamma_multiply(0.15)
+                    accent.unwrap_or_else(theme::primary).gamma_multiply(0.15)
                 } else {
                     theme::surface_subtle()
                 }),
@@ -2995,74 +3009,96 @@ pub fn input_toggle(
         let center = response.rect.center();
         let painter = ui.painter();
         let color = if active {
-            theme::primary_dark()
+            accent.unwrap_or_else(theme::primary_dark)
         } else {
             theme::text_weak()
         };
         let stroke = Stroke::new(1.8, color);
-        if microphone {
-            painter.rect_stroke(
-                egui::Rect::from_center_size(center + egui::vec2(0.0, -3.0), egui::vec2(8.0, 13.0)),
-                CornerRadius::same(4),
-                stroke,
-                egui::StrokeKind::Middle,
-            );
-            painter.add(egui::Shape::line(
-                vec![
-                    center + egui::vec2(-7.0, -3.0),
-                    center + egui::vec2(-7.0, 1.0),
-                    center + egui::vec2(-5.0, 5.0),
-                    center + egui::vec2(0.0, 7.0),
-                    center + egui::vec2(5.0, 5.0),
-                    center + egui::vec2(7.0, 1.0),
-                    center + egui::vec2(7.0, -3.0),
-                ],
-                stroke,
-            ));
-            painter.line_segment(
-                [
-                    center + egui::vec2(0.0, 7.0),
-                    center + egui::vec2(0.0, 11.0),
-                ],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    center + egui::vec2(-4.0, 11.0),
-                    center + egui::vec2(4.0, 11.0),
-                ],
-                stroke,
-            );
-        } else {
-            painter.rect_stroke(
-                egui::Rect::from_center_size(
-                    center + egui::vec2(0.0, -2.0),
-                    egui::vec2(20.0, 14.0),
-                ),
-                CornerRadius::same(4),
-                stroke,
-                egui::StrokeKind::Middle,
-            );
-            for (x, height) in [(-4.0, 3.0), (0.0, 6.0), (4.0, 4.0)] {
+        match icon {
+            InputIcon::Microphone => {
+                painter.rect_stroke(
+                    egui::Rect::from_center_size(
+                        center + egui::vec2(0.0, -3.0),
+                        egui::vec2(8.0, 13.0),
+                    ),
+                    CornerRadius::same(4),
+                    stroke,
+                    egui::StrokeKind::Middle,
+                );
+                painter.add(egui::Shape::line(
+                    vec![
+                        center + egui::vec2(-7.0, -3.0),
+                        center + egui::vec2(-7.0, 1.0),
+                        center + egui::vec2(-5.0, 5.0),
+                        center + egui::vec2(0.0, 7.0),
+                        center + egui::vec2(5.0, 5.0),
+                        center + egui::vec2(7.0, 1.0),
+                        center + egui::vec2(7.0, -3.0),
+                    ],
+                    stroke,
+                ));
                 painter.line_segment(
                     [
-                        center + egui::vec2(x, -2.0 - height / 2.0),
-                        center + egui::vec2(x, -2.0 + height / 2.0),
+                        center + egui::vec2(0.0, 7.0),
+                        center + egui::vec2(0.0, 11.0),
+                    ],
+                    stroke,
+                );
+                painter.line_segment(
+                    [
+                        center + egui::vec2(-4.0, 11.0),
+                        center + egui::vec2(4.0, 11.0),
                     ],
                     stroke,
                 );
             }
-            painter.line_segment(
-                [center + egui::vec2(0.0, 5.0), center + egui::vec2(0.0, 9.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    center + egui::vec2(-5.0, 9.0),
-                    center + egui::vec2(5.0, 9.0),
-                ],
-                stroke,
-            );
+            InputIcon::SystemAudio => {
+                painter.rect_stroke(
+                    egui::Rect::from_center_size(
+                        center + egui::vec2(0.0, -2.0),
+                        egui::vec2(20.0, 14.0),
+                    ),
+                    CornerRadius::same(4),
+                    stroke,
+                    egui::StrokeKind::Middle,
+                );
+                for (x, height) in [(-4.0, 3.0), (0.0, 6.0), (4.0, 4.0)] {
+                    painter.line_segment(
+                        [
+                            center + egui::vec2(x, -2.0 - height / 2.0),
+                            center + egui::vec2(x, -2.0 + height / 2.0),
+                        ],
+                        stroke,
+                    );
+                }
+                painter.line_segment(
+                    [center + egui::vec2(0.0, 5.0), center + egui::vec2(0.0, 9.0)],
+                    stroke,
+                );
+                painter.line_segment(
+                    [
+                        center + egui::vec2(-5.0, 9.0),
+                        center + egui::vec2(5.0, 9.0),
+                    ],
+                    stroke,
+                );
+            }
+            #[cfg(any(target_os = "linux", windows))]
+            InputIcon::Text => {
+                painter.rect_stroke(
+                    egui::Rect::from_center_size(center, egui::vec2(23.0, 22.0)),
+                    CornerRadius::same(4),
+                    stroke,
+                    egui::StrokeKind::Middle,
+                );
+                painter.text(
+                    center,
+                    egui::Align2::CENTER_CENTER,
+                    "文",
+                    egui::FontId::proportional(15.0),
+                    color,
+                );
+            }
         }
         if !active {
             painter.line_segment(

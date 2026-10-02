@@ -86,6 +86,7 @@ impl AppConfig {
                 ModelCapability::Asr => "asr",
                 ModelCapability::Translation => "translation",
                 ModelCapability::Tts => "tts",
+                ModelCapability::Ocr => "ocr",
             };
             raw[section]["provider"] = json!(model.provider);
             let provider = &mut raw[section]["providers"][model.provider];
@@ -101,7 +102,10 @@ impl AppConfig {
                 "transport".into(),
                 json!(model.runtime.map_or("onnx", ModelRuntime::transport)),
             );
-            if model.capability != ModelCapability::Tts {
+            if matches!(
+                model.capability,
+                ModelCapability::Asr | ModelCapability::Translation
+            ) {
                 // Selecting a local package cannot retain a remote endpoint.
                 let port = if model.capability == ModelCapability::Asr {
                     8001

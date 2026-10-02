@@ -11,6 +11,7 @@ use std::{
 pub enum LlamaServerRole {
     Asr,
     Translation,
+    Ocr,
 }
 
 /// GPU-layer policy passed to llama.cpp's `--n-gpu-layers` option.
@@ -132,6 +133,7 @@ impl LlamaServerSpec {
                 match role {
                     LlamaServerRole::Asr => 8001,
                     LlamaServerRole::Translation => 8002,
+                    LlamaServerRole::Ocr => 8003,
                 },
             ),
             model_alias: model_alias.into(),
@@ -176,7 +178,7 @@ impl LlamaServerSpec {
             return Err(SpecValidationError::MissingModelAlias);
         }
         match self.role {
-            LlamaServerRole::Asr if self.mmproj.is_none() => {
+            LlamaServerRole::Asr | LlamaServerRole::Ocr if self.mmproj.is_none() => {
                 Err(SpecValidationError::MissingMultimodalProjection)
             }
             LlamaServerRole::Translation if self.mmproj.is_some() => {
@@ -253,7 +255,7 @@ impl fmt::Display for SpecValidationError {
             Self::InvalidContextSize => "llama-server context size must be non-zero",
             Self::InvalidParallelSlots => "llama-server parallel slots must be non-zero",
             Self::MissingModelAlias => "llama-server model alias is empty",
-            Self::MissingMultimodalProjection => "audio chat ASR requires an mmproj GGUF file",
+            Self::MissingMultimodalProjection => "multimodal recognition requires an mmproj GGUF file",
             Self::UnexpectedMultimodalProjection => {
                 "text translation does not accept a multimodal projection file"
             }

@@ -107,6 +107,8 @@ impl ServiceConfigEditor {
             ("asr", "ASR / Speech Recognition"),
             ("translation", "Translation"),
             ("tts", "Text to Speech"),
+            #[cfg(not(target_os = "android"))]
+            ("ocr", "Screen text recognition"),
         ]
         .into_iter()
         .map(|(key, title)| Self::make_category(&self.document, key, title))
@@ -206,6 +208,32 @@ impl ServiceConfigEditor {
             .and_then(|section| section.get("provider"))
             .and_then(Value::as_str)
             .is_some_and(|provider| provider != "none" && !provider.trim().is_empty())
+    }
+
+    pub(crate) fn ocr_is_configured(&self) -> bool {
+        !cfg!(target_os = "android")
+            && self
+                .document
+                .get("ocr")
+                .and_then(|section| section.get("provider"))
+                .and_then(Value::as_str)
+                .is_some_and(|provider| provider != "none" && !provider.trim().is_empty())
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    pub(crate) fn ocr_model_asset_id(&self) -> Option<xrtranslate_assets::ModelAssetId> {
+        let section = self.document.get("ocr")?;
+        let provider = section.get("provider")?.as_str()?;
+        let key = section
+            .get("providers")?
+            .get(provider)?
+            .get("model_asset")?
+            .as_str()?;
+        let id = xrtranslate_assets::ModelAssetId::from_config_key(key)?;
+        let manifest = xrtranslate_assets::manifest_for(id);
+        (manifest.capability == xrtranslate_assets::ModelCapability::Ocr
+            && manifest.provider == provider)
+            .then_some(id)
     }
 
     pub(crate) const fn has_unsaved_changes(&self) -> bool {
@@ -735,6 +763,8 @@ impl ServiceConfigEditor {
             xrtranslate_assets::ModelCapability::Translation,
         )?;
         validate_tts_provider_asset(&parsed.tts)?;
+        #[cfg(not(target_os = "android"))]
+        validate_ocr_provider_asset(&parsed.ocr)?;
         xrtranslate_config::save_user_config_document(&self.path, &project_root(), &self.document)?;
         self.dirty = false;
         Ok(())
@@ -776,6 +806,7 @@ fn category_capability(category: &str) -> Option<xrtranslate_assets::ModelCapabi
         "asr" => Some(xrtranslate_assets::ModelCapability::Asr),
         "translation" => Some(xrtranslate_assets::ModelCapability::Translation),
         "tts" => Some(xrtranslate_assets::ModelCapability::Tts),
+        "ocr" => Some(xrtranslate_assets::ModelCapability::Ocr),
         _ => None,
     }
 }
@@ -852,6 +883,26 @@ fn validate_native_provider_asset(
             "Model package {} does not belong to provider {} for {capability:?}.",
             manifest.id, provider.provider
         ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "android"))]
+fn validate_ocr_provider_asset(ocr: &xrtranslate_config::OcrConfig) -> Result<(), String> {
+    if ocr.provider.trim().is_empty() || ocr.provider == "none" {
+        return Ok(());
+    }
+    let manifest = ocr
+        .provider_config(&ocr.provider)
+        .and_then(|provider| provider.get("model_asset"))
+        .and_then(Value::as_str)
+        .and_then(xrtranslate_assets::ModelAssetId::from_config_key)
+        .map(xrtranslate_assets::manifest_for)
+        .ok_or_else(|| "Select an OCR model package.".to_owned())?;
+    if manifest.capability != xrtranslate_assets::ModelCapability::Ocr
+        || manifest.provider != ocr.provider
+    {
+        return Err("The selected OCR model does not belong to this provider.".to_owned());
     }
     Ok(())
 }
@@ -1571,6 +1622,8 @@ mod tests {
             ("asr", "ASR / Speech Recognition"),
             ("translation", "Translation"),
             ("tts", "Text to Speech"),
+            #[cfg(not(target_os = "android"))]
+            ("ocr", "Screen text recognition"),
         ]
         .into_iter()
         .map(|(key, title)| ServiceConfigEditor::make_category(&document, key, title))

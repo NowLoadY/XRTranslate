@@ -544,6 +544,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         state.clock,
         visual_dt,
         state.parking.occupied(),
+        speed < 12.0 && anchor.distance(target) < 2.0 && !response.dragged(),
     );
     if interactive
         && (response.dragged() || (state.placement.was_dragged() && (size - small).abs() > 0.1))

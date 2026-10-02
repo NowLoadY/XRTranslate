@@ -624,5 +624,19 @@
         "top_k": 50
       }
     }
+  },
+  "ocr": {
+    "provider": "none",
+    "providers": {
+      "none": {},
+      "paddle-ocr": {
+        "transport": "onnx-cpu",
+        "model_asset": "pp-ocrv6-small-onnx"
+      },
+      "paddle-ocr-vl": {
+        "transport": "local",
+        "model_asset": "paddle-ocr-vl-1.6-gguf"
+      }
+    }
   }
 }

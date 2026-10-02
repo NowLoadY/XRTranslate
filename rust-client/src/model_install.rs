@@ -706,11 +706,7 @@ fn package_from_manifest(manifest: &xrtranslate_assets::ModelAssetManifest) -> N
 }
 
 fn model_download_bytes(id: ModelAssetId) -> u64 {
-    manifests_for_capability(ModelCapability::Asr)
-        .chain(manifests_for_capability(ModelCapability::Translation))
-        .chain(manifests_for_capability(ModelCapability::Tts))
-        .find(|manifest| manifest.id == id)
-        .map_or(0, xrtranslate_assets::ModelAssetManifest::download_bytes)
+    manifest_for(id).download_bytes()
 }
 
 fn clear_model_staging_for(
@@ -773,6 +769,7 @@ pub fn set_model_asset(
         ModelCapability::Asr => "asr",
         ModelCapability::Translation => "translation",
         ModelCapability::Tts => "tts",
+        ModelCapability::Ocr => "ocr",
     };
     let section = document
         .get_mut(section_name)

@@ -9,10 +9,10 @@ use std::sync::{Arc, atomic::AtomicBool};
 use runtime::{OscHandle, OscManager, OscSettings};
 pub use ui::{OscPageContext, OscUiAction};
 
-use crate::session_coordinator::{
-    CaptionUpdate, HostOutputEvent, HostOutputSubscriber, PluginSessionBinding, PluginSessionOwner,
-    SessionOutputPolicy,
-};
+use crate::session_coordinator::{CaptionUpdate, HostOutputEvent, HostOutputSubscriber};
+use crate::ui::components::text_composer::TextComposer;
+#[cfg(test)]
+use crate::ui::components::text_composer::TextMode;
 
 impl HostOutputSubscriber for OscHandle {
     fn on_host_output(&self, event: HostOutputEvent<'_>) {
@@ -48,8 +48,7 @@ impl HostOutputSubscriber for OscHandle {
 pub struct OscPlugin {
     manager: OscManager,
     draft: OscSettings,
-    draft_input: String,
-    translate_input: bool,
+    composer: TextComposer,
     host_enabled: bool,
 }
 
@@ -59,8 +58,7 @@ impl OscPlugin {
         Self {
             manager,
             draft,
-            draft_input: String::new(),
-            translate_input: true,
+            composer: TextComposer::default(),
             host_enabled,
         }
     }
@@ -77,33 +75,27 @@ impl OscPlugin {
         &mut self.draft
     }
 
+    #[cfg(test)]
     pub fn draft_input(&self) -> &str {
-        &self.draft_input
+        &self.composer.text
     }
 
     pub fn draft_input_mut(&mut self) -> &mut String {
-        &mut self.draft_input
+        &mut self.composer.text
     }
 
+    #[cfg(test)]
     pub fn translate_input(&self) -> bool {
-        self.translate_input
+        self.composer.mode == TextMode::Translate
     }
 
+    #[cfg(test)]
     pub fn set_translate_input(&mut self, enabled: bool) {
-        self.translate_input = enabled;
-    }
-
-    pub(crate) fn text_session_binding(&self) -> PluginSessionBinding {
-        PluginSessionBinding::text(
-            PluginSessionOwner::new(
-                super::PluginId::OSC.as_str(),
-                "typing",
-                "VRChat OSC",
-                "VRChat OSC Studio",
-                "Translating…",
-            ),
-            SessionOutputPolicy::Host,
-        )
+        self.composer.mode = if enabled {
+            TextMode::Translate
+        } else {
+            TextMode::Direct
+        };
     }
 
     pub fn send_manual_message(&mut self, text: &str) {

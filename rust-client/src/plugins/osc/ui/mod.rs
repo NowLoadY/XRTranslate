@@ -19,6 +19,7 @@ pub enum OscUiAction {
     SetSpeakerNumberVisible(bool),
     SaveSettings,
     SettingsApplied(Result<(), String>),
+    DirectInput(String),
     TranslateInput {
         text: String,
         source_lang: String,

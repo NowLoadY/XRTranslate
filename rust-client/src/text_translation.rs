@@ -135,6 +135,13 @@ impl TextTranslation {
             .any(|task| !task.terminal && task.pending.is_some())
     }
 
+    pub(crate) fn preparing_host(&self) -> bool {
+        self.tasks.iter().any(|task| {
+            !task.terminal && task.pending.is_some() && task.scope.owner.is_host()
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn preparing_for(&self, plugin_id: &str) -> bool {
         self.tasks.iter().any(|task| {
             !task.terminal && task.pending.is_some() && task.scope.owner.is_plugin(plugin_id)

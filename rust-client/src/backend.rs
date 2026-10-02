@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use crate::child_process::KillOnCloseJob;
 use serde_json::Value;
 use std::{
     fs,
@@ -902,80 +904,6 @@ fn server_address(server_url: &str) -> Option<&str> {
     }
     let address = without_scheme.split('/').next()?.trim();
     (!address.is_empty()).then_some(address)
-}
-
-#[cfg(windows)]
-struct KillOnCloseJob {
-    handle: windows_sys::Win32::Foundation::HANDLE,
-}
-
-#[cfg(windows)]
-impl KillOnCloseJob {
-    fn new() -> Result<Self, String> {
-        use std::mem::size_of;
-        use windows_sys::Win32::{
-            Foundation::{GetLastError, INVALID_HANDLE_VALUE},
-            System::JobObjects::{
-                CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-                SetInformationJobObject,
-            },
-        };
-
-        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
-            return Err(format!("Cannot create backend process job: {}", unsafe {
-                GetLastError()
-            }));
-        }
-        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        let configured = unsafe {
-            SetInformationJobObject(
-                handle,
-                JobObjectExtendedLimitInformation,
-                &limits as *const _ as *const _,
-                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            )
-        };
-        if configured == 0 {
-            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
-            return Err(format!(
-                "Cannot configure backend process job: {}",
-                unsafe { GetLastError() }
-            ));
-        }
-        Ok(Self { handle })
-    }
-
-    fn assign(&self, child: &Child) -> Result<(), String> {
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::{
-            Foundation::GetLastError, System::JobObjects::AssignProcessToJobObject,
-        };
-        let assigned = unsafe { AssignProcessToJobObject(self.handle, child.as_raw_handle() as _) };
-        if assigned == 0 {
-            return Err(format!("Cannot manage backend process tree: {}", unsafe {
-                GetLastError()
-            }));
-        }
-        Ok(())
-    }
-
-    fn terminate(&self) {
-        unsafe {
-            windows_sys::Win32::System::JobObjects::TerminateJobObject(self.handle, 1);
-        }
-    }
-}
-
-#[cfg(windows)]
-impl Drop for KillOnCloseJob {
-    fn drop(&mut self) {
-        unsafe {
-            windows_sys::Win32::Foundation::CloseHandle(self.handle);
-        }
-    }
 }
 
 #[cfg(test)]

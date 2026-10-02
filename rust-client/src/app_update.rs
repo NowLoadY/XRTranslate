@@ -6,7 +6,7 @@
 
 use crate::client_settings::UpdateChannel;
 use crossbeam_channel::{Receiver, TryRecvError, unbounded};
-use reqwest::header::{ACCEPT, ACCEPT_ENCODING, HeaderValue};
+use reqwest::header::{ACCEPT, ACCEPT_ENCODING, CONTENT_LENGTH, HeaderValue};
 use serde::{Deserialize, de::DeserializeOwned};
 use std::{
     fs, io,
@@ -17,11 +17,8 @@ use std::{
 };
 use xrtranslate_download::{DownloadClient, DownloadSpec};
 
-const LATEST_RELEASE_URL: &str =
-    "https://api.github.com/repos/NowLoadY/XRTranslate/releases/latest";
-const RELEASES_URL: &str = "https://api.github.com/repos/NowLoadY/XRTranslate/releases?per_page=30";
+const RELEASES_URL: &str = "https://api.github.com/repos/NowLoadY/XRTranslate/releases";
 const RELEASES_PAGE: &str = "https://github.com/NowLoadY/XRTranslate/releases";
-const LATEST_RELEASE_PAGE: &str = "https://github.com/NowLoadY/XRTranslate/releases/latest";
 const RELEASE_DOWNLOAD_BASE: &str = "https://github.com/NowLoadY/XRTranslate/releases/download/";
 const USER_AGENT: &str = concat!("XRTranslate updater/", env!("CARGO_PKG_VERSION"));
 const GITHUB_API_VERSION: &str = "2022-11-28";
@@ -265,11 +262,13 @@ impl ReleaseAsset {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct GitHubRelease {
     tag_name: String,
     #[serde(default)]
     draft: bool,
+    #[serde(default)]
+    prerelease: bool,
     assets: Vec<GitHubAsset>,
 }
 
@@ -290,51 +289,33 @@ async fn check_latest_release(
         return Err("Updates are available for Windows and Linux builds only.".into());
     }
     let client = http_client(proxy_url)?;
-    if channel == UpdateChannel::Beta {
-        return match fetch_releases(&client).await {
-            Ok(releases) => release_asset_from_catalogue(releases, channel),
-            Err(api_error) => fallback_catalogue_asset(&client, channel).await.map_err(
-                |fallback_error| {
+    match fetch_releases(&client).await {
+        Ok(releases) => release_asset_from_catalogue(releases, channel),
+        Err(api_error) => {
+            fallback_catalogue_asset(&client, channel)
+                .await
+                .map_err(|fallback_error| {
                     format!(
-                        "Cannot check the beta update channel: GitHub API failed ({api_error}); \
-                         release page fallback failed ({fallback_error})."
+                        "Cannot check for updates: GitHub API failed ({api_error}); \
+                     release page fallback failed ({fallback_error})."
                     )
-                },
-            ),
-        };
-    }
-    let (latest_tag, latest_version) = match discover_latest_version(&client).await {
-        Ok(release) => release,
-        Err(page_error) => {
-            let release = fetch_latest_release(&client).await.map_err(|api_error| {
-                format!(
-                    "Cannot check for updates: GitHub release page failed ({page_error}); \
-                     GitHub API failed ({api_error})."
-                )
-            })?;
-            return release_asset_if_newer(release);
+                })
         }
-    };
-    if !version_is_newer(&latest_version, crate::version::APP_VERSION) {
-        return Ok(None);
-    }
-
-    match fetch_latest_release(&client).await {
-        Ok(release) => release_asset_if_newer(release),
-        Err(api_error) => fallback_release_asset(&client, &latest_tag, &latest_version)
-            .await
-            .map(Some)
-            .map_err(|fallback_error| {
-                format!(
-                    "GitHub API is unavailable ({api_error}); direct release lookup also failed \
-                     ({fallback_error})."
-                )
-            }),
     }
 }
 
 async fn fetch_releases(client: &reqwest::Client) -> Result<Vec<GitHubRelease>, String> {
-    fetch_github_json(client, RELEASES_URL).await
+    let mut releases = Vec::new();
+    for page in 1.. {
+        let batch: Vec<GitHubRelease> =
+            fetch_github_json(client, &format!("{RELEASES_URL}?per_page=100&page={page}")).await?;
+        let complete = batch.len() < 100;
+        releases.extend(batch);
+        if complete {
+            break;
+        }
+    }
+    Ok(releases)
 }
 
 fn release_asset_from_catalogue(
@@ -342,55 +323,70 @@ fn release_asset_from_catalogue(
     channel: UpdateChannel,
 ) -> Result<Option<ReleaseAsset>, String> {
     let current = parse_version(crate::version::APP_VERSION)?;
-    let selected = releases
+    Ok(releases
         .into_iter()
         .filter(|release| !release.draft)
         .filter_map(|release| {
             let version = parse_version(&release.tag_name).ok()?;
-            (version > current && (channel == UpdateChannel::Beta || version.is_stable()))
-                .then_some((version, release))
+            if version <= current
+                || (channel == UpdateChannel::Stable
+                    && (release.prerelease || !version.is_stable()))
+            {
+                return None;
+            }
+            let asset = select_release_asset(&release.assets)?;
+            Some((version, asset.clone()))
         })
-        .max_by(|(left, _), (right, _)| left.cmp(right));
-    let Some((version, release)) = selected else {
-        return Ok(None);
-    };
-    let asset = select_release_asset(&release.assets)
-        .ok_or_else(|| format!("No update package is available for {}.", platform_label()))?;
-    Ok(Some(ReleaseAsset {
-        version: version.to_string(),
-        name: asset.name.clone(),
-        download_url: asset.browser_download_url.clone(),
-        size: asset.size,
-        sha256: asset.digest.as_deref().and_then(parse_sha256_digest),
-    }))
+        .max_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(version, asset)| ReleaseAsset {
+            version: version.to_string(),
+            name: asset.name,
+            download_url: asset.browser_download_url,
+            size: asset.size,
+            sha256: asset.digest.as_deref().and_then(parse_sha256_digest),
+        }))
 }
 
 async fn fallback_catalogue_asset(
     client: &reqwest::Client,
     channel: UpdateChannel,
 ) -> Result<Option<ReleaseAsset>, String> {
-    let response = client
-        .get(RELEASES_PAGE)
-        .send()
-        .await
-        .map_err(|error| error.to_string())?
-        .error_for_status()
-        .map_err(|error| error.to_string())?;
-    let tags = release_tags_from_html(&response.text().await.map_err(|error| error.to_string())?);
+    let mut tags = Vec::new();
+    for page in 1.. {
+        let html = client
+            .get(format!("{RELEASES_PAGE}?page={page}"))
+            .send()
+            .await
+            .map_err(|error| error.to_string())?
+            .error_for_status()
+            .map_err(|error| error.to_string())?
+            .text()
+            .await
+            .map_err(|error| error.to_string())?;
+        let page_tags = release_tags_from_html(&html);
+        if page_tags.is_empty() {
+            return Err("The release page did not list any release versions.".into());
+        }
+        tags.extend(page_tags);
+        if !html.contains("rel=\"next\"") {
+            break;
+        }
+    }
     let current = parse_version(crate::version::APP_VERSION)?;
-    let selected = tags
+    let mut candidates = tags
         .into_iter()
         .filter_map(|tag| parse_version(&tag).ok().map(|version| (version, tag)))
         .filter(|(version, _)| {
             version > &current && (channel == UpdateChannel::Beta || version.is_stable())
         })
-        .max_by(|(left, _), (right, _)| left.cmp(right));
-    match selected {
-        Some((version, tag)) => fallback_release_asset(client, &tag, &version.to_string())
-            .await
-            .map(Some),
-        None => Ok(None),
+        .collect::<Vec<_>>();
+    candidates.sort_unstable_by(|(left, _), (right, _)| right.cmp(left));
+    for (version, tag) in candidates {
+        if let Some(asset) = fallback_release_asset(client, &tag, &version.to_string()).await? {
+            return Ok(Some(asset));
+        }
     }
+    Ok(None)
 }
 
 fn release_tags_from_html(html: &str) -> Vec<String> {
@@ -409,25 +405,6 @@ fn release_tags_from_html(html: &str) -> Vec<String> {
         remaining = &remaining[end..];
     }
     tags
-}
-
-async fn discover_latest_version(client: &reqwest::Client) -> Result<(String, String), String> {
-    let response = client
-        .get(LATEST_RELEASE_PAGE)
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!("HTTP {}", response.status()));
-    }
-    let tag = release_tag_from_url(response.url())
-        .ok_or_else(|| format!("unexpected redirect target {}", response.url()))?;
-    let version = normalize_version(&tag)?;
-    Ok((tag, version))
-}
-
-async fn fetch_latest_release(client: &reqwest::Client) -> Result<GitHubRelease, String> {
-    fetch_github_json(client, LATEST_RELEASE_URL).await
 }
 
 async fn fetch_github_json<T: DeserializeOwned>(
@@ -472,33 +449,18 @@ fn github_status_error(response: &reqwest::Response) -> String {
     format!("HTTP {status}")
 }
 
-fn release_asset_if_newer(release: GitHubRelease) -> Result<Option<ReleaseAsset>, String> {
-    let latest_version = normalize_version(&release.tag_name)?;
-    if !version_is_newer(&latest_version, crate::version::APP_VERSION) {
-        return Ok(None);
-    }
-    let asset = select_release_asset(&release.assets)
-        .ok_or_else(|| format!("No update package is available for {}.", platform_label()))?;
-    Ok(Some(ReleaseAsset {
-        version: latest_version,
-        name: asset.name.clone(),
-        download_url: asset.browser_download_url.clone(),
-        size: asset.size,
-        sha256: asset.digest.as_deref().and_then(parse_sha256_digest),
-    }))
-}
-
 async fn fallback_release_asset(
     client: &reqwest::Client,
     tag: &str,
     version: &str,
-) -> Result<ReleaseAsset, String> {
+) -> Result<Option<ReleaseAsset>, String> {
     let name = standard_release_asset_name(version);
     let mut download_url = reqwest::Url::parse(RELEASE_DOWNLOAD_BASE)
         .map_err(|error| format!("invalid release URL: {error}"))?;
     download_url
         .path_segments_mut()
         .map_err(|_| "invalid release URL".to_string())?
+        .pop_if_empty()
         .push(tag)
         .push(&name);
     let response = client
@@ -506,28 +468,26 @@ async fn fallback_release_asset(
         .header(ACCEPT_ENCODING, "identity")
         .send()
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    let response = response
         .error_for_status()
         .map_err(|error| error.to_string())?;
     let size = response
-        .content_length()
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok()?.parse::<u64>().ok())
         .filter(|size| *size > 0)
         .ok_or("release server did not report the package size")?;
-    Ok(ReleaseAsset {
+    Ok(Some(ReleaseAsset {
         version: version.to_owned(),
         name,
         download_url: download_url.into(),
         size,
         sha256: None,
-    })
-}
-
-fn release_tag_from_url(url: &reqwest::Url) -> Option<String> {
-    let segments = url.path_segments()?.collect::<Vec<_>>();
-    let tag = segments
-        .windows(2)
-        .find_map(|pair| (pair[0] == "tag").then_some(pair[1]))?;
-    (!tag.is_empty()).then(|| tag.to_owned())
+    }))
 }
 
 fn standard_release_asset_name(version: &str) -> String {
@@ -702,13 +662,19 @@ fn select_release_asset(assets: &[GitHubAsset]) -> Option<&GitHubAsset> {
 }
 
 fn name_matches_platform(name: &str) -> bool {
-    let arch_ok = ["x64", "x86_64", "amd64"]
+    let tokens = name
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .collect::<Vec<_>>();
+    let arch_ok = tokens.iter().any(|token| matches!(*token, "x64" | "amd64"))
+        || tokens.windows(2).any(|pair| pair == ["x86", "64"]);
+    let windows = tokens
         .iter()
-        .any(|token| name.contains(token));
+        .any(|token| matches!(*token, "win" | "windows"));
+    let linux = tokens.contains(&"linux");
     if cfg!(target_os = "windows") {
-        arch_ok && ["win", "windows"].iter().any(|token| name.contains(token))
+        arch_ok && windows && !linux
     } else if cfg!(target_os = "linux") {
-        arch_ok && name.contains("linux")
+        arch_ok && linux && !windows
     } else {
         false
     }
@@ -728,25 +694,7 @@ fn platform_asset_score(name: &str) -> u8 {
     score
 }
 
-fn platform_label() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "Windows x64"
-    } else if cfg!(target_os = "linux") {
-        "Linux x64"
-    } else {
-        "this platform"
-    }
-}
-
-fn normalize_version(tag: &str) -> Result<String, String> {
-    let version = tag.trim().trim_start_matches(['v', 'V']);
-    if version.is_empty() {
-        Err("The latest release has no version number.".into())
-    } else {
-        Ok(version.to_owned())
-    }
-}
-
+#[cfg(test)]
 fn version_is_newer(latest: &str, current: &str) -> bool {
     match (parse_version(latest), parse_version(current)) {
         (Ok(latest), Ok(current)) => latest > current,
@@ -920,6 +868,10 @@ mod tests {
                 digest: None,
             },
         ];
+        assert!(!name_matches_platform("xrtranslate-v1.2.0-darwin-x64.zip"));
+        assert!(!name_matches_platform(
+            "xrtranslate-v1.2.0-linux-win-x64.zip"
+        ));
         let selected = select_release_asset(&assets).unwrap();
         if cfg!(target_os = "windows") {
             assert!(selected.name.contains("win-x64"));
@@ -942,6 +894,7 @@ mod tests {
         GitHubRelease {
             tag_name: tag.into(),
             draft: false,
+            prerelease: tag.contains("-beta."),
             assets: vec![GitHubAsset {
                 name: standard_release_asset_name(tag.trim_start_matches('v')),
                 browser_download_url: format!("https://example.invalid/{tag}.zip"),
@@ -964,9 +917,13 @@ mod tests {
 
     #[test]
     fn stable_catalogue_ignores_prereleases() {
-        let selected =
-            release_asset_from_catalogue(vec![release("v99.0.0-beta.1")], UpdateChannel::Stable)
-                .unwrap();
+        let mut marked_prerelease = release("v99.0.0");
+        marked_prerelease.prerelease = true;
+        let selected = release_asset_from_catalogue(
+            vec![release("v99.0.0-beta.1"), marked_prerelease],
+            UpdateChannel::Stable,
+        )
+        .unwrap();
         assert!(selected.is_none());
     }
 
@@ -991,15 +948,27 @@ mod tests {
     }
 
     #[test]
-    fn extracts_release_tag_from_latest_redirect() {
-        let url =
-            reqwest::Url::parse("https://github.com/NowLoadY/XRTranslate/releases/tag/v0.2.5")
-                .unwrap();
-        assert_eq!(release_tag_from_url(&url).as_deref(), Some("v0.2.5"));
-
-        let unexpected =
-            reqwest::Url::parse("https://github.com/NowLoadY/XRTranslate/releases").unwrap();
-        assert_eq!(release_tag_from_url(&unexpected), None);
+    fn catalogue_skips_newer_releases_without_current_platform_packages() {
+        let mut other_platform = release("v99.0.1");
+        other_platform.assets[0].name = if cfg!(target_os = "windows") {
+            "XRTranslate-v99.0.1-linux-x64.zip".into()
+        } else {
+            "XRTranslate-v99.0.1-win-x64.zip".into()
+        };
+        for channel in [UpdateChannel::Stable, UpdateChannel::Beta] {
+            let selected = release_asset_from_catalogue(
+                vec![release("v99.0.0"), other_platform.clone()],
+                channel,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(selected.version, "99.0.0");
+        }
+        assert!(
+            release_asset_from_catalogue(vec![other_platform], UpdateChannel::Beta)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

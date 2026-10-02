@@ -1,0 +1,16 @@
+<resources>
+    <string name="text_action_title">XRT Translate</string>
+    <string name="text_action_input">Enter text</string>
+    <string name="text_action_hint">The translation will be copied to your clipboard.</string>
+    <string name="text_action_translate">Translate</string>
+    <string name="text_action_settings">Settings</string>
+    <string name="text_action_translating">Translating…</string>
+    <string name="text_action_setup">Set up translation in XRT to continue. Your text is saved.</string>
+    <string name="text_action_failed">Could not translate. Check your settings and try again.</string>
+    <string name="text_action_copied">Translation copied</string>
+    <string name="text_action_too_long">This text is too long. Select a shorter passage.</string>
+    <string name="text_action_empty_clipboard">Your clipboard has no text. You can enter text here.</string>
+    <string name="text_action_write">Write text</string>
+    <string name="text_action_clipboard">Clipboard</string>
+    <string name="text_action_widget_description">Translate text or your clipboard with XRT.</string>
+</resources>

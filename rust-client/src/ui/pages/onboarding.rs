@@ -1,7 +1,7 @@
 //! Fullscreen onboarding wizard and initial setup steps.
 //!
 //! Provides the step-by-step setup flow for model provider configuration,
-//! optional TTS voice cloning, and centralized resource download / runtime installation.
+//! optional TTS and OCR, and centralized resource download / runtime installation.
 
 use eframe::egui::{self, Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Stroke};
 use xrtranslate_assets::{ModelAssetId, ModelCapability, ModelLevel};
@@ -16,7 +16,16 @@ use crate::{
     ui::{components, model_comparison, theme},
 };
 
-const STEPS: [&'static str; 4] = ["Welcome", "Configure models", "Optional TTS", "Download"];
+const STEPS: [&str; 4] = [
+    "Welcome",
+    "Configure models",
+    if cfg!(target_os = "android") {
+        "Optional TTS"
+    } else {
+        "TTS and OCR"
+    },
+    "Download",
+];
 const QQ_GROUP_NUMBER: &str = "1009732148";
 
 pub fn render_onboarding_fullscreen(
@@ -161,7 +170,13 @@ pub fn render_onboarding_fullscreen(
                 let steps =
                     render_onboarding_steps(ui, app.ui_language, &STEPS, app.onboarding_page);
 
-                ui.add_space(if compact_height { 6.0 } else if compact { 14.0 } else { 28.0 });
+                ui.add_space(if compact_height {
+                    6.0
+                } else if compact {
+                    14.0
+                } else {
+                    28.0
+                });
                 companion.header = if compact {
                     egui::Rect::NOTHING
                 } else if ui.max_rect().right() - steps.right() < 318.0 {
@@ -191,7 +206,7 @@ pub fn render_onboarding_fullscreen(
                                         Some(render_onboarding_welcome(app.ui_language, ui))
                                 }
                                 1 => render_onboarding_models(app, ui),
-                                2 => render_onboarding_tts(app, ui),
+                                2 => render_onboarding_optional(app, ui),
                                 _ => render_onboarding_download(app, ui),
                             },
                         );
@@ -322,9 +337,16 @@ fn render_qq_group_dialog(ctx: &egui::Context, language: i18n::UiLanguage) {
 
     let mut close = false;
     let dismissed = crate::ui::modal::dialog(
-        ctx, id, language, i18n::tr(language, "QQ group"),
+        ctx,
+        id,
+        language,
+        i18n::tr(language, "QQ group"),
         |ui| {
-            ui.label(RichText::new(i18n::tr(language, "Group number")).small().color(theme::text_weak()));
+            ui.label(
+                RichText::new(i18n::tr(language, "Group number"))
+                    .small()
+                    .color(theme::text_weak()),
+            );
             ui.label(RichText::new(QQ_GROUP_NUMBER).size(20.0).strong());
         },
         |ui| {
@@ -389,22 +411,17 @@ fn render_onboarding_steps(
                 format!("{} {}", i + 1, label)
             };
             let step = ui.add(
-                egui::Button::new(
-                    RichText::new(text)
-                        .size(13.0)
-                        .color(text_color)
-                        .strong(),
-                )
-                .min_size(if compact {
-                    egui::vec2(36.0, 32.0)
-                } else {
-                    egui::Vec2::ZERO
-                })
-                .fill(fill)
-                .stroke(stroke)
-                .corner_radius(12)
-                .wrap_mode(egui::TextWrapMode::Extend)
-                .sense(egui::Sense::hover()),
+                egui::Button::new(RichText::new(text).size(13.0).color(text_color).strong())
+                    .min_size(if compact {
+                        egui::vec2(36.0, 32.0)
+                    } else {
+                        egui::Vec2::ZERO
+                    })
+                    .fill(fill)
+                    .stroke(stroke)
+                    .corner_radius(12)
+                    .wrap_mode(egui::TextWrapMode::Extend)
+                    .sense(egui::Sense::hover()),
             );
             let step = step.on_hover_text(label);
             bounds = bounds.union(step.rect);
@@ -788,7 +805,11 @@ fn model_hardware_hint(
     let uses_ram = hardware.accelerator == xrtranslate_assets::ModelAccelerator::Cpu
         || (availability.is_cpu()
             && hardware.accelerator == xrtranslate_assets::ModelAccelerator::LlamaGpu);
-    let (device, memory) = if uses_ram { ("CPU", "RAM") } else { (hardware.accelerator.label(), "VRAM") };
+    let (device, memory) = if uses_ram {
+        ("CPU", "RAM")
+    } else {
+        (hardware.accelerator.label(), "VRAM")
+    };
     format!(
         "{} {} · {:.0} GiB {memory}",
         i18n::tr(language, "Requires at least"),
@@ -1103,19 +1124,32 @@ fn onboarding_model_config_card(
 }
 
 // ---------------------------------------------------------------------------
-// Step 3: Optional TTS (Pure configuration without download button)
+// Step 3: Optional capabilities (downloads are handled in the final step)
 // ---------------------------------------------------------------------------
+
+fn render_onboarding_optional(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
+    let (title, description) = if cfg!(target_os = "android") {
+        (
+            "Optional text-to-speech",
+            "Choose Skip to keep translated text only, or select a voice-cloning provider. The model will be downloaded in the final step.",
+        )
+    } else {
+        (
+            "TTS and OCR",
+            "Choose speech playback and screen text recognition independently. Selected models will be downloaded in the final step.",
+        )
+    };
+    onboarding_title(ui, app.ui_language, title, Some(description));
+    render_onboarding_tts(app, ui);
+    #[cfg(not(target_os = "android"))]
+    {
+        ui.add_space(16.0);
+        render_onboarding_ocr(app, ui);
+    }
+}
 
 fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     let language = app.ui_language;
-    onboarding_title(
-        ui,
-        language,
-        "Optional text-to-speech",
-        Some(
-            "Choose Skip to keep translated text only, or select a voice-cloning provider. The model will be downloaded in the final step.",
-        ),
-    );
     let provider = app.service_config.onboarding_provider_state("tts");
     let mut selected_provider = None;
     let project_root = app.project_root();
@@ -1147,56 +1181,14 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 ui.label(i18n::tr(language, "No providers configured"));
                 return;
             };
-            ui.horizontal_wrapped(|ui| {
-                ui.label(i18n::tr(language, "Provider:"));
-                let local_availability = app.runtime_installer.local_model_availability();
-                let selected_label = provider
-                    .choices
-                    .iter()
-                    .find(|choice| choice.name == provider.selected)
-                    .map(|choice| provider_choice_resource(choice, &project_root, language).0)
-                    .unwrap_or_else(|| provider.selected.clone());
-                components::combobox_ui(ui, ("tts", "provider"), selected_label, |ui| {
-                    for choice in &provider.choices {
-                        let (label, _asset_id, _present) =
-                            provider_choice_resource(choice, &project_root, language);
-                        let local_available = !choice.model_assets.is_empty()
-                            && choice.model_assets.iter().all(|key| {
-                                ModelAssetId::from_config_key(key).is_some_and(|id| {
-                                    local_availability
-                                        .supports(xrtranslate_assets::manifest_for(id).hardware)
-                                })
-                            });
-                        let response = ui.add_enabled_ui(
-                            choice.name == "none" || choice.remote || local_available,
-                            |ui| {
-                                if ui
-                                    .selectable_label(provider.selected == choice.name, label)
-                                    .clicked()
-                                {
-                                    selected_provider = Some(choice.name.clone());
-                                }
-                            },
-                        );
-                        if let Some(model) = choice
-                            .model_assets
-                            .iter()
-                            .filter_map(|key| ModelAssetId::from_config_key(key))
-                            .map(xrtranslate_assets::manifest_for)
-                            .find(|model| !local_availability.supports(model.hardware))
-                        {
-                            response
-                                .response
-                                .on_disabled_hover_text(model_hardware_hint(
-                                    language,
-                                    model.hardware,
-                                    &local_availability,
-                                ));
-                        }
-                    }
-                });
-                local_model_warning_icon(ui, language, &local_availability);
-            });
+            selected_provider = optional_provider_selector(
+                ui,
+                "tts",
+                &provider,
+                &project_root,
+                language,
+                &app.runtime_installer.local_model_availability(),
+            );
             ui.add_space(10.0);
             if provider.selected == "none" {
                 ui.label(
@@ -1409,6 +1401,165 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     }
 }
 
+fn optional_provider_selector(
+    ui: &mut egui::Ui,
+    category: &str,
+    provider: &crate::service_config::OnboardingProviderState,
+    project_root: &std::path::Path,
+    language: i18n::UiLanguage,
+    availability: &crate::runtime_install::LocalModelAvailability,
+) -> Option<String> {
+    let mut selected_provider = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(i18n::tr(language, "Provider:"));
+
+        let selected_label = provider
+            .choices
+            .iter()
+            .find(|choice| choice.name == provider.selected)
+            .map(|choice| provider_choice_resource(choice, project_root, language).0)
+            .unwrap_or_else(|| provider.selected.clone());
+        components::combobox_ui(ui, (category, "provider"), selected_label, |ui| {
+            for choice in &provider.choices {
+                let (label, _asset_id, _present) =
+                    provider_choice_resource(choice, project_root, language);
+                let local_available = !choice.model_assets.is_empty()
+                    && choice.model_assets.iter().all(|key| {
+                        ModelAssetId::from_config_key(key).is_some_and(|id| {
+                            availability.supports(xrtranslate_assets::manifest_for(id).hardware)
+                        })
+                    });
+                let response = ui.add_enabled_ui(
+                    choice.name == "none" || choice.remote || local_available,
+                    |ui| {
+                        if ui
+                            .selectable_label(provider.selected == choice.name, label)
+                            .clicked()
+                        {
+                            selected_provider = Some(choice.name.clone());
+                        }
+                    },
+                );
+                if let Some(model) = choice
+                    .model_assets
+                    .iter()
+                    .filter_map(|key| ModelAssetId::from_config_key(key))
+                    .map(xrtranslate_assets::manifest_for)
+                    .find(|model| !availability.supports(model.hardware))
+                {
+                    response
+                        .response
+                        .on_disabled_hover_text(model_hardware_hint(
+                            language,
+                            model.hardware,
+                            availability,
+                        ));
+                }
+            }
+        });
+        if provider
+            .choices
+            .iter()
+            .find(|choice| choice.name == provider.selected)
+            .is_some_and(|choice| {
+                choice
+                    .model_assets
+                    .iter()
+                    .filter_map(|key| ModelAssetId::from_config_key(key))
+                    .any(|id| !availability.supports(xrtranslate_assets::manifest_for(id).hardware))
+            })
+        {
+            local_model_warning_icon(ui, language, availability);
+        }
+    });
+    selected_provider
+}
+
+#[cfg(not(target_os = "android"))]
+fn render_onboarding_ocr(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
+    let language = app.ui_language;
+    let project_root = app.project_root();
+    let provider = app.service_config.onboarding_provider_state("ocr");
+    let mut selected_provider = None;
+    let mut delete_model = None;
+    crate::ui::organic_border::show(
+        ui,
+        ui.make_persistent_id("onboarding_ocr_border"),
+        Frame::new()
+            .fill(theme::surface_control())
+            .corner_radius(CornerRadius::same(16))
+            .inner_margin(Margin::same(18)),
+        16.0,
+        Color32::from_rgb(139, 92, 246),
+        |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                RichText::new(i18n::tr(language, "Screen text recognition"))
+                    .size(16.0)
+                    .color(theme::text_strong())
+                    .strong(),
+            );
+            ui.add_space(10.0);
+            let Some(provider) = provider else { return };
+            selected_provider = optional_provider_selector(
+                ui,
+                "ocr",
+                &provider,
+                &project_root,
+                language,
+                &app.runtime_installer.local_model_availability(),
+            );
+            ui.add_space(10.0);
+            let description = match provider.selected.as_str() {
+                "none" => "OCR disabled. Enable it to translate text from a screen region.",
+                "paddle-ocr" => {
+                    "Lightweight recognition suited to continuous subtitles, without a dedicated graphics card."
+                }
+                _ => {
+                    "A local vision model suited to static text and complex layouts."
+                }
+            };
+            ui.label(
+                RichText::new(i18n::tr(language, description))
+                    .size(12.5)
+                    .color(theme::text_weak()),
+            );
+            if let Some(choice) = provider
+                .choices
+                .iter()
+                .find(|choice| choice.name == provider.selected)
+            {
+                let (_, asset, installed) =
+                    provider_choice_resource(choice, &project_root, language);
+                if let Some(asset) = asset {
+                    let manifest = xrtranslate_assets::manifest_for(asset);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(components::format_file_size(manifest.download_bytes()))
+                                .size(12.0)
+                                .color(theme::text_weak()),
+                        );
+                        if installed
+                            && components::resource_delete_button(ui, asset, language).clicked()
+                        {
+                            delete_model = Some(asset);
+                        }
+                    });
+                }
+            }
+        },
+    );
+    if let Some(asset) = delete_model {
+        app.request_model_resource_deletion(asset);
+    }
+    if let Some(selected) = selected_provider {
+        app.service_config
+            .select_onboarding_provider("ocr", &selected);
+        let result = app.service_config.save_onboarding_configuration();
+        handle_onboarding_save(app, result);
+    }
+}
+
 fn handle_onboarding_save(
     app: &mut crate::XRTranslateApp,
     result: Result<crate::service_config::OnboardingSaveOutcome, String>,
@@ -1541,6 +1692,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                 ModelCapability::Tts => {
                     ("Voice Cloning & TTS Model", Color32::from_rgb(244, 63, 94))
                 }
+                ModelCapability::Ocr => ("OCR Model", Color32::from_rgb(139, 92, 246)),
             };
             DownloadItem {
                 id: package.id,
@@ -1698,7 +1850,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
     );
 
     // 2. Inference Runtime & Hardware Acceleration (if local models are configured)
-    let requires_runtime = requirements.llama_cpp || requirements.onnx_tts;
+    let requires_runtime = requirements.llama_cpp || requirements.onnx_tts || requirements.onnx_cpu;
     if requires_runtime {
         ui.add_space(16.0);
         ui.label(

@@ -11,6 +11,7 @@ pub enum ModelCapability {
     Asr,
     Translation,
     Tts,
+    Ocr,
 }
 
 impl ModelCapability {
@@ -129,6 +130,11 @@ pub enum ModelRuntime {
     SherpaOfflineAsr {
         delivery: AsrDelivery,
     },
+    PaddleOcrOnnx,
+    LlamaVisionChat {
+        model_alias: &'static str,
+        extra_args: &'static [&'static str],
+    },
     LlamaTextChat {
         model_alias: &'static str,
         prompt_style: TranslationPromptStyle,
@@ -142,35 +148,37 @@ impl ModelRuntime {
     #[must_use]
     pub const fn extra_args(self) -> &'static [&'static str] {
         match self {
-            Self::LlamaAudioChat { extra_args, .. } | Self::LlamaTextChat { extra_args, .. } => {
-                extra_args
-            }
-            Self::SherpaOfflineAsr { .. } => &[],
+            Self::LlamaAudioChat { extra_args, .. }
+            | Self::LlamaTextChat { extra_args, .. }
+            | Self::LlamaVisionChat { extra_args, .. } => extra_args,
+            Self::SherpaOfflineAsr { .. } | Self::PaddleOcrOnnx => &[],
         }
     }
     #[must_use]
     pub const fn uses_llama_cpp(self) -> bool {
         matches!(
             self,
-            Self::LlamaAudioChat { .. } | Self::LlamaTextChat { .. }
+            Self::LlamaAudioChat { .. } | Self::LlamaTextChat { .. } | Self::LlamaVisionChat { .. }
         )
     }
 
     #[must_use]
     pub const fn transport(self) -> &'static str {
         match self {
-            Self::LlamaAudioChat { .. } | Self::LlamaTextChat { .. } => "local",
-            Self::SherpaOfflineAsr { .. } => "onnx-cpu",
+            Self::LlamaAudioChat { .. }
+            | Self::LlamaTextChat { .. }
+            | Self::LlamaVisionChat { .. } => "local",
+            Self::SherpaOfflineAsr { .. } | Self::PaddleOcrOnnx => "onnx-cpu",
         }
     }
 
     #[must_use]
     pub const fn model_alias(self) -> Option<&'static str> {
         match self {
-            Self::LlamaAudioChat { model_alias, .. } | Self::LlamaTextChat { model_alias, .. } => {
-                Some(model_alias)
-            }
-            Self::SherpaOfflineAsr { .. } => None,
+            Self::LlamaAudioChat { model_alias, .. }
+            | Self::LlamaTextChat { model_alias, .. }
+            | Self::LlamaVisionChat { model_alias, .. } => Some(model_alias),
+            Self::SherpaOfflineAsr { .. } | Self::PaddleOcrOnnx => None,
         }
     }
 }
@@ -191,6 +199,8 @@ pub enum ModelFileRole {
     RegistrationManifest,
     SlowArGraph,
     ModelConfig,
+    TextDetectionGraph,
+    TextRecognitionGraph,
     BertGraph,
     BaseTtsGraph,
     ToneConverterGraph,

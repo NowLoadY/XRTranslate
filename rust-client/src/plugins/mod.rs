@@ -6,6 +6,8 @@
 //! remains explicit in the host adapter.
 
 pub mod meeting;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+pub mod ocr;
 pub mod osc;
 pub mod player;
 pub mod vr_overlay;
@@ -22,9 +24,14 @@ impl PluginId {
     pub const MEETING: Self = Self("meeting");
     pub const VIDEO_PLAYER: Self = Self("video_player");
     pub const VR_OVERLAY: Self = Self("vr_overlay");
+    pub const OCR: Self = Self("ocr");
 
     pub fn is_supported(self) -> bool {
-        !cfg!(target_os = "android") || !matches!(self, Self::VR_OVERLAY | Self::VIDEO_PLAYER)
+        match self {
+            Self::OCR => cfg!(any(target_os = "windows", target_os = "linux")),
+            Self::VR_OVERLAY | Self::VIDEO_PLAYER => !cfg!(target_os = "android"),
+            _ => true,
+        }
     }
 
     pub const fn as_str(self) -> &'static str {
@@ -37,6 +44,7 @@ impl PluginId {
             "meeting" => Some(Self::MEETING),
             "video_player" => Some(Self::VIDEO_PLAYER),
             "vr_overlay" => Some(Self::VR_OVERLAY),
+            "ocr" => Some(Self::OCR),
             _ => None,
         }
     }
@@ -112,7 +120,7 @@ pub struct PluginDescriptor {
     pub default_enabled: bool,
 }
 
-const PLUGIN_DESCRIPTORS: [PluginDescriptor; 4] = [
+const PLUGIN_DESCRIPTORS: [PluginDescriptor; 5] = [
     PluginDescriptor {
         id: PluginId::MEETING,
         title_key: "Meeting notes",
@@ -138,6 +146,19 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 4] = [
         scroll_policy: PluginScrollPolicy::Plugin,
         settings_contribution: PluginSettingsContribution::EnablementOnly,
         default_enabled: false,
+    },
+    PluginDescriptor {
+        id: PluginId::OCR,
+        title_key: "Screen Translation",
+        description_key: "Move and resize the OCR frame over text. Translation appears beside it as the text changes.",
+        navigation_order: 160,
+        icon: PluginIcon {
+            uri: "bytes://plugins/ocr/icon.svg",
+            bytes: include_bytes!("../../resources/plugins/ocr/icon.svg"),
+        },
+        scroll_policy: PluginScrollPolicy::Host,
+        settings_contribution: PluginSettingsContribution::EnablementOnly,
+        default_enabled: true,
     },
     PluginDescriptor {
         id: PluginId::VR_OVERLAY,

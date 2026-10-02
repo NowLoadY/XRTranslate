@@ -12,6 +12,8 @@ desktop dependencies:
 ```sh
 sudo apt install build-essential pkg-config libx11-dev libxcursor-dev \
   libxrandr-dev libxi-dev libwayland-dev libxkbcommon-dev libasound2-dev \
+  libpipewire-0.3-dev libclang-dev \
+  libegl-mesa0 libglx-mesa0 libgl1-mesa-dri \
   fontconfig fonts-noto-core fonts-noto-cjk fonts-dejavu-core
 git submodule update --init XR-Corpus
 ```
@@ -41,13 +43,13 @@ For optional MPV support, install `libmpv-dev` and run with
 The output directory must not already exist. Set `XRTRANSLATE_RELEASE_DIR` to
 another path when keeping an earlier package and its runtime data.
 
-The release script requires the three basic ONNX models at their configured
-paths under `models/` and the CPU core at
-`runtime/onnxruntime/cpu/libonnxruntime.so.1.28.0`. It packages only those
-fixed resources, the application binaries, and the default XR Corpus seed.
-Locally downloaded models, managed GPU runtimes, settings, and editable
-databases are excluded. Additional models and runtimes can be installed from
-the application. The application does not require a Python interpreter,
+The release script prepares the three basic ONNX models and CPU ONNX core
+through the shared verified resource installer. It packages those fixed
+resources, the application binaries, and the default XR Corpus seed. Locally
+downloaded models, managed GPU runtimes, settings, and editable databases are
+excluded. Additional models, including optional OCR, and compatible runtimes
+are downloaded from the welcome flow according to the selected configuration.
+The application does not require a Python interpreter,
 virtual environment, or PyTorch.
 
 The release includes a default XR Corpus seed at `corpora/default.sqlite`.
@@ -60,7 +62,15 @@ GPUs. AMD models use the managed Vulkan runtime; TTS still requires NVIDIA CUDA.
 SenseVoiceSmall recognition runs on the CPU without CUDA. The Linux runtime
 catalogue includes llama.cpp CUDA 12.8, llama.cpp Vulkan, and ONNX Runtime 1.28 CUDA 12 with
 matching CUDA and cuDNN libraries. The bundled CPU ONNX core runs the basic
-VAD, denoise, and speaker models; GPU models do not fall back to CPU.
+VAD, denoise, speaker, SenseVoice, and lightweight OCR models; GPU models do not
+fall back to CPU.
+
+Screen sharing uses the desktop portal and the system PipeWire service. The
+build dependency `libpipewire-0.3-dev` also installs the SPA headers; libclang
+is needed to generate Rust bindings. The Linux package requires the system
+`libpipewire-0.3.so.0` library and an `xdg-desktop-portal` backend appropriate for
+the desktop. These system libraries are not copied into the release or added
+to Windows and Android builds.
 
 ## Audio capture
 

@@ -1956,7 +1956,7 @@ fn configured_runtime_plan(
         let core = crate::android::native_executable("onnxruntime");
         let marker_ready = crate::android::resources_ready()
             && (!requirements.llama_cpp || executable.is_file())
-            && (!requirements.onnx_tts || core.is_file())
+            && (!(requirements.onnx_tts || requirements.onnx_cpu) || core.is_file())
             && project_root.join("runtime/native-runtime.json").is_file();
         let llama_cpp = requirements.llama_cpp.then(|| RuntimeSelection {
             assets: Vec::new(),
