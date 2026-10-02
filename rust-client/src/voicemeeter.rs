@@ -2,7 +2,7 @@
 //!
 //! The adapter is constructed only when the official VoiceMeeter uninstall
 //! registration exists. It loads the architecture-matching Remote DLL from
-//! that installation, logs in once, and logs out before unloading the DLL.
+//! that installation and shares one serialized SDK session for the process lifetime.
 
 use std::fmt;
 #[cfg(any(windows, test))]
@@ -340,6 +340,15 @@ mod platform {
 
     impl VoiceMeeterRemote {
         pub fn discover() -> VoiceMeeterResult<Option<Self>> {
+            // The SDK login is process-global. Keep a successful session alive so
+            // independently owned adapters cannot log out or unload each other.
+            static SESSION: Mutex<Option<Arc<Inner>>> = Mutex::new(None);
+            let mut session = SESSION.lock().map_err(|_| VoiceMeeterError::LockPoisoned)?;
+            if let Some(inner) = session.as_ref() {
+                return Ok(Some(Self {
+                    inner: Arc::clone(inner),
+                }));
+            }
             let Some(uninstall) = read_uninstall_string()? else {
                 return Ok(None);
             };
@@ -371,7 +380,7 @@ mod platform {
                 }
             };
             // Login code 1 is successful but means the application is not yet
-            // running. Both 0 and 1 establish a client that must log out.
+            // running. Both 0 and 1 establish a usable session.
             let login = unsafe { (api.login)() };
             if !matches!(login, 0 | 1) {
                 let _ = unsafe { FreeLibrary(module) };
@@ -380,14 +389,14 @@ mod platform {
                     code: login,
                 });
             }
-            Ok(Some(Self {
-                inner: Arc::new(Inner {
-                    module,
-                    api,
-                    calls: Mutex::new(()),
-                    installation_dir,
-                }),
-            }))
+            let inner = Arc::new(Inner {
+                module,
+                api,
+                calls: Mutex::new(()),
+                installation_dir,
+            });
+            *session = Some(Arc::clone(&inner));
+            Ok(Some(Self { inner }))
         }
 
         pub fn status(&self) -> VoiceMeeterResult<VoiceMeeterStatus> {
