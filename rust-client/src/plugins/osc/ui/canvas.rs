@@ -10,6 +10,18 @@ pub fn render_canvas(
         ui.set_min_height(140.0);
 
         let preview = plugin.manager().chatbox_preview();
+        crate::ui::automation::record_output(
+            ui,
+            "OSC preview",
+            crate::ui::automation::ElementValue::Text(preview.text.clone()),
+            ui.max_rect(),
+        );
+        crate::ui::automation::record_output(
+            ui,
+            "OSC typing",
+            crate::ui::automation::ElementValue::Bool(preview.typing),
+            ui.max_rect(),
+        );
         let is_empty = preview.text.trim().is_empty();
         let char_count = preview.text.chars().count();
         let limit = plugin.draft().max_text_length;

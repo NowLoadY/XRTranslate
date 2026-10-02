@@ -126,103 +126,87 @@ impl AnimationSystem {
     where
         P: std::hash::Hash + std::fmt::Debug,
     {
-        let current_time = ui.ctx().input(|i| i.time);
-        let global_id = Id::new("page_transition_state").with(std::any::type_name::<P>());
-
-        let target_hash = Id::new(&page_id).value();
-
-        let start_time = ui.ctx().memory_mut(|m| {
-            let state = m
-                .data
-                .get_temp_mut_or_insert_with(global_id, || (target_hash, current_time));
-            if state.0 != target_hash {
-                state.0 = target_hash;
-                state.1 = current_time;
-            }
-            state.1
-        });
-
-        let elapsed = (current_time - start_time) as f32;
+        let id = Id::new("page_transition").with(std::any::type_name::<P>());
         let duration = crate::ui::theme::animation_timings(ui.ctx()).page;
-        let raw_t = (elapsed / duration).clamp(0.0, 1.0);
-
-        if raw_t < 1.0 {
-            ui.ctx().request_repaint();
-        }
-
-        let eased = Self::ease_out_cubic(raw_t);
-
-        let y_offset = (1.0 - eased) * 12.0;
-
-        ui.scope(|ui| {
-            if y_offset > 0.1 {
-                ui.add_space(y_offset);
-            }
-            if eased < 0.999 {
-                ui.set_opacity(eased);
-            }
-            crate::ui::layout::contain_width(ui, add_contents)
-        })
-        .inner
+        Self::render_transition(
+            ui,
+            id,
+            Id::new(page_id).value(),
+            duration,
+            false,
+            add_contents,
+        )
     }
 
-    /// Renders a directional page-flip / slide transition for multi-step wizards.
-    /// Pages moving forward (next) glide smoothly in from the right; pages moving backward (back) glide in from the left.
+    /// Wizard navigation shares the same motion, with direction following its step order.
     pub fn render_page_flip_transition<R>(
         ui: &mut egui::Ui,
         page_index: usize,
         add_contents: impl FnOnce(&mut egui::Ui) -> R,
     ) -> R {
-        let current_time = ui.ctx().input(|i| i.time);
-        let global_id = Id::new("onboarding_page_flip_transition_state");
-
-        let (direction, start_time) = ui.ctx().memory_mut(|m| {
-            let state = m
-                .data
-                .get_temp_mut_or_insert_with(global_id, || (page_index, current_time, 0.0f32));
-            if state.0 != page_index {
-                let dir = if page_index > state.0 {
-                    1.0f32
-                } else {
-                    -1.0f32
-                };
-                state.0 = page_index;
-                state.1 = current_time;
-                state.2 = dir;
-            }
-            (state.2, state.1)
-        });
-
-        let elapsed = (current_time - start_time) as f32;
         let duration = crate::ui::theme::animation_timings(ui.ctx()).page_flip;
-        let raw_t = (elapsed / duration).clamp(0.0, 1.0);
+        Self::render_transition(
+            ui,
+            Id::new("onboarding_transition"),
+            page_index as u64,
+            duration,
+            true,
+            add_contents,
+        )
+    }
 
-        if raw_t < 1.0 {
+    fn render_transition<R>(
+        ui: &mut egui::Ui,
+        id: Id,
+        page: u64,
+        duration: f32,
+        directional: bool,
+        add_contents: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> R {
+        let now = ui.input(|input| input.time);
+        let (started, direction) = ui.ctx().data_mut(|data| {
+            let state = data.get_temp_mut_or_insert_with(id, || (page, now, 1.0f32));
+            if state.0 != page {
+                state.2 = if directional && page < state.0 {
+                    -1.0
+                } else {
+                    1.0
+                };
+                state.0 = page;
+                state.1 = now;
+            }
+            (state.1, state.2)
+        });
+        let t = if duration > 0.0 {
+            ((now - started) as f32 / duration).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        if t < 1.0 {
             ui.ctx().request_repaint();
         }
-
-        let eased = Self::ease_out_cubic(raw_t);
-        let x_offset = (1.0 - eased) * (direction * 42.0);
-        let opacity = (eased * 1.15).clamp(0.0, 1.0);
-        let left_padding = if x_offset > 0.0 { x_offset } else { 0.0 };
-        let right_padding = if x_offset < 0.0 { -x_offset } else { 0.0 };
-
-        ui.horizontal(|ui| {
-            if left_padding > 0.1 {
-                ui.add_space(left_padding);
-            }
-            ui.vertical(|ui| {
-                if right_padding > 0.1 {
-                    ui.set_width((ui.available_width() - right_padding).max(100.0));
-                } else {
-                    ui.set_width(ui.available_width());
-                }
-                if opacity < 0.999 {
-                    ui.set_opacity(opacity);
-                }
-                add_contents(ui)
-            })
-            .inner
+        let eased = Self::ease_out_cubic(t);
+        let parent = ui.layer_id();
+        let layer = if t < 1.0 {
+            let layer = egui::LayerId::new(parent.order, id.with("content"));
+            let offset = egui::vec2(direction * (1.0 - eased) * 18.0, 0.0);
+            let transform = ui
+                .ctx()
+                .layer_transform_to_global(parent)
+                .unwrap_or_default()
+                * egui::emath::TSTransform::from_translation(offset);
+            ui.ctx().set_sublayer(parent, layer);
+            ui.ctx().set_transform_layer(layer, transform);
+            layer
+        } else {
+            // ScrollArea hover detection uses registered area layers. Release the
+            // temporary paint layer once settled so native wheel input works.
+            parent
+        };
+        // Transform painting and hit testing together; never animate layout padding or width.
+        ui.scope_builder(egui::UiBuilder::new().layer_id(layer), |ui| {
+            ui.multiply_opacity(0.25 + 0.75 * eased);
+            crate::ui::layout::contain_width(ui, add_contents)
         })
         .inner
     }

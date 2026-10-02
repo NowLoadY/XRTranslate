@@ -37,6 +37,7 @@ dist/
 .temp/
 *.tmp
 *.bak
+__pycache__/
 
 # Third party reference repositories
 third_party/Audio8_TTS/
@@ -45,8 +46,10 @@ third_party/Audio8_TTS/
 deepthink/
 /docs/steamvr-overlay.md
 
+# Local demo screenplays and their input assets
+/tools/demos/local/
+
 # Android local configuration and generated output
-/scripts/__pycache__/
 /android/.gradle/
 /android/**/build/
 /android/local.properties

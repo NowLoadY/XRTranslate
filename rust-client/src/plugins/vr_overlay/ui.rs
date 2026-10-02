@@ -402,7 +402,13 @@ pub fn render(
             .id_salt("vr_overlay_page_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                render_combined_preview_and_position_card(settings, ui, context, &mut actions, 230.0);
+                render_combined_preview_and_position_card(
+                    settings,
+                    ui,
+                    context,
+                    &mut actions,
+                    230.0,
+                );
                 ui.add_space(12.0);
                 render_display_card(settings, ui, lang);
             });
@@ -615,7 +621,7 @@ mod tests {
                             modifiers: egui::Modifiers::NONE,
                         });
                     }
-                    driver.begin_frame("vr_overlay");
+                    driver.begin_frame(&ctx, "vr_overlay");
                     let mut output = ctx.run_ui(
                         egui::RawInput {
                             screen_rect: Some(egui::Rect::from_min_size(
@@ -637,7 +643,7 @@ mod tests {
                         },
                     );
                     output.textures_delta.clear();
-                    driver.finish_frame();
+                    driver.finish_frame("vr_overlay");
                 }
                 assert!(
                     actions.contains(&VrOverlayUiAction::RecenterAvatar),

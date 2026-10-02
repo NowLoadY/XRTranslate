@@ -1,3 +1,5 @@
+pub mod audio;
+mod capture;
 pub mod driver;
 pub mod registry;
 pub mod server;
@@ -42,12 +44,54 @@ pub fn init(egui_ctx: egui::Context, port: Option<u16>) {
     }
 }
 
-pub fn begin_frame(current_page: &str) {
-    driver().begin_frame(current_page);
+pub fn begin_frame(ctx: &egui::Context, current_page: &str) {
+    driver().begin_frame(ctx, current_page);
 }
 
-pub fn finish_frame() {
-    driver().finish_frame();
+pub fn raw_input(ctx: &egui::Context, input: &mut egui::RawInput) {
+    capture::receive(ctx, input);
+    input
+        .events
+        .append(&mut driver().frame_state.lock().unwrap().pending_input);
+}
+
+pub fn finish_frame(current_page: &str) {
+    driver().finish_frame(current_page);
+}
+
+/// Expose rendered read-only values to the same inspection API as controls.
+pub fn record_output(ui: &egui::Ui, label: &str, value: ElementValue, rect: Rect) {
+    let d = driver();
+    let mut state = d.frame_state.lock().unwrap();
+    let index = state.elements.len();
+    state.elements.push(ElementDescriptor {
+        index,
+        id_hex: format!("{:016x}", ui.make_persistent_id(label).value()),
+        label: label.to_owned(),
+        kind: ElementKind::Other,
+        value,
+        enabled: false,
+        rect: [rect.min.x, rect.min.y, rect.width(), rect.height()],
+    });
+}
+
+/// Apply a Director click through the same response consumed by the page.
+pub fn button_response(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    label: &str,
+    enabled: bool,
+    mut response: egui::Response,
+) -> egui::Response {
+    if record_button(ui, id, label, enabled, response.rect) {
+        response
+            .flags
+            .insert(egui::response::Flags::FAKE_PRIMARY_CLICKED);
+        let now = ui.input(|input| input.time);
+        ui.data_mut(|data| data.insert_temp(id.with("click_time"), now));
+        ui.ctx().request_repaint();
+    }
+    response
 }
 
 #[must_use]

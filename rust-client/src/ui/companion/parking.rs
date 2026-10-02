@@ -44,16 +44,34 @@ impl Parking {
         self.bounds = Some(bounds);
         self.occupied.clear();
         let mut heading = None;
+        let layers = ctx.memory(|memory| {
+            memory
+                .layer_ids()
+                .filter(|candidate| candidate.order == layer.order)
+                .collect::<Vec<_>>()
+        });
+        let layers = layers
+            .into_iter()
+            .map(|layer| {
+                (
+                    layer,
+                    ctx.layer_transform_to_global(layer).unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>();
         ctx.graphics(|graphics| {
-            if let Some(paint) = graphics.get(layer) {
-                for entry in paint.all_entries() {
-                    collect(
-                        &entry.shape,
-                        entry.clip_rect.intersect(bounds),
-                        bounds,
-                        &mut self.occupied,
-                        &mut heading,
-                    );
+            for (layer, transform) in layers {
+                if let Some(paint) = graphics.get(layer) {
+                    for entry in paint.all_entries() {
+                        collect(
+                            &entry.shape,
+                            transform.mul_rect(entry.clip_rect).intersect(bounds),
+                            bounds,
+                            transform,
+                            &mut self.occupied,
+                            &mut heading,
+                        );
+                    }
                 }
             }
         });
@@ -168,12 +186,13 @@ fn collect(
     shape: &Shape,
     clip: Rect,
     page: Rect,
+    transform: egui::emath::TSTransform,
     occupied: &mut Vec<Rect>,
     heading: &mut Option<Rect>,
 ) {
     if let Shape::Vec(shapes) = shape {
         for shape in shapes {
-            collect(shape, clip, page, occupied, heading);
+            collect(shape, clip, page, transform, occupied, heading);
         }
         return;
     }
@@ -187,7 +206,7 @@ fn collect(
     if !rect.is_positive() || !rect.is_finite() {
         return;
     }
-    let rect = rect.intersect(clip);
+    let rect = transform.mul_rect(rect).intersect(clip);
     if !rect.is_positive() {
         return;
     }

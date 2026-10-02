@@ -1,6 +1,7 @@
-use std::sync::Mutex;
 use crossbeam_channel::{Receiver, Sender, bounded};
+use eframe::egui;
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 
 use super::registry::{ElementDescriptor, ElementValue, FrameSnapshot};
 use crate::ui::Page;
@@ -10,13 +11,35 @@ use crate::ui::Page;
 pub enum DirectorCommand {
     Page(String),
     GetPage,
-    List { filter: Option<String> },
+    List {
+        filter: Option<String>,
+    },
     Inspect(String),
     Click(String),
-    Set { target: String, value: ElementValue },
+    Set {
+        target: String,
+        value: ElementValue,
+    },
     Get(String),
     Status,
     Wait(u64),
+    Text(String),
+    AudioFile(Option<std::path::PathBuf>),
+    Viewport {
+        width: f32,
+        height: f32,
+        scale: f32,
+    },
+    Pointer {
+        x: f32,
+        y: f32,
+        pressed: Option<bool>,
+    },
+    Scroll {
+        x: f32,
+        y: f32,
+        delta: f32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +82,7 @@ pub struct AutomationFrameState {
     pub pending_page: Option<Page>,
     pub pending_onboarding_step: Option<usize>,
     pub pending_queries: Vec<CommandEnvelope>,
+    pub pending_input: Vec<egui::Event>,
     pub last_snapshot: FrameSnapshot,
     pub action_performed_this_frame: bool,
 }
@@ -92,7 +116,7 @@ impl AutomationDriver {
     }
 
     /// Called at the start of each egui frame to process incoming director action commands.
-    pub fn begin_frame(&self, current_page: &str) {
+    pub fn begin_frame(&self, ctx: &egui::Context, current_page: &str) {
         let mut state = self.frame_state.lock().unwrap();
         state.active_page_name = current_page.to_string();
         state.elements.clear();
@@ -104,8 +128,16 @@ impl AutomationDriver {
                 DirectorCommand::Page(_)
                 | DirectorCommand::Click(_)
                 | DirectorCommand::Set { .. }
-                | DirectorCommand::Wait(_) => {
-                    self.execute_action_command(&mut state, envelope);
+                | DirectorCommand::Wait(_)
+                | DirectorCommand::Text(_)
+                | DirectorCommand::AudioFile(_)
+                | DirectorCommand::Viewport { .. }
+                | DirectorCommand::Pointer { .. }
+                | DirectorCommand::Scroll { .. } => {
+                    self.execute_action_command(ctx, &mut state, envelope);
+                    // Let this action reach its widget before accepting another mutation.
+                    ctx.request_repaint();
+                    break;
                 }
                 DirectorCommand::GetPage
                 | DirectorCommand::List { .. }
@@ -119,8 +151,9 @@ impl AutomationDriver {
     }
 
     /// Called at the end of each egui frame to save snapshot and fulfill pending query commands.
-    pub fn finish_frame(&self) {
+    pub fn finish_frame(&self, current_page: &str) {
         let mut state = self.frame_state.lock().unwrap();
+        state.active_page_name = current_page.to_owned();
         state.last_snapshot = FrameSnapshot {
             page: state.active_page_name.clone(),
             elements: state.elements.clone(),
@@ -132,10 +165,25 @@ impl AutomationDriver {
         }
     }
 
-    fn execute_action_command(&self, state: &mut AutomationFrameState, envelope: CommandEnvelope) {
+    fn execute_action_command(
+        &self,
+        ctx: &egui::Context,
+        state: &mut AutomationFrameState,
+        envelope: CommandEnvelope,
+    ) {
         let CommandEnvelope { command, responder } = envelope;
         match command {
+            DirectorCommand::AudioFile(path) => {
+                let response = match super::audio::configure(path) {
+                    Ok(()) => DirectorResponse::ok("Audio input configured", None),
+                    Err(error) => DirectorResponse::err(error),
+                };
+                let _ = responder.send(response);
+            }
             DirectorCommand::Page(page_name) => {
+                state.pending_click = None;
+                state.pending_set = None;
+                state.pending_input.clear();
                 let target = page_name.trim().to_lowercase();
                 if let Some(step_str) = target.strip_prefix("onboarding:") {
                     if let Ok(step) = step_str.parse::<usize>() {
@@ -157,22 +205,19 @@ impl AutomationDriver {
                     "promptstudio" | "prompt_studio" | "prompt-studio" | "prompt" => {
                         Some(Page::PromptStudio)
                     }
-                    "osc" | "plugin:osc" => {
-                        Some(Page::Plugin(crate::plugins::PluginId::OSC))
+                    "corpusstudio" | "corpus" | "corpus_studio" | "corpus-studio"
+                    | "vocabulary" => Some(Page::CorpusStudio),
+                    _ => {
+                        let plugin = target.strip_prefix("plugin:").unwrap_or(&target);
+                        let plugin = match plugin {
+                            "vroverlay" => "vr_overlay",
+                            "videoplayer" | "player" => "video_player",
+                            plugin => plugin,
+                        };
+                        crate::plugins::PluginId::parse(plugin)
+                            .filter(|id| id.is_supported())
+                            .map(Page::Plugin)
                     }
-                    "meeting" | "plugin:meeting" => {
-                        Some(Page::Plugin(crate::plugins::PluginId::MEETING))
-                    }
-                    "vroverlay" | "vr_overlay" | "plugin:vr_overlay" => {
-                        Some(Page::Plugin(crate::plugins::PluginId::VR_OVERLAY))
-                    }
-                    "videoplayer" | "video_player" | "player" | "plugin:video_player" => {
-                        Some(Page::Plugin(crate::plugins::PluginId::VIDEO_PLAYER))
-                    }
-                    "corpus" | "corpus_studio" | "corpus-studio" | "vocabulary" => {
-                        Some(Page::CorpusStudio)
-                    }
-                    _ => None,
                 };
                 if let Some(page) = page {
                     state.pending_page = Some(page);
@@ -182,29 +227,90 @@ impl AutomationDriver {
                     ));
                 } else {
                     let _ = responder.send(DirectorResponse::err(format!(
-                        "Unknown page '{page_name}'. Valid pages: Translation, Settings, AudioStudio, PromptStudio, TtsCenter, osc, meeting, vr_overlay, video_player, onboarding:<step>"
+                        "Unknown page '{page_name}'. Valid pages: Translation, Settings, AudioStudio, PromptStudio, CorpusStudio, TtsCenter, plugin:<id>, onboarding:<step>"
                     )));
                 }
             }
             DirectorCommand::Click(target) => {
-                state.pending_click = Some(target.clone());
+                state.pending_click = Some(
+                    state
+                        .last_snapshot
+                        .find_element(&target)
+                        .map_or_else(|| target.clone(), |element| element.id_hex.clone()),
+                );
                 let _ = responder.send(DirectorResponse::ok(
                     format!("Scheduled click on '{target}'"),
                     None,
                 ));
             }
             DirectorCommand::Set { target, value } => {
-                state.pending_set = Some((target.clone(), value.clone()));
+                let resolved = state
+                    .last_snapshot
+                    .find_element(&target)
+                    .map_or_else(|| target.clone(), |element| element.id_hex.clone());
+                state.pending_set = Some((resolved, value.clone()));
                 let _ = responder.send(DirectorResponse::ok(
                     format!("Queued set on '{target}' to {value:?}"),
                     None,
                 ));
             }
             DirectorCommand::Wait(ms) => {
-                let _ = responder.send(DirectorResponse::ok(
-                    format!("Waited {ms}ms"),
-                    None,
-                ));
+                let _ = responder.send(DirectorResponse::ok(format!("Waited {ms}ms"), None));
+            }
+            DirectorCommand::Viewport {
+                width,
+                height,
+                scale,
+            } => {
+                if !(640.0..=4096.0).contains(&width)
+                    || !(480.0..=2160.0).contains(&height)
+                    || !(0.75..=3.0).contains(&scale)
+                {
+                    let _ = responder.send(DirectorResponse::err("Invalid viewport size or scale"));
+                    return;
+                }
+                // Window commands use this frame's scale; the new scale takes effect next frame.
+                let current_scale = ctx.pixels_per_point();
+                ctx.set_pixels_per_point(scale);
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                    width / current_scale,
+                    height / current_scale,
+                )));
+                let _ = responder.send(DirectorResponse::ok("Viewport updated", None));
+            }
+            DirectorCommand::Pointer { x, y, pressed } => {
+                let position = egui::pos2(x, y);
+                state
+                    .pending_input
+                    .push(egui::Event::PointerMoved(position));
+                if let Some(pressed) = pressed {
+                    state.pending_input.push(egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                ctx.request_repaint();
+                let _ = responder.send(DirectorResponse::ok("Pointer queued", None));
+            }
+            DirectorCommand::Text(text) => {
+                state.pending_input.push(egui::Event::Text(text));
+                ctx.request_repaint();
+                let _ = responder.send(DirectorResponse::ok("Text input queued", None));
+            }
+            DirectorCommand::Scroll { x, y, delta } => {
+                state.pending_input.extend([
+                    egui::Event::PointerMoved(egui::pos2(x, y)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(0.0, delta),
+                        phase: egui::TouchPhase::Move,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+                ctx.request_repaint();
+                let _ = responder.send(DirectorResponse::ok("Scroll queued", None));
             }
             _ => {}
         }
@@ -238,7 +344,11 @@ impl AutomationDriver {
                     snapshot.elements.clone()
                 };
                 let _ = responder.send(DirectorResponse::ok(
-                    format!("Found {} elements on page {}", elements.len(), snapshot.page),
+                    format!(
+                        "Found {} elements on page {}",
+                        elements.len(),
+                        snapshot.page
+                    ),
                     Some(serde_json::to_value(&elements).unwrap_or_default()),
                 ));
             }

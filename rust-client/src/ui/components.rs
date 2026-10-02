@@ -585,7 +585,7 @@ pub fn animated_button_enabled_with_id(
         natural.x.min(ui.max_rect().width()),
         natural.y.max(ui.spacing().interact_size.y),
     );
-    let mut resp = ui
+    let resp = ui
         .allocate_ui(size, |ui| {
             ui.add_enabled_ui(enabled, |ui| {
                 Frame::new()
@@ -641,29 +641,7 @@ pub fn animated_button_enabled_with_id(
     if resp.hovered() && enabled {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let simulated_click = crate::ui::automation::record_button(ui, id, text, enabled, resp.rect);
-    if simulated_click {
-        ui.memory_mut(|m| {
-            m.data.insert_temp(id.with("click_time"), current_time);
-        });
-        resp.flags
-            .set(egui::response::Flags::FAKE_PRIMARY_CLICKED, true);
-        ui.ctx().request_repaint();
-    }
-    resp
-}
-
-fn simulate_click_on(ui: &mut egui::Ui, rect: egui::Rect) {
-    ui.ctx().input_mut(|i| {
-        for pressed in [true, false] {
-            i.events.push(egui::Event::PointerButton {
-                pos: rect.center(),
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: egui::Modifiers::default(),
-            });
-        }
-    });
+    crate::ui::automation::button_response(ui, id, text, enabled, resp)
 }
 
 pub fn primary_button(ui: &mut Ui, text: &str) -> egui::Response {
@@ -788,7 +766,7 @@ pub fn primary_button_enabled_with_id(
             .max(ui.spacing().interact_size.y - 12.0 - 2.0 * stroke.width),
     );
 
-    let mut resp = ui
+    let resp = ui
         .add_enabled_ui(enabled, |ui| {
             Frame::new()
                 .fill(fill)
@@ -826,15 +804,7 @@ pub fn primary_button_enabled_with_id(
     if resp.hovered() && enabled {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let simulated_click = crate::ui::automation::record_button(ui, id, text, enabled, resp.rect);
-    if simulated_click {
-        let current_time = ui.ctx().input(|input| input.time);
-        ui.memory_mut(|m| m.data.insert_temp(id.with("click_time"), current_time));
-        resp.flags
-            .set(egui::response::Flags::FAKE_PRIMARY_CLICKED, true);
-        ui.ctx().request_repaint();
-    }
-    resp
+    crate::ui::automation::button_response(ui, id, text, enabled, resp)
 }
 
 pub fn secondary_button(ui: &mut Ui, text: &str) -> egui::Response {
@@ -964,12 +934,7 @@ pub fn secondary_button_enabled(ui: &mut Ui, text: &str, enabled: bool) -> egui:
     if resp.hovered() && enabled {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let simulated_click = crate::ui::automation::record_button(ui, id, text, enabled, resp.rect);
-    if simulated_click {
-        simulate_click_on(ui, resp.rect);
-        ui.ctx().request_repaint();
-    }
-    resp
+    crate::ui::automation::button_response(ui, id, text, enabled, resp)
 }
 
 pub fn combobox_ui<R>(
@@ -1774,12 +1739,7 @@ pub fn danger_button_enabled_with_id(
     if resp.hovered() && enabled {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let simulated_click = crate::ui::automation::record_button(ui, id, text, enabled, resp.rect);
-    if simulated_click {
-        simulate_click_on(ui, resp.rect);
-        ui.ctx().request_repaint();
-    }
-    resp
+    crate::ui::automation::button_response(ui, id, text, enabled, resp)
 }
 
 pub fn pill_toggle(ui: &mut Ui, checked: &mut bool) -> egui::Response {
@@ -2564,7 +2524,6 @@ pub fn sub_sidebar<T: Copy + PartialEq>(
                                     );
                                     if simulated_click {
                                         *selected = item.id;
-                                        simulate_click_on(ui, resp.rect);
                                         ui.ctx().request_repaint();
                                     }
                                     if resp.hovered() && !is_selected {
@@ -3039,22 +2998,18 @@ pub fn compact_icon_button(
 ) -> egui::Response {
     use crate::ui::animation::AnimationSystem;
     ui.push_id(id, |ui| {
-        let mut response = ui.add(
+        let response = ui.add(
             egui::Button::new("")
                 .min_size(egui::Vec2::splat(INPUT_TOGGLE_SIZE))
                 .frame(false),
         );
-        if crate::ui::automation::record_button(
+        let response = crate::ui::automation::button_response(
             ui,
             response.id,
             label,
             ui.is_enabled(),
-            response.rect,
-        ) {
-            response
-                .flags
-                .set(egui::response::Flags::FAKE_PRIMARY_CLICKED, true);
-        }
+            response,
+        );
         response.widget_info(|| {
             egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), active, label)
         });
@@ -3247,7 +3202,7 @@ mod automation_button_tests {
                 .unwrap();
             for expected in [true, false] {
                 let mut output = ctx.run_ui(Default::default(), |ui| {
-                    crate::ui::automation::begin_frame("fixture");
+                    crate::ui::automation::begin_frame(ui.ctx(), "fixture");
                     let response = if primary {
                         primary_button(ui, "fixture button")
                     } else {
@@ -3255,7 +3210,7 @@ mod automation_button_tests {
                     };
                     assert_eq!(response.clicked(), expected);
                     assert!(ui.ctx().input(|input| input.events.is_empty()));
-                    crate::ui::automation::finish_frame();
+                    crate::ui::automation::finish_frame("fixture");
                 });
                 output.textures_delta.clear();
             }

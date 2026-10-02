@@ -93,11 +93,14 @@ fn handle_client(
     driver: Arc<AutomationDriver>,
     egui_ctx: Arc<Mutex<Option<egui::Context>>>,
 ) {
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_nodelay(true);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
 
     let mut reader = BufReader::new(stream.try_clone().expect("clone tcp stream"));
     let mut line = String::new();
+    let mut timed_capture = false;
     while reader.read_line(&mut line).unwrap_or(0) > 0 {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -107,6 +110,23 @@ fn handle_client(
         let Some(egui_ctx) = egui_ctx.lock().unwrap().clone() else {
             break;
         };
+
+        if let Some(time) = trimmed.strip_prefix("frame ") {
+            if !timed_capture {
+                // A recorder may deliberately hold a frame while real inference completes.
+                let _ = stream.set_read_timeout(None);
+            }
+            timed_capture = true;
+            let result = time
+                .parse::<f64>()
+                .map_err(std::io::Error::other)
+                .and_then(|time| super::capture::timed_frame(&mut stream, &egui_ctx, time));
+            if result.is_err() {
+                break;
+            }
+            line.clear();
+            continue;
+        }
 
         // Check if this is an HTTP request
         if trimmed.starts_with("GET ")
@@ -125,6 +145,9 @@ fn handle_client(
         }
         let _ = stream.flush();
         line.clear();
+    }
+    if timed_capture && let Some(ctx) = egui_ctx.lock().unwrap().clone() {
+        super::capture::resume_clock(&ctx);
     }
 }
 
@@ -166,6 +189,11 @@ fn handle_http_request(
         let _ = std::io::Read::read_exact(reader, &mut body);
     }
     let body_str = String::from_utf8_lossy(&body);
+
+    if method == "GET" && path == "/frame" {
+        super::capture::respond(stream, egui_ctx);
+        return;
+    }
 
     let director_response = if method == "POST" || !body_str.trim().is_empty() {
         if let Ok(cmd) = serde_json::from_str::<DirectorCommand>(&body_str) {

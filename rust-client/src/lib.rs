@@ -4328,6 +4328,9 @@ impl XRTranslateApp {
             return Ok(());
         }
         self.audio_system.stop_capture_group(channel.scope.id());
+        if let Some(result) = ui::automation::audio::attach(channel) {
+            return result;
+        }
         self.audio_system.set_capture_group(channel.scope.id());
         initialize_live_audio(
             self,
@@ -4746,6 +4749,7 @@ impl XRTranslateApp {
     }
 
     fn stop(&mut self) {
+        ui::automation::audio::detach();
         #[cfg(target_os = "android")]
         android::cancel_microphone_request();
         #[cfg(any(windows, target_os = "linux"))]
@@ -5074,9 +5078,10 @@ impl Drop for XRTranslateApp {
 }
 
 impl eframe::App for XRTranslateApp {
-    #[cfg(target_os = "android")]
     fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
+        #[cfg(target_os = "android")]
         android::ime::apply_input(ctx, input);
+        ui::automation::raw_input(ctx, input);
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -5128,7 +5133,7 @@ impl eframe::App for XRTranslateApp {
         }
 
         let page_name = self.current_page_name();
-        ui::automation::begin_frame(&page_name);
+        ui::automation::begin_frame(ui.ctx(), &page_name);
         if let Some(page) = ui::automation::take_pending_page() {
             self.navigation.page = page;
             self.first_run = false;
@@ -5232,7 +5237,7 @@ impl eframe::App for XRTranslateApp {
                 ui::companion::Layout::Onboarding(companion_layout),
             );
             ui::layout::finish_frame(ui.ctx());
-            ui::automation::finish_frame();
+            ui::automation::finish_frame(&self.current_page_name());
             return;
         }
 
@@ -5505,7 +5510,7 @@ impl eframe::App for XRTranslateApp {
             },
         );
         ui::layout::finish_frame(ui.ctx());
-        ui::automation::finish_frame();
+        ui::automation::finish_frame(&self.current_page_name());
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

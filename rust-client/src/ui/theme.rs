@@ -44,8 +44,8 @@ impl Default for AnimationTimings {
             button_click: 0.28,
             primary_click: 0.25,
             sidebar: 0.20,
-            page: 0.25,
-            page_flip: 0.28,
+            page: 0.32,
+            page_flip: 0.32,
             data_text: 0.32,
             window_resize: 0.26,
         }

@@ -13,7 +13,9 @@ Supports:
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
+import socket
 import sys
 import time
 import urllib.error
@@ -30,12 +32,14 @@ class UIDirector:
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, timeout: float = 5.0):
         self.base_url = f"http://{host}:{port}/"
         self.timeout = timeout
+        self.address = (host, port)
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def _send_command(
         self,
         cmd: str,
         args: Any = None,
-        retries: int = 1,
+        retries: int = 0,
         retry_delay: float = 0.3,
         **kwargs,
     ) -> Dict[str, Any]:
@@ -54,7 +58,7 @@ class UIDirector:
         last_error = None
         for attempt in range(retries + 1):
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with self.opener.open(req, timeout=self.timeout) as resp:
                     result_bytes = resp.read()
                     return json.loads(result_bytes.decode("utf-8"))
             except (urllib.error.URLError, OSError) as e:
@@ -117,6 +121,56 @@ class UIDirector:
     def get_value(self, target: str) -> Dict[str, Any]:
         """Get the current value and properties of a UI element."""
         return self._send_command("get", target)
+
+    def viewport(self, width: int, height: int, scale: float = 1.0) -> Dict[str, Any]:
+        """Set the viewport's physical pixels and UI scale for repeatable framing."""
+        return self._send_command("viewport", {"width": width, "height": height, "scale": scale})
+
+    def frame(self) -> tuple[int, int, bytes]:
+        """Capture RGBA pixels from the app renderer, excluding desktop and window chrome."""
+        with self.opener.open(self.base_url + "frame", timeout=self.timeout) as response:
+            width, height = int(response.headers["X-Width"]), int(response.headers["X-Height"])
+            pixels = response.read()
+        if len(pixels) != width * height * 4:
+            raise ValueError("Incomplete viewport frame")
+        return width, height, pixels
+
+    @contextmanager
+    def capture_frames(self):
+        """Yield frame_at(seconds): deterministic UI time on one persistent capture connection.
+
+        Each requested frame is rendered before returning; closing resumes the app's clock.
+        Slow machines take longer to record without skipping animation frames.
+        """
+        with socket.create_connection(self.address, timeout=self.timeout) as connection:
+            connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            with connection.makefile("rwb") as stream:
+                def frame_at(seconds):
+                    stream.write(f"frame {seconds:.9f}\n".encode("ascii"))
+                    stream.flush()
+                    dimensions = json.loads(stream.readline())
+                    width, height = dimensions["width"], dimensions["height"]
+                    pixels = stream.read(width * height * 4)
+                    if len(pixels) != width * height * 4:
+                        raise ValueError("Incomplete viewport frame")
+                    return width, height, pixels
+                yield frame_at
+
+    def pointer(self, x: float, y: float, pressed: Optional[bool] = None) -> Dict[str, Any]:
+        """Move or press/release the app's pointer, in logical viewport coordinates."""
+        return self._send_command("pointer", {"x": x, "y": y, "pressed": pressed})
+
+    def text(self, text: str) -> Dict[str, Any]:
+        """Type into the focused widget without using the desktop keyboard."""
+        return self._send_command("text", text)
+
+    def audio_file(self, path: Optional[str]) -> Dict[str, Any]:
+        """Arm/replay a single-source capture file; None clears the file override."""
+        return self._send_command("audio_file", path)
+
+    def scroll(self, x: float, y: float, delta: float) -> Dict[str, Any]:
+        """Scroll inside the app; negative delta moves content upward."""
+        return self._send_command("scroll", {"x": x, "y": y, "delta": delta})
 
     def wait(self, seconds: float) -> None:
         """Pause execution for a given number of seconds."""

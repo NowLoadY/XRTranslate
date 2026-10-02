@@ -128,16 +128,23 @@ impl TextComposer {
             |ui| {
                 if context.allow_direct {
                     ui.horizontal_wrapped(|ui| {
-                        ui.selectable_value(
-                            &mut self.mode,
-                            TextMode::Translate,
-                            tr(context.language, "Translate"),
-                        );
-                        ui.selectable_value(
-                            &mut self.mode,
-                            TextMode::Direct,
-                            tr(context.language, "Direct"),
-                        );
+                        for (mode, label) in [
+                            (TextMode::Translate, "Translate"),
+                            (TextMode::Direct, "Direct"),
+                        ] {
+                            let label = tr(context.language, label);
+                            let response = ui.selectable_label(self.mode == mode, label);
+                            let response = crate::ui::automation::button_response(
+                                ui,
+                                response.id,
+                                label,
+                                response.enabled(),
+                                response,
+                            );
+                            if response.clicked() {
+                                self.mode = mode;
+                            }
+                        }
                     });
                 }
                 if context.show_languages && self.mode == TextMode::Translate {
@@ -180,7 +187,7 @@ impl TextComposer {
                             } else {
                                 "Temporary Message"
                             };
-                            ui.add(
+                            let response = ui.add(
                                 egui::TextEdit::multiline(&mut self.text)
                                     .id(editor_id)
                                     .desired_width(f32::INFINITY)
@@ -189,8 +196,18 @@ impl TextComposer {
                                     .frame(egui::Frame::NONE)
                                     .margin(egui::Margin::symmetric(0, 2))
                                     .hint_text(tr(context.language, hint)),
-                            )
-                            .on_hover_text(tr(
+                            );
+                            if let Some(text) = crate::ui::automation::record_text_input(
+                                ui,
+                                editor_id,
+                                id,
+                                &self.text,
+                                response.enabled(),
+                                response.rect,
+                            ) {
+                                self.text = text;
+                            }
+                            response.on_hover_text(tr(
                                 context.language,
                                 "Enter to send · Shift+Enter for a new line",
                             ));
