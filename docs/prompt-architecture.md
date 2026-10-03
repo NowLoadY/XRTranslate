@@ -85,6 +85,13 @@ policy. If that output is also rejected, the segment fails and no translation
 is published. As with a context-window retry, a successful regenerated result
 carries the execution trace of the final request.
 
+The shared chat adapter preserves `finish_reason` in both JSON and SSE responses;
+an incomplete response cannot become a final result. A `length` stop shares the
+same one-regeneration allowance as rejected output and clears any live preview.
+The backend drops optional context and doubles the output budget up to half the
+context window, without lowering a larger configured budget. Other stop reasons
+are reported unchanged rather than retried as length limits.
+
 XR Corpus and the backend provide structured facts. XR Corpus retains its legacy
 pre-rendered ASR field for older consumers, but the native backend consumes its
 structured recognition vocabulary. The desktop client owns template selection

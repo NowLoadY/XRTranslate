@@ -1386,7 +1386,7 @@ impl NativeInference {
         };
         let mt_started = Instant::now();
         let mut context_window_retried = false;
-        let mut rejected_output_retried = false;
+        let mut output_retried = false;
         let translated = loop {
             match self
                 .translation
@@ -1413,12 +1413,25 @@ impl NativeInference {
                     options.prompt_context = options.prompt_context.without_reference_context();
                     on_update(String::new()).await;
                 }
-                Err(error) if !rejected_output_retried && error.is_rejected_output() => {
+                Err(error)
+                    if !output_retried
+                        && (error.is_rejected_output() || error.is_output_limit()) =>
+                {
+                    if error.is_output_limit() {
+                        // Leave at least half the window for the required prompt and
+                        // source. Never reduce an explicitly configured output limit.
+                        options.max_tokens = options
+                            .max_tokens
+                            .saturating_mul(2)
+                            .min(options.context_window_tokens / 2)
+                            .max(options.max_tokens);
+                    }
                     warn!(
                         %error,
-                        "translation output failed prompt-aware quality checks; regenerating current segment once"
+                        max_tokens = options.max_tokens,
+                        "translation output was incomplete or invalid; regenerating current segment once without optional context"
                     );
-                    rejected_output_retried = true;
+                    output_retried = true;
                     options.prompt_context = options.prompt_context.without_reference_context();
                     on_update(String::new()).await;
                 }
@@ -1434,7 +1447,7 @@ impl NativeInference {
                 }
                 Err(error) => {
                     on_update(String::new()).await;
-                    let context = if rejected_output_retried || context_window_retried {
+                    let context = if output_retried || context_window_retried {
                         "translation retry failed"
                     } else {
                         "translation request failed"
@@ -1588,6 +1601,9 @@ pub(crate) fn validate_input_chunk_size(bytes: usize) -> Result<(), String> {
 
 #[cfg(test)]
 mod language_tests;
+
+#[cfg(test)]
+mod translation_tests;
 
 #[cfg(test)]
 mod tests {

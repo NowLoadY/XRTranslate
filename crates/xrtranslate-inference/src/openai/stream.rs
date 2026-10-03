@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use super::{ChatCompletion, content_to_text, parse_chat_completion};
+use super::{ChatCompletion, content_to_text, parse_chat_completion, validate_finish_reason};
 use crate::{InferenceError, TransportError};
 
 /// SSE framing is byte based, so UTF-8 characters may span HTTP chunks safely.
@@ -10,6 +10,7 @@ pub(super) struct ChatStream {
     text: String,
     cumulative: bool,
     finished: bool,
+    finish_reason: Option<String>,
     json: bool,
 }
 
@@ -21,6 +22,7 @@ impl ChatStream {
             text: String::new(),
             cumulative,
             finished: false,
+            finish_reason: None,
             json: false,
         }
     }
@@ -80,11 +82,7 @@ impl ChatStream {
             return Ok(false); // A usage-only chunk has no choices.
         };
         if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
-            if reason != "stop" {
-                return Err(stream_error(
-                    "provider stopped before completing the translation",
-                ));
-            }
+            self.finish_reason = Some(reason.into());
             self.finished = true;
         }
         let content = choice.pointer("/delta/content");
@@ -120,6 +118,7 @@ impl ChatStream {
                 source: stream_error("completion stream ended before its final event"),
             });
         }
+        validate_finish_reason(endpoint, self.finish_reason.as_deref())?;
         Ok(ChatCompletion { text: self.text })
     }
 }

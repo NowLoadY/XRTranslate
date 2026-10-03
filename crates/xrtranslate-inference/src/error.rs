@@ -53,6 +53,11 @@ pub enum InferenceError {
         message: String,
         body_preview: String,
     },
+    /// The provider ended generation without completing the requested text.
+    IncompleteCompletion {
+        endpoint: String,
+        finish_reason: String,
+    },
     /// The model completed the request but produced no usable text.
     EmptyOutput { operation: &'static str },
     /// The model completed the request but echoed instructions or other prompt
@@ -95,6 +100,13 @@ impl fmt::Display for InferenceError {
             Self::EmptyOutput { operation } => {
                 write!(formatter, "{operation} completed without usable text")
             }
+            Self::IncompleteCompletion {
+                endpoint,
+                finish_reason,
+            } => write!(
+                formatter,
+                "incomplete inference response from {endpoint} (finish_reason: {finish_reason})"
+            ),
             Self::RejectedOutput { operation, reason } => {
                 write!(formatter, "{operation} output was rejected: {reason}")
             }
@@ -131,6 +143,12 @@ impl InferenceError {
     #[must_use]
     pub fn is_rejected_output(&self) -> bool {
         matches!(self, Self::RejectedOutput { .. })
+    }
+
+    /// A larger generation budget may recover an output or context limit.
+    #[must_use]
+    pub fn is_output_limit(&self) -> bool {
+        matches!(self, Self::IncompleteCompletion { finish_reason, .. } if finish_reason == "length")
     }
 }
 

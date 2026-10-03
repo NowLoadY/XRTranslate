@@ -227,6 +227,10 @@ pub(crate) fn parse_chat_completion(
     else {
         return invalid_response(endpoint, body, "choices[0] is missing");
     };
+    validate_finish_reason(
+        endpoint,
+        choice.get("finish_reason").and_then(Value::as_str),
+    )?;
     let Some(content) = choice.pointer("/message/content") else {
         return invalid_response(endpoint, body, "choices[0].message.content is missing");
     };
@@ -236,6 +240,16 @@ pub(crate) fn parse_chat_completion(
         body_preview: preview(body),
     })?;
     Ok(ChatCompletion { text })
+}
+
+fn validate_finish_reason(endpoint: &str, reason: Option<&str>) -> Result<(), InferenceError> {
+    if let Some(reason) = reason.filter(|reason| *reason != "stop") {
+        return Err(InferenceError::IncompleteCompletion {
+            endpoint: endpoint.into(),
+            finish_reason: reason.into(),
+        });
+    }
+    Ok(())
 }
 
 fn invalid_response<T>(endpoint: &str, body: &str, message: &str) -> Result<T, InferenceError> {
@@ -333,11 +347,38 @@ mod tests {
             .push(b"data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
             .unwrap();
         assert!(unfinished.finish("http://test").is_err());
-        let mut truncated = stream::ChatStream::new(false);
-        assert!(
-            truncated
-                .push(b"data: {\"choices\":[{\"finish_reason\":\"length\"}]}\n\n")
-                .is_err()
-        );
+    }
+
+    #[test]
+    fn incomplete_completions_preserve_the_reason_in_json_and_sse() {
+        let endpoint = "http://test/v1/chat/completions";
+        for reason in ["length", "content_filter", "tool_calls"] {
+            let body = json!({"choices": [{
+                "message": {"content": "unfinished"}, "finish_reason": reason
+            }]})
+            .to_string();
+            let expected = InferenceError::IncompleteCompletion {
+                endpoint: endpoint.into(),
+                finish_reason: reason.into(),
+            };
+            assert_eq!(expected.is_output_limit(), reason == "length");
+            assert_eq!(
+                parse_chat_completion(endpoint, &body),
+                Err(expected.clone())
+            );
+            for wire in [
+                body,
+                format!(
+                    "data: {}\n\ndata: [DONE]\n\n",
+                    json!({"choices": [{"delta": {"content": "unfinished"}, "finish_reason": reason}]})
+                ),
+            ] {
+                let mut stream = stream::ChatStream::new(false);
+                for chunk in wire.as_bytes().chunks(3) {
+                    stream.push(chunk).unwrap();
+                }
+                assert_eq!(stream.finish(endpoint), Err(expected.clone()));
+            }
+        }
     }
 }
