@@ -1238,68 +1238,70 @@ impl NativeInference {
         delivery: AsrPromptDelivery,
         context_free_delivery: AsrPromptDelivery,
         echo_candidates: &[String],
-        max_tokens: u32,
+        mut max_tokens: u32,
     ) -> Result<Option<AsrAttemptResult>, InferenceFailure> {
-        let quality_context = delivery.quality_context();
-        let prompt_trace = delivery.prompt_trace.clone();
-        let mut transcript = self
+        let asr = self
             .asr
             .as_ref()
-            .expect("ASR jobs require an audio session")
-            .transcribe_pcm16(
-                pcm,
-                NativeAsrOptions {
-                    language: language.clone(),
-                    instruction_prompt: delivery.instruction_prompt,
-                    context_bias: delivery.context_bias,
-                    vocabulary_bias: delivery.vocabulary_bias,
-                    max_tokens,
-                },
-            )
-            .await
-            .map_err(|error| InferenceFailure::request("ASR request failed", error))?;
-
-        if !is_probable_asr_hallucination(
-            &transcript.text,
-            sample_count,
-            SAMPLE_RATE_HZ,
-            quality_context.as_deref(),
-            echo_candidates,
-        ) {
-            return Ok(Some(AsrAttemptResult {
-                transcript,
-                prompt_trace,
-            }));
+            .expect("ASR jobs require an audio session");
+        for (retried, delivery) in [(false, delivery), (true, context_free_delivery)] {
+            let quality_context = if retried {
+                None
+            } else {
+                delivery.quality_context()
+            };
+            let transcript = match asr
+                .transcribe_pcm16(
+                    pcm,
+                    NativeAsrOptions {
+                        language: language.clone(),
+                        instruction_prompt: delivery.instruction_prompt,
+                        context_bias: delivery.context_bias,
+                        vocabulary_bias: delivery.vocabulary_bias,
+                        max_tokens,
+                    },
+                )
+                .await
+            {
+                Ok(transcript) => transcript,
+                Err(error) if !retried && error.is_output_limit() => {
+                    let retry_max_tokens =
+                        expanded_output_budget(max_tokens, self.asr_context_window_tokens);
+                    warn!(%error, max_tokens, retry_max_tokens, sample_count,
+                        "ASR output reached its limit; retrying the same audio without optional context");
+                    max_tokens = retry_max_tokens;
+                    continue;
+                }
+                Err(error) => {
+                    return Err(InferenceFailure::request(
+                        if retried {
+                            "ASR context-free retry failed"
+                        } else {
+                            "ASR request failed"
+                        },
+                        error,
+                    ));
+                }
+            };
+            if !is_probable_asr_hallucination(
+                &transcript.text,
+                sample_count,
+                SAMPLE_RATE_HZ,
+                quality_context.as_deref(),
+                if retried { &[] } else { echo_candidates },
+            ) {
+                return Ok(Some(AsrAttemptResult {
+                    transcript,
+                    prompt_trace: delivery.prompt_trace,
+                }));
+            }
+            if retried {
+                warn!("suppressing ASR output after context-free retry failed quality checks");
+            } else {
+                warn!("ASR output failed quality checks; retrying without optional context");
+            }
         }
-
-        warn!("ASR output failed quality checks; retrying without optional context");
-        let prompt_trace = context_free_delivery.prompt_trace.clone();
-        transcript = self
-            .asr
-            .as_ref()
-            .expect("ASR jobs require an audio session")
-            .transcribe_pcm16(
-                pcm,
-                NativeAsrOptions {
-                    language,
-                    instruction_prompt: context_free_delivery.instruction_prompt,
-                    context_bias: context_free_delivery.context_bias,
-                    vocabulary_bias: context_free_delivery.vocabulary_bias,
-                    max_tokens,
-                },
-            )
-            .await
-            .map_err(|error| InferenceFailure::request("ASR context-free retry failed", error))?;
-        if is_probable_asr_hallucination(&transcript.text, sample_count, SAMPLE_RATE_HZ, None, &[])
-        {
-            warn!("suppressing ASR output after context-free retry failed quality checks");
-            Ok(None)
-        } else {
-            Ok(Some(AsrAttemptResult {
-                transcript,
-                prompt_trace,
-            }))
-        }
+        Ok(None)
     }
 
     pub(crate) fn recognition_output(
@@ -1418,13 +1420,10 @@ impl NativeInference {
                         && (error.is_rejected_output() || error.is_output_limit()) =>
                 {
                     if error.is_output_limit() {
-                        // Leave at least half the window for the required prompt and
-                        // source. Never reduce an explicitly configured output limit.
-                        options.max_tokens = options
-                            .max_tokens
-                            .saturating_mul(2)
-                            .min(options.context_window_tokens / 2)
-                            .max(options.max_tokens);
+                        options.max_tokens = expanded_output_budget(
+                            options.max_tokens,
+                            options.context_window_tokens,
+                        );
                     }
                     warn!(
                         %error,
@@ -1515,7 +1514,15 @@ fn is_recoverable_provider_error(error: &InferenceError) -> bool {
 
 fn asr_max_tokens(sample_count: usize) -> u32 {
     let seconds = sample_count as f64 / f64::from(SAMPLE_RATE_HZ);
-    ((seconds * 18.0).ceil() as u32 + 16).clamp(24, 128)
+    ((seconds * 18.0).ceil() as u32).saturating_add(16).max(24)
+}
+
+fn expanded_output_budget(current: u32, context_window: u32) -> u32 {
+    // Leave half the window for input, without lowering a larger configured budget.
+    current
+        .saturating_mul(2)
+        .min(context_window / 2)
+        .max(current)
 }
 
 fn samples_to_ms(samples: u64) -> f64 {
@@ -1603,7 +1610,7 @@ pub(crate) fn validate_input_chunk_size(bytes: usize) -> Result<(), String> {
 mod language_tests;
 
 #[cfg(test)]
-mod translation_tests;
+mod completion_tests;
 
 #[cfg(test)]
 mod tests {

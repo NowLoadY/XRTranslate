@@ -92,6 +92,12 @@ The backend drops optional context and doubles the output budget up to half the
 context window, without lowering a larger configured budget. Other stop reasons
 are reported unchanged rather than retried as length limits.
 
+ASR shares that bounded output-budget expansion with its existing context-free
+quality retry. It resubmits the same audio and selected language at most once per
+recognition attempt; incomplete transcripts never reach language routing or
+translation. Its initial duration-based token estimate is capped by the selected
+provider configuration, with no additional fixed 128-token ceiling.
+
 XR Corpus and the backend provide structured facts. XR Corpus retains its legacy
 pre-rendered ASR field for older consumers, but the native backend consumes its
 structured recognition vocabulary. The desktop client owns template selection
