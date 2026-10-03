@@ -1,5 +1,5 @@
 //! Another view of the same companion; behavior and dialogue stay with its owner.
-use super::{Classic, Gaze, Presentation, Speech};
+use super::{Gaze, Presentation, Speech};
 use crate::ui::animation::AnimationSystem;
 use eframe::egui::{self, Id, Pos2, Rect};
 
@@ -35,7 +35,10 @@ impl Surface {
         let painter = ui
             .ctx()
             .layer_painter(egui::LayerId::new(egui::Order::Foreground, id));
-        Classic::model().paint(&painter, id, center, radius, pose);
+        self.presentation
+            .appearance
+            .model()
+            .paint(&painter, id, center, radius, pose);
         self.presentation.speech.paint(
             &painter,
             ui.ctx().viewport_rect().shrink(4.0),

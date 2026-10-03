@@ -1,5 +1,6 @@
 use crate::ui::components::{self, SubNavItem, section, sub_sidebar};
 use eframe::egui;
+mod avatar;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Default)]
 pub enum SettingsSection {
@@ -8,6 +9,7 @@ pub enum SettingsSection {
     ServiceProviders,
     Plugins,
     BackendServer,
+    Avatar,
 }
 
 pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
@@ -46,6 +48,11 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             icon: "",
             label: crate::i18n::tr(app.ui_language, "Local Service"),
         },
+        SubNavItem {
+            id: SettingsSection::Avatar,
+            icon: "",
+            label: crate::i18n::tr(app.ui_language, "Avatar"),
+        },
     ];
 
     let content = |ui: &mut egui::Ui, app: &mut crate::XRTranslateApp| {
@@ -62,6 +69,11 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                         match cur {
                             SettingsSection::GeneralAppearance => {
                                 render_general_appearance_section(app, ui);
+                            }
+                            SettingsSection::Avatar => {
+                                if avatar::render(ui, &mut app.avatar_appearance, app.ui_language) {
+                                    app.save_settings();
+                                }
                             }
                             SettingsSection::ServiceProviders => {
                                 let apply = app.service_config.render(ui, app.ui_language);
@@ -165,7 +177,11 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
                             .color(crate::ui::theme::text_strong())
                             .strong(),
                     );
-                    if components::language_selector(ui, "settings_ui_language", &mut app.ui_language) {
+                    if components::language_selector(
+                        ui,
+                        "settings_ui_language",
+                        &mut app.ui_language,
+                    ) {
                         app.set_ui_language(app.ui_language);
                     }
                 });
@@ -214,7 +230,11 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
                             .color(crate::ui::theme::text_strong())
                             .strong(),
                     );
-                    if components::language_selector(ui, "settings_ui_language", &mut app.ui_language) {
+                    if components::language_selector(
+                        ui,
+                        "settings_ui_language",
+                        &mut app.ui_language,
+                    ) {
                         app.set_ui_language(app.ui_language);
                     }
                     ui.add_space(18.0);
@@ -779,10 +799,13 @@ fn render_plugins_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             ui.label(
-                                egui::RichText::new(crate::i18n::tr(language, descriptor.title_key))
-                                    .size(14.5)
-                                    .color(crate::ui::theme::text_strong())
-                                    .strong(),
+                                egui::RichText::new(crate::i18n::tr(
+                                    language,
+                                    descriptor.title_key,
+                                ))
+                                .size(14.5)
+                                .color(crate::ui::theme::text_strong())
+                                .strong(),
                             );
                             ui.add_space(2.0);
                             ui.label(

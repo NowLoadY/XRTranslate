@@ -138,6 +138,10 @@ impl BackgroundImage {
         self.texture.is_some()
     }
 
+    pub fn texture_id(&self) -> Option<egui::TextureId> {
+        self.texture.as_ref().map(TextureHandle::id)
+    }
+
     /// Paint one image beneath all panels. Cropping the UVs fills the whole
     /// window without stretching, with excess image cropped equally on each
     /// side. Zero opacity still replaces the default white mask.

@@ -48,39 +48,48 @@ fn feature(
 
 impl Eye {
     fn append(self, body: Vec3, head: HeadShape, pose: Pose, color: Color32, model: &mut Model) {
+        let side = self.position.x.signum();
+        let thought = pose.thinking * if side < 0.0 { 1.0 } else { 0.25 };
         let mut part = feature(
             Geometry::Eye,
-            self.position,
+            self.position + Vec2::new(0.0, side * pose.curiosity * 0.014 - pose.concern * 0.015),
             Vec3::new(
                 self.thickness / 0.146,
-                self.height / 0.396 * (1.0 + pose.curiosity * 0.15),
+                self.height / 0.396 * (1.0 + pose.curiosity * 0.12 - thought * 0.15),
                 1.0,
             ),
             body,
             head,
             color,
         );
-        part.morph = [pose.joy * (1.0 - pose.blink), pose.blink];
+        let blink = pose.blink.max(thought * 0.35);
+        part.morph = [pose.joy * (1.0 - blink), blink];
+        part.transform *=
+            Mat4::from_rotation_z(side * (pose.concern * 0.14 - pose.curiosity * 0.04));
         model.add(part);
     }
 }
 impl Mouth {
-    fn append(self, body: Vec3, head: HeadShape, pose: Pose, model: &mut Model) {
+    fn append(self, body: Vec3, head: HeadShape, pose: Pose, ink: Color32, model: &mut Model) {
+        let open = pose.speech.clamp(0.0, 1.0);
         let mut part = feature(
             Geometry::Mouth,
-            self.position,
-            Vec3::new(self.width / 0.226, 1.0, 1.0),
+            self.position + Vec2::new(pose.thinking * 0.025, 0.0),
+            Vec3::new(self.width / 0.226 * (1.0 - pose.curiosity * 0.2), 1.0, 1.0),
             body,
             head,
-            self.color,
+            ink.lerp_to_gamma(self.color, open.sqrt()),
         );
         part.material = Material {
-            shade_contrast: 0.20,
-            outline_width: 0.005,
+            shade_contrast: 0.12,
+            outline_width: 0.0,
+            softness: 0.40,
             ..Material::CLAY
         };
-        let open = pose.curiosity.max(pose.speech.clamp(0.0, 1.0));
-        part.morph = [pose.joy * (1.0 - open), open];
+        part.morph = [
+            (0.25 + pose.joy * 0.75 - pose.concern * 0.95 - pose.thinking * 0.2) * (1.0 - open),
+            open,
+        ];
         model.add(part);
     }
 }
@@ -131,7 +140,7 @@ impl Face {
             nose.append(body, head, self.ink, model);
         }
         if let Some(mouth) = self.mouth {
-            mouth.append(body, head, pose, model);
+            mouth.append(body, head, pose, self.ink, model);
         }
     }
 }

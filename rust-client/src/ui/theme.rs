@@ -188,6 +188,26 @@ pub fn surface_subtle() -> Color32 {
     Color32::from_rgba_unmultiplied(246, 246, 246, 64)
 }
 
+/// A readable white backing for bounded content over custom background images.
+pub fn surface_panel() -> Color32 {
+    Color32::from_white_alpha(184)
+}
+
+pub fn set_custom_background(ctx: &egui::Context, visible: bool) {
+    ctx.data_mut(|data| data.insert_temp(Id::new("custom_background_visible"), visible));
+}
+
+pub fn panel_fill(ctx: &egui::Context, default: Color32) -> Color32 {
+    if ctx.data(|data| {
+        data.get_temp::<bool>(Id::new("custom_background_visible"))
+            .unwrap_or(false)
+    }) {
+        surface_panel()
+    } else {
+        default
+    }
+}
+
 /// Neutral history layers keep the message bubbles from picking up a blue cast
 /// when composited over the Windows acrylic backdrop.
 pub fn history_surface() -> Color32 {

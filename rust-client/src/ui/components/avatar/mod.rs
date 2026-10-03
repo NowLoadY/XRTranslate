@@ -17,15 +17,19 @@ pub use face::{Face, Nose};
 pub use geometry::body::HeadShape;
 pub use hair::Hair;
 pub use model::{Material, Part};
+pub(crate) use motion::Motion;
 pub use motion::{Expression, Gaze, Pose};
 #[cfg(debug_assertions)]
 pub(crate) use render::export::render_views;
 pub use render::install;
 pub(crate) use render::stereo::StereoRenderer;
+pub use wardrobe::{Accessory, Appearance};
 
 /// A presentation of the existing companion, never a second dialogue owner.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Presentation {
+    #[serde(default)]
+    pub appearance: Appearance,
     pub pose: Pose,
     pub speech: Speech,
     pub clock: f64,
@@ -35,7 +39,7 @@ pub use speech::Speech;
 pub(crate) use surface::Surface;
 
 use eframe::egui::{self, Color32, Id, Pos2, Rect, Vec2};
-use glam::{EulerRot, Mat4, Quat, Vec3};
+use glam::{Mat4, Vec3};
 use model::{Geometry, Model};
 use wardrobe::Attachment;
 
@@ -63,6 +67,19 @@ impl Default for Avatar {
 }
 
 impl Avatar {
+    fn attachment_body(&self, socket: wardrobe::Socket) -> Vec3 {
+        let width = match socket {
+            wardrobe::Socket::Hat => self.head.envelope_width(),
+            _ => self.head.width_at(socket.origin().y),
+        };
+        Vec3::new(self.aspect * width, 1.0, 1.0)
+    }
+
+    pub fn socket_position(&self, socket: wardrobe::Socket, pose: Pose) -> Vec3 {
+        (pose.rotation() * socket.transform(self.attachment_body(socket)))
+            .transform_point3(socket.marker())
+    }
+
     fn assemble(&self, pose: Pose) -> Model {
         let body = Vec3::new(self.aspect, 1.0, 1.0);
         let mut model = Model::default();
@@ -70,10 +87,10 @@ impl Avatar {
             transform: Mat4::from_scale(body),
             morph: self.head.weights(),
             material: Material {
-                shade_contrast: 0.16,
+                shade_contrast: 0.13,
                 outline_width: 0.006,
                 softness: 0.40,
-                blush: 0.75,
+                blush: 0.42 + 0.22 * pose.joy,
                 ..Material::CLAY
             },
             ..Part::new(Geometry::Body, self.color)
@@ -84,18 +101,9 @@ impl Avatar {
             hair.append(body * Vec3::new(hair_width, 1.0, 1.0), pose, &mut model);
         }
         for attachment in &self.attachments {
-            let width = match attachment.socket {
-                wardrobe::Socket::Hat => hair_width,
-                socket => self.head.width_at(socket.origin().y),
-            };
-            attachment.append(body * Vec3::new(width, 1.0, 1.0), &mut model);
+            attachment.append(self.attachment_body(attachment.socket), &mut model);
         }
-        let rotation = Mat4::from_quat(Quat::from_euler(
-            EulerRot::YXZ,
-            pose.gaze.yaw,
-            pose.gaze.pitch,
-            -pose.roll,
-        ));
+        let rotation = pose.rotation();
         for part in &mut model.parts {
             part.transform = rotation * part.transform;
         }

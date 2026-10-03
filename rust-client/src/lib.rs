@@ -706,6 +706,7 @@ struct XRTranslateApp {
     pub ui_language: UiLanguage,
     pub ui_theme: ui::theme::UiTheme,
     pub background_settings: ui::background::BackgroundSettings,
+    pub avatar_appearance: ui::components::avatar::Appearance,
     background_image: ui::background::BackgroundImage,
     navigation: NavigationState,
     window_backdrop: window_backdrop::WindowBackdrop,
@@ -1689,6 +1690,7 @@ impl Default for XRTranslateApp {
             ui_language: settings.ui_language,
             ui_theme: settings.ui_theme,
             background_settings: settings.background_settings,
+            avatar_appearance: settings.avatar_appearance,
             background_image: ui::background::BackgroundImage::default(),
             navigation: NavigationState {
                 collapsed: settings.sidebar_collapsed,
@@ -3122,6 +3124,7 @@ impl XRTranslateApp {
             ui_language: self.ui_language,
             ui_theme: self.ui_theme,
             background_settings: self.background_settings.clone(),
+            avatar_appearance: self.avatar_appearance.clone(),
             first_run: self.first_run,
             model_defaults_initialized: self.model_defaults_initialized,
             server_url: self.server_url.clone(),
@@ -5439,6 +5442,7 @@ impl eframe::App for XRTranslateApp {
                 ui.max_rect(),
                 self.background_settings.opacity,
             );
+        ui::theme::set_custom_background(ui.ctx(), custom_background);
         if self.first_run {
             self.audio_system.set_audio_studio_metering(false);
             let companion_layout = ui::render_onboarding_fullscreen(self, ui);
@@ -5500,7 +5504,7 @@ impl eframe::App for XRTranslateApp {
                     .frame(
                         egui::Frame::new()
                             .fill(if custom_background {
-                                egui::Color32::TRANSPARENT
+                                ui::theme::surface_panel()
                             } else {
                                 ui::theme::sidebar(viewport_focused)
                             })
@@ -5525,7 +5529,7 @@ impl eframe::App for XRTranslateApp {
                     .frame(
                         egui::Frame::new()
                             .fill(if custom_background {
-                                egui::Color32::TRANSPARENT
+                                ui::theme::surface_panel()
                             } else {
                                 ui::theme::sidebar(viewport_focused)
                             })

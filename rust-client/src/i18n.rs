@@ -120,6 +120,15 @@ pub(crate) fn translation(language: UiLanguage, english: &str) -> Option<&'stati
 
 /// Consolidated single-source-of-truth dictionary: `(English Key, Chinese (zh), Japanese (ja), Korean (ko), Russian (ru))`
 const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
+    ("Avatar", "形象", "アバター", "아바타", "Аватар"),
+    ("Hat", "帽子", "帽子", "모자", "Головной убор"),
+    ("Scarf", "围巾", "マフラー", "목도리", "Шарф"),
+    ("Mist blue", "雾蓝", "ミストブルー", "미스트 블루", "Дымчато-голубой"),
+    ("Cream", "奶油", "クリーム", "크림", "Кремовый"),
+    ("Rose", "莓粉", "ローズ", "로즈", "Розовый"),
+    ("No accessory", "不佩戴", "なし", "착용 안 함", "Без аксессуара"),
+    ("Drag to rotate", "拖动旋转", "ドラッグして回転", "드래그하여 회전", "Перетащите для поворота"),
+    ("Reset view", "重置视角", "視点をリセット", "시점 초기화", "Сбросить ракурс"),
     (
         "Turn on automatic typing of translations into the focused input",
         "开启自动输入：将译文填入当前聚焦的输入框",

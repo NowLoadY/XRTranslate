@@ -1,6 +1,7 @@
 //! Fitted short hair and its secondary motion, independent of clothing and expressions.
 pub(super) mod geometry;
 pub(super) mod motion;
+mod strand;
 
 use super::{
     Material, Part, Pose,
@@ -17,7 +18,7 @@ pub struct Hair {
 impl Default for Hair {
     fn default() -> Self {
         Self {
-            color: Color32::from_rgb(248, 228, 186),
+            color: Color32::from_rgb(245, 221, 176),
         }
     }
 }

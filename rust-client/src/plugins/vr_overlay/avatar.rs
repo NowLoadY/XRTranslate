@@ -96,7 +96,12 @@ impl AvatarOverlay {
             self.pending_plane = Some(scene.plane);
         }
         if !renderer
-            .render(presentation.pose, scene.model, scene.cameras)
+            .render(
+                presentation.pose,
+                &presentation.appearance,
+                scene.model,
+                scene.cameras,
+            )
             .map_err(OverlayError::InvalidFrame)?
         {
             return Ok(());

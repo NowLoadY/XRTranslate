@@ -123,21 +123,22 @@ fn visor() -> Mesh {
     )
 }
 
+// Fit the inner opening to the cheek; grow fabric outward and below the chin.
+// This shared surface also seats the hanging end in the padded wrap.
+fn scarf_point(angle: f32, cross: f32) -> Vec3 {
+    const HEIGHT: f32 = 0.44;
+    const THICKNESS: f32 = 0.18;
+    let rise = signed_power(cross.sin(), 0.85);
+    let outward = (1.0 + signed_power(cross.cos(), 0.85)) * 0.5;
+    let opening = Socket::Scarf.origin().y;
+    let mut point = body::ring(opening + 0.04 * rise, angle, 0.015 + THICKNESS * outward);
+    point.y = opening - HEIGHT * 0.3 - 0.035 * angle.sin() + HEIGHT * 0.5 * rise;
+    point
+}
+
 fn scarf() -> Mesh {
     let mut mesh = Mesh::default();
-    mesh.surface(40, 128, true, |u, v| {
-        let angle = u * TAU;
-        let cross = v * TAU;
-        // The lower cheek defines the opening; cloth hangs below the mouth and chin.
-        let rise = signed_power(cross.sin(), 0.5);
-        let mut point = body::ring(
-            Socket::Scarf.origin().y + 0.045 * rise,
-            angle,
-            0.025 + 0.028 * signed_power(cross.cos(), 0.5),
-        );
-        point.y = -0.85 - 0.04 * angle.sin() + 0.115 * rise;
-        point
-    });
+    mesh.surface(40, 128, true, |u, v| scarf_point(u * TAU, v * TAU));
     mesh
 }
 
@@ -168,18 +169,19 @@ fn tail() -> Mesh {
             Vec2::new(-0.12, 0.0),
         ],
     ];
-    cushion(&outline, Vec2::new(0.0, 0.48), 0.046, |point, thickness| {
+    let anchor = scarf_point(0.92, 0.48);
+    cushion(&outline, Vec2::new(0.0, 0.48), 0.065, |point, thickness| {
         let t = point.y;
         let bend = bezier(
             [
-                Vec2::new(-0.86, 0.96),
-                Vec2::new(-1.02, 1.00),
-                Vec2::new(-1.29, 0.98),
-                Vec2::new(-1.33, 0.83),
+                Vec2::new(0.0, -0.015),
+                Vec2::new(-0.18, 0.025),
+                Vec2::new(-0.56, 0.015),
+                Vec2::new(-0.62, -0.08),
             ],
             t,
         );
-        Vec3::new(0.58 + 0.11 * t + point.x, bend.x, bend.y + thickness)
+        anchor + Vec3::new(0.11 * t + point.x * 1.1, bend.x, bend.y + thickness)
     })
 }
 

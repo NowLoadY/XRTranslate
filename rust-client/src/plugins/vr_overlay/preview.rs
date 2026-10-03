@@ -1,6 +1,6 @@
 //! Offline preview of the actual stereo mesh passes; no SteamVR mock image.
 use super::{renderer::VrOverlayRenderer, space::CompanionSpace};
-use crate::ui::components::avatar::{Gaze, Pose, Speech, StereoRenderer};
+use crate::ui::components::avatar::{Appearance, Gaze, Pose, Speech, StereoRenderer};
 use eframe::{egui, icon_data::IconDataExt, wgpu};
 use glam::{Mat4, Vec3};
 use std::{error::Error, path::Path, time::Duration};
@@ -65,7 +65,7 @@ async fn render_async(directory: &Path) -> Result<(), Box<dyn Error + Send + Syn
             .update(view, eye_positions(view), 0.0)
             .ok_or("Invalid preview scene")?;
         for attempt in 0..4 {
-            if renderer.render(pose, scene.model, scene.cameras)? {
+            if renderer.render(pose, &Appearance::default(), scene.model, scene.cameras)? {
                 break;
             }
             renderer.device.poll(wgpu::PollType::Wait {

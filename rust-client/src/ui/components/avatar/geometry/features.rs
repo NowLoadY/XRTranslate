@@ -1,9 +1,14 @@
 //! Continuous rounded strokes with matching topology for GPU expression morphs.
-use super::{Mesh, cushion};
+use super::Mesh;
 use glam::{Vec2, Vec3};
 use std::f32::consts::{FRAC_PI_2, TAU};
 
-fn stroke(path: impl Fn(f32) -> Vec2, radius: impl Fn(f32) -> f32, depth: f32) -> Mesh {
+fn stroke(
+    path: impl Fn(f32) -> Vec2,
+    radius: impl Fn(f32) -> f32,
+    depth: f32,
+    scale: Vec2,
+) -> Mesh {
     let mut mesh = Mesh::default();
     mesh.surface(48, 24, true, |u, v| {
         // Eight rows per rounded end; the middle follows the whole curve without joints.
@@ -20,9 +25,10 @@ fn stroke(path: impl Fn(f32) -> Vec2, radius: impl Fn(f32) -> f32, depth: f32) -
         };
         let (round, offset) = (cap * FRAC_PI_2).sin_cos();
         let angle = u * TAU;
-        let point = path(t)
+        let point = (path(t)
             + tangent * offset * radius * if t < 0.5 { -1.0 } else { 1.0 }
-            + side * (angle.cos() * radius * round);
+            + side * (angle.cos() * radius * round))
+            * scale;
         // The back follows the local curvature of the face instead of floating above it.
         Vec3::new(
             point.x,
@@ -34,10 +40,13 @@ fn stroke(path: impl Fn(f32) -> Vec2, radius: impl Fn(f32) -> f32, depth: f32) -
 }
 
 pub(super) fn eye() -> Mesh {
+    // All poses run from left to right, so a blink closes vertically without
+    // twisting a vertical stroke sideways halfway through the morph.
     let neutral = stroke(
-        |t| Vec2::new(0.0, (t - 0.5) * 0.286),
-        |t| 0.073 * (1.0 - 0.25 * (t * 2.0 - 1.0).powi(2)),
+        |t| Vec2::new((t - 0.5) * 0.06, 0.0),
+        |t| 0.07 * (1.0 - 0.05 * (t * 2.0 - 1.0).powi(2)),
         0.020,
+        Vec2::new(0.75, 2.83),
     );
     let happy = stroke(
         |t| {
@@ -46,39 +55,30 @@ pub(super) fn eye() -> Mesh {
         },
         |_| 0.054,
         0.020,
+        Vec2::ONE,
     );
-    let closed = stroke(|t| Vec2::new((t - 0.5) * 0.16, 0.0), |_| 0.025, 0.012);
+    let closed = stroke(
+        |t| Vec2::new((t - 0.5) * 0.16, 0.0),
+        |_| 0.025,
+        0.012,
+        Vec2::ONE,
+    );
     neutral.morph(happy, closed)
 }
 
 pub(super) fn mouth() -> Mesh {
-    let shape = |width: f32, height: f32, round: f32| {
-        let outline = [
-            [
-                Vec2::new(-width, 0.02),
-                Vec2::new(-width * 0.73, 0.02 + round),
-                Vec2::new(-width * 0.60, -0.015 + round),
-                Vec2::new(0.0, 0.02 + round),
-            ],
-            [
-                Vec2::new(0.0, 0.02 + round),
-                Vec2::new(width * 0.60, -0.015 + round),
-                Vec2::new(width * 0.73, 0.02 + round),
-                Vec2::new(width, 0.02),
-            ],
-            [
-                Vec2::new(width, 0.02),
-                Vec2::new(width, -height),
-                Vec2::new(-width, -height),
-                Vec2::new(-width, 0.02),
-            ],
-        ];
-        cushion(
-            &outline,
-            Vec2::new(0.0, -height * 0.35),
-            0.008,
-            |p, depth| Vec3::new(p.x, p.y, 0.008 + depth - 0.48 * p.length_squared()),
+    let shape = |width: f32, bend: f32, thickness: f32| {
+        stroke(
+            |t| {
+                let x = t * 2.0 - 1.0;
+                Vec2::new(x * width, -bend * (1.0 - x * x))
+            },
+            |_| thickness,
+            0.012,
+            Vec2::ONE,
         )
     };
-    shape(0.105, 0.18, 0.0).morph(shape(0.12, 0.22, 0.0), shape(0.065, 0.22, 0.065))
+    // A closed line, a closed smile, and a rounded speaking mouth share topology.
+    // A small negative smile weight gives concern a frown without another mesh.
+    shape(0.095, 0.0, 0.017).morph(shape(0.12, 0.045, 0.020), shape(0.022, 0.015, 0.080))
 }

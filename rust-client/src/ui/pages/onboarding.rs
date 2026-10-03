@@ -64,7 +64,7 @@ pub fn render_onboarding_fullscreen(
         .frame(
             Frame::new()
                 .fill(if custom_background {
-                    Color32::TRANSPARENT
+                    theme::surface_panel()
                 } else {
                     theme::sidebar(viewport_focused)
                 })
@@ -2258,7 +2258,7 @@ fn render_runtime_download_plan(
 ) {
     let total_bytes = downloads.iter().map(|download| download.bytes).sum::<u64>();
     Frame::new()
-        .fill(theme::surface_subtle())
+        .fill(theme::panel_fill(ui.ctx(), theme::surface_subtle()))
         .corner_radius(CornerRadius::same(8))
         .inner_margin(Margin::symmetric(10, 7))
         .stroke(Stroke::new(1.0, theme::border()))

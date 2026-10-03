@@ -57,13 +57,12 @@ fn soft_shadow(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     let projected = position.xyz / position.w;
     let uv = projected.xy * vec2<f32>(0.5, -0.5) + 0.5;
     let bias = max(0.0025 * (1.0 - dot(normal, normalize(vec3<f32>(-3.0, 5.0, 7.0)))), 0.0016);
-    let texel = 1.0 / vec2<f32>(textureDimensions(shadow_map));
     var visibility = 0.0;
-    // A fixed disk avoids the visible bands that a wide square PCF grid leaves below the visor.
+    // A disk in light-space keeps the soft edge consistent on cards, desktop and VR.
     for (var i = 0; i < 24; i++) {
         let angle = f32(i) * 2.399963;
-        let radius = sqrt((f32(i) + 0.5) / 24.0) * 10.0;
-        let offset = vec2<f32>(cos(angle), sin(angle)) * radius * texel;
+        let radius = sqrt((f32(i) + 0.5) / 24.0) * 0.013;
+        let offset = vec2<f32>(cos(angle), sin(angle)) * radius;
         visibility += textureSampleCompareLevel(shadow_map, shadow_sampler, uv + offset, projected.z - bias);
     }
     return visibility / 24.0;
@@ -79,19 +78,20 @@ fn cel_step(threshold: f32, value: f32, softness: f32) -> f32 {
     let normal = normalize(input.normal);
     let diffuse = dot(normal, normalize(vec3<f32>(-3.0, 5.0, 7.0)));
     let bands = 0.55 * cel_step(0.02, diffuse, input.material.z) + 0.45 * cel_step(0.60, diffuse, input.material.z);
-    let shadow = cel_step(0.55, soft_shadow(input.world, normal), input.material.z);
-    let tone = 1.0 - input.material.x * (1.0 - bands * mix(0.25, 1.0, shadow));
+    // Keep contact/cast shadows soft; only the broad diffuse light uses cel bands.
+    let lighting = bands * mix(0.30, 1.0, soft_shadow(input.world, normal));
+    let tone = 1.0 - input.material.x * (1.0 - lighting);
     var color = input.color.rgb;
     if input.material.w > 0.0 {
         // A warm skin terminator preserves the peach cheeks instead of turning
         // the lower face gray; the same cel lighting still controls its shape.
-        color *= mix(vec3<f32>(1.0, 0.82, 0.76), vec3<f32>(1.0), bands);
+        color *= mix(vec3<f32>(1.0, 0.91, 0.88), vec3<f32>(1.0), lighting);
         let cheek = vec2<f32>((abs(input.local.x) - 0.64) / 0.29, (input.local.y + 0.49) / 0.22);
         let blush = exp(-dot(cheek, cheek) * 1.5) * smoothstep(0.30, 0.65, input.local.z) * input.material.w;
         color = mix(color, vec3<f32>(0.93, 0.46, 0.43), blush);
     }
     let shade = pow(vec3<f32>(max(tone * input.surface.x, 0.01)),
-        mix(vec3<f32>(1.0), vec3<f32>(0.65, 1.15, 1.9), input.surface.y));
+        mix(vec3<f32>(1.0), vec3<f32>(0.80, 1.05, 1.55), input.surface.y));
     return vec4<f32>(color * shade, 1.0);
 }
 

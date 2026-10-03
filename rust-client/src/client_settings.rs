@@ -94,6 +94,8 @@ pub struct ClientSettings {
     pub ui_theme: UiTheme,
     #[serde(default)]
     pub background_settings: crate::ui::background::BackgroundSettings,
+    #[serde(default)]
+    pub avatar_appearance: crate::ui::components::avatar::Appearance,
     #[serde(default = "default_true")]
     pub first_run: bool,
     #[serde(default)]
@@ -184,6 +186,7 @@ impl Default for ClientSettings {
             ui_language: default_ui_language(),
             ui_theme: UiTheme::default(),
             background_settings: crate::ui::background::BackgroundSettings::default(),
+            avatar_appearance: crate::ui::components::avatar::Appearance::default(),
             first_run: true,
             model_defaults_initialized: false,
             server_url: default_server_url(),

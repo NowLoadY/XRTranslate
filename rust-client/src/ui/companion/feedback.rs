@@ -6,6 +6,7 @@ struct Activity {
     translating: bool,
     completed: Option<(usize, u64)>,
     voice_busy: bool,
+    working: bool,
     failed: bool,
 }
 
@@ -26,13 +27,17 @@ impl Feedback {
                 .filter(|entry| !entry.live && !entry.translated.is_empty())
                 .map(|entry| (app.translations.len(), entry.source_end_ms.to_bits())),
             voice_busy: app.tts_center.busy(),
+            working: app.text_translation.busy() || !app.pending_translations.is_empty(),
             failed: app.last_error.is_some() || app.tts_center.error.is_some(),
         };
         if let Some(previous) = &self.previous {
-            let expression = if (current.failed && !previous.failed)
-                || (current.translating && !previous.translating)
-                || (current.voice_busy && !previous.voice_busy)
+            let expression = if current.failed && !previous.failed {
+                Some(Expression::Concerned)
+            } else if (current.voice_busy && !previous.voice_busy)
+                || (current.working && !previous.working)
             {
+                Some(Expression::Thinking)
+            } else if current.translating && !previous.translating {
                 Some(Expression::Curious)
             } else if !current.failed
                 && ((current.completed.is_some() && current.completed != previous.completed)
@@ -47,7 +52,14 @@ impl Feedback {
                 self.until = now + 1.6;
             }
         }
+        let reaction = if now < self.until {
+            Some(self.expression)
+        } else if current.voice_busy || current.working {
+            Some(Expression::Thinking)
+        } else {
+            None
+        };
         self.previous = Some(current);
-        (now < self.until).then_some(self.expression)
+        reaction
     }
 }

@@ -12,7 +12,7 @@ pub struct Classic;
 impl Classic {
     pub fn model() -> &'static Avatar {
         static MODEL: LazyLock<Avatar> = LazyLock::new(|| Avatar {
-            color: Color32::from_rgb(252, 232, 209),
+            color: Color32::from_rgb(252, 230, 213),
             ..Avatar::default()
         });
         &MODEL
@@ -21,7 +21,7 @@ impl Classic {
     pub fn cap(color: Color32) -> Attachment {
         Attachment {
             socket: Socket::Hat,
-            transform: Mat4::from_translation(Vec3::Y * 0.11)
+            transform: Mat4::from_translation(Vec3::Y * -0.04)
                 * Mat4::from_scale(Vec3::new(1.06, 1.0, 1.16)),
             parts: [Geometry::Cap, Geometry::Visor]
                 .map(|geometry| garment(geometry, color))

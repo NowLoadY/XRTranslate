@@ -95,9 +95,12 @@ impl HistoryFeedScale {
     }
 }
 
-fn history_card_frame(scale: &HistoryFeedScale) -> egui::Frame {
+fn history_card_frame(ctx: &egui::Context, scale: &HistoryFeedScale) -> egui::Frame {
     egui::Frame::new()
-        .fill(crate::ui::theme::history_surface())
+        .fill(crate::ui::theme::panel_fill(
+            ctx,
+            crate::ui::theme::history_surface(),
+        ))
         .corner_radius(egui::CornerRadius::same(scale.card_radius))
         .inner_margin(egui::Margin::symmetric(
             scale.card_margin_x,
@@ -117,7 +120,7 @@ fn history_card_with_activity(
     scale: &HistoryFeedScale,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
-    let frame = history_card_frame(scale);
+    let frame = history_card_frame(ui.ctx(), scale);
     let res = frame.show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.set_min_height((row_height - frame.total_margin().sum().y).max(0.0));
@@ -160,7 +163,7 @@ fn prepare_history_row<'a>(
     text: AnnotatedText<'a>,
     translation: Option<AnnotatedText<'a>>,
 ) -> (f32, HistoryRow<'a>) {
-    let margin = history_card_frame(scale).total_margin().sum();
+    let margin = history_card_frame(ui.ctx(), scale).total_margin().sum();
     let width = (ui.available_width() - margin.x).max(1.0);
     let row = HistoryRow {
         text: text.layout(ui, width),
@@ -533,7 +536,10 @@ fn render_history_section(
     let padding_y = if scale.header_size < 14.0 { 6 } else { 10 };
     ui.push_id(title, |ui| {
         let frame_resp = egui::Frame::new()
-            .fill(crate::ui::theme::surface_subtle())
+            .fill(crate::ui::theme::panel_fill(
+                ui.ctx(),
+                crate::ui::theme::surface_subtle(),
+            ))
             .corner_radius(egui::CornerRadius::same(scale.card_radius + 2))
             .inner_margin(egui::Margin::symmetric(padding_x, padding_y))
             .stroke(egui::Stroke::new(1.0, crate::ui::theme::border()))

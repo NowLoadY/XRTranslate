@@ -1,5 +1,5 @@
 //! Two real mesh views packed left/right into one reusable GPU overlay texture.
-use super::super::{Classic, Pose};
+use super::super::{Appearance, Pose};
 use super::{CallbackResources, CallbackTrait, Draw, Renderer, ScreenDescriptor, egui, wgpu};
 use glam::Mat4;
 use std::time::{Duration, Instant};
@@ -61,6 +61,7 @@ impl StereoRenderer {
     pub fn render(
         &mut self,
         mut pose: Pose,
+        appearance: &Appearance,
         model_transform: Mat4,
         cameras: [Mat4; 2],
     ) -> Result<bool, String> {
@@ -102,7 +103,7 @@ impl StereoRenderer {
             scale.x.abs(),
             self.clock.elapsed().as_secs_f64(),
         );
-        let mut model = Classic::model().assemble(pose);
+        let mut model = appearance.model().assemble(pose);
         // Authored widths use model units. Convert with the uniform spatial
         // scale, keeping the requested threefold VR contour at any model size.
         let outline_scale = model_transform.x_axis.truncate().length() * 3.0;

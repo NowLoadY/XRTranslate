@@ -3,8 +3,10 @@ pub(super) mod body;
 mod features;
 mod profile;
 mod sampling;
+mod spline;
 
 pub(super) use sampling::SurfaceSamples;
+pub(super) use spline::Spline;
 
 use super::{classic::clothing, model::Geometry};
 use bytemuck::{Pod, Zeroable};

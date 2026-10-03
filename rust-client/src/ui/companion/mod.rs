@@ -10,7 +10,7 @@ pub(crate) use inbox::Inbox;
 
 use crate::{
     i18n::UiLanguage,
-    ui::components::avatar::{Classic, Expression, Gaze, Pose, Presentation, Speech},
+    ui::components::avatar::{Expression, Gaze, Motion, Pose, Presentation, Speech},
 };
 use attention::{Attention, Target};
 use dialogue::{Cue, Route};
@@ -101,7 +101,7 @@ struct Guide {
     mentioned: u8,
     line: Message,
     speech: Speech,
-    mouth: f32,
+    motion: Motion,
     feedback: feedback::Feedback,
 }
 
@@ -141,7 +141,7 @@ impl Guide {
             mentioned: 0,
             line: scene.cue.text().into(),
             speech: Speech::default(),
-            mouth: 0.0,
+            motion: Motion::default(),
             feedback: feedback::Feedback::default(),
         }
     }
@@ -259,6 +259,21 @@ impl Guide {
         self.speech.say(self.line.text(self.language), self.clock);
     }
 
+    fn pose(&mut self, ctx: &egui::Context, expression: Expression, gaze: Gaze) -> Pose {
+        let expression =
+            if !self.speech.finished(self.clock) && matches!(self.line, Message::Error(_)) {
+                Expression::Concerned
+            } else {
+                expression
+            };
+        let mouth = self.speech.advance(self.clock);
+        let pose = self.motion.advance(self.clock, expression, gaze, mouth);
+        if !self.paused {
+            ctx.request_repaint_after(self.motion.repaint_after(self.clock));
+        }
+        pose
+    }
+
     fn follow_scene(&mut self, scene: &dialogue::Context) {
         let changed_page = self.route != scene.route;
         if changed_page {
@@ -274,7 +289,6 @@ impl Guide {
         if changed_page || self.cue != scene.cue {
             self.cue = scene.cue;
             self.speech.dismiss(self.clock);
-            self.mouth = 0.0;
             self.pending = (matches!(scene.route, Route::Onboarding(_))
                 && self.announced & scene.cue.bit() == 0)
                 .then_some((scene.cue, self.clock));
@@ -454,7 +468,6 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     } else {
         (wall - state.last_wall).clamp(0.0, 1.0)
     };
-    let dt = (elapsed_wall as f32).min(0.05);
     state.last_wall = wall;
     state.background_tick = None;
     state.paused = paused;
@@ -469,8 +482,16 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
             state.say(state.line.clone());
         }
     }
-    let dock = page
-        .and_then(|(bounds, layer)| state.parking.locate(ctx, layer, bounds, small, state.clock));
+    let dock = page.and_then(|(bounds, layer)| {
+        state.parking.locate(
+            ctx,
+            layer,
+            bounds,
+            small,
+            state.clock,
+            app.background_image.texture_id(),
+        )
+    });
     let small = dock.map_or(small, |spot| spot.radius);
     let available = !hidden && (page.is_none() || dock.is_some() || state.clock < state.resume_at);
     if (available || (vr_active && !hidden)) && !paused && !ctx.text_edit_focused() {
@@ -572,10 +593,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     } else {
         state.candidate_since = state.clock;
     }
-    let attentive = available
-        && hovered == Some(Attention::Avatar)
-        && state.candidate == Some(Attention::Avatar)
-        && state.clock - state.candidate_since >= 0.7;
+    let attentive = available && interactive && response.hovered();
     if attentive || response.clicked() {
         state.last_activity = state.clock;
     }
@@ -587,21 +605,21 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         Gaze::default()
     };
     let reaction = state.feedback.update(app, state.clock);
-    let expression = if matches!(state.stage, Stage::Peek | Stage::Greet)
-        || (attentive && hovered == Some(Attention::Avatar))
-    {
+    let interaction = state
+        .motion
+        .interact(state.clock, attentive, response.clicked());
+    let expression = if matches!(state.stage, Stage::Peek) || response.dragged() {
+        Expression::Curious
+    } else if state.stage == Stage::Greet {
         Expression::Happy
     } else {
-        reaction.unwrap_or(Expression::Calm)
+        interaction.or(reaction).unwrap_or(Expression::Calm)
     };
-    let mut pose = Pose::animated(ctx, state_id(), expression, gaze);
+    let mut pose = state.pose(ctx, expression, gaze);
     if let Some(frame) = entrance_frame {
         pose.gaze.yaw = frame.yaw;
         pose.roll = frame.roll;
     }
-    let mouth = state.speech.advance(state.clock);
-    state.mouth += (mouth - state.mouth) * (1.0 - (-dt / 0.045).exp());
-    pose.speech = state.mouth;
 
     let layer = egui::LayerId::new(egui::Order::Foreground, state_id());
     let speed = if visual_dt > 0.0 {
@@ -612,7 +630,9 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     let mut painter = ctx.layer_painter(layer).with_clip_rect(screen);
     painter.multiply_opacity(smooth(state.opacity));
     if state.opacity > 0.0 {
-        Classic::model().paint(&painter, state_id(), anchor, size, pose);
+        app.avatar_appearance
+            .model()
+            .paint(&painter, state_id(), anchor, size, pose);
     }
     let talking = state.speech.paint_avoiding(
         &painter,
@@ -655,6 +675,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     app.vr_overlay_plugin
         .manager()
         .present_companion(Presentation {
+            appearance: app.avatar_appearance.clone(),
             pose,
             speech: state.speech.clone(),
             clock: state.clock,
@@ -682,7 +703,7 @@ pub(crate) fn tick_background(ctx: &egui::Context, app: &mut crate::XRTranslateA
         ctx.data_mut(|data| data.insert_temp(state_id(), state));
         return;
     }
-    let dt = state.advance_background(std::time::Instant::now());
+    state.advance_background(std::time::Instant::now());
     state.follow_scene(&scene);
     if desktop && state.stage != Stage::Ready {
         state.enter(Stage::Ready);
@@ -699,11 +720,9 @@ pub(crate) fn tick_background(ctx: &egui::Context, app: &mut crate::XRTranslateA
         .feedback
         .update(app, state.clock)
         .unwrap_or(Expression::Calm);
-    let mut pose = Pose::idle_at(state.clock, expression);
-    let mouth = state.speech.advance(state.clock);
-    state.mouth += (mouth - state.mouth) * (1.0 - (-dt / 0.045).exp());
-    pose.speech = state.mouth;
+    let pose = state.pose(ctx, expression, Gaze::default());
     let presentation = Presentation {
+        appearance: app.avatar_appearance.clone(),
         pose,
         speech: state.speech.clone(),
         clock: state.clock,

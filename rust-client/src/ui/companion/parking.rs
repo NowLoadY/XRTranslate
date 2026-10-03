@@ -1,6 +1,6 @@
 //! Find quiet space in the painted page without adding hooks to its controls.
 use super::placement;
-use eframe::egui::{self, LayerId, Pos2, Rect, Shape};
+use eframe::egui::{self, LayerId, Pos2, Rect, Shape, TextureId};
 
 const SCAN_INTERVAL: f64 = 0.5;
 const DESTINATION_DWELL: f64 = 1.2;
@@ -41,6 +41,7 @@ impl Parking {
         bounds: Rect,
         radius: f32,
         now: f64,
+        background: Option<TextureId>,
     ) -> Option<Spot> {
         let bounds = bounds.intersect(ctx.viewport_rect());
         if now < self.next_check && self.bounds == Some(bounds) {
@@ -74,6 +75,7 @@ impl Parking {
                             transform.mul_rect(entry.clip_rect).intersect(bounds),
                             bounds,
                             transform,
+                            background,
                             &mut self.occupied,
                             &mut heading,
                         );
@@ -226,13 +228,18 @@ fn collect(
     clip: Rect,
     page: Rect,
     transform: egui::emath::TSTransform,
+    background: Option<TextureId>,
     occupied: &mut Vec<Rect>,
     heading: &mut Option<Rect>,
 ) {
     if let Shape::Vec(shapes) = shape {
         for shape in shapes {
-            collect(shape, clip, page, transform, occupied, heading);
+            collect(shape, clip, page, transform, background, occupied, heading);
         }
+        return;
+    }
+    // Only the application's backdrop is exempt; content images remain obstacles.
+    if matches!(shape, Shape::Mesh(mesh) if Some(mesh.texture_id) == background) {
         return;
     }
     // Page/section backdrops are surfaces we can rest on, not foreground content.

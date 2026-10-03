@@ -16,7 +16,7 @@ pub fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
         ui,
         border_id,
         Frame::new()
-            .fill(theme::surface_subtle())
+            .fill(theme::panel_fill(ui.ctx(), theme::surface_subtle()))
             .corner_radius(CornerRadius::same(16))
             .inner_margin(Margin::same(16))
             .shadow(egui::Shadow::NONE),
@@ -71,7 +71,7 @@ pub fn action_card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R
         ui,
         border_id,
         Frame::new()
-            .fill(Color32::TRANSPARENT)
+            .fill(theme::panel_fill(ui.ctx(), Color32::TRANSPARENT))
             .corner_radius(CornerRadius::same(10))
             .inner_margin(Margin::symmetric(16, 12)),
         10.0,
@@ -86,7 +86,7 @@ pub fn history_entry_card<R>(
     add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> egui::Response {
     Frame::new()
-        .fill(theme::history_surface())
+        .fill(theme::panel_fill(ui.ctx(), theme::history_surface()))
         .corner_radius(CornerRadius::same(12))
         .inner_margin(Margin::symmetric(12, 9))
         .stroke(Stroke::new(1.0, theme::border().gamma_multiply(0.35)))
@@ -1433,7 +1433,7 @@ pub fn error_actions(ui: &mut Ui, language: crate::i18n::UiLanguage, details: &s
 
 pub fn validation_notice(ui: &mut Ui, language: crate::i18n::UiLanguage, details: &str) {
     Frame::new()
-        .fill(crate::ui::theme::surface_subtle())
+        .fill(theme::panel_fill(ui.ctx(), theme::surface_subtle()))
         .stroke(Stroke::new(1.0, crate::ui::theme::danger()))
         .corner_radius(CornerRadius::same(10))
         .inner_margin(Margin::symmetric(12, 8))
@@ -2374,7 +2374,7 @@ pub fn sub_sidebar<T: Copy + PartialEq>(
                 ui,
                 border_id,
                 Frame::new()
-                    .fill(Color32::TRANSPARENT)
+                    .fill(theme::panel_fill(ui.ctx(), Color32::TRANSPARENT))
                     .corner_radius(CornerRadius::same(10))
                     .inner_margin(Margin::symmetric(8, 10)),
                 10.0,

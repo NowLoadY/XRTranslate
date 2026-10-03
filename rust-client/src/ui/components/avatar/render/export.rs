@@ -43,6 +43,11 @@ async fn render(directory: &Path) -> Result<(), Box<dyn Error + Send + Sync>> {
         ("happy", -0.20, 0.10, 1.0, 0.0, [0.0; 2]),
         ("blink", 0.0, 0.0, 0.0, 1.0, [0.0; 2]),
         ("curious", 0.0, 0.0, 0.0, 0.0, [0.0; 2]),
+        ("thinking", 0.0, 0.0, 0.0, 0.0, [0.0; 2]),
+        ("concerned", 0.0, 0.0, 0.0, 0.0, [0.0; 2]),
+        ("talking", 0.0, 0.0, 0.2, 0.0, [0.0; 2]),
+        ("relaxed", 0.0, 0.0, 0.32, 0.0, [0.0; 2]),
+        ("half-blink", 0.0, 0.0, 0.0, 0.5, [0.0; 2]),
         ("sway-left", 0.0, 0.0, 0.0, 0.0, [-1.0, 0.0]),
         ("sway-right", 0.0, 0.0, 0.0, 0.0, [1.0, 0.0]),
         ("sway-forward", -0.55, 0.10, 0.0, 0.0, [0.0, 1.0]),
@@ -120,6 +125,9 @@ async fn render(directory: &Path) -> Result<(), Box<dyn Error + Send + Sync>> {
             blink,
             hair,
             curiosity: if name == "curious" { 1.0 } else { 0.0 },
+            thinking: if name == "thinking" { 1.0 } else { 0.0 },
+            concern: if name == "concerned" { 1.0 } else { 0.0 },
+            speech: if name == "talking" { 0.85 } else { 0.0 },
             ..Default::default()
         });
         // Fit the sheet into the same orthographic camera used by the floating UI avatar.

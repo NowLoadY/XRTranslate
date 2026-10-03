@@ -20,6 +20,7 @@ use std::{
 
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+const MASKED_DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 const SAMPLES: u32 = 4;
 
 #[derive(Clone, Copy, PartialEq, Pod, Zeroable)]
@@ -114,17 +115,36 @@ impl Target {
         let color = color_texture.create_view(&Default::default());
         let msaa = texture(COLOR, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT)
             .create_view(&Default::default());
-        let depth = texture(DEPTH, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING)
-            .create_view(&Default::default());
-        let output_texture = texture(COLOR, 1, wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC);
+        let depth_texture = texture(
+            MASKED_DEPTH,
+            SAMPLES,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        );
+        let depth = depth_texture.create_view(&Default::default());
+        let depth_sample = depth_texture.create_view(&wgpu::TextureViewDescriptor {
+            aspect: wgpu::TextureAspect::DepthOnly,
+            ..Default::default()
+        });
+        let output_texture = texture(
+            COLOR,
+            1,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+        );
         let output = output_texture.create_view(&Default::default());
         let occlusion = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("avatar contact shadows"),
             layout: occlusion_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&color) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&depth) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&color),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&depth_sample),
+                },
             ],
         });
         let composite = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -302,18 +322,24 @@ impl Renderer {
             label: Some("avatar contact shadow layout"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
-                    binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2, multisampled: false,
-                    }, count: None,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2, multisampled: true,
-                    }, count: None,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: true,
+                    },
+                    count: None,
                 },
             ],
         });
@@ -386,11 +412,21 @@ impl Renderer {
                 cache: None,
             })
         };
-        let model_depth = wgpu::DepthStencilState {
-            format: DEPTH,
+        let mark = wgpu::StencilFaceState {
+            compare: wgpu::CompareFunction::Always,
+            pass_op: wgpu::StencilOperation::Replace,
+            ..Default::default()
+        };
+        let mut model_depth = wgpu::DepthStencilState {
+            format: MASKED_DEPTH,
             depth_write_enabled: Some(true),
             depth_compare: Some(wgpu::CompareFunction::Less),
-            stencil: Default::default(),
+            stencil: wgpu::StencilState {
+                front: mark,
+                back: mark,
+                read_mask: 0xff,
+                write_mask: 0xff,
+            },
             bias: Default::default(),
         };
         let model_pipeline = pipeline(
@@ -405,6 +441,16 @@ impl Renderer {
             None,
             None,
         );
+        let outside = wgpu::StencilFaceState {
+            compare: wgpu::CompareFunction::GreaterEqual,
+            ..Default::default()
+        };
+        model_depth.stencil = wgpu::StencilState {
+            front: outside,
+            back: outside,
+            read_mask: 0xff,
+            write_mask: 0,
+        };
         let outline_pipeline = pipeline(
             &model_shader,
             &[Some(&camera_layout)],
@@ -460,8 +506,16 @@ impl Renderer {
             None,
         );
         let occlusion_pipeline = pipeline(
-            &occlusion_shader, &[Some(&camera_layout), Some(&occlusion_layout)],
-            "vertex", Some("fragment"), &[], COLOR, None, 1, None, None,
+            &occlusion_shader,
+            &[Some(&camera_layout), Some(&occlusion_layout)],
+            "vertex",
+            Some("fragment"),
+            &[],
+            COLOR,
+            None,
+            1,
+            None,
+            None,
         );
         let matrix = glam::camera::rh::proj::directx::orthographic(-2.2, 2.2, -2.2, 2.2, 0.1, 20.0)
             * glam::camera::rh::view::look_at_mat4(Vec3::new(0.0, 0.0, 6.0), Vec3::ZERO, Vec3::Y);
@@ -474,7 +528,11 @@ impl Renderer {
                 );
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("avatar camera"),
-            contents: bytemuck::cast_slice(&[matrix.to_cols_array(), light_matrix.to_cols_array(), matrix.inverse().to_cols_array()]),
+            contents: bytemuck::cast_slice(&[
+                matrix.to_cols_array(),
+                light_matrix.to_cols_array(),
+                matrix.inverse().to_cols_array(),
+            ]),
             usage: wgpu::BufferUsages::UNIFORM,
         });
         let camera = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -627,7 +685,11 @@ impl CallbackTrait for Draw {
                     Vec3::ZERO,
                     Vec3::Y,
                 );
-                let values = [matrix.to_cols_array(), light.to_cols_array(), matrix.inverse().to_cols_array()];
+                let values = [
+                    matrix.to_cols_array(),
+                    light.to_cols_array(),
+                    matrix.inverse().to_cols_array(),
+                ];
                 if target.camera.is_none() {
                     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("avatar eye camera"),
@@ -682,7 +744,7 @@ impl CallbackTrait for Draw {
                 multiview_mask: None,
             });
             shadow_pass.set_pipeline(&renderer.shadow_pipeline);
-            self.draw_parts(&mut shadow_pass, renderer, target);
+            self.draw_parts(&mut shadow_pass, renderer, target, false);
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("avatar 3D pass"),
@@ -692,37 +754,58 @@ impl CallbackTrait for Draw {
                 resolve_target: Some(&target.color),
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
+                    store: wgpu::StoreOp::Discard,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &target.depth,
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0),
                     store: wgpu::StoreOp::Discard,
                 }),
-                stencil_ops: None,
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&renderer.outline_pipeline);
-        self.draw_parts(&mut pass, renderer, target);
+        pass.set_stencil_reference(1);
         pass.set_pipeline(&renderer.model_pipeline);
         pass.set_bind_group(1, &target.lighting, &[]);
-        self.draw_parts(&mut pass, renderer, target);
+        self.draw_parts(&mut pass, renderer, target, false);
+        // Hair strands share one silhouette; their hidden expanded faces must
+        // not draw stray outlines through neighboring locks.
+        pass.set_pipeline(&renderer.outline_pipeline);
+        self.draw_parts(&mut pass, renderer, target, true);
         drop(pass);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("avatar contact shadow pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &target.output, depth_slice: None, resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                view: &target.output,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
             })],
-            depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
         });
         pass.set_pipeline(&renderer.occlusion_pipeline);
-        pass.set_bind_group(0, target.camera.as_ref().map_or(&renderer.camera, |camera| &camera.1), &[]);
+        pass.set_bind_group(
+            0,
+            target
+                .camera
+                .as_ref()
+                .map_or(&renderer.camera, |camera| &camera.1),
+            &[],
+        );
         pass.set_bind_group(1, &target.occlusion, &[]);
         pass.draw(0..3, 0..1);
         Vec::new()
@@ -772,7 +855,13 @@ impl Draw {
         }
     }
 
-    fn draw_parts(&self, pass: &mut wgpu::RenderPass<'_>, renderer: &Renderer, target: &Target) {
+    fn draw_parts(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        renderer: &Renderer,
+        target: &Target,
+        outlines: bool,
+    ) {
         pass.set_bind_group(
             0,
             target
@@ -785,6 +874,9 @@ impl Draw {
         pass.set_vertex_buffer(1, target.parts.slice(..));
         pass.set_index_buffer(renderer.indices.slice(..), wgpu::IndexFormat::Uint32);
         for batch in &self.batches {
+            if outlines {
+                pass.set_stencil_reference(u32::from(batch.geometry != Geometry::Hair));
+            }
             pass.draw_indexed(
                 renderer.ranges[batch.geometry as usize].clone(),
                 0,
