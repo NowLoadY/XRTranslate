@@ -9,12 +9,13 @@ mod placement;
 pub(crate) use inbox::Inbox;
 
 use crate::{
-    i18n::{self, UiLanguage},
+    i18n::UiLanguage,
     ui::components::avatar::{Classic, Expression, Gaze, Pose, Presentation, Speech},
 };
 use attention::{Attention, Target};
 use dialogue::{Cue, Route};
 use eframe::egui::{self, Id, Pos2, Rect, Vec2};
+use inbox::Message;
 use std::{
     f32::consts::{PI, TAU},
     time::Duration,
@@ -47,7 +48,7 @@ impl Default for OnboardingLayout {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Stage {
     Peek,
     Greet,
@@ -55,6 +56,21 @@ enum Stage {
     WalkAway,
     TurnBack,
     Ready,
+}
+
+struct Entrance {
+    start: Pos2,
+    greeting: Pos2,
+    home: Pos2,
+    radius: f32,
+    resting_radius: f32,
+}
+
+struct EntranceFrame {
+    center: Pos2,
+    radius: f32,
+    yaw: f32,
+    roll: f32,
 }
 
 #[derive(Clone)]
@@ -83,7 +99,7 @@ struct Guide {
     last_activity: f64,
     last_spoken: f64,
     mentioned: u8,
-    line: &'static str,
+    line: Message,
     speech: Speech,
     mouth: f32,
     feedback: feedback::Feedback,
@@ -123,7 +139,7 @@ impl Guide {
             last_activity: 0.0,
             last_spoken: 0.0,
             mentioned: 0,
-            line: scene.cue.text(),
+            line: scene.cue.text().into(),
             speech: Speech::default(),
             mouth: 0.0,
             feedback: feedback::Feedback::default(),
@@ -135,39 +151,116 @@ impl Guide {
         self.stage_started = self.clock;
     }
 
-    fn move_to(&mut self, target: Pos2, radius: f32, dt: f32) {
-        // Long trips cover more than two body diameters.
-        if self.center.distance(target) > radius * 4.0 {
+    fn welcome_frame(&mut self, entrance: &Entrance, playing: bool) -> Option<EntranceFrame> {
+        let elapsed = (self.clock - self.stage_started) as f32;
+        let mut frame = EntranceFrame {
+            center: entrance.greeting,
+            radius: entrance.radius,
+            yaw: 0.0,
+            roll: 0.0,
+        };
+        match self.stage {
+            Stage::Peek => {
+                let t = smooth((elapsed - 0.25) / 1.15);
+                frame.center = entrance.start.lerp(entrance.greeting, t);
+                frame.roll = -0.60 * (1.0 - smooth((t - 0.4) / 0.6));
+                if playing && elapsed >= 1.4 {
+                    self.enter(Stage::Greet);
+                    self.announce(Cue::Hello);
+                }
+            }
+            Stage::Greet => {
+                if playing && self.speech.finished(self.clock) {
+                    self.enter(Stage::TurnAway);
+                }
+            }
+            Stage::TurnAway => {
+                frame.yaw = -PI * smooth(elapsed / 0.7);
+                if playing && elapsed >= 0.7 {
+                    self.enter(Stage::WalkAway);
+                }
+            }
+            Stage::WalkAway => {
+                let t = (elapsed / 1.65).clamp(0.0, 1.0);
+                let envelope = (PI * t).sin();
+                frame.center = entrance.greeting.lerp(entrance.home, smooth(t));
+                frame.center.y -= (t * PI * 3.0).sin().abs() * 3.0 * envelope;
+                frame.radius = egui::lerp(entrance.radius..=entrance.resting_radius, smooth(t));
+                frame.yaw = -PI;
+                frame.roll = (t * TAU * 3.0).sin() * 0.045 * envelope;
+                if playing && t >= 1.0 {
+                    self.enter(Stage::TurnBack);
+                }
+            }
+            Stage::TurnBack => {
+                frame.center = entrance.home;
+                frame.radius = entrance.resting_radius;
+                frame.yaw = -PI - PI * smooth(elapsed / 0.75);
+                if playing && elapsed >= 0.75 {
+                    self.enter(Stage::Ready);
+                    self.last_activity = self.clock;
+                    frame.yaw = 0.0;
+                }
+            }
+            Stage::Ready => return None,
+        }
+        Some(frame)
+    }
+
+    fn move_to(&mut self, target: Option<Pos2>, radius: f32, opacity: f32, dt: f32) {
+        let dt = dt.clamp(0.0, 0.05);
+        if dt == 0.0 {
+            return;
+        }
+        let Some(target) = target else {
+            // An occupied page is a reason to quietly disappear, not to keep
+            // walking between temporary gaps or sit on top of a control.
+            self.velocity = Vec2::ZERO;
+            self.relocating = false;
+            self.fade_to(0.0, dt);
+            return;
+        };
+        let distance = self.center.distance(target);
+        if self.opacity == 0.0 {
+            self.center = target;
+            self.velocity = Vec2::ZERO;
+            self.relocating = false;
+        } else if distance > radius * 0.75 {
             self.relocating = true;
+        } else if distance <= 1.0 {
+            self.relocating = false;
         }
         if self.relocating {
             self.velocity = Vec2::ZERO;
-            self.opacity = (self.opacity - dt / 0.18).max(0.0);
+            self.fade_to(0.0, dt);
             if self.opacity == 0.0 {
                 self.center = target;
                 self.relocating = false;
                 self.speech = self.speech.on_surface(&Speech::default());
             }
         } else {
-            self.opacity = (self.opacity + dt / 0.24).min(1.0);
-            placement::approach(&mut self.center, &mut self.velocity, target, dt);
+            self.fade_to(opacity, dt);
+            if self.center.distance(target) > 1.0 {
+                placement::approach(&mut self.center, &mut self.velocity, target, dt);
+            } else {
+                self.velocity = Vec2::ZERO;
+            }
         }
     }
 
-    fn say(&mut self, line: &'static str) {
-        self.line = line;
+    fn fade_to(&mut self, target: f32, dt: f32) {
+        let duration = if target > self.opacity { 0.9 } else { 0.65 };
+        self.opacity += (target - self.opacity).clamp(-dt / duration, dt / duration);
+    }
+
+    fn say(&mut self, line: impl Into<Message>) {
+        self.line = line.into();
         self.last_spoken = self.clock;
-        self.speech.say(i18n::tr(self.language, line), self.clock);
+        self.speech.say(self.line.text(self.language), self.clock);
     }
 
-    fn follow_scene(&mut self, scene: &dialogue::Context, start: Pos2, intro: bool) {
+    fn follow_scene(&mut self, scene: &dialogue::Context) {
         let changed_page = self.route != scene.route;
-        if changed_page && scene.route == Route::Onboarding(0) {
-            // A new welcome visit restarts the whole entrance, including drag
-            // placement, speech and announcement history.
-            *self = Self::new(self.last_wall, self.language, start, scene, intro);
-            return;
-        }
         if changed_page {
             self.route = scene.route;
             self.velocity = Vec2::ZERO;
@@ -180,7 +273,7 @@ impl Guide {
         }
         if changed_page || self.cue != scene.cue {
             self.cue = scene.cue;
-            self.speech = Speech::default();
+            self.speech.dismiss(self.clock);
             self.mouth = 0.0;
             self.pending = (matches!(scene.route, Route::Onboarding(_))
                 && self.announced & scene.cue.bit() == 0)
@@ -191,6 +284,15 @@ impl Guide {
     fn announce(&mut self, cue: Cue) {
         self.announced |= cue.bit();
         self.say(cue.text());
+    }
+
+    fn announce_pending(&mut self) {
+        if let Some((cue, since)) = self.pending
+            && self.clock - since >= 1.2
+        {
+            self.pending = None;
+            self.announce(cue);
+        }
     }
 
     fn ready_to_speak(&self) -> bool {
@@ -226,7 +328,7 @@ impl Guide {
             self.candidate_since = self.clock;
         }
         let dwell = self.clock - self.candidate_since;
-        if dwell >= 0.65 {
+        if dwell >= 0.7 {
             self.focus = target;
         }
         if clicked && hovered == Some(Attention::Avatar) {
@@ -238,7 +340,7 @@ impl Guide {
         if clicked && hovered == Some(Attention::Avatar) {
             self.say(scene.reply(Attention::Avatar));
         } else if let Some(topic) = hovered
-            && dwell >= 1.15
+            && dwell >= 2.0
             && topic.bit() != 0
             && self.mentioned & topic.bit() == 0
         {
@@ -253,6 +355,10 @@ fn state_id() -> Id {
 }
 
 pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout: Layout) {
+    if desktop_active(app) {
+        tick_background(ctx, app);
+        return;
+    }
     // Navigation can change while the old page is still being drawn. Wait for
     // the matching layout before consuming its companion entry transition.
     if app.first_run != matches!(&layout, Layout::Onboarding(_)) {
@@ -266,7 +372,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     let scene = dialogue::Context::read(app, layout.as_ref().and_then(|layout| layout.requirement));
     let language = app.ui_language;
     let screen = ctx.viewport_rect();
-    // The entrance has its own stage; settled companions share the page's gaps.
+    // The first welcome keeps its lively entrance; daily use stays parked.
     let welcome = layout
         .as_ref()
         .and_then(|layout| {
@@ -292,18 +398,17 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     if welcome.is_none() {
         page = page.or_else(|| layout.as_ref().and_then(|layout| layout.content));
     }
-    let (wall, pointer, activity, focused, pressed) = ctx.input(|input| {
+    let (wall, pointer, focused, pressed) = ctx.input(|input| {
         (
             input.time,
             input.pointer.hover_pos(),
-            input.pointer.delta().length_sq() > 0.5 || !input.events.is_empty(),
             input.viewport().focused.unwrap_or(true),
             input.pointer.any_down(),
         )
     });
+    let small = resting_radius(screen);
     let radius = (screen.width().min(screen.height()) * 0.067).clamp(28.0, 48.0);
-    let small = radius * 0.58;
-    let intro = egui::pos2(
+    let greeting = egui::pos2(
         bounds.right() - radius * 2.6,
         bounds.bottom() - radius * 1.6,
     );
@@ -315,29 +420,35 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
             bounds.bottom() - small * 2.0
         },
     );
-    let start = egui::pos2(screen.right() + radius * 1.2, intro.y + 12.0);
+    let entrance = Entrance {
+        start: egui::pos2(screen.right() + radius * 1.2, greeting.y + 12.0),
+        greeting,
+        home,
+        radius,
+        resting_radius: small,
+    };
     let mut state = ctx
         .data(|data| data.get_temp::<Guide>(state_id()))
         .unwrap_or_else(|| {
             Guide::new(
                 wall,
                 language,
-                if welcome.is_some() { start } else { home },
+                if welcome.is_some() {
+                    entrance.start
+                } else {
+                    home
+                },
                 &scene,
                 welcome.is_some(),
             )
         });
     let hidden = app.modal_dialog.open
         || ctx.memory(|memory| memory.top_modal_layer().is_some())
-        || screen.height() < radius * 4.0;
+        || screen.height() < small * 4.0;
     let vr_active = app.vr_overlay_plugin.manager().companion_active();
     let interactive = !hidden && (focused || vr_active) && !ctx.any_popup_open();
     let paused = !interactive || pressed;
-    let visual_dt = if interactive {
-        (wall - state.last_wall).clamp(0.0, 0.05) as f32
-    } else {
-        0.0
-    };
+    let visual_dt = (wall - state.last_wall).clamp(0.0, 0.05) as f32;
     let elapsed_wall = if paused || state.paused {
         0.0
     } else {
@@ -348,153 +459,84 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     state.background_tick = None;
     state.paused = paused;
     state.clock += elapsed_wall;
-    state.follow_scene(
-        &scene,
-        if welcome.is_some() { start } else { home },
-        welcome.is_some(),
-    );
+    state.follow_scene(&scene);
     if welcome.is_none() && state.stage != Stage::Ready {
         state.enter(Stage::Ready);
-        state.center = home;
     }
     if state.language != language {
         state.language = language;
         if !state.speech.finished(state.clock) {
-            state.say(state.line);
+            state.say(state.line.clone());
         }
-    }
-    if hidden {
-        app.vr_overlay_plugin
-            .manager()
-            .present_companion(Presentation::default());
-        ctx.data_mut(|data| data.insert_temp(state_id(), state));
-        return;
     }
     let dock = page
         .and_then(|(bounds, layer)| state.parking.locate(ctx, layer, bounds, small, state.clock));
-    if page.is_some() && dock.is_none() && state.opacity == 0.0 && !vr_active {
-        state.velocity = Vec2::ZERO;
-        ctx.request_repaint_after(Duration::from_millis(350));
-        ctx.data_mut(|data| data.insert_temp(state_id(), state));
-        return;
-    }
     let small = dock.map_or(small, |spot| spot.radius);
-    if activity && !paused {
-        state.last_activity = state.clock;
-    }
-    if !paused
-        && !ctx.text_edit_focused()
-        && let Some((cue, since)) = state.pending
-        && state.clock - since >= 0.55
-    {
-        state.pending = None;
-        state.announce(cue);
-    }
-    // Read mail on the companion's own clock, without interrupting dialogue,
-    // entrance, dragging, hidden/modal states, or its existing speech cooldown.
-    if !paused {
+    let available = !hidden && (page.is_none() || dock.is_some() || state.clock < state.resume_at);
+    if (available || (vr_active && !hidden)) && !paused && !ctx.text_edit_focused() {
+        state.announce_pending();
         state.read_mail(&mut app.companion_inbox);
     }
-    let elapsed = (state.clock - state.stage_started) as f32;
     let previous_center = state.center;
-    let mut size = radius;
-    let mut yaw = None;
-    let mut roll = 0.0;
-    let mut offset = Vec2::ZERO;
-    let target = match state.stage {
-        Stage::Peek => {
-            let t = smooth((elapsed - 0.25) / 1.15);
-            yaw = Some(0.0);
-            roll = -0.60 * (1.0 - smooth((t - 0.4) / 0.6));
-            state.center = start.lerp(intro, t);
-            if elapsed >= 1.4 {
-                state.enter(Stage::Greet);
-                state.announce(Cue::Hello);
-            }
-            state.center
-        }
-        Stage::Greet => {
-            if state.speech.finished(state.clock) {
-                state.enter(Stage::TurnAway);
-            }
-            intro
-        }
-        Stage::TurnAway => {
-            yaw = Some(-PI * smooth(elapsed / 0.7));
-            if elapsed >= 0.7 {
-                state.enter(Stage::WalkAway);
-            }
-            intro
-        }
-        Stage::WalkAway => {
-            let t = (elapsed / 1.65).clamp(0.0, 1.0);
-            yaw = Some(-PI);
-            size = egui::lerp(radius..=small, smooth(t));
-            // Three small steps, tapered at both ends. No idle bobbing.
-            let envelope = (PI * t).sin();
-            roll = (t * TAU * 3.0).sin() * 0.045 * envelope;
-            offset.y = -(t * PI * 3.0).sin().abs() * 3.0 * envelope;
-            state.center = intro.lerp(home, smooth(t));
-            if t >= 1.0 {
-                state.enter(Stage::TurnBack);
-            }
-            state.center
-        }
-        Stage::TurnBack => {
-            size = small;
-            yaw = Some(-PI - PI * smooth(elapsed / 0.75));
-            if elapsed >= 0.75 {
-                state.enter(Stage::Ready);
-            }
-            home
-        }
-        Stage::Ready => {
-            size = small;
-            if state.clock < state.resume_at {
-                state.center
-            } else if let Some(spot) = dock {
-                spot.center
-            } else if page.is_some() {
-                // Keep the current position until the next page's gap is stable.
-                state.center
-            } else if !layout
-                .as_ref()
-                .is_some_and(|layout| layout.features.is_some())
-            {
-                home
-            } else {
-                state.focus.map_or(state.center, |focus| {
-                    focus.destination(state.center, small, screen)
-                })
-            }
-        }
-    };
-    size = state.placement.radius(size, small, visual_dt);
-    // Clamp the destination as well as the body: an unreachable target otherwise
-    // keeps walking into the same window edge on every frame.
-    let target = if state.stage == Stage::Ready {
-        let center = placement::constrain(state.center, size, screen);
-        if center != state.center {
-            state.velocity = Vec2::ZERO;
-        }
-        state.center = center;
-        placement::constrain(target, size, screen)
+    let mut entrance_frame = state.welcome_frame(&entrance, available && !paused);
+    // Hovering controls may explain them, but never sends the avatar across the
+    // page. Explicit placement survives the welcome conversation too.
+    let target = if !available {
+        None
+    } else if paused || state.clock < state.resume_at {
+        Some(state.center)
+    } else if let Some(spot) = dock {
+        Some(spot.center)
+    } else if state.placement.was_dragged() {
+        Some(state.center)
     } else {
-        target
+        Some(home)
     };
-    if state.stage == Stage::Ready {
-        state.move_to(target, size, dt);
+    let size = state.placement.radius(
+        entrance_frame.as_ref().map_or(small, |frame| frame.radius),
+        small,
+        visual_dt,
+    );
+    let target = if let Some(frame) = &entrance_frame {
+        Some(frame.center)
     } else {
-        let movement = (target - state.center) * (1.0 - (-dt / 0.20).exp());
-        state.center += movement.normalized() * movement.length().min(640.0 * dt);
+        target.map(|target| placement::constrain(target, size, screen))
+    };
+    let opacity = if entrance_frame.is_some()
+        || !state.speech.finished(state.clock)
+        || state.clock - state.last_activity < 3.0
+    {
+        1.0
+    } else {
+        0.6
+    };
+    if let Some(frame) = &entrance_frame {
+        // Authored welcome movement stays visible; automatic daily relocation
+        // continues to use the quiet fade-out/move/fade-in path below.
+        state.center = frame.center;
+        state.velocity = Vec2::ZERO;
+        state.relocating = false;
+        if !available {
+            state.fade_to(0.0, visual_dt);
+        } else if !paused {
+            state.fade_to(1.0, visual_dt);
+        }
+    } else {
+        // Pausing a relocation preserves its opacity until release.
+        state.move_to(
+            target,
+            size,
+            opacity,
+            if paused && available { 0.0 } else { visual_dt },
+        );
     }
-    let mut anchor = state.center + offset;
+    let mut anchor = state.center;
     let response = state.placement.interact(
         ctx,
         state_id(),
         &mut anchor,
         size,
-        interactive && state.opacity > 0.0,
+        interactive && available && !state.relocating && state.opacity >= 0.25,
     );
     if state.stage == Stage::Ready {
         state.center = anchor;
@@ -508,7 +550,8 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         state.center = anchor;
         state.velocity = Vec2::ZERO;
         state.relocating = false;
-        state.opacity = 1.0;
+        state.fade_to(1.0, visual_dt);
+        state.last_activity = state.clock;
         state.resume_at = state.clock + 1.2;
         state.focus = None;
         state.candidate = None;
@@ -516,18 +559,27 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         if page.is_some() && response.drag_stopped_by(egui::PointerButton::Primary) {
             state.parking.dropped(anchor, size);
         }
-        yaw = None;
-        roll = 0.0;
+        entrance_frame = None;
     }
     let focus = Target::read(ctx, layout.as_ref(), &response);
     let hovered = focus.map(|target| target.attention);
-    if state.stage == Stage::Ready && !paused && state.clock >= state.resume_at {
+    if state.stage == Stage::Ready
+        && !paused
+        && !ctx.text_edit_focused()
+        && state.clock >= state.resume_at
+    {
         state.attend(focus, response.clicked(), &scene);
     } else {
         state.candidate_since = state.clock;
     }
-    let attentive = state.stage == Stage::Ready && state.clock - state.last_activity < 12.0;
-    let gaze = if attentive && !paused {
+    let attentive = available
+        && hovered == Some(Attention::Avatar)
+        && state.candidate == Some(Attention::Avatar)
+        && state.clock - state.candidate_since >= 0.7;
+    if attentive || response.clicked() {
+        state.last_activity = state.clock;
+    }
+    let gaze = if available && !paused {
         pointer.map_or(Gaze::default(), |point| {
             Gaze::toward(point - state.center, 420.0)
         })
@@ -535,17 +587,18 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         Gaze::default()
     };
     let reaction = state.feedback.update(app, state.clock);
-    let expression =
-        if state.stage == Stage::Greet || (attentive && hovered == Some(Attention::Avatar)) {
-            Expression::Happy
-        } else {
-            reaction.unwrap_or(Expression::Calm)
-        };
+    let expression = if matches!(state.stage, Stage::Peek | Stage::Greet)
+        || (attentive && hovered == Some(Attention::Avatar))
+    {
+        Expression::Happy
+    } else {
+        reaction.unwrap_or(Expression::Calm)
+    };
     let mut pose = Pose::animated(ctx, state_id(), expression, gaze);
-    if let Some(yaw) = yaw {
-        pose.gaze.yaw = yaw;
+    if let Some(frame) = entrance_frame {
+        pose.gaze.yaw = frame.yaw;
+        pose.roll = frame.roll;
     }
-    pose.roll = roll;
     let mouth = state.speech.advance(state.clock);
     state.mouth += (mouth - state.mouth) * (1.0 - (-dt / 0.045).exp());
     pose.speech = state.mouth;
@@ -558,7 +611,9 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     };
     let mut painter = ctx.layer_painter(layer).with_clip_rect(screen);
     painter.multiply_opacity(smooth(state.opacity));
-    Classic::model().paint(&painter, state_id(), anchor, size, pose);
+    if state.opacity > 0.0 {
+        Classic::model().paint(&painter, state_id(), anchor, size, pose);
+    }
     let talking = state.speech.paint_avoiding(
         &painter,
         if state.stage == Stage::Ready {
@@ -571,20 +626,25 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         state.clock,
         visual_dt,
         state.parking.occupied(),
-        speed < 12.0 && anchor.distance(target) < 2.0 && !response.dragged(),
+        speed < 12.0
+            && target.is_none_or(|target| anchor.distance(target) < 2.0)
+            && !response.dragged(),
     );
     if interactive
         && (response.dragged() || (state.placement.was_dragged() && (size - small).abs() > 0.1))
     {
         ctx.request_repaint_after(Duration::from_millis(16));
     }
-    if !paused {
+    if !paused || state.opacity > 0.0 {
         // Sleep once settled; pointer events and Pose's scheduled blink wake us.
-        let moving = state.stage != Stage::Ready || state.center.distance(target) > 0.2;
+        let moving = state.stage != Stage::Ready
+            || target.is_some_and(|target| state.center.distance(target) > 1.0);
         let dwelling = state.pending.is_some()
             || state.candidate != state.focus.map(|target| target.attention)
             || hovered.is_some_and(|topic| topic.bit() != 0 && state.mentioned & topic.bit() == 0);
-        ctx.request_repaint_after(if moving || talking || state.opacity < 1.0 {
+        let fading = state.relocating
+            || (state.opacity - if available { opacity } else { 0.0 }).abs() > 0.001;
+        ctx.request_repaint_after(if moving || (talking && available) || fading {
             Duration::from_millis(16)
         } else if dwelling {
             Duration::from_millis(80)
@@ -609,10 +669,12 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
 /// eframe's hidden-window logic hook runs without a paint pass. Keep the same
 /// Guide/mailbox alive using a monotonic clock rather than frozen egui input time.
 pub(crate) fn tick_background(ctx: &egui::Context, app: &mut crate::XRTranslateApp) {
-    let Some(mut state) = ctx.data(|data| data.get_temp::<Guide>(state_id())) else {
-        return;
-    };
-    if !app.vr_overlay_plugin.manager().companion_active() || app.modal_dialog.open {
+    let desktop = desktop_active(app);
+    let scene = dialogue::Context::read(app, None);
+    let mut state = ctx
+        .data(|data| data.get_temp::<Guide>(state_id()))
+        .unwrap_or_else(|| Guide::new(0.0, app.ui_language, Pos2::ZERO, &scene, false));
+    if !desktop && (!app.vr_overlay_plugin.manager().companion_active() || app.modal_dialog.open) {
         state.background_tick = None;
         app.vr_overlay_plugin
             .manager()
@@ -621,11 +683,17 @@ pub(crate) fn tick_background(ctx: &egui::Context, app: &mut crate::XRTranslateA
         return;
     }
     let dt = state.advance_background(std::time::Instant::now());
-    let scene = dialogue::Context::read(app, None);
-    state.follow_scene(&scene, state.center, false);
+    state.follow_scene(&scene);
+    if desktop && state.stage != Stage::Ready {
+        state.enter(Stage::Ready);
+    }
     if state.language != app.ui_language {
         state.language = app.ui_language;
+        if !state.speech.finished(state.clock) {
+            state.say(state.line.clone());
+        }
     }
+    state.announce_pending();
     state.read_mail(&mut app.companion_inbox);
     let expression = state
         .feedback
@@ -635,16 +703,35 @@ pub(crate) fn tick_background(ctx: &egui::Context, app: &mut crate::XRTranslateA
     let mouth = state.speech.advance(state.clock);
     state.mouth += (mouth - state.mouth) * (1.0 - (-dt / 0.045).exp());
     pose.speech = state.mouth;
+    let presentation = Presentation {
+        pose,
+        speech: state.speech.clone(),
+        clock: state.clock,
+        visible: true,
+    };
+    if let Ok(mut overlay) = app.overlay_manager.lock() {
+        overlay.present_companion(presentation.clone());
+    }
     app.vr_overlay_plugin
         .manager()
-        .present_companion(Presentation {
-            pose,
-            speech: state.speech.clone(),
-            clock: state.clock,
-            visible: true,
-        });
+        .present_companion(presentation);
     ctx.data_mut(|data| data.insert_temp(state_id(), state));
     ctx.request_repaint_after(Duration::from_millis(33));
+}
+
+fn desktop_active(app: &crate::XRTranslateApp) -> bool {
+    app.overlay_manager
+        .lock()
+        .is_ok_and(|mut overlay| overlay.companion_active())
+}
+
+fn resting_radius(screen: Rect) -> f32 {
+    let edge = screen.width().min(screen.height());
+    if cfg!(target_os = "android") {
+        (edge * 0.067).clamp(28.0, 48.0) * 0.58
+    } else {
+        (edge * 0.052).clamp(24.0, 38.0) * 0.58
+    }
 }
 
 fn smooth(t: f32) -> f32 {
@@ -655,6 +742,207 @@ fn smooth(t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn welcome_guide() -> (Guide, Entrance) {
+        let entrance = Entrance {
+            start: egui::pos2(860.0, 420.0),
+            greeting: egui::pos2(640.0, 400.0),
+            home: egui::pos2(740.0, 280.0),
+            radius: 48.0,
+            resting_radius: 22.0,
+        };
+        let guide = Guide::new(
+            0.0,
+            UiLanguage::English,
+            entrance.start,
+            &dialogue::Context {
+                route: Route::Onboarding(0),
+                cue: Cue::Hello,
+                blocked: None,
+            },
+            true,
+        );
+        (guide, entrance)
+    }
+
+    #[test]
+    fn welcome_keeps_the_lively_sequence_and_settles_at_the_smaller_size() {
+        let (mut guide, entrance) = welcome_guide();
+        let first = guide.welcome_frame(&entrance, true).unwrap();
+        assert_eq!(first.center, entrance.start);
+        assert_eq!(first.radius, entrance.radius);
+        assert!(first.roll < -0.5);
+        assert_eq!(guide.opacity, 1.0);
+        let mut stages = vec![guide.stage];
+        let mut last = first;
+        for tick in 1..=1800 {
+            guide.clock = tick as f64 / 60.0;
+            if let Some(frame) = guide.welcome_frame(&entrance, true) {
+                last = frame;
+            }
+            guide.speech.advance(guide.clock);
+            if stages.last() != Some(&guide.stage) {
+                stages.push(guide.stage);
+            }
+        }
+        assert_eq!(
+            stages,
+            vec![
+                Stage::Peek,
+                Stage::Greet,
+                Stage::TurnAway,
+                Stage::WalkAway,
+                Stage::TurnBack,
+                Stage::Ready
+            ]
+        );
+        assert_eq!(last.center, entrance.home);
+        assert_eq!(last.radius, entrance.resting_radius);
+        assert_eq!(last.yaw, 0.0);
+        assert_eq!(last.roll, 0.0);
+        assert!(guide.welcome_frame(&entrance, true).is_none());
+        assert_eq!(guide.announced & Cue::Hello.bit(), Cue::Hello.bit());
+    }
+
+    #[test]
+    fn paused_welcome_does_not_announce_or_advance_the_sequence() {
+        let (mut guide, entrance) = welcome_guide();
+        guide.clock = 1.4;
+        guide.welcome_frame(&entrance, false);
+        assert_eq!(guide.stage, Stage::Peek);
+        assert_eq!(guide.announced, 0);
+        guide.welcome_frame(&entrance, true);
+        assert_eq!(guide.stage, Stage::Greet);
+        guide.speech.dismiss(guide.clock);
+        guide.welcome_frame(&entrance, false);
+        assert_eq!(guide.stage, Stage::Greet);
+        guide.welcome_frame(&entrance, true);
+        assert_eq!(guide.stage, Stage::TurnAway);
+    }
+
+    #[test]
+    fn leaving_welcome_cancels_unfinished_entrance_motion() {
+        let (mut guide, entrance) = welcome_guide();
+        guide.enter(Stage::WalkAway);
+        guide.follow_scene(&dialogue::Context {
+            route: Route::Page(crate::ui::Page::Translation),
+            cue: Cue::Translation,
+            blocked: None,
+        });
+        assert_eq!(guide.stage, Stage::Ready);
+        assert!(guide.welcome_frame(&entrance, true).is_none());
+    }
+
+    fn quiet_guide() -> Guide {
+        Guide::new(
+            0.0,
+            UiLanguage::English,
+            egui::pos2(80.0, 80.0),
+            &dialogue::Context {
+                route: Route::Page(crate::ui::Page::Translation),
+                cue: Cue::Translation,
+                blocked: None,
+            },
+            false,
+        )
+    }
+
+    #[test]
+    fn relocation_never_travels_while_visible() {
+        let mut guide = quiet_guide();
+        let origin = guide.center;
+        let destination = egui::pos2(480.0, 320.0);
+        guide.opacity = 1.0;
+        for _ in 0..12 {
+            guide.move_to(Some(destination), 20.0, 0.6, 0.05);
+            assert_eq!(guide.center, origin);
+            assert!(guide.opacity > 0.0);
+        }
+        for _ in 0..4 {
+            guide.move_to(Some(destination), 20.0, 0.6, 0.05);
+            if guide.center != origin {
+                assert_eq!(guide.center, destination);
+                assert_eq!(guide.opacity, 0.0);
+                break;
+            }
+        }
+        assert_eq!(guide.center, destination);
+        guide.move_to(Some(destination), 20.0, 0.6, 0.05);
+        assert!(guide.opacity > 0.0 && guide.opacity < 0.1);
+        for _ in 0..60 {
+            guide.move_to(Some(destination), 20.0, 0.6, 0.05);
+        }
+        assert_eq!(guide.opacity, 0.6);
+        assert!(!guide.relocating);
+    }
+
+    #[test]
+    fn unavailable_space_fades_out_and_returns_without_a_flash() {
+        let mut guide = quiet_guide();
+        guide.opacity = 0.6;
+        let origin = guide.center;
+        guide.move_to(None, 20.0, 1.0, 0.05);
+        assert!(guide.opacity > 0.5 && guide.opacity < 0.6);
+        assert_eq!(guide.center, origin);
+        for _ in 0..20 {
+            guide.move_to(None, 20.0, 1.0, 0.05);
+        }
+        assert_eq!(guide.opacity, 0.0);
+        let destination = egui::pos2(400.0, 300.0);
+        guide.move_to(Some(destination), 20.0, 0.6, 0.05);
+        assert_eq!(guide.center, destination);
+        assert!(guide.opacity < 0.1);
+    }
+
+    #[test]
+    fn paused_relocation_resumes_without_an_opacity_pulse() {
+        let mut guide = quiet_guide();
+        guide.opacity = 0.6;
+        let destination = egui::pos2(480.0, 320.0);
+        guide.move_to(Some(destination), 20.0, 0.6, 0.05);
+        let opacity = guide.opacity;
+        let origin = guide.center;
+        for _ in 0..60 {
+            guide.move_to(Some(origin), 20.0, 0.6, 0.0);
+        }
+        assert_eq!(guide.opacity, opacity);
+        assert_eq!(guide.center, origin);
+        assert!(guide.relocating);
+        guide.move_to(Some(destination), 20.0, 0.6, 0.05);
+        assert!(guide.opacity < opacity);
+        assert_eq!(guide.center, origin);
+    }
+
+    #[test]
+    fn small_layout_jitter_does_not_move_a_resting_avatar() {
+        let mut guide = quiet_guide();
+        guide.opacity = 0.6;
+        let origin = guide.center;
+        for frame in 0..100 {
+            let dx = if frame % 2 == 0 { 0.5 } else { -0.5 };
+            guide.move_to(Some(origin + egui::vec2(dx, 0.0)), 20.0, 0.6, 0.05);
+        }
+        assert_eq!(guide.center, origin);
+        assert_eq!(guide.opacity, 0.6);
+        assert_eq!(guide.velocity, Vec2::ZERO);
+    }
+
+    #[test]
+    fn returning_to_welcome_does_not_restart_the_entrance() {
+        let mut guide = quiet_guide();
+        guide.announced = Cue::Hello.bit();
+        guide.opacity = 0.6;
+        let origin = guide.center;
+        guide.follow_scene(&dialogue::Context {
+            route: Route::Onboarding(0),
+            cue: Cue::Hello,
+            blocked: None,
+        });
+        assert!(guide.stage == Stage::Ready);
+        assert_eq!(guide.center, origin);
+        assert_eq!(guide.opacity, 0.6);
+        assert!(guide.pending.is_none());
+    }
 
     #[test]
     fn mail_waits_for_current_speech_and_cooldown() {
@@ -680,7 +968,7 @@ mod tests {
         guide.read_mail(&mut inbox);
         assert_eq!(
             guide.line,
-            "Translation session is not active. Please start translation first."
+            Message::from("Translation session is not active. Please start translation first.")
         );
         assert_eq!(inbox.read(), None);
         assert!(!guide.ready_to_speak());
@@ -705,7 +993,7 @@ mod tests {
             guide.read_mail(&mut inbox);
             guide.speech.advance(guide.clock);
         }
-        assert_eq!(guide.line, message);
+        assert_eq!(guide.line, Message::from(message));
         assert_eq!(inbox.read(), None);
         assert!((guide.clock - 10.0).abs() < 0.001);
         assert_eq!(guide.last_wall, 123.0); // No egui wall clock or paint needed.
@@ -713,6 +1001,42 @@ mod tests {
         let before = guide.clock;
         guide.advance_background(now + Duration::from_secs(200));
         assert!((guide.clock - before - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn background_errors_reach_speech_once_without_a_paint_pass() {
+        let mut guide = quiet_guide();
+        let mut inbox = Inbox::default();
+        let detail = format!("Translation provider returned HTTP {}", 503);
+        let now = std::time::Instant::now();
+        for tick in 0..=600 {
+            inbox.observe_error("session", Some(&detail));
+            guide.advance_background(now + Duration::from_millis(tick * 100));
+            guide.read_mail(&mut inbox);
+            guide.speech.advance(guide.clock);
+        }
+        assert_eq!(guide.line, Message::Error(detail.clone()));
+        assert!((guide.last_spoken - 3.0).abs() < 0.001);
+        let mut expected = Speech::default();
+        expected.say(format!("Something went wrong: {detail}"), guide.last_spoken);
+        expected.advance(guide.clock);
+        assert_eq!(guide.speech, expected);
+        assert!(guide.speech.finished(guide.clock));
+        assert_eq!(inbox.read(), None);
+
+        // Re-localizing the prefix must retain the owned runtime reason.
+        guide.language = UiLanguage::Chinese;
+        guide.say(guide.line.clone());
+        let mut localized = Speech::default();
+        localized.say(
+            format!(
+                "{}: {detail}",
+                crate::i18n::tr(UiLanguage::Chinese, "Something went wrong")
+            ),
+            guide.clock,
+        );
+        assert_eq!(guide.speech, localized);
+        assert_eq!(guide.line, Message::Error(detail));
     }
 
     #[test]
@@ -727,16 +1051,16 @@ mod tests {
         inbox.post("Translation session is not active. Please start translation first.");
         guide.clock = 20.0;
         guide.read_mail(&mut inbox);
-        assert_eq!(guide.line, scene.cue.text());
+        assert_eq!(guide.line, Message::from(scene.cue.text()));
         guide.enter(Stage::Ready);
         guide.pending = Some((Cue::Hello, guide.clock));
         guide.read_mail(&mut inbox);
-        assert_eq!(guide.line, scene.cue.text());
+        assert_eq!(guide.line, Message::from(scene.cue.text()));
         guide.pending = None;
         guide.read_mail(&mut inbox);
         assert_eq!(
             guide.line,
-            "Translation session is not active. Please start translation first."
+            Message::from("Translation session is not active. Please start translation first.")
         );
         assert_eq!(inbox.read(), None);
     }

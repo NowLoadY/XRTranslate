@@ -4,6 +4,7 @@
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 use eframe::egui;
+use std::collections::VecDeque;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
@@ -27,6 +28,7 @@ mod client_settings;
 pub(crate) mod contributors;
 mod feature_access;
 mod file_dialog;
+mod focused_input;
 mod history;
 mod i18n;
 pub(crate) mod media_import;
@@ -104,6 +106,7 @@ use xrtranslate_engine::language::{LanguageCapabilities, LanguageSelection, Lang
 /// Capture callbacks never block. A bounded handoff prevents an overloaded
 /// network/model path from turning old audio into ever-growing live latency.
 const LIVE_AUDIO_QUEUE_CAPACITY: usize = 64;
+const MAX_PENDING_COMPANION_ERRORS: usize = 32;
 
 pub(crate) fn language_label(ui_language: UiLanguage, code: &str) -> &'static str {
     if code == "auto" {
@@ -666,6 +669,7 @@ struct XRTranslateApp {
     tts_runtime_backend: Option<String>,
     tts_runtime_cuda_version: Option<String>,
     osc_plugin: OscPlugin,
+    auto_input_plugin: plugins::auto_input::AutoInputPlugin,
     vr_overlay_plugin: VrOverlayPlugin,
     audio_studio: AudioStudioController,
     voicemeeter_remote: Option<voicemeeter::VoiceMeeterRemote>,
@@ -701,6 +705,8 @@ struct XRTranslateApp {
     pub onboarding_page: usize,
     pub ui_language: UiLanguage,
     pub ui_theme: ui::theme::UiTheme,
+    pub background_settings: ui::background::BackgroundSettings,
+    background_image: ui::background::BackgroundImage,
     navigation: NavigationState,
     window_backdrop: window_backdrop::WindowBackdrop,
     mute_self_pauses_translation: Arc<AtomicBool>,
@@ -730,6 +736,7 @@ struct SharedSessionState {
     translations: Vec<TranslationHistoryEntry>,
     translation_previews: Vec<TranslationHistoryEntry>,
     last_error: Option<String>,
+    pending_companion_errors: VecDeque<Option<String>>,
     translation_enabled: bool,
     pending_route_change: Option<(String, String)>,
     latest_asr_prompt_trace: Option<PromptExecutionTrace>,
@@ -743,6 +750,39 @@ struct SharedSessionState {
 }
 
 impl SharedSessionState {
+    fn record_error(&mut self, error: String) {
+        // More than one session can fail between UI ticks. Preserve distinct
+        // failures for the inbox while keeping the existing latest-error view.
+        let detail = error.trim();
+        if !detail.is_empty()
+            && !self
+                .pending_companion_errors
+                .iter()
+                .rev()
+                .take_while(|notice| notice.is_some())
+                .flatten()
+                .any(|pending| pending == detail)
+        {
+            self.push_companion_notice(Some(detail.to_owned()));
+        }
+        self.last_error = Some(error);
+    }
+
+    fn record_recovery(&mut self) {
+        // Reconnecting alone is not recovery; this is called only after a
+        // successful translation, allowing a later failure to be reported anew.
+        if self.pending_companion_errors.back() != Some(&None) {
+            self.push_companion_notice(None);
+        }
+    }
+
+    fn push_companion_notice(&mut self, notice: Option<String>) {
+        if self.pending_companion_errors.len() == MAX_PENDING_COMPANION_ERRORS {
+            self.pending_companion_errors.pop_front();
+        }
+        self.pending_companion_errors.push_back(notice);
+    }
+
     fn retire_stream(&mut self, stream: u64) {
         self.retired_streams.push(stream);
         self.translation_previews
@@ -805,6 +845,38 @@ fn publish_host_output(subscribers: &[Box<dyn HostOutputSubscriber>], event: Hos
     }
 }
 
+fn publish_committed_translations(
+    subscribers: &[Box<dyn HostOutputSubscriber>],
+    events: &[TranslationEvent],
+) -> bool {
+    let mut committed = false;
+    for event in events {
+        let segments = match event {
+            TranslationEvent::Segment(segment) => std::slice::from_ref(segment),
+            TranslationEvent::ReplaceSegments(segments) => segments.as_slice(),
+            _ => continue,
+        };
+        for segment in segments {
+            if !segment.revisable
+                && let Some(translated) = segment.translated.as_deref()
+                && !translated.trim().is_empty()
+            {
+                committed = true;
+                publish_host_output(
+                    subscribers,
+                    HostOutputEvent::CommittedTranslation {
+                        stream_id: segment.stream_id,
+                        turn_id: &segment.turn_id,
+                        segment_index: segment.segment_index,
+                        translated,
+                    },
+                );
+            }
+        }
+    }
+    committed
+}
+
 /// Initializes output-side session dependencies before activating live input.
 ///
 /// On Windows the session configuration can create the default-output TTS
@@ -854,6 +926,7 @@ impl Default for XRTranslateApp {
             }
         };
         let player_plugin = plugins::player::VideoPlayerPlugin::new();
+        let auto_input_plugin = plugins::auto_input::AutoInputPlugin::default();
         #[cfg(any(windows, target_os = "linux"))]
         let ocr = ocr_host::OcrHost::default();
         let mut model_task_manager = model_install::NativeModelTaskManager::default();
@@ -907,6 +980,7 @@ impl Default for XRTranslateApp {
             Box::new(ocr.plugin.event_sink.clone()),
         ]);
         let host_output_subscribers: Arc<Vec<Box<dyn HostOutputSubscriber>>> = Arc::new(vec![
+            Box::new(auto_input_plugin.publisher()),
             Box::new(osc_plugin.publisher()),
             Box::new(vr_overlay_plugin.handle()),
             #[cfg(target_os = "android")]
@@ -938,7 +1012,14 @@ impl Default for XRTranslateApp {
                         continue;
                     }
                     let scoped_stream = scope.stream_id.load(Ordering::Acquire);
-                    scope.publish(&event, &result_subscribers);
+                    let host_translation = matches!(
+                        &event,
+                        SessionEvent::Translation {
+                            publish_to_host_outputs: true,
+                            ..
+                        }
+                    );
+                    let results = scope.publish(&event, &result_subscribers);
                     match event {
                         SessionEvent::Connected => {
                             state.connection_status = "Connected - listening".into();
@@ -1469,16 +1550,22 @@ impl Default for XRTranslateApp {
                             state
                                 .translation_previews
                                 .retain(|entry| entry.stream_id != Some(scoped_stream));
-                            state.last_error = Some(message);
+                            state.record_error(message);
                             state.provider_configuration_required |= configuration_required;
                         }
                         SessionEvent::Error(error) => {
                             state
                                 .translation_previews
                                 .retain(|entry| entry.stream_id != Some(scoped_stream));
-                            state.last_error = Some(error);
+                            state.record_error(error);
                             state.connection_status = "Connection error".into();
                         }
+                    }
+
+                    if host_translation
+                        && publish_committed_translations(&output_subscribers, &results)
+                    {
+                        state.record_recovery();
                     }
 
                     // Send state to overlay process immediately (unblocked by main window minimization)
@@ -1560,6 +1647,7 @@ impl Default for XRTranslateApp {
             tts_runtime_backend: None,
             tts_runtime_cuda_version: None,
             osc_plugin,
+            auto_input_plugin,
             vr_overlay_plugin,
             audio_studio,
             voicemeeter_remote,
@@ -1600,6 +1688,8 @@ impl Default for XRTranslateApp {
             onboarding_page,
             ui_language: settings.ui_language,
             ui_theme: settings.ui_theme,
+            background_settings: settings.background_settings,
+            background_image: ui::background::BackgroundImage::default(),
             navigation: NavigationState {
                 collapsed: settings.sidebar_collapsed,
                 page: settings.active_page,
@@ -3031,6 +3121,7 @@ impl XRTranslateApp {
             mute_self_pauses_translation: self.mute_self_pauses_translation.load(Ordering::Relaxed),
             ui_language: self.ui_language,
             ui_theme: self.ui_theme,
+            background_settings: self.background_settings.clone(),
             first_run: self.first_run,
             model_defaults_initialized: self.model_defaults_initialized,
             server_url: self.server_url.clone(),
@@ -3108,6 +3199,10 @@ impl XRTranslateApp {
         if self.service_config.tts_is_configured() && !self.usage_guidelines_accepted {
             return;
         }
+        // Setup can replace providers and the process-wide ONNX core. Retire
+        // existing consumers so the next lazy backend start reads the new plan.
+        self.stop();
+        self.backend_manager.invalidate_runtime();
         self.first_run = false;
         self.save_settings();
         #[cfg(any(windows, target_os = "linux"))]
@@ -3122,6 +3217,49 @@ impl XRTranslateApp {
     pub fn set_ui_theme(&mut self, theme: ui::theme::UiTheme) {
         self.ui_theme = theme;
         self.save_settings();
+    }
+
+    fn choose_background_image(&mut self, ctx: &egui::Context) {
+        let ctx = ctx.clone();
+        self.choose_file(
+            file_dialog::FileDialog::new()
+                .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp"]),
+            move |app, path| {
+                let root = app.project_root();
+                app.background_image.request_import(path, root, &ctx);
+            },
+        );
+    }
+
+    fn set_background_opacity(&mut self, opacity: f32) {
+        let previous = self.background_settings.opacity;
+        self.background_settings.opacity = opacity;
+        self.background_settings.normalize();
+        if self.background_settings.opacity != previous {
+            self.save_settings();
+        }
+    }
+
+    fn reset_background(&mut self) {
+        self.background_image.reset();
+        self.background_settings = ui::background::BackgroundSettings::default();
+        self.save_settings();
+    }
+
+    fn poll_background_image(&mut self, ctx: &egui::Context) {
+        if let Some(result) = self.background_image.poll(ctx) {
+            match result {
+                Ok(path) => {
+                    if self.background_settings.image_path.as_ref() != Some(&path) {
+                        self.background_settings.image_path = Some(path);
+                        self.save_settings();
+                    }
+                }
+                Err(error) => self.last_error = Some(error),
+            }
+        }
+        self.background_image
+            .ensure_loaded(&self.background_settings, ctx);
     }
 
     pub fn app_update_state(&self) -> &app_update::AppUpdateState {
@@ -3153,6 +3291,9 @@ impl XRTranslateApp {
     }
 
     fn show_available_update(&mut self) {
+        if self.modal_dialog.open {
+            return;
+        }
         let app_update::AppUpdateState::Available(info) = self.app_update_manager.state() else {
             return;
         };
@@ -3165,6 +3306,9 @@ impl XRTranslateApp {
     }
 
     fn show_ready_update(&mut self) {
+        if self.modal_dialog.open {
+            return;
+        }
         let app_update::AppUpdateState::Ready(info) = self.app_update_manager.state() else {
             return;
         };
@@ -3213,6 +3357,8 @@ impl XRTranslateApp {
     }
 
     fn set_startup_error(&mut self, status: &str, error: String) {
+        self.companion_inbox
+            .observe_error("application", Some(&error));
         let pending = std::mem::take(&mut self.pending_translations);
         for task in pending {
             self.fail_task_startup(&task.owner(), &error);
@@ -3458,6 +3604,10 @@ impl XRTranslateApp {
                 .filter(|scope| owner.is_none_or(|owner| &scope.owner == owner))
             {
                 scope.cancel(&self.session_event_subscribers);
+                publish_host_output(
+                    &self.host_output_subscribers,
+                    HostOutputEvent::StreamCancelled(scope.id()),
+                );
             }
         }
         if let Some(owner) = owner {
@@ -3502,6 +3652,10 @@ impl XRTranslateApp {
             for task in &stopped {
                 for channel in &task.channels {
                     channel.scope.cancel(&self.session_event_subscribers);
+                    publish_host_output(
+                        &self.host_output_subscribers,
+                        HostOutputEvent::StreamCancelled(channel.scope.id()),
+                    );
                     state.retire_stream(channel.session.stream_id());
                 }
             }
@@ -3719,6 +3873,8 @@ impl XRTranslateApp {
     }
 
     fn fail_task_startup(&mut self, owner: &TranslationSessionOwner, error: &str) {
+        self.companion_inbox
+            .observe_error("application", Some(error));
         translation_service::publish_result(
             owner,
             &TranslationEvent::Finished {
@@ -4535,6 +4691,9 @@ impl XRTranslateApp {
     }
 
     fn set_floating_subtitles_enabled(&mut self, enabled: bool) {
+        if !enabled {
+            self.auto_input_plugin.set_enabled(false);
+        }
         #[cfg(any(windows, target_os = "linux"))]
         if !enabled {
             self.stop_ocr();
@@ -4605,6 +4764,7 @@ impl XRTranslateApp {
             state.pending_recognition_windows.clear();
         }
         self.osc_plugin.clear_chatbox();
+        self.auto_input_plugin.clear();
     }
 
     pub(crate) fn translate_text(
@@ -4749,6 +4909,7 @@ impl XRTranslateApp {
     }
 
     fn stop(&mut self) {
+        self.auto_input_plugin.set_enabled(false);
         ui::automation::audio::detach();
         #[cfg(target_os = "android")]
         android::cancel_microphone_request();
@@ -4806,7 +4967,7 @@ impl XRTranslateApp {
         if !self.translation_enabled {
             return;
         }
-        for error in self.text_translation.poll(
+        let output = self.text_translation.poll(
             &mut self.backend_manager,
             &self.server_url,
             PromptGraphSet {
@@ -4814,12 +4975,23 @@ impl XRTranslateApp {
             },
             Some(ctx.clone()),
             &self.event_tx,
-        ) {
+        );
+        for error in output.errors {
+            self.companion_inbox.observe_error("text", Some(&error));
             self.last_error = Some(error);
+        }
+        for result in output.completed {
+            self.companion_inbox.observe_error("text", None);
+            if result.owner.is_host() {
+                ctx.copy_text(result.translated);
+            }
         }
     }
 
     fn poll_session_events(&mut self) {
+        if let Some(error) = self.auto_input_plugin.take_error() {
+            self.last_error = Some(error);
+        }
         if let Some(error) = self.osc_plugin.manager().take_error() {
             self.last_error = Some(error);
         }
@@ -4833,6 +5005,8 @@ impl XRTranslateApp {
             .store(self.floating_subtitles_font_size as u32, Ordering::Relaxed);
 
         let overlay_controls = overlay_ipc::OverlayControls {
+            auto_input_available: PluginId::AUTO_INPUT.is_supported(),
+            auto_input_enabled: self.auto_input_plugin.enabled(),
             translation_enabled: self.translation_enabled,
             microphone_enabled: self
                 .input_control_visible(CaptureSource::Microphone, false)
@@ -4912,6 +5086,9 @@ impl XRTranslateApp {
                 overlay_ipc::OverlayEvent::SystemAudioEnabled(enabled) => {
                     self.set_system_audio_enabled(enabled, None);
                 }
+                overlay_ipc::OverlayEvent::AutoInputEnabled(enabled) => {
+                    self.auto_input_plugin.set_enabled(enabled);
+                }
                 event => {
                     #[cfg(any(windows, target_os = "linux"))]
                     self.handle_ocr_event(event);
@@ -4966,6 +5143,10 @@ impl XRTranslateApp {
             if let Some(err) = &state.last_error {
                 self.last_error = Some(err.clone());
             }
+            for error in state.pending_companion_errors.drain(..) {
+                self.companion_inbox
+                    .observe_error("session", error.as_deref());
+            }
             open_provider_configuration =
                 std::mem::take(&mut state.provider_configuration_required);
         }
@@ -4975,6 +5156,22 @@ impl XRTranslateApp {
             self.first_run = true;
             self.onboarding_page = 1;
         }
+    }
+
+    fn observe_companion_errors(&mut self) {
+        // Session errors are already delivered with their recovery events. The
+        // sticky UI copy must not replace a newer application error in its cache.
+        let session_error = self
+            .shared_session_state
+            .lock()
+            .is_ok_and(|state| state.last_error.is_some() && state.last_error == self.last_error);
+        if !session_error {
+            self.companion_inbox
+                .observe_error("application", self.last_error.as_deref());
+        }
+        #[cfg(any(windows, target_os = "linux"))]
+        self.companion_inbox
+            .observe_error("ocr", self.ocr.plugin.state.status.as_deref());
     }
 }
 
@@ -5087,11 +5284,16 @@ impl eframe::App for XRTranslateApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "android")]
         self.poll_android_text_actions(ctx);
-        if !self.first_run && !ctx.input(|input| input.viewport().visible().unwrap_or(true)) {
-            self.poll_backend_startup(Some(ctx.clone()));
-            self.poll_text_translation(ctx);
-            self.poll_session_events();
-            self.player_plugin.poll_translation_events();
+        if !ctx.input(|input| input.viewport().visible().unwrap_or(true)) {
+            if !self.first_run {
+                self.poll_backend_startup(Some(ctx.clone()));
+                self.poll_text_translation(ctx);
+                self.poll_session_events();
+                self.player_plugin.poll_translation_events();
+            }
+            // A provider failure can reopen configuration while the main window
+            // is hidden. Keep an existing companion reading its queued error.
+            self.observe_companion_errors();
             ui::companion::tick_background(ctx, self);
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -5101,6 +5303,7 @@ impl eframe::App for XRTranslateApp {
         ui::theme::install_context(ui.ctx(), self.ui_theme);
         ui::layout::begin_frame(ui.ctx());
         self.poll_file_dialogs();
+        self.poll_background_image(ui.ctx());
         #[cfg(target_os = "android")]
         self.poll_android_text_actions(ui.ctx());
         #[cfg(any(windows, target_os = "linux"))]
@@ -5227,10 +5430,20 @@ impl eframe::App for XRTranslateApp {
         } else if !self.audio_system.voice_preview_playing() {
             self.tts_center.previewing = None;
         }
+        let is_player_fullscreen = !self.first_run
+            && self.navigation.page == Page::Plugin(PluginId::VIDEO_PLAYER)
+            && self.player_plugin.controller.fullscreen_mode;
+        let custom_background = !is_player_fullscreen
+            && self.background_image.paint(
+                ui.painter(),
+                ui.max_rect(),
+                self.background_settings.opacity,
+            );
         if self.first_run {
             self.audio_system.set_audio_studio_metering(false);
             let companion_layout = ui::render_onboarding_fullscreen(self, ui);
             self.render_modal_layer(ui.ctx());
+            self.observe_companion_errors();
             ui::companion::show(
                 ui.ctx(),
                 self,
@@ -5252,8 +5465,6 @@ impl eframe::App for XRTranslateApp {
             self.meeting_plugin.controller.poll_live_view();
         }
 
-        let is_player_fullscreen = self.navigation.page == Page::Plugin(PluginId::VIDEO_PLAYER)
-            && self.player_plugin.controller.fullscreen_mode;
         let viewport_focused = ui.input(|input| input.viewport().focused.unwrap_or(true));
 
         if !is_player_fullscreen {
@@ -5288,7 +5499,11 @@ impl eframe::App for XRTranslateApp {
                 egui::Panel::top("navigation_panel")
                     .frame(
                         egui::Frame::new()
-                            .fill(ui::theme::sidebar(viewport_focused))
+                            .fill(if custom_background {
+                                egui::Color32::TRANSPARENT
+                            } else {
+                                ui::theme::sidebar(viewport_focused)
+                            })
                             .inner_margin(8),
                     )
                     .show(ui, |ui| {
@@ -5309,7 +5524,11 @@ impl eframe::App for XRTranslateApp {
                     .exact_size(sidebar_width)
                     .frame(
                         egui::Frame::new()
-                            .fill(ui::theme::sidebar(viewport_focused))
+                            .fill(if custom_background {
+                                egui::Color32::TRANSPARENT
+                            } else {
+                                ui::theme::sidebar(viewport_focused)
+                            })
                             .stroke(egui::Stroke::new(1.0, ui::theme::border()))
                             .inner_margin(egui::Margin::symmetric(
                                 margin_x.round() as i8,
@@ -5350,7 +5569,11 @@ impl eframe::App for XRTranslateApp {
         } else {
             let is_compact_screen = ui.available_width() < 550.0 || ui.available_height() < 500.0;
             egui::Frame::new()
-                .fill(ui::theme::content_backdrop(viewport_focused))
+                .fill(if custom_background {
+                    egui::Color32::TRANSPARENT
+                } else {
+                    ui::theme::content_backdrop(viewport_focused)
+                })
                 .shadow(egui::Shadow {
                     offset: [0, 0],
                     blur: 14,
@@ -5501,6 +5724,7 @@ impl eframe::App for XRTranslateApp {
             });
 
         self.render_modal_layer(ui.ctx());
+        self.observe_companion_errors();
         ui::companion::show(
             ui.ctx(),
             self,
@@ -5701,6 +5925,86 @@ mod tests {
         compile_audio_studio_asr, compile_audio_studio_route, initialize_live_audio,
         vad_threshold_for_background_noise,
     };
+
+    #[test]
+    fn companion_error_queue_preserves_distinct_failures_and_recovery() {
+        let mut state = super::SharedSessionState::default();
+        state.record_error("Microphone disconnected".into());
+        state.record_error("Translation unavailable".into());
+        state.record_error(" Microphone disconnected ".into());
+        state.record_recovery();
+        state.record_recovery();
+        state.record_error("Translation unavailable".into());
+        assert_eq!(
+            state
+                .pending_companion_errors
+                .into_iter()
+                .collect::<Vec<_>>(),
+            [
+                Some("Microphone disconnected".into()),
+                Some("Translation unavailable".into()),
+                None,
+                Some("Translation unavailable".into())
+            ]
+        );
+        assert_eq!(state.last_error.as_deref(), Some("Translation unavailable"));
+    }
+
+    #[test]
+    fn committed_output_excludes_source_only_revisable_and_empty_results() {
+        use crate::session_coordinator::{
+            HostOutputEvent, HostOutputSubscriber, TranslationEvent, TranslationSegment,
+        };
+        use std::sync::{Arc, Mutex};
+        struct Sink(Arc<Mutex<Vec<String>>>);
+        impl HostOutputSubscriber for Sink {
+            fn on_host_output(&self, event: HostOutputEvent<'_>) {
+                if let HostOutputEvent::CommittedTranslation { translated, .. } = event {
+                    self.0.lock().unwrap().push(translated.to_owned());
+                }
+            }
+        }
+        let segment = TranslationSegment {
+            stream_id: 7,
+            audio_source: CaptureSource::Microphone,
+            turn_id: "turn".into(),
+            segment_index: 1,
+            segment_count: 1,
+            source: "source".into(),
+            translated: Some("completed".into()),
+            speaker_id: String::new(),
+            source_start_ms: 0.0,
+            source_end_ms: 0.0,
+            timing: Default::default(),
+            boundary: Default::default(),
+            revisable: false,
+            live: false,
+        };
+        let source = TranslationSegment {
+            translated: None,
+            ..segment.clone()
+        };
+        let preview = TranslationSegment {
+            revisable: true,
+            ..segment.clone()
+        };
+        let empty = TranslationSegment {
+            translated: Some("  ".into()),
+            ..segment.clone()
+        };
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let subscribers: Vec<Box<dyn HostOutputSubscriber>> =
+            vec![Box::new(Sink(received.clone()))];
+        super::publish_committed_translations(
+            &subscribers,
+            &[
+                TranslationEvent::Segment(source),
+                TranslationEvent::ReplaceSegments(vec![preview, empty, segment]),
+                TranslationEvent::StreamEnded { stream_id: 7 },
+            ],
+        );
+        assert_eq!(*received.lock().unwrap(), ["completed"]);
+    }
 
     fn fixture_task(
         owner: crate::TranslationSessionOwner,

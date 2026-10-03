@@ -1,6 +1,6 @@
 //! Discover attention targets from egui instead of wiring behavior into each page.
-use super::{OnboardingLayout, placement};
-use eframe::egui::{self, Id, Pos2, Rect, Response};
+use super::OnboardingLayout;
+use eframe::egui::{self, Id, Rect, Response};
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Attention {
@@ -38,7 +38,7 @@ impl Target {
                 rect: avatar.rect,
             });
         }
-        // Only the first welcome page follows controls; other pages park.
+        // Only the first welcome page offers hints for hovered controls.
         let layout = layout?;
         layout.features?;
         if let Some(pointer) = ctx.pointer_hover_pos() {
@@ -82,27 +82,5 @@ impl Target {
             .filter_map(read)
             .min_by(|a, b| a.rect.area().total_cmp(&b.rect.area()))
             .or_else(|| ctx.memory(|memory| memory.focused()).and_then(read))
-    }
-
-    pub fn destination(self, current: Pos2, radius: f32, screen: Rect) -> Pos2 {
-        if self.attention == Attention::Avatar {
-            return current;
-        }
-        let body = placement::footprint(Pos2::ZERO, radius);
-        let top = -body.min.to_vec2();
-        let bottom = body.max.to_vec2();
-        let center = self.rect.center();
-        // Choose the nearest clear side, keeping both the avatar and focused control visible.
-        [
-            egui::pos2(self.rect.right() + top.x + 18.0, center.y),
-            egui::pos2(self.rect.left() - bottom.x - 18.0, center.y),
-            egui::pos2(center.x, self.rect.top() - bottom.y - 18.0),
-            egui::pos2(center.x, self.rect.bottom() + top.y + 18.0),
-        ]
-        .into_iter()
-        .map(|point| placement::constrain(point, radius, screen))
-        .filter(|point| !placement::footprint(*point, radius).intersects(self.rect.expand(8.0)))
-        .min_by(|a, b| a.distance_sq(current).total_cmp(&b.distance_sq(current)))
-        .unwrap_or(current)
     }
 }

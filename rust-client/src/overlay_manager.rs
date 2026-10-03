@@ -10,6 +10,7 @@ use std::thread;
 use crate::overlay_ipc::{
     OcrOverlayState, OverlayCommand, OverlayControls, OverlayEvent, OverlayState,
 };
+use crate::ui::components::avatar::Presentation;
 
 #[derive(Clone, Default)]
 struct Snapshot {
@@ -17,6 +18,7 @@ struct Snapshot {
     controls: OverlayControls,
     subtitles: Option<OverlayState>,
     ocr: Option<OcrOverlayState>,
+    companion: Presentation,
 }
 
 struct Writer {
@@ -38,6 +40,7 @@ pub struct OverlayManager {
     pending_events: Vec<OverlayEvent>,
     snapshot: Snapshot,
     restart_blocked: bool,
+    companion_detached: bool,
 }
 
 impl OverlayManager {
@@ -50,6 +53,7 @@ impl OverlayManager {
             pending_events: Vec::new(),
             snapshot: Snapshot::default(),
             restart_blocked: false,
+            companion_detached: false,
         }
     }
 
@@ -103,6 +107,7 @@ impl OverlayManager {
     }
 
     fn stop_process(&mut self) {
+        self.companion_detached = false;
         self.writer = None;
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
@@ -125,6 +130,9 @@ impl OverlayManager {
         if let Some(receiver) = &self.event_rx {
             for event in receiver.try_iter() {
                 match event {
+                    ChildEvent::Ui(OverlayEvent::CompanionDetached(detached)) => {
+                        self.companion_detached = detached;
+                    }
                     ChildEvent::Ui(event) => self.pending_events.push(event),
                     ChildEvent::OutputClosed => self.output_closed = true,
                 }
@@ -171,6 +179,18 @@ impl OverlayManager {
     pub fn set_language(&mut self, language: crate::i18n::UiLanguage) {
         if self.snapshot.language != language {
             self.snapshot.language = language;
+            self.publish();
+        }
+    }
+
+    pub(crate) fn companion_active(&mut self) -> bool {
+        self.check_process();
+        self.companion_detached && self.child.is_some()
+    }
+
+    pub(crate) fn present_companion(&mut self, presentation: Presentation) {
+        if self.companion_detached {
+            self.snapshot.companion = presentation;
             self.publish();
         }
     }
@@ -223,22 +243,34 @@ impl Writer {
         let fault = Arc::clone(&failed);
         let (wake, receiver) = sync_channel(1);
         thread::spawn(move || {
+            let mut previous: Option<Snapshot> = None;
             while receiver.recv().is_ok() {
                 let state = pending
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .clone();
-                let language = state.language;
-                let commands = state
-                    .subtitles
-                    .map(OverlayCommand::Subtitles)
-                    .into_iter()
-                    .chain([
-                        OverlayCommand::Ocr(state.ocr),
-                        OverlayCommand::Language(language),
-                        OverlayCommand::Controls(state.controls),
-                    ]);
-                for command in commands {
+                let commands = [
+                    (previous
+                        .as_ref()
+                        .is_none_or(|p| p.subtitles != state.subtitles))
+                    .then(|| state.subtitles.clone().map(OverlayCommand::Subtitles))
+                    .flatten(),
+                    (previous.as_ref().is_none_or(|p| p.ocr != state.ocr))
+                        .then(|| OverlayCommand::Ocr(state.ocr.clone())),
+                    (previous
+                        .as_ref()
+                        .is_none_or(|p| p.language != state.language))
+                    .then_some(OverlayCommand::Language(state.language)),
+                    (previous
+                        .as_ref()
+                        .is_none_or(|p| p.controls != state.controls))
+                    .then(|| OverlayCommand::Controls(state.controls.clone())),
+                    (previous
+                        .as_ref()
+                        .is_none_or(|p| p.companion != state.companion))
+                    .then(|| OverlayCommand::Companion(state.companion.clone())),
+                ];
+                for command in commands.into_iter().flatten() {
                     let result = serde_json::to_writer(&mut stdin, &command)
                         .map_err(std::io::Error::other)
                         .and_then(|()| stdin.write_all(b"\n"));
@@ -247,6 +279,7 @@ impl Writer {
                         return;
                     }
                 }
+                previous = Some(state);
             }
         });
         Self {

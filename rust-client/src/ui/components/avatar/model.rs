@@ -7,16 +7,18 @@ pub enum Geometry {
     Body,
     Eye,
     Mouth,
+    Hair,
     Cap,
     Visor,
     Scarf,
     Tail,
 }
 impl Geometry {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Body,
         Self::Eye,
         Self::Mouth,
+        Self::Hair,
         Self::Cap,
         Self::Visor,
         Self::Scarf,
@@ -37,15 +39,17 @@ pub struct Part {
 pub struct Material {
     pub shade_contrast: f32,
     pub outline_width: f32,
+    pub softness: f32,
+    pub blush: f32,
+    pub warmth: f32,
 }
 impl Material {
     pub const CLAY: Self = Self {
         shade_contrast: 0.26,
         outline_width: 0.014,
-    };
-    pub const FABRIC: Self = Self {
-        shade_contrast: 0.34,
-        outline_width: 0.012,
+        softness: 0.08,
+        blush: 0.0,
+        warmth: 0.0,
     };
 }
 

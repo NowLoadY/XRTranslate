@@ -44,6 +44,11 @@ The neutral session contracts live under `session_coordinator`:
   persistence belongs on a plugin-owned worker.
 - `HostOutputSubscriber` receives captions after host history merging. External
   presentation plugins do not need a branch inside the event pump.
+  `CommittedTranslation` also supplies validated, non-revisable translated
+  segments with stable stream/turn/segment identity. Outputs that insert text
+  consume this event once, rather than interpreting caption preview updates.
+  `StreamCancelled` discards any queued output for an explicitly cancelled
+  stream; natural `StreamEnded` preserves completed output awaiting delivery.
 - `TranslationSessionOwner::Plugin` stores opaque plugin metadata. Adding a new
   session-using plugin must not modify the owner enum or network protocol.
 
@@ -133,6 +138,23 @@ them. If it overlaps the capture area, those pixels are excluded from
 recognition; an occluded empty result preserves the previous translation.
 OCR is an independent input switch. Editing or confirming its range changes
 the frame presentation without changing OCR enablement or the other inputs.
+
+The shared text composer copies each successfully completed host text request
+to the clipboard, joining its translated segments in order. Completion waits
+for the result pump's terminal acknowledgement; previews, failures, cancellation,
+and plugin-owned text requests never change the clipboard through this path.
+History presentation continues through the same shared translation events.
+
+On Windows the floating controls include an opt-in automatic-input output.
+It starts disabled and delivers only committed translations produced after the
+current editable foreground control gained focus in another application. Results
+without a supported target are discarded; refocusing never replays old results.
+The worker makes one delivery attempt and rejects focus changes after a result
+was produced. It transfers the exact translated text, preserving spaces, line
+breaks, and Unicode without adding separators or a submit keystroke. It also
+preserves the clipboard. Disabling the output, stopping
+translation, closing the floating window, or clearing history discards pending
+input. The switch is a session preference and is not persisted across launches.
 
 Android text selection and sharing enter through a windowless Activity and a
 bounded foreground service. `android_text_actions` drives the same text-task
@@ -393,6 +415,13 @@ Core Studio infrastructure is owned outside the plugin catalogue:
 
 Current plugin ownership is:
 
+- `plugins::auto_input`: embedded automatic text output, bounded worker handoff
+  and identity deduplication, and a `HostOutputSubscriber`. It has a stable ID
+  but no standalone page. Its worker is started lazily, sleeps while disabled,
+  releases its native adapter on disable, and is stopped and joined on drop.
+  `focused_input` supplies platform focus validation and Unicode insertion;
+  neither layer starts translation or reads UI history. Unsupported platforms
+  do not expose the floating-window toggle.
 - `plugins::osc`: OSC settings, UDP listener/writer, caption formatting,
   preview/settings UI, mute-state capability, and a `HostOutputSubscriber`.
   The Translation and OSC pages reuse the same text composer. Translation

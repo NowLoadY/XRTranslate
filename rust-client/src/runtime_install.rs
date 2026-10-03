@@ -3,8 +3,9 @@
 //! The configured `model_manager.llama_cpp.downloads` list is the contract:
 //! CUDA and Vulkan selection follows verified GPU capabilities and the selected
 //! packages' memory requirements. Managed
-//! model packages never fall back to CPU; bundled small ONNX components are a
-//! separate application resource class and do not use this installer.
+//! model packages never fall back to CPU. Bundled small ONNX components remain
+//! a separate resource class; their missing files can be repaired here, reusing
+//! a verified local ONNX core before scheduling any download.
 
 use crossbeam_channel::{Receiver, TryRecvError, unbounded};
 use std::{
@@ -13,23 +14,25 @@ use std::{
     path::{Path, PathBuf},
     thread,
 };
-use xrtranslate_config::{
-    AppConfig, LlamaCppArchiveFormat, LlamaCppAssetKind, LlamaCppRuntimeConfig,
-    NativeRuntimeBackend, NativeRuntimeSelection, OnnxRuntimeConfig,
-    RuntimeLayout, RuntimeRequirements,
-};
 #[cfg(any(not(target_os = "android"), test))]
 use xrtranslate_config::ManagedRuntimeArchive;
+use xrtranslate_config::{
+    AppConfig, LlamaCppArchiveFormat, LlamaCppAssetKind, LlamaCppRuntimeConfig,
+    NativeRuntimeBackend, NativeRuntimeSelection, OnnxRuntimeConfig, RuntimeLayout,
+    RuntimeRequirements,
+};
 use xrtranslate_download::{DownloadCancellation, DownloadClient, DownloadSource, DownloadSpec};
 
 #[cfg(any(not(target_os = "android"), test))]
 const TURING_COMPUTE_CAPABILITY: (u16, u16) = (7, 5);
 #[cfg(any(not(target_os = "android"), test))]
 const BLACKWELL_MINIMUM_CUDA: (u16, u16) = (12, 8);
+#[cfg(any(not(target_os = "android"), test))]
+mod bundled_cpu;
 mod hardware;
+use hardware::Hardware;
 pub use hardware::LocalModelAvailability;
 pub(crate) use hardware::NVIDIA_APP_URL;
-use hardware::Hardware;
 #[cfg(any(not(target_os = "android"), test))]
 use hardware::{NvidiaCuda, VulkanGpu};
 #[cfg(test)]
@@ -134,7 +137,9 @@ enum Event {
     },
     Extracting,
     Cancelled,
-    Finished(Result<PathBuf, String>),
+    // Only a real llama executable is returned to host coordination. An ONNX
+    // marker is an installation side effect, never an executable candidate.
+    Finished(Result<Option<PathBuf>, String>),
 }
 
 /// One background worker for the optional automatic llama.cpp installer.
@@ -527,8 +532,8 @@ impl RuntimeInstaller {
                         selection.marker_ready = true;
                     }
                     self.state = match result {
-                        Ok(path) => {
-                            installed_executable = Some(path);
+                        Ok(executable) => {
+                            installed_executable = executable;
                             RuntimeInstallState::Installed
                         }
                         Err(error) => RuntimeInstallState::Failed(error),
@@ -604,7 +609,7 @@ struct ReleaseAsset {
     required_file_prefixes: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ManagedRuntimeAsset {
     name: String,
     browser_download_url: String,
@@ -1128,11 +1133,17 @@ async fn install_runtime_plan(
     proxy_url: Option<&str>,
     source: DownloadSource,
     cancellation: DownloadCancellation,
-) -> Result<PathBuf, String> {
+) -> Result<Option<PathBuf>, String> {
     let config = load_app_config(&project_root)?;
     let layout = config.runtime_layout(&project_root);
     let progress_total = plan.total_bytes();
     let mut completed = 0_u64;
+    #[cfg(not(target_os = "android"))]
+    let restore_cpu_from_provider = bundled_cpu::provider_download_supplies_cpu_core(
+        &config,
+        plan.onnx.as_ref(),
+        &plan.downloads,
+    );
 
     if progress_total > 0 && !plan.downloads.is_empty() {
         let client = DownloadClient::with_proxy_source_and_cancellation(
@@ -1191,9 +1202,17 @@ async fn install_runtime_plan(
     } else if layout.onnx_cpu_core_library().is_file() {
         runtime_marker = Some(persist_cpu_onnx_marker(&layout, None)?);
     }
-    llama_executable
-        .or(runtime_marker)
-        .ok_or_else(|| "No native runtime is required by the selected providers.".into())
+    #[cfg(not(target_os = "android"))]
+    if restore_cpu_from_provider && !bundled_cpu::restore_cpu_core(&layout, &config)? {
+        return Err(
+            "The installed ONNX archive does not contain the verified bundled CPU core. Repair the runtime configuration and try again."
+                .into(),
+        );
+    }
+    if llama_executable.is_none() && runtime_marker.is_none() {
+        return Err("No native runtime is required by the selected providers.".into());
+    }
+    Ok(llama_executable)
 }
 
 async fn install(
@@ -1836,6 +1855,26 @@ fn persist_llama_runtime_marker(
 
 #[cfg(windows)]
 fn atomic_replace_file(source: &Path, destination: &Path) -> Result<(), String> {
+    move_file_windows(source, destination, true)
+        .map_err(|error| format!("Cannot atomically replace native runtime marker: {error}"))
+}
+
+#[cfg(windows)]
+fn publish_file_if_absent(source: &Path, destination: &Path) -> std::io::Result<()> {
+    move_file_windows(source, destination, false)
+}
+
+#[cfg(all(not(windows), any(not(target_os = "android"), test)))]
+fn publish_file_if_absent(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::hard_link(source, destination)
+}
+
+#[cfg(windows)]
+fn move_file_windows(
+    source: &Path,
+    destination: &Path,
+    replace_existing: bool,
+) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -1850,18 +1889,15 @@ fn atomic_replace_file(source: &Path, destination: &Path) -> Result<(), String> 
         .encode_wide()
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
-    let result = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
+    let flags = MOVEFILE_WRITE_THROUGH
+        | if replace_existing {
+            MOVEFILE_REPLACE_EXISTING
+        } else {
+            0
+        };
+    let result = unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) };
     if result == 0 {
-        Err(format!(
-            "Cannot atomically replace native runtime marker: {}",
-            std::io::Error::last_os_error()
-        ))
+        Err(std::io::Error::last_os_error())
     } else {
         Ok(())
     }
@@ -1918,6 +1954,13 @@ fn configured_runtime_plan(
     requirements: RuntimeRequirements,
 ) -> Result<RuntimePlan, String> {
     let config = load_app_config(project_root)?;
+    #[cfg(not(target_os = "android"))]
+    {
+        let layout = config.runtime_layout(project_root);
+        migrate_legacy_runtime_layout(&layout);
+        // Preparation runs on the planner worker, not in per-frame UI queries.
+        bundled_cpu::restore_cpu_core(&layout, &config)?;
+    }
     let model_assets = config
         .active_native_model_assets()
         .into_iter()
@@ -1979,7 +2022,7 @@ fn configured_runtime_plan(
             .as_ref()
             .filter(|gpu| gpu.memory_bytes >= required_model_vram_bytes);
         // ONNX CUDA deliberately reuses the declared llama.cpp CUDA redistributable
-        // catalogue. Small bundled ONNX components do not participate in this plan.
+        // catalogue. Bundled CPU resources never add GPU acceleration requirements.
         let llama_assets = (requirements.llama_cpp || requirements.onnx_cuda)
             .then(|| release_assets_from_config(&config.model_manager.llama_cpp))
             .transpose()?
@@ -2007,12 +2050,16 @@ fn configured_runtime_plan(
         } else {
             None
         };
-        let mut downloads = missing_base_bundled_downloads(project_root, &config);
-        downloads.extend(missing_runtime_downloads(
-            project_root,
-            llama_cpp.as_ref(),
+        let runtime_downloads =
+            missing_runtime_downloads(project_root, llama_cpp.as_ref(), onnx.as_ref());
+        let cpu_from_provider = bundled_cpu::provider_download_supplies_cpu_core(
+            &config,
             onnx.as_ref(),
-        ));
+            &runtime_downloads,
+        );
+        let mut downloads =
+            missing_base_bundled_downloads(project_root, &config, cpu_from_provider);
+        downloads.extend(runtime_downloads);
         let marker_ready =
             runtime_marker_matches_plan(project_root, llama_cpp.as_ref(), onnx.as_ref());
         (llama_cpp, onnx, downloads, marker_ready)
@@ -2151,12 +2198,16 @@ fn runtime_marker_matches_plan(
 }
 
 #[cfg(any(not(target_os = "android"), test))]
-fn missing_base_bundled_downloads(project_root: &Path, config: &AppConfig) -> Vec<RuntimeDownload> {
+fn missing_base_bundled_downloads(
+    project_root: &Path,
+    config: &AppConfig,
+    cpu_from_provider: bool,
+) -> Vec<RuntimeDownload> {
     let layout = config.runtime_layout(project_root);
     let target = current_runtime_target();
     let mut downloads = Vec::new();
 
-    if !layout.onnx_cpu_core_library().is_file() {
+    if !layout.onnx_cpu_core_library().is_file() && !cpu_from_provider {
         if let Some(archive) = config
             .model_manager
             .onnxruntime
@@ -3081,7 +3132,7 @@ mod tests {
         let executable = PathBuf::from("runtime/llama.cpp/llama-server.exe");
         let (sender, receiver) = unbounded();
         sender
-            .send(Event::Finished(Ok(executable.clone())))
+            .send(Event::Finished(Ok(Some(executable.clone()))))
             .unwrap();
         let mut installer = RuntimeInstaller {
             events: Some(receiver),
@@ -3091,6 +3142,67 @@ mod tests {
         assert_eq!(installer.poll(), Some(executable));
         assert!(matches!(installer.state(), RuntimeInstallState::Installed));
         assert!(installer.events.is_none());
+    }
+
+    #[test]
+    fn onnx_only_completion_does_not_report_a_llama_executable() {
+        let (sender, receiver) = unbounded();
+        sender.send(Event::Finished(Ok(None))).unwrap();
+        let mut installer = RuntimeInstaller {
+            events: Some(receiver),
+            ..RuntimeInstaller::default()
+        };
+
+        assert_eq!(installer.poll(), None);
+        assert!(matches!(installer.state(), RuntimeInstallState::Installed));
+        assert!(installer.events.is_none());
+    }
+
+    #[test]
+    fn packaged_cpu_resources_need_no_acceleration_marker_or_download() {
+        let root = std::env::temp_dir().join(format!(
+            "xrtranslate-packaged-cpu-bootstrap-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("config.json"), include_str!("../../config.json")).unwrap();
+        let config = load_app_config(&root).unwrap();
+        let layout = config.runtime_layout(&root);
+        fs::create_dir_all(layout.onnx_cpu_runtime_directory()).unwrap();
+        fs::write(layout.onnx_cpu_core_library(), b"packaged core").unwrap();
+        for model in config.model_manager.resolved_bundled_models() {
+            if model
+                .target
+                .as_deref()
+                .is_some_and(|target| target != current_runtime_target())
+            {
+                continue;
+            }
+            let path = root.join(model.relative_path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"packaged model").unwrap();
+        }
+
+        assert!(missing_base_bundled_downloads(&root, &config, false).is_empty());
+        assert!(runtime_marker_matches_plan(&root, None, None));
+        assert!(!layout.native_runtime_selection_file().exists());
+        assert!(!layout.llama_cpp_directory().exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "audits the developer machine's configured local runtime and GPU"]
+    fn installed_configuration_runtime_plan_is_ready() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let config = load_app_config(root).unwrap();
+        let plan = configured_runtime_plan(root, config.runtime_requirements()).unwrap();
+        assert!(
+            plan.is_ready(),
+            "blocking_error={:?}; downloads={:?}; marker_ready={}",
+            plan.blocking_error,
+            plan.downloads,
+            plan.marker_ready
+        );
     }
 
     fn asset(name: &str) -> ReleaseAsset {
@@ -3331,14 +3443,15 @@ mod tests {
         };
         installer.poll();
         for _ in 0..100 {
-            installer.poll();
-            if layout.native_runtime_selection_file().is_file() {
+            assert_eq!(installer.poll(), None);
+            if matches!(installer.state(), RuntimeInstallState::Installed) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
 
         assert!(layout.native_runtime_selection_file().is_file());
+        assert!(matches!(installer.state(), RuntimeInstallState::Installed));
         assert!(runtime_marker_matches_plan(&root, None, Some(&selection)));
         fs::remove_dir_all(root).unwrap();
     }

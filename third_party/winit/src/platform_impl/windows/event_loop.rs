@@ -25,6 +25,7 @@ use windows_sys::Win32::Graphics::Gdi::{
     ValidateRect, MONITORINFO, MONITOR_DEFAULTTONULL, RDW_INTERNALPAINT, SC_SCREENSAVE,
 };
 use windows_sys::Win32::System::Ole::RevokeDragDrop;
+use windows_sys::Win32::System::SystemServices::{MK_CONTROL, MK_SHIFT};
 use windows_sys::Win32::System::Threading::{
     CreateWaitableTimerExW, GetCurrentThreadId, SetWaitableTimer,
     CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, INFINITE, TIMER_ALL_ACCESS,
@@ -32,7 +33,8 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::Controls::{HOVER_DEFAULT, WM_MOUSELEAVE};
 use windows_sys::Win32::UI::Input::Ime::{GCS_COMPSTR, GCS_RESULTSTR, ISC_SHOWUICOMPOSITIONWINDOW};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    VK_CONTROL,
 };
 use windows_sys::Win32::UI::Input::Pointer::{
     POINTER_FLAG_DOWN, POINTER_FLAG_UP, POINTER_FLAG_UPDATE,
@@ -66,7 +68,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use crate::dpi::{PhysicalPosition, PhysicalSize};
 use crate::error::EventLoopError;
 use crate::event::{
-    DeviceEvent, Event, Force, Ime, InnerSizeWriter, RawKeyEvent, Touch, TouchPhase, WindowEvent,
+    DeviceEvent, Event, Force, Ime, InnerSizeWriter, MouseScrollDelta, RawKeyEvent, Touch,
+    TouchPhase, WindowEvent,
 };
 use crate::event_loop::{ActiveEventLoop as RootAEL, ControlFlow, DeviceEvents, EventLoopClosed};
 use crate::keyboard::ModifiersState;
@@ -1022,6 +1025,46 @@ fn update_modifiers(window: HWND, userdata: &WindowData) {
     }
 }
 
+fn send_mouse_wheel(
+    window: HWND,
+    userdata: &WindowData,
+    wparam: WPARAM,
+    delta: MouseScrollDelta,
+) {
+    update_modifiers(window, userdata);
+    let keyboard_modifiers = userdata.window_state_lock().modifiers_state;
+    let mut wheel_modifiers = keyboard_modifiers;
+    // Touchpad compatibility gestures can carry Ctrl/Shift in the wheel message
+    // without a corresponding keyboard press. Keep physical AltGr filtering.
+    if wparam & MK_CONTROL as usize != 0 && unsafe { GetKeyState(VK_CONTROL as i32) } >= 0 {
+        wheel_modifiers.insert(ModifiersState::CONTROL);
+    }
+    if wparam & MK_SHIFT as usize != 0 {
+        wheel_modifiers.insert(ModifiersState::SHIFT);
+    }
+    let send_modifiers = |modifiers: ModifiersState| {
+        userdata.send_event(Event::WindowEvent {
+            window_id: RootWindowId(WindowId(window)),
+            event: WindowEvent::ModifiersChanged(modifiers.into()),
+        });
+    };
+    if wheel_modifiers != keyboard_modifiers {
+        send_modifiers(wheel_modifiers);
+    }
+    userdata.send_event(Event::WindowEvent {
+        window_id: RootWindowId(WindowId(window)),
+        event: WindowEvent::MouseWheel {
+            device_id: DEVICE_ID,
+            delta,
+            phase: TouchPhase::Moved,
+        },
+    });
+    // Synthetic modifiers apply only to this event, never to later keyboard input.
+    if wheel_modifiers != keyboard_modifiers {
+        send_modifiers(keyboard_modifiers);
+    }
+}
+
 unsafe fn gain_active_focus(window: HWND, userdata: &WindowData) {
     use crate::event::WindowEvent::Focused;
 
@@ -1730,16 +1773,7 @@ unsafe fn public_window_callback_inner(
             let value = (wparam >> 16) as i16;
             let value = value as f32 / WHEEL_DELTA as f32;
 
-            update_modifiers(window, userdata);
-
-            userdata.send_event(Event::WindowEvent {
-                window_id: RootWindowId(WindowId(window)),
-                event: WindowEvent::MouseWheel {
-                    device_id: DEVICE_ID,
-                    delta: LineDelta(0.0, value),
-                    phase: TouchPhase::Moved,
-                },
-            });
+            send_mouse_wheel(window, userdata, wparam, LineDelta(0.0, value));
 
             result = ProcResult::Value(0);
         },
@@ -1750,16 +1784,7 @@ unsafe fn public_window_callback_inner(
             let value = (wparam >> 16) as i16;
             let value = -value as f32 / WHEEL_DELTA as f32; // NOTE: inverted! See https://github.com/rust-windowing/winit/pull/2105/
 
-            update_modifiers(window, userdata);
-
-            userdata.send_event(Event::WindowEvent {
-                window_id: RootWindowId(WindowId(window)),
-                event: WindowEvent::MouseWheel {
-                    device_id: DEVICE_ID,
-                    delta: LineDelta(value, 0.0),
-                    phase: TouchPhase::Moved,
-                },
-            });
+            send_mouse_wheel(window, userdata, wparam, LineDelta(value, 0.0));
 
             result = ProcResult::Value(0);
         },

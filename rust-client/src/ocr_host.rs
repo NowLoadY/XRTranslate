@@ -16,6 +16,7 @@ pub(crate) struct OcrHost {
     requested: bool,
     region: Option<OverlayRegion>,
     result_region: Option<OverlayRegion>,
+    companion_region: Option<OverlayRegion>,
     result_moving: bool,
     revision: u64,
     languages: Option<(String, String)>,
@@ -27,6 +28,7 @@ impl OcrHost {
         self.enabled = false;
         self.region = None;
         self.result_region = None;
+        self.companion_region = None;
         self.result_moving = false;
     }
 
@@ -34,8 +36,9 @@ impl OcrHost {
         self.stopping && self.capture.is_some()
     }
 
-    fn exclusion(&self) -> Option<OverlayRegion> {
-        crate::screen_capture::intersection(self.region?, self.result_region?).ok()
+    fn exclusions(&self) -> [Option<OverlayRegion>; 2] {
+        [self.result_region, self.companion_region]
+            .map(|area| crate::screen_capture::intersection(self.region?, area?).ok())
     }
 }
 
@@ -43,11 +46,9 @@ impl XRTranslateApp {
     pub(crate) fn set_ocr_enabled(&mut self, enabled: bool) {
         self.ocr.enabled = enabled && self.plugin_enabled(PluginId::OCR);
         if self.ocr.enabled {
-            if self.translation_enabled {
-                self.refresh_ocr();
-            } else {
-                self.enable_translation_service();
-            }
+            // Opening the region only selects the OCR input. Capture starts
+            // when the independently controlled translation service is active.
+            self.refresh_ocr();
         } else {
             self.stop_ocr();
         }
@@ -123,7 +124,7 @@ impl XRTranslateApp {
             capture.update(
                 self.ocr.requested.then_some(region),
                 self.ocr.revision,
-                self.ocr.exclusion(),
+                self.ocr.exclusions(),
             );
         }
     }
@@ -144,7 +145,7 @@ impl XRTranslateApp {
                 self.ocr.revision = self.ocr.revision.wrapping_add(1);
                 self.cancel_ocr_translation();
                 if let Some(capture) = &self.ocr.capture {
-                    capture.update(None, self.ocr.revision, None);
+                    capture.update(None, self.ocr.revision, [None; 2]);
                 }
             }
             OverlayEvent::ResultChanging => {
@@ -154,14 +155,21 @@ impl XRTranslateApp {
                 // Presentation moved, but accepted text is still valid. Keep
                 // its translation running while new pixels are unavailable.
                 if let Some(capture) = &self.ocr.capture {
-                    capture.update(None, self.ocr.revision, None);
+                    capture.update(None, self.ocr.revision, [None; 2]);
                 }
             }
             OverlayEvent::ResultRegionChanged(region) => {
-                let before = self.ocr.exclusion();
+                let before = self.ocr.exclusions();
                 let was_moving = std::mem::replace(&mut self.ocr.result_moving, false);
                 self.ocr.result_region = region;
-                if was_moving || before != self.ocr.exclusion() {
+                if was_moving || before != self.ocr.exclusions() {
+                    self.request_ocr_capture(false);
+                }
+            }
+            OverlayEvent::CompanionRegionChanged(region) => {
+                let before = self.ocr.exclusions();
+                self.ocr.companion_region = region;
+                if before != self.ocr.exclusions() {
                     self.request_ocr_capture(false);
                 }
             }
@@ -202,7 +210,7 @@ impl XRTranslateApp {
                 self.project_root(),
                 region,
                 self.ocr.revision,
-                self.ocr.exclusion(),
+                self.ocr.exclusions(),
             ) {
                 Ok(capture) => self.ocr.capture = Some(capture),
                 Err(error) => {

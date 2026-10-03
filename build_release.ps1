@@ -6,7 +6,9 @@ param(
     [switch]$IncludeModels,
     # Verified ONNX Runtime 1.28 core DLL. GPU providers are downloaded later.
     [string]$OnnxRuntimeCpu,
-    # Validate all release inputs without writing a release directory.
+    # VS 2022 VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT; auto-detected with vswhere.
+    [string]$VcRuntimeDirectory,
+    # Validate existing release inputs without building, downloading, or staging.
     [switch]$ValidateOnly
 )
 
@@ -19,137 +21,145 @@ $speakerModel = Join-Path $projectRoot 'models\3D-Speaker-ERes2NetV2\speaker_emb
 $denoiseModel = Join-Path $projectRoot 'models\gtcrn\gtcrn_simple.onnx'
 $seedDatabase = Join-Path $projectRoot 'XR-Corpus\corpora\default.sqlite'
 $cargoPath = Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe'
+$packagerPath = Join-Path $projectRoot 'target\release\xrtranslate-packager.exe'
 
 $expectedOnnxSha256 = '2462fe2d64ce063babefda3d9b1998380ffa74e99acf5d24d520ee67daa9e0f1'
 $expectedLicenseSha256 = 'c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674'
 $expectedNoticesSha256 = 'fb0af774b4d7cffc5b9d046f2aaeade2f37df2f80abf8033c95dfffcc77a8866'
+# Matches RuntimeLayout::ONNX_CPU_CORE_WIN_SOURCE_ARCHIVE.
+$onnxCpuSourceArchive = 'onnxruntime-win-x64-gpu_cuda13-1.28.0.zip'
 
-function Get-ZipEntryFromUrl {
+function Assert-ReleaseDefaultConfiguration {
+    param([string]$Root)
+
+    $defaultsPath = Join-Path $Root 'config.json'
+    if (-not (Test-Path -LiteralPath $defaultsPath -PathType Leaf)) {
+        throw "Release configuration was not found: $defaultsPath"
+    }
+    $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $gitCommand) {
+        throw 'Git is required to verify the committed release defaults.'
+    }
+
+    # The runtime catalogue is also compiled from config.json. Reject local or
+    # staged overrides instead of silently packaging an older HEAD catalogue.
+    $committedHash = & $gitCommand.Source -C $Root rev-parse --verify 'HEAD:config.json'
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The release requires config.json to exist in Git HEAD.'
+    }
+    $indexHash = & $gitCommand.Source -C $Root rev-parse --verify ':config.json'
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The release requires config.json to exist in the Git index.'
+    }
+    # hash-object reads the file even when assume-unchanged/skip-worktree is set,
+    # and applies the same line-ending normalization as the committed Git blob.
+    $workingHash = & $gitCommand.Source -C $Root hash-object --path=config.json -- $defaultsPath
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not verify the working-tree release configuration.'
+    }
+    if ($workingHash -ne $committedHash -or $indexHash -ne $committedHash) {
+        throw 'Release config.json must match Git HEAD in both the working tree and index. Keep personal settings, API keys, and private endpoints in runtime/user-config.json; review and commit legitimate default/catalogue changes before packaging.'
+    }
+}
+
+function Resolve-VcRuntimeDirectory {
+    param([string]$Directory)
+
+    $explicitDirectory = -not [string]::IsNullOrWhiteSpace($Directory)
+    $candidateDirectories = @()
+    if ($explicitDirectory) {
+        $candidateDirectories = @([System.IO.Path]::GetFullPath($Directory))
+    } else {
+        $vswherePath = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (-not (Test-Path -LiteralPath $vswherePath -PathType Leaf)) {
+            throw 'Visual Studio discovery (vswhere.exe) was not found. Pass -VcRuntimeDirectory pointing to a VS 2022 VC/Redist/MSVC/<version>/x64/Microsoft.VC*.CRT directory. System32 DLLs are not release inputs.'
+        }
+        $installations = @(& $vswherePath -all -products '*' -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath)
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Could not discover Visual Studio 2022 redistributable files. Pass -VcRuntimeDirectory explicitly.'
+        }
+        foreach ($installation in $installations) {
+            $redistRoot = Join-Path $installation 'VC\Redist\MSVC'
+            if (Test-Path -LiteralPath $redistRoot -PathType Container) {
+                foreach ($versionDirectory in Get-ChildItem -LiteralPath $redistRoot -Directory) {
+                    $x64Directory = Join-Path $versionDirectory.FullName 'x64'
+                    if (Test-Path -LiteralPath $x64Directory -PathType Container) {
+                        $candidateDirectories += Get-ChildItem -LiteralPath $x64Directory -Directory -Filter 'Microsoft.VC*.CRT' |
+                            Select-Object -ExpandProperty FullName
+                    }
+                }
+            }
+        }
+    }
+
+    $available = @(
+        foreach ($candidate in $candidateDirectories) {
+            $layout = [regex]::Match($candidate, '[\\/]VC[\\/]Redist[\\/]MSVC[\\/](?<version>[^\\/]+)[\\/]x64[\\/]Microsoft\.VC[0-9]+\.CRT[\\/]?$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            if (-not $layout.Success) {
+                throw 'VC runtime files must come from a VS 2022 VC/Redist/MSVC/<version>/x64/Microsoft.VC*.CRT directory. Do not use System32 or debug runtime files.'
+            }
+            if (-not (Test-Path -LiteralPath $candidate -PathType Container)) {
+                throw "VC runtime redistributable directory was not found: $candidate"
+            }
+            # Directory discovery belongs here. Required DLL names, PE checks,
+            # and integrity metadata are owned by the native release packager.
+            $redistVersion = [version]'0.0'
+            $parsedVersion = $null
+            if ([version]::TryParse($layout.Groups['version'].Value, [ref]$parsedVersion)) {
+                $redistVersion = $parsedVersion
+            }
+            [pscustomobject]@{
+                Path = $candidate
+                Version = $redistVersion
+            }
+        }
+    )
+    $selected = $available | Sort-Object Version -Descending | Select-Object -First 1
+    if ($null -eq $selected) {
+        throw 'No VS 2022 x64 redistributable CRT directory was found. Ensure the VS C++ redistributable files are present, or pass -VcRuntimeDirectory <VC/Redist/MSVC/version/x64/Microsoft.VC*.CRT>. No system dependencies will be installed.'
+    }
+    return $selected.Path
+}
+
+Assert-ReleaseDefaultConfiguration -Root $projectRoot
+if ($ValidateOnly -and -not (Test-Path -LiteralPath $packagerPath -PathType Leaf)) {
+    throw "Validation requires an existing native release packager: $packagerPath. -ValidateOnly never builds binaries."
+}
+if (-not $ValidateOnly) {
+    if (Test-Path -LiteralPath $cargoPath) {
+        $cargo = $cargoPath
+    } elseif (Get-Command cargo -ErrorAction SilentlyContinue) {
+        $cargo = 'cargo'
+    } else {
+        throw 'Cargo was not found. Install Rust with rustup, then restart PowerShell.'
+    }
+}
+$VcRuntimeDirectory = Resolve-VcRuntimeDirectory -Directory $VcRuntimeDirectory
+Write-Host "Using app-local Visual C++ runtime from redistributable files: $VcRuntimeDirectory"
+
+function Export-VerifiedZipEntry {
     param(
-        [string]$Url,
-        [string]$EntryName,
+        [string]$ArchivePath,
+        [string]$EntryPath,
         [string]$OutFile,
         [string]$ExpectedSha256
     )
-    Add-Type -AssemblyName System.IO.Compression
-
-    # 1. Get length of remote file
-    $req = [System.Net.HttpWebRequest]::Create($Url)
-    $req.Method = 'HEAD'
-    $res = $req.GetResponse()
-    $totalLen = $res.ContentLength
-    $res.Close()
-
-    # 2. Download the last 64KB to find the End of Central Directory Record (EOCD)
-    $tailSize = [Math]::Min(65536, $totalLen)
-    $tailStart = $totalLen - $tailSize
-    $req = [System.Net.HttpWebRequest]::Create($Url)
-    $req.AddRange($tailStart, $totalLen - 1)
-    $res = $req.GetResponse()
-    $ms = New-Object System.IO.MemoryStream
-    $res.GetResponseStream().CopyTo($ms)
-    $res.Close()
-    $tailBytes = $ms.ToArray()
-
-    # Find EOCD signature: 0x06054b50
-    $eocdOffsetInTail = -1
-    for ($i = $tailBytes.Length - 22; $i -ge 0; $i--) {
-        if ($tailBytes[$i] -eq 0x50 -and $tailBytes[$i+1] -eq 0x4b -and $tailBytes[$i+2] -eq 0x05 -and $tailBytes[$i+3] -eq 0x06) {
-            $eocdOffsetInTail = $i
-            break
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
+    try {
+        $entry = $archive.GetEntry($EntryPath)
+        if ($null -eq $entry) {
+            throw "Entry $EntryPath was not found in $ArchivePath"
         }
-    }
-    if ($eocdOffsetInTail -eq -1) { throw "EOCD not found in remote zip archive: $Url" }
-
-    $cdSize = [BitConverter]::ToUInt32($tailBytes, $eocdOffsetInTail + 12)
-    $cdOffset = [BitConverter]::ToUInt32($tailBytes, $eocdOffsetInTail + 16)
-
-    # 3. Download Central Directory
-    $req = [System.Net.HttpWebRequest]::Create($Url)
-    $req.AddRange($cdOffset, $cdOffset + $cdSize - 1)
-    $res = $req.GetResponse()
-    $msCd = New-Object System.IO.MemoryStream
-    $res.GetResponseStream().CopyTo($msCd)
-    $res.Close()
-    $cdBytes = $msCd.ToArray()
-
-    # 4. Parse Central Directory entries to find target entry
-    $ptr = 0
-    $foundLocalHeaderOffset = -1
-    $compressedSize = 0
-    $uncompressedSize = 0
-    $compressionMethod = 0
-
-    while ($ptr -lt $cdBytes.Length - 4) {
-        $sig = [BitConverter]::ToUInt32($cdBytes, $ptr)
-        if ($sig -ne 0x02014b50) { break }
-        $method = [BitConverter]::ToUInt16($cdBytes, $ptr + 10)
-        $cSize = [BitConverter]::ToUInt32($cdBytes, $ptr + 20)
-        $uSize = [BitConverter]::ToUInt32($cdBytes, $ptr + 24)
-        $fnLen = [BitConverter]::ToUInt16($cdBytes, $ptr + 28)
-        $extraLen = [BitConverter]::ToUInt16($cdBytes, $ptr + 30)
-        $commentLen = [BitConverter]::ToUInt16($cdBytes, $ptr + 32)
-        $localHeaderOffset = [BitConverter]::ToUInt32($cdBytes, $ptr + 42)
-        $fileName = [System.Text.Encoding]::UTF8.GetString($cdBytes, $ptr + 46, $fnLen)
-
-        if ($fileName.EndsWith($EntryName, [System.StringComparison]::OrdinalIgnoreCase)) {
-            $foundLocalHeaderOffset = $localHeaderOffset
-            $compressedSize = $cSize
-            $uncompressedSize = $uSize
-            $compressionMethod = $method
-            break
-        }
-        $ptr += 46 + $fnLen + $extraLen + $commentLen
-    }
-
-    if ($foundLocalHeaderOffset -eq -1) { throw "Entry $EntryName not found in remote archive $Url" }
-
-    # 5. Read local header to get exact data offset
-    $req = [System.Net.HttpWebRequest]::Create($Url)
-    $req.AddRange($foundLocalHeaderOffset, $foundLocalHeaderOffset + 30 + 1024)
-    $res = $req.GetResponse()
-    $msLoc = New-Object System.IO.MemoryStream
-    $res.GetResponseStream().CopyTo($msLoc)
-    $res.Close()
-    $locBytes = $msLoc.ToArray()
-
-    $locFnLen = [BitConverter]::ToUInt16($locBytes, 26)
-    $locExtraLen = [BitConverter]::ToUInt16($locBytes, 28)
-    $dataOffset = $foundLocalHeaderOffset + 30 + $locFnLen + $locExtraLen
-
-    # 6. Download file data
-    $req = [System.Net.HttpWebRequest]::Create($Url)
-    $req.AddRange($dataOffset, $dataOffset + $compressedSize - 1)
-    $res = $req.GetResponse()
-    $msData = New-Object System.IO.MemoryStream
-    $res.GetResponseStream().CopyTo($msData)
-    $res.Close()
-    $dataBytes = $msData.ToArray()
-
-    # 7. Decompress or save
-    $outDir = [System.IO.Path]::GetDirectoryName($OutFile)
-    if (-not [string]::IsNullOrEmpty($outDir) -and -not (Test-Path $outDir)) {
+        $outDir = [System.IO.Path]::GetDirectoryName($OutFile)
         New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $OutFile, $true)
+    } finally {
+        $archive.Dispose()
     }
-
-    if ($compressionMethod -eq 0) {
-        [System.IO.File]::WriteAllBytes($OutFile, $dataBytes)
-    } elseif ($compressionMethod -eq 8) {
-        $inMs = New-Object System.IO.MemoryStream(,$dataBytes)
-        $deflate = New-Object System.IO.Compression.DeflateStream($inMs, [System.IO.Compression.CompressionMode]::Decompress)
-        $outMs = New-Object System.IO.MemoryStream
-        $deflate.CopyTo($outMs)
-        $deflate.Close()
-        [System.IO.File]::WriteAllBytes($OutFile, $outMs.ToArray())
-    } else {
-        throw "Unsupported compression method: $compressionMethod"
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($ExpectedSha256)) {
-        $actualHash = (Get-FileHash -LiteralPath $OutFile -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($actualHash -ne $ExpectedSha256.ToLowerInvariant()) {
-            throw "SHA256 mismatch for extracted $EntryName : expected $ExpectedSha256, got $actualHash"
-        }
+    $actualHash = (Get-FileHash -LiteralPath $OutFile -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne $ExpectedSha256.ToLowerInvariant()) {
+        throw "SHA256 mismatch for extracted $EntryPath : expected $ExpectedSha256, got $actualHash"
     }
 }
 
@@ -231,20 +241,35 @@ $onnxRuntimeNotices = $candidateNoticePaths | Where-Object {
 } | Select-Object -First 1
 
 if ($null -eq $onnxRuntimeLicense -or $null -eq $onnxRuntimeNotices) {
+    if ($ValidateOnly) {
+        throw 'Validation requires verified ONNX Runtime LICENSE and ThirdPartyNotices.txt beside the core or in .temp/runtime-assets/licenses/onnxruntime. -ValidateOnly never downloads files.'
+    }
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
         throw "Release configuration was not found: $configPath"
     }
     $releaseConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
-    $downloadUrl = ($releaseConfig.model_manager.onnxruntime.downloads | Select-Object -First 1).url
-    Write-Host "Fetching ONNX Runtime license files from official package..."
+    $matchingDownloads = @($releaseConfig.model_manager.onnxruntime.downloads | Where-Object {
+        $_.name -eq $onnxCpuSourceArchive -and $_.target -eq 'windows-x86_64'
+    })
+    if ($matchingDownloads.Count -ne 1) {
+        throw "Expected exactly one Windows ONNX core source archive in config.json: $onnxCpuSourceArchive"
+    }
+    $download = $matchingDownloads[0]
+    $archivePath = Join-Path $projectRoot ".temp\runtime-assets\$onnxCpuSourceArchive"
+    $archiveRoot = [System.IO.Path]::GetFileNameWithoutExtension($onnxCpuSourceArchive)
+    Write-Host 'Fetching the verified ONNX Runtime source archive for its license files...'
+    & $cargo run --locked --manifest-path $workspaceManifest --target-dir (Join-Path $projectRoot 'target') --release --package xrtranslate-download --example fetch -- $download.url $download.bytes $download.sha256 $archivePath
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
     if ($null -eq $onnxRuntimeLicense) {
         $targetLic = Join-Path $onnxLicensesDir 'LICENSE'
-        Get-ZipEntryFromUrl -Url $downloadUrl -EntryName 'LICENSE' -OutFile $targetLic -ExpectedSha256 $expectedLicenseSha256
+        Export-VerifiedZipEntry -ArchivePath $archivePath -EntryPath "$archiveRoot/LICENSE" -OutFile $targetLic -ExpectedSha256 $expectedLicenseSha256
         $onnxRuntimeLicense = $targetLic
     }
     if ($null -eq $onnxRuntimeNotices) {
         $targetNot = Join-Path $onnxLicensesDir 'ThirdPartyNotices.txt'
-        Get-ZipEntryFromUrl -Url $downloadUrl -EntryName 'ThirdPartyNotices.txt' -OutFile $targetNot -ExpectedSha256 $expectedNoticesSha256
+        Export-VerifiedZipEntry -ArchivePath $archivePath -EntryPath "$archiveRoot/ThirdPartyNotices.txt" -OutFile $targetNot -ExpectedSha256 $expectedNoticesSha256
         $onnxRuntimeNotices = $targetNot
     }
 }
@@ -269,14 +294,6 @@ if (-not (Test-Path -LiteralPath $seedDatabase -PathType Leaf)) {
     throw "Default terminology database was not found: $seedDatabase"
 }
 
-if (Test-Path -LiteralPath $cargoPath) {
-    $cargo = $cargoPath
-} elseif (Get-Command cargo -ErrorAction SilentlyContinue) {
-    $cargo = 'cargo'
-} else {
-    throw 'Cargo was not found. Install Rust with rustup, then restart PowerShell.'
-}
-
 if ([string]::IsNullOrWhiteSpace($Output)) {
     $version = "0.1.0"
     if (Test-Path -LiteralPath $workspaceManifest) {
@@ -295,29 +312,30 @@ if (Test-Path -LiteralPath $Output) {
     throw "Release output already exists. Choose a new -Output path: $Output"
 }
 
-$buildArguments = @(
-    'build', '--manifest-path', $workspaceManifest, '--release',
-    '--package', 'rust-client',
-    '--package', 'xrtranslate-backend',
-    '--package', 'xrtranslate-installer',
-    '--package', 'xrtranslate-updater',
-    '--package', 'xrtranslate-packager',
-    '--features', 'rust-client/mpv,xrtranslate-backend/managed-ort'
-)
+if (-not $ValidateOnly) {
+    $buildArguments = @(
+        'build', '--locked', '--manifest-path', $workspaceManifest, '--target-dir', (Join-Path $projectRoot 'target'), '--release',
+        '--package', 'rust-client',
+        '--package', 'xrtranslate-backend',
+        '--package', 'xrtranslate-installer',
+        '--package', 'xrtranslate-updater',
+        '--package', 'xrtranslate-packager',
+        '--features', 'rust-client/mpv,xrtranslate-backend/managed-ort'
+    )
 
-Write-Host 'Building native release binaries...'
-& $cargo @buildArguments
-if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
-}
+    Write-Host 'Building native release binaries...'
+    & $cargo @buildArguments
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
 
-& $cargo build --manifest-path (Join-Path $projectRoot 'XR-Corpus\Cargo.toml') --target-dir (Join-Path $projectRoot 'target') --release --package xr-corpus-server
-if ($LASTEXITCODE -ne 0) {
-    exit $LASTEXITCODE
+    & $cargo build --locked --manifest-path (Join-Path $projectRoot 'XR-Corpus\Cargo.toml') --target-dir (Join-Path $projectRoot 'target') --release --package xr-corpus-server
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
 }
 
 $packageArguments = @(
-    'run', '--manifest-path', $workspaceManifest, '--release', '--package', 'xrtranslate-packager', '--',
     '--rust-client-bin', (Join-Path $projectRoot 'target\release\rust-client.exe'),
     '--backend-bin', (Join-Path $projectRoot 'target\release\xrtranslate-backend.exe'),
     '--corpus-bin', (Join-Path $projectRoot 'target\release\xr-corpus-server.exe'),
@@ -332,6 +350,7 @@ $packageArguments = @(
     '--onnx-runtime-cpu', $OnnxRuntimeCpu,
     '--onnx-runtime-license', $onnxRuntimeLicense,
     '--onnx-runtime-notices', $onnxRuntimeNotices,
+    '--vc-runtime-dir', $VcRuntimeDirectory,
     '--output', $Output
 )
 if ($IncludeModels) {
@@ -341,8 +360,13 @@ if ($ValidateOnly) {
     $packageArguments += '--check'
 }
 
-Write-Host 'Preparing the native release package...'
-& $cargo @packageArguments
+Assert-ReleaseDefaultConfiguration -Root $projectRoot
+if ($ValidateOnly) {
+    Write-Host 'Validating existing native release inputs (no build or download)...'
+} else {
+    Write-Host 'Preparing the native release package...'
+}
+& $packagerPath @packageArguments
 if ($LASTEXITCODE -ne 0 -or $ValidateOnly) {
     exit $LASTEXITCODE
 }

@@ -37,6 +37,14 @@ const INTERNAL_BIN_DIRECTORY: &str = "bin";
 const ONNX_LICENSE_RELATIVE_PATH: &str = "licenses/onnxruntime/LICENSE";
 const ONNX_NOTICES_RELATIVE_PATH: &str = "licenses/onnxruntime/ThirdPartyNotices.txt";
 
+#[derive(Debug)]
+struct VcRuntimeFile {
+    name: &'static str,
+    source: PathBuf,
+    bytes: u64,
+    sha256: String,
+}
+
 struct OnnxCpuMetadata {
     path: &'static str,
     bytes: u64,
@@ -57,7 +65,7 @@ fn onnx_cpu_metadata(client: &Path) -> OnnxCpuMetadata {
             path: "runtime/onnxruntime/cpu/onnxruntime.dll",
             bytes: RuntimeLayout::ONNX_CPU_CORE_WIN_BYTES,
             sha256: RuntimeLayout::ONNX_CPU_CORE_WIN_SHA256,
-            source_archive: "onnxruntime-win-x64-gpu_cuda13-1.28.0.zip",
+            source_archive: RuntimeLayout::ONNX_CPU_CORE_WIN_SOURCE_ARCHIVE,
             license_bytes: 1_094,
             license_sha256: "c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674",
             notices_bytes: 331_175,
@@ -128,6 +136,9 @@ struct Arguments {
     onnx_runtime_license: PathBuf,
     #[arg(long)]
     onnx_runtime_notices: PathBuf,
+    /// Visual Studio x64 release CRT redistributable directory (required for Windows).
+    #[arg(long)]
+    vc_runtime_dir: Option<PathBuf>,
     /// Destination release directory. It must not already exist.
     #[arg(long)]
     output: PathBuf,
@@ -207,6 +218,7 @@ struct ReleasePlan {
     onnx_runtime_cpu: PathBuf,
     onnx_runtime_license: PathBuf,
     onnx_runtime_notices: PathBuf,
+    vc_runtime: Vec<VcRuntimeFile>,
     output: PathBuf,
     include_models: bool,
     assets: ResolvedModelAssets,
@@ -306,6 +318,10 @@ impl ReleasePlan {
         require_directory("--resources-dir", &arguments.resources_dir)?;
         require_regular_file("--seed-database", &arguments.seed_database)?;
         require_regular_file("--license", &arguments.license)?;
+        let vc_runtime = windows_vc_runtime(
+            &arguments.rust_client_bin,
+            arguments.vc_runtime_dir.as_deref(),
+        )?;
 
         let project_root = arguments
             .config
@@ -357,6 +373,7 @@ impl ReleasePlan {
             arguments.include_models,
             &assets,
             &RuntimeLayout::for_project_root(&project_root),
+            &vc_runtime,
         );
 
         Ok(Self {
@@ -374,6 +391,7 @@ impl ReleasePlan {
             onnx_runtime_cpu: arguments.onnx_runtime_cpu,
             onnx_runtime_license: arguments.onnx_runtime_license,
             onnx_runtime_notices: arguments.onnx_runtime_notices,
+            vc_runtime,
             output: arguments.output,
             include_models: arguments.include_models,
             assets,
@@ -431,6 +449,7 @@ fn package(plan: &ReleasePlan) -> Result<PathBuf, PackageError> {
                     &plan.updater_bin,
                 )?),
         )?;
+        copy_vc_runtime(&plan.vc_runtime, &staging)?;
         copy_native_directory(&plan.resources_dir, &staging.join("resources"))?;
         copy_file_to(&plan.seed_database, &staging.join(CORPUS_SEED_PATH))?;
         copy_file_to(&plan.license, &staging.join("LICENSE"))?;
@@ -581,6 +600,7 @@ fn release_manifest(
     include_models: bool,
     assets: &ResolvedModelAssets,
     runtime_layout: &RuntimeLayout,
+    vc_runtime: &[VcRuntimeFile],
 ) -> Value {
     let onnx = onnx_cpu_metadata(rust_client);
     let model_packages = assets
@@ -606,6 +626,16 @@ fn release_manifest(
         },
         "runtime": {
             "included": true,
+            "msvc": {
+                "included": !vc_runtime.is_empty(),
+                "delivery": "app-local",
+                "files": vc_runtime.iter().map(|file| json!({
+                    "paths": [file.name, format!("{INTERNAL_BIN_DIRECTORY}/{}", file.name)],
+                    "architecture": "x86_64",
+                    "bytes": file.bytes,
+                    "sha256": file.sha256,
+                })).collect::<Vec<_>>(),
+            },
             "directory": runtime_directory,
             "setup_required": "Download the selected models and compatible runtime in the client welcome flow.",
             "onnx_cuda": {
@@ -815,6 +845,130 @@ fn require_directory(label: &str, path: &Path) -> Result<(), PackageError> {
             source,
         }),
     }
+}
+
+fn windows_vc_runtime(
+    client: &Path,
+    directory: Option<&Path>,
+) -> Result<Vec<VcRuntimeFile>, PackageError> {
+    if !client
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+    {
+        return Ok(Vec::new());
+    }
+    let directory = directory.ok_or_else(|| {
+        PackageError::InvalidInput(
+            "Windows releases require --vc-runtime-dir pointing to the Visual Studio x64 release CRT redistributable directory".into(),
+        )
+    })?;
+    require_directory("--vc-runtime-dir", directory)?;
+    // Validate the resolved location too: a path alias must not turn System32
+    // or a debug-runtime directory into an apparent redistributable input.
+    let directory = fs::canonicalize(directory).map_err(|source| PackageError::Io {
+        context: format!("cannot resolve --vc-runtime-dir {}", directory.display()),
+        source,
+    })?;
+    let components = directory
+        .components()
+        .rev()
+        .take(6)
+        .map(|part| part.as_os_str().to_string_lossy().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let is_redist = match components.as_slice() {
+        [crt, architecture, version, msvc, redist, vc] => {
+            vc == "vc"
+                && redist == "redist"
+                && msvc == "msvc"
+                && architecture == "x64"
+                && version.contains('.')
+                && version
+                    .split('.')
+                    .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+                && crt
+                    .strip_prefix("microsoft.vc")
+                    .and_then(|suffix| suffix.strip_suffix(".crt"))
+                    .is_some_and(|toolset| {
+                        !toolset.is_empty() && toolset.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+        }
+        _ => false,
+    };
+    if !is_redist {
+        return Err(PackageError::InvalidInput(
+            "--vc-runtime-dir must be a Visual Studio VC/Redist/MSVC/<version>/x64/Microsoft.VC*.CRT release redistributable directory; System32 and DebugCRT are not release inputs".into(),
+        ));
+    }
+    let mut files = Vec::new();
+    for &name in RuntimeLayout::WINDOWS_CRT_REQUIRED_FILES
+        .iter()
+        .chain(RuntimeLayout::WINDOWS_CRT_OPTIONAL_FILES)
+    {
+        let source = directory.join(name);
+        if !source.exists() && RuntimeLayout::WINDOWS_CRT_OPTIONAL_FILES.contains(&name) {
+            continue;
+        }
+        require_regular_file("--vc-runtime-dir", &source)?;
+        let bytes = fs::read(&source).map_err(|source_error| PackageError::Io {
+            context: format!("cannot read VC runtime {}", source.display()),
+            source: source_error,
+        })?;
+        validate_x64_crt_dll(&source, &bytes)?;
+        files.push(VcRuntimeFile {
+            name,
+            source,
+            bytes: bytes.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(&bytes)),
+        });
+    }
+    Ok(files)
+}
+
+fn validate_x64_crt_dll(path: &Path, bytes: &[u8]) -> Result<(), PackageError> {
+    let invalid = || {
+        PackageError::InvalidInput(format!(
+            "VC runtime must be an AMD64 PE32+ release DLL: {}",
+            path.display()
+        ))
+    };
+    if bytes.get(..2) != Some(b"MZ") {
+        return Err(invalid());
+    }
+    let offset = bytes.get(0x3c..0x40).ok_or_else(invalid)?;
+    let pe = u32::from_le_bytes(offset.try_into().map_err(|_| invalid())?) as usize;
+    let header_end = pe.checked_add(26).ok_or_else(invalid)?;
+    let header = bytes.get(pe..header_end).ok_or_else(invalid)?;
+    let optional_size = u16::from_le_bytes([header[20], header[21]]) as usize;
+    let section_count = u16::from_le_bytes([header[6], header[7]]) as usize;
+    let optional_end = pe
+        .checked_add(24)
+        .and_then(|start| start.checked_add(optional_size))
+        .ok_or_else(invalid)?;
+    if &header[..4] != b"PE\0\0"
+        || u16::from_le_bytes([header[4], header[5]]) != 0x8664
+        || u16::from_le_bytes([header[22], header[23]]) & 0x2000 == 0
+        || u16::from_le_bytes([header[24], header[25]]) != 0x20b
+        || optional_size < 112
+        || section_count == 0
+        || optional_end
+            .checked_add(section_count * 40)
+            .is_none_or(|end| end > bytes.len())
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn copy_vc_runtime(files: &[VcRuntimeFile], staging: &Path) -> Result<(), PackageError> {
+    for file in files {
+        // Both the GUI and the helper executables need an application-local CRT.
+        for directory in [staging.to_path_buf(), staging.join(INTERNAL_BIN_DIRECTORY)] {
+            let destination = directory.join(file.name);
+            copy_file_to(&file.source, &destination)?;
+            verify_file_integrity("staged VC runtime", &destination, file.bytes, &file.sha256)?;
+        }
+    }
+    Ok(())
 }
 
 fn verify_file_integrity(
@@ -1090,6 +1244,107 @@ mod tests {
         fs::write(path, contents).unwrap();
     }
 
+    fn x64_dll_fixture() -> Vec<u8> {
+        let mut bytes = vec![0; 512];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&0x80_u32.to_le_bytes());
+        bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
+        bytes[0x84..0x86].copy_from_slice(&0x8664_u16.to_le_bytes());
+        bytes[0x86..0x88].copy_from_slice(&1_u16.to_le_bytes());
+        bytes[0x94..0x96].copy_from_slice(&240_u16.to_le_bytes());
+        bytes[0x96..0x98].copy_from_slice(&0x2002_u16.to_le_bytes());
+        bytes[0x98..0x9a].copy_from_slice(&0x20b_u16.to_le_bytes());
+        bytes
+    }
+
+    fn write_vc_runtime_fixture(directory: &Path) {
+        for &name in RuntimeLayout::WINDOWS_CRT_REQUIRED_FILES {
+            write(&directory.join(name), &x64_dll_fixture());
+        }
+    }
+
+    fn vc_redist_directory(root: &Path) -> PathBuf {
+        root.join("VC/Redist/MSVC/14.44.35112/x64/Microsoft.VC143.CRT")
+    }
+
+    #[test]
+    fn windows_release_requires_complete_x64_release_crt() {
+        let root = temp_directory("crt-inputs");
+        let directory = vc_redist_directory(&root);
+        let client = Path::new("rust-client.exe");
+        assert!(windows_vc_runtime(client, None).is_err());
+        assert!(
+            windows_vc_runtime(Path::new("rust-client"), None)
+                .unwrap()
+                .is_empty()
+        );
+        write_vc_runtime_fixture(&directory);
+        assert_eq!(
+            windows_vc_runtime(client, Some(&directory)).unwrap().len(),
+            RuntimeLayout::WINDOWS_CRT_REQUIRED_FILES.len()
+        );
+        let required = directory.join("msvcp140_1.dll");
+        fs::remove_file(&required).unwrap();
+        assert!(windows_vc_runtime(client, Some(&directory)).is_err());
+
+        let mut x86_dll = x64_dll_fixture();
+        x86_dll[0x84..0x86].copy_from_slice(&0x14c_u16.to_le_bytes());
+        write(&required, &x86_dll);
+        assert!(windows_vc_runtime(client, Some(&directory)).is_err());
+        write(&required, b"not a PE file");
+        assert!(windows_vc_runtime(client, Some(&directory)).is_err());
+        write(&required, &x64_dll_fixture()[..256]);
+        assert!(windows_vc_runtime(client, Some(&directory)).is_err());
+
+        let debug_directory = directory.with_file_name("Microsoft.VC143.DebugCRT");
+        write_vc_runtime_fixture(&debug_directory);
+        assert!(windows_vc_runtime(client, Some(&debug_directory)).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vc_runtime_input_rejects_system_directory_even_with_valid_x64_dlls() {
+        let root = temp_directory("crt-system-directory");
+        let directory = root.join("Windows/System32");
+        write_vc_runtime_fixture(&directory);
+        let error = windows_vc_runtime(Path::new("client.exe"), Some(&directory)).unwrap_err();
+        assert!(error.to_string().contains("Visual Studio"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vc_runtime_is_staged_beside_gui_and_helpers_without_unlisted_files() {
+        let root = temp_directory("crt-layout");
+        let directory = vc_redist_directory(&root);
+        let staging = root.join("release");
+        write_vc_runtime_fixture(&directory);
+        write(&directory.join("concrt140.dll"), &x64_dll_fixture());
+        for name in [
+            "msvcp140d.dll",
+            "kernel32.dll",
+            "personal.txt",
+            "subdir/helper.dll",
+        ] {
+            write(&directory.join(name), b"must stay out of the release");
+        }
+        let files = windows_vc_runtime(Path::new("client.exe"), Some(&directory)).unwrap();
+        copy_vc_runtime(&files, &staging).unwrap();
+
+        assert_eq!(
+            files.len(),
+            RuntimeLayout::WINDOWS_CRT_REQUIRED_FILES.len() + 1
+        );
+        for target in [&staging, &staging.join(INTERNAL_BIN_DIRECTORY)] {
+            for file in &files {
+                assert_eq!(fs::read(target.join(file.name)).unwrap(), x64_dll_fixture());
+            }
+            for name in ["msvcp140d.dll", "kernel32.dll", "personal.txt", "subdir"] {
+                assert!(!target.join(name).exists());
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn rewrite_config_clears_runtime_path_and_makes_models_release_relative() {
         let root = temp_directory("config");
@@ -1154,6 +1409,10 @@ mod tests {
         let onnx_runtime_cpu = source.join("onnxruntime.dll");
         let onnx_runtime_license = source.join("onnxruntime-LICENSE");
         let onnx_runtime_notices = source.join("onnxruntime-ThirdPartyNotices.txt");
+        let vc_runtime_dir = cfg!(windows).then(|| vc_redist_directory(&source));
+        if let Some(directory) = &vc_runtime_dir {
+            write_vc_runtime_fixture(directory);
+        }
         let config = source.join("config.json");
         let license = source.join("LICENSE");
         write(&client, b"client");
@@ -1219,6 +1478,7 @@ mod tests {
             onnx_runtime_cpu,
             onnx_runtime_license,
             onnx_runtime_notices,
+            vc_runtime_dir,
             output: output.clone(),
             include_models: false,
             check: false,
@@ -1270,7 +1530,11 @@ mod tests {
         assert!(output.join(VAD_RELATIVE_PATH).is_file());
         assert!(output.join(SPEAKER_RELATIVE_PATH).is_file());
         assert!(output.join(DENOISE_RELATIVE_PATH).is_file());
-        assert!(output.join(onnx_cpu_metadata(&plan.rust_client_bin).path).is_file());
+        assert!(
+            output
+                .join(onnx_cpu_metadata(&plan.rust_client_bin).path)
+                .is_file()
+        );
         assert!(output.join(ONNX_LICENSE_RELATIVE_PATH).is_file());
         assert!(output.join(ONNX_NOTICES_RELATIVE_PATH).is_file());
         assert!(output.join("release-manifest.json").is_file());
@@ -1307,6 +1571,26 @@ mod tests {
         .unwrap();
         assert_eq!(manifest["python"], false);
         assert_eq!(manifest["runtime"]["included"], true);
+        assert_eq!(manifest["runtime"]["msvc"]["included"], cfg!(windows));
+        if cfg!(windows) {
+            let files = manifest["runtime"]["msvc"]["files"].as_array().unwrap();
+            assert_eq!(files.len(), RuntimeLayout::WINDOWS_CRT_REQUIRED_FILES.len());
+            for file in files {
+                for path in file["paths"].as_array().unwrap() {
+                    assert_eq!(
+                        fs::read(output.join(path.as_str().unwrap())).unwrap(),
+                        x64_dll_fixture()
+                    );
+                }
+                assert_eq!(file["architecture"], "x86_64");
+                assert_eq!(file["bytes"], 512);
+                assert_eq!(
+                    file["sha256"],
+                    format!("{:x}", Sha256::digest(x64_dll_fixture()))
+                );
+            }
+            assert!(!manifest.to_string().contains("Microsoft.VC143.CRT"));
+        }
         assert_eq!(
             manifest["runtime"]["onnx_cpu"]["path"],
             onnx_cpu_metadata(&plan.rust_client_bin).path

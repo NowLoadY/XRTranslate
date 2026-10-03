@@ -15,7 +15,7 @@ use std::{
 struct Request {
     revision: u64,
     region: Option<OverlayRegion>,
-    excluded: Option<OverlayRegion>,
+    excluded: [Option<OverlayRegion>; 2],
 }
 
 pub enum CaptureEvent {
@@ -72,7 +72,7 @@ impl OcrCapture {
         root: PathBuf,
         region: OverlayRegion,
         revision: u64,
-        excluded: Option<OverlayRegion>,
+        excluded: [Option<OverlayRegion>; 2],
     ) -> Result<Self, String> {
         let request = Arc::new(Mutex::new(Request {
             revision,
@@ -123,7 +123,7 @@ impl OcrCapture {
         &self,
         region: Option<OverlayRegion>,
         revision: u64,
-        excluded: Option<OverlayRegion>,
+        excluded: [Option<OverlayRegion>; 2],
     ) {
         *self.request.lock().unwrap_or_else(|e| e.into_inner()) = Request {
             revision,
@@ -219,7 +219,10 @@ fn run(
                 if request.lock().unwrap_or_else(|e| e.into_inner()).revision != current.revision {
                     continue;
                 }
-                let occluded = current.excluded.is_some_and(|area| frame.mask(area));
+                let mut occluded = false;
+                for area in current.excluded.into_iter().flatten() {
+                    occluded |= frame.mask(area);
+                }
                 let image = frame.image;
                 let mut hash = std::collections::hash_map::DefaultHasher::new();
                 image.as_raw().hash(&mut hash);

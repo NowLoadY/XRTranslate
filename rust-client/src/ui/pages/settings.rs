@@ -101,6 +101,57 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     }
 }
 
+fn background_image_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
+    let label = crate::i18n::tr(app.ui_language, "Background image");
+    let response = components::compact_icon_button(
+        ui,
+        "settings_background_image",
+        app.background_settings.image_path.is_some(),
+        label,
+        None,
+    );
+    egui::Image::new(egui::include_image!("../../../resources/icons/image.svg"))
+        .tint(crate::ui::theme::text_strong())
+        .paint_at(
+            ui,
+            egui::Rect::from_center_size(response.rect.center(), egui::vec2(18.0, 18.0)),
+        );
+    egui::Popup::from_toggle_button_response(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .layout(egui::Layout::top_down_justified(egui::Align::Min))
+        .width(208.0)
+        .show(|ui| {
+            ui.set_width(208.0);
+            if components::secondary_button(ui, crate::i18n::tr(app.ui_language, "Choose image…"))
+                .clicked()
+            {
+                app.choose_background_image(ui.ctx());
+                ui.close();
+            }
+            ui.horizontal(|ui| {
+                let label = ui.label(crate::i18n::tr(app.ui_language, "Image opacity"));
+                let mut percent = app.background_settings.opacity * 100.0;
+                let response = ui
+                    .add(
+                        egui::DragValue::new(&mut percent)
+                            .range(0.0..=100.0)
+                            .speed(0.5)
+                            .fixed_decimals(2)
+                            .suffix("%"),
+                    )
+                    .labelled_by(label.id);
+                if response.changed() {
+                    app.set_background_opacity(percent / 100.0);
+                }
+            });
+            if components::secondary_button(ui, crate::i18n::tr(app.ui_language, "Restore default"))
+                .clicked()
+            {
+                app.reset_background();
+            }
+        });
+}
+
 fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     section(
         ui,
@@ -154,6 +205,7 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
                     if variant != app.ui_theme.variant {
                         app.set_ui_theme(crate::ui::theme::UiTheme { variant });
                     }
+                    background_image_controls(app, ui);
                 });
             } else {
                 crate::ui::layout::flow_row(ui, |ui| {
@@ -201,6 +253,7 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
                     if variant != app.ui_theme.variant {
                         app.set_ui_theme(crate::ui::theme::UiTheme { variant });
                     }
+                    background_image_controls(app, ui);
                 });
             }
         },

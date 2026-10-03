@@ -242,10 +242,11 @@ fn render_preview_card(
         };
         spatial_preview(ui, settings, cards, preview_height);
         ui.label(
-            egui::RichText::new(tr("Drag up or down · Drag a corner to resize"))
+            egui::RichText::new(tr("Drag up or down · Pinch or drag a corner to resize"))
                 .small()
                 .color(theme::text_weak()),
-        );
+        )
+        .on_hover_text(tr("Pinch or Ctrl+scroll over the preview to resize. Two-finger scrolling scrolls the page."));
     });
 }
 
@@ -298,10 +299,11 @@ fn render_combined_preview_and_position_card(
         };
         spatial_preview(ui, settings, cards, preview_height);
         ui.label(
-            egui::RichText::new(tr("Drag up or down · Drag a corner to resize"))
+            egui::RichText::new(tr("Drag up or down · Pinch or drag a corner to resize"))
                 .small()
                 .color(theme::text_weak()),
-        );
+        )
+        .on_hover_text(tr("Pinch or Ctrl+scroll over the preview to resize. Two-finger scrolling scrolls the page."));
         ModernSlider::new(
             &tr("Distance in Front"),
             &mut settings.distance_meters,
@@ -455,6 +457,17 @@ fn spatial_preview(
         egui::vec2(ui.available_width(), preview_height),
         egui::Sense::hover(),
     );
+    if ui.is_enabled()
+        && ui.rect_contains_pointer(view)
+        && !ui.input(|input| input.pointer.any_down())
+    {
+        // Handles native pinch gestures and the Ctrl+wheel events used by touchpads.
+        // Leave ordinary two-finger scrolling to the surrounding ScrollArea.
+        let zoom = ui.input(|input| input.zoom_delta());
+        if zoom.is_finite() && zoom > 0.0 && zoom != 1.0 {
+            settings.overlay_width_meters = (settings.overlay_width_meters * zoom).clamp(0.3, 1.5);
+        }
+    }
     let painter = ui.painter().with_clip_rect(view);
     painter.rect_filled(view, 10.0, theme::surface_subtle());
     painter.line_segment(
@@ -583,6 +596,77 @@ mod tests {
         assert_eq!(changed.width(), default.width() * 2.0);
         settings.distance_meters *= 2.0;
         assert_eq!(preview_geometry(view, &settings).0.width(), default.width());
+    }
+
+    #[test]
+    fn preview_pinch_resizes_without_stealing_page_scroll() {
+        let wheel = |ctrl| egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -4.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers {
+                ctrl,
+                command: ctrl,
+                ..Default::default()
+            },
+        };
+        for (event, inside, enabled, expected_width, scrolls) in [
+            (egui::Event::Zoom(1.2), true, true, 0.6, false),
+            (egui::Event::Zoom(10.0), true, true, 1.5, false),
+            (egui::Event::Zoom(0.1), true, true, 0.3, false),
+            (wheel(true), true, true, 0.5 * (-0.02_f32).exp(), false),
+            (wheel(false), true, true, 0.5, true),
+            (egui::Event::Zoom(1.2), false, true, 0.5, false),
+            (egui::Event::Zoom(1.2), true, false, 0.5, false),
+        ] {
+            let ctx = egui::Context::default();
+            let mut settings = VrOverlaySettings::default();
+            let original_offset = settings.vertical_offset_meters;
+            let mut scroll_offset = 0.0;
+            for frame in 0..3 {
+                let mut events = vec![egui::Event::PointerMoved(if inside {
+                    egui::pos2(150.0, 100.0)
+                } else {
+                    egui::pos2(410.0, 250.0)
+                })];
+                if frame == 2 {
+                    // Windows touchpads can add Ctrl for just the wheel event.
+                    if let egui::Event::MouseWheel { modifiers, .. } = &event {
+                        events.push(egui::Event::ModifiersChanged(*modifiers));
+                    }
+                    events.push(event.clone());
+                    events.push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+                }
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(420.0, 260.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        scroll_offset = egui::ScrollArea::vertical()
+                            .max_height(220.0)
+                            .show(ui, |ui| {
+                                ui.add_enabled_ui(enabled, |ui| {
+                                    spatial_preview(ui, &mut settings, &[], 200.0);
+                                });
+                                ui.add_space(600.0);
+                            })
+                            .state
+                            .offset
+                            .y;
+                    },
+                );
+                output.textures_delta.clear();
+            }
+            assert!((settings.overlay_width_meters - expected_width).abs() < 0.0001);
+            assert_eq!(settings.vertical_offset_meters, original_offset);
+            assert_eq!(scroll_offset > 0.0, scrolls);
+            assert!(!ctx.input(|input| input.modifiers.ctrl));
+        }
     }
 
     #[test]

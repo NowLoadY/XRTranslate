@@ -236,7 +236,7 @@ fn translate_request(
         translator.poll(backend, &settings.server_url, graphs.clone(), None, &events);
         for event in received.try_iter() {
             if event.scope.accepts_events() {
-                event.scope.publish(&event.event, &subscribers);
+                let _ = event.scope.publish(&event.event, &subscribers);
             }
         }
         let mut result = results.lock().unwrap();

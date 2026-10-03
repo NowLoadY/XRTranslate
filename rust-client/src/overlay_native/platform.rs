@@ -133,6 +133,16 @@ impl InputRegion {
         Ok(())
     }
 
+    pub fn pointer_position(&self, window: &Window, scale: f32) -> Option<egui::Pos2> {
+        let origin = window.inner_position().ok()?;
+        self.platform.pointer_position().map(|point| {
+            egui::pos2(
+                (point.x - origin.x as f32) / scale,
+                (point.y - origin.y as f32) / scale,
+            )
+        })
+    }
+
     pub fn work_area(&self, window: &Window) -> Rect {
         let monitor = window
             .current_monitor()
@@ -167,6 +177,19 @@ struct Platform {
 
 #[cfg(target_os = "linux")]
 impl Platform {
+    fn pointer_position(&self) -> Option<egui::Pos2> {
+        use x11rb::protocol::xproto::ConnectionExt;
+        let pointer = self
+            .connection
+            .query_pointer(self.root)
+            .ok()?
+            .reply()
+            .ok()?;
+        pointer
+            .same_screen
+            .then(|| egui::pos2(pointer.root_x as f32, pointer.root_y as f32))
+    }
+
     fn new(window: &Window) -> Result<Self, String> {
         use x11rb::connection::Connection;
         let window = match window
@@ -255,6 +278,15 @@ struct Platform(windows::Win32::Foundation::HWND);
 
 #[cfg(windows)]
 impl Platform {
+    fn pointer_position(&self) -> Option<egui::Pos2> {
+        use windows::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
+        let mut point = POINT::default();
+        unsafe {
+            GetCursorPos(&mut point).ok()?;
+        }
+        Some(egui::pos2(point.x as f32, point.y as f32))
+    }
+
     fn new(window: &Window) -> Result<Self, String> {
         match window
             .window_handle()

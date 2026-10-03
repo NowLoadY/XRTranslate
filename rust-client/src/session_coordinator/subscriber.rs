@@ -28,6 +28,14 @@ pub enum CaptionUpdate {
 /// plugins consume this instead of being named inside the event pump.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostOutputEvent<'a> {
+    /// A validated, completed segment accepted into host history. Stable identity
+    /// lets irreversible outputs consume it once even when captions are revised.
+    CommittedTranslation {
+        stream_id: u64,
+        turn_id: &'a str,
+        segment_index: u32,
+        translated: &'a str,
+    },
     Caption {
         stream_id: u64,
         audio_source: CaptureSource,
@@ -38,6 +46,8 @@ pub enum HostOutputEvent<'a> {
         update: CaptionUpdate,
     },
     StreamEnded(u64),
+    /// Explicit cancellation invalidates completed output still awaiting delivery.
+    StreamCancelled(u64),
     Clear,
 }
 

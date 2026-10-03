@@ -1,13 +1,14 @@
 //! Continuous rounded strokes with matching topology for GPU expression morphs.
-use super::Mesh;
+use super::{Mesh, cushion};
 use glam::{Vec2, Vec3};
 use std::f32::consts::{FRAC_PI_2, TAU};
 
-fn stroke(path: impl Fn(f32) -> Vec2, radius: f32, depth: f32) -> Mesh {
+fn stroke(path: impl Fn(f32) -> Vec2, radius: impl Fn(f32) -> f32, depth: f32) -> Mesh {
     let mut mesh = Mesh::default();
     mesh.surface(48, 24, true, |u, v| {
         // Eight rows per rounded end; the middle follows the whole curve without joints.
         let t = ((v * 48.0 - 8.0) / 32.0).clamp(0.0, 1.0);
+        let radius = radius(t);
         let tangent = (path((t + 0.001).min(1.0)) - path((t - 0.001).max(0.0))).normalize();
         let side = Vec2::new(tangent.y, -tangent.x);
         let cap = if v < 1.0 / 6.0 {
@@ -33,37 +34,51 @@ fn stroke(path: impl Fn(f32) -> Vec2, radius: f32, depth: f32) -> Mesh {
 }
 
 pub(super) fn eye() -> Mesh {
-    let neutral = stroke(|t| Vec2::new(0.0, (t - 0.5) * 0.25), 0.073, 0.034);
+    let neutral = stroke(
+        |t| Vec2::new(0.0, (t - 0.5) * 0.286),
+        |t| 0.073 * (1.0 - 0.25 * (t * 2.0 - 1.0).powi(2)),
+        0.020,
+    );
     let happy = stroke(
         |t| {
             let x = t * 2.0 - 1.0;
             Vec2::new(x * 0.115, (1.0 - x * x) * 0.085 - 0.025)
         },
-        0.054,
-        0.030,
+        |_| 0.054,
+        0.020,
     );
-    let closed = stroke(|t| Vec2::new((t - 0.5) * 0.16, 0.0), 0.025, 0.018);
+    let closed = stroke(|t| Vec2::new((t - 0.5) * 0.16, 0.0), |_| 0.025, 0.012);
     neutral.morph(happy, closed)
 }
 
 pub(super) fn mouth() -> Mesh {
-    let smile = |width, height| {
-        stroke(
-            |t| {
-                let x = t * 2.0 - 1.0;
-                Vec2::new(x * width, -(1.0 - x * x) * height)
-            },
-            0.025,
-            0.020,
+    let shape = |width: f32, height: f32, round: f32| {
+        let outline = [
+            [
+                Vec2::new(-width, 0.02),
+                Vec2::new(-width * 0.73, 0.02 + round),
+                Vec2::new(-width * 0.60, -0.015 + round),
+                Vec2::new(0.0, 0.02 + round),
+            ],
+            [
+                Vec2::new(0.0, 0.02 + round),
+                Vec2::new(width * 0.60, -0.015 + round),
+                Vec2::new(width * 0.73, 0.02 + round),
+                Vec2::new(width, 0.02),
+            ],
+            [
+                Vec2::new(width, 0.02),
+                Vec2::new(width, -height),
+                Vec2::new(-width, -height),
+                Vec2::new(-width, 0.02),
+            ],
+        ];
+        cushion(
+            &outline,
+            Vec2::new(0.0, -height * 0.35),
+            0.008,
+            |p, depth| Vec3::new(p.x, p.y, 0.008 + depth - 0.48 * p.length_squared()),
         )
     };
-    let curious = stroke(
-        |t| {
-            let angle = t * TAU;
-            Vec2::new(angle.cos() * 0.038, angle.sin() * 0.046 - 0.025)
-        },
-        0.018,
-        0.017,
-    );
-    smile(0.088, 0.058).morph(smile(0.115, 0.085), curious)
+    shape(0.105, 0.18, 0.0).morph(shape(0.12, 0.22, 0.0), shape(0.065, 0.22, 0.065))
 }

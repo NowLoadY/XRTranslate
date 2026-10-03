@@ -114,6 +114,25 @@ impl RuntimeLayout {
     pub const CUDNN_RUNTIME_DIRECTORY: &'static str = "runtime/cudnn";
     pub const ONNX_RUNTIME_DIRECTORY: &'static str = "runtime/onnxruntime";
     pub const ONNX_CPU_RUNTIME_DIRECTORY: &'static str = "runtime/onnxruntime/cpu";
+    /// Immutable Windows application resources, supplied from Visual Studio's
+    /// x64 release CRT redistributable directory before any app code can run.
+    /// They ship beside the GUI and each helper in `bin`, outside managed model
+    /// downloads and backend selection. Debug CRT and OS DLLs are never bundled.
+    pub const WINDOWS_CRT_REQUIRED_FILES: &'static [&'static str] = &[
+        "msvcp140.dll",
+        "msvcp140_1.dll",
+        "vcruntime140.dll",
+        "vcruntime140_1.dll",
+    ];
+    /// Additional redistributable components available in some VS 14.x releases.
+    pub const WINDOWS_CRT_OPTIONAL_FILES: &'static [&'static str] = &[
+        "concrt140.dll",
+        "msvcp140_2.dll",
+        "msvcp140_atomic_wait.dll",
+        "msvcp140_codecvt_ids.dll",
+        "vccorlib140.dll",
+        "vcruntime140_threads.dll",
+    ];
     #[cfg(windows)]
     pub const ONNX_CORE_LIBRARY: &'static str = "onnxruntime.dll";
     #[cfg(not(windows))]
@@ -141,6 +160,9 @@ impl RuntimeLayout {
     pub const ONNX_CPU_CORE_WIN_BYTES: u64 = 16_277_856;
     pub const ONNX_CPU_CORE_WIN_SHA256: &'static str =
         "2462fe2d64ce063babefda3d9b1998380ffa74e99acf5d24d520ee67daa9e0f1";
+    /// The official CUDA archive also supplies the independently usable CPU core.
+    pub const ONNX_CPU_CORE_WIN_SOURCE_ARCHIVE: &'static str =
+        "onnxruntime-win-x64-gpu_cuda13-1.28.0.zip";
 
     pub const ONNX_CPU_CORE_LINUX_BYTES: u64 = 24_268_848;
     pub const ONNX_CPU_CORE_LINUX_SHA256: &'static str =

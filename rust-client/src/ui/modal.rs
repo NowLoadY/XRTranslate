@@ -35,6 +35,7 @@ pub struct ModalDialog {
     action: Option<ModalAction>,
     ok_action: Option<ModalAction>,
     destructive_ok: bool,
+    update_version: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +58,7 @@ impl Default for ModalDialog {
             action: None,
             ok_action: None,
             destructive_ok: false,
+            update_version: None,
         }
     }
 }
@@ -66,13 +68,10 @@ impl ModalDialog {
         Self {
             open: true,
             pages: vec![ModalPage::new(
-                crate::i18n::tr(language, "Update available"),
-                format!(
-                    "{} v{}",
-                    crate::i18n::tr(language, "A new version is available:"),
-                    version
-                ),
+                crate::i18n::tr(language, "A new version is here"),
+                "",
             )],
+            update_version: Some(format!("v{version}")),
             ok_label: crate::i18n::tr(language, "Update").into(),
             show_cancel_button: true,
             cancel_label: crate::i18n::tr(language, "Later").into(),
@@ -87,18 +86,15 @@ impl ModalDialog {
             pages: vec![
                 ModalPage::new(
                     crate::i18n::tr(language, "Update ready"),
-                    format!(
-                        "v{}\n{}",
-                        version,
-                        crate::i18n::tr(language, "Install the update now?")
-                    ),
+                    crate::i18n::tr(language, "Install the update now?"),
                 )
                 .footnote(crate::i18n::tr(
                     language,
                     "You can install it later from Settings > General.",
                 )),
             ],
-            ok_label: crate::i18n::tr(language, "Install").into(),
+            update_version: Some(format!("v{version}")),
+            ok_label: crate::i18n::tr(language, "Install and restart").into(),
             show_cancel_button: true,
             cancel_label: crate::i18n::tr(language, "Later").into(),
             ok_action: Some(ModalAction::InstallUpdate),
@@ -196,13 +192,23 @@ impl ModalDialog {
         let page = self.pages[self.current_page].clone();
         let total_pages = self.pages.len();
         let mut close = false;
-        let response = dialog(
+        let response = dialog_with_width(
             ctx,
             id,
             language,
             &page.title,
+            if self.update_version.is_some() {
+                360.0
+            } else {
+                500.0
+            },
             |ui| {
-                ui.label(&page.content);
+                if let Some(version) = &self.update_version {
+                    crate::ui::components::status_badge(ui, version, false, false);
+                }
+                if !page.content.is_empty() {
+                    ui.label(&page.content);
+                }
                 if let Some(details) = &page.error_details {
                     ui.add_space(10.0);
                     crate::ui::components::dark_container_frame(ui, |ui| {
@@ -296,8 +302,20 @@ pub(super) fn dialog(
     body: impl FnOnce(&mut egui::Ui),
     actions: impl FnOnce(&mut egui::Ui),
 ) -> bool {
+    dialog_with_width(ctx, id, language, title, 500.0, body, actions)
+}
+
+fn dialog_with_width(
+    ctx: &egui::Context,
+    id: egui::Id,
+    language: crate::i18n::UiLanguage,
+    title: &str,
+    max_width: f32,
+    body: impl FnOnce(&mut egui::Ui),
+    actions: impl FnOnce(&mut egui::Ui),
+) -> bool {
     let available = ctx.content_rect().size();
-    let width = (available.x - 64.0).clamp(80.0, 500.0);
+    let width = (available.x - 64.0).clamp(80.0, max_width);
     let mut close = false;
     let response = egui::Modal::new(id).frame(Frame::NONE).show(ctx, |ui| {
         crate::ui::organic_border::show(
@@ -388,18 +406,27 @@ mod tests {
 
     #[test]
     fn dialogs_fit_small_viewports_and_escape_cancels() {
-        for size in [
+        let language = crate::i18n::UiLanguage::Chinese;
+        for (size, mut modal) in [
             egui::vec2(320.0, 600.0),
             egui::vec2(800.0, 300.0),
             egui::vec2(360.0, 180.0),
-        ] {
+        ]
+        .into_iter()
+        .flat_map(|size| {
+            [
+                ModalDialog::error(
+                    language,
+                    &"A long failure message with details. ".repeat(100),
+                    None,
+                ),
+                ModalDialog::update_available("1.2.3", language),
+                ModalDialog::update_ready("1.2.3", language),
+            ]
+            .map(|modal| (size, modal))
+        }) {
             let ctx = egui::Context::default();
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-            let mut modal = ModalDialog::error(
-                crate::i18n::UiLanguage::Chinese,
-                &"A long failure message with details. ".repeat(100),
-                None,
-            );
             for _ in 0..3 {
                 let mut output = ctx.run_ui(
                     egui::RawInput {
@@ -504,7 +531,7 @@ mod tests {
             modal.pages[0].footnote.as_deref(),
             Some("你也可以稍后在设置 → 常规中安装。")
         );
-        assert_eq!(modal.ok_label, "安装");
+        assert_eq!(modal.ok_label, "安装并重启");
         assert_eq!(modal.cancel_label, "稍后");
         assert_eq!(modal.ok_action, Some(ModalAction::InstallUpdate));
     }

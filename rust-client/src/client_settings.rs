@@ -92,6 +92,8 @@ pub struct ClientSettings {
     pub ui_language: UiLanguage,
     #[serde(default)]
     pub ui_theme: UiTheme,
+    #[serde(default)]
+    pub background_settings: crate::ui::background::BackgroundSettings,
     #[serde(default = "default_true")]
     pub first_run: bool,
     #[serde(default)]
@@ -114,7 +116,7 @@ pub struct ClientSettings {
     pub sidebar_collapsed: bool,
     #[serde(default)]
     pub usage_guidelines_accepted: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub floating_subtitles_enabled: bool,
     #[serde(default = "default_floating_max_count")]
     pub floating_subtitles_max_count: usize,
@@ -181,6 +183,7 @@ impl Default for ClientSettings {
             mute_self_pauses_translation: false,
             ui_language: default_ui_language(),
             ui_theme: UiTheme::default(),
+            background_settings: crate::ui::background::BackgroundSettings::default(),
             first_run: true,
             model_defaults_initialized: false,
             server_url: default_server_url(),
@@ -192,7 +195,7 @@ impl Default for ClientSettings {
             active_page: Page::default(),
             sidebar_collapsed: false,
             usage_guidelines_accepted: false,
-            floating_subtitles_enabled: false,
+            floating_subtitles_enabled: true,
             floating_subtitles_max_count: default_floating_max_count(),
             floating_subtitles_font_size: default_floating_font_size(),
             preferred_gpu: None,
@@ -268,6 +271,7 @@ impl ClientSettings {
 
     /// Normalizes settings that share one user-facing feature.
     pub fn normalize_feature_dependencies(&mut self) {
+        self.background_settings.normalize();
         self.background_noise = self.background_noise.clamp(0.2, 0.8);
         self.pause_tolerance = self.pause_tolerance.clamp(0.0, 1.0);
         for settings in [
@@ -394,6 +398,24 @@ impl ClientSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_settings_preserve_legacy_defaults_and_round_trip() {
+        let mut settings: ClientSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(
+            settings.background_settings,
+            crate::ui::background::BackgroundSettings::default()
+        );
+        assert_eq!(
+            settings.background_settings.opacity,
+            crate::ui::theme::content_backdrop(true).a() as f32 / 255.0
+        );
+        settings.background_settings.image_path = Some("runtime/backgrounds/背景.png".into());
+        settings.background_settings.opacity = 0.42;
+        let saved = serde_json::to_string(&settings).unwrap();
+        let loaded: ClientSettings = serde_json::from_str(&saved).unwrap();
+        assert_eq!(loaded.background_settings, settings.background_settings);
+    }
 
     #[test]
     fn recognition_defaults_prioritize_speech() {

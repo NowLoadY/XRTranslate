@@ -30,6 +30,10 @@ pub struct OverlayControls {
     pub microphone_enabled: Option<bool>,
     pub system_audio_enabled: Option<bool>,
     pub ocr_enabled: Option<bool>,
+    #[serde(default)]
+    pub auto_input_available: bool,
+    #[serde(default)]
+    pub auto_input_enabled: bool,
 }
 
 /// Screen coordinates use physical pixels, including negative monitor origins.
@@ -47,6 +51,7 @@ pub enum OverlayCommand {
     Controls(OverlayControls),
     Subtitles(OverlayState),
     Ocr(Option<OcrOverlayState>),
+    Companion(crate::ui::components::avatar::Presentation),
     Hide,
 }
 
@@ -55,6 +60,7 @@ pub enum OverlayEvent {
     TranslationEnabled(bool),
     MicrophoneEnabled(bool),
     SystemAudioEnabled(bool),
+    AutoInputEnabled(bool),
     CloseRequested,
     Failed(String),
     OcrEnabled(bool),
@@ -62,6 +68,8 @@ pub enum OverlayEvent {
     RegionChanged(OverlayRegion),
     ResultChanging,
     ResultRegionChanged(Option<OverlayRegion>),
+    CompanionDetached(bool),
+    CompanionRegionChanged(Option<OverlayRegion>),
 }
 
 #[cfg(test)]

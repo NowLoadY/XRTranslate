@@ -10,7 +10,7 @@ pub enum Expression {
     Curious,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Gaze {
     pub yaw: f32,
     pub pitch: f32,
@@ -25,12 +25,15 @@ impl Gaze {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Pose {
     pub gaze: Gaze,
     pub roll: f32,
     /// Independent mouth opening, from silent (0) to fully open (1).
     pub speech: f32,
+    /// Root-pinned hair bending, shared by all renderers.
+    #[serde(default)]
+    pub(super) hair: [f32; 2],
     pub(super) joy: f32,
     pub(super) curiosity: f32,
     pub(super) blink: f32,

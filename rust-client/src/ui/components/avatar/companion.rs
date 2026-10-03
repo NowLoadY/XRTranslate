@@ -1,5 +1,5 @@
-//! Quiet monochrome companions sharing one face rig.
-use super::{Avatar, Nose};
+//! Card companions share the classic character's appearance and face rig.
+use super::{Avatar, Classic, Nose};
 use eframe::egui::Vec2;
 
 pub fn companion(name: &str) -> Avatar {
@@ -9,7 +9,7 @@ pub fn companion(name: &str) -> Avatar {
         % 3;
     let mut avatar = Avatar {
         aspect: [0.86, 1.0, 1.16][variant],
-        ..Avatar::default()
+        ..Classic::model().clone()
     };
     if variant == 2 {
         avatar.face.nose = Some(Nose {

@@ -2,7 +2,7 @@
 use super::super::{Classic, Pose};
 use super::{CallbackResources, CallbackTrait, Draw, Renderer, ScreenDescriptor, egui, wgpu};
 use glam::Mat4;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub(crate) const EYE_SIZE: u32 = 512;
 
@@ -13,6 +13,8 @@ pub(crate) struct StereoRenderer {
     resources: CallbackResources,
     pending: Option<wgpu::SubmissionIndex>,
     errors: std::sync::Arc<parking_lot::Mutex<Option<String>>>,
+    hair: super::super::hair::motion::Motion,
+    clock: Instant,
 }
 
 impl StereoRenderer {
@@ -47,6 +49,8 @@ impl StereoRenderer {
             resources,
             pending: None,
             errors,
+            hair: Default::default(),
+            clock: Instant::now(),
         }
     }
 
@@ -56,7 +60,7 @@ impl StereoRenderer {
 
     pub fn render(
         &mut self,
-        pose: Pose,
+        mut pose: Pose,
         model_transform: Mat4,
         cameras: [Mat4; 2],
     ) -> Result<bool, String> {
@@ -86,6 +90,18 @@ impl StereoRenderer {
         if !model_transform.is_finite() || cameras.iter().any(|m| !m.is_finite()) {
             return Err("Invalid companion camera".into());
         }
+        let (scale, rotation, position) = model_transform.to_scale_rotation_translation();
+        let (yaw, pitch, roll) = rotation.to_euler(glam::EulerRot::YXZ);
+        pose.hair = self.hair.sample(
+            glam::Vec3::new(
+                yaw + pose.gaze.yaw,
+                pitch + pose.gaze.pitch,
+                pose.roll - roll,
+            ),
+            position,
+            scale.x.abs(),
+            self.clock.elapsed().as_secs_f64(),
+        );
         let mut model = Classic::model().assemble(pose);
         // Authored widths use model units. Convert with the uniform spatial
         // scale, keeping the requested threefold VR contour at any model size.

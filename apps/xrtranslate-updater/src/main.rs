@@ -12,6 +12,7 @@ use std::{
 };
 
 use clap::Parser;
+use xrtranslate_config::RuntimeLayout;
 
 const PROTECTED_TOP_LEVEL: &[&str] = &["runtime"];
 const RETRY_TIMEOUT: Duration = Duration::from_secs(45);
@@ -93,7 +94,6 @@ fn apply_update(source: &Path, target: &Path) -> Result<(), Box<dyn Error>> {
 
     let result = replace_entries(source, target, &source_entries, &backup);
     if let Err(error) = result {
-        let _ = restore_backup(target, &backup);
         return Err(error.into());
     }
     reset_app_state_first_run(target)?;
@@ -155,26 +155,95 @@ fn replace_entries(
     source_entries: &HashSet<String>,
     backup: &Path,
 ) -> Result<(), String> {
-    remove_old_client_binary(target, source_entries, backup)?;
-    for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let name = entry.file_name();
-        if name.eq_ignore_ascii_case(OsStr::new("models")) {
-            merge_models_directory(&entry.path(), &target.join(&name), target, backup)?;
-            continue;
+    let mut new_runtime_files = Vec::new();
+    let result = (|| {
+        remove_old_client_binary(target, source_entries, backup)?;
+        replace_packaged_cpu_core(source, target, backup, &mut new_runtime_files)?;
+        for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let name = entry.file_name();
+            if name.eq_ignore_ascii_case(OsStr::new("models")) {
+                merge_models_directory(&entry.path(), &target.join(&name), target, backup)?;
+                continue;
+            }
+            if name.eq_ignore_ascii_case(OsStr::new("resources")) {
+                replace_resources_directory(&entry.path(), &target.join(&name), target, backup)?;
+                continue;
+            }
+            if is_protected(&name) {
+                continue;
+            }
+            let destination = target.join(&name);
+            backup_existing(&destination, target, backup)?;
+            copy_path(&entry.path(), &destination)?;
         }
-        if name.eq_ignore_ascii_case(OsStr::new("resources")) {
-            replace_resources_directory(&entry.path(), &target.join(&name), target, backup)?;
-            continue;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        // Newly supplied immutable files have no backup. Remove even partially
+        // copied files before restoring the previous installation.
+        let mut rollback_errors = Vec::new();
+        for path in new_runtime_files {
+            if let Err(error) = fs::remove_file(&path)
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                rollback_errors.push(format!("cannot remove {}: {error}", path.display()));
+            }
         }
-        if is_protected(&name) {
-            continue;
+        if let Err(error) = restore_backup(target, backup) {
+            rollback_errors.push(error);
         }
-        let destination = target.join(&name);
-        backup_existing(&destination, target, backup)?;
-        copy_path(&entry.path(), &destination)?;
+        return if rollback_errors.is_empty() {
+            Err(error)
+        } else {
+            Err(format!(
+                "{error}; rollback failed: {}",
+                rollback_errors.join("; ")
+            ))
+        };
     }
     Ok(())
+}
+
+/// Runtime also contains private settings, downloaded GPU libraries and the
+/// active backend marker. Only the CPU core shipped by the release is replaced.
+fn replace_packaged_cpu_core(
+    source: &Path,
+    target: &Path,
+    backup: &Path,
+    new_files: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let relative =
+        Path::new(RuntimeLayout::ONNX_CPU_RUNTIME_DIRECTORY).join(RuntimeLayout::ONNX_CORE_LIBRARY);
+    let source_file = source.join(&relative);
+    match fs::symlink_metadata(&source_file) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => {
+            return Err(format!(
+                "packaged CPU core is not a regular file: {}",
+                source_file.display()
+            ));
+        }
+        Err(error) => return Err(format!("cannot inspect {}: {error}", source_file.display())),
+    }
+    let destination = target.join(relative);
+    match fs::symlink_metadata(&destination) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            new_files.push(destination.clone());
+        }
+        Ok(metadata) if metadata.file_type().is_file() => {
+            backup_existing(&destination, target, backup)?;
+        }
+        Ok(_) => {
+            return Err(format!(
+                "installed CPU core is not a regular file: {}",
+                destination.display()
+            ));
+        }
+        Err(error) => return Err(format!("cannot inspect {}: {error}", destination.display())),
+    }
+    copy_path(&source_file, &destination)
 }
 
 /// Replaces packaged resources while preserving locally installed native
@@ -421,6 +490,145 @@ fn require_directory(path: &Path, label: &str) -> Result<(), Box<dyn Error>> {
 mod tests {
     use super::*;
 
+    fn cpu_core_path(root: &Path) -> PathBuf {
+        root.join(RuntimeLayout::ONNX_CPU_RUNTIME_DIRECTORY)
+            .join(RuntimeLayout::ONNX_CORE_LIBRARY)
+    }
+
+    fn write_fixture(path: &Path, bytes: &[u8]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn update_supplies_missing_cpu_core_and_preserves_private_runtime() {
+        let temp =
+            std::env::temp_dir().join(format!("xrt_updater_cpu_missing_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let source = temp.join("source");
+        let target = temp.join("target");
+        write_fixture(&cpu_core_path(&source), b"packaged CPU core");
+        for relative in [
+            "runtime/native-runtime.json",
+            "runtime/user-config.json",
+            "runtime/onnxruntime/cuda-13/onnxruntime.dll",
+            "runtime/onnxruntime/cpu/private-note.txt",
+            "runtime/voice_clones/recording.wav",
+        ] {
+            write_fixture(&source.join(relative), b"must not be installed");
+            write_fixture(&target.join(relative), b"preserved user runtime");
+        }
+        write_fixture(
+            &source.join("runtime/unrequested.json"),
+            b"must not be installed",
+        );
+
+        apply_update(&source, &target).unwrap();
+
+        assert_eq!(
+            fs::read(cpu_core_path(&target)).unwrap(),
+            b"packaged CPU core"
+        );
+        for relative in [
+            "runtime/native-runtime.json",
+            "runtime/user-config.json",
+            "runtime/onnxruntime/cuda-13/onnxruntime.dll",
+            "runtime/onnxruntime/cpu/private-note.txt",
+            "runtime/voice_clones/recording.wav",
+        ] {
+            assert_eq!(
+                fs::read(target.join(relative)).unwrap(),
+                b"preserved user runtime"
+            );
+        }
+        assert!(!target.join("runtime/unrequested.json").exists());
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn update_replaces_old_packaged_cpu_core_and_keeps_backup() {
+        let temp =
+            std::env::temp_dir().join(format!("xrt_updater_cpu_replace_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let source = temp.join("source");
+        let target = temp.join("target");
+        let backup = temp.join("backup");
+        write_fixture(&cpu_core_path(&source), b"new CPU core");
+        write_fixture(&cpu_core_path(&target), b"old CPU core");
+
+        replace_entries(&source, &target, &source_entries(&source).unwrap(), &backup).unwrap();
+
+        assert_eq!(fs::read(cpu_core_path(&target)).unwrap(), b"new CPU core");
+        assert_eq!(fs::read(cpu_core_path(&backup)).unwrap(), b"old CPU core");
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn update_without_packaged_cpu_core_preserves_existing_installation() {
+        let temp =
+            std::env::temp_dir().join(format!("xrt_updater_cpu_absent_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        let source = temp.join("source");
+        let target = temp.join("target");
+        fs::create_dir_all(&source).unwrap();
+        write_fixture(&cpu_core_path(&target), b"installed CPU core");
+
+        apply_update(&source, &target).unwrap();
+
+        assert_eq!(
+            fs::read(cpu_core_path(&target)).unwrap(),
+            b"installed CPU core"
+        );
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn failed_update_restores_old_cpu_core_and_removes_new_cpu_files() {
+        let temp =
+            std::env::temp_dir().join(format!("xrt_updater_cpu_rollback_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        for existing in [false, true] {
+            let root = temp.join(if existing { "existing" } else { "missing" });
+            let source = root.join("source");
+            let target = root.join("target");
+            write_fixture(&cpu_core_path(&source), b"new CPU core");
+            if existing {
+                write_fixture(&cpu_core_path(&target), b"old CPU core");
+            }
+            write_fixture(&target.join("runtime/native-runtime.json"), b"CUDA marker");
+            write_fixture(
+                &target.join("runtime/user-config.json"),
+                b"personal settings",
+            );
+            // Runtime files are copied first. A file where the models directory
+            // should be makes the later merge fail without filesystem timing.
+            write_fixture(&target.join("models"), b"existing conflicting file");
+            fs::create_dir_all(source.join("models")).unwrap();
+
+            assert!(apply_update(&source, &target).is_err());
+
+            if existing {
+                assert_eq!(fs::read(cpu_core_path(&target)).unwrap(), b"old CPU core");
+            } else {
+                assert!(!cpu_core_path(&target).exists());
+            }
+            assert_eq!(
+                fs::read(target.join("runtime/native-runtime.json")).unwrap(),
+                b"CUDA marker"
+            );
+            assert_eq!(
+                fs::read(target.join("runtime/user-config.json")).unwrap(),
+                b"personal settings"
+            );
+            assert_eq!(
+                fs::read(target.join("models")).unwrap(),
+                b"existing conflicting file"
+            );
+            assert!(!target.join("runtime/app_state.json").exists());
+        }
+        let _ = fs::remove_dir_all(&temp);
+    }
+
     #[test]
     fn merge_models_directory_adds_new_onnx_and_preserves_user_gguf() {
         let temp = std::env::temp_dir().join(format!("xrt_updater_test_{}", std::process::id()));
@@ -620,9 +828,10 @@ mod tests {
 
         apply_update(&source, &target).unwrap();
 
-        let app_state: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(target.join("runtime/app_state.json")).unwrap())
-                .unwrap();
+        let app_state: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(target.join("runtime/app_state.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(app_state["first_run"], true);
         assert_eq!(app_state["ui_language"], "japanese");
 

@@ -1,7 +1,6 @@
 //! Independent features attach to a tangent frame on the fitted body surface.
 use super::{
-    Pose,
-    geometry::body,
+    HeadShape, Pose,
     model::{Geometry, Material, Model, Part},
 };
 use eframe::egui::{Color32, Vec2};
@@ -11,11 +10,13 @@ use glam::{Mat4, Vec3};
 pub struct Eye {
     pub position: Vec2,
     pub thickness: f32,
+    pub height: f32,
 }
 #[derive(Clone, Copy)]
 pub struct Mouth {
     pub position: Vec2,
     pub width: f32,
+    pub color: Color32,
 }
 #[derive(Clone, Copy)]
 pub struct Nose {
@@ -23,26 +24,40 @@ pub struct Nose {
     pub size: f32,
 }
 
-fn feature(kind: Geometry, point: Vec2, scale: Vec3, body: Vec3, color: Color32) -> Part {
+fn feature(
+    kind: Geometry,
+    point: Vec2,
+    scale: Vec3,
+    body: Vec3,
+    head: HeadShape,
+    color: Color32,
+) -> Part {
     Part {
         transform: Mat4::from_scale(body)
-            * body::frame(glam::Vec2::new(point.x, -point.y))
+            * head.frame(glam::Vec2::new(point.x, -point.y))
             * Mat4::from_scale(scale),
         material: Material {
-            shade_contrast: 0.0,
+            shade_contrast: 0.12,
+            softness: 0.40,
             outline_width: 0.0,
+            ..Material::CLAY
         },
         ..Part::new(kind, color)
     }
 }
 
 impl Eye {
-    fn append(self, body: Vec3, pose: Pose, color: Color32, model: &mut Model) {
+    fn append(self, body: Vec3, head: HeadShape, pose: Pose, color: Color32, model: &mut Model) {
         let mut part = feature(
             Geometry::Eye,
             self.position,
-            Vec3::new(self.thickness / 0.146, 1.0 + pose.curiosity * 0.15, 1.0),
+            Vec3::new(
+                self.thickness / 0.146,
+                self.height / 0.396 * (1.0 + pose.curiosity * 0.15),
+                1.0,
+            ),
             body,
+            head,
             color,
         );
         part.morph = [pose.joy * (1.0 - pose.blink), pose.blink];
@@ -50,26 +65,33 @@ impl Eye {
     }
 }
 impl Mouth {
-    fn append(self, body: Vec3, pose: Pose, color: Color32, model: &mut Model) {
+    fn append(self, body: Vec3, head: HeadShape, pose: Pose, model: &mut Model) {
         let mut part = feature(
             Geometry::Mouth,
             self.position,
             Vec3::new(self.width / 0.226, 1.0, 1.0),
             body,
-            color,
+            head,
+            self.color,
         );
+        part.material = Material {
+            shade_contrast: 0.20,
+            outline_width: 0.005,
+            ..Material::CLAY
+        };
         let open = pose.curiosity.max(pose.speech.clamp(0.0, 1.0));
         part.morph = [pose.joy * (1.0 - open), open];
         model.add(part);
     }
 }
 impl Nose {
-    fn append(self, body: Vec3, color: Color32, model: &mut Model) {
+    fn append(self, body: Vec3, head: HeadShape, color: Color32, model: &mut Model) {
         model.add(feature(
             Geometry::Body,
             self.position,
             Vec3::splat(self.size),
             body,
+            head,
             color,
         ));
     }
@@ -85,29 +107,31 @@ pub struct Face {
 impl Default for Face {
     fn default() -> Self {
         Self {
-            eyes: [-0.34, 0.34].map(|x| Eye {
-                position: Vec2::new(x, -0.20),
-                thickness: 0.158,
+            eyes: [-0.424, 0.424].map(|x| Eye {
+                position: Vec2::new(x, 0.257),
+                thickness: 0.149,
+                height: 0.348,
             }),
             mouth: Some(Mouth {
-                position: Vec2::new(0.0, 0.02),
-                width: 0.226,
+                position: Vec2::new(0.0, 0.493),
+                width: 0.172,
+                color: Color32::from_rgb(236, 148, 147),
             }),
             nose: None,
-            ink: Color32::from_rgb(59, 60, 64),
+            ink: Color32::from_rgb(71, 59, 53),
         }
     }
 }
 impl Face {
-    pub(super) fn append(self, body: Vec3, pose: Pose, model: &mut Model) {
+    pub(super) fn append(self, body: Vec3, head: HeadShape, pose: Pose, model: &mut Model) {
         for eye in self.eyes {
-            eye.append(body, pose, self.ink, model);
+            eye.append(body, head, pose, self.ink, model);
         }
         if let Some(nose) = self.nose {
-            nose.append(body, self.ink, model);
+            nose.append(body, head, self.ink, model);
         }
         if let Some(mouth) = self.mouth {
-            mouth.append(body, pose, self.ink, model);
+            mouth.append(body, head, pose, model);
         }
     }
 }

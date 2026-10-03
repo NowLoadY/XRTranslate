@@ -55,13 +55,17 @@ impl ChannelScope {
         self.active.load(Ordering::Acquire) && !self.finished.load(Ordering::Acquire)
     }
 
-    pub fn publish(&self, event: &SessionEvent, subscribers: &[Box<dyn SessionEventSubscriber>]) {
+    pub fn publish(
+        &self,
+        event: &SessionEvent,
+        subscribers: &[Box<dyn SessionEventSubscriber>],
+    ) -> Vec<TranslationEvent> {
         let events = match self.results.lock() {
             Ok(mut results) => results.push(event, self.id()),
-            Err(_) => return,
+            Err(_) => return Vec::new(),
         };
-        for event in events {
-            publish_result(&self.owner, &event, subscribers);
+        for event in &events {
+            publish_result(&self.owner, event, subscribers);
             if let TranslationEvent::Finished { outcome, .. } = event {
                 self.failed.store(
                     matches!(outcome, TranslationOutcome::Failed(_)),
@@ -70,11 +74,12 @@ impl ChannelScope {
                 self.finished.store(true, Ordering::Release);
             }
         }
+        events
     }
 
     pub fn cancel(&self, subscribers: &[Box<dyn SessionEventSubscriber>]) {
         if self.accepts_events() {
-            self.publish(&SessionEvent::Disconnected("Cancelled".into()), subscribers);
+            let _ = self.publish(&SessionEvent::Disconnected("Cancelled".into()), subscribers);
         }
         self.active.store(false, Ordering::Release);
     }

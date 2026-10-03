@@ -32,13 +32,19 @@ struct Instance {
 }
 impl From<&Part> for Instance {
     fn from(part: &Part) -> Self {
+        let normal = Mat3::from_mat4(part.transform)
+            .inverse()
+            .transpose()
+            .to_cols_array_2d();
+        let surface = [
+            part.material.softness,
+            part.material.blush,
+            part.material.warmth,
+        ];
         Self {
             model: part.transform.to_cols_array_2d(),
-            normal: Mat3::from_mat4(part.transform)
-                .inverse()
-                .transpose()
-                .to_cols_array_2d()
-                .map(|v| [v[0], v[1], v[2], 0.0]),
+            // Use the normal matrix's alignment padding for surface controls.
+            normal: std::array::from_fn(|i| [normal[i][0], normal[i][1], normal[i][2], surface[i]]),
             color: egui::Rgba::from(part.color).to_array(),
             shape: [
                 part.morph[0],
@@ -56,6 +62,8 @@ struct Target {
     parts: wgpu::Buffer,
     color: wgpu::TextureView,
     texture: wgpu::Texture,
+    output: wgpu::TextureView,
+    occlusion: wgpu::BindGroup,
     msaa: wgpu::TextureView,
     depth: wgpu::TextureView,
     shadow: wgpu::TextureView,
@@ -76,6 +84,7 @@ impl Target {
         sampler: &wgpu::Sampler,
         shadow_layout: &wgpu::BindGroupLayout,
         shadow_sampler: &wgpu::Sampler,
+        occlusion_layout: &wgpu::BindGroupLayout,
         size: u32,
         count: usize,
     ) -> Self {
@@ -105,15 +114,26 @@ impl Target {
         let color = color_texture.create_view(&Default::default());
         let msaa = texture(COLOR, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT)
             .create_view(&Default::default());
-        let depth = texture(DEPTH, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT)
+        let depth = texture(DEPTH, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING)
             .create_view(&Default::default());
+        let output_texture = texture(COLOR, 1, wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC);
+        let output = output_texture.create_view(&Default::default());
+        let occlusion = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("avatar contact shadows"),
+            layout: occlusion_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&color) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&depth) },
+            ],
+        });
         let composite = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("avatar composite"),
             layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&color),
+                    resource: wgpu::BindingResource::TextureView(&output),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -171,7 +191,9 @@ impl Target {
             capacity,
             parts,
             color,
-            texture: color_texture,
+            texture: output_texture,
+            output,
+            occlusion,
             msaa,
             depth,
             shadow,
@@ -195,6 +217,8 @@ struct Renderer {
     shadow_layout: wgpu::BindGroupLayout,
     shadow_sampler: wgpu::Sampler,
     composite_pipeline: wgpu::RenderPipeline,
+    occlusion_pipeline: wgpu::RenderPipeline,
+    occlusion_layout: wgpu::BindGroupLayout,
     camera: wgpu::BindGroup,
     camera_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
@@ -214,6 +238,10 @@ impl Renderer {
         let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("avatar composite shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("composite.wgsl").into()),
+        });
+        let occlusion_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("avatar contact shadows"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("occlusion.wgsl").into()),
         });
         let camera_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("avatar camera layout"),
@@ -270,6 +298,25 @@ impl Renderer {
                 },
             ],
         });
+        let occlusion_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("avatar contact shadow layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2, multisampled: false,
+                    }, count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2, multisampled: true,
+                    }, count: None,
+                },
+            ],
+        });
         let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("avatar soft shadow sampler"),
             compare: Some(wgpu::CompareFunction::LessEqual),
@@ -277,7 +324,7 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let mesh_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 11 => Float32x3, 12 => Float32x3, 13 => Float32x3, 14 => Float32x3];
+        let mesh_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 11 => Float32x3, 12 => Float32x3, 13 => Float32x3, 14 => Float32x3, 15 => Float32];
         let instance_attributes = wgpu::vertex_attr_array![2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4, 10 => Float32x4];
         let buffers = [
             Some(wgpu::VertexBufferLayout {
@@ -412,6 +459,10 @@ impl Renderer {
             Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
             None,
         );
+        let occlusion_pipeline = pipeline(
+            &occlusion_shader, &[Some(&camera_layout), Some(&occlusion_layout)],
+            "vertex", Some("fragment"), &[], COLOR, None, 1, None, None,
+        );
         let matrix = glam::camera::rh::proj::directx::orthographic(-2.2, 2.2, -2.2, 2.2, 0.1, 20.0)
             * glam::camera::rh::view::look_at_mat4(Vec3::new(0.0, 0.0, 6.0), Vec3::ZERO, Vec3::Y);
         let light_matrix =
@@ -423,7 +474,7 @@ impl Renderer {
                 );
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("avatar camera"),
-            contents: bytemuck::cast_slice(&[matrix.to_cols_array(), light_matrix.to_cols_array()]),
+            contents: bytemuck::cast_slice(&[matrix.to_cols_array(), light_matrix.to_cols_array(), matrix.inverse().to_cols_array()]),
             usage: wgpu::BufferUsages::UNIFORM,
         });
         let camera = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -457,6 +508,8 @@ impl Renderer {
             shadow_layout,
             shadow_sampler,
             composite_pipeline,
+            occlusion_pipeline,
+            occlusion_layout,
             camera,
             camera_layout,
             texture_layout,
@@ -532,6 +585,7 @@ impl CallbackTrait for Draw {
                     &renderer.sampler,
                     &renderer.shadow_layout,
                     &renderer.shadow_sampler,
+                    &renderer.occlusion_layout,
                     size,
                     self.parts.len(),
                 ),
@@ -573,11 +627,11 @@ impl CallbackTrait for Draw {
                     Vec3::ZERO,
                     Vec3::Y,
                 );
-                let values = [matrix.to_cols_array(), light.to_cols_array()];
+                let values = [matrix.to_cols_array(), light.to_cols_array(), matrix.inverse().to_cols_array()];
                 if target.camera.is_none() {
                     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                         label: Some("avatar eye camera"),
-                        size: 128,
+                        size: 192,
                         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                         mapped_at_creation: false,
                     });
@@ -638,7 +692,7 @@ impl CallbackTrait for Draw {
                 resolve_target: Some(&target.color),
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Discard,
+                    store: wgpu::StoreOp::Store,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -658,6 +712,19 @@ impl CallbackTrait for Draw {
         pass.set_pipeline(&renderer.model_pipeline);
         pass.set_bind_group(1, &target.lighting, &[]);
         self.draw_parts(&mut pass, renderer, target);
+        drop(pass);
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("avatar contact shadow pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &target.output, depth_slice: None, resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+        });
+        pass.set_pipeline(&renderer.occlusion_pipeline);
+        pass.set_bind_group(0, target.camera.as_ref().map_or(&renderer.camera, |camera| &camera.1), &[]);
+        pass.set_bind_group(1, &target.occlusion, &[]);
+        pass.draw(0..3, 0..1);
         Vec::new()
     }
     fn paint(

@@ -1,5 +1,6 @@
 pub mod animation;
 pub mod automation;
+pub(crate) mod background;
 pub(crate) mod companion;
 pub mod components;
 pub mod fonts;

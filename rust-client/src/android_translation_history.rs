@@ -12,6 +12,7 @@ pub(crate) struct ResultSubscriber {
 impl HostOutputSubscriber for ResultSubscriber {
     fn on_host_output(&self, event: HostOutputEvent<'_>) {
         match event {
+            HostOutputEvent::CommittedTranslation { .. } | HostOutputEvent::StreamCancelled(_) => {}
             HostOutputEvent::Caption {
                 stream_id,
                 source,

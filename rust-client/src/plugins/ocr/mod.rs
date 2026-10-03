@@ -62,7 +62,11 @@ impl OcrPlugin {
 
     pub fn set_recognizing(&mut self, recognizing: bool) {
         self.recognizing = recognizing;
-        self.capture_error = None;
+        // Starting a retry does not mean capture has recovered. Keep its error
+        // visible until the next successful observation arrives.
+        if !recognizing {
+            self.capture_error = None;
+        }
         self.refresh_status();
     }
 
@@ -141,11 +145,79 @@ impl OcrPlugin {
     }
 
     fn refresh_status(&mut self) {
-        self.state.busy = self.recognizing || self.translating;
+        // Capturing changed pixels can yield exactly the same text. Once we
+        // have a source, those background checks should not pulse the UI.
+        self.state.busy = self.translating || (self.recognizing && self.state.source.is_empty());
         self.state.status = self
             .translation_error
             .as_ref()
             .or(self.capture_error.as_ref())
             .cloned();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn finish_translation(plugin: &mut OcrPlugin, outcome: TranslationOutcome) {
+        let owner = TranslationSessionOwner::Plugin(plugin.owner.clone().unwrap());
+        plugin.event_sink.on_translation_event(
+            &owner,
+            &TranslationEvent::Finished {
+                stream_id: 1,
+                outcome,
+            },
+        );
+        plugin.poll();
+    }
+
+    #[test]
+    fn duplicate_capture_cycles_leave_completed_presentation_unchanged() {
+        let mut plugin = OcrPlugin::default();
+        let binding = plugin.recognized("Keep this sentence".into()).unwrap();
+        finish_translation(&mut plugin, TranslationOutcome::Completed);
+        let settled = plugin.state.clone();
+
+        for _ in 0..3 {
+            plugin.set_recognizing(true);
+            assert_eq!(plugin.state, settled);
+            plugin.set_recognizing(false);
+            assert_eq!(plugin.state, settled);
+            // A capture revision can re-emit the same text, including changes
+            // only in whitespace, without creating another translation.
+            assert!(plugin.recognized("Keep  this\nsentence".into()).is_none());
+            assert_eq!(plugin.state, settled);
+            assert_eq!(plugin.owner.as_ref(), Some(&binding.owner));
+        }
+        let next = plugin.recognized("Next sentence".into()).unwrap();
+        assert_ne!(binding.owner.operation_id(), next.owner.operation_id());
+        assert!(plugin.state.busy);
+    }
+
+    #[test]
+    fn capture_retry_keeps_error_until_a_successful_observation() {
+        let mut plugin = OcrPlugin::default();
+        let binding = plugin.recognized("Still on screen".into()).unwrap();
+        finish_translation(&mut plugin, TranslationOutcome::Completed);
+        plugin.capture_failed("Capture temporarily unavailable".into());
+        let failed = plugin.state.clone();
+
+        for _ in 0..3 {
+            plugin.set_recognizing(true);
+            assert_eq!(plugin.state, failed);
+            plugin.capture_failed("Capture temporarily unavailable".into());
+            assert_eq!(plugin.state, failed);
+        }
+        plugin.set_recognizing(false);
+        assert!(plugin.state.status.is_none());
+        assert_eq!(plugin.state.source, "Still on screen");
+        assert_eq!(plugin.owner.as_ref(), Some(&binding.owner));
+
+        plugin.capture_failed("Capture temporarily unavailable".into());
+        plugin.set_recognizing(true);
+        assert!(plugin.recognized("Still on screen".into()).is_none());
+        assert!(plugin.state.status.is_none());
+        assert!(!plugin.state.busy);
     }
 }

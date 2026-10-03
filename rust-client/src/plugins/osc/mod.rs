@@ -17,6 +17,7 @@ use crate::ui::components::text_composer::TextMode;
 impl HostOutputSubscriber for OscHandle {
     fn on_host_output(&self, event: HostOutputEvent<'_>) {
         match event {
+            HostOutputEvent::CommittedTranslation { .. } | HostOutputEvent::StreamCancelled(_) => {}
             HostOutputEvent::Caption {
                 stream_id,
                 audio_source,
@@ -130,11 +131,7 @@ impl OscPlugin {
         self.manager.clear_chatbox();
     }
 
-    pub fn render_page(
-        &mut self,
-        ui: &mut egui::Ui,
-        context: OscPageContext,
-    ) -> Vec<OscUiAction> {
+    pub fn render_page(&mut self, ui: &mut egui::Ui, context: OscPageContext) -> Vec<OscUiAction> {
         ui::render(self, ui, context)
     }
 

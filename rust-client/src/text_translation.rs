@@ -9,7 +9,7 @@ use crate::{
 use crossbeam_channel::{Receiver, Sender, bounded};
 use eframe::egui;
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, VecDeque},
     sync::{Arc, atomic::Ordering},
     time::{Duration, Instant},
 };
@@ -66,7 +66,7 @@ struct TextTask {
     publish_to_host_outputs: bool,
     connection: TextConnection,
     started: Instant,
-    segments: HashSet<u32>,
+    segments: BTreeMap<u32, String>,
     segment_count: u32,
     terminal: bool,
 }
@@ -125,14 +125,28 @@ impl TextTask {
 
 pub(crate) struct TextTranslation {
     tasks: Vec<TextTask>,
+    completed: VecDeque<CompletedText>,
     backend_preparing: bool,
     next_poll: Instant,
+}
+
+/// Completed finite text output, independent of any clipboard or UI policy.
+pub(crate) struct CompletedText {
+    pub owner: TranslationSessionOwner,
+    pub translated: String,
+}
+
+#[derive(Default)]
+pub(crate) struct TextPoll {
+    pub errors: Vec<String>,
+    pub completed: VecDeque<CompletedText>,
 }
 
 impl Default for TextTranslation {
     fn default() -> Self {
         Self {
             tasks: Vec::new(),
+            completed: VecDeque::new(),
             backend_preparing: false,
             next_poll: Instant::now(),
         }
@@ -176,6 +190,23 @@ impl TextTranslation {
 
     fn retire_finished(&mut self) {
         for task in self.tasks.iter_mut().filter(|task| task.terminal) {
+            if task.scope.finished.load(Ordering::Acquire) && !task.segments.is_empty() {
+                let segments = std::mem::take(&mut task.segments);
+                if task.scope.active.load(Ordering::Acquire)
+                    && !task.scope.failed.load(Ordering::Acquire)
+                {
+                    let translated = segments.into_values().collect::<Vec<_>>().join("\n");
+                    if !translated.trim().is_empty() {
+                        if self.completed.len() == 32 {
+                            self.completed.pop_front();
+                        }
+                        self.completed.push_back(CompletedText {
+                            owner: task.scope.owner.clone(),
+                            translated,
+                        });
+                    }
+                }
+            }
             while let Ok(event) = task.connection.rx.try_recv() {
                 match event {
                     SessionEvent::StreamEnded { .. } => task.connection.drained = true,
@@ -279,7 +310,7 @@ impl TextTranslation {
             publish_to_host_outputs,
             connection: TextConnection::default(),
             started: Instant::now(),
-            segments: HashSet::new(),
+            segments: BTreeMap::new(),
             segment_count: 0,
             terminal: false,
         });
@@ -297,6 +328,7 @@ impl TextTranslation {
     }
 
     pub(crate) fn cancel_owner(&mut self, owner: &TranslationSessionOwner) {
+        self.completed.retain(|result| result.owner != *owner);
         self.tasks.retain(|task| {
             if task.scope.owner == *owner {
                 task.cancel();
@@ -311,6 +343,7 @@ impl TextTranslation {
     }
 
     pub(crate) fn reset(&mut self) {
+        self.completed.clear();
         for task in self.tasks.drain(..) {
             task.cancel();
         }
@@ -324,7 +357,7 @@ impl TextTranslation {
         graphs: PromptGraphSet,
         ctx: Option<egui::Context>,
         target: &Sender<TaskEvent>,
-    ) -> Vec<String> {
+    ) -> TextPoll {
         self.retire_finished();
         self.reuse_connections();
         let mut errors = Vec::new();
@@ -408,12 +441,13 @@ impl TextTranslation {
                         revisable,
                         segment_index,
                         segment_count,
+                        translated,
                         ..
                     } => {
                         task.segment_count = task.segment_count.max((*segment_count).max(1));
                         if !revisable && *segment_index > 0 && *segment_index <= task.segment_count
                         {
-                            task.segments.insert(*segment_index);
+                            task.segments.insert(*segment_index, translated.clone());
                         }
                         task.emit(event, target);
                         if task.segments.len() == task.segment_count as usize {
@@ -435,12 +469,18 @@ impl TextTranslation {
                 task.fail(error.into(), target, &mut errors);
             }
         }
-        if self.busy()
+        if self
+            .tasks
+            .iter()
+            .any(|task| !task.terminal || task.scope.accepts_events())
             && let Some(ctx) = ctx
         {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
-        errors
+        TextPoll {
+            errors,
+            completed: std::mem::take(&mut self.completed),
+        }
     }
 }
 
@@ -496,7 +536,7 @@ mod tests {
             continuous: false,
             publish_to_host_outputs: false,
             source: "words".into(),
-            translated: "文字".into(),
+            translated: format!("文字{segment_index}"),
             turn_id: "text-1".into(),
             segment_index,
             segment_count: 2,
@@ -518,7 +558,7 @@ mod tests {
                 .tx
                 .send(make_segment(index))
                 .unwrap();
-            text.poll(
+            let output = text.poll(
                 &mut backend,
                 "",
                 PromptGraphSet {
@@ -527,17 +567,62 @@ mod tests {
                 Some(egui::Context::default()),
                 &target,
             );
+            assert!(output.completed.is_empty());
             assert_eq!(text.busy(), index != 1);
         }
         assert!(text.tasks[0].scope.accepts_events());
-        let delivered = events
-            .try_iter()
-            .map(|event| event.event)
-            .collect::<Vec<_>>();
+        let delivered = events.try_iter().collect::<Vec<_>>();
         assert_eq!(delivered.len(), 4);
         assert!(
-            matches!(delivered.last(), Some(SessionEvent::Disconnected(reason)) if reason == "Finished")
+            matches!(&delivered.last().unwrap().event, SessionEvent::Disconnected(reason) if reason == "Finished")
         );
+        // The UI must wait for acceptance by the same pump that updates history.
+        for event in delivered {
+            let _ = event.scope.publish(&event.event, &[]);
+        }
+        text.retire_finished();
+        let completed = text.completed.pop_front().unwrap();
+        assert_eq!(completed.translated, "文字1\n文字2");
+        assert!(completed.owner.is_host());
+        text.retire_finished();
+        assert!(text.completed.is_empty());
+    }
+
+    #[test]
+    fn failed_and_cancelled_text_does_not_produce_completed_output() {
+        for reason in ["Cancelled", "connection failed"] {
+            let mut text = TextTranslation::default();
+            text.submit(request(
+                "input",
+                LanguageSelection::parse("en", "zh").unwrap(),
+            ))
+            .unwrap();
+            let task = &mut text.tasks[0];
+            task.terminal = true;
+            task.segments.insert(1, "partial result".into());
+            if reason == "Cancelled" {
+                task.scope.cancel(&[]);
+            } else {
+                let _ = task
+                    .scope
+                    .publish(&SessionEvent::Disconnected(reason.into()), &[]);
+            }
+            text.retire_finished();
+            assert!(text.completed.is_empty());
+        }
+    }
+
+    #[test]
+    fn reset_discards_undelivered_completed_output() {
+        let mut text = TextTranslation::default();
+        text.completed.push_back(CompletedText {
+            owner: TranslationSessionOwner::Host {
+                capture_source: CaptureSource::Microphone,
+            },
+            translated: "old result".into(),
+        });
+        text.reset();
+        assert!(text.completed.is_empty());
     }
 
     #[test]

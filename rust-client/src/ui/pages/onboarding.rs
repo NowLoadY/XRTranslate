@@ -52,6 +52,7 @@ pub fn render_onboarding_fullscreen(
     );
 
     let viewport_focused = ui.input(|input| input.viewport().focused.unwrap_or(true));
+    let custom_background = app.background_image.is_loaded();
     let mut companion = crate::ui::companion::OnboardingLayout {
         requirement,
         ..Default::default()
@@ -62,7 +63,11 @@ pub fn render_onboarding_fullscreen(
         .show_separator_line(true)
         .frame(
             Frame::new()
-                .fill(theme::sidebar(viewport_focused))
+                .fill(if custom_background {
+                    Color32::TRANSPARENT
+                } else {
+                    theme::sidebar(viewport_focused)
+                })
                 .stroke(Stroke::new(1.0, theme::border()))
                 .inner_margin(Margin::symmetric(margin, footer_margin_y)),
         )
@@ -138,7 +143,11 @@ pub fn render_onboarding_fullscreen(
     let content = egui::CentralPanel::default()
         .frame(
             Frame::new()
-                .fill(theme::content_backdrop(viewport_focused))
+                .fill(if custom_background {
+                    Color32::TRANSPARENT
+                } else {
+                    theme::content_backdrop(viewport_focused)
+                })
                 .inner_margin(Margin::symmetric(margin, content_margin_y))
                 .stroke(Stroke::NONE),
         )
@@ -548,14 +557,6 @@ fn render_onboarding_welcome(
 
 fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     let language = app.ui_language;
-    onboarding_title(
-        ui,
-        language,
-        "Configure model providers",
-        Some(
-            "Select local models or cloud APIs for speech recognition and translation. Required model packages will be downloaded in the final step.",
-        ),
-    );
     let project_root = app.project_root();
     let local_availability = app.runtime_installer.local_model_availability();
     if !app.model_defaults_initialized
@@ -1128,18 +1129,6 @@ fn onboarding_model_config_card(
 // ---------------------------------------------------------------------------
 
 fn render_onboarding_optional(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
-    let (title, description) = if cfg!(target_os = "android") {
-        (
-            "Optional text-to-speech",
-            "Choose Skip to keep translated text only, or select a voice-cloning provider. The model will be downloaded in the final step.",
-        )
-    } else {
-        (
-            "TTS and OCR",
-            "Choose speech playback and screen text recognition independently. Selected models will be downloaded in the final step.",
-        )
-    };
-    onboarding_title(ui, app.ui_language, title, Some(description));
     render_onboarding_tts(app, ui);
     #[cfg(not(target_os = "android"))]
     {
@@ -1642,15 +1631,6 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
         app.last_error = Some(error);
     }
 
-    onboarding_title(
-        ui,
-        language,
-        "Download required resources",
-        Some(
-            "Download the configured model packages and native inference runtime for your system.",
-        ),
-    );
-
     let busy = app.model_task_manager.is_busy();
     let mut installs = Vec::new();
     let mut delete_model = None;
@@ -1716,40 +1696,55 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
             .collect::<Vec<_>>();
         let missing_download_bytes = missing.iter().map(|item| item.download_bytes).sum::<u64>();
         let missing_installed_bytes = missing.iter().map(|item| item.installed_bytes).sum::<u64>();
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(i18n::tr(language, "Model Packages"))
-                    .size(15.0)
-                    .color(theme::text_strong())
-                    .strong(),
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let previous_source = app.model_task_manager.use_mirror();
-                let mut use_mirror = previous_source;
-                components::download_mirror_toggle(ui, language, &mut use_mirror);
-                if use_mirror != previous_source
-                    && let Err(error) = app
-                        .model_task_manager
-                        .switch_download_source(project_root.clone(), use_mirror)
-                {
-                    app.last_error = Some(error);
-                }
-            });
-        });
-        if !missing.is_empty() {
-            ui.add_space(6.0);
-            ui.horizontal_wrapped(|ui| {
-                let label = format!(
+        egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(),
+            ui.make_persistent_id("onboarding_model_downloads"),
+            false,
+        )
+        .show_header(ui, |ui| {
+            let label = if missing.is_empty() {
+                i18n::tr(language, "Download selected models").to_owned()
+            } else {
+                format!(
                     "{} ({}) · {}",
-                    i18n::tr(language, "Download all required models"),
+                    i18n::tr(language, "Download selected models"),
                     missing.len(),
                     components::format_file_size(missing_download_bytes),
+                )
+            };
+            if components::primary_button_enabled(
+                ui,
+                &label,
+                !missing.is_empty() && !app.runtime_installer.is_busy(),
+            )
+            .clicked()
+            {
+                installs.extend(missing.iter().map(|item| item.id));
+            }
+        })
+        .body(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(i18n::tr(language, "Model Packages"))
+                        .size(15.0)
+                        .color(theme::text_strong())
+                        .strong(),
                 );
-                if components::primary_button_enabled(ui, &label, !app.runtime_installer.is_busy())
-                    .clicked()
-                {
-                    installs.extend(missing.iter().map(|item| item.id));
-                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let previous_source = app.model_task_manager.use_mirror();
+                    let mut use_mirror = previous_source;
+                    components::download_mirror_toggle(ui, language, &mut use_mirror);
+                    if use_mirror != previous_source
+                        && let Err(error) = app
+                            .model_task_manager
+                            .switch_download_source(project_root.clone(), use_mirror)
+                    {
+                        app.last_error = Some(error);
+                    }
+                });
+            });
+            if !missing.is_empty() {
+                ui.add_space(6.0);
                 ui.label(
                     RichText::new(format!(
                         "{}: {}",
@@ -1759,55 +1754,57 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                     .size(12.0)
                     .color(theme::text_weak()),
                 );
-            });
-        }
-        ui.add_space(8.0);
-
-        for item in &download_items {
-            let batch = app.model_task_manager.batch_snapshot();
-            let is_active =
-                batch.as_ref().and_then(|batch| batch.current_asset_id) == Some(item.id) && busy;
-            let queued_position = batch.as_ref().and_then(|batch| {
-                batch
-                    .queued_packages
-                    .iter()
-                    .position(|id| *id == item.id)
-                    .map(|position| position + 1)
-            });
-            let failed = batch.as_ref().and_then(|batch| batch.failed_asset_id) == Some(item.id);
-            let action = if item.installed {
-                "Installed"
-            } else if is_active {
-                "Downloading"
-            } else if queued_position.is_some() {
-                "Queued"
-            } else if failed {
-                "Retry"
-            } else {
-                "Download"
-            };
-            let (clicked, delete_clicked) = render_download_card(
-                ui,
-                language,
-                item,
-                action,
-                !item.installed
-                    && !is_active
-                    && queued_position.is_none()
-                    && item.hardware_available
-                    && !app.runtime_installer.is_busy(),
-                !busy,
-                queued_position,
-                is_active.then_some(app.model_task_manager.state()),
-            );
-            if clicked {
-                installs.push(item.id);
-            }
-            if delete_clicked {
-                delete_model = Some(item.id);
             }
             ui.add_space(8.0);
-        }
+
+            for item in &download_items {
+                let batch = app.model_task_manager.batch_snapshot();
+                let is_active = batch.as_ref().and_then(|batch| batch.current_asset_id)
+                    == Some(item.id)
+                    && busy;
+                let queued_position = batch.as_ref().and_then(|batch| {
+                    batch
+                        .queued_packages
+                        .iter()
+                        .position(|id| *id == item.id)
+                        .map(|position| position + 1)
+                });
+                let failed =
+                    batch.as_ref().and_then(|batch| batch.failed_asset_id) == Some(item.id);
+                let action = if item.installed {
+                    "Installed"
+                } else if is_active {
+                    "Downloading"
+                } else if queued_position.is_some() {
+                    "Queued"
+                } else if failed {
+                    "Retry"
+                } else {
+                    "Download"
+                };
+                let (clicked, delete_clicked) = render_download_card(
+                    ui,
+                    language,
+                    item,
+                    action,
+                    !item.installed
+                        && !is_active
+                        && queued_position.is_none()
+                        && item.hardware_available
+                        && !app.runtime_installer.is_busy(),
+                    !busy,
+                    queued_position,
+                    is_active.then_some(app.model_task_manager.state()),
+                );
+                if clicked {
+                    installs.push(item.id);
+                }
+                if delete_clicked {
+                    delete_model = Some(item.id);
+                }
+                ui.add_space(8.0);
+            }
+        });
     } else {
         Frame::new()
             .fill(theme::surface_control())
@@ -1894,9 +1891,13 @@ fn render_download_card(
             let layout = if compact {
                 Layout::top_down(Align::Min)
             } else {
-                Layout::left_to_right(Align::Center)
+                Layout::left_to_right(Align::Min)
             };
-            ui.with_layout(layout, |ui| {
+            // `with_layout` inherits the scroll area's remaining height. A centered
+            // horizontal layout then pushes the first card's contents down into
+            // that space. Start with no requested height and grow with the content.
+            let row_size = egui::vec2(ui.available_width(), 0.0);
+            ui.allocate_ui_with_layout(row_size, layout, |ui| {
                 let details_width = if compact {
                     ui.available_width()
                 } else {
@@ -1906,6 +1907,9 @@ fn render_download_card(
                     egui::vec2(details_width, 0.0),
                     Layout::top_down(Align::Min),
                     |ui| {
+                        // Allocation alone only caps this column's width; reserve
+                        // it so short descriptions keep actions in their own column.
+                        ui.set_width(details_width);
                         ui.label(
                             RichText::new(i18n::tr(language, item.category_title))
                                 .size(14.5)
@@ -2019,6 +2023,10 @@ fn render_download_card(
     (clicked, delete_clicked)
 }
 
+#[cfg(test)]
+#[path = "onboarding_download_card_tests.rs"]
+mod download_card_tests;
+
 fn render_runtime_installation_section(
     app: &mut crate::XRTranslateApp,
     ui: &mut egui::Ui,
@@ -2101,17 +2109,15 @@ fn render_runtime_installation_section(
                             );
                         });
                 } else {
-                    let button_text = download_size.map_or_else(
-                        || i18n::tr(language, "Preparing download…").to_owned(),
-                        |bytes| {
-                            format!(
-                                "{} {} · {}",
-                                i18n::tr(language, "Download"),
-                                backend,
-                                components::format_file_size(bytes)
-                            )
-                        },
-                    );
+                    let button_text = match download_size {
+                        None => i18n::tr(language, "Preparing download…").to_owned(),
+                        Some(0) => i18n::tr(language, "Configure runtime").to_owned(),
+                        Some(bytes) => format!(
+                            "{} · {}",
+                            i18n::tr(language, "Download missing resources"),
+                            components::format_file_size(bytes)
+                        ),
+                    };
                     let install_clicked = components::primary_button_enabled(
                         ui,
                         &button_text,

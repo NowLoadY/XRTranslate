@@ -7,7 +7,7 @@ use crate::i18n::{UiLanguage, tr};
 use crate::overlay_ipc::{
     OcrOverlayState, OverlayCommand, OverlayControls, OverlayEvent, OverlayRegion, OverlayState,
 };
-use crate::ui::{components, theme};
+use crate::ui::{components, components::avatar, theme};
 use eframe::egui::{self, Color32, Rect, RichText, Stroke, Vec2};
 use std::{
     io::{BufRead, Write},
@@ -25,16 +25,13 @@ pub fn run_native_overlay() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("XRTranslate Floating Window")
             .with_inner_size([460.0, 360.0])
-            .with_min_inner_size([320.0, 160.0])
+            .with_min_inner_size([360.0, 160.0])
             .with_decorations(false)
             .with_transparent(true)
             .with_always_on_top()
             .with_active(false)
             .with_taskbar(false)
             .with_visible(false),
-        #[cfg(target_os = "linux")]
-        renderer: eframe::Renderer::Glow,
-        #[cfg(windows)]
         renderer: eframe::Renderer::Wgpu,
         persist_window: false,
         ..Default::default()
@@ -47,6 +44,10 @@ pub fn run_native_overlay() -> eframe::Result<()> {
         options.event_loop_builder = Some(Box::new(|builder| {
             builder.with_x11();
         }));
+        if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup
+        {
+            setup.instance_descriptor.backends = eframe::wgpu::Backends::GL;
+        }
     }
     #[cfg(windows)]
     {
@@ -59,19 +60,23 @@ pub fn run_native_overlay() -> eframe::Result<()> {
         "XRTranslate Floating Window",
         options,
         Box::new(|context| {
+            let graphics = context
+                .wgpu_render_state
+                .as_ref()
+                .ok_or("Avatar rendering is unavailable.")?;
             #[cfg(target_os = "linux")]
             {
-                use eframe::glow::HasContext;
-                let gl = context
-                    .gl
-                    .as_ref()
-                    .ok_or("Software rendering is unavailable.")?;
-                let renderer = unsafe { gl.get_parameter_string(eframe::glow::RENDERER) };
-                if !renderer.to_ascii_lowercase().contains("llvmpipe") {
+                let renderer = graphics.adapter.get_info();
+                if !renderer.name.to_ascii_lowercase().contains("llvmpipe") {
                     return Err("Software rendering is unavailable.".into());
                 }
-                log::info!("Floating window software renderer: {renderer}");
+                log::info!("Floating window software renderer: {}", renderer.name);
             }
+            avatar::install(
+                &graphics.device,
+                graphics.target_format,
+                &mut graphics.renderer.write(),
+            );
             crate::ui::fonts::configure_multilingual_fonts(&context.egui_ctx);
             theme::apply_theme(&context.egui_ctx);
             context.egui_ctx.all_styles_mut(|style| {
@@ -132,7 +137,9 @@ pub fn run_native_overlay() -> eframe::Result<()> {
                     vad_active: false,
                 },
                 ocr: None,
-                edit_region: false,
+                collapsed: false,
+                companion: avatar::Surface::default(),
+                companion_region: None,
                 pending_region: None,
                 sent_region: None,
                 closing: false,
@@ -151,7 +158,9 @@ struct OverlayWindow {
     controls: OverlayControls,
     subtitles: OverlayState,
     ocr: Option<OcrOverlayState>,
-    edit_region: bool,
+    collapsed: bool,
+    companion: avatar::Surface,
+    companion_region: Option<OverlayRegion>,
     pending_region: Option<(OverlayRegion, Instant)>,
     sent_region: Option<OverlayRegion>,
     closing: bool,
@@ -246,6 +255,13 @@ impl ResultWindow {
 }
 
 impl OverlayWindow {
+    fn invalidate_region(&mut self) {
+        self.pending_region = None;
+        if self.sent_region.take().is_some() {
+            send_event(OverlayEvent::RegionChanging);
+        }
+    }
+
     fn close(&mut self, ctx: &egui::Context) {
         if !self.closing {
             send_event(OverlayEvent::CloseRequested);
@@ -257,14 +273,32 @@ impl OverlayWindow {
     fn header(&mut self, ui: &mut egui::Ui) -> Rect {
         // Tooltips must never be painted over the area being captured.
         ui.ctx().all_styles_mut(|style| {
-            style.interaction.tooltip_delay =
-                if self.edit_region || self.controls.ocr_enabled == Some(true) {
-                    f32::INFINITY
-                } else {
-                    0.5
-                };
+            style.interaction.tooltip_delay = if self.controls.ocr_enabled == Some(true) {
+                f32::INFINITY
+            } else {
+                0.5
+            };
             style.interaction.tooltip_grace_time = 0.0;
         });
+        if self.collapsed {
+            // Keep the header height unchanged so folding never moves the OCR area.
+            let (rect, response) = ui.allocate_exact_size(
+                Vec2::splat(components::INPUT_TOGGLE_SIZE + 14.0),
+                egui::Sense::click_and_drag(),
+            );
+            let response = response.on_hover_cursor(egui::CursorIcon::Grab);
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "XRTranslate")
+            });
+            if response.drag_started() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+            if response.clicked() {
+                self.collapsed = false;
+                send_event(OverlayEvent::CompanionDetached(false));
+            }
+            return rect;
+        }
         panel(6)
             .show(ui, |ui| {
                 ui.spacing_mut().button_padding = Vec2::splat(4.0);
@@ -302,60 +336,41 @@ impl OverlayWindow {
                     }
                 }
                 if drag.drag_started() {
-                    self.edit_region |= self.controls.ocr_enabled == Some(true);
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
-                if self.controls.ocr_enabled.is_some() {
-                    let label = tr(
-                        self.language,
-                        if self.edit_region {
-                            "Confirm recognition area"
-                        } else {
-                            "Adjust recognition area"
-                        },
-                    );
-                    let response = icon_button(
-                        ui,
-                        slot(bar.left() + 50.0),
-                        "recognition_area",
-                        self.edit_region,
-                        label,
-                    );
-                    let center = response.rect.center();
-                    let stroke = Stroke::new(
-                        1.6,
-                        if self.edit_region || response.hovered() {
-                            theme::text_strong()
-                        } else {
-                            theme::text_weak()
-                        },
-                    );
-                    if self.edit_region {
-                        ui.painter().add(egui::Shape::line(
-                            vec![
-                                center + egui::vec2(-7.0, 0.0),
-                                center + egui::vec2(-2.0, 5.0),
-                                center + egui::vec2(8.0, -6.0),
-                            ],
-                            stroke,
-                        ));
-                    } else {
-                        for (x, y) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
-                            let corner = center + egui::vec2(x, y) * 9.0;
-                            ui.painter().add(egui::Shape::line(
-                                vec![
-                                    corner - egui::vec2(x * 5.0, 0.0),
-                                    corner,
-                                    corner - egui::vec2(0.0, y * 5.0),
-                                ],
-                                stroke,
-                            ));
-                        }
-                    }
-                    if response.clicked() {
-                        self.edit_region = !self.edit_region;
-                    }
+                let collapse = ui.put(
+                    Rect::from_min_size(
+                        bar.min + egui::vec2(26.0, 0.0),
+                        egui::vec2(24.0, bar.height()),
+                    ),
+                    egui::Button::new(
+                        egui::Image::new(egui::include_image!(
+                            "../resources/icons/chevron-left.svg"
+                        ))
+                        .fit_to_exact_size(Vec2::splat(16.0))
+                        .tint(theme::text_weak()),
+                    )
+                    .min_size(egui::vec2(24.0, bar.height()))
+                    .corner_radius(10),
+                );
+                if collapse.clicked() {
+                    self.collapsed = true;
+                    send_event(OverlayEvent::CompanionDetached(true));
                 }
+                let step = components::INPUT_TOGGLE_SIZE + 4.0;
+                let inputs = usize::from(self.controls.microphone_enabled.is_some())
+                    + usize::from(self.controls.system_audio_enabled.is_some())
+                    + usize::from(self.controls.ocr_enabled.is_some())
+                    + usize::from(self.controls.auto_input_available);
+                let left = bar.left() + 72.0;
+                let right = (bar.right() - 62.0 - inputs as f32 * step).max(left);
+                let first = (bar.center().x - inputs as f32 * step * 0.5).clamp(left, right);
+                let translation_x = first
+                    + if self.controls.microphone_enabled.is_some() {
+                        step
+                    } else {
+                        0.0
+                    };
                 let active = self.controls.translation_enabled;
                 let label = tr(
                     self.language,
@@ -365,40 +380,36 @@ impl OverlayWindow {
                         "Start Translation"
                     },
                 );
-                let response = icon_button(ui, slot(bar.center().x), "translation", active, label);
-                egui::Image::new(egui::include_image!("../resources/icons/translation.svg"))
-                    .tint(theme::text_strong())
+                let response = icon_button(ui, slot(translation_x), "translation", active, label);
+                egui::Image::new(egui::include_image!("../resources/icons/power.svg"))
+                    .tint(if active || response.hovered() || response.has_focus() {
+                        theme::text_strong()
+                    } else {
+                        theme::text_weak()
+                    })
                     .paint_at(ui, response.rect.shrink(7.0));
                 if response.clicked() {
                     send_event(OverlayEvent::TranslationEnabled(!active));
                 }
                 use components::InputIcon;
-                let step = components::INPUT_TOGGLE_SIZE + 8.0;
                 for (icon, enabled, x, id) in [
                     (
                         InputIcon::Microphone,
                         self.controls.microphone_enabled,
-                        bar.center().x - step,
+                        first,
                         "microphone_input",
                     ),
                     (
                         InputIcon::SystemAudio,
                         self.controls.system_audio_enabled,
-                        bar.center().x
-                            + if self.controls.microphone_enabled.is_some() {
-                                step
-                            } else {
-                                -step
-                            },
+                        translation_x + step,
                         "system_audio_input",
                     ),
                     (
                         InputIcon::Text,
                         self.controls.ocr_enabled,
-                        bar.center().x
-                            + if self.controls.microphone_enabled.is_some()
-                                && self.controls.system_audio_enabled.is_some()
-                            {
+                        translation_x
+                            + if self.controls.system_audio_enabled.is_some() {
                                 step * 2.0
                             } else {
                                 step
@@ -435,18 +446,44 @@ impl OverlayWindow {
                         })
                         .inner;
                     if response.clicked() {
-                        if matches!(icon, InputIcon::Text) && !enabled {
-                            self.edit_region = true;
-                            self.pending_region = None;
-                            if self.sent_region.take().is_some() {
-                                send_event(OverlayEvent::RegionChanging);
-                            }
+                        if matches!(icon, InputIcon::Text) {
+                            self.invalidate_region();
                         }
                         send_event(match icon {
                             InputIcon::Microphone => OverlayEvent::MicrophoneEnabled(!enabled),
                             InputIcon::SystemAudio => OverlayEvent::SystemAudioEnabled(!enabled),
                             InputIcon::Text => OverlayEvent::OcrEnabled(!enabled),
                         });
+                    }
+                }
+                if self.controls.auto_input_available {
+                    let active = self.controls.auto_input_enabled;
+                    let label = tr(
+                        self.language,
+                        if active {
+                            "Turn off automatic typing of translations into the focused input"
+                        } else {
+                            "Turn on automatic typing of translations into the focused input"
+                        },
+                    );
+                    let response = icon_button(
+                        ui,
+                        slot(first + inputs as f32 * step),
+                        "auto_input",
+                        active,
+                        label,
+                    );
+                    paint_wave_pen(
+                        ui.painter(),
+                        response.rect.center(),
+                        if active || response.hovered() || response.has_focus() {
+                            theme::text_strong()
+                        } else {
+                            theme::text_weak()
+                        },
+                    );
+                    if response.clicked() {
+                        send_event(OverlayEvent::AutoInputEnabled(!active));
                     }
                 }
                 let close = icon_button(
@@ -586,12 +623,25 @@ impl OverlayWindow {
                                 theme::text_weak(),
                             );
                         }
+                        // Activity belongs in the existing header, so capture
+                        // and translation updates cannot shift the result list.
+                        if ocr.is_some_and(|ocr| ocr.busy) {
+                            egui::Spinner::new().color(theme::text_weak()).paint_at(
+                                ui,
+                                Rect::from_center_size(
+                                    egui::pos2(handle.left() + 6.0, handle.center().y),
+                                    Vec2::splat(12.0),
+                                ),
+                            );
+                        }
                         if drag.drag_started() {
                             result.moving();
                             ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                         }
                         ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
                         egui::ScrollArea::vertical()
+                            .stick_to_bottom(true)
+                            .min_scrolled_height(0.0)
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
                                 result_contents(ui, language, subtitles, ocr, waiting);
@@ -634,16 +684,13 @@ impl eframe::App for OverlayWindow {
                 OverlayCommand::Language(language) => self.language = language,
                 OverlayCommand::Controls(controls) => {
                     if controls.ocr_enabled != self.controls.ocr_enabled {
-                        self.edit_region = controls.ocr_enabled == Some(true);
-                    }
-                    if controls.ocr_enabled.is_none() {
-                        self.pending_region = None;
-                        self.sent_region = None;
+                        self.invalidate_region();
                     }
                     self.controls = controls;
                 }
                 OverlayCommand::Subtitles(state) => self.subtitles = state,
                 OverlayCommand::Ocr(state) => self.ocr = state,
+                OverlayCommand::Companion(presentation) => self.companion.update(presentation),
                 OverlayCommand::Hide => {
                     self.closing = true;
                     self.close(ui.ctx());
@@ -659,86 +706,74 @@ impl eframe::App for OverlayWindow {
         let mut regions = Vec::new();
         let mut selection = None;
         let mut anchor = Rect::NOTHING;
+        let collapsed = self.collapsed;
+        let mut header_rect = Rect::NOTHING;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.inner_margin(4))
             .show(ui, |ui| {
                 let header = self.header(ui);
-                regions.push((header, CORNER as f32));
+                header_rect = header;
+                regions.push((header, if collapsed { 8.0 } else { CORNER as f32 }));
                 anchor = header;
                 ui.add_space(GAP);
-                if self.controls.ocr_enabled.is_some()
-                    && (self.edit_region
-                        || self.controls.ocr_enabled == Some(true)
-                        || (self.pending_region.is_some() && self.sent_region.is_none()))
+                if let Some(rect) =
+                    recognition_area(ui, self.controls.ocr_enabled == Some(true), &mut regions)
                 {
-                    let rect = ui.available_rect_before_wrap().shrink(2.0);
                     selection = Some(rect.shrink(12.0));
                     anchor = header.union(rect);
-                    if self.edit_region {
-                        let color = Color32::WHITE;
-                        ui.painter().rect_stroke(
-                            rect.translate(egui::vec2(0.0, 1.0)),
-                            0.0,
-                            Stroke::new(5.0, Color32::from_black_alpha(112)),
-                            egui::StrokeKind::Inside,
-                        );
-                        ui.painter().rect_stroke(
-                            rect,
-                            0.0,
-                            Stroke::new(2.0, color),
-                            egui::StrokeKind::Inside,
-                        );
-                        use egui::viewport::ResizeDirection::*;
-                        for (edge, direction) in [
-                            (
-                                Rect::from_min_max(
-                                    rect.left_top(),
-                                    rect.right_top() + egui::vec2(0.0, GAP),
-                                ),
-                                North,
-                            ),
-                            (
-                                Rect::from_min_max(
-                                    rect.left_bottom() - egui::vec2(0.0, GAP),
-                                    rect.right_bottom(),
-                                ),
-                                South,
-                            ),
-                            (
-                                Rect::from_min_max(
-                                    rect.left_top(),
-                                    rect.left_bottom() + egui::vec2(GAP, 0.0),
-                                ),
-                                West,
-                            ),
-                            (
-                                Rect::from_min_max(
-                                    rect.right_top() - egui::vec2(GAP, 0.0),
-                                    rect.right_bottom(),
-                                ),
-                                East,
-                            ),
-                        ] {
-                            resize(ui, edge, direction);
-                            regions.push((edge, 0.0));
-                        }
-                        for (point, direction) in [
-                            (rect.left_top(), NorthWest),
-                            (rect.right_top() - egui::vec2(12.0, 0.0), NorthEast),
-                            (rect.left_bottom() - egui::vec2(0.0, 12.0), SouthWest),
-                            (rect.right_bottom() - egui::vec2(12.0, 12.0), SouthEast),
-                        ] {
-                            let corner = Rect::from_min_size(point, Vec2::splat(12.0));
-                            ui.painter().rect_filled(corner, 2.0, color);
-                            resize(ui, corner, direction);
-                            regions.push((corner, 2.0));
-                        }
-                    }
                 }
             });
         let Some(window) = frame.winit_window() else {
             return;
         };
+        let bubble = if collapsed {
+            let pointer = self
+                .input
+                .pointer_position(window, ui.ctx().pixels_per_point());
+            ui.ctx().request_repaint_after(Duration::from_millis(33));
+            self.companion.paint(ui, header_rect, pointer)
+        } else {
+            None
+        };
+        let bubble = bubble.map(|rect| rect.intersect(ui.ctx().viewport_rect()));
+        if let Some(rect) = bubble {
+            regions.push((rect, 0.0));
+        }
+        if let Ok(position) = window.inner_position() {
+            let region = bubble.map(|rect| {
+                let rect = rect * ui.ctx().pixels_per_point();
+                OverlayRegion {
+                    x: position.x + rect.left().floor() as i32,
+                    y: position.y + rect.top().floor() as i32,
+                    width: (rect.right().ceil() - rect.left().floor()) as u32,
+                    height: (rect.bottom().ceil() - rect.top().floor()) as u32,
+                }
+            });
+            if self.companion_region != region {
+                self.companion_region = region;
+                send_event(OverlayEvent::CompanionRegionChanged(region));
+            }
+        }
+        // Windows clips painting as well as input to this region. Include only
+        // tooltips painted this pass, with their shadows, until they disappear.
+        let tooltips = ui.ctx().memory(|memory| {
+            memory
+                .areas()
+                .visible_layer_ids()
+                .into_iter()
+                .filter(|layer| layer.order == egui::Order::Tooltip)
+                .filter_map(|layer| memory.area_rect(layer.id).map(|rect| (layer, rect)))
+                .collect::<Vec<_>>()
+        });
+        let shadow = ui.ctx().global_style().visuals.popup_shadow.margin();
+        ui.ctx().graphics(|graphics| {
+            regions.extend(tooltips.into_iter().filter_map(|(layer, rect)| {
+                graphics
+                    .get(layer)
+                    .filter(|paint| !paint.is_empty())
+                    .map(|_| (rect.expand(1.0) + shadow, 0.0))
+            }));
+        });
         if self
             .input
             .update(&regions, ui.ctx().pixels_per_point())
@@ -789,6 +824,106 @@ impl eframe::App for OverlayWindow {
     }
 }
 
+/// The OCR toggle owns both the visible frame and its resize handles. Keep the
+/// middle out of the native input region so the captured application stays usable.
+fn recognition_area(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    regions: &mut Vec<(Rect, f32)>,
+) -> Option<Rect> {
+    if !enabled {
+        return None;
+    }
+    let rect = ui.available_rect_before_wrap().shrink(2.0);
+    let painter = ui.painter();
+    // Inward grey shadows stay within the native window's narrow input mask.
+    // The capture inset below the caller's frame excludes all of these pixels.
+    let shadow_rect = rect.shrink(1.0).translate(egui::vec2(0.0, 0.75));
+    for (width, alpha) in [(4.0, 36), (2.5, 80)] {
+        painter.rect_stroke(
+            shadow_rect,
+            0.0,
+            Stroke::new(width, Color32::from_rgba_unmultiplied(96, 96, 96, alpha)),
+            egui::StrokeKind::Inside,
+        );
+    }
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0, Color32::WHITE),
+        egui::StrokeKind::Inside,
+    );
+    for (corner, direction) in [
+        (rect.left_top(), egui::vec2(1.0, 1.0)),
+        (rect.right_top(), egui::vec2(-1.0, 1.0)),
+        (rect.left_bottom(), egui::vec2(1.0, -1.0)),
+        (rect.right_bottom(), egui::vec2(-1.0, -1.0)),
+    ] {
+        let corner = corner + direction * 1.5;
+        let points = [
+            corner + egui::vec2(direction.x * 9.0, 0.0),
+            corner,
+            corner + egui::vec2(0.0, direction.y * 9.0),
+        ];
+        painter.add(egui::Shape::line(
+            points.map(|point| point + direction * 1.0).to_vec(),
+            Stroke::new(4.0, Color32::from_rgba_unmultiplied(96, 96, 96, 100)),
+        ));
+        painter.add(egui::Shape::line(
+            points.to_vec(),
+            Stroke::new(3.0, Color32::WHITE),
+        ));
+    }
+
+    use egui::viewport::ResizeDirection::*;
+    // Wider invisible handles keep the thin outline easy to grab. Register
+    // corners last so diagonal resizing wins where handles overlap.
+    for (edge, direction) in [
+        (
+            Rect::from_min_max(rect.left_top(), rect.right_top() + egui::vec2(0.0, GAP)),
+            North,
+        ),
+        (
+            Rect::from_min_max(
+                rect.left_bottom() - egui::vec2(0.0, GAP),
+                rect.right_bottom(),
+            ),
+            South,
+        ),
+        (
+            Rect::from_min_max(rect.left_top(), rect.left_bottom() + egui::vec2(GAP, 0.0)),
+            West,
+        ),
+        (
+            Rect::from_min_max(rect.right_top() - egui::vec2(GAP, 0.0), rect.right_bottom()),
+            East,
+        ),
+        (
+            Rect::from_min_size(rect.left_top(), Vec2::splat(12.0)),
+            NorthWest,
+        ),
+        (
+            Rect::from_min_size(rect.right_top() - egui::vec2(12.0, 0.0), Vec2::splat(12.0)),
+            NorthEast,
+        ),
+        (
+            Rect::from_min_size(
+                rect.left_bottom() - egui::vec2(0.0, 12.0),
+                Vec2::splat(12.0),
+            ),
+            SouthWest,
+        ),
+        (
+            Rect::from_min_size(rect.right_bottom() - Vec2::splat(12.0), Vec2::splat(12.0)),
+            SouthEast,
+        ),
+    ] {
+        resize(ui, edge, direction);
+        regions.push((edge, 0.0));
+    }
+    Some(rect)
+}
+
 fn result_contents(
     ui: &mut egui::Ui,
     language: UiLanguage,
@@ -797,23 +932,8 @@ fn result_contents(
     waiting: bool,
 ) {
     let size = subtitles.font_size.clamp(10, 32) as f32;
-    if let Some(ocr) = ocr {
-        if !ocr.source.is_empty() {
-            ui.add(
-                egui::Label::new(
-                    RichText::new(&ocr.source)
-                        .size(size)
-                        .color(theme::text_weak()),
-                )
-                .selectable(true),
-            );
-        }
-        if let Some(status) = &ocr.status {
-            ui.label(RichText::new(status).color(theme::text_weak()));
-        }
-        if ocr.busy {
-            ui.add(egui::Spinner::new().size(14.0).color(theme::text_weak()));
-        }
+    if let Some(status) = ocr.and_then(|ocr| ocr.status.as_ref()) {
+        ui.label(RichText::new(status).color(theme::text_weak()));
         ui.add_space(GAP);
     }
     for entry in &subtitles.visible_entries {
@@ -860,6 +980,40 @@ fn icon_button(
         components::compact_icon_button(ui, id, active, label, Some(theme::text_strong()))
     })
     .inner
+}
+
+fn paint_wave_pen(painter: &egui::Painter, center: egui::Pos2, color: Color32) {
+    let stroke = Stroke::new(1.6, color);
+    let tip = center + egui::vec2(-7.0, 6.0);
+    let axis = egui::vec2(1.0, -1.0) * std::f32::consts::FRAC_1_SQRT_2;
+    let normal = egui::vec2(1.0, 1.0) * std::f32::consts::FRAC_1_SQRT_2;
+    painter.add(egui::Shape::line(
+        vec![
+            tip + axis * 4.0 + normal * 2.2,
+            tip,
+            tip + axis * 4.0 - normal * 2.2,
+        ],
+        stroke,
+    ));
+    // The diagonal audio waveform forms the shaft, without a solid pen barrel.
+    let wave = (0..=36)
+        .map(|index| {
+            let t = index as f32 / 36.0;
+            tip + axis * (4.0 + 17.0 * t) + normal * ((t * std::f32::consts::TAU * 3.0).sin() * 2.8)
+        })
+        .collect();
+    painter.add(egui::Shape::line(wave, stroke));
+    painter.add(egui::Shape::line(
+        vec![
+            tip,
+            center + egui::vec2(-9.0, 9.0),
+            center + egui::vec2(-4.0, 9.0),
+            center + egui::vec2(-1.0, 7.5),
+            center + egui::vec2(2.0, 9.0),
+            center + egui::vec2(7.0, 9.0),
+        ],
+        stroke,
+    ));
 }
 
 fn card(
@@ -968,5 +1122,184 @@ fn send_event(event: OverlayEvent) {
     if serde_json::to_writer(&mut stdout, &event).is_ok() {
         let _ = stdout.write_all(b"\n");
         let _ = stdout.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ocr_capture_updates_do_not_move_results_or_their_scroll_position() {
+        for count in [0, 1, 8] {
+            let ctx = egui::Context::default();
+            let subtitles = OverlayState {
+                font_size: 14,
+                max_items: count,
+                visible_entries: (0..count)
+                    .map(|index| crate::overlay_ipc::OverlayEntry {
+                        source: format!("source {index}"),
+                        translated: format!("translated text {index}"),
+                        live: false,
+                        vad_active: false,
+                    })
+                    .collect(),
+                partial_text: None,
+                vad_active: false,
+            };
+            let paint = |source: &str, busy, tick| {
+                let ocr = OcrOverlayState {
+                    source: source.into(),
+                    status: None,
+                    busy,
+                };
+                let mut metrics = None;
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(320.0, 240.0),
+                        )),
+                        time: Some(tick as f64 * 0.1),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        egui::CentralPanel::default().show(ui, |ui| {
+                            let scroll = egui::ScrollArea::vertical()
+                                .stick_to_bottom(true)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    result_contents(
+                                        ui,
+                                        UiLanguage::English,
+                                        &subtitles,
+                                        Some(&ocr),
+                                        false,
+                                    );
+                                });
+                            metrics = Some((scroll.content_size, scroll.state.offset));
+                        });
+                    },
+                );
+                output.textures_delta.clear();
+                if count == 1 && tick >= 4 {
+                    let texts: Vec<_> = output
+                        .shapes
+                        .iter()
+                        .filter_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text) => Some(text.galley.text()),
+                            _ => None,
+                        })
+                        .collect();
+                    // A translated card keeps its original + translation;
+                    // only the standalone recognition observation is hidden.
+                    assert!(texts.contains(&"source 0"));
+                    assert!(texts.contains(&"translated text 0"));
+                    assert!(!texts.iter().any(|text| text.contains("screen text")));
+                }
+                metrics.unwrap()
+            };
+            let mut settled = paint("", false, 0);
+            for tick in 1..4 {
+                settled = paint("", false, tick);
+            }
+            for tick in 4..12 {
+                // Raw OCR observations (including empty captures) never become
+                // list rows. Only translated entries may change its geometry.
+                let source = if tick % 3 == 0 {
+                    ""
+                } else {
+                    "The same screen text\nwith another recognized line"
+                };
+                assert_eq!(paint(source, tick % 2 == 0, tick), settled);
+            }
+        }
+    }
+
+    fn frame(
+        ctx: &egui::Context,
+        enabled: bool,
+        time: f64,
+        events: Vec<egui::Event>,
+    ) -> (Option<Rect>, Vec<(Rect, f32)>, egui::FullOutput) {
+        let mut area = None;
+        let mut regions = Vec::new();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(460.0, 360.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                ui.add_space(60.0);
+                area = recognition_area(ui, enabled, &mut regions);
+            },
+        );
+        output.textures_delta.clear();
+        (area, regions, output)
+    }
+
+    #[test]
+    fn ocr_toggle_controls_frame_and_handles_without_blocking_captured_content() {
+        let ctx = egui::Context::default();
+        let (area, regions, _) = frame(&ctx, false, 0.0, vec![]);
+        assert!(area.is_none() && regions.is_empty());
+        for tick in 1..=3 {
+            let (area, regions, _) = frame(&ctx, true, tick as f64, vec![]);
+            let area = area.unwrap();
+            assert_eq!(regions.len(), 8);
+            let capture = area.shrink(12.0);
+            for (hit, _) in regions {
+                assert!(hit.is_positive());
+                assert!(!hit.intersect(capture).is_positive());
+                assert!(!hit.contains(area.center()));
+            }
+        }
+        let (area, regions, _) = frame(&ctx, false, 4.0, vec![]);
+        assert!(area.is_none() && regions.is_empty());
+    }
+
+    #[test]
+    fn enabled_ocr_resizes_from_every_edge_and_corner_without_edit_mode() {
+        use egui::viewport::ResizeDirection::*;
+        for (index, direction) in [
+            North, South, West, East, NorthWest, NorthEast, SouthWest, SouthEast,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let ctx = egui::Context::default();
+            let (_, regions, _) = frame(&ctx, true, 0.0, vec![]);
+            let point = regions[index].0.center();
+            frame(&ctx, true, 0.1, vec![egui::Event::PointerMoved(point)]);
+            let mut began_resize = false;
+            for (time, events) in [
+                (
+                    0.2,
+                    vec![egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                ),
+                (
+                    0.3,
+                    vec![egui::Event::PointerMoved(point + egui::vec2(8.0, 8.0))],
+                ),
+            ] {
+                let (_, _, output) = frame(&ctx, true, time, events);
+                began_resize |= output.viewport_output.values().any(|output| {
+                    output.commands.iter().any(|command| {
+                        matches!(command, egui::ViewportCommand::BeginResize(actual) if *actual == direction)
+                    })
+                });
+            }
+            assert!(began_resize, "missing resize command for {direction:?}");
+        }
     }
 }

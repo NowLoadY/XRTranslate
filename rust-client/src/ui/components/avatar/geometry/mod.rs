@@ -1,11 +1,18 @@
 //! Authored surfaces, tessellated once and shared by every avatar instance.
 pub(super) mod body;
 mod features;
+mod profile;
+mod sampling;
+
+pub(super) use sampling::SurfaceSamples;
 
 use super::{classic::clothing, model::Geometry};
 use bytemuck::{Pod, Zeroable};
 use glam::{Vec2, Vec3};
-use std::{f32::consts::PI, ops::Range};
+use std::{
+    f32::consts::PI,
+    ops::{Add, Mul, Range},
+};
 
 #[derive(Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
@@ -16,6 +23,7 @@ pub(super) struct Vertex {
     pub happy_normal: [f32; 3],
     pub other_position: [f32; 3],
     pub other_normal: [f32; 3],
+    pub tone: f32,
 }
 
 #[derive(Default)]
@@ -40,15 +48,27 @@ impl Mesh {
         reverse: bool,
         point: impl Fn(f32, f32) -> Vec3,
     ) {
+        self.shaded_surface(rows, columns, reverse, point, |_, _| 1.0);
+    }
+
+    /// Authored soft shading follows the surface and its expression morphs.
+    pub fn shaded_surface(
+        &mut self,
+        rows: u32,
+        columns: u32,
+        reverse: bool,
+        point: impl Fn(f32, f32) -> Vec3,
+        tone: impl Fn(f32, f32) -> f32,
+    ) {
         let base = self.vertices.len() as u32;
         for row in 0..=rows {
             let v = row as f32 / rows as f32;
             for column in 0..=columns {
                 let u = column as f32 / columns as f32;
                 // Evaluate just inside collapsed pole rows to obtain a stable limiting normal.
-                let nv = v.clamp(0.0001, 0.9999);
-                let du = point(u + 0.0001, nv) - point(u - 0.0001, nv);
-                let dv = point(u, nv + 0.00005) - point(u, nv - 0.00005);
+                let nv = v.clamp(0.001, 0.999);
+                let du = point(u + 0.001, nv) - point(u - 0.001, nv);
+                let dv = point(u, nv + 0.0005) - point(u, nv - 0.0005);
                 let normal = du.cross(dv).normalize_or(Vec3::Y) * if reverse { -1.0 } else { 1.0 };
                 self.vertices.push(Vertex {
                     position: point(u, v).to_array(),
@@ -57,6 +77,7 @@ impl Mesh {
                     happy_normal: [0.0; 3],
                     other_position: [0.0; 3],
                     other_normal: [0.0; 3],
+                    tone: tone(u, v),
                 });
             }
         }
@@ -64,18 +85,21 @@ impl Mesh {
         // contours from opening tiny spikes where all the surface meridians meet.
         for row in [0, rows] {
             let start = (base + row * (columns + 1)) as usize;
+            // Finite differences lose precision at the pole itself. Use the
+            // neighboring ring, whose vertices still have distinct positions.
+            let adjacent = (base + (if row == 0 { 1 } else { rows - 1 }) * (columns + 1)) as usize;
+            let normal = self.vertices[adjacent..adjacent + columns as usize]
+                .iter()
+                .map(|vertex| Vec3::from_array(vertex.normal))
+                .sum::<Vec3>()
+                .normalize_or(Vec3::Y)
+                .to_array();
             let ring = &mut self.vertices[start..start + columns as usize + 1];
             let pole = Vec3::from_array(ring[0].position);
             if ring
                 .iter()
                 .all(|vertex| Vec3::from_array(vertex.position).distance_squared(pole) < 1e-10)
             {
-                let normal = ring
-                    .iter()
-                    .map(|vertex| Vec3::from_array(vertex.normal))
-                    .sum::<Vec3>()
-                    .normalize_or(Vec3::Y)
-                    .to_array();
                 for vertex in ring {
                     vertex.normal = normal;
                 }
@@ -114,7 +138,10 @@ impl Mesh {
     }
 }
 
-pub(super) fn bezier(points: [Vec2; 4], t: f32) -> Vec2 {
+pub(super) fn bezier<T: Copy + Mul<f32, Output = T> + Add<Output = T>>(
+    points: [T; 4],
+    t: f32,
+) -> T {
     let s = 1.0 - t;
     points[0] * s.powi(3)
         + points[1] * (3.0 * s * s * t)
@@ -122,7 +149,10 @@ pub(super) fn bezier(points: [Vec2; 4], t: f32) -> Vec2 {
         + points[3] * t.powi(3)
 }
 
-pub(super) fn curve(segments: &[[Vec2; 4]], t: f32) -> Vec2 {
+pub(super) fn curve<T: Copy + Mul<f32, Output = T> + Add<Output = T>>(
+    segments: &[[T; 4]],
+    t: f32,
+) -> T {
     let step = t.clamp(0.0, 1.0) * segments.len() as f32;
     let index = (step as usize).min(segments.len() - 1);
     bezier(segments[index], step - index as f32)
@@ -132,7 +162,7 @@ pub(super) fn signed_power(value: f32, power: f32) -> f32 {
     value.signum() * value.abs().powf(power)
 }
 
-/// A closed, beveled cloth solid with a Bézier outline and a separately authored bend.
+/// A closed, beveled solid with a star-shaped Bézier outline and an authored bend.
 pub(super) fn cushion(
     outline: &[[Vec2; 4]],
     center: Vec2,
@@ -140,7 +170,7 @@ pub(super) fn cushion(
     place: impl Fn(Vec2, f32) -> Vec3,
 ) -> Mesh {
     let mut mesh = Mesh::default();
-    mesh.surface(48, 96, false, |u, v| {
+    mesh.surface(32, (outline.len() * 16) as u32, false, |u, v| {
         let angle = v * PI;
         let radius = angle.sin();
         let point = center.lerp(curve(outline, u.rem_euclid(1.0)), radius);
@@ -160,6 +190,7 @@ pub(super) fn atlas() -> (Vec<Vertex>, Vec<u32>, Vec<Range<u32>>) {
             Geometry::Body => body::mesh(),
             Geometry::Eye => features::eye(),
             Geometry::Mouth => features::mouth(),
+            Geometry::Hair => super::hair::geometry::mesh(),
             _ => clothing::mesh(geometry),
         };
         let start = atlas.indices.len() as u32;

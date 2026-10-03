@@ -6,6 +6,7 @@
 //! repeated navigation/settings metadata; statically typed runtime composition
 //! remains explicit in the host adapter.
 
+pub(crate) mod auto_input;
 pub mod meeting;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 pub mod ocr;
@@ -26,9 +27,11 @@ impl PluginId {
     pub const VIDEO_PLAYER: Self = Self("video_player");
     pub const VR_OVERLAY: Self = Self("vr_overlay");
     pub const OCR: Self = Self("ocr");
+    pub const AUTO_INPUT: Self = Self("auto_input");
 
     pub fn is_supported(self) -> bool {
         match self {
+            Self::AUTO_INPUT => cfg!(windows),
             Self::OCR => cfg!(any(target_os = "windows", target_os = "linux")),
             Self::VR_OVERLAY | Self::VIDEO_PLAYER => !cfg!(target_os = "android"),
             _ => true,
@@ -46,6 +49,7 @@ impl PluginId {
             "video_player" => Some(Self::VIDEO_PLAYER),
             "vr_overlay" => Some(Self::VR_OVERLAY),
             "ocr" => Some(Self::OCR),
+            "auto_input" => Some(Self::AUTO_INPUT),
             _ => None,
         }
     }
@@ -277,6 +281,12 @@ mod tests {
 
     #[test]
     fn plugin_ids_have_stable_string_serialization() {
+        assert_eq!(PluginId::parse("auto_input"), Some(PluginId::AUTO_INPUT));
+        assert_eq!(
+            serde_json::to_string(&PluginId::AUTO_INPUT).unwrap(),
+            r#""auto_input""#
+        );
+        assert_eq!(PluginId::AUTO_INPUT.is_supported(), cfg!(windows));
         assert_eq!(serde_json::to_string(&PluginId::OSC).unwrap(), r#""osc""#);
         assert_eq!(
             serde_json::to_string(&PluginId::VR_OVERLAY).unwrap(),

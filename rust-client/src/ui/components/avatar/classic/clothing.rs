@@ -128,10 +128,15 @@ fn scarf() -> Mesh {
     mesh.surface(40, 128, true, |u, v| {
         let angle = u * TAU;
         let cross = v * TAU;
-        // Flattened cloth section, with the inside following the actual cheek profile.
-        let y = -0.49 - 0.11 * angle.sin() + 0.185 * signed_power(cross.sin(), 0.5);
-        let radius = body::radius(y) + 0.042 + 0.030 * signed_power(cross.cos(), 0.5);
-        body::ring(radius, y, angle)
+        // The lower cheek defines the opening; cloth hangs below the mouth and chin.
+        let rise = signed_power(cross.sin(), 0.5);
+        let mut point = body::ring(
+            Socket::Scarf.origin().y + 0.045 * rise,
+            angle,
+            0.025 + 0.028 * signed_power(cross.cos(), 0.5),
+        );
+        point.y = -0.85 - 0.04 * angle.sin() + 0.115 * rise;
+        point
     });
     mesh
 }
@@ -167,14 +172,14 @@ fn tail() -> Mesh {
         let t = point.y;
         let bend = bezier(
             [
-                Vec2::new(-0.39, 0.87),
-                Vec2::new(-0.54, 1.01),
-                Vec2::new(-0.85, 0.97),
-                Vec2::new(-0.97, 0.87),
+                Vec2::new(-0.86, 0.96),
+                Vec2::new(-1.02, 1.00),
+                Vec2::new(-1.29, 0.98),
+                Vec2::new(-1.33, 0.83),
             ],
             t,
         );
-        Vec3::new(0.60 + 0.11 * t + point.x, bend.x, bend.y + thickness)
+        Vec3::new(0.58 + 0.11 * t + point.x, bend.x, bend.y + thickness)
     })
 }
 

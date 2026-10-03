@@ -4,13 +4,14 @@
 `xrtranslate-assets` 为唯一事实源，运行时归档以 `config.json` 为唯一事实源；
 界面、下载器和后端只消费这些声明，不再各自维护文件名或设备判断。
 
-## 三类资源
+## 资源类别
 
 | 类型 | 所有者 | 存储位置 | 交付方式 | 更新与校验 |
 | --- | --- | --- | --- | --- |
 | 模型包 | `xrtranslate-assets` | `models/<package>` | Windows 默认发布包按需下载；Linux 本地打包复制已安装的 `models/` | 每文件固定 revision、大小、SHA-256；支持 `models_directory` 自定义 |
 | 推理引擎核心 | `xrtranslate-config` / release packager | `<runtime_root>/<engine>` | Windows 发布包内置 CPU ONNX 核心；Linux 本地打包复制已安装核心；llama.cpp 与 CUDA ONNX provider 按需下载 | 固定版本、归档大小、SHA-256、必需文件集合；支持 `runtime_directory` 自定义 |
 | 设备加速包 | `xrtranslate-config` | `<runtime_root>/cuda/<version>` 与 `<runtime_root>/cudnn/<major>` | 仅兼容 NVIDIA 设备按需下载 | CUDA ABI 与驱动能力匹配；llama.cpp 与 ONNX 复用 CUDA，ONNX 另消费匹配 major 的 cuDNN |
+| 应用启动依赖 | `xrtranslate-config` / release packager | 应用根目录与 `bin/` | Windows 随包携带 VS 正式可分发 MSVC CRT，不能等应用启动后下载 | 共享必需/可选文件声明、PE x64 校验，发布清单记录每项大小与 SHA-256；更新器随应用文件替换 |
 
 所有网络传输统一经过 `xrtranslate-download`，因此模型和运行时共用断点续传、
 代理、重试、进度、大小与 SHA-256 校验。模型与 runtime installer 只传递中立的
@@ -131,16 +132,54 @@ runtime/cudnn/
 - 检测旧版平铺在 `runtime/llama.cpp/` 下的 DLL 并依据文件名后缀（`_13` 或 `_12`）迁移至 `runtime/cuda/13.3/` 或 `runtime/cuda/12.4/`；
 - 检测旧版平铺在 `runtime/onnxruntime/` 根目录下的 DLL 并安全归档迁移至 `runtime/onnxruntime/cuda-13/`，无需用户重新下载。
 
+Windows 运行时规划在后台优先修复缺失的 CPU 核心：若配置声明的 CUDA 目录中已有
+与发布包 CPU 核心大小和 SHA-256 完全一致的 `onnxruntime.dll`，将其复制至
+`onnxruntime/cpu/`。保留 CUDA 原件、选择清单和已存在的 CPU 核心，遵循自定义
+`runtime_directory`。OCR 独立加载 CPU 目录；后端继续按清单加载 CUDA 核心，
+两者都能创建 CPU session，无需为同一核心重复下载归档。
+
+首次安装选中同一官方来源的 CUDA 归档时，也由该归档提供 CPU 核心，解压后校验
+并复制；复用仅适用于默认受支持的 CPU 归档声明。其他版本、损坏的本地核心或
+自定义 CPU 归档仍使用配置声明的 CPU 下载。
+界面按钮显示“下载缺失资源”，具体资源及大小以缺失列表为准；仅修复运行时清单
+时显示“配置运行环境”，不把整个计划的 CUDA 版本当成本次下载的资源名。
+
 ## 启动资源校验与 4 步向导系统
 
-1. **启动自检机制**：程序每次启动时调用 `onboarding::resolve_startup_onboarding_state`。
-   - 若检测到缺失任一核心前置资源（API Key、本地 ASR/翻译模型包、已启用的 TTS provider 模型、llama.cpp 运行时或 ONNX 加速库），自动将 `first_run` 置为 `true` 并停留在向导页（Step 1: Welcome）；
-   - 若所有前置条件均已就绪，则直接进入主会话翻译界面（`first_run = false`）。
+1. **启动自检机制**：程序每次启动都会在后台规划运行时并执行本地核心恢复，不依赖
+   `first_run`。`onboarding::resolve_startup_onboarding_state` 保留已完成的设置状态；
+   新安装进入欢迎向导，已完成设置的用户按具体任务检查资源，音频资源缺失不会阻止
+   独立的文本翻译。向导完成前统一检查选定模型、API Key 和运行时是否就绪。
 2. **向导 4 步骤流程**：
    - **Step 1: Welcome**：欢迎页与核心特性介绍（三列卡片：Audio Input, Recognition & Translation, VRChat OSC）；
    - **Step 2: Configure models**：只配置本地/在线 ASR 与翻译 provider、模型和级别，不在此页启动下载；
    - **Step 3: Optional TTS**：选择语音克隆 provider、一个或多个互补语言包及包内 voice preset，或跳过；
    - **Step 4: Download**：集中列出所需模型包和推理 runtime，显示每项传输/安装大小并通过统一队列下载、修复或继续。
+
+完成向导时停止旧会话并使后端失效，下一次任务按新配置重新启动。因此从 CPU
+音频组件切换到 CUDA TTS 时，不会在同一旧进程中尝试替换已经加载的 ONNX 核心。
+仅安装 ONNX 时只报告运行时准备完成，不把 `native-runtime.json` 当作 llama 可执行文件。
+
+### 开发与 Windows 发布边界
+
+- 本机个人设置放在 `runtime/user-config.json`；根目录 `config.json` 是可发行的
+  资源目录。Windows 发布脚本要求它与当前提交一致，避免工作区个人设置进入发布包。
+- Packager 校验 CPU ONNX 核心、VAD、说话人识别、降噪及 ONNX 许可文件的大小和
+  SHA-256，默认发布包无需用户另外下载 CPU 核心。大模型和 GPU 加速依赖仍按配置下载。
+- 发布脚本补齐 ONNX 许可时，也通过 `xrtranslate-download` 获取配置声明的同源归档，
+  校验完整归档后只提取许可文件；不另建 HTTP 下载实现，也不依赖归档列表的排序。
+- Windows 客户端和 ONNX 核心依赖 MSVC CRT。发布脚本从 Visual Studio 的 x64
+  可分发目录发现这些 DLL，或接受显式 `-VcRuntimeDirectory`；packager 拒绝缺少
+  必需项或非 x64 的输入，并把发行 CRT 放在根目录和 `bin/`，覆盖客户端、后端、
+  安装器和更新器的加载位置，不依赖用户已经安装开发工具。此方式遵循
+  [Microsoft 的应用本地部署说明](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files?view=msvc-170#install-individual-redistributable-files)，
+  只使用可分发目录中的文件，不复制 `System32` 的系统 DLL。
+- 新发布包不携带开发机的 CUDA 选择清单、个人配置、录音或克隆数据。首次启动无
+  清单时，后端使用随包 CPU 核心；启用 CUDA TTS 后消费安装器生成的完整清单。
+- 更新器保留可变 `runtime` 数据，但单独更新随包的 CPU 核心；该文件参与备份与
+  失败回滚。用户自定义运行时目录由运行时规划器管理，更新器不覆盖外部目录。
+- `build_release.ps1 -ValidateOnly` 只检查已存在的发布输入，不构建二进制、不下载
+  资源，也不写入发布目录。开发阶段可直接用 debug packager 的 `--check` 做相同预检。
 
 ## 生命周期与诊断
 

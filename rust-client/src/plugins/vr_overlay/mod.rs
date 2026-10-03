@@ -23,6 +23,7 @@ use crate::session_coordinator::{CaptionUpdate, HostOutputEvent, HostOutputSubsc
 impl HostOutputSubscriber for VrOverlayHandle {
     fn on_host_output(&self, event: HostOutputEvent<'_>) {
         match event {
+            HostOutputEvent::CommittedTranslation { .. } | HostOutputEvent::StreamCancelled(_) => {}
             HostOutputEvent::Caption {
                 stream_id,
                 source,

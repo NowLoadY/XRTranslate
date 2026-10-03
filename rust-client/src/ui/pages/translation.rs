@@ -343,6 +343,23 @@ fn render_translation_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::U
                     ));
             }
 
+            if crate::feature_access::is_available(
+                crate::feature_access::Feature::FloatingSubtitles,
+            ) {
+                let mut floating_enabled = app.floating_subtitles_enabled;
+                if components::feature_checkbox(
+                    ui,
+                    crate::feature_access::Feature::FloatingSubtitles,
+                    app.ui_language,
+                    &mut floating_enabled,
+                    crate::i18n::tr(app.ui_language, "Floating subtitles"),
+                )
+                .changed()
+                {
+                    app.set_floating_subtitles_enabled(floating_enabled);
+                }
+            }
+
             details
         });
         crate::ui::layout::flow_row(ui, |ui| {
@@ -491,24 +508,6 @@ fn render_translation_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::U
                     status.state == xrtranslate_protocol::VoiceClonePhase::Ready
                 }) {
                     ui.label(egui::RichText::new("OK").color(egui::Color32::from_rgb(5, 150, 105)));
-                }
-
-                if crate::feature_access::is_available(
-                    crate::feature_access::Feature::FloatingSubtitles,
-                ) {
-                    ui.add_space(12.0);
-                    let mut floating_enabled = app.floating_subtitles_enabled;
-                    if components::feature_checkbox(
-                        ui,
-                        crate::feature_access::Feature::FloatingSubtitles,
-                        app.ui_language,
-                        &mut floating_enabled,
-                        crate::i18n::tr(app.ui_language, "Floating subtitles"),
-                    )
-                    .changed()
-                    {
-                        app.set_floating_subtitles_enabled(floating_enabled);
-                    }
                 }
             });
         });

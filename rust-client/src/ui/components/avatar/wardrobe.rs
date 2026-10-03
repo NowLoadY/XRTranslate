@@ -14,7 +14,7 @@ impl Socket {
     pub fn origin(self) -> Vec3 {
         match self {
             Self::Hat => Vec3::new(0.0, 0.65, 0.0),
-            Self::Scarf => Vec3::new(0.0, -0.55, 0.0),
+            Self::Scarf => Vec3::new(0.0, -0.70, 0.0),
             Self::Tie => Vec3::new(0.0, -0.55, 0.93),
         }
     }
@@ -32,14 +32,6 @@ pub struct Attachment {
 }
 
 impl Attachment {
-    pub fn new(socket: Socket, parts: Vec<Part>) -> Self {
-        Self {
-            socket,
-            transform: Mat4::IDENTITY,
-            parts,
-        }
-    }
-
     pub(super) fn append(&self, body: Vec3, model: &mut Model) {
         let parent = self.socket.transform(body) * self.transform;
         model

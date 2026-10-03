@@ -9,3 +9,4 @@ description = "Applies staged XRTranslate application updates."
 [dependencies]
 clap = { version = "4.5.58", features = ["derive"] }
 serde_json = "1.0.151"
+xrtranslate-config = { path = "../../crates/xrtranslate-config" }
