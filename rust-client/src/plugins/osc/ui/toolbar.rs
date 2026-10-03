@@ -313,7 +313,7 @@ pub fn render_toolbar(
                             &mut plugin.draft_mut().history_ttl_seconds,
                             10.0..=20.0,
                             15.0,
-                            "TTL:",
+                            crate::i18n::tr(language, "Maximum display time:"),
                             "s",
                         )
                         .changed()

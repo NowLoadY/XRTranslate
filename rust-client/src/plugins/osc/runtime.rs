@@ -358,7 +358,6 @@ struct QueuedMessage {
     text: String,
     typing: bool,
     notify: bool,
-    final_priority: bool,
     expires_at: Option<Instant>,
 }
 enum Command {
@@ -692,43 +691,39 @@ fn dispatch_loop(
     let monitor = super::sys_info::SystemMonitor::new();
     let mut history = Vec::new();
     let mut live = Vec::new();
-    let mut manual_message: Option<ManualMessage> = None;
-    let mut pending = None;
+    let mut manual_message = None;
+    // Keep only the latest snapshot, while preserving a final notification.
+    let mut pending: Option<bool> = None;
+    let mut clear_pending = false;
+    let mut force_send = false;
     let mut last_send = Instant::now() - COOLDOWN;
     let mut next_banner_refresh = banner_refresh_deadline(&settings, Instant::now());
     loop {
         let wait = dispatch_wait(
-            pending.as_ref(),
+            pending.is_some(),
             last_send,
             next_content_expiry(&history, &live, manual_message.as_ref()),
             next_banner_refresh,
         );
-        match rx.recv_timeout(wait) {
+        let command = rx.recv_timeout(wait);
+        let now = Instant::now();
+        let mut changed = false;
+        let mut notify = false;
+        let mut shutdown = false;
+        match command {
             Ok(Command::ManualMessage { text, ttl }) if settings.enabled => {
-                let now = Instant::now();
-                expire_chatbox_entries(&mut history, &mut live, now);
-                let effective_ttl =
-                    ttl.unwrap_or_else(|| Duration::from_secs_f64(settings.history_ttl_seconds));
-                let expires_at = now + effective_ttl;
-                let manual = ManualMessage { text, expires_at };
-                let metrics = monitor.snapshot();
-                let message = build_queued_message(
-                    &history,
-                    &live,
-                    Some(&manual),
-                    &settings,
-                    &metrics,
-                    !live.is_empty(),
-                    true,
-                    true,
-                );
-                if message.text.is_empty() {
-                    continue;
-                }
-                manual_message = Some(manual);
-                queue_message(&mut pending, message);
+                clear_pending = false;
+                manual_message = Some(ManualMessage {
+                    text,
+                    updated_at: now,
+                    expires_at: now
+                        + ttl.unwrap_or_else(|| {
+                            Duration::from_secs_f64(settings.history_ttl_seconds)
+                        }),
+                });
+                changed = true;
+                notify = true;
             }
-            Ok(Command::ManualMessage { .. }) => {}
             Ok(Command::Message {
                 stream_id,
                 audio_source,
@@ -740,8 +735,6 @@ fn dispatch_loop(
                 ongoing,
                 ttl,
             }) if settings.enabled => {
-                let now = Instant::now();
-                expire_chatbox_entries(&mut history, &mut live, now);
                 let entry = HistoryMessage {
                     stream_id,
                     source_kind: if is_typing {
@@ -753,41 +746,24 @@ fn dispatch_loop(
                     translated,
                     additional_translations,
                     speaker_id,
+                    updated_at: now,
                     expires_at: now
                         + ttl.unwrap_or_else(|| {
                             Duration::from_secs_f64(settings.history_ttl_seconds)
                         }),
                 };
-                if render_entry(&entry, &settings).is_empty() {
-                    continue;
-                }
-                if ongoing {
-                    if let Some(current) = live.iter_mut().find(|item| item.stream_id == stream_id)
-                    {
-                        *current = entry;
-                    } else {
+                if !render_entry(&entry, &settings).is_empty() {
+                    clear_pending = false;
+                    live.retain(|item: &HistoryMessage| item.stream_id != stream_id);
+                    if ongoing {
                         live.push(entry);
+                    } else {
+                        history.push(entry);
                     }
-                } else {
-                    live.retain(|item| item.stream_id != stream_id);
-                    history.push(entry);
+                    changed = true;
+                    notify = !ongoing;
                 }
-                let metrics = monitor.snapshot();
-                queue_message(
-                    &mut pending,
-                    build_queued_message(
-                        &history,
-                        &live,
-                        manual_message.as_ref(),
-                        &settings,
-                        &metrics,
-                        ongoing,
-                        !ongoing,
-                        !ongoing,
-                    ),
-                );
             }
-            Ok(Command::Message { .. }) => {}
             Ok(Command::RollStream {
                 stream_id,
                 audio_source,
@@ -796,8 +772,7 @@ fn dispatch_loop(
                 translated,
                 speaker_id,
             }) if settings.enabled => {
-                let now = Instant::now();
-                expire_chatbox_entries(&mut history, &mut live, now);
+                clear_pending = false;
                 if let Some(index) = live.iter().position(|entry| entry.stream_id == stream_id) {
                     history.push(live.remove(index));
                 }
@@ -812,146 +787,98 @@ fn dispatch_loop(
                     translated,
                     additional_translations: Vec::new(),
                     speaker_id,
+                    updated_at: now,
                     expires_at: now + Duration::from_secs_f64(settings.history_ttl_seconds),
                 });
-                let metrics = monitor.snapshot();
-                queue_message(
-                    &mut pending,
-                    build_queued_message(
-                        &history,
-                        &live,
-                        manual_message.as_ref(),
-                        &settings,
-                        &metrics,
-                        true,
-                        true,
-                        true,
-                    ),
-                );
+                changed = true;
+                notify = true;
             }
-            Ok(Command::RollStream { .. }) => {}
-            Ok(Command::EndStream(stream_id)) => {
+            Ok(Command::EndStream(stream_id)) if settings.enabled => {
                 if let Some(index) = live.iter().position(|entry| entry.stream_id == stream_id) {
                     history.push(live.remove(index));
-                    let metrics = monitor.snapshot();
-                    queue_message(
-                        &mut pending,
-                        build_queued_message(
-                            &history,
-                            &live,
-                            manual_message.as_ref(),
-                            &settings,
-                            &metrics,
-                            !live.is_empty(),
-                            true,
-                            true,
-                        ),
-                    );
+                    changed = true;
+                    notify = true;
                 }
             }
             Ok(Command::Clear) => {
                 manual_message = None;
                 history.clear();
                 live.clear();
-                if settings.enabled {
-                    queue_message(&mut pending, clear_message());
-                } else {
-                    clear_runtime_preview(&status);
-                }
+                pending = None;
+                clear_pending = true;
+                changed = true;
             }
             Ok(Command::Update(updated)) => {
+                force_send |= settings.ip != updated.ip
+                    || settings.send_port != updated.send_port
+                    || settings.enabled != updated.enabled;
                 if settings.enabled && !updated.enabled {
-                    manual_message = None;
                     send_message(&settings, &clear_message(), &status);
                     pending = None;
-                    last_send = Instant::now();
+                    manual_message = None;
+                    history.clear();
+                    live.clear();
+                    last_send = now;
                 }
                 settings = updated;
-                let now = Instant::now();
                 next_banner_refresh = banner_refresh_deadline(&settings, now);
-                expire_chatbox_entries(&mut history, &mut live, now);
-                if settings.enabled {
-                    let metrics = monitor.snapshot();
-                    if let Some(manual) = &manual_message {
-                        if now >= manual.expires_at {
-                            manual_message = None;
-                        }
-                    }
-                    queue_message(
-                        &mut pending,
-                        build_queued_message(
-                            &history,
-                            &live,
-                            manual_message.as_ref(),
-                            &settings,
-                            &metrics,
-                            !live.is_empty(),
-                            false,
-                            true,
-                        ),
-                    );
-                }
+                changed = true;
             }
             Ok(Command::Shutdown) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                if let Some(message) = pending.take()
-                    && settings.enabled
-                {
-                    send_message(&settings, &message, &status);
-                }
-                return;
+                shutdown = true;
             }
-            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                let now = Instant::now();
-                let mut manual_expired = false;
-                if let Some(manual) = &manual_message {
-                    if now >= manual.expires_at {
-                        manual_message = None;
-                        manual_expired = true;
-                    }
-                }
-                let asr_expired = expire_chatbox_entries(&mut history, &mut live, now);
-                let banner_refresh_due =
-                    next_banner_refresh.is_some_and(|deadline| now >= deadline);
-                if banner_refresh_due {
-                    next_banner_refresh = banner_refresh_deadline(&settings, now);
-                }
-                if manual_expired || asr_expired || banner_refresh_due {
-                    let metrics = monitor.snapshot();
-                    queue_message(
-                        &mut pending,
-                        build_queued_message(
-                            &history,
-                            &live,
-                            manual_message.as_ref(),
-                            &settings,
-                            &metrics,
-                            !live.is_empty(),
-                            false,
-                            true,
-                        ),
-                    );
-                }
+            _ => {}
+        }
+        // Service deadlines even while incoming commands keep the channel busy.
+        changed |= refresh_chatbox_entries(
+            &mut history,
+            &mut live,
+            &mut manual_message,
+            Duration::from_secs_f64(settings.history_ttl_seconds),
+            now,
+        );
+        if next_banner_refresh.is_some_and(|deadline| now >= deadline) {
+            next_banner_refresh = banner_refresh_deadline(&settings, now);
+            force_send = true;
+            changed = true;
+        }
+        if changed {
+            if settings.enabled {
+                pending = Some(pending.unwrap_or(false) || notify);
+            } else {
+                clear_runtime_preview(&status);
             }
         }
-        if pending.is_some() && last_send.elapsed() >= COOLDOWN {
-            let message = pending.take().expect("pending message checked above");
-            send_message(&settings, &message, &status);
-            last_send = Instant::now();
+        if pending.is_some() && (last_send.elapsed() >= COOLDOWN || shutdown) {
+            let notify = pending.take().unwrap_or(false);
+            let message = if std::mem::take(&mut clear_pending) {
+                clear_message()
+            } else {
+                build_queued_message(
+                    &history,
+                    &live,
+                    manual_message.as_ref(),
+                    &settings,
+                    &monitor.snapshot(),
+                    !live.is_empty(),
+                    notify,
+                )
+            };
+            let unchanged = {
+                let mut runtime = status.lock();
+                runtime.next_message_expires_at = message.expires_at;
+                runtime.chatbox_text == message.text && runtime.chatbox_typing == message.typing
+            };
+            if !unchanged || notify || force_send {
+                send_message(&settings, &message, &status);
+                last_send = Instant::now();
+            }
+            force_send = false;
+        }
+        if shutdown {
+            return;
         }
     }
-}
-
-fn queue_message(pending: &mut Option<QueuedMessage>, mut message: QueuedMessage) {
-    // Each message is a complete history + live snapshot. Preserve a pending
-    // final notification, but never discard the next caption's fresher snapshot.
-    if let Some(previous) = pending.as_ref()
-        && previous.final_priority
-        && !message.final_priority
-    {
-        message.final_priority = true;
-        message.notify |= previous.notify;
-    }
-    *pending = Some(message);
 }
 
 fn clear_message() -> QueuedMessage {
@@ -959,7 +886,6 @@ fn clear_message() -> QueuedMessage {
         text: String::new(),
         typing: false,
         notify: false,
-        final_priority: true,
         expires_at: None,
     }
 }
@@ -1014,25 +940,23 @@ fn build_queued_message(
     metrics: &super::sys_info::SystemMetrics,
     typing: bool,
     notify: bool,
-    final_priority: bool,
 ) -> QueuedMessage {
     QueuedMessage {
         text: build_chatbox_text(history, live, manual_message, settings, metrics),
         typing,
         notify,
-        final_priority,
         expires_at: next_content_expiry(history, live, manual_message),
     }
 }
 
 fn dispatch_wait(
-    pending: Option<&QueuedMessage>,
+    pending: bool,
     last_send: Instant,
     content_expiry: Option<Instant>,
     banner_refresh: Option<Instant>,
 ) -> Duration {
     let now = Instant::now();
-    let send_wait = pending.map(|_| COOLDOWN.saturating_sub(now.duration_since(last_send)));
+    let send_wait = pending.then(|| COOLDOWN.saturating_sub(now.duration_since(last_send)));
     let expiry_wait = content_expiry.map(|expires_at| expires_at.saturating_duration_since(now));
     let banner_wait = banner_refresh.map(|deadline| deadline.saturating_duration_since(now));
     [send_wait, expiry_wait, banner_wait]
@@ -1072,6 +996,46 @@ fn listener_config_changed(previous: &OscSettings, updated: &OscSettings) -> boo
     previous.enabled != updated.enabled
         || previous.ip != updated.ip
         || previous.listen_port != updated.listen_port
+}
+
+fn refresh_chatbox_entries(
+    history: &mut Vec<HistoryMessage>,
+    live: &mut Vec<HistoryMessage>,
+    manual: &mut Option<ManualMessage>,
+    max_ttl: Duration,
+    now: Instant,
+) -> bool {
+    let mut changed = expire_chatbox_entries(history, live, now);
+    if manual.as_ref().is_some_and(|entry| now >= entry.expires_at) {
+        *manual = None;
+        changed = true;
+    }
+    let mut timeline = history
+        .iter_mut()
+        .chain(live.iter_mut())
+        .map(|entry| (entry.updated_at, &mut entry.expires_at))
+        .chain(
+            manual
+                .iter_mut()
+                .map(|entry| (entry.updated_at, &mut entry.expires_at)),
+        )
+        .collect::<Vec<_>>();
+    timeline.sort_by_key(|(updated_at, _)| *updated_at);
+    // Newer messages shorten older messages' lifetime. Never postpone an
+    // existing deadline, or make new translations wait for an old message's TTL.
+    let minimum = Duration::from_secs(2).min(max_ttl);
+    for (newer, (updated_at, expires_at)) in timeline.into_iter().rev().enumerate() {
+        let ttl = (max_ttl / (newer + 1) as u32).max(minimum);
+        let deadline = (*expires_at).min(updated_at + ttl);
+        changed |= deadline != *expires_at;
+        *expires_at = deadline;
+    }
+    changed |= expire_chatbox_entries(history, live, now);
+    if manual.as_ref().is_some_and(|entry| now >= entry.expires_at) {
+        *manual = None;
+        changed = true;
+    }
+    changed
 }
 
 fn expire_chatbox_entries(
@@ -1119,6 +1083,7 @@ mod tests {
             translated: String::new(),
             additional_translations: Vec::new(),
             speaker_id: String::new(),
+            updated_at: Instant::now(),
             expires_at,
         }
     }
@@ -1177,6 +1142,77 @@ mod tests {
     }
 
     #[test]
+    fn backlog_shortens_older_messages_without_extending_deadlines() {
+        let now = Instant::now();
+        let max_ttl = Duration::from_secs(15);
+        let mut history = (0..8)
+            .map(|index| {
+                let mut entry = history_message(now + max_ttl, "caption");
+                entry.updated_at = now + Duration::from_millis(index);
+                entry.expires_at = entry.updated_at + max_ttl;
+                entry
+            })
+            .collect::<Vec<_>>();
+        let mut live = Vec::new();
+        let mut manual = None;
+        refresh_chatbox_entries(&mut history, &mut live, &mut manual, max_ttl, now);
+        assert_eq!(
+            history[0].expires_at,
+            history[0].updated_at + Duration::from_secs(2)
+        );
+        assert_eq!(
+            history[5].expires_at,
+            history[5].updated_at + Duration::from_secs(5)
+        );
+        assert_eq!(
+            history[6].expires_at,
+            history[6].updated_at + Duration::from_millis(7500)
+        );
+        assert_eq!(history[7].expires_at, history[7].updated_at + max_ttl);
+
+        let deadline = history[0].expires_at;
+        history.truncate(1);
+        refresh_chatbox_entries(&mut history, &mut live, &mut manual, max_ttl, now);
+        assert_eq!(history[0].expires_at, deadline);
+        refresh_chatbox_entries(&mut history, &mut live, &mut manual, max_ttl, deadline);
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn live_and_direct_messages_share_the_ttl_budget_and_respect_a_lower_setting() {
+        let now = Instant::now();
+        let mut live = vec![history_message(now + Duration::from_secs(15), "live")];
+        live[0].updated_at = now;
+        let mut manual = Some(ManualMessage {
+            text: "note".into(),
+            updated_at: now + Duration::from_millis(1),
+            expires_at: now + Duration::from_secs(15),
+        });
+        let mut history = Vec::new();
+        refresh_chatbox_entries(
+            &mut history,
+            &mut live,
+            &mut manual,
+            Duration::from_secs(15),
+            now,
+        );
+        assert_eq!(live[0].expires_at, now + Duration::from_millis(7500));
+        refresh_chatbox_entries(
+            &mut history,
+            &mut live,
+            &mut manual,
+            Duration::from_secs(1),
+            now,
+        );
+        assert_eq!(live[0].expires_at, now + Duration::from_secs(1));
+        let manual = manual.unwrap();
+        assert_eq!(
+            manual.expires_at,
+            manual.updated_at + Duration::from_secs(1)
+        );
+    }
+
+    #[test]
     fn next_expiry_tracks_the_oldest_visible_entry() {
         let started = Instant::now();
         let history = vec![
@@ -1231,7 +1267,6 @@ mod tests {
 
         assert!(!message.typing);
         assert!(!message.notify);
-        assert!(message.final_priority);
     }
 
     #[test]
@@ -1270,6 +1305,55 @@ mod tests {
         assert_eq!(receive_chatbox_input(&receiver), (String::new(), false));
         assert!(status.lock().chatbox_text.is_empty());
 
+        tx.send(Command::Shutdown).unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn burst_reaches_udp_without_waiting_for_stale_live_or_direct_message_ttl() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let settings = OscSettings {
+            send_port: receiver.local_addr().unwrap().port(),
+            max_text_length: 24,
+            history_ttl_seconds: 15.0,
+            ..Default::default()
+        };
+        let status = Arc::new(Mutex::new(RuntimeStatus::default()));
+        let (tx, rx) = unbounded();
+        let worker = thread::spawn(move || dispatch_loop(rx, settings, status));
+        let caption = |stream_id, source: String, ongoing| Command::Message {
+            stream_id,
+            audio_source: OscInputSource::Unknown,
+            is_typing: false,
+            source,
+            translated: String::new(),
+            additional_translations: Vec::new(),
+            speaker_id: String::new(),
+            ongoing,
+            ttl: None,
+        };
+        tx.send(caption(0, "old live message".into(), true))
+            .unwrap();
+        assert_eq!(receive_chatbox_input(&receiver).0, "old live message");
+        tx.send(Command::ManualMessage {
+            text: "old note".repeat(3),
+            ttl: None,
+        })
+        .unwrap();
+        receive_chatbox_input(&receiver);
+
+        let started = Instant::now();
+        for index in 1..=32 {
+            tx.send(caption(index, format!("{:024}", index), false))
+                .unwrap();
+        }
+        let (text, notify) = receive_chatbox_input(&receiver);
+        assert_eq!(text, format!("{:024}", 32));
+        assert!(notify);
+        assert!(started.elapsed() < Duration::from_secs(2));
         tx.send(Command::Shutdown).unwrap();
         worker.join().unwrap();
     }

@@ -7,6 +7,8 @@ use super::{
     sys_info::SystemMetrics,
 };
 
+const MAX_LINES: usize = 9;
+
 #[derive(Clone)]
 pub(super) struct HistoryMessage {
     pub(super) stream_id: u64,
@@ -15,12 +17,14 @@ pub(super) struct HistoryMessage {
     pub(super) translated: String,
     pub(super) additional_translations: Vec<(String, String)>,
     pub(super) speaker_id: String,
+    pub(super) updated_at: Instant,
     pub(super) expires_at: Instant,
 }
 
 #[derive(Clone)]
 pub(super) struct ManualMessage {
     pub(super) text: String,
+    pub(super) updated_at: Instant,
     pub(super) expires_at: Instant,
 }
 
@@ -31,36 +35,63 @@ pub(super) fn build_chatbox_text(
     settings: &OscSettings,
     metrics: &SystemMetrics,
 ) -> String {
-    let mut entries = history
-        .iter()
-        .chain(live.iter())
-        .cloned()
-        .collect::<VecDeque<_>>();
-    while entries.len() > 9 {
+    let mut entries = history.iter().chain(live.iter()).collect::<VecDeque<_>>();
+    // A stale live caption must not take precedence over a newer final result.
+    entries
+        .make_contiguous()
+        .sort_by_key(|entry| entry.updated_at);
+    while entries.len() > MAX_LINES {
         entries.pop_front();
     }
 
     if let Some(manual) = manual_message {
         let manual_raw = manual.text.trim();
         if !manual_raw.is_empty() {
-            let manual_text = fit_prefixed_text(
-                settings.prefix_for(OscInputSource::Typing),
-                manual_raw,
-                settings.max_text_length,
+            let (manual_limit, manual_lines) =
+                entries
+                    .back()
+                    .map_or((settings.max_text_length, MAX_LINES), |latest| {
+                        if latest.updated_at > manual.updated_at {
+                            let latest = render_entry(latest, settings);
+                            (
+                                settings
+                                    .max_text_length
+                                    .saturating_sub(latest.chars().count() + 1),
+                                MAX_LINES.saturating_sub(latest.lines().count()),
+                            )
+                        } else {
+                            (settings.max_text_length, MAX_LINES)
+                        }
+                    });
+            let manual_text = fit_lines(
+                fit_prefixed_text(
+                    settings.prefix_for(OscInputSource::Typing),
+                    manual_raw,
+                    manual_limit,
+                ),
+                manual_lines,
             );
-            let manual_len = manual_text.chars().count();
-            if entries.is_empty() || manual_len >= settings.max_text_length {
-                return manual_text;
+            if !manual_text.is_empty() {
+                let manual_len = manual_text.chars().count();
+                if entries.is_empty() || manual_len >= settings.max_text_length {
+                    return manual_text;
+                }
+                let available_for_asr = settings.max_text_length.saturating_sub(manual_len + 1);
+                if available_for_asr == 0 {
+                    return manual_text;
+                }
+                let asr_text = fit_asr_entries(
+                    &mut entries,
+                    available_for_asr,
+                    MAX_LINES.saturating_sub(manual_text.lines().count()),
+                    settings,
+                );
+                return if asr_text.is_empty() {
+                    manual_text
+                } else {
+                    format!("{asr_text}\n{manual_text}")
+                };
             }
-            let available_for_asr = settings.max_text_length.saturating_sub(manual_len + 1);
-            if available_for_asr == 0 {
-                return manual_text;
-            }
-            let asr_text = fit_asr_entries(&mut entries, available_for_asr, settings);
-            if asr_text.is_empty() {
-                return manual_text;
-            }
-            return format!("{asr_text}\n{manual_text}");
         }
     }
 
@@ -78,9 +109,15 @@ pub(super) fn build_chatbox_text(
     }
 
     while let Some(first) = entries.front() {
-        let combined = compose_chatbox(&prefix, &render_entries(entries.iter(), settings), &suffix);
+        let combined = compose_chatbox(
+            &prefix,
+            &render_entries(entries.iter().copied(), settings),
+            &suffix,
+        );
 
-        if combined.chars().count() <= settings.max_text_length {
+        if combined.chars().count() <= settings.max_text_length
+            && combined.lines().count() <= MAX_LINES
+        {
             return combined;
         }
         if entries.len() > 1 {
@@ -94,28 +131,35 @@ pub(super) fn build_chatbox_text(
 }
 
 fn fit_asr_entries(
-    entries: &mut VecDeque<HistoryMessage>,
+    entries: &mut VecDeque<&HistoryMessage>,
     limit: usize,
+    line_limit: usize,
     settings: &OscSettings,
 ) -> String {
+    if line_limit == 0 {
+        return String::new();
+    }
     while let Some(first) = entries.front() {
-        let rendered = render_entries(entries.iter(), settings);
-        if rendered.chars().count() <= limit {
+        let rendered = render_entries(entries.iter().copied(), settings);
+        if rendered.chars().count() <= limit && rendered.lines().count() <= line_limit {
             return rendered;
         }
         if entries.len() > 1 {
             entries.pop_front();
         } else {
             if !first.additional_translations.is_empty() {
-                return fit_multilingual_entry(first, settings, limit);
+                return fit_lines(fit_multilingual_entry(first, settings, limit), line_limit);
             }
             let rendered = render_entry(first, settings);
             let label = entry_prefix(first, settings);
-            return if !label.is_empty() && rendered.starts_with(&label) {
-                fit_prefixed_text(&label, &rendered[label.len()..], limit)
-            } else {
-                trim_text(&rendered, limit)
-            };
+            return fit_lines(
+                if !label.is_empty() && rendered.starts_with(&label) {
+                    fit_prefixed_text(&label, &rendered[label.len()..], limit)
+                } else {
+                    trim_text(&rendered, limit)
+                },
+                line_limit,
+            );
         }
     }
     String::new()
@@ -246,7 +290,7 @@ fn fit_decorations(prefix: &str, suffix: &str, limit: usize) -> String {
             break;
         }
     }
-    compose_chatbox(&prefix, &suffix, "")
+    fit_lines(compose_chatbox(&prefix, &suffix, ""), MAX_LINES)
 }
 
 pub(super) fn render_entry(entry: &HistoryMessage, settings: &OscSettings) -> String {
@@ -428,7 +472,17 @@ fn fit_single_entry(
     } else {
         trim_text(&rendered, content_limit)
     };
-    compose_chatbox(prefix, &content, suffix)
+    fit_lines(compose_chatbox(prefix, &content, suffix), MAX_LINES)
+}
+
+fn fit_lines(text: String, limit: usize) -> String {
+    if limit == 0 {
+        String::new()
+    } else if text.lines().count() > limit {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    } else {
+        text
+    }
 }
 
 fn entry_prefix(entry: &HistoryMessage, settings: &OscSettings) -> String {
@@ -532,6 +586,7 @@ mod tests {
             translated: String::new(),
             additional_translations: Vec::new(),
             speaker_id: String::new(),
+            updated_at: Instant::now(),
             expires_at,
         }
     }
@@ -575,6 +630,71 @@ mod tests {
     }
 
     #[test]
+    fn latest_completed_caption_is_not_hidden_by_an_older_live_caption_or_direct_message() {
+        let now = Instant::now();
+        let mut older = history_message(now, &"old".repeat(48));
+        older.updated_at = now;
+        let mut latest = history_message(now, &"新".repeat(144));
+        latest.updated_at = now + Duration::from_secs(1);
+        let manual = ManualMessage {
+            text: "note".repeat(36),
+            updated_at: now,
+            expires_at: now + Duration::from_secs(15),
+        };
+        for manual in [None, Some(&manual)] {
+            assert_eq!(
+                build_chatbox_text(
+                    std::slice::from_ref(&latest),
+                    std::slice::from_ref(&older),
+                    manual,
+                    &OscSettings::default(),
+                    &SystemMetrics::default(),
+                ),
+                latest.source,
+            );
+        }
+    }
+
+    #[test]
+    fn short_multilingual_messages_fit_the_visible_line_budget_with_banners_or_a_note() {
+        let now = Instant::now();
+        let history = (0..6)
+            .map(|index| {
+                let mut entry = history_message(now, &format!("source {index}"));
+                entry.translated = format!("译文 {index}");
+                entry.additional_translations = vec![("ja".into(), format!("訳文 {index}"))];
+                entry
+            })
+            .collect::<Vec<_>>();
+        let settings = OscSettings {
+            header_config: BannerConfig {
+                content_type: BannerContentType::CustomText,
+                custom_text: "header".into(),
+                show_device_name: false,
+            },
+            footer_config: BannerConfig {
+                content_type: BannerContentType::CustomText,
+                custom_text: "footer".into(),
+                show_device_name: false,
+            },
+            ..Default::default()
+        };
+        let manual = ManualMessage {
+            text: "note".into(),
+            updated_at: Instant::now(),
+            expires_at: now,
+        };
+        for manual in [None, Some(&manual)] {
+            let text =
+                build_chatbox_text(&history, &[], manual, &settings, &SystemMetrics::default());
+            assert!(text.lines().count() <= MAX_LINES, "{text}");
+            assert!(text.chars().count() <= settings.max_text_length);
+            assert!(text.contains("source 5\n译文 5\n訳文 5"));
+            assert!(!text.contains("source 0"));
+        }
+    }
+
+    #[test]
     fn multilingual_truncation_reserves_each_target_within_the_shared_budget() {
         let mut entry = history_message(Instant::now(), &"源".repeat(80));
         entry.translated = "主".repeat(80);
@@ -602,6 +722,7 @@ mod tests {
             assert!(text.contains("追"), "additional target lost: {text}");
             let manual = ManualMessage {
                 text: "note".into(),
+                updated_at: Instant::now(),
                 expires_at: Instant::now(),
             };
             let text = build_chatbox_text(
@@ -784,6 +905,7 @@ mod tests {
         // 2. With manual message: Header and footer are suppressed, manual message is at bottom with the typing prefix
         let manual = ManualMessage {
             text: "typing note".into(),
+            updated_at: Instant::now(),
             expires_at: now + Duration::from_secs(10),
         };
         let combined = build_chatbox_text(&history, &[], Some(&manual), &settings, &metrics);
@@ -839,6 +961,7 @@ mod tests {
         };
         let manual = ManualMessage {
             text: "hello world".into(),
+            updated_at: Instant::now(),
             expires_at: Instant::now(),
         };
         let text = build_chatbox_text(

@@ -469,6 +469,14 @@ Current plugin ownership is:
   fields remain readable for compatibility but no longer control submissions.
   Its optional direct-message mode
   sends the typed text through the OSC output without translation.
+  Pending caption updates are coalesced into the latest snapshot, not played
+  through a FIFO. Captions are ordered by their last update across all sources.
+  TTL is an upper bound: each newer retained message divides an older message's
+  lifetime, with a two-second floor (or the configured TTL when lower). Deadlines
+  only shorten; expiry runs even during continuous input. New captions never
+  wait for older TTLs, and older direct messages cannot reserve their space.
+  Formatting evicts whole older captions to fit both the character budget and
+  VRChat's nine-line limit, including banners and direct messages.
 - `plugins::meeting`: meeting store, controller, recording, meeting UI, a
   `TranslationSessionPlugin` binding, and a non-blocking
   `SessionEventSubscriber` that persists normalized results. It uses

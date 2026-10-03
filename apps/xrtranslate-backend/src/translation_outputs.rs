@@ -102,12 +102,7 @@ impl AdditionalOutputScope {
                 });
             }
         }
-        let session = self
-            .active
-            .as_ref()
-            .expect("prepared additional scope")
-            .2
-            .clone();
+        let session = &mut self.active.as_mut().expect("prepared additional scope").2;
         let asr = session
             .prepare_asr(&PrepareAsrRequest {
                 source_language: recognized.source_language.clone(),
@@ -134,7 +129,7 @@ impl AdditionalOutputScope {
             .await
             .map_err(|error| error.to_string())?;
         Ok(Some(AdditionalTurn {
-            session,
+            session: session.clone(),
             context_id: context.context_id,
             target: target.into(),
             contexts: align_translation_contexts(&recognized.segments, &context.segments),
