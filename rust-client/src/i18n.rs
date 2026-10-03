@@ -3006,6 +3006,28 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "자동 (양방향)",
         "Авто (двунаправленный)",
     ),
+    (
+        "Input only (ASR)",
+        "仅输入语种（ASR）",
+        "入力のみ（ASR）",
+        "입력만 (ASR)",
+        "Только ввод (ASR)",
+    ),
+    ("ASR only", "仅 ASR", "ASR のみ", "ASR만", "Только ASR"),
+    (
+        "Fixed extra language",
+        "固定第三语种",
+        "固定の追加言語",
+        "고정 추가 언어",
+        "Дополнительный фиксированный язык",
+    ),
+    (
+        "This output language stays fixed when the input language changes.",
+        "输入语种自动切换时，此输出语种保持不变。",
+        "入力言語が切り替わっても、この出力言語は変わりません。",
+        "입력 언어가 바뀌어도 이 출력 언어는 유지됩니다.",
+        "Этот язык вывода не меняется при смене входного языка.",
+    ),
     ("Chinese", "中文", "中国語", "중국어", "Китайский"),
     (
         "Traditional Chinese",
@@ -5337,6 +5359,13 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "SteamVR ゲーム内オーバーレイ",
         "SteamVR 인게임 오버레이",
         "Внутриигровой оверлей SteamVR",
+    ),
+    (
+        "Avatar in VR",
+        "3D 空间形象",
+        "VRのアバター",
+        "VR 아바타",
+        "Аватар в VR",
     ),
     (
         "Come here",

@@ -216,6 +216,29 @@ impl<'de> Deserialize<'de> for PromptGraphSet {
     }
 }
 
+/// Independent output intent, captured together with the primary language route.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranslationOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_target_lang: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub asr_only: bool,
+}
+impl TranslationOptions {
+    pub fn is_default(&self) -> bool {
+        self.additional_target_lang.is_none() && !self.asr_only
+    }
+}
+
+/// A completed translation of the same source with its own target and context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdditionalTranslation {
+    pub target_lang: String,
+    pub translated_text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub term_matches: Vec<CorpusTermMatch>,
+}
+
 /// Action-discriminated client controls.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -225,6 +248,8 @@ pub enum ActionControl {
     SessionConfig {
         source_lang: String,
         target_lang: String,
+        #[serde(default, skip_serializing_if = "TranslationOptions::is_default")]
+        translation_options: TranslationOptions,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sample_rate: Option<u32>,
         #[serde(
@@ -247,6 +272,8 @@ pub enum ActionControl {
     /// translation model inference, terminology post-rewriting, and history commit).
     TranslateText {
         text: String,
+        #[serde(default, skip_serializing_if = "TranslationOptions::is_default")]
+        translation_options: TranslationOptions,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_lang: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -268,6 +295,8 @@ pub enum EventControl {
         sample_rate: u32,
         source_lang: String,
         target_lang: String,
+        #[serde(default, skip_serializing_if = "TranslationOptions::is_default")]
+        translation_options: TranslationOptions,
         #[serde(default, skip_serializing_if = "is_default_audio_source")]
         audio_source: AudioSource,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -330,6 +359,7 @@ pub enum ServerEvent {
     VadActivity(VadActivity),
     AsrResult(AsrResult),
     SourceSegmentReady(SourceSegmentReady),
+    TranslationActivity(TranslationActivity),
     TranslationPreview(TranslationPreview),
     TranslationReady(TranslationReady),
     RecognitionStreamEnded(RecognitionStreamEnded),
@@ -338,6 +368,13 @@ pub enum ServerEvent {
     VoiceCloneState(VoiceCloneState),
     RouteChanged(RouteChanged),
     Error(ErrorEvent),
+}
+
+/// Actual translation inference, excluding recognition, queued work and cached results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranslationActivity {
+    pub request_id: u64,
+    pub active: bool,
 }
 
 /// Confirms that every inference result preceding a pause or terminal input
@@ -482,6 +519,10 @@ pub struct TranslationPreview {
 /// A completed translation and its latency information.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TranslationReady {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_translations: Vec<AdditionalTranslation>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub asr_only: bool,
     pub source_text: String,
     pub translated_text: String,
     #[serde(default)]
@@ -582,6 +623,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn independent_output_options_round_trip_without_changing_legacy_controls() {
+        let legacy = r#"{"action":"session_config","source_lang":"auto","target_lang":"en,zh"}"#;
+        let control: ClientControl = serde_json::from_str(legacy).unwrap();
+        assert_eq!(serde_json::to_string(&control).unwrap(), legacy);
+        for options in [
+            TranslationOptions {
+                additional_target_lang: Some("ja".into()),
+                asr_only: false,
+            },
+            TranslationOptions {
+                additional_target_lang: None,
+                asr_only: true,
+            },
+        ] {
+            let control = ClientControl::Action(ActionControl::SessionConfig {
+                source_lang: "auto".into(),
+                target_lang: "en,zh".into(),
+                translation_options: options.clone(),
+                sample_rate: None,
+                prompt_graphs: None,
+            });
+            let encoded = serde_json::to_value(&control).unwrap();
+            assert_eq!(
+                encoded["translation_options"],
+                serde_json::to_value(options).unwrap()
+            );
+            assert_eq!(
+                serde_json::from_value::<ClientControl>(encoded).unwrap(),
+                control
+            );
+        }
+    }
+
+    #[test]
+    fn additional_output_and_asr_tag_are_explicit_and_legacy_results_default_empty() {
+        let legacy = serde_json::json!({
+            "source_text":"hello", "translated_text":"hello", "turn_id":"t1",
+            "segment_index":1,"segment_count":1,"speaker_id":"", "revisable":false,
+            "overlap_ratio":0.0,"clone_audio_path":"","tts_audio_path":"",
+            "metrics":{"asr_ms":1,"mt_ms":0,"tts_ms":0}
+        });
+        let mut result: TranslationReady = serde_json::from_value(legacy).unwrap();
+        assert!(!result.asr_only);
+        assert!(result.additional_translations.is_empty());
+        result.asr_only = true;
+        assert_eq!(serde_json::to_value(&result).unwrap()["asr_only"], true);
+        result.asr_only = false;
+        result.additional_translations.push(AdditionalTranslation {
+            target_lang: "ja".into(),
+            translated_text: "こんにちは".into(),
+            term_matches: Vec::new(),
+        });
+        assert_eq!(
+            serde_json::from_str::<TranslationReady>(&serde_json::to_string(&result).unwrap())
+                .unwrap(),
+            result
+        );
+    }
+
+    #[test]
     fn legacy_session_ready_defaults_tts_runtime_diagnostics() {
         let event: ServerEvent = serde_json::from_str(
             r#"{"action":"session_ready","data":{"session_id":"s1","source_lang":"en","target_lang":"zh"}}"#,
@@ -643,6 +744,7 @@ mod tests {
     #[test]
     fn session_config_omits_an_unset_graph_snapshot() {
         let control = ClientControl::Action(ActionControl::SessionConfig {
+            translation_options: TranslationOptions::default(),
             source_lang: "auto".into(),
             target_lang: "zh,en".into(),
             sample_rate: None,
@@ -706,6 +808,7 @@ mod tests {
         assert_eq!(
             control,
             ClientControl::Event(EventControl::ConfigAudio {
+                translation_options: TranslationOptions::default(),
                 sample_rate: 16_000,
                 source_lang: "auto".into(),
                 target_lang: "zh,en".into(),
@@ -722,6 +825,7 @@ mod tests {
     #[test]
     fn offline_workload_is_explicit_while_realtime_stays_wire_compatible() {
         let control = ClientControl::Event(EventControl::ConfigAudio {
+            translation_options: TranslationOptions::default(),
             sample_rate: 16_000,
             source_lang: "ja".into(),
             target_lang: "zh".into(),
@@ -770,6 +874,7 @@ mod tests {
     #[test]
     fn translate_text_action_has_stable_wire_shape() {
         let control = ClientControl::Action(ActionControl::TranslateText {
+            translation_options: TranslationOptions::default(),
             text: "Hello world".into(),
             source_lang: Some("en".into()),
             target_lang: Some("zh".into()),
@@ -786,6 +891,7 @@ mod tests {
         );
 
         let minimal = ClientControl::Action(ActionControl::TranslateText {
+            translation_options: TranslationOptions::default(),
             text: "Hello".into(),
             source_lang: None,
             target_lang: None,
@@ -849,6 +955,8 @@ mod tests {
         assert_eq!(
             event,
             ServerEvent::TranslationReady(TranslationReady {
+                additional_translations: Vec::new(),
+                asr_only: false,
                 source_text: "hello".into(),
                 translated_text: "你好".into(),
                 term_matches: Vec::new(),
@@ -891,6 +999,8 @@ mod tests {
             .unwrap()
             .trace;
         let event = ServerEvent::TranslationReady(TranslationReady {
+            additional_translations: Vec::new(),
+            asr_only: false,
             source_text: "hello".into(),
             translated_text: "你好".into(),
             term_matches: Vec::new(),

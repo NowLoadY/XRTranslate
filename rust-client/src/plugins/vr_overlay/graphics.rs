@@ -1,6 +1,5 @@
 //! SteamVR's GPU and extension requirements applied before Vulkan creation.
-use super::openvr::{AvatarTracking, VulkanTexture};
-use crate::ui::components::avatar::StereoRenderer;
+use super::openvr::{AvatarTracking, OpenVrOverlay, OverlayError, VulkanTexture, raw_rgba_len};
 use ash::{vk, vk::Handle};
 use eframe::wgpu::{
     self,
@@ -8,6 +7,7 @@ use eframe::wgpu::{
 };
 use std::{
     ffi::{CStr, CString},
+    rc::Rc,
     sync::{LazyLock, Mutex},
 };
 
@@ -56,7 +56,12 @@ impl Drop for DeviceOwner {
     }
 }
 
-pub(super) fn create(tracking: &AvatarTracking) -> Result<StereoRenderer, String> {
+pub(super) struct Graphics {
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+}
+
+pub(super) fn create(tracking: &AvatarTracking) -> Result<Rc<Graphics>, String> {
     // This dedicated queue is touched only by the overlay worker, including
     // Valve's submission. Desktop rendering never concurrently uses it.
     let entry = unsafe { ash::Entry::load() }.map_err(|e| e.to_string())?;
@@ -65,7 +70,7 @@ pub(super) fn create(tracking: &AvatarTracking) -> Result<StereoRenderer, String
         .unwrap_or(vk::API_VERSION_1_0)
         .min(vk::API_VERSION_1_3);
     if version < vk::API_VERSION_1_1 {
-        return Err("Vulkan 1.1 is required for the VR companion".into());
+        return Err("Vulkan 1.1 is required for VR overlays".into());
     }
     let flags = wgpu::InstanceFlags::empty();
     let mut extensions =
@@ -77,7 +82,7 @@ pub(super) fn create(tracking: &AvatarTracking) -> Result<StereoRenderer, String
     }
     let pointers: Vec<_> = extensions.iter().map(|s| s.as_ptr()).collect();
     let app = vk::ApplicationInfo::default()
-        .application_name(c"XRTranslate Companion")
+        .application_name(c"XRTranslate Overlays")
         .api_version(version);
     let raw = unsafe {
         entry.create_instance(
@@ -119,7 +124,7 @@ pub(super) fn create(tracking: &AvatarTracking) -> Result<StereoRenderer, String
             unsafe { adapter.as_hal::<Vulkan>() }
                 .is_some_and(|hal| hal.raw_physical_device().as_raw() == required)
         })
-        .ok_or("SteamVR GPU is unavailable for companion rendering")?;
+        .ok_or("SteamVR GPU is unavailable for overlay rendering")?;
     let descriptor = wgpu::DeviceDescriptor::default();
     let hal = unsafe { adapter.as_hal::<Vulkan>() }.ok_or("Vulkan adapter unavailable")?;
     let mut extensions = hal.required_device_extensions(descriptor.required_features);
@@ -164,19 +169,29 @@ pub(super) fn create(tracking: &AvatarTracking) -> Result<StereoRenderer, String
     drop(hal);
     let (device, queue) = unsafe { adapter.create_device_from_hal::<Vulkan>(opened, &descriptor) }
         .map_err(|e| e.to_string())?;
-    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let renderer = StereoRenderer::new(device.clone(), queue);
-    if let Some(error) = futures::executor::block_on(validation.pop()) {
-        return Err(error.to_string());
-    }
-    Ok(renderer)
+    device.on_uncaptured_error(std::sync::Arc::new(|error| {
+        log::error!("Overlay GPU error: {error}");
+    }));
+    let graphics = Rc::new(Graphics { device, queue });
+    tracking.retain_graphics(Box::new(Rc::clone(&graphics)));
+    Ok(graphics)
 }
 
-pub(super) fn texture(renderer: &StereoRenderer) -> Result<VulkanTexture, String> {
-    let device =
-        unsafe { renderer.device.as_hal::<Vulkan>() }.ok_or("Companion GPU is unavailable")?;
-    let texture =
-        unsafe { renderer.texture.as_hal::<Vulkan>() }.ok_or("Companion texture is unavailable")?;
+pub(super) fn texture(
+    device: &wgpu::Device,
+    texture: &wgpu::Texture,
+) -> Result<VulkanTexture, String> {
+    if texture.format() != wgpu::TextureFormat::Rgba8Unorm
+        || texture.dimension() != wgpu::TextureDimension::D2
+        || texture.depth_or_array_layers() != 1
+        || texture.sample_count() != 1
+    {
+        return Err("Overlay texture must be a single RGBA8 image".into());
+    }
+    let width = texture.width();
+    let height = texture.height();
+    let device = unsafe { device.as_hal::<Vulkan>() }.ok_or("Overlay GPU is unavailable")?;
+    let texture = unsafe { texture.as_hal::<Vulkan>() }.ok_or("Overlay texture is unavailable")?;
     Ok(VulkanTexture {
         image: unsafe { texture.raw_handle() }.as_raw(),
         device: device.raw_device().handle().as_raw() as *mut _,
@@ -184,11 +199,100 @@ pub(super) fn texture(renderer: &StereoRenderer) -> Result<VulkanTexture, String
         instance: device.shared_instance().raw_instance().handle().as_raw() as *mut _,
         queue: device.raw_queue().as_raw() as *mut _,
         queue_family: device.queue_family_index(),
-        width: 1024,
-        height: 512,
+        width,
+        height,
         format: vk::Format::R8G8B8A8_UNORM.as_raw() as u32,
         samples: 1,
     })
+}
+
+/// Reusable GPU image for straight-alpha, sRGB caption and speech pixels.
+pub(super) struct RgbaTexture {
+    graphics: Rc<Graphics>,
+    texture: wgpu::Texture,
+    native: VulkanTexture,
+    len: usize,
+}
+
+impl RgbaTexture {
+    pub fn new(
+        tracking: &AvatarTracking,
+        graphics: Rc<Graphics>,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, String> {
+        let len = raw_rgba_len(width, height)?;
+        let validation = graphics
+            .device
+            .push_error_scope(wgpu::ErrorFilter::Validation);
+        let image = graphics.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("RGBA overlay"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        if let Some(error) = futures::executor::block_on(validation.pop()) {
+            return Err(error.to_string());
+        }
+        let native = texture(&graphics.device, &image)?;
+        tracking.retain_graphics(Box::new(image.clone()));
+        Ok(Self {
+            graphics,
+            texture: image,
+            native,
+            len,
+        })
+    }
+
+    pub fn upload(&mut self, overlay: &OpenVrOverlay, pixels: &[u8]) -> Result<(), OverlayError> {
+        if pixels.len() != self.len {
+            return Err(OverlayError::InvalidFrame(
+                "Invalid buffer length for RGBA overlay".into(),
+            ));
+        }
+        let validation = self
+            .graphics
+            .device
+            .push_error_scope(wgpu::ErrorFilter::Validation);
+        self.graphics.queue.write_texture(
+            self.texture.as_image_copy(),
+            pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(self.native.width * 4),
+                rows_per_image: Some(self.native.height),
+            },
+            self.texture.size(),
+        );
+        let mut encoder = self
+            .graphics
+            .device
+            .create_command_encoder(&Default::default());
+        // SteamVR reads on this same queue and leaves TRANSFER_SRC_OPTIMAL intact.
+        encoder.transition_resources(
+            std::iter::empty(),
+            std::iter::once(wgpu::TextureTransition {
+                texture: &self.texture,
+                selector: None,
+                state: wgpu::TextureUses::COPY_SRC,
+            }),
+        );
+        self.graphics.queue.submit([encoder.finish()]);
+        if let Some(error) = futures::executor::block_on(validation.pop()) {
+            return Err(OverlayError::InvalidFrame(error.to_string()));
+        }
+        overlay.set_vulkan_texture(&mut self.native)
+    }
 }
 
 #[cfg(test)]

@@ -16,20 +16,26 @@ use std::{
 use xrtranslate_engine::language::{LanguageCapabilities, LanguageSelection};
 use xrtranslate_protocol::PromptGraphSet;
 
-pub(crate) fn select_languages(
+pub(crate) fn select_languages_with_options(
     text: &str,
     source: &str,
     target: &str,
     capabilities: LanguageCapabilities,
+    additional_target: Option<&str>,
+    asr_only: bool,
 ) -> Result<LanguageSelection, String> {
     let capabilities = capabilities.for_text();
+    if asr_only {
+        return capabilities.select_with_options(source, target, None, true);
+    }
     if let Some((source, target)) =
         xrtranslate_engine::auto_route_language_pair(text, source, target)
-        && let Ok(selection) = capabilities.select(source, target)
+        && let Ok(selection) =
+            capabilities.select_with_options(source, target, additional_target, false)
     {
         return Ok(selection);
     }
-    capabilities.select(source, target)
+    capabilities.select_with_options(source, target, additional_target, false)
 }
 
 struct TextConnection {
@@ -303,8 +309,12 @@ impl TextTranslation {
             .plugin
             .as_ref()
             .is_none_or(|binding| binding.publish_to_host_outputs());
+        let scope = ChannelScope::text(owner);
+        scope
+            .asr_only
+            .store(task.languages.asr_only(), Ordering::Release);
         self.tasks.push(TextTask {
-            scope: ChannelScope::text(owner),
+            scope,
             pending: Some(text),
             languages: task.languages,
             publish_to_host_outputs,
@@ -537,6 +547,8 @@ mod tests {
             publish_to_host_outputs: false,
             source: "words".into(),
             translated: format!("文字{segment_index}"),
+            additional_translations: Vec::new(),
+            asr_only: false,
             turn_id: "text-1".into(),
             segment_index,
             segment_count: 2,
@@ -663,5 +675,55 @@ mod tests {
         assert_eq!(controller.tasks.len(), 31);
         controller.reset();
         assert!(!controller.preparing());
+    }
+
+    #[test]
+    fn requests_capture_additional_target_and_asr_mode_in_conversation_scope() {
+        let mut controller = TextTranslation::default();
+        let base = LanguageSelection::parse("en", "zh").unwrap();
+        let extra = LanguageSelection::parse_with_options("en", "zh", Some("ja"), false).unwrap();
+        let asr = LanguageSelection::parse_with_options("en", "zh", Some("ja"), true).unwrap();
+        for languages in [base, extra, asr] {
+            controller.submit(request("input", languages)).unwrap();
+        }
+        assert!(!controller.tasks[0].same_conversation(&controller.tasks[1]));
+        assert!(!controller.tasks[1].same_conversation(&controller.tasks[2]));
+        assert_eq!(
+            controller.tasks[1]
+                .languages
+                .additional_target()
+                .unwrap()
+                .code(),
+            "ja"
+        );
+        assert!(controller.tasks[2].scope.asr_only.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn text_detection_preserves_additional_target_and_asr_does_not_translate() {
+        let caps = LanguageCapabilities::default();
+        let selected = select_languages_with_options(
+            "How are you doing today?",
+            "auto",
+            "zh,en",
+            caps,
+            Some("ja"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(selected.wire(), ("en".into(), "zh".into()));
+        assert_eq!(selected.additional_target().unwrap().code(), "ja");
+        let asr = select_languages_with_options(
+            "How are you doing today?",
+            "zh",
+            "en",
+            caps,
+            Some("ja"),
+            true,
+        )
+        .unwrap();
+        assert!(asr.asr_only());
+        assert_eq!(asr.wire(), ("zh".into(), "zh".into()));
+        assert!(asr.additional_target().is_none());
     }
 }

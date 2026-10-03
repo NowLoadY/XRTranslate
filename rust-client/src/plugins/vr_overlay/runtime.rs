@@ -9,6 +9,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use super::avatar::AvatarOverlay;
+use super::graphics;
 use super::openvr::{OpenVrApi, OpenVrOverlay, OpenVrSession, OverlayError};
 use super::renderer::{VrOverlayRenderer, VrSubtitleCard};
 use crate::ui::components::avatar::Presentation;
@@ -20,6 +21,10 @@ const RENDER_HEIGHT: u32 = 320;
 pub struct VrOverlaySettings {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub avatar_enabled: bool,
+    #[serde(default = "default_true")]
+    pub captions_enabled: bool,
     #[serde(default = "default_max_items")]
     pub max_items: usize,
     #[serde(default = "default_true")]
@@ -123,6 +128,8 @@ impl Default for VrOverlaySettings {
     fn default() -> Self {
         Self {
             enabled: true,
+            avatar_enabled: false,
+            captions_enabled: true,
             max_items: default_max_items(),
             bilingual: true,
             font_size: default_font_size(),
@@ -141,6 +148,9 @@ pub struct VrRuntimeStatus {
     pub steamvr_installed: bool,
     pub steamvr_connected: bool,
     pub avatar_available: bool,
+    pub avatar_present: bool,
+    pub avatar_attention: bool,
+    pub avatar_greeting: bool,
     pub avatar_error: Option<String>,
     pub last_error: Option<String>,
     pub active_card_count: usize,
@@ -154,6 +164,7 @@ pub enum VrCommand {
         stream_id: u64,
         source: String,
         translated: String,
+        additional_translations: Vec<String>,
         speaker: String,
         live: bool,
     },
@@ -161,6 +172,7 @@ pub enum VrCommand {
         stream_id: u64,
         source: String,
         translated: String,
+        additional_translations: Vec<String>,
         speaker: String,
     },
     EndStream(u64),
@@ -168,7 +180,8 @@ pub enum VrCommand {
     Connect,
     Disconnect,
     UpdateSettings(VrOverlaySettings),
-    RecenterAvatar,
+    VisitAvatar,
+    ReturnAvatar,
     Shutdown,
 }
 
@@ -177,6 +190,7 @@ struct StreamEntry {
     stream_id: u64,
     source: String,
     translated: String,
+    additional_translations: Vec<String>,
     speaker: String,
     live: bool,
     updated_at: Instant,
@@ -228,14 +242,14 @@ impl VrOverlayManager {
         }
     }
 
-    pub(crate) fn companion_active(&self) -> bool {
-        self.status.lock().avatar_available
-    }
     pub(crate) fn present_companion(&self, presentation: Presentation) {
         *self.companion.lock() = presentation;
     }
-    pub fn recenter_avatar(&self) {
-        let _ = self.command_tx.send(VrCommand::RecenterAvatar);
+    pub fn visit_avatar(&self) {
+        let _ = self.command_tx.send(VrCommand::VisitAvatar);
+    }
+    pub fn return_avatar(&self) {
+        let _ = self.command_tx.send(VrCommand::ReturnAvatar);
     }
 
     pub fn status(&self) -> VrRuntimeStatus {
@@ -280,6 +294,7 @@ impl VrOverlayHandle {
         stream_id: u64,
         source: &str,
         translated: &str,
+        additional_translations: &[xrtranslate_protocol::AdditionalTranslation],
         speaker: &str,
         live: bool,
     ) {
@@ -287,16 +302,25 @@ impl VrOverlayHandle {
             stream_id,
             source: source.to_owned(),
             translated: translated.to_owned(),
+            additional_translations: additional_caption_lines(additional_translations),
             speaker: speaker.to_owned(),
             live,
         });
     }
 
-    pub fn roll_stream(&self, stream_id: u64, source: &str, translated: &str, speaker: &str) {
+    pub fn roll_stream(
+        &self,
+        stream_id: u64,
+        source: &str,
+        translated: &str,
+        additional_translations: &[xrtranslate_protocol::AdditionalTranslation],
+        speaker: &str,
+    ) {
         let _ = self.command_tx.send(VrCommand::RollStream {
             stream_id,
             source: source.to_owned(),
             translated: translated.to_owned(),
+            additional_translations: additional_caption_lines(additional_translations),
             speaker: speaker.to_owned(),
         });
     }
@@ -308,6 +332,16 @@ impl VrOverlayHandle {
     pub fn clear(&self) {
         let _ = self.command_tx.send(VrCommand::Clear);
     }
+}
+
+fn additional_caption_lines(
+    translations: &[xrtranslate_protocol::AdditionalTranslation],
+) -> Vec<String> {
+    translations
+        .iter()
+        .filter(|result| !result.translated_text.trim().is_empty())
+        .map(|result| result.translated_text.trim().to_owned())
+        .collect()
 }
 
 fn run_vr_worker(
@@ -323,8 +357,11 @@ fn run_vr_worker(
     let mut openvr_api: Option<Arc<OpenVrApi>> = OpenVrApi::try_load();
     let mut vr_session: Option<OpenVrSession> = None;
     let mut vr_overlay: Option<OpenVrOverlay> = None;
+    let mut graphics = None;
     let mut avatar: Option<AvatarOverlay> = None;
+    let mut avatar_initialized = false;
     let mut next_avatar_frame = Instant::now();
+    let mut next_session_check = Instant::now();
 
     let mut entries: Vec<StreamEntry> = Vec::new();
     let mut needs_redraw = false;
@@ -335,7 +372,7 @@ fn run_vr_worker(
     }
 
     while !shutdown.load(Ordering::Acquire) {
-        let timeout = if avatar.is_some() {
+        let timeout = if settings.avatar_enabled && status.lock().avatar_available {
             next_avatar_frame
                 .saturating_duration_since(Instant::now())
                 .min(Duration::from_millis(100))
@@ -388,21 +425,38 @@ fn run_vr_worker(
                                                 st.last_error = Some(error.to_string());
                                                 continue;
                                             }
+                                            let surfaces =
+                                                session.avatar_tracking().and_then(|tracking| {
+                                                    let gpu = graphics::create(&tracking)?;
+                                                    let (width, height) = renderer.dimensions();
+                                                    let captions = graphics::RgbaTexture::new(
+                                                        &tracking,
+                                                        gpu.clone(),
+                                                        width,
+                                                        height,
+                                                    )?;
+                                                    Ok((gpu, captions))
+                                                });
+                                            let graphics_error = match surfaces {
+                                                Ok(surfaces) => {
+                                                    graphics = Some(surfaces);
+                                                    None
+                                                }
+                                                Err(error) => {
+                                                    log::warn!(
+                                                        "VR captions using raw upload: {error}"
+                                                    );
+                                                    Some(error)
+                                                }
+                                            };
                                             is_overlay_visible = false;
-                                            // Avatar failure leaves the caption connection usable.
-                                            let created = AvatarOverlay::new(&session);
-                                            {
-                                                let mut st = status.lock();
-                                                st.avatar_available = created.is_ok();
-                                                st.avatar_error = created.as_ref().err().cloned();
-                                            }
-                                            avatar = created.ok();
-                                            next_avatar_frame = Instant::now();
+                                            avatar_initialized = false;
                                             vr_overlay = Some(overlay);
                                             vr_session = Some(session);
                                             needs_redraw = true;
                                             let mut st = status.lock();
                                             st.steamvr_connected = true;
+                                            st.avatar_error = graphics_error;
                                             st.last_error = None;
                                         }
                                         Err(e) => {
@@ -431,11 +485,15 @@ fn run_vr_worker(
                 Ok(VrCommand::Disconnect) => {
                     avatar = None;
                     vr_overlay = None;
+                    graphics = None;
                     vr_session = None;
                     is_overlay_visible = false;
                     let mut st = status.lock();
                     st.steamvr_connected = false;
                     st.avatar_available = false;
+                    st.avatar_present = false;
+                    st.avatar_attention = false;
+                    st.avatar_greeting = false;
                     st.avatar_error = None;
                     st.last_error = None;
                 }
@@ -443,6 +501,7 @@ fn run_vr_worker(
                     stream_id,
                     source,
                     translated,
+                    additional_translations,
                     speaker,
                     live,
                 }) => {
@@ -451,6 +510,7 @@ fn run_vr_worker(
                         stream_id,
                         source,
                         translated,
+                        additional_translations,
                         speaker,
                         live,
                         Instant::now(),
@@ -462,6 +522,7 @@ fn run_vr_worker(
                     stream_id,
                     source,
                     translated,
+                    additional_translations,
                     speaker,
                 }) => {
                     upsert_caption(
@@ -469,6 +530,7 @@ fn run_vr_worker(
                         stream_id,
                         source,
                         translated,
+                        additional_translations,
                         speaker,
                         false,
                         Instant::now(),
@@ -492,13 +554,26 @@ fn run_vr_worker(
                 }
                 Ok(VrCommand::UpdateSettings(mut updated)) => {
                     updated.normalize();
+                    if updated.avatar_enabled && !settings.avatar_enabled {
+                        if let Some(avatar) = avatar.as_mut() {
+                            avatar.resume();
+                            status.lock().avatar_error = None;
+                        }
+                    }
                     settings = updated;
                     clamp_entries(&mut entries, settings.max_items);
                     needs_redraw = true;
                 }
-                Ok(VrCommand::RecenterAvatar) => {
+                Ok(VrCommand::VisitAvatar) => {
+                    if settings.avatar_enabled
+                        && let Some(avatar) = avatar.as_mut()
+                    {
+                        avatar.request_visit();
+                    }
+                }
+                Ok(VrCommand::ReturnAvatar) => {
                     if let Some(avatar) = avatar.as_mut() {
-                        avatar.recenter();
+                        avatar.return_from_visit();
                     }
                 }
                 Ok(VrCommand::Shutdown) => return,
@@ -514,15 +589,25 @@ fn run_vr_worker(
 
         // Passive session monitor: detect if SteamVR was closed by user or if disabled
         if vr_session.is_some() {
-            let running = super::openvr::is_steamvr_running();
+            // Process enumeration is a liveness check, not part of every frame.
+            let running = if Instant::now() >= next_session_check {
+                next_session_check = Instant::now() + Duration::from_secs(1);
+                super::openvr::is_steamvr_running()
+            } else {
+                true
+            };
             if !running || !settings.enabled {
                 avatar = None;
                 vr_overlay = None;
+                graphics = None;
                 vr_session = None;
                 is_overlay_visible = false;
                 let mut st = status.lock();
                 st.steamvr_connected = false;
                 st.avatar_available = false;
+                st.avatar_present = false;
+                st.avatar_attention = false;
+                st.avatar_greeting = false;
             }
         }
 
@@ -535,6 +620,7 @@ fn run_vr_worker(
                 .map(|e| VrSubtitleCard {
                     source: e.source.clone(),
                     translated: e.translated.clone(),
+                    additional_translations: e.additional_translations.clone(),
                     speaker: e.speaker.clone(),
                     live: e.live,
                 })
@@ -545,22 +631,22 @@ fn run_vr_worker(
                 let mut st = status.lock();
                 st.cards.clone_from(&cards);
                 st.active_card_count = cards.len();
-                st.latest_caption_preview = cards.last().map(|c| {
-                    if c.translated.is_empty() {
-                        c.source.clone()
-                    } else {
-                        format!("{} | {}", c.source, c.translated)
-                    }
-                });
+                st.latest_caption_preview =
+                    cards.last().map(|c| c.preview_text(settings.bilingual));
             }
 
             if let Some(overlay) = vr_overlay.as_mut() {
+                let (width, height) = renderer.dimensions();
                 match redraw_overlay(
                     overlay,
                     &mut renderer,
                     &cards,
                     &settings,
                     &mut is_overlay_visible,
+                    |overlay, pixels| match graphics.as_mut() {
+                        Some((_, texture)) => texture.upload(overlay, &pixels),
+                        None => overlay.set_raw_rgba(pixels, width, height),
+                    },
                 ) {
                     Ok(()) => status.lock().last_error = None,
                     Err(error) => {
@@ -571,26 +657,69 @@ fn run_vr_worker(
                             // Destroy before shutdown. Captions remain available for reconnect.
                             avatar = None;
                             vr_overlay = None;
+                            graphics = None;
                             vr_session = None;
                             is_overlay_visible = false;
                             st.steamvr_connected = false;
                             st.avatar_available = false;
+                            st.avatar_present = false;
+                            st.avatar_attention = false;
+                            st.avatar_greeting = false;
                         }
                     }
                 }
             }
         }
+        // Create lazily once per session: OpenVR retains its GPU resources until
+        // shutdown. Toggling only suspends the same companion, never the captions.
+        if settings.avatar_enabled {
+            if !avatar_initialized
+                && let Some(session) = &vr_session
+                && let Some((gpu, _)) = &graphics
+            {
+                avatar_initialized = true;
+                match AvatarOverlay::new(session, gpu.clone()) {
+                    Ok(created) => avatar = Some(created),
+                    Err(error) => status.lock().avatar_error = Some(error),
+                }
+            }
+            let mut st = status.lock();
+            st.avatar_available = avatar.is_some() && st.avatar_error.is_none();
+        } else {
+            if let Some(current) = avatar.as_mut() {
+                if let Err(error) = current.hide() {
+                    status.lock().avatar_error = Some(error.to_string());
+                }
+            }
+            let mut st = status.lock();
+            st.avatar_available = false;
+            st.avatar_present = false;
+            st.avatar_attention = false;
+            st.avatar_greeting = false;
+        }
         // Captions have already drained and rendered; companion dialogue timing
         // never gates subtitle consumption. Avoid command bursts starving frames.
-        if avatar.is_some() && Instant::now() >= next_avatar_frame {
-            next_avatar_frame = Instant::now() + Duration::from_millis(33);
+        if status.lock().avatar_available && Instant::now() >= next_avatar_frame {
+            // One start-to-start clock; native/GPU waits must not add another frame.
+            next_avatar_frame = Instant::now() + Duration::from_secs_f64(1.0 / 60.0);
             let presentation = companion.lock().clone();
             if let Some(current) = avatar.as_mut() {
-                if let Err(error) = current.frame(&presentation) {
-                    avatar = None;
-                    let mut st = status.lock();
-                    st.avatar_available = false;
-                    st.avatar_error = Some(error.to_string());
+                let result = current.frame(&presentation);
+                let mut st = status.lock();
+                match result {
+                    Ok(()) => {
+                        st.avatar_present = current.visible();
+                        st.avatar_attention = current.attentive();
+                        st.avatar_greeting = current.greeting();
+                    }
+                    Err(error) => {
+                        let _ = current.hide();
+                        st.avatar_available = false;
+                        st.avatar_present = false;
+                        st.avatar_attention = false;
+                        st.avatar_greeting = false;
+                        st.avatar_error = Some(error.to_string());
+                    }
                 }
             }
         }
@@ -613,8 +742,9 @@ fn redraw_overlay(
     cards: &[VrSubtitleCard],
     settings: &VrOverlaySettings,
     visible: &mut bool,
+    upload: impl FnOnce(&mut OpenVrOverlay, Vec<u8>) -> Result<(), OverlayError>,
 ) -> Result<(), OverlayError> {
-    if cards.is_empty() {
+    if !settings.captions_enabled || cards.is_empty() {
         if *visible {
             overlay.hide()?;
             *visible = false;
@@ -624,8 +754,7 @@ fn redraw_overlay(
             .render(cards, settings.bilingual, settings.font_size)
             .map_err(OverlayError::InvalidFrame)?;
         configure_overlay(overlay, settings)?;
-        let (width, height) = renderer.dimensions();
-        overlay.set_raw_rgba(buffer, width, height)?;
+        upload(overlay, buffer)?;
         if !*visible {
             overlay.show()?;
             *visible = true;
@@ -639,17 +768,22 @@ fn upsert_caption(
     stream_id: u64,
     source: String,
     translated: String,
+    additional_translations: Vec<String>,
     speaker: String,
     live: bool,
     now: Instant,
 ) {
-    if source.trim().is_empty() && translated.trim().is_empty() {
+    if source.trim().is_empty()
+        && translated.trim().is_empty()
+        && additional_translations.is_empty()
+    {
         return;
     }
     let entry = StreamEntry {
         stream_id,
         source,
         translated,
+        additional_translations,
         speaker,
         live,
         updated_at: now,
@@ -719,6 +853,7 @@ mod tests {
         let cards = [VrSubtitleCard {
             source: "text".into(),
             translated: String::new(),
+            additional_translations: Vec::new(),
             speaker: String::new(),
             live: true,
         }];
@@ -730,7 +865,8 @@ mod tests {
                 &mut renderer,
                 &cards,
                 &VrOverlaySettings::default(),
-                &mut visible
+                &mut visible,
+                |_, _| Ok(()),
             )
             .is_err()
         );
@@ -742,6 +878,7 @@ mod tests {
             &cards,
             &VrOverlaySettings::default(),
             &mut visible,
+            |_, _| Ok(()),
         )
         .unwrap();
         assert!(visible);
@@ -752,7 +889,8 @@ mod tests {
                 &mut renderer,
                 &[],
                 &VrOverlaySettings::default(),
-                &mut visible
+                &mut visible,
+                |_, _| Ok(()),
             )
             .is_err()
         );
@@ -764,6 +902,7 @@ mod tests {
             &[],
             &VrOverlaySettings::default(),
             &mut visible,
+            |_, _| Ok(()),
         )
         .unwrap();
         assert!(!visible);
@@ -777,7 +916,7 @@ mod tests {
         let stopped = Arc::clone(&manager.shutdown);
         let producer = std::thread::spawn(move || {
             for i in 0..500 {
-                handle.add_caption(i, "caption", "字幕", "", true);
+                handle.add_caption(i, "caption", "字幕", &[], "", true);
             }
             handle
         });
@@ -808,6 +947,7 @@ mod tests {
             1,
             "partial".into(),
             "初稿".into(),
+            Vec::new(),
             "A".into(),
             true,
             now,
@@ -817,6 +957,7 @@ mod tests {
             2,
             "other".into(),
             "另一任务".into(),
+            Vec::new(),
             "B".into(),
             true,
             now,
@@ -827,6 +968,7 @@ mod tests {
                 1,
                 format!("revision {i}"),
                 "更新".into(),
+                Vec::new(),
                 "A".into(),
                 true,
                 now,
@@ -839,6 +981,7 @@ mod tests {
             1,
             "final".into(),
             "定稿".into(),
+            Vec::new(),
             "A".into(),
             false,
             now,
@@ -848,6 +991,7 @@ mod tests {
             1,
             "next".into(),
             "下一句".into(),
+            Vec::new(),
             "A".into(),
             true,
             now,
@@ -867,6 +1011,7 @@ mod tests {
             1,
             "stale live".into(),
             String::new(),
+            Vec::new(),
             String::new(),
             true,
             start,
@@ -876,6 +1021,7 @@ mod tests {
             2,
             "history".into(),
             String::new(),
+            Vec::new(),
             String::new(),
             false,
             start,
@@ -885,6 +1031,7 @@ mod tests {
             3,
             "fresh".into(),
             String::new(),
+            Vec::new(),
             String::new(),
             true,
             start + Duration::from_secs(4),
@@ -902,6 +1049,15 @@ mod tests {
     fn vr_overlay_settings_has_expected_defaults() {
         let settings = VrOverlaySettings::default();
         assert!(settings.enabled);
+        assert!(!settings.avatar_enabled);
+        assert!(settings.captions_enabled);
+        let mut legacy = serde_json::to_value(&settings).unwrap();
+        legacy.as_object_mut().unwrap().remove("avatar_enabled");
+        legacy.as_object_mut().unwrap().remove("captions_enabled");
+        assert_eq!(
+            serde_json::from_value::<VrOverlaySettings>(legacy).unwrap(),
+            settings
+        );
         assert_eq!(settings.max_items, 3);
         assert!(settings.bilingual);
         assert_eq!(settings.font_size, 20.0);
@@ -918,6 +1074,7 @@ mod tests {
                 stream_id: i,
                 source: format!("source {i}"),
                 translated: format!("trans {i}"),
+                additional_translations: Vec::new(),
                 speaker: String::new(),
                 live: false,
                 updated_at: Instant::now(),
@@ -936,12 +1093,14 @@ mod tests {
             VrSubtitleCard {
                 source: "Hello world".into(),
                 translated: "你好，世界".into(),
+                additional_translations: Vec::new(),
                 speaker: "User1".into(),
                 live: false,
             },
             VrSubtitleCard {
                 source: "Second sentence".into(),
                 translated: "第二句话".into(),
+                additional_translations: Vec::new(),
                 speaker: String::new(),
                 live: true,
             },
@@ -954,13 +1113,21 @@ mod tests {
     fn manager_connect_and_disconnect_lifecycle() {
         let manager = VrOverlayManager::new(VrOverlaySettings::default());
 
-        // Connect request via manager
+        // Wait for the worker result, not a 50 ms guess at native startup time.
         manager.connect();
-        std::thread::sleep(Duration::from_millis(50));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !manager.status().steamvr_connected && manager.status().last_error.is_none() {
+            assert!(Instant::now() < deadline, "connect did not finish");
+            std::thread::sleep(Duration::from_millis(10));
+        }
 
         // Disconnect request via manager
         manager.disconnect();
-        std::thread::sleep(Duration::from_millis(50));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while manager.status().steamvr_connected {
+            assert!(Instant::now() < deadline, "disconnect did not finish");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(!manager.status().steamvr_connected);
     }
 }

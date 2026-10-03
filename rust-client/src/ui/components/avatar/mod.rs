@@ -6,6 +6,7 @@ mod geometry;
 mod hair;
 mod model;
 mod motion;
+mod presentation;
 mod render;
 mod speech;
 mod surface;
@@ -19,22 +20,14 @@ pub use hair::Hair;
 pub use model::{Material, Part};
 pub(crate) use motion::Motion;
 pub use motion::{Expression, Gaze, Pose};
+pub use presentation::Presentation;
+pub(crate) use presentation::PresentationSampler;
 #[cfg(debug_assertions)]
 pub(crate) use render::export::render_views;
 pub use render::install;
 pub(crate) use render::stereo::StereoRenderer;
 pub use wardrobe::{Accessory, Appearance};
 
-/// A presentation of the existing companion, never a second dialogue owner.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Presentation {
-    #[serde(default)]
-    pub appearance: Appearance,
-    pub pose: Pose,
-    pub speech: Speech,
-    pub clock: f64,
-    pub visible: bool,
-}
 pub use speech::Speech;
 pub(crate) use surface::Surface;
 

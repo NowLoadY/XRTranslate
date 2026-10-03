@@ -33,14 +33,18 @@ impl Motion {
         }
         let turn = (angles - last_angles).map(|a| (a + PI).rem_euclid(TAU) - PI) / dt;
         let target = Vec2::new(
-            -turn.x * 0.22 + turn.z * 0.32 - movement.x / dt * 0.025,
-            turn.y * 0.25 - (movement.y + movement.z) / dt * 0.020,
+            -turn.x * 0.25 + turn.z * 0.36 - movement.x / dt * 0.028,
+            turn.y * 0.28 - (movement.y + movement.z) / dt * 0.022,
         )
         .clamp(Vec2::splat(-0.8), Vec2::splat(0.8));
         let steps = (dt * 120.0).ceil().max(1.0) as usize;
         let h = dt / steps as f32;
+        // A slower spring and lighter damping give the tips a soft trailing swing.
+        let frequency = TAU * 1.7;
+        let damping = 2.0 * 0.42 * frequency;
         for _ in 0..steps {
-            self.velocity += ((target - self.bend) * 180.0 - self.velocity * 13.0) * h;
+            self.velocity +=
+                ((target - self.bend) * frequency * frequency - self.velocity * damping) * h;
             self.bend = (self.bend + self.velocity * h).clamp(Vec2::splat(-1.0), Vec2::splat(1.0));
         }
         if !self.moving() {

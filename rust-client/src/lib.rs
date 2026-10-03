@@ -662,6 +662,8 @@ struct XRTranslateApp {
     update_channel: client_settings::UpdateChannel,
     source_lang: String,
     target_lang: String,
+    asr_only: bool,
+    additional_target_lang: Option<String>,
     denoise_enabled: bool,
     tts_enabled: bool,
     microphone_clone_state: Option<xrtranslate_protocol::VoiceCloneState>,
@@ -738,6 +740,8 @@ struct SharedSessionState {
     translation_previews: Vec<TranslationHistoryEntry>,
     last_error: Option<String>,
     pending_companion_errors: VecDeque<Option<String>>,
+    companion_reader: ui::companion::Reader,
+    companion_work: ui::companion::TranslationWork,
     translation_enabled: bool,
     pending_route_change: Option<(String, String)>,
     latest_asr_prompt_trace: Option<PromptExecutionTrace>,
@@ -785,6 +789,8 @@ impl SharedSessionState {
     }
 
     fn retire_stream(&mut self, stream: u64) {
+        self.companion_reader.retire_stream(stream);
+        self.companion_work.retire_stream(stream);
         self.retired_streams.push(stream);
         self.translation_previews
             .retain(|entry| entry.stream_id != Some(stream));
@@ -820,8 +826,12 @@ impl SharedSessionState {
                     .saturating_sub(max_items),
             )
             .map(|translation| overlay_ipc::OverlayEntry {
-                source: translation.source.clone(),
-                translated: translation.translated.clone(),
+                source: if translation.asr_only {
+                    String::new()
+                } else {
+                    translation.source.clone()
+                },
+                translated: translation.output_text(),
                 live: translation.live,
                 vad_active: match translation.audio_source {
                     CaptureSource::Microphone => microphone_active,
@@ -1021,7 +1031,24 @@ impl Default for XRTranslateApp {
                         }
                     );
                     let results = scope.publish(&event, &result_subscribers);
+                    for result in &results {
+                        state
+                            .companion_reader
+                            .observe(&scope.owner, scope.is_text, result);
+                        if let TranslationEvent::StreamEnded { stream_id }
+                        | TranslationEvent::Finished { stream_id, .. } = result
+                        {
+                            state.companion_work.retire_stream(*stream_id);
+                        }
+                    }
                     match event {
+                        SessionEvent::TranslationActivity {
+                            stream_id,
+                            request_id,
+                            active,
+                        } => {
+                            state.companion_work.observe(stream_id, request_id, active);
+                        }
                         SessionEvent::Connected => {
                             state.connection_status = "Connected - listening".into();
                             scope.ready.store(true, Ordering::Release);
@@ -1081,6 +1108,8 @@ impl Default for XRTranslateApp {
                                         is_typing: false,
                                         source: &text,
                                         translated: "",
+                                        additional_translations: &[],
+                                        asr_only: scope.asr_only.load(Ordering::Acquire),
                                         speaker: "",
                                         update: CaptionUpdate::Replace,
                                     },
@@ -1326,6 +1355,8 @@ impl Default for XRTranslateApp {
                             publish_to_host_outputs,
                             source,
                             translated,
+                            additional_translations,
+                            asr_only,
                             turn_id,
                             segment_index,
                             segment_count,
@@ -1359,6 +1390,8 @@ impl Default for XRTranslateApp {
                                 live: continuous && (revisable || authoritative_snapshot),
                                 source,
                                 translated,
+                                additional_translations,
+                                asr_only,
                                 speaker_id,
                                 source_start_ms,
                                 source_end_ms,
@@ -1371,6 +1404,7 @@ impl Default for XRTranslateApp {
                                 revision_id: revision,
                                 source_revision: None,
                                 translated_revision: None,
+                                additional_revisions: Default::default(),
                             };
                             if authoritative_snapshot {
                                 let complete = collect_authoritative_translation_snapshot(
@@ -1397,6 +1431,9 @@ impl Default for XRTranslateApp {
                                                     is_typing: scope.is_text,
                                                     source: &entry.source,
                                                     translated: &entry.translated,
+                                                    additional_translations: &entry
+                                                        .additional_translations,
+                                                    asr_only: entry.asr_only,
                                                     speaker: &entry.speaker_id,
                                                     update: CaptionUpdate::RollOver,
                                                 },
@@ -1413,6 +1450,9 @@ impl Default for XRTranslateApp {
                                                     is_typing: scope.is_text,
                                                     source: &entry.source,
                                                     translated: &entry.translated,
+                                                    additional_translations: &entry
+                                                        .additional_translations,
+                                                    asr_only: entry.asr_only,
                                                     speaker: &entry.speaker_id,
                                                     update: CaptionUpdate::Replace,
                                                 },
@@ -1440,6 +1480,9 @@ impl Default for XRTranslateApp {
                                                 is_typing: scope.is_text,
                                                 source: &previous.source,
                                                 translated: &previous.translated,
+                                                additional_translations: &previous
+                                                    .additional_translations,
+                                                asr_only: previous.asr_only,
                                                 speaker: &previous.speaker_id,
                                                 update: CaptionUpdate::RollOver,
                                             },
@@ -1453,6 +1496,10 @@ impl Default for XRTranslateApp {
                                             is_typing: scope.is_text,
                                             source: &merged.entry.source,
                                             translated: &merged.entry.translated,
+                                            additional_translations: &merged
+                                                .entry
+                                                .additional_translations,
+                                            asr_only: merged.entry.asr_only,
                                             speaker: &merged.entry.speaker_id,
                                             update: CaptionUpdate::Replace,
                                         },
@@ -1466,6 +1513,10 @@ impl Default for XRTranslateApp {
                                             is_typing: scope.is_text,
                                             source: &merged.entry.source,
                                             translated: &merged.entry.translated,
+                                            additional_translations: &merged
+                                                .entry
+                                                .additional_translations,
+                                            asr_only: merged.entry.asr_only,
                                             speaker: &merged.entry.speaker_id,
                                             update: CaptionUpdate::Replace,
                                         },
@@ -1480,6 +1531,8 @@ impl Default for XRTranslateApp {
                                         is_typing: scope.is_text,
                                         source: &fragment.source,
                                         translated: &fragment.translated,
+                                        additional_translations: &fragment.additional_translations,
+                                        asr_only: fragment.asr_only,
                                         speaker: &fragment.speaker_id,
                                         update: CaptionUpdate::Append,
                                     },
@@ -1641,6 +1694,8 @@ impl Default for XRTranslateApp {
             update_channel: settings.update_channel,
             source_lang: settings.source_lang,
             target_lang: settings.target_lang,
+            asr_only: settings.asr_only,
+            additional_target_lang: settings.additional_target_lang,
             denoise_enabled: settings.denoise_enabled,
             tts_enabled: settings.tts_enabled && service_config.tts_is_configured(),
             microphone_clone_state: settings.microphone_clone_state,
@@ -2615,17 +2670,29 @@ impl XRTranslateApp {
                     Ok(()) => self.last_error = None,
                     Err(error) => self.last_error = Some(error),
                 },
-                OscUiAction::TranslateInput {
-                    text,
+                OscUiAction::SetLanguageRoute {
                     source_lang,
                     target_lang,
+                    asr_only,
                 } => {
-                    if self.submit_text_translation(
-                        &text,
-                        Some(source_lang),
-                        Some(target_lang),
-                        None,
-                    ) {
+                    if self
+                        .select_language_options(
+                            &source_lang,
+                            &target_lang,
+                            self.additional_target_lang.clone().as_deref(),
+                            asr_only,
+                        )
+                        .is_none()
+                    {
+                        return;
+                    }
+                    self.source_lang = source_lang;
+                    self.target_lang = target_lang;
+                    self.asr_only = asr_only;
+                    self.apply_language_route();
+                }
+                OscUiAction::TranslateInput { text } => {
+                    if self.submit_text_translation(&text, None, None, None) {
                         self.osc_plugin.draft_input_mut().clear();
                     }
                 }
@@ -2641,7 +2708,7 @@ impl XRTranslateApp {
 
     fn render_osc_plugin_page(&mut self, ui: &mut egui::Ui) {
         let mute_gate_enabled = self.mute_self_pauses_translation.load(Ordering::Acquire);
-        let languages = self.language_capabilities().for_text();
+        let languages = self.language_capabilities();
         let actions = self.osc_plugin.render_page(
             ui,
             OscPageContext {
@@ -2649,6 +2716,10 @@ impl XRTranslateApp {
                 preparing_text: self.text_translation.preparing_host(),
                 mute_gate_enabled,
                 languages,
+                source_lang: &self.source_lang,
+                target_lang: &self.target_lang,
+                asr_only: self.asr_only,
+                additional_target_lang: self.additional_target_lang.as_deref(),
             },
         );
         self.apply_osc_actions(actions);
@@ -2788,10 +2859,29 @@ impl XRTranslateApp {
     }
 
     fn select_languages(&mut self, source: &str, target: &str) -> Option<LanguageSelection> {
+        self.select_language_options(source, target, None, false)
+    }
+
+    fn select_host_languages(&mut self) -> Option<LanguageSelection> {
+        self.select_language_options(
+            &self.source_lang.clone(),
+            &self.target_lang.clone(),
+            self.additional_target_lang.clone().as_deref(),
+            self.asr_only,
+        )
+    }
+
+    fn select_language_options(
+        &mut self,
+        source: &str,
+        target: &str,
+        additional_target: Option<&str>,
+        asr_only: bool,
+    ) -> Option<LanguageSelection> {
         match self
             .service_config
             .language_capabilities()
-            .and_then(|caps| caps.select(source, target))
+            .and_then(|caps| caps.select_with_options(source, target, additional_target, asr_only))
         {
             Ok(selection) => Some(selection),
             Err(error) => {
@@ -2935,6 +3025,9 @@ impl XRTranslateApp {
             ctx,
         );
         let scope = ChannelScope::new(owner.clone());
+        scope
+            .asr_only
+            .store(task.languages.asr_only(), Ordering::Release);
         let session = start_session(
             audio_rx,
             scoped_events(scope.clone(), self.event_tx.clone()),
@@ -3009,8 +3102,8 @@ impl XRTranslateApp {
                 VrOverlayUiAction::ConnectSteamVr => {
                     self.vr_overlay_plugin.connect();
                 }
-                VrOverlayUiAction::RecenterAvatar => {
-                    self.vr_overlay_plugin.manager().recenter_avatar()
+                VrOverlayUiAction::VisitAvatar => {
+                    ui::companion::execute_command(self, ui::companion::Command::ComeHere)
                 }
                 VrOverlayUiAction::DisconnectSteamVr => {
                     self.vr_overlay_plugin.disconnect();
@@ -3116,6 +3209,8 @@ impl XRTranslateApp {
             loopback_recognition: self.loopback_recognition.clone(),
             source_lang: self.source_lang.clone(),
             target_lang: self.target_lang.clone(),
+            asr_only: self.asr_only,
+            additional_target_lang: self.additional_target_lang.clone(),
             denoise_enabled: self.denoise_enabled,
             tts_enabled: self.tts_enabled,
             microphone_clone_state: self.microphone_clone_state.clone(),
@@ -3483,9 +3578,7 @@ impl XRTranslateApp {
         if self.host_input_active(source) {
             return;
         }
-        let Some(languages) =
-            self.select_languages(&self.source_lang.clone(), &self.target_lang.clone())
-        else {
+        let Some(languages) = self.select_host_languages() else {
             return;
         };
         self.active_languages = Some(languages);
@@ -3600,13 +3693,14 @@ impl XRTranslateApp {
     }
 
     fn cancel_text_tasks(&mut self, owner: Option<&TranslationSessionOwner>) {
-        if let Ok(_state) = self.shared_session_state.lock() {
+        if let Ok(mut state) = self.shared_session_state.lock() {
             for scope in self
                 .text_translation
                 .scopes()
                 .filter(|scope| owner.is_none_or(|owner| &scope.owner == owner))
             {
                 scope.cancel(&self.session_event_subscribers);
+                state.retire_stream(scope.id());
                 publish_host_output(
                     &self.host_output_subscribers,
                     HostOutputEvent::StreamCancelled(scope.id()),
@@ -3900,7 +3994,17 @@ impl XRTranslateApp {
             return;
         }
         let (source, target) = task.languages.wire();
-        if self.select_languages(&source, &target).is_none() {
+        if self
+            .select_language_options(
+                &source,
+                &target,
+                task.languages
+                    .additional_target()
+                    .map(|language| language.code()),
+                task.languages.asr_only(),
+            )
+            .is_none()
+        {
             self.fail_task_startup(&task.owner(), &self.last_error.clone().unwrap_or_default());
             return;
         }
@@ -4053,6 +4157,9 @@ impl XRTranslateApp {
                 tx
             };
             let scope = ChannelScope::new(owner.clone());
+            scope
+                .asr_only
+                .store(task.languages.asr_only(), Ordering::Release);
             let session = start_session(
                 rx,
                 scoped_events(scope.clone(), self.event_tx.clone()),
@@ -4625,15 +4732,24 @@ impl XRTranslateApp {
     }
 
     fn apply_language_route(&mut self) {
-        let Some(selection) =
-            self.select_languages(&self.source_lang.clone(), &self.target_lang.clone())
-        else {
+        let Some(selection) = self.select_host_languages() else {
             return;
         };
         self.active_languages = Some(selection);
         self.save_settings();
-        for session in self.host_channels().map(|channel| &channel.session) {
-            session.update_language_route(self.source_lang.clone(), self.target_lang.clone());
+        for task in self
+            .audio_tasks
+            .iter_mut()
+            .filter(|task| task.owner.is_host())
+        {
+            task.languages = selection;
+            for channel in &task.channels {
+                channel
+                    .scope
+                    .asr_only
+                    .store(selection.asr_only(), Ordering::Release);
+                channel.session.update_language_route(selection);
+            }
         }
     }
 
@@ -4765,6 +4881,7 @@ impl XRTranslateApp {
             state.partial_text.clear();
             state.pending_final_asr.clear();
             state.pending_recognition_windows.clear();
+            state.companion_reader.clear_history();
         }
         self.osc_plugin.clear_chatbox();
         self.auto_input_plugin.clear();
@@ -4796,7 +4913,14 @@ impl XRTranslateApp {
             .service_config
             .language_capabilities()
             .and_then(|capabilities| {
-                text_translation::select_languages(trimmed, &source, &target, capabilities)
+                text_translation::select_languages_with_options(
+                    trimmed,
+                    &source,
+                    &target,
+                    capabilities,
+                    self.additional_target_lang.as_deref(),
+                    self.asr_only,
+                )
             }) {
             Ok(languages) => self.start_translation_task(
                 TranslationTask::text(trimmed.to_owned(), languages, plugin),
@@ -5135,8 +5259,42 @@ impl XRTranslateApp {
             };
             self.prompt_studio.set_runtime_trace(prompt_trace);
             if let Some((source_lang, target_lang)) = state.pending_route_change.take() {
-                self.active_languages = LanguageSelection::parse(&source_lang, &target_lang).ok();
-                if self.audio_tasks.iter().any(|task| task.owner.is_host()) {
+                let configurable =
+                    self.service_config
+                        .language_capabilities()
+                        .ok()
+                        .and_then(|caps| {
+                            caps.select_with_options(
+                                &source_lang,
+                                &target_lang,
+                                self.additional_target_lang.as_deref(),
+                                self.asr_only,
+                            )
+                            .ok()
+                        });
+                // An effective adaptive pair can include the fixed extra target.
+                // Keep that live fact without turning it into a conflicting user
+                // configuration or erasing the independently captured target.
+                self.active_languages = LanguageSelection::parse_with_options(
+                    &source_lang,
+                    &target_lang,
+                    None,
+                    self.asr_only,
+                )
+                .ok()
+                .map(|mut selection| {
+                    if !self.asr_only {
+                        selection.additional_target = self
+                            .additional_target_lang
+                            .as_deref()
+                            .and_then(xrtranslate_engine::language::SupportedLanguage::parse);
+                    }
+                    selection
+                });
+                if !self.asr_only
+                    && configurable.is_some()
+                    && self.audio_tasks.iter().any(|task| task.owner.is_host())
+                {
                     self.source_lang = source_lang;
                     self.target_lang = target_lang;
                 }
@@ -5153,6 +5311,9 @@ impl XRTranslateApp {
             open_provider_configuration =
                 std::mem::take(&mut state.provider_configuration_required);
         }
+        // Drain final commands before completed tasks retire their streams.
+        // Failed and cancelled turns have already been discarded by the reader.
+        ui::companion::process_commands(self);
         self.poll_translation_tasks();
         if open_provider_configuration {
             self.stop();
@@ -5976,6 +6137,8 @@ mod tests {
             segment_count: 1,
             source: "source".into(),
             translated: Some("completed".into()),
+            additional_translations: Vec::new(),
+            asr_only: false,
             speaker_id: String::new(),
             source_start_ms: 0.0,
             source_end_ms: 0.0,
@@ -6738,8 +6901,6 @@ mod tests {
         *app.osc_plugin.draft_input_mut() = "hello".into();
         app.apply_osc_actions(vec![crate::OscUiAction::TranslateInput {
             text: "hello".into(),
-            source_lang: "en".into(),
-            target_lang: "zh".into(),
         }]);
         assert_eq!(app.osc_plugin.draft_input(), "");
         assert!(
@@ -6752,6 +6913,60 @@ mod tests {
         assert!(app.audio_tasks.is_empty());
         assert!(app.text_translation.preparing());
         assert_eq!(app.last_error.as_deref(), Some("settings write failed"));
+    }
+
+    #[test]
+    fn osc_composer_submissions_share_the_host_language_intent() {
+        let mut app = XRTranslateApp::default();
+        app.source_lang = "en".into();
+        app.target_lang = "zh".into();
+        app.asr_only = false;
+        app.additional_target_lang = Some("ja".into());
+        app.apply_osc_actions(vec![crate::OscUiAction::TranslateInput {
+            text: "hello".into(),
+        }]);
+        assert_eq!((&*app.source_lang, &*app.target_lang), ("en", "zh"));
+        assert_eq!(app.additional_target_lang.as_deref(), Some("ja"));
+        assert!(app.text_translation.preparing());
+        assert!(
+            app.text_translation
+                .scopes()
+                .all(|scope| !scope.asr_only.load(std::sync::atomic::Ordering::Acquire))
+        );
+        app.asr_only = true;
+        app.apply_osc_actions(vec![crate::OscUiAction::TranslateInput {
+            text: "hello".into(),
+        }]);
+        assert_eq!(app.additional_target_lang.as_deref(), Some("ja"));
+        assert!(
+            app.text_translation
+                .scopes()
+                .any(|scope| scope.asr_only.load(std::sync::atomic::Ordering::Acquire))
+        );
+    }
+
+    #[test]
+    fn adaptive_pair_cannot_overwrite_the_fixed_additional_language_configuration() {
+        let mut app = XRTranslateApp::default();
+        app.source_lang = "auto".into();
+        app.target_lang = "zh,en".into();
+        app.additional_target_lang = Some("ja".into());
+        app.asr_only = false;
+        let owner = crate::TranslationSessionOwner::Host {
+            capture_source: CaptureSource::Microphone,
+        };
+        let (task, _commands) = fixture_task(owner, &[CaptureSource::Microphone], false);
+        app.audio_tasks.push(task);
+        app.shared_session_state
+            .lock()
+            .unwrap()
+            .pending_route_change = Some(("auto".into(), "ja,zh".into()));
+        app.poll_session_events();
+        assert_eq!(app.target_lang, "zh,en");
+        assert_eq!(app.additional_target_lang.as_deref(), Some("ja"));
+        let active = app.active_languages.unwrap();
+        assert_eq!(active.wire(), ("auto".into(), "ja,zh".into()));
+        assert_eq!(active.additional_target().unwrap().code(), "ja");
     }
 
     #[test]
@@ -6791,8 +7006,6 @@ mod tests {
         app.active_languages = Some(languages);
         app.apply_osc_actions(vec![crate::OscUiAction::TranslateInput {
             text: "hello".into(),
-            source_lang: "en".into(),
-            target_lang: "zh".into(),
         }]);
         assert_eq!(app.audio_tasks.len(), 1);
         assert_eq!(app.audio_tasks[0].owner, owner);

@@ -28,21 +28,32 @@ impl HostOutputSubscriber for VrOverlayHandle {
                 stream_id,
                 source,
                 translated,
+                additional_translations,
+                asr_only,
                 speaker,
                 update: CaptionUpdate::RollOver,
                 ..
-            } => self.roll_stream(stream_id, source, translated, speaker),
+            } => self.roll_stream(
+                stream_id,
+                if asr_only { "" } else { source },
+                translated,
+                additional_translations,
+                speaker,
+            ),
             HostOutputEvent::Caption {
                 stream_id,
                 source,
                 translated,
+                additional_translations,
+                asr_only,
                 speaker,
                 update,
                 ..
             } => self.add_caption(
                 stream_id,
-                source,
+                if asr_only { "" } else { source },
                 translated,
+                additional_translations,
                 speaker,
                 matches!(update, CaptionUpdate::Replace),
             ),
@@ -121,6 +132,62 @@ mod tests {
     use crate::client_settings::CaptureSource;
 
     #[test]
+    fn tagged_asr_and_additional_targets_share_the_normal_caption_lifecycle() {
+        use std::time::{Duration, Instant};
+        let plugin = VrOverlayPlugin::new(VrOverlaySettings::default(), true);
+        let handle = plugin.handle();
+        handle.on_host_output(HostOutputEvent::Caption {
+            stream_id: 1,
+            audio_source: CaptureSource::Microphone,
+            is_typing: false,
+            source: "uncorrected recognition",
+            translated: "corrected terminology",
+            additional_translations: &[],
+            asr_only: true,
+            speaker: "",
+            update: CaptionUpdate::Append,
+        });
+        for text in ["こんにちは", "こんばんは"] {
+            handle.on_host_output(HostOutputEvent::Caption {
+                stream_id: 2,
+                audio_source: CaptureSource::Microphone,
+                is_typing: false,
+                source: "hello",
+                translated: "你好",
+                additional_translations: &[xrtranslate_protocol::AdditionalTranslation {
+                    target_lang: "ja".into(),
+                    translated_text: text.into(),
+                    term_matches: Vec::new(),
+                }],
+                asr_only: false,
+                speaker: "",
+                update: CaptionUpdate::Replace,
+            });
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            let status = plugin.manager().status();
+            if status
+                .latest_caption_preview
+                .as_ref()
+                .is_some_and(|text| text.contains("こんばんは"))
+            {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "caption worker did not consume multilingual output"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(status.cards.len(), 2);
+        assert_eq!(status.cards[0].source, "");
+        assert_eq!(status.cards[0].preview_text(true), "corrected terminology");
+        assert_eq!(status.cards[1].additional_translations, ["こんばんは"]);
+        assert_eq!(status.cards[1].source, "hello");
+    }
+
+    #[test]
     fn vr_overlay_plugin_lifecycle_and_settings_sync() {
         let mut plugin = VrOverlayPlugin::new(VrOverlaySettings::default(), true);
         assert!(plugin.draft().enabled);
@@ -150,6 +217,8 @@ mod tests {
                 is_typing,
                 source,
                 translated: source,
+                additional_translations: &[],
+                asr_only: false,
                 speaker: "",
                 update,
             })
@@ -191,6 +260,8 @@ mod tests {
             is_typing: false,
             source: "Hello world".into(),
             translated: "你好，世界".into(),
+            additional_translations: &[],
+            asr_only: false,
             speaker: "Speaker 1".into(),
             update: CaptionUpdate::Replace,
         });
@@ -202,6 +273,8 @@ mod tests {
             is_typing: false,
             source: "Next line".into(),
             translated: "下一句".into(),
+            additional_translations: &[],
+            asr_only: false,
             speaker: "Speaker 1".into(),
             update: CaptionUpdate::RollOver,
         });

@@ -1457,10 +1457,25 @@ pub fn source_language_selector(
     bidirectional: bool,
     language: crate::i18n::UiLanguage,
 ) -> bool {
+    source_language_selector_inner(ui, id, source, available, bidirectional, false, language)
+}
+
+fn source_language_selector_inner(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    source: &mut String,
+    available: xrtranslate_engine::language::LanguageSet,
+    bidirectional: bool,
+    allow_asr_only: bool,
+    language: crate::i18n::UiLanguage,
+) -> bool {
     let tr = |label| crate::i18n::tr(language, label).to_string();
     let mut options = vec![("auto".to_owned(), tr("Auto Detect"))];
     if bidirectional {
         options.push(("auto-pair".to_owned(), tr("Auto (bidirectional)")));
+    }
+    if allow_asr_only {
+        options.push(("asr-only".to_owned(), tr("Input only (ASR)")));
     }
     options.extend(
         available
@@ -1489,29 +1504,192 @@ pub fn translation_language_selector(
     capabilities: xrtranslate_engine::language::LanguageCapabilities,
     language: crate::i18n::UiLanguage,
 ) -> bool {
+    translation_language_selector_inner(ui, id, source, target, None, false, capabilities, language)
+}
+
+/// Reuses the host route controls while leaving the fixed extra output unchanged.
+pub fn translation_primary_language_selector(
+    ui: &mut Ui,
+    id: &str,
+    source: &mut String,
+    target: &mut String,
+    additional_target: Option<&str>,
+    asr_only: &mut bool,
+    capabilities: xrtranslate_engine::language::LanguageCapabilities,
+    language: crate::i18n::UiLanguage,
+) -> bool {
+    let mut additional_target = additional_target.map(str::to_owned);
+    translation_language_selector_inner(
+        ui,
+        id,
+        source,
+        target,
+        Some((&mut additional_target, asr_only)),
+        false,
+        capabilities,
+        language,
+    )
+}
+
+/// The host's output options extend the same language rules used by task plugins.
+pub fn translation_language_selector_with_options(
+    ui: &mut Ui,
+    id: &str,
+    source: &mut String,
+    target: &mut String,
+    additional_target: &mut Option<String>,
+    asr_only: &mut bool,
+    capabilities: xrtranslate_engine::language::LanguageCapabilities,
+    language: crate::i18n::UiLanguage,
+) -> bool {
+    translation_language_selector_inner(
+        ui,
+        id,
+        source,
+        target,
+        Some((additional_target, asr_only)),
+        true,
+        capabilities,
+        language,
+    )
+}
+
+fn additional_language_options(
+    source: &str,
+    target: &str,
+    capabilities: xrtranslate_engine::language::LanguageCapabilities,
+) -> xrtranslate_engine::language::LanguageSet {
+    let source_language = xrtranslate_engine::language::SupportedLanguage::parse(source);
+    xrtranslate_engine::language::LanguageSet::matching(|language| {
+        Some(language) != source_language
+            && capabilities
+                .select_with_options(source, target, Some(language.code()), false)
+                .is_ok()
+    })
+}
+
+fn primary_language_capabilities(
+    capabilities: xrtranslate_engine::language::LanguageCapabilities,
+    additional_target: Option<&str>,
+) -> xrtranslate_engine::language::LanguageCapabilities {
+    let Some(additional) =
+        additional_target.and_then(xrtranslate_engine::language::SupportedLanguage::parse)
+    else {
+        return capabilities;
+    };
+    xrtranslate_engine::language::LanguageCapabilities {
+        translation: Some(xrtranslate_engine::language::LanguageSet::matching(
+            |language| language != additional && capabilities.targets().contains(language),
+        )),
+        ..capabilities
+    }
+}
+
+#[derive(Clone)]
+struct AdditionalLanguageOptionsCache {
+    source: String,
+    target: String,
+    capabilities: xrtranslate_engine::language::LanguageCapabilities,
+    available: xrtranslate_engine::language::LanguageSet,
+}
+
+fn cached_additional_language_options(
+    ui: &Ui,
+    id: &str,
+    source: &str,
+    target: &str,
+    capabilities: xrtranslate_engine::language::LanguageCapabilities,
+) -> xrtranslate_engine::language::LanguageSet {
+    let key = ui.make_persistent_id((id, "additional_language_options"));
+    ui.data_mut(|data| {
+        if let Some(cache) = data.get_temp::<AdditionalLanguageOptionsCache>(key)
+            && cache.source == source
+            && cache.target == target
+            && cache.capabilities == capabilities
+        {
+            return cache.available;
+        }
+        let available = additional_language_options(source, target, capabilities);
+        data.insert_temp(
+            key,
+            AdditionalLanguageOptionsCache {
+                source: source.to_owned(),
+                target: target.to_owned(),
+                capabilities,
+                available,
+            },
+        );
+        available
+    })
+}
+
+fn translation_language_selector_inner(
+    ui: &mut Ui,
+    id: &str,
+    source: &mut String,
+    target: &mut String,
+    mut output_options: Option<(&mut Option<String>, &mut bool)>,
+    show_additional: bool,
+    capabilities: xrtranslate_engine::language::LanguageCapabilities,
+    language: crate::i18n::UiLanguage,
+) -> bool {
     let tr = |label| crate::i18n::tr(language, label).to_string();
     let label = |code: &str| crate::language_label(language, code).to_string();
-    let mut input = if source == "auto" && target.contains(',') {
+    let primary_capabilities = primary_language_capabilities(
+        capabilities,
+        output_options
+            .as_ref()
+            .and_then(|(additional, _)| additional.as_deref()),
+    );
+    let asr_only = output_options.as_ref().is_some_and(|(_, asr)| **asr);
+    let mut input = if asr_only {
+        "asr-only".to_owned()
+    } else if source == "auto" && target.contains(',') {
         "auto-pair".to_owned()
     } else {
         source.clone()
     };
     let mut changed = false;
     ui.horizontal_wrapped(|ui| {
-        if source_language_selector(
+        if source_language_selector_inner(
             ui,
             format!("{id}_source"),
             &mut input,
-            capabilities.sources(),
-            capabilities.change_input("auto", target, true).is_ok(),
+            primary_capabilities.sources(),
+            primary_capabilities
+                .change_input("auto", target, true)
+                .is_ok(),
+            output_options.is_some(),
             language,
         ) {
-            let pair = input == "auto-pair";
-            let next_source = if pair { "auto" } else { &input };
-            if let Ok(selection) = capabilities.change_input(next_source, target, pair) {
-                (*source, *target) = selection.wire();
+            if input == "asr-only" {
+                if let Some((_, asr)) = output_options.as_mut() {
+                    **asr = true;
+                }
                 changed = true;
+            } else {
+                let pair = input == "auto-pair";
+                let next_source = if pair { "auto" } else { &input };
+                if let Ok(selection) = primary_capabilities.change_input(next_source, target, pair)
+                {
+                    (*source, *target) = selection.wire();
+                    if let Some((_, asr)) = output_options.as_mut() {
+                        **asr = false;
+                    }
+                    changed = true;
+                }
             }
+        }
+        if output_options.as_ref().is_some_and(|(_, asr)| **asr) {
+            changed |= source_language_selector(
+                ui,
+                format!("{id}_recognition_source"),
+                source,
+                capabilities.recognition_sources(),
+                false,
+                language,
+            );
+            return;
         }
         let pair = source == "auto" && target.contains(',');
         if pair && ui.available_width() < 390.0 {
@@ -1520,7 +1698,8 @@ pub fn translation_language_selector(
         if source != "auto"
             && ui
                 .push_id(id, |ui| {
-                    swap_capsule_button(ui, capabilities.select(target, source).is_ok()).clicked()
+                    swap_capsule_button(ui, primary_capabilities.select(target, source).is_ok())
+                        .clicked()
                 })
                 .inner
         {
@@ -1528,9 +1707,9 @@ pub fn translation_language_selector(
             changed = true;
         }
         let available = if pair {
-            capabilities.sources()
+            primary_capabilities.sources()
         } else {
-            capabilities.targets()
+            primary_capabilities.targets()
         };
         let mut targets: Vec<String> = target.split(',').map(str::to_owned).collect();
         for index in 0..targets.len() {
@@ -1572,7 +1751,52 @@ pub fn translation_language_selector(
             }
         }
     });
-    if let Err(error) = capabilities.select(source, target) {
+    let asr_only = output_options.as_ref().is_some_and(|(_, asr)| **asr);
+    if let Some((additional, _)) = output_options.as_mut() {
+        if show_additional && !asr_only {
+            let available =
+                cached_additional_language_options(ui, id, source, target, capabilities);
+            ui.horizontal_wrapped(|ui| {
+                let mut enabled = additional.is_some();
+                let response = ui.add_enabled(
+                    enabled || !available.is_empty(),
+                    egui::Checkbox::new(&mut enabled, tr("Fixed extra language")),
+                );
+                response.clone().on_hover_text(tr(
+                    "This output language stays fixed when the input language changes.",
+                ));
+                if response.changed() {
+                    **additional = enabled
+                        .then(|| {
+                            available
+                                .iter()
+                                .next()
+                                .map(|language| language.code().to_owned())
+                        })
+                        .flatten();
+                    changed = true;
+                }
+                if let Some(selected) = additional.as_mut() {
+                    let options: Vec<_> = available
+                        .iter()
+                        .map(|language| (language.code().to_owned(), tr(language.name())))
+                        .collect();
+                    changed |= searchable_combobox(
+                        ui,
+                        format!("{id}_additional_target"),
+                        label(selected),
+                        selected,
+                        &options,
+                    );
+                }
+            });
+        }
+    }
+    let additional = output_options
+        .as_ref()
+        .filter(|_| !asr_only)
+        .and_then(|(additional, _)| additional.as_deref());
+    if let Err(error) = capabilities.select_with_options(source, target, additional, asr_only) {
         validation_notice(ui, language, &error);
     }
     changed

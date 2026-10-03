@@ -209,6 +209,7 @@ mod tests {
                 topic_turn_id: id.into(),
                 source_language: "en".into(),
                 target_language: "zh".into(),
+                translation_options: Default::default(),
                 speaker_id: Some("speaker-1".into()),
                 workload: InferenceWorkload::Realtime,
                 enqueued_at: Instant::now(),

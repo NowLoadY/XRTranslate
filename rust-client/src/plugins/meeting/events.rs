@@ -662,6 +662,8 @@ mod tests {
                 live: false,
                 source: "hello".into(),
                 translated: Some("你好".into()),
+                additional_translations: Vec::new(),
+                asr_only: false,
                 turn_id: "turn-generic".into(),
                 segment_index: 1,
                 segment_count: 1,

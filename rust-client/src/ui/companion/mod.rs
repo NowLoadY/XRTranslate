@@ -1,12 +1,18 @@
 //! One persistent companion for the whole application.
+//! Activity and attention enter the shared feedback policy; Motion and Speech
+//! turn that decision into one Presentation. Desktop/VR surfaces own placement
+//! and sensing, never a second conversation, reaction policy, or character clock.
 mod attention;
 mod dialogue;
 mod feedback;
 mod inbox;
 mod parking;
 mod placement;
+mod reader;
 
+pub(crate) use feedback::TranslationWork;
 pub(crate) use inbox::Inbox;
+pub(crate) use reader::{Command, Reader};
 
 use crate::{
     i18n::UiLanguage,
@@ -327,7 +333,10 @@ impl Guide {
     }
 
     fn read_mail(&mut self, inbox: &mut Inbox) {
-        if self.stage == Stage::Ready
+        if let Some(message) = inbox.read_acknowledgement() {
+            self.pending = None;
+            self.say(message);
+        } else if self.stage == Stage::Ready
             && self.ready_to_speak()
             && let Some(message) = inbox.read()
         {
@@ -368,8 +377,43 @@ fn state_id() -> Id {
     Id::new("application_companion")
 }
 
+pub(crate) fn process_commands(app: &mut crate::XRTranslateApp) {
+    let commands = app
+        .shared_session_state
+        .lock()
+        .map(|mut state| state.companion_reader.take_commands())
+        .unwrap_or_default();
+    for command in commands {
+        execute_command(app, command);
+    }
+}
+
+/// Voice and UI actions share the same application-level controls and replies.
+pub(crate) fn execute_command(app: &mut crate::XRTranslateApp, command: Command) {
+    match command {
+        Command::HideSubtitles | Command::ShowSubtitles => {
+            app.vr_overlay_plugin.draft_mut().captions_enabled = command == Command::ShowSubtitles;
+            app.vr_overlay_plugin.sync_settings();
+            app.save_settings();
+        }
+        Command::ComeHere | Command::ReturnHome => {
+            let manager = app.vr_overlay_plugin.manager();
+            if !manager.status().avatar_present {
+                return;
+            }
+            if command == Command::ComeHere {
+                manager.visit_avatar();
+            } else {
+                manager.return_avatar();
+            }
+        }
+    }
+    app.companion_inbox.acknowledge(command);
+}
+
 pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout: Layout) {
-    if desktop_active(app) {
+    let vr = app.vr_overlay_plugin.manager().status();
+    if desktop_active(app) || vr.avatar_present {
         tick_background(ctx, app);
         return;
     }
@@ -459,7 +503,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     let hidden = app.modal_dialog.open
         || ctx.memory(|memory| memory.top_modal_layer().is_some())
         || screen.height() < small * 4.0;
-    let vr_active = app.vr_overlay_plugin.manager().companion_active();
+    let vr_active = vr.avatar_available;
     let interactive = !hidden && (focused || vr_active) && !ctx.any_popup_open();
     let paused = !interactive || pressed;
     let visual_dt = (wall - state.last_wall).clamp(0.0, 0.05) as f32;
@@ -604,16 +648,15 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     } else {
         Gaze::default()
     };
-    let reaction = state.feedback.update(app, state.clock);
-    let interaction = state
-        .motion
-        .interact(state.clock, attentive, response.clicked());
+    let reaction = state
+        .feedback
+        .update(app, state.clock, attentive, response.clicked());
     let expression = if matches!(state.stage, Stage::Peek) || response.dragged() {
         Expression::Curious
     } else if state.stage == Stage::Greet {
         Expression::Happy
     } else {
-        interaction.or(reaction).unwrap_or(Expression::Calm)
+        reaction.unwrap_or(Expression::Calm)
     };
     let mut pose = state.pose(ctx, expression, gaze);
     if let Some(frame) = entrance_frame {
@@ -672,6 +715,10 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
             Duration::from_secs(1)
         });
     }
+    // The desktop remains until VR has actually presented a frame. Its pointer
+    // and authored entrance are local placement, not the spatial avatar's pose.
+    pose.gaze = Gaze::default();
+    pose.roll = 0.0;
     app.vr_overlay_plugin
         .manager()
         .present_companion(Presentation {
@@ -679,10 +726,11 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
             pose,
             speech: state.speech.clone(),
             clock: state.clock,
-            visible: !hidden,
+            visible: vr_active,
+            motion: Some(state.motion.on_surface(pose)),
         });
     if vr_active {
-        ctx.request_repaint_after(Duration::from_millis(33));
+        ctx.request_repaint_after(Duration::from_millis(16));
     }
     ctx.data_mut(|data| data.insert_temp(state_id(), state));
 }
@@ -691,11 +739,12 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
 /// Guide/mailbox alive using a monotonic clock rather than frozen egui input time.
 pub(crate) fn tick_background(ctx: &egui::Context, app: &mut crate::XRTranslateApp) {
     let desktop = desktop_active(app);
+    let vr = app.vr_overlay_plugin.manager().status();
     let scene = dialogue::Context::read(app, None);
     let mut state = ctx
         .data(|data| data.get_temp::<Guide>(state_id()))
         .unwrap_or_else(|| Guide::new(0.0, app.ui_language, Pos2::ZERO, &scene, false));
-    if !desktop && (!app.vr_overlay_plugin.manager().companion_active() || app.modal_dialog.open) {
+    if !desktop && !vr.avatar_available {
         state.background_tick = None;
         app.vr_overlay_plugin
             .manager()
@@ -704,8 +753,13 @@ pub(crate) fn tick_background(ctx: &egui::Context, app: &mut crate::XRTranslateA
         return;
     }
     state.advance_background(std::time::Instant::now());
-    state.follow_scene(&scene);
-    if desktop && state.stage != Stage::Ready {
+    if vr.avatar_available {
+        // Desktop navigation and modal focus must not interrupt spatial speech.
+        state.pending = None;
+    } else {
+        state.follow_scene(&scene);
+    }
+    if state.stage != Stage::Ready {
         state.enter(Stage::Ready);
     }
     if state.language != app.ui_language {
@@ -718,24 +772,42 @@ pub(crate) fn tick_background(ctx: &egui::Context, app: &mut crate::XRTranslateA
     state.read_mail(&mut app.companion_inbox);
     let expression = state
         .feedback
-        .update(app, state.clock)
+        .update(app, state.clock, vr.avatar_attention, false)
         .unwrap_or(Expression::Calm);
     let pose = state.pose(ctx, expression, Gaze::default());
+    // Background logic skips Pose's foreground repaint request. Keep gestures,
+    // blinks and speech smooth without polling a resting face at frame rate.
+    let repaint_after =
+        state
+            .motion
+            .repaint_after(state.clock)
+            .min(if state.speech.finished(state.clock) {
+                Duration::from_millis(33)
+            } else {
+                Duration::from_millis(16)
+            });
     let presentation = Presentation {
         appearance: app.avatar_appearance.clone(),
         pose,
         speech: state.speech.clone(),
         clock: state.clock,
         visible: true,
+        motion: Some(state.motion.clone()),
     };
-    if let Ok(mut overlay) = app.overlay_manager.lock() {
-        overlay.present_companion(presentation.clone());
+    if desktop && let Ok(mut overlay) = app.overlay_manager.lock() {
+        overlay.present_companion(if vr.avatar_present {
+            // A constant hidden snapshot lets the existing IPC writer sleep
+            // instead of waking the desktop window for every VR face update.
+            Presentation::default()
+        } else {
+            presentation.clone()
+        });
     }
     app.vr_overlay_plugin
         .manager()
         .present_companion(presentation);
     ctx.data_mut(|data| data.insert_temp(state_id(), state));
-    ctx.request_repaint_after(Duration::from_millis(33));
+    ctx.request_repaint_after(repaint_after);
 }
 
 fn desktop_active(app: &crate::XRTranslateApp) -> bool {

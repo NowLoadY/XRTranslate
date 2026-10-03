@@ -18,7 +18,7 @@ pub enum VrOverlayUiAction {
     ClearSubtitles,
     ConnectSteamVr,
     DisconnectSteamVr,
-    RecenterAvatar,
+    VisitAvatar,
 }
 
 // Reserve a complete button before wrapped layout chooses the next row.
@@ -38,6 +38,7 @@ fn header_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
 }
 
 fn render_header(
+    settings: &mut VrOverlaySettings,
     ui: &mut egui::Ui,
     context: VrOverlayPageContext<'_>,
     actions: &mut Vec<VrOverlayUiAction>,
@@ -54,9 +55,6 @@ fn render_header(
         ui.add_space(8.0);
         if context.status.steamvr_connected {
             crate::ui::components::status_badge(ui, &tr("SteamVR Connected"), true, false);
-            if context.status.avatar_available && header_button(ui, tr("Come here")).clicked() {
-                actions.push(VrOverlayUiAction::RecenterAvatar);
-            }
             if header_button(ui, tr("Disconnect")).clicked() {
                 actions.push(VrOverlayUiAction::DisconnectSteamVr);
             }
@@ -65,6 +63,33 @@ fn render_header(
             if crate::ui::components::animated_button(ui, tr("Connect SteamVR")).clicked() {
                 actions.push(VrOverlayUiAction::ConnectSteamVr);
             }
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        for (label, enabled) in [
+            ("Subtitles", &mut settings.captions_enabled),
+            ("Avatar in VR", &mut settings.avatar_enabled),
+        ] {
+            let label = tr(label);
+            let width = ui
+                .painter()
+                .layout_no_wrap(
+                    label.to_owned(),
+                    egui::FontId::proportional(13.0),
+                    theme::text_strong(),
+                )
+                .size()
+                .x
+                + 40.0
+                + ui.spacing().item_spacing.x * 2.0;
+            ui.allocate_ui_with_layout(
+                egui::vec2(width, 28.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| crate::ui::components::toggle_with_label(ui, enabled, label),
+            );
+        }
+        if context.status.avatar_available && header_button(ui, tr("Come here")).clicked() {
+            actions.push(VrOverlayUiAction::VisitAvatar);
         }
     });
     if let Some(error) = &context.status.last_error {
@@ -232,6 +257,7 @@ fn render_preview_card(
             }
             .into(),
             translated: tr("A beautiful day.").to_owned(),
+            additional_translations: Vec::new(),
             speaker: String::new(),
             live: true,
         }];
@@ -289,6 +315,7 @@ fn render_combined_preview_and_position_card(
             }
             .into(),
             translated: tr("A beautiful day.").to_owned(),
+            additional_translations: Vec::new(),
             speaker: String::new(),
             live: true,
         }];
@@ -360,7 +387,7 @@ pub fn render(
         settings.vertical_offset_meters = 0.0;
     }
 
-    render_header(ui, context, &mut actions);
+    render_header(settings, ui, context, &mut actions);
     ui.add_space(10.0);
 
     let is_wide = (ui.available_width() > ui.available_height() && ui.available_width() >= 540.0)
@@ -730,7 +757,7 @@ mod tests {
                     driver.finish_frame("vr_overlay");
                 }
                 assert!(
-                    actions.contains(&VrOverlayUiAction::RecenterAvatar),
+                    actions.contains(&VrOverlayUiAction::VisitAvatar),
                     "{language:?}, width={width}, pointer={pointer:?}, actions={actions:?}, widgets={:?}",
                     driver.frame_state.lock().unwrap().last_snapshot.elements
                 );

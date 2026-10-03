@@ -67,6 +67,10 @@ pub struct LanguageCapabilities {
 }
 
 impl LanguageCapabilities {
+    pub fn recognition_sources(self) -> LanguageSet {
+        self.recognition.unwrap_or(LanguageSet::ALL)
+    }
+
     pub fn sources(self) -> LanguageSet {
         self.recognition
             .unwrap_or(LanguageSet::ALL)
@@ -112,7 +116,10 @@ impl LanguageCapabilities {
                     sources.contains(*language) && language.base_code() != a.base_code()
                 })
                 .ok_or("Bidirectional translation requires two available spoken languages")?;
-            return Ok(LanguageSelection::Bidirectional([a, b]));
+            return Ok(LanguageSelection {
+                mode: LanguageMode::Bidirectional([a, b]),
+                additional_target: None,
+            });
         }
         let source_language = SupportedLanguage::parse(source);
         let target = preferred
@@ -126,7 +133,18 @@ impl LanguageCapabilities {
     }
 
     pub fn select(self, source: &str, target: &str) -> Result<LanguageSelection, String> {
-        let selection = LanguageSelection::parse(source, target)?;
+        self.select_with_options(source, target, None, false)
+    }
+
+    pub fn select_with_options(
+        self,
+        source: &str,
+        target: &str,
+        additional_target: Option<&str>,
+        asr_only: bool,
+    ) -> Result<LanguageSelection, String> {
+        let selection =
+            LanguageSelection::parse_with_options(source, target, additional_target, asr_only)?;
         let require = |set: LanguageSet, language: SupportedLanguage, role: &str| {
             if set.contains(language) {
                 Ok(())
@@ -137,29 +155,49 @@ impl LanguageCapabilities {
                 ))
             }
         };
-        match selection {
-            LanguageSelection::Fixed { source, target } => {
+        match selection.mode {
+            LanguageMode::AsrOnly { source } => {
+                if let Some(source) = source {
+                    require(self.recognition_sources(), source, "recognition")?;
+                }
+                if self.recognition_sources().is_empty() {
+                    return Err("No recognition language is available".into());
+                }
+            }
+            LanguageMode::Fixed { source, target } => {
                 require(self.sources(), source, "input")?;
                 require(self.targets(), target, "translation")?;
             }
-            LanguageSelection::Detect { target } => {
+            LanguageMode::Detect { target } => {
                 require(self.targets(), target, "translation")?;
                 if self.sources().is_empty() {
                     return Err("The selected services have no common input language".into());
                 }
             }
-            LanguageSelection::Bidirectional(pair) => {
+            LanguageMode::Bidirectional(pair) => {
                 for language in pair {
                     require(self.sources(), language, "bidirectional translation")?;
                 }
             }
+        }
+        if let Some(additional) = selection.additional_target {
+            require(self.targets(), additional, "additional translation")?;
         }
         Ok(selection)
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LanguageSelection {
+pub struct LanguageSelection {
+    pub mode: LanguageMode,
+    pub additional_target: Option<SupportedLanguage>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LanguageMode {
+    AsrOnly {
+        source: Option<SupportedLanguage>,
+    },
     Fixed {
         source: SupportedLanguage,
         target: SupportedLanguage,
@@ -170,7 +208,7 @@ pub enum LanguageSelection {
     Bidirectional([SupportedLanguage; 2]),
 }
 
-impl LanguageSelection {
+impl LanguageMode {
     pub fn parse(source: &str, target: &str) -> Result<Self, String> {
         let language = |code| {
             SupportedLanguage::parse(code).ok_or_else(|| format!("Unknown language: {code:?}"))
@@ -199,6 +237,10 @@ impl LanguageSelection {
 
     pub fn wire(self) -> (String, String) {
         match self {
+            Self::AsrOnly { source } => {
+                let source = source.map_or("auto", SupportedLanguage::code).to_owned();
+                (source.clone(), source)
+            }
             Self::Fixed { source, target } => (source.code().into(), target.code().into()),
             Self::Detect { target } => ("auto".into(), target.code().into()),
             Self::Bidirectional([a, b]) => ("auto".into(), format!("{},{}", a.code(), b.code())),
@@ -206,9 +248,126 @@ impl LanguageSelection {
     }
 }
 
+impl LanguageSelection {
+    pub fn parse(source: &str, target: &str) -> Result<Self, String> {
+        Self::parse_with_options(source, target, None, false)
+    }
+
+    pub fn parse_with_options(
+        source: &str,
+        target: &str,
+        additional_target: Option<&str>,
+        asr_only: bool,
+    ) -> Result<Self, String> {
+        if asr_only {
+            let source = if source.trim().eq_ignore_ascii_case("auto") {
+                None
+            } else {
+                Some(
+                    SupportedLanguage::parse(source)
+                        .ok_or_else(|| format!("Unknown language: {source:?}"))?,
+                )
+            };
+            return Ok(Self {
+                mode: LanguageMode::AsrOnly { source },
+                additional_target: None,
+            });
+        }
+        let mode = LanguageMode::parse(source, target)?;
+        let additional_target = additional_target
+            .filter(|target| !target.trim().is_empty())
+            .map(|code| {
+                SupportedLanguage::parse(code).ok_or_else(|| format!("Unknown language: {code:?}"))
+            })
+            .transpose()?;
+        if let Some(additional) = additional_target {
+            let duplicate = match mode {
+                LanguageMode::Fixed { target, .. } => additional == target,
+                LanguageMode::Detect { target } => additional == target,
+                LanguageMode::Bidirectional(pair) => pair.contains(&additional),
+                LanguageMode::AsrOnly { .. } => false,
+            };
+            if duplicate {
+                return Err("The additional target must differ from the main languages".into());
+            }
+        }
+        Ok(Self {
+            mode,
+            additional_target,
+        })
+    }
+
+    pub fn wire(self) -> (String, String) {
+        self.mode.wire()
+    }
+    pub fn asr_only(self) -> bool {
+        matches!(self.mode, LanguageMode::AsrOnly { .. })
+    }
+    pub fn additional_target(self) -> Option<SupportedLanguage> {
+        self.additional_target
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_additional_target_survives_primary_mode_and_direction_changes() {
+        let caps = LanguageCapabilities::default();
+        for (source, target) in [
+            ("auto", "en,zh"),
+            ("en", "zh"),
+            ("zh", "en"),
+            ("auto", "en"),
+        ] {
+            let selection = caps
+                .select_with_options(source, target, Some("ja"), false)
+                .unwrap();
+            assert_eq!(selection.additional_target().unwrap().code(), "ja");
+            assert_eq!(selection.wire(), (source.into(), target.into()));
+            assert!(!selection.asr_only());
+        }
+        // A newly detected source can equal the independent target. Runtime
+        // preserves that route and produces its corrected source directly.
+        assert!(
+            caps.select_with_options("ja", "en", Some("ja"), false)
+                .is_ok()
+        );
+        assert!(
+            caps.select_with_options("en", "ja", Some("ja"), false)
+                .is_err()
+        );
+        assert!(
+            caps.select_with_options("auto", "en,ja", Some("ja"), false)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn asr_only_uses_recognition_capabilities_and_discards_inactive_extra_intent() {
+        let caps = LanguageCapabilities {
+            recognition: Some(LanguageSet::from_codes(&["ja"], true)),
+            translation: Some(LanguageSet::EMPTY),
+        };
+        let selection = caps
+            .select_with_options("ja", "en", Some("fr"), true)
+            .unwrap();
+        assert!(selection.asr_only());
+        assert_eq!(selection.additional_target(), None);
+        assert_eq!(selection.wire(), ("ja".into(), "ja".into()));
+        assert!(caps.select_with_options("auto", "", None, true).is_ok());
+        assert!(caps.select_with_options("en", "", None, true).is_err());
+        assert!(caps.select("ja", "en").is_err());
+        let caps = LanguageCapabilities {
+            recognition: None,
+            translation: Some(LanguageSet::from_codes(&["en", "ja"], false)),
+        };
+        assert!(
+            caps.select_with_options("en", "ja", Some("fr"), false)
+                .is_err()
+        );
+    }
 
     #[test]
     fn switching_modes_uses_available_languages_without_chinese_or_english_defaults() {

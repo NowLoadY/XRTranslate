@@ -290,6 +290,19 @@ impl OverlayWindow {
             response.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "XRTranslate")
             });
+            if !self.companion.visible() {
+                let logo = rect.shrink(4.0);
+                ui.painter().circle_filled(
+                    logo.center(),
+                    logo.width() * 0.5,
+                    theme::content_backdrop(true),
+                );
+                egui::Image::new(egui::include_image!(
+                    "../resources/branding/xrtranslate-logo.png"
+                ))
+                .corner_radius(255)
+                .paint_at(ui, logo.shrink(5.0));
+            }
             if response.drag_started() {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }

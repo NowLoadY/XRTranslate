@@ -335,6 +335,8 @@ pub(crate) fn merge_stream_translation(
             let source_start_ms = current.source_start_ms.min(fragment.source_start_ms);
             let changed = current.source != fragment.source
                 || current.translated != fragment.translated
+                || current.additional_translations != fragment.additional_translations
+                || current.asr_only != fragment.asr_only
                 || current.term_matches != fragment.term_matches;
             *current = fragment;
             current.source_start_ms = source_start_ms;
@@ -364,6 +366,26 @@ pub(crate) fn merge_stream_translation(
             changed: true,
         };
     };
+
+    if current.asr_only != fragment.asr_only
+        || current
+            .additional_translations
+            .iter()
+            .map(|entry| &entry.target_lang)
+            .ne(fragment
+                .additional_translations
+                .iter()
+                .map(|entry| &entry.target_lang))
+    {
+        current.live = false;
+        initialize_revision(&mut fragment);
+        history.push(fragment.clone());
+        return StreamMerge {
+            entry: fragment,
+            rolled_over: true,
+            changed: true,
+        };
+    }
 
     let stable_source = current
         .source_revision
@@ -402,6 +424,22 @@ pub(crate) fn merge_stream_translation(
             fragment.translated = translated.text;
             fragment.term_matches =
                 trimmed_term_matches(&fragment.term_matches, translated.source_start);
+            for extra in &mut fragment.additional_translations {
+                if let Some(previous) = current
+                    .additional_translations
+                    .iter()
+                    .find(|old| old.target_lang == extra.target_lang)
+                {
+                    let handoff = crate::streaming::handoff_text(
+                        &previous.translated_text,
+                        &extra.translated_text,
+                        fragment.overlap_ratio,
+                    );
+                    extra.translated_text = handoff.text;
+                    extra.term_matches =
+                        trimmed_term_matches(&extra.term_matches, handoff.source_start);
+                }
+            }
             initialize_revision(&mut fragment);
             history.push(fragment.clone());
             return StreamMerge {
@@ -447,6 +485,7 @@ pub(crate) fn merge_stream_translation(
         );
         (source_changed, translated_changed)
     };
+    let additional_changed = merge_additional_translations(current, &fragment);
     crate::streaming::retain_tail(&mut current.source, None, STREAM_TEXT_LIMIT);
     crate::streaming::retain_tail(
         &mut current.translated,
@@ -463,8 +502,55 @@ pub(crate) fn merge_stream_translation(
     StreamMerge {
         entry: current.clone(),
         rolled_over: false,
-        changed: source_changed || translated_changed,
+        changed: source_changed || translated_changed || additional_changed,
     }
+}
+
+fn merge_additional_translations(
+    current: &mut TranslationHistoryEntry,
+    fragment: &TranslationHistoryEntry,
+) -> bool {
+    let mut changed = false;
+    for incoming in &fragment.additional_translations {
+        let Some(existing) = current
+            .additional_translations
+            .iter_mut()
+            .find(|old| old.target_lang == incoming.target_lang)
+        else {
+            continue;
+        };
+        let old = existing.clone();
+        if fragment.revisable {
+            let revision = current
+                .additional_revisions
+                .entry(incoming.target_lang.clone())
+                .or_insert_with(|| crate::streaming::RevisableText::new(&existing.translated_text))
+                .update(&incoming.translated_text, fragment.overlap_ratio);
+            existing.translated_text = revision.text;
+            merge_revision_matches(
+                &mut existing.term_matches,
+                &incoming.term_matches,
+                revision.hypothesis_start,
+            );
+        } else {
+            let offset = crate::streaming::append_text(
+                &mut existing.translated_text,
+                &incoming.translated_text,
+            );
+            crate::streaming::append_term_matches(
+                &mut existing.term_matches,
+                &incoming.term_matches,
+                offset,
+            );
+        }
+        crate::streaming::retain_tail(
+            &mut existing.translated_text,
+            Some(&mut existing.term_matches),
+            STREAM_TEXT_LIMIT,
+        );
+        changed |= *existing != old;
+    }
+    changed
 }
 
 pub(crate) fn collect_authoritative_translation_snapshot(
@@ -643,6 +729,16 @@ fn initialize_revision(entry: &mut TranslationHistoryEntry) {
     if entry.revisable {
         entry.source_revision = Some(crate::streaming::RevisableText::new(&entry.source));
         entry.translated_revision = Some(crate::streaming::RevisableText::new(&entry.translated));
+        entry.additional_revisions = entry
+            .additional_translations
+            .iter()
+            .map(|extra| {
+                (
+                    extra.target_lang.clone(),
+                    crate::streaming::RevisableText::new(&extra.translated_text),
+                )
+            })
+            .collect();
     }
 }
 
@@ -725,6 +821,8 @@ mod tests {
             live: true,
             source: source.into(),
             translated: translated.into(),
+            additional_translations: Vec::new(),
+            asr_only: false,
             speaker_id: String::new(),
             source_start_ms: 0.0,
             source_end_ms: 1.0,
@@ -737,6 +835,7 @@ mod tests {
             revision_id: 0,
             source_revision: None,
             translated_revision: None,
+            additional_revisions: Default::default(),
         }
     }
 
@@ -1263,5 +1362,44 @@ mod tests {
         assert!(!update.changed);
         assert_eq!(history[0].source, "correct source");
         assert_eq!(history[0].translated, "correct translation");
+    }
+
+    #[test]
+    fn additional_only_revisions_refresh_the_existing_caption_and_reject_stale_output() {
+        let extra = |text: &str| xrtranslate_protocol::AdditionalTranslation {
+            target_lang: "ja".into(),
+            translated_text: text.into(),
+            term_matches: Vec::new(),
+        };
+        let mut first = snapshot(7, "source", "main");
+        first.authoritative_snapshot = true;
+        first.revision_id = 1;
+        first.additional_translations = vec![extra("first")];
+        let mut history = Vec::new();
+        merge_stream_translation(&mut history, 7, first.clone());
+        let mut next = first.clone();
+        next.revision_id = 2;
+        next.additional_translations = vec![extra("corrected")];
+        assert!(merge_stream_translation(&mut history, 7, next).changed);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].output_text(), "main\nja · corrected");
+        assert!(!merge_stream_translation(&mut history, 7, first).changed);
+        assert_eq!(
+            history[0].additional_translations[0].translated_text,
+            "corrected"
+        );
+    }
+
+    #[test]
+    fn language_modes_do_not_merge_asr_only_into_a_translated_caption() {
+        let mut history = Vec::new();
+        merge_stream_translation(&mut history, 7, fragment(7, "source", "main"));
+        let mut next = fragment(7, "raw recognition", "corrected recognition");
+        next.asr_only = true;
+        let merged = merge_stream_translation(&mut history, 7, next);
+        assert!(merged.rolled_over);
+        assert!(merged.entry.asr_only);
+        assert_eq!(merged.entry.translated, "corrected recognition");
+        assert_eq!(history.len(), 2);
     }
 }

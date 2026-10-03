@@ -113,8 +113,8 @@ struct IVROverlayFnTable {
     hide_overlay: unsafe extern "system" fn(u64) -> i32, // 44
     _is_overlay_visible: usize,             // 45
     _get_transform_for_overlay_coordinates: usize, // 46
-    wait_frame_sync: unsafe extern "system" fn(u32) -> i32, // 47
-    _poll_next_overlay_event: usize,        // 48
+    _wait_frame_sync: usize,                // 47
+    poll_next_overlay_event: unsafe extern "system" fn(u64, *mut OverlayEvent, u32) -> bool, // 48
     _get_overlay_input_method: usize,       // 49
     _set_overlay_input_method: usize,       // 50
     _get_overlay_mouse_scale: usize,        // 51
@@ -379,7 +379,18 @@ struct NativeTexture {
     color_space: i32,
 }
 
-/// Only avatar creation requests these additional versioned interfaces.
+// VREvent_t / VREvent_Data_t's reserved payload in the pinned OpenVR header.
+#[repr(C)]
+#[cfg_attr(unix, repr(packed(4)))]
+#[derive(Default)]
+struct OverlayEvent {
+    event_type: u32,
+    tracked_device_index: u32,
+    age_seconds: f32,
+    data: [u64; 6],
+}
+
+/// GPU overlays request these additional versioned interfaces.
 pub(super) struct AvatarTracking {
     session: Rc<OpenVrSessionInner>,
     system: *const IVRSystemFnTable,
@@ -434,10 +445,6 @@ impl AvatarTracking {
     pub fn retain_graphics(&self, owner: Box<dyn Any>) {
         self.session.graphics.borrow_mut().push(owner);
     }
-    pub fn wait_frame(&self) -> Result<(), OverlayError> {
-        let table = unsafe { &*(self.session.overlay_interface as *const IVROverlayFnTable) };
-        check_overlay_error("WaitFrameSync", unsafe { (table.wait_frame_sync)(8) })
-    }
 }
 impl Default for HmdMatrix34 {
     fn default() -> Self {
@@ -488,7 +495,7 @@ impl OpenVrSession {
             let ptr =
                 unsafe { (self.inner.api.vr_get_generic_interface)(name.as_ptr(), &mut error) };
             if ptr.is_null() || error != 0 {
-                Err("SteamVR avatar interfaces unavailable; update SteamVR".to_owned())
+                Err("SteamVR overlay interfaces unavailable; update SteamVR".to_owned())
             } else {
                 Ok(ptr)
             }
@@ -609,26 +616,41 @@ impl OpenVrOverlay {
             || [data.device, data.physical_device, data.instance, data.queue]
                 .iter()
                 .any(|p| p.is_null())
-            || data.width != 1024
-            || data.height != 512
+            || raw_rgba_len(data.width, data.height).is_err()
             || data.samples != 1
             || data.format != 37
         {
             return Err(OverlayError::InvalidFrame(
-                "Invalid avatar GPU texture".into(),
+                "Invalid overlay GPU texture".into(),
             ));
         }
         let texture = NativeTexture {
             handle: (data as *mut VulkanTexture).cast(),
             texture_type: 2,
-            color_space: 2,
+            // RGBA8 pixels are sRGB; the overlay flag separately selects whether
+            // alpha is straight (text) or premultiplied (stereo composition).
+            color_space: 1,
         };
+        self.drain_events();
         check_overlay_error("SetOverlayTexture", unsafe {
             (self.table().set_overlay_texture)(self.handle, &texture)
         })
     }
     fn table(&self) -> &IVROverlayFnTable {
         unsafe { &*(self.session.overlay_interface as *const IVROverlayFnTable) }
+    }
+
+    fn drain_events(&self) {
+        // SteamVR queues ImageLoaded for raw uploads. Leaving those unread
+        // exhausts its queue after about 200 updates and makes uploads fail.
+        let mut event = OverlayEvent::default();
+        while unsafe {
+            (self.table().poll_next_overlay_event)(
+                self.handle,
+                &mut event,
+                std::mem::size_of::<OverlayEvent>() as u32,
+            )
+        } {}
     }
 
     pub fn set_auto_hmd_hud_transform(
@@ -702,6 +724,7 @@ impl OpenVrOverlay {
                 "Invalid buffer length for raw RGBA overlay".into(),
             ));
         }
+        self.drain_events();
         check_overlay_error("SetOverlayRaw", unsafe {
             (self.table().set_overlay_raw)(
                 self.handle,
@@ -1071,13 +1094,15 @@ pub(super) mod tests {
         assert!(unsafe { &*matrix }.rigid_matrix().is_some());
         call("SetOverlayTransformAbsolute")
     }
-    unsafe extern "system" fn fake_wait(_: u32) -> i32 {
-        call("WaitFrameSync")
+    unsafe extern "system" fn fake_poll(_: u64, _: *mut OverlayEvent, size: u32) -> bool {
+        assert_eq!(size as usize, std::mem::size_of::<OverlayEvent>());
+        call("PollNextOverlayEvent");
+        false
     }
     unsafe extern "system" fn fake_texture(_: u64, texture: *const NativeTexture) -> i32 {
         let texture = unsafe { &*texture };
         assert_eq!(texture.texture_type, 2);
-        assert_eq!(texture.color_space, 2);
+        assert_eq!(texture.color_space, 1);
         call("SetOverlayTexture")
     }
     fn table() -> &'static IVROverlayFnTable {
@@ -1130,8 +1155,8 @@ pub(super) mod tests {
             hide_overlay: fake_hide,
             _is_overlay_visible: 0,
             _get_transform_for_overlay_coordinates: 0,
-            wait_frame_sync: fake_wait,
-            _poll_next_overlay_event: 0,
+            _wait_frame_sync: 0,
+            poll_next_overlay_event: fake_poll,
             _get_overlay_input_method: 0,
             _set_overlay_input_method: 0,
             _get_overlay_mouse_scale: 0,
@@ -1268,11 +1293,6 @@ pub(super) mod tests {
         );
         NATIVE.lock().unwrap().invalid_pose = true;
         assert!(tracking.eyes_and_head().is_none());
-        fail_operation("WaitFrameSync", 34);
-        assert!(matches!(
-            tracking.wait_frame(),
-            Err(OverlayError::Api(_, 34))
-        ));
     }
     #[test]
     fn avatar_interfaces_are_optional_and_graphics_outlive_shutdown() {
@@ -1333,6 +1353,9 @@ pub(super) mod tests {
             samples: 1,
         };
         overlay.set_vulkan_texture(&mut texture).unwrap();
+        texture.width = 640;
+        texture.height = 320;
+        overlay.set_vulkan_texture(&mut texture).unwrap();
         fail_operation("SetOverlayTexture", 24);
         assert!(matches!(
             overlay.set_vulkan_texture(&mut texture),
@@ -1362,7 +1385,7 @@ pub(super) mod tests {
             offset_of!(IVROverlayFnTable, set_overlay_transform_absolute),
             33 * slot
         );
-        assert_eq!(offset_of!(IVROverlayFnTable, wait_frame_sync), 47 * slot);
+        assert_eq!(offset_of!(IVROverlayFnTable, _wait_frame_sync), 47 * slot);
         assert_eq!(
             offset_of!(IVROverlayFnTable, set_overlay_texture),
             60 * slot
@@ -1429,29 +1452,48 @@ pub(super) mod tests {
     #[test]
     #[ignore = "Requires installed SteamVR, a connected headset, and explicit hardware testing"]
     fn openvr_api_loads_and_detects_runtime() {
-        let api = OpenVrApi::try_load();
-        assert!(
-            api.is_some(),
-            "OpenVR API should be loadable on this system"
-        );
-        if let Some(api) = api {
-            let installed = api.is_runtime_installed();
-            assert!(installed, "SteamVR runtime should be detected as installed");
-            if installed {
-                if let Ok(session) = api.init_overlay() {
-                    if let Ok(mut overlay) =
-                        session.create_overlay("xrtranslate.test_overlay", "Test Overlay")
-                    {
-                        overlay.set_width(1.0).unwrap();
-                        overlay.set_alpha(0.8).unwrap();
-                        overlay.set_auto_hmd_hud_transform(1.2, -0.35).unwrap();
-                        let buf = vec![255u8; 64 * 64 * 4];
-                        let _ = overlay.set_raw_rgba(buf, 64, 64);
-                        overlay.show().unwrap();
-                        overlay.hide().unwrap();
-                    }
-                }
+        use super::super::graphics;
+        let api = OpenVrApi::try_load().expect("OpenVR API should be loadable on this system");
+        assert!(api.is_runtime_installed(), "SteamVR should be installed");
+        let session = api.init_overlay().unwrap();
+        let tracking = session.avatar_tracking().unwrap();
+        let graphics = graphics::create(&tracking).unwrap();
+        let overlay = session
+            .create_overlay("xrtranslate.test_overlay", "Test Overlay")
+            .unwrap();
+        overlay.set_width(1.0).unwrap();
+        overlay.set_alpha(0.8).unwrap();
+        overlay.set_auto_hmd_hud_transform(1.2, -0.35).unwrap();
+        let mut image = graphics::RgbaTexture::new(&tracking, graphics, 640, 320).unwrap();
+        let mut pixels = vec![255; 640 * 320 * 4];
+        // Keep hidden. Cross the event-queue capacity using one persistent image;
+        // a single upload misses failures after sustained caption updates.
+        for frame in 0..256 {
+            for pixel in pixels.chunks_exact_mut(4) {
+                pixel[..3].fill(23 + (frame % 191) as u8);
             }
+            image.upload(&overlay, &pixels).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        // Optional native readback, which some runtimes expose only for raw images.
+        let read: unsafe extern "system" fn(u64, *mut c_void, u32, *mut u32, *mut u32) -> i32 =
+            unsafe { std::mem::transmute(overlay.table()._get_overlay_image_data) };
+        let mut actual = vec![0; pixels.len()];
+        let (mut width, mut height) = (0, 0);
+        let result = unsafe {
+            read(
+                overlay.handle,
+                actual.as_mut_ptr().cast(),
+                actual.len() as u32,
+                &mut width,
+                &mut height,
+            )
+        };
+        if result == 0 {
+            assert_eq!((width, height), (640, 320));
+            assert_eq!(actual, pixels);
+        } else {
+            eprintln!("Native GPU image readback unavailable: {result}");
         }
     }
 }

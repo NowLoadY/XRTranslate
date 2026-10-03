@@ -2,7 +2,7 @@
 use eframe::egui::{self, Id, Vec2};
 use std::{f32::consts::PI, time::Duration};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Expression {
     #[default]
     Calm,
@@ -115,9 +115,10 @@ impl Pose {
 }
 
 /// Owned by the companion, not by its desktop/VR renderers. Cards use the same rig.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Motion {
     pose: Pose,
+    gaze: Gaze,
     previous_clock: Option<f64>,
     expression: Expression,
     changed_at: f64,
@@ -126,6 +127,20 @@ pub(crate) struct Motion {
 }
 
 impl Motion {
+    /// Keep authored desktop placement out of another surface's facial motion.
+    pub(crate) fn on_surface(&self, pose: Pose) -> Self {
+        Self {
+            pose,
+            gaze: Gaze::default(),
+            ..self.clone()
+        }
+    }
+
+    pub(crate) fn sample_at(&self, clock: f64, speech: f32) -> Pose {
+        self.clone()
+            .advance(clock, self.expression, self.gaze, speech)
+    }
+
     pub(crate) fn interact(
         &mut self,
         clock: f64,
@@ -160,16 +175,31 @@ impl Motion {
         let dt = self
             .previous_clock
             .replace(clock)
-            .map_or(0.0, |last| (clock - last).clamp(0.0, 0.08)) as f32;
+            .map_or(0.0, |last| (clock - last).clamp(0.0, 0.25)) as f32;
+        self.gaze = gaze;
         if self.expression != expression {
             self.expression = expression;
             self.changed_at = clock;
         }
         let mut target = Pose::idle_at(clock, expression);
+        let age = (clock - self.changed_at).max(0.0) as f32;
         // Delight opens into a relaxed smile instead of holding squinted eyes indefinitely.
-        let delight = (1.0 - (clock - self.changed_at) as f32 / 1.5).clamp(0.0, 1.0);
+        let delight = (1.0 - age / 1.5).clamp(0.0, 1.0);
         target.joy *= 0.32 + 0.68 * delight * delight;
-        let mut moving = target.joy > 0.32;
+        // Each expression gets one small entry gesture, then resumes the caller's
+        // gaze. Holding an expression never starts a looping idle animation.
+        let pulse = |duration: f32| (PI * (age / duration).clamp(0.0, 1.0)).sin().powi(2);
+        let nod = if expression == Expression::Happy {
+            pulse(0.8)
+        } else {
+            0.0
+        };
+        let glance = if expression == Expression::Thinking {
+            pulse(2.2)
+        } else {
+            0.0
+        };
+        let mut moving = target.joy > 0.32 || (expression == Expression::Thinking && age < 2.2);
         let mut follow = |value: &mut f32, target: f32, duration: f32| {
             *value += (target - *value) * (1.0 - (-dt / duration).exp());
             if (*value - target).abs() < 0.001 {
@@ -182,10 +212,14 @@ impl Motion {
         follow(&mut self.pose.curiosity, target.curiosity, 0.16);
         follow(&mut self.pose.thinking, target.thinking, 0.16);
         follow(&mut self.pose.concern, target.concern, 0.16);
-        follow(&mut self.pose.gaze.yaw, gaze.yaw.clamp(-0.65, 0.65), 0.11);
+        follow(
+            &mut self.pose.gaze.yaw,
+            (gaze.yaw + glance * 0.12).clamp(-0.65, 0.65),
+            0.11,
+        );
         follow(
             &mut self.pose.gaze.pitch,
-            gaze.pitch.clamp(-0.45, 0.45),
+            (gaze.pitch + nod * 0.08 - glance * 0.05).clamp(-0.45, 0.45),
             0.11,
         );
         follow(

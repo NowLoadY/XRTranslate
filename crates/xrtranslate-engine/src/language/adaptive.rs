@@ -14,8 +14,8 @@ impl LanguagePair {
     }
 
     fn parse(source: &str, targets: &str) -> Option<Self> {
-        match LanguageSelection::parse(source, targets).ok()? {
-            LanguageSelection::Bidirectional(pair) => Some(Self(pair)),
+        match LanguageSelection::parse(source, targets).ok()?.mode {
+            super::LanguageMode::Bidirectional(pair) => Some(Self(pair)),
             _ => None,
         }
     }

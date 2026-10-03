@@ -34,6 +34,7 @@ fn translation_history_fingerprint(entries: &[crate::history::TranslationHistory
         first.segment_index.hash(&mut hasher);
         first.source.hash(&mut hasher);
         first.translated.hash(&mut hasher);
+        hash_translation_outputs(first, &mut hasher);
     }
     if let Some(last) = entries.last() {
         last.stream_id.hash(&mut hasher);
@@ -42,8 +43,21 @@ fn translation_history_fingerprint(entries: &[crate::history::TranslationHistory
         last.speaker_id.hash(&mut hasher);
         last.source.hash(&mut hasher);
         last.translated.hash(&mut hasher);
+        hash_translation_outputs(last, &mut hasher);
     }
     hasher.finish()
+}
+
+fn hash_translation_outputs(
+    entry: &crate::history::TranslationHistoryEntry,
+    hasher: &mut impl Hasher,
+) {
+    entry.asr_only.hash(hasher);
+    entry.additional_translations.len().hash(hasher);
+    for output in &entry.additional_translations {
+        output.target_lang.hash(hasher);
+        output.translated_text.hash(hasher);
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -157,6 +171,78 @@ fn history_text<'a>(ui: &egui::Ui, speaker_id: &str, speaker_size: f32) -> Annot
     text
 }
 
+fn translation_output_text<'a>(
+    ui: &egui::Ui,
+    entry: &'a crate::history::TranslationHistoryEntry,
+    language: crate::i18n::UiLanguage,
+    text_size: f32,
+    label_size: f32,
+    show_speaker: bool,
+) -> AnnotatedText<'a> {
+    let mut text = history_text(
+        ui,
+        if show_speaker { &entry.speaker_id } else { "" },
+        label_size,
+    );
+    if entry.asr_only {
+        text.append(
+            ui,
+            egui::RichText::new(format!("{}  ", crate::i18n::tr(language, "ASR only")))
+                .color(crate::ui::theme::text_weak())
+                .size(label_size),
+        );
+    }
+    text.append_terms(
+        ui,
+        &entry.translated,
+        &entry.term_matches,
+        &[],
+        crate::ui::theme::text_strong(),
+        text_size,
+    );
+    for output in &entry.additional_translations {
+        text.append(ui, egui::RichText::new("\n").size(text_size));
+        text.append_terms(
+            ui,
+            &output.translated_text,
+            &output.term_matches,
+            &[],
+            crate::ui::theme::text_strong(),
+            text_size,
+        );
+    }
+    text
+}
+
+fn prepare_translation_history_row<'a>(
+    ui: &egui::Ui,
+    entry: &'a crate::history::TranslationHistoryEntry,
+    scale: &HistoryFeedScale,
+    language: crate::i18n::UiLanguage,
+) -> (f32, HistoryRow<'a>) {
+    let show_source = !entry.source.is_empty() && !entry.asr_only;
+    let translated = translation_output_text(
+        ui,
+        entry,
+        language,
+        scale.text_size,
+        scale.speaker_size,
+        !show_source,
+    );
+    if show_source {
+        let mut source = history_text(ui, &entry.speaker_id, scale.speaker_size);
+        source.append(
+            ui,
+            egui::RichText::new(&entry.source)
+                .color(crate::ui::theme::text_weak())
+                .size(scale.source_size),
+        );
+        prepare_history_row(ui, scale, source, Some(translated))
+    } else {
+        prepare_history_row(ui, scale, translated, None)
+    }
+}
+
 fn prepare_history_row<'a>(
     ui: &egui::Ui,
     scale: &HistoryFeedScale,
@@ -190,12 +276,105 @@ fn history_activity(index: usize, row_count: usize) -> f32 {
 mod virtual_history_tests {
     use super::*;
 
+    fn translation_entry() -> crate::history::TranslationHistoryEntry {
+        crate::history::TranslationHistoryEntry::preview(
+            1,
+            CaptureSource::Microphone,
+            xrtranslate_protocol::TranslationPreview {
+                source_text: "raw recognition".into(),
+                translated_text: "corrected result".into(),
+                turn_id: "turn-1".into(),
+                segment_index: 0,
+                revision: 1,
+                speaker_id: String::new(),
+            },
+        )
+    }
+
     #[test]
     fn history_activity_increases_towards_the_newest_row() {
         assert_eq!(history_activity(0, 0), 1.0);
         assert_eq!(history_activity(0, 1), 1.0);
         assert_eq!(history_activity(0, 5), 0.0);
         assert_eq!(history_activity(4, 5), 1.0);
+    }
+
+    #[test]
+    fn asr_only_history_renders_the_final_pipeline_output_once() {
+        let ctx = egui::Context::default();
+        let mut entry = translation_entry();
+        entry.asr_only = true;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let (_, row) = prepare_translation_history_row(
+                    ui,
+                    &entry,
+                    &HistoryFeedScale::compute(300.0, 400.0),
+                    crate::i18n::UiLanguage::English,
+                );
+                assert!(row.translation.is_none());
+                row.show(ui);
+            });
+        });
+        output.textures_delta.clear();
+        let rendered = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.text()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rendered, vec!["ASR only  corrected result"]);
+    }
+
+    #[test]
+    fn extra_outputs_invalidate_history_and_contribute_to_measured_height() {
+        let ctx = egui::Context::default();
+        let mut entry = translation_entry();
+        let original_fingerprint = translation_history_fingerprint(std::slice::from_ref(&entry));
+        let mut original_height = 0.0;
+        let scale = HistoryFeedScale::compute(300.0, 400.0);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                original_height = prepare_translation_history_row(
+                    ui,
+                    &entry,
+                    &scale,
+                    crate::i18n::UiLanguage::English,
+                )
+                .0;
+            });
+        });
+        output.textures_delta.clear();
+        entry
+            .additional_translations
+            .push(xrtranslate_protocol::AdditionalTranslation {
+                target_lang: "fr".into(),
+                translated_text: "bonjour".into(),
+                term_matches: Vec::new(),
+            });
+        assert_ne!(
+            original_fingerprint,
+            translation_history_fingerprint(std::slice::from_ref(&entry))
+        );
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let (height, row) = prepare_translation_history_row(
+                    ui,
+                    &entry,
+                    &scale,
+                    crate::i18n::UiLanguage::English,
+                );
+                assert!(height > original_height);
+                row.show(ui);
+            });
+        });
+        output.textures_delta.clear();
+        assert!(output.shapes.iter().any(|shape| matches!(
+            &shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == "corrected result\nbonjour"
+        )));
     }
 }
 
@@ -286,11 +465,13 @@ fn render_translation_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::U
     components::card(ui, |ui| {
         ui.set_min_width(ui.available_width());
         let capabilities = app.language_capabilities();
-        if components::translation_language_selector(
+        if components::translation_language_selector_with_options(
             ui,
             "translation_page",
             &mut app.source_lang,
             &mut app.target_lang,
+            &mut app.additional_target_lang,
+            &mut app.asr_only,
             capabilities,
             app.ui_language,
         ) {
@@ -780,44 +961,12 @@ fn render_history_feeds(
                                     app.translations
                                         .iter()
                                         .map(|entry| {
-                                            let mut text = history_text(
+                                            prepare_translation_history_row(
                                                 ui,
-                                                &entry.speaker_id,
-                                                scale.speaker_size,
-                                            );
-                                            if entry.source.is_empty() {
-                                                text.append_terms(
-                                                    ui,
-                                                    &entry.translated,
-                                                    &entry.term_matches,
-                                                    &[],
-                                                    crate::ui::theme::text_strong(),
-                                                    scale.text_size,
-                                                );
-                                                prepare_history_row(ui, &scale, text, None)
-                                            } else {
-                                                let mut translated = AnnotatedText::default();
-                                                translated.append_terms(
-                                                    ui,
-                                                    &entry.translated,
-                                                    &entry.term_matches,
-                                                    &[],
-                                                    crate::ui::theme::text_strong(),
-                                                    scale.text_size,
-                                                );
-                                                text.append(
-                                                    ui,
-                                                    egui::RichText::new(&entry.source)
-                                                        .color(crate::ui::theme::text_weak())
-                                                        .size(scale.source_size),
-                                                );
-                                                prepare_history_row(
-                                                    ui,
-                                                    &scale,
-                                                    text,
-                                                    Some(translated),
-                                                )
-                                            }
+                                                entry,
+                                                &scale,
+                                                app.ui_language,
+                                            )
                                         })
                                         .collect()
                                 },
@@ -988,7 +1137,8 @@ fn render_fullscreen_history(
                         components::history_entry_card(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.spacing_mut().item_spacing.y = 2.0;
-                            if !entry.source.is_empty() {
+                            let show_source = !entry.source.is_empty() && !entry.asr_only;
+                            if show_source {
                                 render_text_with_term_matches(
                                     ui,
                                     &entry.speaker_id,
@@ -999,19 +1149,9 @@ fn render_fullscreen_history(
                                     13.5,
                                 );
                             }
-                            render_text_with_term_matches(
-                                ui,
-                                if entry.source.is_empty() {
-                                    &entry.speaker_id
-                                } else {
-                                    ""
-                                },
-                                &entry.translated,
-                                &entry.term_matches,
-                                &[],
-                                crate::ui::theme::text_strong(),
-                                16.0,
-                            );
+                            translation_output_text(ui, entry, language, 16.0, 12.0, !show_source)
+                                .layout(ui, ui.available_width())
+                                .show(ui);
                         });
                         ui.add_space(6.0);
                     }

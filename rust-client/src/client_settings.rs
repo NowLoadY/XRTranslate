@@ -78,6 +78,10 @@ pub struct ClientSettings {
     pub source_lang: String,
     #[serde(default = "default_target_lang")]
     pub target_lang: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_target_lang: Option<String>,
+    #[serde(default)]
+    pub asr_only: bool,
     #[serde(default = "default_true")]
     pub denoise_enabled: bool,
     #[serde(default)]
@@ -178,6 +182,8 @@ impl Default for ClientSettings {
             loopback_recognition: RecognitionSettings::default(),
             source_lang: default_source_lang(),
             target_lang: default_target_lang(),
+            additional_target_lang: None,
+            asr_only: false,
             denoise_enabled: true,
             tts_enabled: false,
             microphone_clone_state: None,
@@ -440,6 +446,8 @@ mod tests {
             selected_loopback_device_id: "loopback-1".into(),
             tts_enabled: true,
             source_lang: "en".into(),
+            additional_target_lang: Some("ja".into()),
+            asr_only: true,
             download_proxy_url: "socks5://127.0.0.1:1080".into(),
             update_channel: UpdateChannel::Beta,
             sidebar_collapsed: true,
@@ -460,6 +468,8 @@ mod tests {
         assert_eq!(loaded.selected_loopback_device_id, "loopback-1");
         assert!(loaded.tts_enabled);
         assert_eq!(loaded.source_lang, "en");
+        assert_eq!(loaded.additional_target_lang.as_deref(), Some("ja"));
+        assert!(loaded.asr_only);
         assert_eq!(loaded.download_proxy_url, "socks5://127.0.0.1:1080");
         assert_eq!(loaded.update_channel, UpdateChannel::Beta);
         assert!(loaded.sidebar_collapsed);

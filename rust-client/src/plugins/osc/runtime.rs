@@ -200,6 +200,7 @@ pub struct OscSettings {
     #[serde(default)]
     pub message_separator: OscMessageSeparator,
     pub show_speaker_number: bool,
+    // Persisted compatibility only. OSC's composer edits the host language route.
     #[serde(default = "default_typing_source_lang")]
     pub typing_source_lang: String,
     #[serde(default = "default_typing_target_lang")]
@@ -367,6 +368,7 @@ enum Command {
         is_typing: bool,
         source: String,
         translated: String,
+        additional_translations: Vec<(String, String)>,
         speaker_id: String,
         ongoing: bool,
         /// Optional lifetime for this message.
@@ -403,6 +405,7 @@ impl OscHandle {
         is_typing: bool,
         source: &str,
         translated: &str,
+        additional_translations: &[xrtranslate_protocol::AdditionalTranslation],
         speaker_id: &str,
         ongoing: bool,
     ) {
@@ -416,6 +419,16 @@ impl OscHandle {
             is_typing,
             source: sanitize_chatbox_segment(source),
             translated: sanitize_chatbox_segment(translated),
+            additional_translations: additional_translations
+                .iter()
+                .filter(|result| !result.translated_text.trim().is_empty())
+                .map(|result| {
+                    (
+                        result.target_lang.clone(),
+                        sanitize_chatbox_segment(&result.translated_text),
+                    )
+                })
+                .collect(),
             speaker_id: speaker_id.trim().into(),
             ongoing,
             ttl: None,
@@ -722,6 +735,7 @@ fn dispatch_loop(
                 is_typing,
                 source,
                 translated,
+                additional_translations,
                 speaker_id,
                 ongoing,
                 ttl,
@@ -737,6 +751,7 @@ fn dispatch_loop(
                     },
                     source,
                     translated,
+                    additional_translations,
                     speaker_id,
                     expires_at: now
                         + ttl.unwrap_or_else(|| {
@@ -795,6 +810,7 @@ fn dispatch_loop(
                     },
                     source,
                     translated,
+                    additional_translations: Vec::new(),
                     speaker_id,
                     expires_at: now + Duration::from_secs_f64(settings.history_ttl_seconds),
                 });
@@ -1101,6 +1117,7 @@ mod tests {
             source_kind: OscInputSource::Unknown,
             source: text.into(),
             translated: String::new(),
+            additional_translations: Vec::new(),
             speaker_id: String::new(),
             expires_at,
         }
@@ -1240,6 +1257,7 @@ mod tests {
             is_typing: false,
             source: "hello".into(),
             translated: "你好".into(),
+            additional_translations: Vec::new(),
             speaker_id: "speaker-01".into(),
             ongoing: false,
             ttl: None,
@@ -1278,6 +1296,7 @@ mod tests {
             is_typing: false,
             source: "first".into(),
             translated: "one".into(),
+            additional_translations: Vec::new(),
             speaker_id: String::new(),
             ongoing: true,
             ttl: None,
@@ -1326,6 +1345,7 @@ mod tests {
             is_typing: false,
             source: "speech 1".into(),
             translated: "翻译 1".into(),
+            additional_translations: Vec::new(),
             speaker_id: String::new(),
             ongoing: false,
             ttl: Some(Duration::from_secs(2)),
@@ -1358,6 +1378,7 @@ mod tests {
             is_typing: false,
             source: "speech 2".into(),
             translated: "翻译 2".into(),
+            additional_translations: Vec::new(),
             speaker_id: String::new(),
             ongoing: false,
             ttl: Some(Duration::from_secs(2)),

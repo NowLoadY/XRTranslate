@@ -445,6 +445,8 @@ mod tests {
                 is_typing: false,
                 source: "source",
                 translated: "preview",
+                additional_translations: &[],
+                asr_only: false,
                 speaker: "",
                 update,
             });

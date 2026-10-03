@@ -86,6 +86,7 @@ async fn recognize(
             &vec![100; 16_000],
             source,
             target,
+            false,
             &mut AdaptiveLanguageRoute::default(),
             &PromptNodeGraph::builtin_default(),
             AsrPromptContext::default(),
@@ -133,4 +134,72 @@ async fn detected_input_is_checked_against_translation_support() {
     assert!(recognize(&inference, "auto", "zh,ja").await.is_err());
     assert_eq!(requests.load(Ordering::Relaxed), before);
     server.abort();
+}
+
+#[tokio::test]
+async fn recognition_only_accepts_a_source_outside_translation_model_support() {
+    let (mut inference, requests, server) =
+        inference("language Japanese<asr_text>こんにちは世界", "qwen").await;
+    inference.languages.translation = Some(xrtranslate_engine::language::LanguageSet::EMPTY);
+    let output = inference
+        .transcribe(
+            &vec![100; 16_000],
+            "ja",
+            "ja",
+            true,
+            &mut AdaptiveLanguageRoute::default(),
+            &PromptNodeGraph::builtin_default(),
+            AsrPromptContext::default(),
+            &[],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(output.source_language, "ja");
+    assert_eq!(output.target_language, "ja");
+    assert_eq!(requests.load(Ordering::Relaxed), 1);
+    server.abort();
+}
+
+#[test]
+fn scope_specific_corrections_preserve_shared_sentence_identity() {
+    let raw = RecognizedOutput {
+        source_text: "Meet doctor Smith tomorrow.".into(),
+        segments: vec![TranslationSegmentPair {
+            source_text: "Meet doctor Smith tomorrow.".into(),
+            translation_text: "Meet doctor Smith tomorrow.".into(),
+        }],
+        source_language: "en".into(),
+        target_language: "fr".into(),
+        asr_elapsed: Duration::ZERO,
+        route_switched: None,
+        prompt_trace: None,
+    };
+    let correction = xr_corpus_protocol::CorpusRecognitionCorrection {
+        start_byte: 5,
+        end_byte: 17,
+        original_text: "doctor Smith".into(),
+        corrected_text: "Dr. Smith".into(),
+        sources: Vec::new(),
+    };
+    let context = xr_corpus_protocol::SegmentContext {
+        corrected_text: raw.source_text.clone(),
+        prompt_terms: Vec::new(),
+        context_data: Default::default(),
+        source_corrections: vec![correction.clone()],
+        activation_matches: Vec::new(),
+        context_matches: Vec::new(),
+    };
+    let mut primary = raw.clone();
+    primary.apply_terminology(&[correction], &[context]);
+    assert_eq!(primary.source_text, "Meet Dr. Smith tomorrow.");
+    assert_eq!(primary.segments.len(), raw.segments.len());
+    assert_eq!(
+        primary.segments[0].translation_text,
+        "Meet Dr. Smith tomorrow."
+    );
+    assert_eq!(
+        raw.segments[0].translation_text,
+        "Meet doctor Smith tomorrow."
+    );
 }

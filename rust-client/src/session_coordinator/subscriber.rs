@@ -26,7 +26,7 @@ pub enum CaptionUpdate {
 
 /// Presentation event emitted after host history merging. External output
 /// plugins consume this instead of being named inside the event pump.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HostOutputEvent<'a> {
     /// A validated, completed segment accepted into host history. Stable identity
     /// lets irreversible outputs consume it once even when captions are revised.
@@ -43,6 +43,8 @@ pub enum HostOutputEvent<'a> {
         source: &'a str,
         translated: &'a str,
         speaker: &'a str,
+        additional_translations: &'a [xrtranslate_protocol::AdditionalTranslation],
+        asr_only: bool,
         update: CaptionUpdate,
     },
     StreamEnded(u64),

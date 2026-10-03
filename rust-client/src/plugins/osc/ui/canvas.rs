@@ -97,53 +97,126 @@ pub fn render_canvas(
 pub fn render_bottom_input_bar(
     plugin: &mut super::super::OscPlugin,
     ui: &mut egui::Ui,
-    language: crate::i18n::UiLanguage,
-    capabilities: xrtranslate_engine::language::LanguageCapabilities,
-    preparing_text: bool,
+    context: super::OscPageContext<'_>,
     actions: &mut Vec<super::OscUiAction>,
 ) {
-    use crate::ui::components::text_composer::{ComposerContext, TextAction};
-    let before = (
-        plugin.draft.typing_source_lang.clone(),
-        plugin.draft.typing_target_lang.clone(),
-    );
+    use crate::ui::components::text_composer::{ComposerContext, TextAction, TextMode};
+    let mut source = context.source_lang.to_owned();
+    let mut target = context.target_lang.to_owned();
+    let mut asr_only = context.asr_only;
+    if plugin.composer.mode == TextMode::Translate
+        && crate::ui::components::translation_primary_language_selector(
+            ui,
+            "osc_primary_languages",
+            &mut source,
+            &mut target,
+            context.additional_target_lang,
+            &mut asr_only,
+            context.languages,
+            context.language,
+        )
+    {
+        actions.push(super::OscUiAction::SetLanguageRoute {
+            source_lang: source.clone(),
+            target_lang: target.clone(),
+            asr_only,
+        });
+    }
     let action = plugin.composer.render(
         ui,
         "osc_text_composer",
-        (
-            &mut plugin.draft.typing_source_lang,
-            &mut plugin.draft.typing_target_lang,
-        ),
+        (&mut source, &mut target),
         ComposerContext {
-            language,
-            capabilities,
-            preparing: preparing_text,
+            language: context.language,
+            capabilities: context.languages,
+            preparing: context.preparing_text,
             allow_direct: true,
             direct_enabled: plugin.draft.enabled,
-            show_languages: true,
+            show_languages: false,
         },
     );
-    if before
-        != (
-            plugin.draft.typing_source_lang.clone(),
-            plugin.draft.typing_target_lang.clone(),
-        )
-    {
-        actions.push(super::OscUiAction::SaveSettings);
-    }
     match action {
-        Some(TextAction::Translate {
-            text,
-            source_lang,
-            target_lang,
-        }) => {
-            actions.push(super::OscUiAction::TranslateInput {
-                text,
-                source_lang,
-                target_lang,
-            });
+        Some(TextAction::Translate { text, .. }) => {
+            // Route changes precede submission in the same frame. The host is
+            // the source of truth for both this composer and Translation.
+            actions.push(super::OscUiAction::TranslateInput { text });
         }
         Some(TextAction::Direct(text)) => actions.push(super::OscUiAction::DirectInput(text)),
         None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::osc::{OscPageContext, OscPlugin, OscUiAction, runtime::OscSettings};
+
+    #[test]
+    fn shared_language_edits_precede_submission_without_changing_legacy_settings() {
+        let mut plugin = OscPlugin::new(
+            OscSettings {
+                listen_port: 0,
+                ..Default::default()
+            },
+            true,
+        );
+        *plugin.draft_input_mut() = "hello".into();
+        let driver = crate::ui::automation::driver();
+        {
+            let mut state = driver.frame_state.lock().unwrap();
+            *state = Default::default();
+            state.pending_set = Some((
+                "Japanese".into(),
+                crate::ui::automation::ElementValue::Text("Input only (ASR)".into()),
+            ));
+            state.pending_click = Some("Send".into());
+        }
+        let mut actions = Vec::new();
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                render_bottom_input_bar(
+                    &mut plugin,
+                    ui,
+                    OscPageContext {
+                        language: crate::i18n::UiLanguage::English,
+                        preparing_text: false,
+                        mute_gate_enabled: false,
+                        languages: Default::default(),
+                        source_lang: "ja",
+                        target_lang: "ko",
+                        additional_target_lang: Some("fr"),
+                        asr_only: false,
+                    },
+                    &mut actions,
+                );
+            });
+        });
+        output.textures_delta.clear();
+        assert_eq!(
+            actions,
+            vec![
+                OscUiAction::SetLanguageRoute {
+                    source_lang: "ja".into(),
+                    target_lang: "ko".into(),
+                    asr_only: true
+                },
+                OscUiAction::TranslateInput {
+                    text: "hello".into()
+                },
+            ]
+        );
+        assert_eq!(plugin.draft().typing_source_lang, "zh");
+        assert_eq!(plugin.draft().typing_target_lang, "en");
+        assert!(
+            !driver
+                .frame_state
+                .lock()
+                .unwrap()
+                .elements
+                .iter()
+                .any(|element| element.label == "Fixed extra language")
+        );
+        *driver.frame_state.lock().unwrap() = Default::default();
     }
 }

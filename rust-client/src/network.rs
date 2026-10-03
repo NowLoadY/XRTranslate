@@ -59,6 +59,11 @@ pub enum SessionEvent {
         source: CaptureSource,
         active: bool,
     },
+    TranslationActivity {
+        stream_id: u64,
+        request_id: u64,
+        active: bool,
+    },
     Asr {
         stream_id: u64,
         audio_source: CaptureSource,
@@ -97,6 +102,8 @@ pub enum SessionEvent {
         publish_to_host_outputs: bool,
         source: String,
         translated: String,
+        additional_translations: Vec<xrtranslate_protocol::AdditionalTranslation>,
+        asr_only: bool,
         turn_id: String,
         segment_index: u32,
         #[allow(dead_code)]
@@ -155,6 +162,7 @@ enum SessionCommand {
     UpdateLanguageRoute {
         source_lang: String,
         target_lang: String,
+        translation_options: xrtranslate_protocol::TranslationOptions,
     },
     #[allow(dead_code)]
     ResetAudioPipeline {
@@ -281,12 +289,17 @@ impl SessionHandle {
         let _ = self.command_tx.try_send(SessionCommand::Cancel);
     }
 
-    pub fn update_language_route(&self, source_lang: String, target_lang: String) {
+    pub fn update_language_route(
+        &self,
+        languages: xrtranslate_engine::language::LanguageSelection,
+    ) {
+        let (source_lang, target_lang) = languages.wire();
         let _ = self
             .command_tx
             .try_send(SessionCommand::UpdateLanguageRoute {
                 source_lang,
                 target_lang,
+                translation_options: translation_options(languages),
             });
     }
 
@@ -504,6 +517,7 @@ async fn run_session(
         prompt_graphs,
     } = config;
     let (source_lang, target_lang) = languages.wire();
+    let mut translation_options = translation_options(languages);
     let workload = if finish_when_audio_ends {
         InferenceWorkload::Offline
     } else {
@@ -548,6 +562,7 @@ async fn run_session(
             "action": "session_config",
             "source_lang": source_lang,
             "target_lang": target_lang,
+            "translation_options": translation_options,
             "sample_rate": 16_000,
             "prompt_graphs": prompt_graphs,
             "vad_threshold": vad_threshold,
@@ -585,6 +600,7 @@ async fn run_session(
                 "sample_rate": 16_000,
                 "source_lang": source_lang,
                 "target_lang": target_lang,
+                "translation_options": translation_options,
                 "vad_threshold": vad_threshold,
                 "vad_silence_ms": vad_silence_ms,
                 "continuous_recognition": continuous_recognition,
@@ -680,7 +696,7 @@ async fn run_session(
                 if is_finish && finish_sent {
                     continue;
                 }
-                if let Err(error) = send_session_command(&mut write, command, audio_source).await {
+                if let Err(error) = send_session_command(&mut write, command, audio_source, &mut translation_options).await {
                     let _ = event_tx.send(SessionEvent::Error(format!("Failed to update session: {error}")));
                     return;
                 }
@@ -803,6 +819,7 @@ async fn send_session_command<S>(
     write: &mut S,
     command: SessionCommand,
     audio_source: CaptureSource,
+    translation_options: &mut xrtranslate_protocol::TranslationOptions,
 ) -> Result<(), tungstenite::Error>
 where
     S: futures::Sink<Message, Error = tungstenite::Error> + Unpin,
@@ -811,13 +828,16 @@ where
         SessionCommand::UpdateLanguageRoute {
             source_lang,
             target_lang,
+            translation_options: options,
         } => {
+            *translation_options = options;
             send_json(
                 write,
                 json!({
                     "action": "session_config",
                     "source_lang": source_lang,
                     "target_lang": target_lang,
+                    "translation_options": translation_options,
                 }),
             )
             .await
@@ -858,6 +878,7 @@ where
                     "text": text,
                     "source_lang": source_lang,
                     "target_lang": target_lang,
+                    "translation_options": translation_options,
                 }),
             )
             .await
@@ -878,6 +899,7 @@ where
                     "sample_rate": 16_000,
                     "source_lang": source_lang,
                     "target_lang": target_lang,
+                    "translation_options": translation_options,
                     "audio_source": audio_source_name(audio_source),
                     "vad_threshold": vad_threshold,
                     "vad_silence_ms": vad_silence_ms,
@@ -898,6 +920,7 @@ where
                 json!({
                     "event": "config_audio", "sample_rate": 16_000,
                     "source_lang": source_lang, "target_lang": target_lang,
+                    "translation_options": translation_options,
                     "vad_threshold": vad_threshold, "vad_silence_ms": vad_silence_ms,
                     "continuous_recognition": continuous_recognition,
                     "audio_source": audio_source_name(audio_source),
@@ -909,6 +932,17 @@ where
         SessionCommand::Resume => send_json(write, json!({"event": "resume"})).await,
         SessionCommand::Finish => send_json(write, json!({"event": "finish"})).await,
         SessionCommand::Cancel => unreachable!("cancel closes the WebSocket before dispatch"),
+    }
+}
+
+fn translation_options(
+    languages: xrtranslate_engine::language::LanguageSelection,
+) -> xrtranslate_protocol::TranslationOptions {
+    xrtranslate_protocol::TranslationOptions {
+        additional_target_lang: languages
+            .additional_target()
+            .map(|language| language.code().to_owned()),
+        asr_only: languages.asr_only(),
     }
 }
 
@@ -1084,6 +1118,20 @@ fn forward_server_event(
                     .unwrap_or_default(),
             });
         }
+        Some("translation_activity") => {
+            if let Some(activity) = data.and_then(|data| {
+                serde_json::from_value::<xrtranslate_protocol::TranslationActivity>(Value::Object(
+                    data.clone(),
+                ))
+                .ok()
+            }) {
+                let _ = event_tx.send(SessionEvent::TranslationActivity {
+                    stream_id,
+                    request_id: activity.request_id,
+                    active: activity.active,
+                });
+            }
+        }
         Some("translation_preview") => {
             if let Some(preview) =
                 data.and_then(|data| serde_json::from_value(Value::Object(data.clone())).ok())
@@ -1132,6 +1180,8 @@ fn forward_server_event(
                 publish_to_host_outputs,
                 source,
                 translated,
+                additional_translations: event_metadata(data, "additional_translations"),
+                asr_only: event_metadata(data, "asr_only"),
                 turn_id: data
                     .and_then(|d| d.get("turn_id"))
                     .and_then(Value::as_str)
@@ -1460,6 +1510,100 @@ mod tests {
             term_matches[0].sources[0].corpus_id,
             "games.overwatch.heroes"
         );
+    }
+
+    #[test]
+    fn final_output_metadata_survives_network_and_plugin_adapters() {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        for asr_only in [false, true] {
+            let payload = json!({"action":"translation_ready","data": {
+                "source_text":"raw recognition", "translated_text":"corrected output",
+                "turn_id":"turn", "segment_index":1, "segment_count":1,
+                "revisable":false, "overlap_ratio":0.0, "asr_only":asr_only,
+                "additional_translations": if asr_only { vec![] } else { vec![json!({
+                    "target_lang":"ja", "translated_text":"追加の翻訳", "term_matches":[]
+                })] }
+            }});
+            forward_server_event(
+                &sender,
+                &payload.to_string(),
+                7,
+                false,
+                false,
+                CaptureSource::Microphone,
+            );
+            let event = receiver.try_recv().unwrap();
+            let mut adapter = crate::session_coordinator::TranslationEventAdapter::default();
+            let events = adapter.push(&event, 7);
+            let [crate::session_coordinator::TranslationEvent::Segment(segment)] =
+                events.as_slice()
+            else {
+                panic!("expected one complete segment")
+            };
+            assert_eq!(segment.translated.as_deref(), Some("corrected output"));
+            assert_eq!(segment.asr_only, asr_only);
+            assert_eq!(
+                segment.additional_translations.len(),
+                usize::from(!asr_only)
+            );
+            if !asr_only {
+                assert_eq!(segment.additional_translations[0].target_lang, "ja");
+                assert_eq!(
+                    segment.additional_translations[0].translated_text,
+                    "追加の翻訳"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn language_options_survive_route_audio_and_text_controls() {
+        let (sender, mut receiver) = futures::channel::mpsc::unbounded::<Message>();
+        let mut sender = sender.sink_map_err(|_| tungstenite::Error::ConnectionClosed);
+        let mut active = xrtranslate_protocol::TranslationOptions::default();
+        for options in [
+            xrtranslate_protocol::TranslationOptions {
+                additional_target_lang: Some("ja".into()),
+                asr_only: false,
+            },
+            xrtranslate_protocol::TranslationOptions {
+                additional_target_lang: None,
+                asr_only: true,
+            },
+        ] {
+            let commands = [
+                SessionCommand::UpdateLanguageRoute {
+                    source_lang: "en".into(),
+                    target_lang: "zh".into(),
+                    translation_options: options.clone(),
+                },
+                SessionCommand::UpdateAudioSegmentation {
+                    source_lang: "en".into(),
+                    target_lang: "zh".into(),
+                    vad_threshold: 0.5,
+                    vad_silence_ms: 400,
+                    continuous_recognition: true,
+                },
+                SessionCommand::TranslateText {
+                    text: "hello".into(),
+                    source_lang: Some("en".into()),
+                    target_lang: Some("zh".into()),
+                },
+            ];
+            for command in commands {
+                send_session_command(&mut sender, command, CaptureSource::Microphone, &mut active)
+                    .await
+                    .unwrap();
+                let Message::Text(json) = receiver.next().await.unwrap() else {
+                    panic!("expected JSON control")
+                };
+                let payload: Value = serde_json::from_str(&json).unwrap();
+                assert_eq!(
+                    payload["translation_options"],
+                    serde_json::to_value(&options).unwrap()
+                );
+            }
+        }
     }
 
     #[test]

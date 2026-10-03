@@ -9,12 +9,14 @@ const MAX_PENDING_ERRORS: usize = 8;
 pub(super) enum Message {
     Localized(&'static str),
     Error(String),
+    Command(super::Command),
 }
 
 impl Message {
     pub(super) fn text(&self, language: UiLanguage) -> Cow<'static, str> {
         match self {
             Self::Localized(key) => Cow::Borrowed(i18n::tr(language, key)),
+            Self::Command(command) => Cow::Borrowed(command.reply(language)),
             Self::Error(detail) => Cow::Owned(format!(
                 "{}: {detail}",
                 i18n::tr(language, "Something went wrong")
@@ -34,9 +36,19 @@ pub(crate) struct Inbox {
     letters: VecDeque<Message>,
     reading: Option<Message>,
     observed_errors: VecDeque<(&'static str, String)>,
+    acknowledgement: Option<super::Command>,
 }
 
 impl Inbox {
+    pub(crate) fn acknowledge(&mut self, command: super::Command) {
+        // Immediate feedback for the latest action, never a backlog of stale replies.
+        self.acknowledgement = Some(command);
+    }
+
+    pub(super) fn read_acknowledgement(&mut self) -> Option<Message> {
+        self.acknowledgement.take().map(Message::Command)
+    }
+
     pub(crate) fn post(&mut self, message: &'static str) {
         self.enqueue(message.into());
     }

@@ -84,6 +84,32 @@ Speech synthesis runs independently and sends each generated audio chunk to
 playback immediately. Providers without streaming audio keep their normal
 bounded text-chunk synthesis.
 
+Language selection also carries neutral `TranslationOptions`. An optional
+`additional_target_lang` is fixed for the task and does not follow automatic
+direction changes of the main language pair. It is validated against the same
+translation-model language catalogue. Each target uses its own conversation
+context; plugins must not launch a second session to obtain the extra result.
+Completed `additional_translations` carry their target language, translated
+text, and terminology matches on the original segment identity. Main and
+additional results share replacement, cancellation, and terminal semantics.
+
+The explicit `asr_only` mode keeps one input language and bypasses model
+translation. The final terminology-processed text still travels through the
+normal translated-result field with the `asr_only` tag. Consumers must use
+that field for insertion or display and must not substitute the raw source or
+display both as if they were a bilingual pair. Empty translated previews do
+not authorize raw-source fallback in this mode.
+
+`HostOutputEvent::Caption` preserves both `additional_translations` and
+`asr_only` after history merging. OSC attaches unlabelled additional
+results to the same message, counts all languages against its existing
+Unicode length limit, and keeps the same output rate and expiry rules.
+SteamVR places each target in the same subtitle card, reserves visible rows
+for additional targets, and shares this layout with its desktop preview.
+Both plugins omit the source for tagged ASR-only output. These display rules
+remain inside their plugin subscribers and renderers; shared translation
+infrastructure does not contain plugin-specific formatting.
+
 Each channel owns its result adapter and cancellation scope. Domain subscribers
 receive results before host presentation policy is applied, so `PluginOnly`
 tasks still receive complete results and terminal outcomes. `Host` additionally
@@ -426,7 +452,14 @@ Current plugin ownership is:
   preview/settings UI, mute-state capability, and a `HostOutputSubscriber`.
   The Translation and OSC pages reuse the same text composer. Translation
   requests from either page belong to the host's shared text task; OSC does not
-  create a separate translation session. Its optional direct-message mode
+  create a separate translation session. OSC projects the host's main language
+  selection (including ASR-only mode) and returns typed route-change actions to
+  edit those same controls. Its composer has no independent language state;
+  the fixed extra target remains configured by the shared Translation controls
+  and is not an extra selectable main target. Language edits are applied before
+  a text submission from the same frame. Legacy persisted OSC typing-language
+  fields remain readable for compatibility but no longer control submissions.
+  Its optional direct-message mode
   sends the typed text through the OSC output without translation.
 - `plugins::meeting`: meeting store, controller, recording, meeting UI, a
   `TranslationSessionPlugin` binding, and a non-blocking

@@ -44,10 +44,13 @@ pub(crate) struct SessionAdapter {
     turn_id: String,
     recognized_turn_ids: VecDeque<String>,
     translation_metadata: VecDeque<TranslationMetadata>,
+    translation_options: xrtranslate_protocol::TranslationOptions,
 }
 
 #[derive(Clone)]
 struct TranslationMetadata {
+    additional_translations: Vec<xrtranslate_protocol::AdditionalTranslation>,
+    asr_only: bool,
     metrics: LatencyMetrics,
     context: SegmentContext,
     term_matches: Vec<CorpusTermMatch>,
@@ -61,6 +64,7 @@ impl SessionAdapter {
             turn_id: "native-1".into(),
             recognized_turn_ids: VecDeque::new(),
             translation_metadata: VecDeque::new(),
+            translation_options: Default::default(),
         })
     }
 
@@ -88,6 +92,16 @@ impl SessionAdapter {
         self.recognized_turn_ids.clear();
         self.translation_metadata.clear();
         Ok(())
+    }
+
+    pub(crate) fn translation_options(&self) -> &xrtranslate_protocol::TranslationOptions {
+        &self.translation_options
+    }
+    pub(crate) fn set_translation_options(
+        &mut self,
+        options: xrtranslate_protocol::TranslationOptions,
+    ) {
+        self.translation_options = options;
     }
 
     pub(crate) fn set_tts_enabled(&mut self, enabled: bool) {
@@ -238,6 +252,8 @@ impl SessionAdapter {
             source_text,
             translated_text,
             Vec::new(),
+            Vec::new(),
+            false,
             None,
             metrics,
             SegmentContext {
@@ -267,6 +283,8 @@ impl SessionAdapter {
         source_text: String,
         translated_text: String,
         term_matches: Vec<CorpusTermMatch>,
+        additional_translations: Vec<xrtranslate_protocol::AdditionalTranslation>,
+        asr_only: bool,
         prompt_trace: Option<PromptExecutionTrace>,
         metrics: LatencyMetrics,
         context: SegmentContext,
@@ -286,6 +304,8 @@ impl SessionAdapter {
             metrics,
             context,
             term_matches,
+            additional_translations,
+            asr_only,
             prompt_trace,
         });
         Ok(true)
@@ -403,6 +423,8 @@ impl SessionAdapter {
                                     context_matches: Vec::new(),
                                 },
                                 term_matches: Vec::new(),
+                                additional_translations: Vec::new(),
+                                asr_only: false,
                                 prompt_trace: None,
                             });
                     output.push(WireOutput::Event(ServerEvent::TranslationReady(
@@ -410,6 +432,8 @@ impl SessionAdapter {
                             source_text,
                             translated_text,
                             term_matches: metadata.term_matches,
+                            additional_translations: metadata.additional_translations,
+                            asr_only: metadata.asr_only,
                             prompt_trace: metadata.prompt_trace,
                             turn_id: metadata.context.turn_id,
                             segment_index: metadata.context.segment_index,
@@ -548,6 +572,8 @@ mod tests {
                     "source".into(),
                     "translation".into(),
                     Vec::new(),
+                    Vec::new(),
+                    false,
                     None,
                     LatencyMetrics {
                         queue_ms: 0,

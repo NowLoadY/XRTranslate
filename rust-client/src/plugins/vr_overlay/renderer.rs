@@ -6,8 +6,39 @@ use eframe::egui::{self, Color32, FontId, Painter, Pos2, Rect, Vec2};
 pub struct VrSubtitleCard {
     pub source: String,
     pub translated: String,
+    pub additional_translations: Vec<String>,
     pub speaker: String,
     pub live: bool,
+}
+
+impl VrSubtitleCard {
+    fn primary(&self) -> &str {
+        if self.translated.trim().is_empty() {
+            &self.source
+        } else {
+            &self.translated
+        }
+    }
+
+    fn show_source(&self, bilingual: bool) -> bool {
+        bilingual
+            && !self.translated.trim().is_empty()
+            && !self.source.trim().is_empty()
+            && self.source.trim() != self.translated.trim()
+    }
+
+    pub(super) fn preview_text(&self, bilingual: bool) -> String {
+        let mut lines = vec![self.primary()];
+        lines.extend(self.additional_translations.iter().map(String::as_str));
+        if self.show_source(bilingual) {
+            lines.push(&self.source);
+        }
+        lines
+            .into_iter()
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
 }
 
 /// Paint newest captions last. When space is tight, retain the newest cards and
@@ -30,7 +61,13 @@ pub fn paint_cards(
     } * scale;
     let padding = 12.0 * scale;
     let gap = 8.0 * scale;
-    let min_height = font * if bilingual { 2.8 } else { 1.7 } + padding * 2.0;
+    let extra_lines = cards
+        .iter()
+        .map(|card| card.additional_translations.len())
+        .max()
+        .unwrap_or(0);
+    let min_height =
+        font * (if bilingual { 2.8 } else { 1.7 } + extra_lines as f32 * 1.4) + padding * 2.0;
     let count = cards.len().min(
         ((rect.height() - gap) / (min_height + gap))
             .floor()
@@ -52,15 +89,8 @@ pub fn paint_cards(
     };
     let mut layouts = Vec::new();
     for card in cards {
-        let primary = if card.translated.trim().is_empty() {
-            &card.source
-        } else {
-            &card.translated
-        };
-        let secondary = bilingual
-            && !card.translated.trim().is_empty()
-            && !card.source.trim().is_empty()
-            && card.source.trim() != card.translated.trim();
+        let primary = card.primary();
+        let secondary = card.show_source(bilingual);
         let header = (!card.speaker.is_empty()).then(|| {
             text(
                 &card.speaker,
@@ -70,11 +100,20 @@ pub fn paint_cards(
             )
         });
         let header_height = header.as_ref().map_or(0.0, |g| g.size().y + gap * 0.5);
-        let available = (budget - padding * 2.0 - header_height).max(font * 1.2);
-        let rows = ((available / if secondary { 2.3 } else { 1.2 }) / font)
-            .floor()
-            .max(1.0) as usize;
+        let available = (budget
+            - padding * 2.0
+            - header_height
+            - gap * 0.5 * card.additional_translations.len() as f32)
+            .max(font * 1.2);
+        let line_weight =
+            if secondary { 2.3 } else { 1.2 } + card.additional_translations.len() as f32 * 1.2;
+        let rows = ((available / line_weight) / font).floor().max(1.0) as usize;
         let main = text(primary, font, rows, Color32::from_rgb(240, 247, 252));
+        let additional = card
+            .additional_translations
+            .iter()
+            .map(|line| text(line, font * 0.94, rows, Color32::from_rgb(217, 232, 244)))
+            .collect::<Vec<_>>();
         let source = secondary.then(|| {
             text(
                 &card.source,
@@ -86,12 +125,16 @@ pub fn paint_cards(
         let height = padding * 2.0
             + header_height
             + main.size().y
+            + additional
+                .iter()
+                .map(|g| g.size().y + gap * 0.5)
+                .sum::<f32>()
             + source.as_ref().map_or(0.0, |g| g.size().y + gap * 0.5);
-        layouts.push((card, header, main, source, height.min(budget)));
+        layouts.push((card, header, main, source, height.min(budget), additional));
     }
     let total = layouts.iter().map(|x| x.4 + gap).sum::<f32>() - gap;
     let mut y = rect.center().y - total * 0.5;
-    for (card, header, main, source, height) in layouts {
+    for (card, header, main, source, height, additional) in layouts {
         let bounds = Rect::from_min_size(
             Pos2::new(rect.left() + padding, y),
             Vec2::new(rect.width() - padding * 2.0, height),
@@ -131,8 +174,13 @@ pub fn paint_cards(
         }
         let h = main.size().y;
         p.galley(position, main, Color32::WHITE);
-        if let Some(source) = source {
+        position.y += h + gap * 0.5;
+        for extra in additional {
+            let h = extra.size().y;
+            p.galley(position, extra, Color32::WHITE);
             position.y += h + gap * 0.5;
+        }
+        if let Some(source) = source {
             p.galley(position, source, Color32::WHITE);
         }
         y += height + gap;
@@ -181,6 +229,7 @@ impl VrOverlayRenderer {
         &mut self,
         speech: &crate::ui::components::avatar::Speech,
         clock: f64,
+        dt: f32,
     ) -> Result<Vec<u8>, String> {
         let mut speech = speech.on_surface(&self.speech_layout);
         let output = self.render_surface(|painter, rect| {
@@ -190,11 +239,15 @@ impl VrOverlayRenderer {
                 Pos2::new(rect.center().x, rect.bottom() - 16.0),
                 24.0,
                 clock,
-                0.08,
+                dt,
             );
         });
         self.speech_layout = speech;
         output
+    }
+
+    pub(super) fn speech_visible(&self) -> bool {
+        self.speech_layout.bounds().is_some()
     }
 
     pub(super) fn render_surface(
@@ -354,6 +407,52 @@ fn raster_triangle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn additional_language_has_visible_pixels_even_with_long_primary_history() {
+        let mut renderer = VrOverlayRenderer::new(640, 320).unwrap();
+        let card = VrSubtitleCard {
+            source: "source ".repeat(1000),
+            translated: "主要译文".repeat(1000),
+            additional_translations: vec!["こんにちは".into()],
+            speaker: "Speaker".into(),
+            live: true,
+        };
+        for bilingual in [false, true] {
+            let mut cards = vec![card.clone(); 5];
+            let before = renderer.render(&cards, bilingual, 36.0).unwrap();
+            cards.last_mut().unwrap().additional_translations = vec!["こんばんは".into()];
+            assert_ne!(
+                before,
+                renderer.render(&cards, bilingual, 36.0).unwrap(),
+                "additional language must have a reserved visible line"
+            );
+            assert!(
+                cards
+                    .last()
+                    .unwrap()
+                    .preview_text(bilingual)
+                    .contains("こんばんは")
+            );
+        }
+    }
+
+    #[test]
+    fn processed_asr_caption_is_identical_with_source_display_on_or_off() {
+        let mut renderer = VrOverlayRenderer::new(640, 320).unwrap();
+        let card = VrSubtitleCard {
+            source: String::new(),
+            translated: "Corrected terminology".into(),
+            additional_translations: Vec::new(),
+            speaker: String::new(),
+            live: true,
+        };
+        assert_eq!(card.preview_text(true), "Corrected terminology");
+        assert_eq!(
+            renderer.render(&[card.clone()], true, 20.0).unwrap(),
+            renderer.render(&[card], false, 20.0).unwrap()
+        );
+    }
     #[test]
     fn invalid_dimensions_and_nonfinite_font_never_reach_unbounded_allocations() {
         for (w, h) in [(0, 320), (640, 0), (u32::MAX, u32::MAX), (2048, 2048)] {
@@ -363,6 +462,7 @@ mod tests {
         let card = VrSubtitleCard {
             source: "text".into(),
             translated: "字幕".into(),
+            additional_translations: Vec::new(),
             speaker: String::new(),
             live: true,
         };
@@ -381,6 +481,7 @@ mod tests {
         let card = VrSubtitleCard {
             source: "日本語 English العربية ".repeat(1000),
             translated: "中文字幕".repeat(1000),
+            additional_translations: Vec::new(),
             speaker: "Speaker".into(),
             live: true,
         };
@@ -406,6 +507,7 @@ mod tests {
         let card = VrSubtitleCard {
             source: "Hello world".into(),
             translated: "你好，世界".into(),
+            additional_translations: Vec::new(),
             speaker: "Alice".into(),
             live: true,
         };
@@ -424,12 +526,14 @@ mod tests {
         let old = VrSubtitleCard {
             source: "old ".repeat(2000),
             translated: "旧字幕".repeat(2000),
+            additional_translations: Vec::new(),
             speaker: "Speaker ".repeat(50),
             live: false,
         };
         let latest = VrSubtitleCard {
             source: "LATEST".into(),
             translated: String::new(),
+            additional_translations: Vec::new(),
             speaker: String::new(),
             live: true,
         };

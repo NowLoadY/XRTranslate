@@ -5,11 +5,15 @@ pub mod toolbar;
 use eframe::egui;
 
 #[derive(Clone, Copy)]
-pub struct OscPageContext {
+pub struct OscPageContext<'a> {
     pub language: crate::i18n::UiLanguage,
     pub preparing_text: bool,
     pub mute_gate_enabled: bool,
     pub languages: xrtranslate_engine::language::LanguageCapabilities,
+    pub source_lang: &'a str,
+    pub target_lang: &'a str,
+    pub additional_target_lang: Option<&'a str>,
+    pub asr_only: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -20,17 +24,20 @@ pub enum OscUiAction {
     SaveSettings,
     SettingsApplied(Result<(), String>),
     DirectInput(String),
-    TranslateInput {
-        text: String,
+    SetLanguageRoute {
         source_lang: String,
         target_lang: String,
+        asr_only: bool,
+    },
+    TranslateInput {
+        text: String,
     },
 }
 
 pub fn render(
     plugin: &mut super::OscPlugin,
     ui: &mut egui::Ui,
-    context: OscPageContext,
+    context: OscPageContext<'_>,
 ) -> Vec<OscUiAction> {
     let mut actions = Vec::new();
     egui::Panel::bottom("osc_bottom_input_bar")
@@ -38,14 +45,7 @@ pub fn render(
         .frame(egui::Frame::NONE)
         .show(ui, |ui| {
             ui.add_space(10.0);
-            canvas::render_bottom_input_bar(
-                plugin,
-                ui,
-                context.language,
-                context.languages,
-                context.preparing_text,
-                &mut actions,
-            );
+            canvas::render_bottom_input_bar(plugin, ui, context, &mut actions);
         });
 
     egui::ScrollArea::vertical()
@@ -61,7 +61,8 @@ pub fn render(
 
             ui.add_space(12.0);
 
-            let is_wide = (ui.available_width() > ui.available_height() && ui.available_width() >= 540.0)
+            let is_wide = (ui.available_width() > ui.available_height()
+                && ui.available_width() >= 540.0)
                 || ui.available_width() >= 800.0;
 
             if is_wide {

@@ -53,6 +53,8 @@ pub(crate) struct TranslationHistoryEntry {
     pub(crate) live: bool,
     pub(crate) source: String,
     pub(crate) translated: String,
+    pub(crate) additional_translations: Vec<xrtranslate_protocol::AdditionalTranslation>,
+    pub(crate) asr_only: bool,
     pub(crate) speaker_id: String,
     pub(crate) source_start_ms: f64,
     pub(crate) source_end_ms: f64,
@@ -65,9 +67,27 @@ pub(crate) struct TranslationHistoryEntry {
     pub(crate) revision_id: u64,
     pub(crate) source_revision: Option<RevisableText>,
     pub(crate) translated_revision: Option<RevisableText>,
+    pub(crate) additional_revisions: std::collections::BTreeMap<String, RevisableText>,
 }
 
 impl TranslationHistoryEntry {
+    /// Plain-text projection for subtitle surfaces without annotated spans.
+    pub(crate) fn output_text(&self) -> String {
+        let mut text = self.translated.clone();
+        for extra in &self.additional_translations {
+            if extra.translated_text.trim().is_empty() {
+                continue;
+            }
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&extra.target_lang);
+            text.push_str(" · ");
+            text.push_str(&extra.translated_text);
+        }
+        text
+    }
+
     pub(crate) fn preview(
         stream_id: u64,
         audio_source: CaptureSource,
@@ -81,6 +101,8 @@ impl TranslationHistoryEntry {
             live: true,
             source: preview.source_text,
             translated: preview.translated_text,
+            additional_translations: Vec::new(),
+            asr_only: false,
             speaker_id: preview.speaker_id,
             source_start_ms: 0.0,
             source_end_ms: 0.0,
@@ -93,6 +115,7 @@ impl TranslationHistoryEntry {
             revision_id: preview.revision,
             source_revision: None,
             translated_revision: None,
+            additional_revisions: Default::default(),
         }
     }
 }

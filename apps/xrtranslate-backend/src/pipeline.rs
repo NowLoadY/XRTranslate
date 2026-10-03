@@ -46,7 +46,7 @@ use xrtranslate_vad::{
     SileroVad, Utterance, UtteranceEndReason, decode_pcm16le_frame,
 };
 
-use xrtranslate_engine::language::{LanguageCapabilities, LanguageSelection};
+use xrtranslate_engine::language::{LanguageCapabilities, LanguageMode};
 
 use crate::language::{
     AdaptiveLanguageRoute, AutoDecision, SupportedLanguage, is_traditional_chinese,
@@ -116,6 +116,26 @@ pub(crate) enum PipelineEvent {
 }
 
 impl RecognizedOutput {
+    /// Terminology belongs to an output scope. Keep the recognition sentence
+    /// identities stable even when a replacement introduces sentence punctuation,
+    /// so another output can correct and translate the same original segments.
+    pub(crate) fn apply_terminology(
+        &mut self,
+        corrections: &[xr_corpus_protocol::CorpusRecognitionCorrection],
+        contexts: &[xr_corpus_protocol::SegmentContext],
+    ) {
+        use crate::terminology::rewrite_recognition_terms;
+        self.source_text = rewrite_recognition_terms(&self.source_text, corrections).corrected_text;
+        for (segment, context) in self.segments.iter_mut().zip(contexts) {
+            segment.translation_text =
+                rewrite_recognition_terms(&segment.translation_text, &context.source_corrections)
+                    .corrected_text;
+            segment.source_text =
+                rewrite_recognition_terms(&segment.source_text, &context.source_corrections)
+                    .corrected_text;
+        }
+    }
+
     pub(crate) fn apply_source_correction(&mut self, corrected: String) {
         if corrected == self.source_text {
             return;
@@ -160,6 +180,9 @@ impl RecognizedOutput {
 /// A single provider translation emitted after a recognized source segment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TranslationOutput {
+    pub(crate) additional_source_text: Option<String>,
+    pub(crate) additional_translations: Vec<xrtranslate_protocol::AdditionalTranslation>,
+    pub(crate) asr_only: bool,
     pub(crate) source_text: String,
     pub(crate) translated_text: String,
     pub(crate) source_language: String,
@@ -1013,6 +1036,7 @@ impl NativeInference {
         samples: &[i16],
         source_language: &str,
         target_language: &str,
+        asr_only: bool,
         adaptive_route: &mut AdaptiveLanguageRoute,
         prompt_graph: &PromptNodeGraph,
         prompt_context: AsrPromptContext,
@@ -1026,7 +1050,7 @@ impl NativeInference {
         let max_tokens = asr_max_tokens(samples.len()).min(self.asr_max_output_tokens);
         let selection = self
             .languages
-            .select(source_language, target_language)
+            .select_with_options(source_language, target_language, None, asr_only)
             .map_err(InferenceFailure::runtime)?;
         adaptive_route.configure(source_language, target_language);
         adaptive_route.constrain(self.languages.sources());
@@ -1058,9 +1082,9 @@ impl NativeInference {
         else {
             return Ok(None);
         };
-        let direct_route = match selection {
-            LanguageSelection::Fixed { source, target } => Some((Some(source), target)),
-            LanguageSelection::Detect { target } => {
+        let direct_route = match selection.mode {
+            LanguageMode::Fixed { source, target } => Some((Some(source), target)),
+            LanguageMode::Detect { target } => {
                 let source = auto_result
                     .transcript
                     .language
@@ -1073,7 +1097,22 @@ impl NativeInference {
                 }
                 Some((source, target))
             }
-            LanguageSelection::Bidirectional(_) => None,
+            LanguageMode::AsrOnly { source } => {
+                let source = source.or_else(|| {
+                    auto_result
+                        .transcript
+                        .language
+                        .as_deref()
+                        .and_then(SupportedLanguage::parse)
+                });
+                let target = source
+                    .or_else(|| self.languages.recognition_sources().iter().next())
+                    .ok_or_else(|| {
+                        InferenceFailure::runtime("No recognition language is available")
+                    })?;
+                Some((source, target))
+            }
+            LanguageMode::Bidirectional(_) => None,
         };
         let (result, source, target, route_switched) = if let Some((source, target)) = direct_route
         {
@@ -1180,7 +1219,11 @@ impl NativeInference {
             segments: translation_segment_pairs_for_final_text_with_lang(&source_text, source_code),
             source_text,
             source_language: source_code.to_owned(),
-            target_language: target.code().to_owned(),
+            target_language: if asr_only {
+                source_code.to_owned()
+            } else {
+                target.code().to_owned()
+            },
             asr_elapsed,
             route_switched,
             prompt_trace,
@@ -1259,6 +1302,24 @@ impl NativeInference {
         }
     }
 
+    pub(crate) fn recognition_output(
+        segment: &TranslationSegmentPair,
+        source_language: &str,
+    ) -> TranslationOutput {
+        TranslationOutput {
+            additional_source_text: None,
+            additional_translations: Vec::new(),
+            asr_only: true,
+            source_text: segment.source_text.clone(),
+            translated_text: segment.source_text.clone(),
+            source_language: source_language.to_owned(),
+            target_language: source_language.to_owned(),
+            term_matches: Vec::new(),
+            prompt_trace: None,
+            mt_elapsed: Duration::ZERO,
+        }
+    }
+
     /// Translates one already-normalized, user-visible source segment.
     pub(crate) async fn translate_segment(
         &self,
@@ -1302,6 +1363,9 @@ impl NativeInference {
             let converted = to_traditional_chinese(&segment.translation_text);
             on_update(converted.clone()).await;
             return Ok(TranslationOutput {
+                additional_source_text: None,
+                additional_translations: Vec::new(),
+                asr_only: false,
                 source_text: segment.source_text.clone(),
                 translated_text: converted,
                 source_language: route.source_code,
@@ -1386,6 +1450,9 @@ impl NativeInference {
         }
 
         Ok(TranslationOutput {
+            additional_source_text: None,
+            additional_translations: Vec::new(),
+            asr_only: false,
             source_text: segment.source_text.clone(),
             translated_text: final_translated_text,
             source_language: route.source_code,

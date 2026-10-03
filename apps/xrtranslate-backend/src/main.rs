@@ -74,6 +74,7 @@ mod sentence_assembly;
 mod sentence_gate;
 mod session;
 mod terminology;
+mod translation_outputs;
 mod tts_session;
 use model_runtime::{
     NativeProviderPlan, NativeTtsAdapter, OnnxRuntimeDiagnostic, initialize_managed_onnx_runtime,
@@ -147,6 +148,7 @@ struct UtteranceJob {
     topic_turn_id: String,
     source_language: String,
     target_language: String,
+    translation_options: xrtranslate_protocol::TranslationOptions,
     speaker_id: Option<String>,
     workload: InferenceWorkload,
     enqueued_at: Instant,
@@ -160,6 +162,7 @@ struct TextJob {
     topic_turn_id: String,
     source_language: String,
     target_language: String,
+    translation_options: xrtranslate_protocol::TranslationOptions,
     speaker_id: Option<String>,
     workload: InferenceWorkload,
     enqueued_at: Instant,
@@ -168,6 +171,8 @@ struct TextJob {
 
 #[derive(Hash, PartialEq, Eq)]
 struct SentenceTranslationKey {
+    additional_target: Option<String>,
+    asr_only: bool,
     turn_id: String,
     segment_index: u32,
     source_language: String,
@@ -230,6 +235,10 @@ enum InferenceEvent {
         segments: Vec<SegmentContext>,
         reference_samples: Option<Vec<i16>>,
     },
+    TranslationActivity {
+        generation: PipelineGeneration,
+        activity: xrtranslate_protocol::TranslationActivity,
+    },
     TranslationPreview {
         generation: PipelineGeneration,
         source_text: String,
@@ -266,6 +275,7 @@ impl InferenceEvent {
             Self::WindowObserved { generation, .. }
             | Self::RecognitionReference { generation, .. }
             | Self::Recognized { generation, .. }
+            | Self::TranslationActivity { generation, .. }
             | Self::TranslationPreview { generation, .. }
             | Self::Translation { generation, .. }
             | Self::StreamEnded { generation, .. }
@@ -287,6 +297,54 @@ impl InferenceEvent {
                 ..
             } => Some((&recognized.source_text, samples)),
             _ => None,
+        }
+    }
+}
+
+/// Reserve completion before announcing work, so cancellation can always clear it
+/// without blocking or spawning a task from Drop.
+struct TranslationActivityGuard {
+    completion: Option<mpsc::OwnedPermit<InferenceEvent>>,
+    generation: PipelineGeneration,
+    request_id: u64,
+}
+
+impl TranslationActivityGuard {
+    async fn begin(
+        events: &mpsc::Sender<InferenceEvent>,
+        generation: PipelineGeneration,
+    ) -> Option<Self> {
+        static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
+        let completion = events.clone().reserve_owned().await.ok()?;
+        let request_id = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
+        events
+            .send(InferenceEvent::TranslationActivity {
+                generation,
+                activity: xrtranslate_protocol::TranslationActivity {
+                    request_id,
+                    active: true,
+                },
+            })
+            .await
+            .ok()?;
+        Some(Self {
+            completion: Some(completion),
+            generation,
+            request_id,
+        })
+    }
+}
+
+impl Drop for TranslationActivityGuard {
+    fn drop(&mut self) {
+        if let Some(completion) = self.completion.take() {
+            completion.send(InferenceEvent::TranslationActivity {
+                generation: self.generation,
+                activity: xrtranslate_protocol::TranslationActivity {
+                    request_id: self.request_id,
+                    active: false,
+                },
+            });
         }
     }
 }
@@ -846,6 +904,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                             target_lang: target,
                             sample_rate,
                             prompt_graphs: graphs,
+                            translation_options,
                         })) => {
                             if let Some(graphs) = graphs {
                                 if let Err(error) = validate_prompt_graph_set(&graphs) {
@@ -872,7 +931,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                                 input_format = PcmFormat::mono_s16le(sample_rate);
                             }
                             if let Err(error) = state.model_plan.language_capabilities.for_text()
-                                .select(&source, &target)
+                                .select_with_options(&source, &target, translation_options.additional_target_lang.as_deref(), translation_options.asr_only)
                                 .and_then(|selection| {
                                     let (source, target) = selection.wire();
                                     session.set_route(&source, &target)
@@ -885,6 +944,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                                 if send_error(&outbound_sender, error).await.is_err() { break; }
                                 continue;
                             }
+                            session.set_translation_options(translation_options);
                             audio_route_valid = true;
                             if let Some(pipeline) = &mut pipeline { pipeline.reset(); }
                             generation.route_epoch = session.route_epoch();
@@ -919,6 +979,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                             vad_silence_ms,
                             continuous_recognition: configured_continuous_recognition,
                             workload: configured_workload,
+                            translation_options,
                         })) => {
                             if let Err(error) = validate_input_sample_rate(sample_rate) {
                                 if send_error(&outbound_sender, error).await.is_err() {
@@ -943,7 +1004,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                                 continue;
                             }
                             if let Err(error) = state.model_plan.language_capabilities
-                                .select(&source, &target)
+                                .select_with_options(&source, &target, translation_options.additional_target_lang.as_deref(), translation_options.asr_only)
                                 .and_then(|selection| {
                                     let (source, target) = selection.wire();
                                     session.set_route(&source, &target)
@@ -956,6 +1017,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                                 if send_error(&outbound_sender, error).await.is_err() { break; }
                                 continue;
                             }
+                            session.set_translation_options(translation_options);
                             audio_route_valid = true;
                             pipeline.reset();
                             workload = configured_workload;
@@ -1112,6 +1174,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                             source_lang,
                             target_lang,
                             stream_id: _,
+                            translation_options,
                         })) => {
                             let trimmed = text.trim();
                             if !trimmed.is_empty() && input_state != SessionInputState::Draining {
@@ -1121,6 +1184,21 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                                 let target_language = target_lang
                                     .filter(|t| !t.trim().is_empty())
                                     .unwrap_or_else(|| session.target_lang().to_string());
+                                let selection = match state.model_plan.language_capabilities.for_text().select_with_options(
+                                    &source_language, &target_language,
+                                    translation_options.additional_target_lang.as_deref(), translation_options.asr_only,
+                                ) {
+                                    Ok(selection) => selection,
+                                    Err(error) => {
+                                        if send_error(&outbound_sender, error).await.is_err() { break; }
+                                        continue;
+                                    }
+                                };
+                                let (source_language, target_language) = selection.wire();
+                                let translation_options = xrtranslate_protocol::TranslationOptions {
+                                    asr_only: selection.asr_only(),
+                                    additional_target_lang: selection.additional_target().map(|language| language.code().to_owned()),
+                                };
                                 let revision = next_utterance_sequence;
                                 let turn_id = format!("text-{revision}");
                                 next_utterance_sequence = next_utterance_sequence.wrapping_add(1);
@@ -1132,6 +1210,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                                     topic_turn_id,
                                     source_language,
                                     target_language,
+                                    translation_options,
                                     speaker_id: None,
                                     workload,
                                     enqueued_at: Instant::now(),
@@ -1566,6 +1645,7 @@ fn inference_jobs(
             topic_turn_id,
             source_language: source_language.clone(),
             target_language: target_language.clone(),
+            translation_options: session.translation_options().clone(),
             speaker_id,
             workload,
             enqueued_at: Instant::now(),
@@ -1671,6 +1751,7 @@ async fn run_inference_worker(
             return;
         }
     };
+    let mut additional_scope = translation_outputs::AdditionalOutputScope::default();
     let mut pending_translation: Option<tokio::task::JoinHandle<()>> = None;
     let mut active_sentence_gate: Option<(
         PipelineGeneration,
@@ -1805,12 +1886,22 @@ async fn run_inference_worker(
                     asr_tokens,
                     translation_tokens,
                 };
-                let (routed_source, routed_target) = if let Some((new_src, new_tgt)) =
+                let (routed_source, routed_target) = if job.translation_options.asr_only {
+                    let source = if job.source_language == "auto" {
+                        xrtranslate_engine::language::detect_text_language(&job.text)
+                            .unwrap_or("auto")
+                            .to_owned()
+                    } else {
+                        job.source_language.clone()
+                    };
+                    (source.clone(), source)
+                } else if let Some((new_src, new_tgt)) =
                     xrtranslate_engine::auto_route_language_pair(
                         &job.text,
                         &job.source_language,
                         &job.target_language,
-                    ) {
+                    )
+                {
                     (new_src.to_string(), new_tgt.to_string())
                 } else {
                     (job.source_language.clone(), job.target_language.clone())
@@ -1886,31 +1977,13 @@ async fn run_inference_worker(
                         continue;
                     }
                 };
-                let source_rewrite = rewrite_recognition_terms(
-                    &recognized.source_text,
-                    &translation_context.source_corrections,
-                );
-                if source_rewrite.corrected_text != recognized.source_text {
-                    recognized.apply_source_correction(source_rewrite.corrected_text.clone());
-                }
+                let additional_source = recognized.clone();
                 let translation_context_segments =
                     align_translation_contexts(&recognized.segments, &translation_context.segments);
-                for (segment, context) in recognized
-                    .segments
-                    .iter_mut()
-                    .zip(&translation_context_segments)
-                {
-                    let rewrite = rewrite_recognition_terms(
-                        &segment.translation_text,
-                        &context.source_corrections,
-                    );
-                    segment.translation_text = rewrite.corrected_text;
-                    segment.source_text = rewrite_recognition_terms(
-                        &segment.source_text,
-                        &context.source_corrections,
-                    )
-                    .corrected_text;
-                }
+                recognized.apply_terminology(
+                    &translation_context.source_corrections,
+                    &translation_context_segments,
+                );
                 let asr_elapsed = Duration::ZERO;
                 let source_language = recognized.source_language.clone();
                 let target_language = recognized.target_language.clone();
@@ -1930,6 +2003,34 @@ async fn run_inference_worker(
                         revision: job.revision,
                     },
                 );
+                let additional_turn = match additional_scope
+                    .prepare(
+                        &corpus_client,
+                        job.generation,
+                        job.translation_options
+                            .additional_target_lang
+                            .as_deref()
+                            .filter(|_| !job.translation_options.asr_only),
+                        &additional_source,
+                        context_budgets,
+                        &job.topic_turn_id,
+                        job.speaker_id.as_deref().unwrap_or_default(),
+                    )
+                    .await
+                {
+                    Ok(context) => context,
+                    Err(message) => {
+                        let _ = events
+                            .send(InferenceEvent::Error {
+                                generation: job.generation,
+                                message,
+                                configuration_required: false,
+                            })
+                            .await;
+                        continue;
+                    }
+                };
+                let asr_only = job.translation_options.asr_only;
                 if events
                     .send(InferenceEvent::Recognized {
                         generation: job.generation,
@@ -1975,22 +2076,26 @@ async fn run_inference_worker(
                         let prompt_graph = prompt_graph_for_turn.clone();
                         let preview_events = translation_events.clone();
                         let preview_generation = translation_generation.clone();
+                        let mut request_generation = translation_generation.clone();
                         let preview_context = segment_context.clone();
                         let preview_source = segment.source_text.clone();
+                        let additional_segment = additional_turn.as_ref().and_then(|turn| turn.segment(segment_context.segment_index.saturating_sub(1) as usize));
                         async move {
-                            let _permit = scheduler.acquire_translation(workload).await;
+                            if *request_generation.borrow_and_update() != event_generation { return None; }
                             let prompt_context = prompt_context_for_segment(
                                 &source_language,
                                 &target_language,
                                 &corpus_context,
                             );
-                            let output = inference
-                                .translate_segment_streaming(
+                            let activity = if asr_only { None } else { TranslationActivityGuard::begin(&preview_events, event_generation).await };
+                            let output = tokio::select! {
+                                output = translation_outputs::translate(&inference, &scheduler, workload,
                                     &segment,
                                     &source_language,
                                     &target_language,
                                     prompt_graph,
                                     prompt_context,
+                                    additional_segment, asr_only,
                                     move |translated_text| {
                                         let events = preview_events.clone();
                                         let generation = preview_generation.clone();
@@ -2009,18 +2114,24 @@ async fn run_inference_worker(
                                             }
                                         }
                                     },
-                                )
-                                .await;
-                            (segment_context, source_for_terms, prompt_terms, output)
+                                ) => output,
+                                _ = request_generation.changed() => return None,
+                            };
+                            drop(activity);
+                            Some((segment_context, source_for_terms, prompt_terms, output))
                         }
                     })
                     .buffered(TRANSLATION_CONCURRENCY_PER_SESSION);
                     tokio::pin!(translations);
                     let mut completed_pairs = Vec::new();
+                    let mut additional_pairs = Vec::new();
                     let mut cancelled = false;
-                    while let Some((segment_context, source_for_terms, prompt_terms, mut output)) =
-                        translations.next().await
-                    {
+                    while let Some(result) = translations.next().await {
+                        let Some((segment_context, source_for_terms, prompt_terms, mut output)) =
+                            result
+                        else {
+                            continue;
+                        };
                         if *translation_generation.borrow() != event_generation {
                             cancelled = true;
                             break;
@@ -2034,6 +2145,16 @@ async fn run_inference_worker(
                             );
                             translated.translated_text = rewrite.translated_text;
                             translated.term_matches = rewrite.term_matches;
+                            additional_pairs.extend(
+                                translated
+                                    .additional_translations
+                                    .iter()
+                                    .filter_map(|extra| {
+                                        translated.additional_source_text.as_ref().map(|source| {
+                                            (source.clone(), extra.translated_text.clone())
+                                        })
+                                    }),
+                            );
                             completed_pairs.push((
                                 translated.source_text.clone(),
                                 translated.translated_text.clone(),
@@ -2054,6 +2175,16 @@ async fn run_inference_worker(
                         {
                             return;
                         }
+                    }
+                    if !cancelled && let Some(additional) = &additional_turn {
+                        additional
+                            .record(
+                                logical_turn_id.clone(),
+                                history_speaker_id.clone(),
+                                &history_source_language,
+                                &additional_pairs,
+                            )
+                            .await;
                     }
                     if !cancelled
                         && let Some(request) = (LogicalTurnRecord {
@@ -2258,6 +2389,7 @@ async fn run_inference_worker(
                     &job.utterance.samples,
                     &job.source_language,
                     &job.target_language,
+                    job.translation_options.asr_only,
                     &mut adaptive_route,
                     &prompt_graph_for_revision,
                     AsrPromptContext {
@@ -2583,35 +2715,13 @@ async fn run_inference_worker(
                 continue;
             }
         };
-        let source_rewrite = rewrite_recognition_terms(
-            &recognized.source_text,
-            &translation_context.source_corrections,
-        );
-        if source_rewrite.corrected_text != recognized.source_text {
-            info!(
-                before = %recognized.source_text,
-                after = %source_rewrite.corrected_text,
-                "applied XR Corpus ASR terminology correction"
-            );
-            recognized.apply_source_correction(source_rewrite.corrected_text.clone());
-        }
-        if job.revisable {
-            recognized.prepare_revisable_snapshot();
-        }
+        let additional_source = recognized.clone();
         let translation_context_segments =
             align_translation_contexts(&recognized.segments, &translation_context.segments);
-        for (segment, context) in recognized
-            .segments
-            .iter_mut()
-            .zip(&translation_context_segments)
-        {
-            let rewrite =
-                rewrite_recognition_terms(&segment.translation_text, &context.source_corrections);
-            segment.translation_text = rewrite.corrected_text;
-            segment.source_text =
-                rewrite_recognition_terms(&segment.source_text, &context.source_corrections)
-                    .corrected_text;
-        }
+        recognized.apply_terminology(
+            &translation_context.source_corrections,
+            &translation_context_segments,
+        );
         let sentence_readiness =
             sentence_gate.observe(job.revision, &recognized.segments, !job.revisable);
         stable_translation_cache.lock().await.retain(|key, output| {
@@ -2645,6 +2755,34 @@ async fn run_inference_worker(
                 context.timing = SegmentTiming::EstimatedTextPartition;
             }
         }
+        let additional_turn = match additional_scope
+            .prepare(
+                &corpus_client,
+                job.generation,
+                job.translation_options
+                    .additional_target_lang
+                    .as_deref()
+                    .filter(|_| !job.translation_options.asr_only),
+                &additional_source,
+                context_budgets,
+                &job.topic_turn_id,
+                &speaker_id,
+            )
+            .await
+        {
+            Ok(context) => context,
+            Err(message) => {
+                let _ = events
+                    .send(InferenceEvent::Error {
+                        generation: job.generation,
+                        message,
+                        configuration_required: false,
+                    })
+                    .await;
+                continue;
+            }
+        };
+        let asr_only = job.translation_options.asr_only;
         if events
             .send(InferenceEvent::Recognized {
                 generation: job.generation,
@@ -2700,6 +2838,7 @@ async fn run_inference_worker(
                 let preview_events = translation_events.clone();
                 let preview_generation = translation_generation.clone();
                 let preview_source = segment.source_text.clone();
+                let additional_segment = additional_turn.as_ref().and_then(|turn| turn.segment(segment_context.segment_index.saturating_sub(1) as usize));
                 let stable_translation_cache = Arc::clone(&stable_translation_cache);
                 let cache_turn_id = cache_turn_id.clone();
                 let prompt_graph_fingerprint = prompt_graph_fingerprint.clone();
@@ -2722,6 +2861,8 @@ async fn run_inference_worker(
                     );
                     prompt_context.mode = prompt_mode_for_turn;
                     let cache_key = SentenceTranslationKey {
+                        additional_target: additional_segment.as_ref().map(|segment| segment.target.clone()),
+                        asr_only,
                         turn_id: cache_turn_id,
                         segment_index: segment_context.segment_index,
                         source_language: source_language.clone(),
@@ -2739,24 +2880,25 @@ async fn run_inference_worker(
                     let output = if let Some(output) = cached {
                         Ok(output)
                     } else {
-                        let _permit = tokio::select! {
-                            permit = scheduler.acquire_translation(workload) => permit,
-                            _ = gate_generation.changed() => return None,
-                            () = readiness.revised(asr_revision) => return None,
-                        };
                         if !readiness.is_current(asr_revision)
                             || *gate_generation.borrow() != event_generation {
                             return None;
                         }
                         let preview_readiness = readiness.clone();
                         let sentence_index = segment_context.segment_index.saturating_sub(1) as usize;
-                        let output = inference
-                            .translate_segment_streaming(
+                        let activity = if asr_only { None } else { TranslationActivityGuard::begin(
+                            &preview_events,
+                            event_generation,
+                        ).await };
+                        let output = tokio::select! {
+                            output = translation_outputs::translate(
+                                &inference, &scheduler, workload,
                                 &segment,
                                 &source_language,
                                 &target_language,
                                 prompt_graph,
                                 prompt_context,
+                                additional_segment, asr_only,
                                 move |translated_text| {
                                     let events = preview_events.clone();
                                     let generation = preview_generation.clone();
@@ -2773,7 +2915,11 @@ async fn run_inference_worker(
                                     }
                                 },
                             )
-                            .await;
+                            => output,
+                            _ = gate_generation.changed() => return None,
+                            () = readiness.revised(asr_revision) => return None,
+                        };
+                        drop(activity);
                         if !readiness.contains(sentence_index, &segment.source_text)
                             || *gate_generation.borrow() != event_generation {
                             return None;
@@ -2786,6 +2932,7 @@ async fn run_inference_worker(
             .buffered(TRANSLATION_CONCURRENCY_PER_SESSION);
             tokio::pin!(translations);
             let mut completed_pairs = Vec::new();
+            let mut additional_pairs = Vec::new();
             let mut cancelled = false;
             while let Some(result) = translations.next().await {
                 let Some((
@@ -2813,6 +2960,16 @@ async fn run_inference_worker(
                 }
                 if already_translated {
                     if let Ok(translated) = &output {
+                        additional_pairs.extend(
+                            translated
+                                .additional_translations
+                                .iter()
+                                .filter_map(|extra| {
+                                    translated.additional_source_text.as_ref().map(|source| {
+                                        (source.clone(), extra.translated_text.clone())
+                                    })
+                                }),
+                        );
                         completed_pairs.push((
                             translated.source_text.clone(),
                             translated.translated_text.clone(),
@@ -2844,6 +3001,14 @@ async fn run_inference_worker(
                     );
                     translated.translated_text = rewrite.translated_text;
                     translated.term_matches = rewrite.term_matches;
+                    additional_pairs.extend(translated.additional_translations.iter().filter_map(
+                        |extra| {
+                            translated
+                                .additional_source_text
+                                .as_ref()
+                                .map(|source| (source.clone(), extra.translated_text.clone()))
+                        },
+                    ));
                     completed_pairs.push((
                         translated.source_text.clone(),
                         translated.translated_text.clone(),
@@ -2870,6 +3035,16 @@ async fn run_inference_worker(
                         .insert(cache_key, output);
                 }
             }
+            if !cancelled && let Some(additional) = &additional_turn {
+                additional
+                    .record(
+                        logical_turn_id.clone(),
+                        history_speaker_id.clone(),
+                        &history_source_language,
+                        &additional_pairs,
+                    )
+                    .await;
+            }
             if !cancelled
                 && let Some(request) = (LogicalTurnRecord {
                     context_id,
@@ -2887,6 +3062,8 @@ async fn run_inference_worker(
             }
         }));
     }
+    additional_scope.close().await;
+    let _ = corpus_session.close().await;
 }
 
 /// Show retained source immediately, while its unfinished sentence remains
@@ -2937,7 +3114,13 @@ async fn handle_inference_event(
     voice_ready: bool,
     max_input_chars: usize,
 ) -> Result<bool, axum::Error> {
-    if event.generation() != current_generation {
+    // A completion only removes its unique request; allow it through after a
+    // reset even when the corresponding result is intentionally discarded.
+    let completion = matches!(
+        &event,
+        InferenceEvent::TranslationActivity { activity, .. } if !activity.active
+    );
+    if event.generation() != current_generation && !completion {
         return Ok(false);
     }
     let mut tts_queued = false;
@@ -2990,6 +3173,17 @@ async fn handle_inference_event(
                 .await?;
             }
         }
+        InferenceEvent::TranslationActivity {
+            generation,
+            activity,
+        } => {
+            send_event(
+                writer,
+                activity.active.then_some(generation),
+                ServerEvent::TranslationActivity(activity),
+            )
+            .await?;
+        }
         InferenceEvent::TranslationPreview {
             generation,
             source_text,
@@ -3041,6 +3235,8 @@ async fn handle_inference_event(
                     output.source_text,
                     output.translated_text,
                     output.term_matches,
+                    output.additional_translations,
+                    output.asr_only,
                     output.prompt_trace,
                     LatencyMetrics {
                         queue_ms: millis(queue_elapsed),
@@ -3124,13 +3320,9 @@ fn text_density_units(text: &str) -> usize {
     units
 }
 
-/// Keeps post-correction segmentation total with the corpus response.
-///
-/// XR Corpus selects context against the ASR segmentation that was submitted
-/// with the request. A terminology correction can change sentence boundaries
-/// before the authoritative snapshot is emitted. Never let a plain `zip`
-/// silently drop a newly created segment; retain positional context where it
-/// still exists and give unmatched segments an explicit empty context.
+/// Keeps recognition segments total with the corpus response. Output-specific
+/// corrections retain these shared boundaries; an incomplete context response
+/// must never cause a plain `zip` to silently drop a recognized segment.
 fn align_translation_contexts(
     segments: &[xrtranslate_engine::TranslationSegmentPair],
     contexts: &[CorpusSegmentContext],
@@ -3388,6 +3580,48 @@ mod tests {
             graph: PromptNodeGraph::builtin_default(),
         };
         graphs.graph.validate_for_activation().unwrap();
+    }
+
+    #[tokio::test]
+    async fn translation_cancellation_completes_even_when_the_event_queue_is_full() {
+        use super::{InferenceEvent, TranslationActivityGuard};
+
+        let generation = PipelineGeneration {
+            route_epoch: xrtranslate_engine::RouteEpoch::INITIAL,
+            audio_epoch: AudioEpoch::INITIAL,
+        };
+        let (events, mut receiver) = tokio::sync::mpsc::channel(2);
+        let worker_events = events.clone();
+        let task = tokio::spawn(async move {
+            let _activity = TranslationActivityGuard::begin(&worker_events, generation).await;
+            std::future::pending::<()>().await;
+        });
+        let Some(InferenceEvent::TranslationActivity { activity, .. }) = receiver.recv().await
+        else {
+            panic!("missing translation start");
+        };
+        assert!(activity.active);
+        let request_id = activity.request_id;
+        assert!(
+            events
+                .try_send(InferenceEvent::Drained {
+                    generation,
+                    reason: xrtranslate_protocol::DrainReason::InputEnded,
+                })
+                .is_ok()
+        );
+        assert_eq!(events.capacity(), 0);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(matches!(
+            receiver.recv().await,
+            Some(InferenceEvent::Drained { .. })
+        ));
+        assert!(matches!(
+            receiver.recv().await,
+            Some(InferenceEvent::TranslationActivity { activity, .. })
+                if activity.request_id == request_id && !activity.active
+        ));
     }
 
     #[tokio::test]

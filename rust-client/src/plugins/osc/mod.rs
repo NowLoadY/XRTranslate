@@ -24,14 +24,17 @@ impl HostOutputSubscriber for OscHandle {
                 is_typing,
                 source,
                 translated,
+                additional_translations,
+                asr_only,
                 speaker,
                 update,
             } => self.add_message_for_stream(
                 stream_id,
                 audio_source,
                 is_typing,
-                source,
+                if asr_only { "" } else { source },
                 translated,
+                additional_translations,
                 speaker,
                 matches!(update, CaptionUpdate::Replace),
             ),
@@ -131,7 +134,11 @@ impl OscPlugin {
         self.manager.clear_chatbox();
     }
 
-    pub fn render_page(&mut self, ui: &mut egui::Ui, context: OscPageContext) -> Vec<OscUiAction> {
+    pub fn render_page(
+        &mut self,
+        ui: &mut egui::Ui,
+        context: OscPageContext<'_>,
+    ) -> Vec<OscUiAction> {
         ui::render(self, ui, context)
     }
 
@@ -181,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn typing_language_direction_defaults_to_zh_to_en_and_can_be_changed() {
+    fn legacy_typing_language_settings_remain_round_trip_compatible() {
         let mut plugin = OscPlugin::new(OscSettings::default(), true);
         assert_eq!(plugin.draft().typing_source_lang, "zh");
         assert_eq!(plugin.draft().typing_target_lang, "en");
@@ -190,6 +197,10 @@ mod tests {
         plugin.draft_mut().typing_target_lang = "zh".into();
         assert_eq!(plugin.draft().typing_source_lang, "ja");
         assert_eq!(plugin.draft().typing_target_lang, "zh");
+        let saved = serde_json::to_string(plugin.draft()).unwrap();
+        let restored: OscSettings = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.typing_source_lang, "ja");
+        assert_eq!(restored.typing_target_lang, "zh");
     }
 }
 
@@ -201,6 +212,82 @@ mod output_contract_tests {
         net::UdpSocket,
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn asr_only_uses_final_pipeline_output_even_in_bilingual_mode() {
+        let manager = OscManager::new(OscSettings {
+            listen_port: 0,
+            microphone_prefix: String::new(),
+            ..Default::default()
+        });
+        let handle = manager.handle();
+        for translated in ["", "corrected terminology"] {
+            handle.on_host_output(HostOutputEvent::Caption {
+                stream_id: 1,
+                audio_source: CaptureSource::Microphone,
+                is_typing: false,
+                source: "uncorrected recognition",
+                translated,
+                additional_translations: &[],
+                asr_only: true,
+                speaker: "",
+                update: CaptionUpdate::Replace,
+            });
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let text = manager.chatbox_preview().text;
+            assert!(!text.contains("uncorrected"));
+            if text == "corrected terminology" {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "OSC did not consume ASR-only result"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn additional_translation_replaces_the_same_live_message() {
+        let manager = OscManager::new(OscSettings {
+            listen_port: 0,
+            microphone_prefix: String::new(),
+            ..Default::default()
+        });
+        let handle = manager.handle();
+        for translated in ["こんにちは", "こんばんは"] {
+            handle.on_host_output(HostOutputEvent::Caption {
+                stream_id: 1,
+                audio_source: CaptureSource::Microphone,
+                is_typing: false,
+                source: "hello",
+                translated: "你好",
+                additional_translations: &[xrtranslate_protocol::AdditionalTranslation {
+                    target_lang: "ja".into(),
+                    translated_text: translated.into(),
+                    term_matches: Vec::new(),
+                }],
+                asr_only: false,
+                speaker: "",
+                update: CaptionUpdate::Replace,
+            });
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let text = manager.chatbox_preview().text;
+            if text.contains("こんばんは") {
+                assert_eq!(text, "hello\n你好\nこんばんは");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "OSC did not consume additional translation"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 
     #[test]
     fn finalized_host_rollover_replaces_the_live_draft_without_duplicate_history() {
@@ -218,6 +305,8 @@ mod output_contract_tests {
                 is_typing: false,
                 source,
                 translated: "",
+                additional_translations: &[],
+                asr_only: false,
                 speaker: "",
                 update,
             })

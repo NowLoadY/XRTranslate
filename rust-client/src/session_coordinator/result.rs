@@ -13,6 +13,8 @@ pub struct TranslationSegment {
     pub segment_count: u32,
     pub source: String,
     pub translated: Option<String>,
+    pub additional_translations: Vec<xrtranslate_protocol::AdditionalTranslation>,
+    pub asr_only: bool,
     pub speaker_id: String,
     pub source_start_ms: f64,
     pub source_end_ms: f64,
@@ -97,6 +99,14 @@ impl TranslationEventAdapter {
             SessionEvent::Translation { translated, .. } => Some(translated.clone()),
             _ => None,
         };
+        let (additional_translations, asr_only) = match event {
+            SessionEvent::Translation {
+                additional_translations,
+                asr_only,
+                ..
+            } => (additional_translations.clone(), *asr_only),
+            _ => (Vec::new(), false),
+        };
         let (segment, authoritative, revision) = match event {
             SessionEvent::SourceSegment {
                 stream_id,
@@ -142,6 +152,8 @@ impl TranslationEventAdapter {
                     segment_count: *segment_count,
                     source: source.clone(),
                     translated,
+                    additional_translations,
+                    asr_only,
                     speaker_id: speaker_id.clone(),
                     source_start_ms: *source_start_ms,
                     source_end_ms: *source_end_ms,

@@ -13,6 +13,7 @@ pub(super) struct HistoryMessage {
     pub(super) source_kind: OscInputSource,
     pub(super) source: String,
     pub(super) translated: String,
+    pub(super) additional_translations: Vec<(String, String)>,
     pub(super) speaker_id: String,
     pub(super) expires_at: Instant,
 }
@@ -105,6 +106,9 @@ fn fit_asr_entries(
         if entries.len() > 1 {
             entries.pop_front();
         } else {
+            if !first.additional_translations.is_empty() {
+                return fit_multilingual_entry(first, settings, limit);
+            }
             let rendered = render_entry(first, settings);
             let label = entry_prefix(first, settings);
             return if !label.is_empty() && rendered.starts_with(&label) {
@@ -121,13 +125,6 @@ fn render_entries<'a>(
     entries: impl Iterator<Item = &'a HistoryMessage>,
     settings: &OscSettings,
 ) -> String {
-    if settings.format_mode == OscFormatMode::TargetOnly {
-        return entries
-            .map(|entry| render_entry(entry, settings))
-            .filter(|text| !text.is_empty())
-            .collect::<Vec<_>>()
-            .join(settings.message_separator.value());
-    }
     if settings.message_separator == OscMessageSeparator::NewLine {
         return entries
             .map(|entry| render_entry(entry, settings))
@@ -138,6 +135,7 @@ fn render_entries<'a>(
 
     let mut sources = Vec::new();
     let mut targets = Vec::new();
+    let mut additional: Vec<(String, Vec<String>)> = Vec::new();
     for entry in entries {
         let source = sanitize_chatbox_segment(&entry.source);
         let target = sanitize_chatbox_segment(&entry.translated);
@@ -146,7 +144,15 @@ fn render_entries<'a>(
             .then(|| compact_speaker_label(&entry.speaker_id))
             .flatten();
 
-        if !source.is_empty() && !target.is_empty() && source != target {
+        if settings.format_mode == OscFormatMode::TargetOnly {
+            let text = if target.is_empty() { source } else { target };
+            if !text.is_empty() {
+                targets.push(with_speaker(
+                    &with_source_prefix(&text, entry.source_kind, settings),
+                    speaker.as_deref(),
+                ));
+            }
+        } else if !source.is_empty() && !target.is_empty() && source != target {
             sources.push(with_speaker(
                 &with_source_prefix(&source, entry.source_kind, settings),
                 speaker.as_deref(),
@@ -172,21 +178,36 @@ fn render_entries<'a>(
                 OscFormatMode::TargetOnly => unreachable!(),
             }
         }
+        for (language, text) in &entry.additional_translations {
+            let text = sanitize_chatbox_segment(text);
+            if text.is_empty() {
+                continue;
+            }
+            if let Some((_, texts)) = additional.iter_mut().find(|(key, _)| key == language) {
+                texts.push(text);
+            } else {
+                additional.push((language.clone(), vec![text]));
+            }
+        }
     }
 
     let sources = sources.join(" ");
-    let targets = targets.join(" ");
-    let (first, second, separator) = match settings.format_mode {
-        OscFormatMode::BilingualTargetFirst => (targets, sources, "\n"),
-        OscFormatMode::BilingualSourceFirst => (sources, targets, "\n"),
-        OscFormatMode::Inline => (sources, targets, " | "),
-        OscFormatMode::TargetOnly => unreachable!(),
-    };
-    [first, second]
+    let mut lines = vec![targets.join(" ")];
+    lines.extend(additional.into_iter().map(|(_, texts)| texts.join(" ")));
+    match settings.format_mode {
+        OscFormatMode::BilingualTargetFirst => lines.push(sources),
+        OscFormatMode::BilingualSourceFirst | OscFormatMode::Inline => lines.insert(0, sources),
+        OscFormatMode::TargetOnly => {}
+    }
+    lines
         .into_iter()
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
-        .join(separator)
+        .join(if settings.format_mode == OscFormatMode::Inline {
+            " | "
+        } else {
+            "\n"
+        })
 }
 
 fn with_speaker(text: &str, speaker: Option<&str>) -> String {
@@ -229,64 +250,94 @@ fn fit_decorations(prefix: &str, suffix: &str, limit: usize) -> String {
 }
 
 pub(super) fn render_entry(entry: &HistoryMessage, settings: &OscSettings) -> String {
+    let (parts, separator) = entry_parts(entry, settings);
+    parts
+        .into_iter()
+        .map(|(label, text)| format!("{label}{text}"))
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
+fn entry_parts(
+    entry: &HistoryMessage,
+    settings: &OscSettings,
+) -> (Vec<(String, String)>, &'static str) {
     let source = sanitize_chatbox_segment(&entry.source);
     let translated = sanitize_chatbox_segment(&entry.translated);
-
-    let core_text = match settings.format_mode {
-        OscFormatMode::TargetOnly => {
-            if !translated.is_empty() {
-                translated
-            } else {
-                source
-            }
-        }
-        OscFormatMode::BilingualTargetFirst => {
-            if !source.is_empty() && !translated.is_empty() && source != translated {
-                format!("{}\n{}", translated, source)
-            } else if !translated.is_empty() {
-                translated
-            } else {
-                source
-            }
-        }
-        OscFormatMode::Inline => {
-            if !source.is_empty() && !translated.is_empty() && source != translated {
-                format!("{} | {}", source, translated)
-            } else if !translated.is_empty() {
-                translated
-            } else {
-                source
-            }
-        }
-        OscFormatMode::BilingualSourceFirst => {
-            if !source.is_empty() && !translated.is_empty() && source != translated {
-                format!("{}\n{}", source, translated)
-            } else if !translated.is_empty() {
-                translated
-            } else {
-                source
-            }
-        }
-    };
-
-    if core_text.is_empty() {
-        return String::new();
+    let show_source = !source.is_empty()
+        && !translated.is_empty()
+        && source != translated
+        && settings.format_mode != OscFormatMode::TargetOnly;
+    let mut parts = Vec::new();
+    if show_source && settings.format_mode != OscFormatMode::BilingualTargetFirst {
+        parts.push((String::new(), source.clone()));
     }
-
-    let prefix = prefixed_label(settings.prefix_for(entry.source_kind));
-    let decorated = if prefix.is_empty() {
-        core_text
+    let main = if translated.is_empty() {
+        &source
     } else {
-        format!("{prefix}{core_text}")
+        &translated
     };
-
-    if settings.show_speaker_number
-        && let Some(label) = compact_speaker_label(&entry.speaker_id)
-    {
-        format!("[{label}] {decorated}")
-    } else {
-        decorated
+    if !main.is_empty() {
+        parts.push((String::new(), main.clone()));
     }
+    for (_, text) in &entry.additional_translations {
+        let text = sanitize_chatbox_segment(text);
+        if !text.is_empty() {
+            parts.push((String::new(), text));
+        }
+    }
+    if show_source && settings.format_mode == OscFormatMode::BilingualTargetFirst {
+        parts.push((String::new(), source));
+    }
+    if let Some((label, _)) = parts.first_mut() {
+        label.insert_str(0, &entry_prefix(entry, settings));
+    }
+    let separator = if settings.format_mode == OscFormatMode::Inline {
+        " | "
+    } else {
+        "\n"
+    };
+    (parts, separator)
+}
+
+fn fit_multilingual_entry(entry: &HistoryMessage, settings: &OscSettings, limit: usize) -> String {
+    let (parts, separator) = entry_parts(entry, settings);
+    let overhead = parts
+        .iter()
+        .map(|(label, _)| label.chars().count())
+        .sum::<usize>()
+        + parts.len().saturating_sub(1) * separator.chars().count();
+    if overhead >= limit || parts.is_empty() {
+        return render_entry(entry, settings).chars().take(limit).collect();
+    }
+    // Divide the remaining Unicode character budget among languages, giving
+    // unused space from short lines back to the others. Extra targets cannot
+    // evict the primary translation merely by being longer.
+    let mut lengths = vec![0; parts.len()];
+    let needed = parts
+        .iter()
+        .map(|(_, text)| text.chars().count())
+        .collect::<Vec<_>>();
+    let mut remaining = limit - overhead;
+    while remaining > 0 {
+        let mut grew = false;
+        for (length, needed) in lengths.iter_mut().zip(&needed) {
+            if *length < *needed && remaining > 0 {
+                *length += 1;
+                remaining -= 1;
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    parts
+        .into_iter()
+        .zip(lengths)
+        .map(|((label, text), length)| format!("{label}{}", trim_text(&text, length)))
+        .collect::<Vec<_>>()
+        .join(separator)
 }
 
 /// Sanitizes a text segment for informal chatbox display:
@@ -370,7 +421,9 @@ fn fit_single_entry(
     }
     let content_limit = limit.saturating_sub(decoration_length(prefix, suffix));
     let entry_label = entry_prefix(entry, settings);
-    let content = if !entry_label.is_empty() && rendered.starts_with(&entry_label) {
+    let content = if !entry.additional_translations.is_empty() {
+        fit_multilingual_entry(entry, settings, content_limit)
+    } else if !entry_label.is_empty() && rendered.starts_with(&entry_label) {
         fit_prefixed_text(&entry_label, &rendered[entry_label.len()..], content_limit)
     } else {
         trim_text(&rendered, content_limit)
@@ -477,9 +530,123 @@ mod tests {
             source_kind: OscInputSource::Unknown,
             source: text.into(),
             translated: String::new(),
+            additional_translations: Vec::new(),
             speaker_id: String::new(),
             expires_at,
         }
+    }
+
+    #[test]
+    fn additional_target_stays_with_its_source_in_every_format() {
+        let mut entry = history_message(Instant::now(), "hello");
+        entry.translated = "你好".into();
+        entry.additional_translations = vec![("ja".into(), "こんにちは".into())];
+        for (format_mode, expected) in [
+            (
+                OscFormatMode::BilingualSourceFirst,
+                "hello\n你好\nこんにちは",
+            ),
+            (
+                OscFormatMode::BilingualTargetFirst,
+                "你好\nこんにちは\nhello",
+            ),
+            (OscFormatMode::Inline, "hello | 你好 | こんにちは"),
+            (OscFormatMode::TargetOnly, "你好\nこんにちは"),
+        ] {
+            for message_separator in [OscMessageSeparator::Space, OscMessageSeparator::NewLine] {
+                let settings = OscSettings {
+                    format_mode,
+                    message_separator,
+                    ..Default::default()
+                };
+                assert_eq!(render_entry(&entry, &settings), expected);
+                assert_eq!(
+                    build_chatbox_text(
+                        &[entry.clone()],
+                        &[],
+                        None,
+                        &settings,
+                        &SystemMetrics::default()
+                    ),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn multilingual_truncation_reserves_each_target_within_the_shared_budget() {
+        let mut entry = history_message(Instant::now(), &"源".repeat(80));
+        entry.translated = "主".repeat(80);
+        entry.additional_translations = vec![("ja".into(), "追".repeat(200))];
+        for format_mode in [
+            OscFormatMode::BilingualSourceFirst,
+            OscFormatMode::BilingualTargetFirst,
+            OscFormatMode::Inline,
+            OscFormatMode::TargetOnly,
+        ] {
+            let settings = OscSettings {
+                format_mode,
+                max_text_length: 40,
+                ..Default::default()
+            };
+            let text = build_chatbox_text(
+                &[entry.clone()],
+                &[],
+                None,
+                &settings,
+                &SystemMetrics::default(),
+            );
+            assert!(text.chars().count() <= 40);
+            assert!(text.contains('主'), "primary lost: {text}");
+            assert!(text.contains("追"), "additional target lost: {text}");
+            let manual = ManualMessage {
+                text: "note".into(),
+                expires_at: Instant::now(),
+            };
+            let text = build_chatbox_text(
+                &[entry.clone()],
+                &[],
+                Some(&manual),
+                &settings,
+                &SystemMetrics::default(),
+            );
+            assert!(text.chars().count() <= 40);
+            assert!(text.contains('主'));
+            assert!(text.contains("追"));
+            assert!(text.ends_with("💬 note"));
+        }
+    }
+
+    #[test]
+    fn compact_messages_group_each_additional_language_and_evict_whole_segments() {
+        let mut first = history_message(Instant::now(), "first source");
+        first.translated = "first target".into();
+        first.additional_translations = vec![("ja".into(), "first extra".into())];
+        let mut second = history_message(Instant::now(), "second source");
+        second.translated = "second target".into();
+        second.additional_translations = vec![("ja".into(), "second extra".into())];
+        let mut settings = OscSettings {
+            message_separator: OscMessageSeparator::Space,
+            format_mode: OscFormatMode::BilingualSourceFirst,
+            ..Default::default()
+        };
+        let entries = [first, second];
+        assert_eq!(
+            build_chatbox_text(&entries, &[], None, &settings, &SystemMetrics::default()),
+            "first source second source\nfirst target second target\nfirst extra second extra"
+        );
+        settings.max_text_length = 45;
+        assert_eq!(
+            build_chatbox_text(&entries, &[], None, &settings, &SystemMetrics::default()),
+            "second source\nsecond target\nsecond extra"
+        );
+        settings.format_mode = OscFormatMode::TargetOnly;
+        settings.max_text_length = 144;
+        assert_eq!(
+            build_chatbox_text(&entries, &[], None, &settings, &SystemMetrics::default()),
+            "first target second target\nfirst extra second extra"
+        );
     }
 
     #[test]

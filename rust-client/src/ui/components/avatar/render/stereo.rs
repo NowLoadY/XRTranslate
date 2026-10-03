@@ -10,6 +10,7 @@ pub(crate) struct StereoRenderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub texture: wgpu::Texture,
+    output: wgpu::TextureView,
     resources: CallbackResources,
     pending: Option<wgpu::SubmissionIndex>,
     errors: std::sync::Arc<parking_lot::Mutex<Option<String>>>,
@@ -35,27 +36,25 @@ impl StereoRenderer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::COPY_DST
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::COPY_SRC
                 | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let mut resources = CallbackResources::default();
         resources.insert(Renderer::new(&device, wgpu::TextureFormat::Rgba8Unorm));
+        let output = texture.create_view(&Default::default());
         Self {
             device,
             queue,
             texture,
+            output,
             resources,
             pending: None,
             errors,
             hair: Default::default(),
             clock: Instant::now(),
         }
-    }
-
-    pub fn is_pending(&self) -> bool {
-        self.pending.is_some()
     }
 
     pub fn render(
@@ -68,8 +67,8 @@ impl StereoRenderer {
         if let Some(error) = self.errors.lock().take() {
             return Err(error);
         }
-        // At most one frame is in flight. A slow GPU cannot grow a queue or
-        // monopolize the caption worker; complete it on a later worker tick.
+        // Bound frames in flight without stalling the caption worker. A busy
+        // GPU keeps its submitted image; the next successful tick uses fresh poses.
         if let Some(submission) = self.pending.take() {
             match self.device.poll(wgpu::PollType::Wait {
                 submission_index: Some(submission.clone()),
@@ -79,7 +78,6 @@ impl StereoRenderer {
                     if let Some(error) = self.errors.lock().take() {
                         return Err(error);
                     }
-                    return Ok(true);
                 }
                 Err(wgpu::PollError::Timeout) => {
                     self.pending = Some(submission);
@@ -112,12 +110,14 @@ impl StereoRenderer {
             part.material.outline_width *= outline_scale;
         }
         let mut encoder = self.device.create_command_encoder(&Default::default());
+        // Both eyes share instance transforms and batches, only their cameras differ.
+        let mut draw = Draw::new(
+            0,
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(EYE_SIZE as f32)),
+            model,
+        );
         for (eye, camera) in cameras.into_iter().enumerate() {
-            let mut draw = Draw::new(
-                eye as u64,
-                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(EYE_SIZE as f32)),
-                model.clone(),
-            );
+            draw.id = eye as u64;
             draw.projection = Some(camera);
             draw.prepare(
                 &self.device,
@@ -129,29 +129,42 @@ impl StereoRenderer {
                 &mut encoder,
                 &mut self.resources,
             );
-            let renderer = self
-                .resources
-                .get::<Renderer>()
-                .expect("stereo renderer is installed");
-            encoder.copy_texture_to_texture(
-                renderer.targets[&(eye as u64)].texture.as_image_copy(),
-                wgpu::TexelCopyTextureInfo {
-                    origin: wgpu::Origin3d {
-                        x: eye as u32 * EYE_SIZE,
-                        y: 0,
-                        z: 0,
-                    },
-                    ..self.texture.as_image_copy()
+            // Use the same linear-to-sRGB composition as the desktop. Copying
+            // the intermediate target would leave linear bytes in a gamma image.
+            let mut pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("companion stereo composition"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.output,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: if eye == 0 {
+                                wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                            } else {
+                                wgpu::LoadOp::Load
+                            },
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                })
+                .forget_lifetime();
+            let x = eye as f32 * EYE_SIZE as f32;
+            pass.set_viewport(x, 0.0, EYE_SIZE as f32, EYE_SIZE as f32, 0.0, 1.0);
+            draw.paint(
+                egui::PaintCallbackInfo {
+                    viewport: draw.rect.translate(egui::vec2(x, 0.0)),
+                    clip_rect: draw.rect.translate(egui::vec2(x, 0.0)),
+                    pixels_per_point: 1.0,
+                    screen_size_px: [EYE_SIZE * 2, EYE_SIZE],
                 },
-                wgpu::Extent3d {
-                    width: EYE_SIZE,
-                    height: EYE_SIZE,
-                    depth_or_array_layers: 1,
-                },
+                &mut pass,
+                &self.resources,
             );
         }
         // Valve requires TRANSFER_SRC_OPTIMAL and leaves it in that state.
-        // Use wgpu's tracker, so the next COPY_DST transition remains correct.
+        // Use wgpu's tracker, so the next render attachment transition is correct.
         encoder.transition_resources(
             std::iter::empty(),
             std::iter::once(wgpu::TextureTransition {
@@ -160,21 +173,9 @@ impl StereoRenderer {
                 state: wgpu::TextureUses::COPY_SRC,
             }),
         );
-        let submission = self.queue.submit([encoder.finish()]);
-        match self.device.poll(wgpu::PollType::Wait {
-            submission_index: Some(submission.clone()),
-            timeout: Some(Duration::from_millis(4)),
-        }) {
-            Ok(_) => {}
-            Err(wgpu::PollError::Timeout) => {
-                self.pending = Some(submission);
-                return Ok(false);
-            }
-            Err(error) => return Err(error.to_string()),
-        }
-        if let Some(error) = self.errors.lock().take() {
-            return Err(error);
-        }
+        // SteamVR queues its transfer on this same worker-owned Vulkan queue.
+        // Submit it directly after rendering; no CPU fence wait or stale frame.
+        self.pending = Some(self.queue.submit([encoder.finish()]));
         Ok(true)
     }
 }

@@ -148,11 +148,13 @@ fn translate(id: i32, text: String, conversation: String) -> (i32, String) {
     let languages = crate::service_config::ServiceConfigEditor::load()
         .language_capabilities()
         .and_then(|capabilities| {
-            crate::text_translation::select_languages(
+            crate::text_translation::select_languages_with_options(
                 &text,
                 &settings.source_lang,
                 &settings.target_lang,
                 capabilities,
+                settings.additional_target_lang.as_deref(),
+                settings.asr_only,
             )
         });
     let Ok(languages) = languages else {
@@ -347,6 +349,8 @@ impl crate::XRTranslateApp {
                         live: false,
                         source: segment.source,
                         translated,
+                        additional_translations: segment.additional_translations,
+                        asr_only: segment.asr_only,
                         speaker_id: segment.speaker_id,
                         source_start_ms: segment.source_start_ms,
                         source_end_ms: segment.source_end_ms,
@@ -359,6 +363,7 @@ impl crate::XRTranslateApp {
                         revision_id: 0,
                         source_revision: None,
                         translated_revision: None,
+                        additional_revisions: Default::default(),
                     },
                 );
             }

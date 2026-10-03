@@ -121,13 +121,10 @@ async fn render_async(directory: &Path) -> Result<(), Box<dyn Error + Send + Syn
         let paper = egui::Rgba::from(egui::Color32::from_rgb(236, 240, 246));
         let mut sheet = Vec::with_capacity(pixels.len());
         for (dest, source) in straight.chunks_exact_mut(4).zip(pixels.chunks_exact(4)) {
-            let color = egui::Rgba::from_rgba_premultiplied(
-                source[0] as f32 / 255.0,
-                source[1] as f32 / 255.0,
-                source[2] as f32 / 255.0,
-                source[3] as f32 / 255.0,
-            );
+            let color =
+                egui::Color32::from_rgba_premultiplied(source[0], source[1], source[2], source[3]);
             dest.copy_from_slice(&color.to_srgba_unmultiplied());
+            let color = egui::Rgba::from(color);
             sheet.extend_from_slice(
                 &egui::Color32::from(color + paper * (1.0 - color.a())).to_array(),
             );
@@ -181,9 +178,9 @@ async fn render_async(directory: &Path) -> Result<(), Box<dyn Error + Send + Syn
     speech.advance(1.5);
     let mut text = VrOverlayRenderer::new(640, 320)?;
     for _ in 0..20 {
-        text.render_speech(&speech, 1.5)?;
+        text.render_speech(&speech, 1.5, 1.0 / 30.0)?;
     }
-    let pixels = text.render_speech(&speech, 1.5)?;
+    let pixels = text.render_speech(&speech, 1.5, 1.0 / 30.0)?;
     std::fs::write(
         directory.join("speech.png"),
         egui::IconData {

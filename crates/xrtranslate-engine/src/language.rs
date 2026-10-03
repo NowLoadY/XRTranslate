@@ -8,7 +8,7 @@ pub use catalog::{LANGUAGE_OPTIONS, LANGUAGES, SupportedLanguage, is_traditional
 mod adaptive;
 pub use adaptive::{AdaptiveLanguageRoute, AutoDecision, LanguagePair, LanguageRoute};
 mod selection;
-pub use selection::{LanguageCapabilities, LanguageSelection, LanguageSet};
+pub use selection::{LanguageCapabilities, LanguageMode, LanguageSelection, LanguageSet};
 
 /// Unicode scripts recognized for rapid language classification.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
