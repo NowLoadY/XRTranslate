@@ -3426,6 +3426,14 @@ impl XRTranslateApp {
         }
     }
 
+    #[cfg(target_os = "android")]
+    pub fn install_update_and_restart(&mut self) {
+        if let Err(error) = self.app_update_manager.begin_install() {
+            self.last_error = Some(error);
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
     pub fn install_update_and_restart(&mut self) {
         let install = match self.app_update_manager.begin_install() {
             Ok(install) => install,

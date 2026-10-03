@@ -94,7 +94,15 @@ impl ModalDialog {
                 )),
             ],
             update_version: Some(format!("v{version}")),
-            ok_label: crate::i18n::tr(language, "Install and restart").into(),
+            ok_label: crate::i18n::tr(
+                language,
+                if cfg!(target_os = "android") {
+                    "Install"
+                } else {
+                    "Install and restart"
+                },
+            )
+            .into(),
             show_cancel_button: true,
             cancel_label: crate::i18n::tr(language, "Later").into(),
             ok_action: Some(ModalAction::InstallUpdate),

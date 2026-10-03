@@ -500,3 +500,61 @@ pub fn prepare_resources(context: eframe::egui::Context) {
         Err(error) => *RESOURCES_RESULT.lock().unwrap() = Some(Err(error.to_string())),
     }
 }
+
+static UPDATE_INSTALL_RESULT: Mutex<Option<Result<(), String>>> = Mutex::new(None);
+
+pub fn validate_update(path: &std::path::Path, version: &str) -> Result<(), String> {
+    with_activity(|env, activity| {
+        let path = env.new_string(path.to_string_lossy())?;
+        let version = env.new_string(version)?;
+        let error = env
+            .call_method(
+                activity,
+                "validateUpdate",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                &[(&path).into(), (&version).into()],
+            )?
+            .l()?;
+        if error.is_null() {
+            Ok(Ok(()))
+        } else {
+            let error = jni::objects::JString::from(error);
+            Ok(Err(env.get_string(&error)?.into()))
+        }
+    })?
+}
+
+pub fn request_update_install(path: &std::path::Path) -> Result<(), String> {
+    UPDATE_INSTALL_RESULT.lock().unwrap().take();
+    with_activity(|env, activity| {
+        let path = env.new_string(path.to_string_lossy())?;
+        env.call_method(
+            activity,
+            "installUpdate",
+            "(Ljava/lang/String;)V",
+            &[(&path).into()],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn take_update_install_result() -> Option<Result<(), String>> {
+    UPDATE_INSTALL_RESULT.lock().unwrap().take()
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_xrtranslate_app_MainActivity_updateInstallCompleted(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    error: jni::objects::JString,
+) {
+    let result = if error.is_null() {
+        Ok(())
+    } else {
+        Err(env
+            .get_string(&error)
+            .map(|value| value.into())
+            .unwrap_or_else(|_| "Cannot start Android installer.".into()))
+    };
+    *UPDATE_INSTALL_RESULT.lock().unwrap() = Some(result);
+}

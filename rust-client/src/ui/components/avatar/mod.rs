@@ -9,6 +9,7 @@ mod motion;
 mod presentation;
 mod render;
 mod speech;
+#[cfg(any(windows, target_os = "linux"))]
 mod surface;
 pub mod wardrobe;
 
@@ -29,6 +30,7 @@ pub(crate) use render::stereo::StereoRenderer;
 pub use wardrobe::{Accessory, Appearance};
 
 pub use speech::Speech;
+#[cfg(any(windows, target_os = "linux"))]
 pub(crate) use surface::Surface;
 
 use eframe::egui::{self, Color32, Id, Pos2, Rect, Vec2};

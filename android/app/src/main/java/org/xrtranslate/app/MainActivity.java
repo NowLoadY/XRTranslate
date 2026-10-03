@@ -37,6 +37,7 @@ public final class MainActivity extends GameActivity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        updates.restore(state);
         acceptNavigation(getIntent());
         requestTranslationNotifications();
         getSharedPreferences("text_action_draft", MODE_PRIVATE).edit().clear().apply();
@@ -142,6 +143,18 @@ public final class MainActivity extends GameActivity {
     public void prepareConfiguration() throws java.io.IOException { ApplicationResources.prepare(this, false); }
 
     public void prepareResources() throws java.io.IOException { ApplicationResources.prepare(this, true); }
+
+    private static native void updateInstallCompleted(String error);
+    private final org.xrtranslate.app.updates.UpdateInstaller updates =
+        new org.xrtranslate.app.updates.UpdateInstaller(this, MainActivity::updateInstallCompleted);
+
+    public String validateUpdate(String path, String version) { return updates.validate(path, version); }
+    public void installUpdate(String path) { updates.request(path); }
+
+    @Override protected void onSaveInstanceState(Bundle state) {
+        updates.save(state);
+        super.onSaveInstanceState(state);
+    }
 
     private static native void fileDialogCompleted(long id, String path, String error);
     private final org.xrtranslate.app.documents.DocumentActions documents =

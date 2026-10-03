@@ -1,5 +1,9 @@
 # Project specific runtime/build folders
 .env
+.env.*
+*.env
+!.env.example
+!.env.sample
 runtime/
 # Manually created local editor access marker; never ship or track it.
 **/runtime/debug.md
@@ -54,5 +58,10 @@ deepthink/
 /android/**/build/
 /android/local.properties
 /android/.cxx/
+# Local signing credentials and private keys
 *.jks
 *.keystore
+*.p12
+*.pfx
+keystore.properties
+signing.properties

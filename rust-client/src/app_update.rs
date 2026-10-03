@@ -1,20 +1,21 @@
 //! Application update discovery, staging, and handoff to the updater process.
 //!
-//! The desktop UI owns only the state machine. Network, archive validation, and
+//! The UI owns only the state machine. Network, archive validation, and
 //! staging run on a worker thread; replacing the running application is handed
-//! to `xrtranslate-updater` so Windows can swap the executable after exit.
+//! to `xrtranslate-updater` on desktop and the system package installer on Android.
 
 use crate::client_settings::UpdateChannel;
 use crossbeam_channel::{Receiver, TryRecvError, unbounded};
 use reqwest::header::{ACCEPT, ACCEPT_ENCODING, CONTENT_LENGTH, HeaderValue};
 use serde::{Deserialize, de::DeserializeOwned};
 use std::{
-    fs, io,
+    fs,
     path::{Path, PathBuf},
-    process::Command,
     thread,
     time::Duration,
 };
+#[cfg(not(target_os = "android"))]
+use std::{io, process::Command};
 use xrtranslate_download::{DownloadClient, DownloadSpec};
 
 const RELEASES_URL: &str = "https://api.github.com/repos/NowLoadY/XRTranslate/releases";
@@ -60,11 +61,14 @@ impl AppUpdateState {
 #[derive(Clone, Debug)]
 pub struct PreparedUpdate {
     source: PathBuf,
+    #[cfg(not(target_os = "android"))]
     project_root: PathBuf,
+    #[cfg(not(target_os = "android"))]
     updater_entrypoint: String,
     info: AppUpdateInfo,
 }
 
+#[cfg(not(target_os = "android"))]
 #[derive(Debug)]
 pub struct AppUpdateInstall {
     pub updater: PathBuf,
@@ -91,7 +95,11 @@ pub struct AppUpdateManager {
 
 impl AppUpdateManager {
     pub const fn is_supported() -> bool {
-        cfg!(any(target_os = "windows", target_os = "linux"))
+        cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "android"
+        ))
     }
 
     pub fn set_proxy_url(&mut self, proxy_url: &str) {
@@ -99,6 +107,7 @@ impl AppUpdateManager {
     }
     pub fn set_channel(&mut self, channel: UpdateChannel) {
         if self.channel != channel {
+            self.events = None;
             self.channel = channel;
             self.state = AppUpdateState::Idle;
             self.available = None;
@@ -164,6 +173,7 @@ impl AppUpdateManager {
         Ok(())
     }
 
+    #[cfg(not(target_os = "android"))]
     pub fn begin_install(&mut self) -> Result<AppUpdateInstall, String> {
         if self.is_busy() {
             return Err("An update task is already running.".into());
@@ -184,7 +194,33 @@ impl AppUpdateManager {
         })
     }
 
+    #[cfg(target_os = "android")]
+    pub fn begin_install(&mut self) -> Result<(), String> {
+        if self.is_busy() {
+            return Err("An update task is already running.".into());
+        }
+        let prepared = self
+            .prepared
+            .as_ref()
+            .ok_or("Download the update before installing.")?;
+        crate::android::request_update_install(&prepared.source)?;
+        self.state = AppUpdateState::Installing;
+        Ok(())
+    }
+
     pub fn poll(&mut self) {
+        #[cfg(target_os = "android")]
+        if let Some(result) = crate::android::take_update_install_result() {
+            self.state = match result {
+                Ok(()) => self
+                    .prepared
+                    .as_ref()
+                    .map_or(AppUpdateState::Idle, |prepared| {
+                        AppUpdateState::Ready(prepared.info.clone())
+                    }),
+                Err(error) => AppUpdateState::Failed(error),
+            };
+        }
         let Some(events) = &self.events else {
             return;
         };
@@ -286,7 +322,7 @@ async fn check_latest_release(
     channel: UpdateChannel,
 ) -> Result<Option<ReleaseAsset>, String> {
     if !AppUpdateManager::is_supported() {
-        return Err("Updates are available for Windows and Linux builds only.".into());
+        return Err("Updates are not supported on this platform.".into());
     }
     let client = http_client(proxy_url)?;
     match fetch_releases(&client).await {
@@ -454,7 +490,24 @@ async fn fallback_release_asset(
     tag: &str,
     version: &str,
 ) -> Result<Option<ReleaseAsset>, String> {
-    let name = standard_release_asset_name(version);
+    let mut names = vec![standard_release_asset_name(version)];
+    if cfg!(target_os = "android") {
+        names.push(format!("XRTranslate-v{version}-android-universal.apk"));
+    }
+    for name in names {
+        if let Some(asset) = probe_release_asset(client, tag, version, name).await? {
+            return Ok(Some(asset));
+        }
+    }
+    Ok(None)
+}
+
+async fn probe_release_asset(
+    client: &reqwest::Client,
+    tag: &str,
+    version: &str,
+    name: String,
+) -> Result<Option<ReleaseAsset>, String> {
     let mut download_url = reqwest::Url::parse(RELEASE_DOWNLOAD_BASE)
         .map_err(|error| format!("invalid release URL: {error}"))?;
     download_url
@@ -491,12 +544,38 @@ async fn fallback_release_asset(
 }
 
 fn standard_release_asset_name(version: &str) -> String {
-    let platform = if cfg!(target_os = "windows") {
-        "win-x64"
+    if cfg!(target_os = "android") {
+        format!(
+            "XRTranslate-v{version}-android-{}.apk",
+            android_architecture()
+        )
     } else {
-        "linux-x64"
+        let platform = if cfg!(target_os = "windows") {
+            "win-x64"
+        } else {
+            "linux-x64"
+        };
+        format!("XRTranslate-v{version}-{platform}.zip")
+    }
+}
+
+fn android_architecture() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x64"
+    }
+}
+
+fn android_asset_matches(name: &str, architecture: &str) -> bool {
+    let Some(version) = name.strip_prefix("xrtranslate-v") else {
+        return false;
     };
-    format!("XRTranslate-v{version}-{platform}.zip")
+    [architecture, "universal"].iter().any(|arch| {
+        version
+            .strip_suffix(&format!("-android-{arch}.apk"))
+            .is_some_and(|version| parse_version(version).is_ok())
+    })
 }
 
 async fn download_and_stage(
@@ -513,12 +592,23 @@ async fn download_and_stage(
     }
     let updates_root = project_root.join("runtime").join("updates");
     let download_dir = updates_root.join("downloads");
+    #[cfg(not(target_os = "android"))]
     let staging_root = updates_root.join(format!("v{}-staging", safe_path_segment(&asset.version)));
+    #[cfg(not(target_os = "android"))]
     let payload = staging_root.join("payload");
     fs::create_dir_all(&download_dir)
         .map_err(|error| format!("Cannot create update download folder: {error}"))?;
+    #[cfg(not(target_os = "android"))]
     reset_directory(&payload)?;
 
+    if Path::new(&asset.name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some(&asset.name)
+        || asset.name.contains(['/', '\\'])
+    {
+        return Err("The update package name is invalid.".into());
+    }
     let archive = download_dir.join(&asset.name);
     let client = DownloadClient::with_proxy(USER_AGENT, proxy_url)
         .map_err(|error| format!("Cannot initialize update download: {error}"))?;
@@ -536,17 +626,29 @@ async fn download_and_stage(
         .await
         .map_err(|error| format!("Cannot download update: {error}"))?;
 
-    extract_zip(&archive, &payload)?;
-    let source = release_source_directory(&payload)?;
-    let updater_entrypoint = validate_staged_release(&source)?;
-    Ok(PreparedUpdate {
-        source,
-        project_root,
-        updater_entrypoint,
-        info: asset.info(),
-    })
+    #[cfg(target_os = "android")]
+    {
+        crate::android::validate_update(&archive, &asset.version)?;
+        Ok(PreparedUpdate {
+            source: archive,
+            info: asset.info(),
+        })
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        extract_zip(&archive, &payload)?;
+        let source = release_source_directory(&payload)?;
+        let updater_entrypoint = validate_staged_release(&source)?;
+        Ok(PreparedUpdate {
+            source,
+            project_root,
+            updater_entrypoint,
+            info: asset.info(),
+        })
+    }
 }
 
+#[cfg(not(target_os = "android"))]
 fn extract_zip(archive: &Path, destination: &Path) -> Result<(), String> {
     let file = fs::File::open(archive)
         .map_err(|error| format!("Cannot open update package {}: {error}", archive.display()))?;
@@ -584,6 +686,7 @@ fn extract_zip(archive: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(target_os = "android"))]
 fn release_source_directory(payload: &Path) -> Result<PathBuf, String> {
     if payload.join("release-manifest.json").is_file() {
         return Ok(payload.to_path_buf());
@@ -600,6 +703,7 @@ fn release_source_directory(payload: &Path) -> Result<PathBuf, String> {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn validate_staged_release(source: &Path) -> Result<String, String> {
     let manifest_path = source.join("release-manifest.json");
     let manifest: serde_json::Value =
@@ -633,6 +737,7 @@ fn validate_staged_release(source: &Path) -> Result<String, String> {
     Ok(updater.to_owned())
 }
 
+#[cfg(not(target_os = "android"))]
 pub fn spawn_updater(install: AppUpdateInstall) -> Result<(), String> {
     let mut command = Command::new(&install.updater);
     command
@@ -656,7 +761,11 @@ fn select_release_asset(assets: &[GitHubAsset]) -> Option<&GitHubAsset> {
         .iter()
         .filter(|asset| {
             let name = asset.name.to_ascii_lowercase();
-            name.ends_with(".zip") && name_matches_platform(&name)
+            if cfg!(target_os = "android") {
+                android_asset_matches(&name, android_architecture())
+            } else {
+                name.ends_with(".zip") && name_matches_platform(&name)
+            }
         })
         .max_by_key(|asset| platform_asset_score(&asset.name.to_ascii_lowercase()))
 }
@@ -681,6 +790,9 @@ fn name_matches_platform(name: &str) -> bool {
 }
 
 fn platform_asset_score(name: &str) -> u8 {
+    if cfg!(target_os = "android") {
+        return u8::from(name.ends_with(&format!("-android-{}.apk", android_architecture())));
+    }
     let mut score = 0;
     if name.contains("x64") {
         score += 2;
@@ -793,6 +905,7 @@ where
         .block_on(task())
 }
 
+#[cfg(not(target_os = "android"))]
 fn reset_directory(path: &Path) -> Result<(), String> {
     if path.exists() {
         fs::remove_dir_all(path)
@@ -801,6 +914,7 @@ fn reset_directory(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|error| format!("Cannot create {}: {error}", path.display()))
 }
 
+#[cfg(not(target_os = "android"))]
 fn safe_path_segment(value: &str) -> String {
     value
         .chars()
@@ -817,8 +931,10 @@ fn safe_path_segment(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_os = "android"))]
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn begin_install_targets_the_project_root() {
         let root = std::env::temp_dir().join(format!(
@@ -854,7 +970,48 @@ mod tests {
 
     #[test]
     fn selects_current_platform_zip_assets() {
+        for arch in ["arm64", "x64"] {
+            assert!(android_asset_matches(
+                &format!("xrtranslate-v1.2.0-android-{arch}.apk"),
+                arch
+            ));
+            assert!(android_asset_matches(
+                "xrtranslate-v1.2.0-beta.2-android-universal.apk",
+                arch
+            ));
+            for wrong in [
+                "linux-x64.zip",
+                "win-x64.zip",
+                "android-arm64-debug.apk",
+                "android-arm64-unsigned.apk",
+            ] {
+                assert!(!android_asset_matches(
+                    &format!("xrtranslate-v1.2.0-{wrong}"),
+                    arch
+                ));
+            }
+        }
+        assert!(!android_asset_matches(
+            "xrtranslate-v1.2.0-android-x64.apk",
+            "arm64"
+        ));
+        assert!(!android_asset_matches(
+            "xrtranslate-v1.2.0-android-arm64.apk",
+            "x64"
+        ));
         let assets = vec![
+            GitHubAsset {
+                name: "XRTranslate-v1.2.0-android-arm64.apk".into(),
+                browser_download_url: "https://example.invalid/arm64.apk".into(),
+                size: 1,
+                digest: None,
+            },
+            GitHubAsset {
+                name: "XRTranslate-v1.2.0-android-x64.apk".into(),
+                browser_download_url: "https://example.invalid/x64.apk".into(),
+                size: 1,
+                digest: None,
+            },
             GitHubAsset {
                 name: "XRTranslate-v1.2.0-linux-x64.zip".into(),
                 browser_download_url: "https://example.invalid/linux.zip".into(),
@@ -976,6 +1133,11 @@ mod tests {
         let name = standard_release_asset_name("0.2.5");
         if cfg!(target_os = "windows") {
             assert_eq!(name, "XRTranslate-v0.2.5-win-x64.zip");
+        } else if cfg!(target_os = "android") {
+            assert_eq!(
+                name,
+                format!("XRTranslate-v0.2.5-android-{}.apk", android_architecture())
+            );
         } else {
             assert_eq!(name, "XRTranslate-v0.2.5-linux-x64.zip");
         }

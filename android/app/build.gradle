@@ -2,6 +2,12 @@ plugins { id 'com.android.application' }
 
 def selectedAbis = providers.gradleProperty('androidAbis').getOrElse('arm64-v8a').split(',').toList()
 def pythonCommand = providers.gradleProperty('pythonCommand').getOrElse(System.getProperty('os.name').toLowerCase().contains('windows') ? 'python' : 'python3')
+def releaseMetadata = new groovy.json.JsonSlurper().parseText(providers.exec {
+    workingDir rootProject.projectDir.parentFile
+    commandLine pythonCommand, 'scripts/android.py', 'metadata', '--abis', selectedAbis.join(',')
+}.standardOutput.asText.get())
+def signingStore = providers.environmentVariable('XRT_ANDROID_KEYSTORE').orNull
+
 android {
     namespace = 'org.xrtranslate.app'
     compileSdk = 36
@@ -10,12 +16,27 @@ android {
         applicationId = 'org.xrtranslate.app'
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = '0.2.11'
+        versionCode = releaseMetadata.code
+        versionName = releaseMetadata.version
         ndk { abiFilters.addAll(selectedAbis) }
     }
     packaging { jniLibs { useLegacyPackaging = true } }
-    buildTypes { release { minifyEnabled = false } }
+    signingConfigs {
+        if (signingStore) {
+            release {
+                storeFile = rootProject.file(signingStore)
+                storePassword = providers.environmentVariable('XRT_ANDROID_STORE_PASSWORD').get()
+                keyAlias = providers.environmentVariable('XRT_ANDROID_KEY_ALIAS').get()
+                keyPassword = providers.environmentVariable('XRT_ANDROID_KEY_PASSWORD').get()
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled = false
+            if (signingStore) signingConfig = signingConfigs.release
+        }
+    }
     sourceSets {
         debug { jniLibs.srcDir layout.buildDirectory.dir('generated/rust/debug/jniLibs').get().asFile; assets.srcDir layout.buildDirectory.dir('generated/rust/debug/assets').get().asFile }
         release { jniLibs.srcDir layout.buildDirectory.dir('generated/rust/release/jniLibs').get().asFile; assets.srcDir layout.buildDirectory.dir('generated/rust/release/assets').get().asFile }

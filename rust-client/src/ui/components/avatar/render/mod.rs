@@ -62,6 +62,7 @@ struct Target {
     capacity: usize,
     parts: wgpu::Buffer,
     color: wgpu::TextureView,
+    #[cfg(debug_assertions)]
     texture: wgpu::Texture,
     output: wgpu::TextureView,
     occlusion: wgpu::BindGroup,
@@ -211,6 +212,7 @@ impl Target {
             capacity,
             parts,
             color,
+            #[cfg(debug_assertions)]
             texture: output_texture,
             output,
             occlusion,

@@ -11,10 +11,25 @@ import subprocess
 import sys
 import struct
 import shlex
+import re
+import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 NDK_VERSION = '29.0.14206865'
 TARGETS = {'arm64-v8a': ('aarch64-linux-android', 'aarch64-linux-android'), 'x86_64': ('x86_64-linux-android', 'x86_64-linux-android')}
+
+def release_metadata(abis):
+    version = tomllib.loads((ROOT / 'Cargo.toml').read_text())['workspace']['package']['version']
+    match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?', version)
+    if not match: raise SystemExit('Android releases require major.minor.patch or major.minor.patch-beta.N.')
+    major, minor, patch = map(int, match.group(1, 2, 3))
+    beta = int(match[4]) if match[4] is not None else 999
+    if major > 209 or minor > 99 or patch > 99 or (beta > 998 and match[4] is not None):
+        raise SystemExit('Android version components exceed the supported range (209.99.99, beta.998).')
+    code = ((major * 100 + minor) * 100 + patch) * 1000 + beta
+    if code <= 0: raise SystemExit('Android versionCode must be positive.')
+    architecture = {'arm64-v8a': 'arm64', 'x86_64': 'x64'}.get(abis, 'universal')
+    return {'version': version, 'code': code, 'name': f'XRTranslate-v{version}-android-{architecture}'}
 
 def run(*command, env=None, cwd=ROOT):
     subprocess.run([str(arg) for arg in command], cwd=cwd, env=env, check=True)
@@ -190,13 +205,16 @@ def java_environment(sdk):
 
 def main():
     parser = argparse.ArgumentParser(description='Android build entry. Requires Rust, Python 3.12+, CMake (plus Ninja on Windows), JDK 17+, Android SDK 36, build-tools 36.1.0, NDK ' + NDK_VERSION + ', and initialized XR-Corpus submodule. SDK location: ANDROID_HOME or android/local.properties.')
-    parser.add_argument('command', choices=['doctor', 'setup', 'native', 'build', 'run'])
+    parser.add_argument('command', choices=['doctor', 'setup', 'native', 'build', 'run', 'metadata'])
     parser.add_argument('--abis', default='arm64-v8a')
     parser.add_argument('--profile', choices=['debug', 'release'], default='debug')
     parser.add_argument('--serial', help='ADB device serial, if several devices are connected')
     args = parser.parse_args()
-    args.abis = ','.join(abi.strip() for abi in args.abis.split(','))
+    args.abis = ','.join(dict.fromkeys(abi.strip() for abi in args.abis.split(',')))
     if any(abi not in TARGETS for abi in args.abis.split(',')): parser.error('Supported ABIs: arm64-v8a, x86_64')
+    if args.command == 'metadata':
+        print(json.dumps(release_metadata(args.abis)))
+        return
     sdk = sdk_path()
     if args.command == 'doctor':
         for tool in ['cargo', 'rustup', 'java', 'python' if os.name == 'nt' else 'python3', 'cmake', 'git'] + (['ninja'] if os.name == 'nt' else []): print(f'{tool}: {shutil.which(tool) or "missing"}')
@@ -212,11 +230,21 @@ def main():
     else:
         wrapper = ROOT / 'android' / ('gradlew.bat' if os.name == 'nt' else 'gradlew')
         run(wrapper, ':app:assemble' + args.profile.capitalize(), '-PandroidAbis=' + args.abis, '-PpythonCommand=' + sys.executable, env=java_environment(sdk), cwd=ROOT / 'android')
+        output = ROOT / 'android/app/build/outputs/apk' / args.profile
+        metadata = json.loads((output / 'output-metadata.json').read_text())
+        artifact = output / metadata['elements'][0]['outputFile']
+        signed = args.profile == 'debug' or bool(os.environ.get('XRT_ANDROID_KEYSTORE'))
+        suffix = '-debug' if args.profile == 'debug' else '' if signed else '-unsigned'
+        destination = ROOT / 'dist' / (release_metadata(args.abis)['name'] + suffix + '.apk')
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(artifact, destination)
+        print(f'APK: {destination}')
+        if not signed: print('Unsigned APK: configure XRT_ANDROID_KEYSTORE and signing credentials before publishing.')
         if args.command == 'run':
             if args.profile != 'debug': raise SystemExit('Use a debug build for device installation, or configure release signing locally.')
             adb = sdk / 'platform-tools' / ('adb.exe' if os.name == 'nt' else 'adb')
             options = ['-s', args.serial] if args.serial else []
-            run(adb, *options, 'install', '-r', ROOT / 'android/app/build/outputs/apk/debug/app-debug.apk')
+            run(adb, *options, 'install', '-r', artifact)
             run(adb, *options, 'shell', 'am', 'start', '-n', 'org.xrtranslate.app/.MainActivity')
 
 if __name__ == '__main__': main()

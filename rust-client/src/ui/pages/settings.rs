@@ -506,7 +506,15 @@ pub(crate) fn render_update_action_button(app: &mut crate::XRTranslateApp, ui: &
         AppUpdateState::Ready(_) | AppUpdateState::Available(_)
     );
     let label = match &state {
-        AppUpdateState::Ready(_) => crate::i18n::tr(language, "Install and Restart").to_string(),
+        AppUpdateState::Ready(_) => crate::i18n::tr(
+            language,
+            if cfg!(target_os = "android") {
+                "Install"
+            } else {
+                "Install and restart"
+            },
+        )
+        .to_string(),
         AppUpdateState::Available(_) => crate::i18n::tr(language, "Download Update").to_string(),
         AppUpdateState::Checking => crate::i18n::tr(language, "Checking...").to_string(),
         AppUpdateState::Downloading {

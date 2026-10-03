@@ -236,3 +236,45 @@ start inference, or choose storage locations.
 This preserves the dependency direction in `docs/refactoring-contract.md`:
 platform code composes shared capabilities, while shared capabilities remain
 independent of concrete plugins and operating systems.
+
+## Android packages and application updates
+
+Build the default ARM64 APK with `python3 scripts/android.py build --profile release`.
+Use `--abis x86_64` for x64, or `--abis arm64-v8a,x86_64` for a universal APK.
+Prerequisites and SDK setup are available through `python3 scripts/android.py --help`
+and `python3 scripts/android.py setup`. Python is build tooling only.
+
+The build reads the workspace version from `Cargo.toml`; Android never maintains
+an independent version. Releases use `major.minor.patch` or
+`major.minor.patch-beta.N`. The Android version code is
+`((major * 100 + minor) * 100 + patch) * 1000 + rank`, with beta ranks 0–998 and
+stable rank 999. Minor/patch components are 0–99 and major is 0–209; codes must
+be positive. This keeps beta → stable and subsequent releases upgradeable.
+
+Configure signing using environment variables before the release build:
+
+```sh
+export XRT_ANDROID_KEYSTORE=/absolute/path/to/release.jks
+export XRT_ANDROID_KEY_ALIAS=xrtranslate
+# Supply XRT_ANDROID_STORE_PASSWORD and XRT_ANDROID_KEY_PASSWORD securely.
+python3 scripts/android.py build --profile release
+```
+
+Reuse the same release key for subsequent versions and keep it outside the
+repository. Without signing configuration, the build explicitly emits an
+`-unsigned.apk`; debug packages carry `-debug.apk`. Neither is an update asset.
+The distributable output is `dist/XRTranslate-v<version>-android-arm64.apk`,
+`-android-x64.apk`, or `-android-universal.apk`. Publish signed packages as assets
+of the corresponding `v<version>` GitHub release; beta releases also use the
+GitHub prerelease flag. The normal Gradle output remains available under
+`android/app/build/outputs/apk/`.
+
+Android shares `app_update` discovery, stable/beta selection, progress, proxy,
+download integrity checks and GitHub fallback with desktop. It accepts only
+release APKs for its architecture (or universal), while desktop selects its own
+ZIP packages. `updates/UpdateInstaller` handles only package/version/signer
+validation, unknown-app-source permission and the Android system installer.
+The FileProvider exposes only the update download directory. Cancelling system
+installation leaves the downloaded update available to retry. Installing an
+update always requires system confirmation; a differently signed development
+installation cannot be overwritten by a release package.
