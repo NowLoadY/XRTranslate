@@ -97,6 +97,8 @@ quality retry. It resubmits the same audio and selected language at most once pe
 recognition attempt; incomplete transcripts never reach language routing or
 translation. Its initial duration-based token estimate is capped by the selected
 provider configuration, with no additional fixed 128-token ceiling.
+If the retry also reaches the output limit, only that utterance is skipped via
+the normal empty-recognition path; subsequent audio continues without an error popup.
 
 XR Corpus and the backend provide structured facts. XR Corpus retains its legacy
 pre-rendered ASR field for older consumers, but the native backend consumes its

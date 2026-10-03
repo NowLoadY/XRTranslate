@@ -184,6 +184,8 @@ async fn asr_length_recovery_preserves_audio_and_language_without_publishing_tru
             if retry_limit.is_some() {
                 assert!(output.prompt_trace.is_none());
             }
+        } else if first == "length" && second == "length" {
+            assert!(result.unwrap().is_none());
         } else {
             assert!(
                 result

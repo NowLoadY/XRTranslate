@@ -1264,7 +1264,12 @@ impl NativeInference {
                 .await
             {
                 Ok(transcript) => transcript,
-                Err(error) if !retried && error.is_output_limit() => {
+                Err(error) if error.is_output_limit() => {
+                    if retried {
+                        warn!(%error, max_tokens, sample_count,
+                            "skipping ASR utterance after its retry reached the output limit");
+                        return Ok(None);
+                    }
                     let retry_max_tokens =
                         expanded_output_budget(max_tokens, self.asr_context_window_tokens);
                     warn!(%error, max_tokens, retry_max_tokens, sample_count,
