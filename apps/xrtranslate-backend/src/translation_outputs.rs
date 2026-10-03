@@ -5,6 +5,7 @@ use std::future::Future;
 use xr_corpus_client::{CorpusClient, CorpusSessionClient};
 use xr_corpus_protocol::{ContextBudgets, PrepareAsrRequest, PrepareTranslationRequest};
 use xrtranslate_engine::TranslationSegmentPair;
+use xrtranslate_engine::language::SupportedLanguage;
 use xrtranslate_prompt::{PromptNodeGraph, TranslationPromptContext};
 use xrtranslate_protocol::{AdditionalTranslation, InferenceWorkload};
 
@@ -49,6 +50,12 @@ pub(crate) struct AdditionalSegment {
     segment: TranslationSegmentPair,
 }
 
+fn same_output_language(left: &str, right: &str) -> bool {
+    SupportedLanguage::parse(left)
+        .zip(SupportedLanguage::parse(right))
+        .is_some_and(|(left, right)| left == right)
+}
+
 impl AdditionalOutputScope {
     pub(crate) async fn close(&mut self) {
         if let Some((_, _, session)) = self.active.take() {
@@ -70,13 +77,21 @@ impl AdditionalOutputScope {
             self.close().await;
             return Ok(None);
         };
-        if self
-            .active
-            .as_ref()
-            .is_none_or(|(active_generation, active_target, _)| {
-                *active_generation != generation || active_target != target
-            })
-        {
+        let needs_session =
+            self.active
+                .as_ref()
+                .is_none_or(|(active_generation, active_target, _)| {
+                    *active_generation != generation || active_target != target
+                });
+        if same_output_language(target, &recognized.target_language) {
+            // Suspend this output without preparing or recording a turn. Its
+            // own history resumes when the primary target changes again.
+            if needs_session {
+                self.close().await;
+            }
+            return Ok(None);
+        }
+        if needs_session {
             let session = client
                 .create_session()
                 .await
@@ -201,7 +216,9 @@ where
             .await
     };
     let extra = async {
-        let Some(additional) = additional else {
+        let Some(additional) =
+            additional.filter(|extra| !same_output_language(target, &extra.target))
+        else {
             return Ok(None);
         };
         let source_for_terms = rewrite_recognition_terms(
@@ -388,6 +405,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn duplicate_target_uses_only_primary_provider_context_and_result() {
+        let (inference, requests, maximum, server) = fixture().await;
+        for (target, extra_target) in [("zh", "zh"), ("zh", "Chinese"), ("zh-TW", "zh_hant_HK")] {
+            let segment = TranslationSegmentPair {
+                source_text: "Hello friend.".into(),
+                translation_text: "Hello friend.".into(),
+            };
+            let output = translate(
+                &inference,
+                &InferenceScheduler::new(1, 2),
+                InferenceWorkload::Realtime,
+                &segment,
+                "en",
+                target,
+                PromptNodeGraph::builtin_default(),
+                prompt_context_for_segment("en", target, &context("PRIMARY_HISTORY", target)),
+                Some(AdditionalSegment {
+                    target: extra_target.into(),
+                    context: context("EXTRA_HISTORY", extra_target),
+                    segment: segment.clone(),
+                }),
+                false,
+                |_| std::future::ready(()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(output.target_language, target);
+            assert!(!output.translated_text.is_empty());
+            assert!(!output.asr_only);
+            assert!(output.additional_translations.is_empty());
+            assert!(output.additional_source_text.is_none());
+            let mut requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            let request = requests[0].to_string();
+            assert!(request.contains("PRIMARY_HISTORY"));
+            assert!(!request.contains("EXTRA_HISTORY"));
+            requests.clear();
+        }
+        assert_eq!(maximum.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn simplified_and_traditional_chinese_remain_independent_outputs() {
+        let (inference, requests, _, server) = fixture().await;
+        let segment = TranslationSegmentPair {
+            source_text: "Hello friend.".into(),
+            translation_text: "Hello friend.".into(),
+        };
+        let output = translate(
+            &inference,
+            &InferenceScheduler::new(1, 2),
+            InferenceWorkload::Realtime,
+            &segment,
+            "en",
+            "zh",
+            PromptNodeGraph::builtin_default(),
+            TranslationPromptContext::default(),
+            Some(AdditionalSegment {
+                target: "zh-TW".into(),
+                context: context("EXTRA_HISTORY", "zh-TW"),
+                segment: segment.clone(),
+            }),
+            false,
+            |_| std::future::ready(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.target_language, "zh");
+        assert_eq!(output.additional_translations.len(), 1);
+        assert_eq!(output.additional_translations[0].target_lang, "zh-TW");
+        assert_eq!(requests.lock().unwrap().len(), 2);
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn one_translation_slot_serves_two_outputs_without_a_nested_permit_deadlock() {
         let (inference, requests, maximum, server) = fixture().await;
         let output = tokio::time::timeout(
@@ -526,6 +619,9 @@ mod tests {
         let record_histories = histories.clone();
         let created = Arc::new(AtomicUsize::new(0));
         let ids = created.clone();
+        let prepared = Arc::new(AtomicUsize::new(0));
+        let asr_prepared = prepared.clone();
+        let translation_prepared = prepared.clone();
         let closed = Arc::new(Mutex::new(Vec::new()));
         let close_ids = closed.clone();
         let router = axum::Router::new()
@@ -538,13 +634,17 @@ mod tests {
             )
             .route(
                 "/v2/sessions/{id}/asr",
-                post(|| async { Json(serde_json::json!({"context_id":1})) }),
+                post(move || {
+                    asr_prepared.fetch_add(1, Ordering::SeqCst);
+                    async { Json(serde_json::json!({"context_id":1})) }
+                }),
             )
             .route(
                 "/v2/sessions/{id}/translation",
                 post(
                     move |Path(id): Path<String>,
                           Json(request): Json<PrepareTranslationRequest>| {
+                        translation_prepared.fetch_add(1, Ordering::SeqCst);
                         let history = translation_histories.lock().unwrap().get(&id).cloned();
                         async move {
                             Json(PrepareTranslationResponse {
@@ -634,6 +734,26 @@ mod tests {
             asr_tokens: 128,
             translation_tokens: 256,
         };
+        let mut overlapping = recognized.clone();
+        overlapping.target_language = "ja".into();
+        assert!(
+            scope
+                .prepare(
+                    &client,
+                    generation,
+                    Some("ja"),
+                    &overlapping,
+                    budgets,
+                    "turn-overlap-before-first-extra",
+                    "",
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(scope.active.is_none());
+        assert_eq!(created.load(Ordering::SeqCst), 1);
+        assert_eq!(prepared.load(Ordering::SeqCst), 0);
         let extra = scope
             .prepare(
                 &client,
@@ -657,6 +777,24 @@ mod tests {
                 &[("EXTRA_SOURCE".into(), "EXTRA_HISTORY".into())],
             )
             .await;
+        assert!(
+            scope
+                .prepare(
+                    &client,
+                    generation,
+                    Some("ja"),
+                    &overlapping,
+                    budgets,
+                    "turn-overlap",
+                    "",
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(scope.active.as_ref().unwrap().2.id(), extra.session.id());
+        assert_eq!(created.load(Ordering::SeqCst), 2);
+        assert_eq!(prepared.load(Ordering::SeqCst), 2);
         let next = scope
             .prepare(
                 &client,
@@ -680,6 +818,24 @@ mod tests {
             "EXTRA_SOURCE"
         );
         generation.audio_epoch.advance();
+        assert!(
+            scope
+                .prepare(
+                    &client,
+                    generation,
+                    Some("ja"),
+                    &overlapping,
+                    budgets,
+                    "turn-overlap-new-generation",
+                    "",
+                )
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(scope.active.is_none());
+        assert_eq!(created.load(Ordering::SeqCst), 2);
+        assert_eq!(prepared.load(Ordering::SeqCst), 4);
         let reset = scope
             .prepare(
                 &client,

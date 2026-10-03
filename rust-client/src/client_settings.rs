@@ -82,6 +82,8 @@ pub struct ClientSettings {
     pub additional_target_lang: Option<String>,
     #[serde(default)]
     pub asr_only: bool,
+    #[serde(default)]
+    pub history_display: crate::ui::pages::translation::history::HistoryDisplay,
     #[serde(default = "default_true")]
     pub denoise_enabled: bool,
     #[serde(default)]
@@ -184,6 +186,7 @@ impl Default for ClientSettings {
             target_lang: default_target_lang(),
             additional_target_lang: None,
             asr_only: false,
+            history_display: Default::default(),
             denoise_enabled: true,
             tts_enabled: false,
             microphone_clone_state: None,

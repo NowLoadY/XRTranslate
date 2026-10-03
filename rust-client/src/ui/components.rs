@@ -4,7 +4,9 @@ use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Stroke, Ui, Vec2}
 pub mod annotated_text;
 pub mod avatar;
 pub mod faded_scroll_text;
+mod segmented_switch;
 pub mod selection_card;
+pub use segmented_switch::segmented_switch;
 pub mod text_composer;
 
 #[cfg(test)]
@@ -79,19 +81,6 @@ pub fn action_card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R
         add_contents,
     )
     .inner
-}
-
-pub fn history_entry_card<R>(
-    ui: &mut Ui,
-    add_contents: impl FnOnce(&mut Ui) -> R,
-) -> egui::Response {
-    Frame::new()
-        .fill(theme::panel_fill(ui.ctx(), theme::history_surface()))
-        .corner_radius(CornerRadius::same(12))
-        .inner_margin(Margin::symmetric(12, 9))
-        .stroke(Stroke::new(1.0, theme::border().gamma_multiply(0.35)))
-        .show(ui, add_contents)
-        .response
 }
 
 pub fn dark_container_frame<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {

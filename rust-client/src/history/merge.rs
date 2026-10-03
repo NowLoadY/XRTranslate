@@ -1391,6 +1391,49 @@ mod tests {
     }
 
     #[test]
+    fn suppressed_additional_output_is_removed_from_captions_and_can_resume() {
+        for authoritative in [false, true] {
+            let mut history = Vec::new();
+            let mut entry = if authoritative {
+                snapshot(7, "source", "main")
+            } else {
+                fragment(7, "source", "main")
+            };
+            entry.authoritative_snapshot = authoritative;
+            entry.revision_id = 1;
+            entry.additional_translations = vec![xrtranslate_protocol::AdditionalTranslation {
+                target_lang: "zh".into(),
+                translated_text: "extra before overlap".into(),
+                term_matches: Vec::new(),
+            }];
+            merge_stream_translation(&mut history, 7, entry.clone());
+
+            entry.revision_id = 2;
+            entry.translated = "main during overlap".into();
+            entry.additional_translations.clear();
+            let suppressed = merge_stream_translation(&mut history, 7, entry.clone());
+            assert!(suppressed.changed);
+            assert!(suppressed.entry.additional_translations.is_empty());
+            assert_eq!(suppressed.entry.output_text(), "main during overlap");
+
+            entry.revision_id = 3;
+            entry.translated = "main after overlap".into();
+            entry.additional_translations = vec![xrtranslate_protocol::AdditionalTranslation {
+                target_lang: "zh".into(),
+                translated_text: "extra after overlap".into(),
+                term_matches: Vec::new(),
+            }];
+            let resumed = merge_stream_translation(&mut history, 7, entry);
+            assert!(resumed.changed);
+            assert_eq!(resumed.entry.additional_translations.len(), 1);
+            assert_eq!(
+                resumed.entry.output_text(),
+                "main after overlap\nzh · extra after overlap"
+            );
+        }
+    }
+
+    #[test]
     fn language_modes_do_not_merge_asr_only_into_a_translated_caption() {
         let mut history = Vec::new();
         merge_stream_translation(&mut history, 7, fragment(7, "source", "main"));

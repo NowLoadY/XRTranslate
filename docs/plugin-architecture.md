@@ -92,6 +92,13 @@ context; plugins must not launch a second session to obtain the extra result.
 Completed `additional_translations` carry their target language, translated
 text, and terminology matches on the original segment identity. Main and
 additional results share replacement, cancellation, and terminal semantics.
+If the resolved main target matches the fixed additional target, the backend
+skips the additional context preparation and translation, and emits only the
+main result. The fixed selection and its independent history remain available
+for when the main target changes again; skipped turns do not enter that history.
+Targets are compared using canonical language identities, so Simplified and
+Traditional Chinese remain distinct outputs. A fixed target matching only the
+recognized source still produces its own terminology-processed recognition.
 
 The explicit `asr_only` mode keeps one input language and bypasses model
 translation. The final terminology-processed text still travels through the
@@ -166,7 +173,8 @@ OCR is an independent input switch. Editing or confirming its range changes
 the frame presentation without changing OCR enablement or the other inputs.
 
 The shared text composer copies each successfully completed host text request
-to the clipboard, joining its translated segments in order. Completion waits
+to the clipboard, joining its translated segments in order into continuous text
+with script-aware spacing rather than one line per sentence. Completion waits
 for the result pump's terminal acknowledgement; previews, failures, cancellation,
 and plugin-owned text requests never change the clipboard through this path.
 History presentation continues through the same shared translation events.

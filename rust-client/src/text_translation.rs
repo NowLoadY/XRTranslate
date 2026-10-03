@@ -201,7 +201,10 @@ impl TextTranslation {
                 if task.scope.active.load(Ordering::Acquire)
                     && !task.scope.failed.load(Ordering::Acquire)
                 {
-                    let translated = segments.into_values().collect::<Vec<_>>().join("\n");
+                    let mut translated = String::new();
+                    for segment in segments.into_values() {
+                        crate::streaming::append_segment(&mut translated, &segment);
+                    }
                     if !translated.trim().is_empty() {
                         if self.completed.len() == 32 {
                             self.completed.pop_front();
@@ -594,7 +597,7 @@ mod tests {
         }
         text.retire_finished();
         let completed = text.completed.pop_front().unwrap();
-        assert_eq!(completed.translated, "文字1\n文字2");
+        assert_eq!(completed.translated, "文字1文字2");
         assert!(completed.owner.is_host());
         text.retire_finished();
         assert!(text.completed.is_empty());

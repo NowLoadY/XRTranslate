@@ -442,7 +442,7 @@ fn text_units(text: &str) -> usize {
     units
 }
 
-fn needs_separator(current: &str, addition: &str) -> bool {
+pub(crate) fn needs_separator(current: &str, addition: &str) -> bool {
     if current.is_empty() || addition.is_empty() {
         return false;
     }

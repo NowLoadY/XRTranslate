@@ -14,6 +14,22 @@ pub struct TextLayout<'a> {
 }
 
 impl<'a> AnnotatedText<'a> {
+    /// Join separate sentences without changing the offsets of their annotations.
+    pub fn append_segment(
+        &mut self,
+        ui: &Ui,
+        text: &str,
+        primary: &'a [CorpusTermMatch],
+        secondary: &'a [CorpusTermMatch],
+        color: Color32,
+        size: f32,
+    ) {
+        if crate::streaming::needs_separator(&self.job.text, text) {
+            self.append(ui, RichText::new(" ").color(color).size(size));
+        }
+        self.append_terms(ui, text, primary, secondary, color, size);
+    }
+
     pub fn append(&mut self, ui: &Ui, text: RichText) {
         text.append_to(
             &mut self.job,

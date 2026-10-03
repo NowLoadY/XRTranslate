@@ -3014,6 +3014,8 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Только ввод (ASR)",
     ),
     ("ASR only", "仅 ASR", "ASR のみ", "ASR만", "Только ASR"),
+    ("Bubbles", "气泡", "吹き出し", "말풍선", "Пузырьки"),
+    ("Plain text", "纯文本", "テキスト", "텍스트", "Текст"),
     (
         "Fixed extra language",
         "固定第三语种",
