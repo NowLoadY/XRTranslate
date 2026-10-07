@@ -186,14 +186,11 @@ pub fn show<R>(
     color: Color32,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<R> {
+    let frame = layout_frame(ui.ctx(), frame, color);
     if !crate::ui::theme::is_hand_drawn(ui.ctx()) {
-        return frame
-            .stroke(crate::ui::theme::border_stroke(color))
-            .show(ui, add_contents);
+        return frame.show(ui, add_contents);
     }
-    let response = frame
-        .outer_margin(Margin::same(LAYOUT_GUTTER))
-        .show(ui, add_contents);
+    let response = frame.show(ui, add_contents);
     paint_subtle(
         ui,
         id,
@@ -202,6 +199,19 @@ pub fn show<R>(
         color,
     );
     response
+}
+
+/// Match measured content to the same border and gutter used when rendering.
+pub(crate) fn frame_margins(ctx: &egui::Context, frame: egui::Frame, color: Color32) -> egui::Vec2 {
+    layout_frame(ctx, frame, color).total_margin().sum()
+}
+
+fn layout_frame(ctx: &egui::Context, frame: egui::Frame, color: Color32) -> egui::Frame {
+    if crate::ui::theme::is_hand_drawn(ctx) {
+        frame.outer_margin(Margin::same(LAYOUT_GUTTER))
+    } else {
+        frame.stroke(crate::ui::theme::border_stroke(color))
+    }
 }
 
 fn paint_with_painter(

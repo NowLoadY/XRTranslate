@@ -50,7 +50,11 @@ fn render_runtime_install_banner(
         ),
         install_error,
     );
-    if controller.backend.is_some() {
+    if controller
+        .backend
+        .as_ref()
+        .is_some_and(|backend| backend.supports_video())
+    {
         return;
     }
 

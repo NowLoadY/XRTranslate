@@ -24,6 +24,7 @@ pub(super) fn render_task_control_card(
         snapshot.languages
     };
     let count = controller.subtitles.count();
+    let translation_progress = controller.translation_progress();
     let translated = controller
         .subtitles
         .cues()
@@ -49,6 +50,7 @@ pub(super) fn render_task_control_card(
     let mut language_changed = false;
     let mut routing = false;
     components::card(ui, |ui| {
+        ui.set_width(ui.available_width());
         ui.add_enabled_ui(!task.is_task_running, |ui| {
             language_changed = components::translation_language_selector(
                 ui,
@@ -84,33 +86,46 @@ pub(super) fn render_task_control_card(
                             .is_ok(),
                 )
                 .clicked();
-                if count > 0 {
-                    ui.menu_button("…", |ui| {
-                        if ui
-                            .add_enabled(
-                                has_audio,
-                                egui::Button::new(tr(language, "Clear & Restart")),
-                            )
-                            .clicked()
-                        {
-                            restart = true;
-                            ui.close();
-                        }
-                    });
-                }
             }
             if subtitles {
                 ui.weak(format!("{translated} / {count}"));
             } else {
                 ui.weak(format!("{} · {count}", tr(language, "Subtitles Count")));
             }
+            if !task.is_task_running && count > 0 {
+                egui::menu::MenuButton::from_button(
+                    egui::Button::new("…")
+                        .frame(false)
+                        .min_size(egui::vec2(28.0, 32.0)),
+                )
+                .ui(ui, |ui| {
+                    if ui
+                        .add_enabled(
+                            has_audio,
+                            egui::Button::new(tr(language, "Translate again")).frame(false),
+                        )
+                        .on_hover_text(tr(language, "Clear existing results and translate again."))
+                        .clicked()
+                    {
+                        restart = true;
+                        ui.close();
+                    }
+                })
+                .0
+                .on_hover_text(tr(language, "Task actions"));
+            }
         });
         if subtitles {
+            let progress = if count == 0 {
+                0.0
+            } else {
+                translated as f32 / count as f32
+            };
             ui.add(
-                egui::ProgressBar::new(if count == 0 {
-                    0.0
+                egui::ProgressBar::new(if task.is_task_running {
+                    progress.min(0.99)
                 } else {
-                    translated as f32 / count as f32
+                    progress
                 })
                 .show_percentage(),
             );
@@ -119,21 +134,27 @@ pub(super) fn render_task_control_card(
                 let progress = if controller.is_extracting {
                     controller.extraction_progress
                 } else {
-                    controller.recognition_progress
+                    translation_progress
                 };
                 ui.label(tr(
                     language,
                     if controller.is_extracting {
                         "Audio Extraction"
+                    } else if controller
+                        .recognition_progress
+                        .is_some_and(|fraction| fraction >= 1.0)
+                    {
+                        "Finishing translation"
                     } else {
-                        "Speech Recognition & Subtitles"
+                        "Translating audio"
                     },
                 ));
-                ui.add(
-                    egui::ProgressBar::new(progress.unwrap_or(0.0))
-                        .show_percentage()
-                        .animate(progress.is_none()),
-                );
+                let bar = egui::ProgressBar::new(progress.unwrap_or(0.0).min(0.99));
+                ui.add(if progress.is_some() {
+                    bar.show_percentage()
+                } else {
+                    bar.animate(true)
+                });
             }
             egui::CollapsingHeader::new(tr(language, "Recognition Settings")).show(ui, |ui| {
                 ui.add_enabled_ui(!task.is_task_running, |ui| {

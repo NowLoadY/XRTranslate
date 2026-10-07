@@ -19,16 +19,28 @@ pub fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     crate::ui::organic_border::show(
         ui,
         border_id,
-        Frame::new()
-            .fill(theme::panel_fill(ui.ctx(), theme::surface_subtle()))
-            .corner_radius(theme::container_radius(16))
-            .inner_margin(Margin::same(16))
-            .shadow(egui::Shadow::NONE),
+        card_frame(ui.ctx()),
         theme::container_radius_f32(16.0),
         theme::border().gamma_multiply(0.55),
         add_contents,
     )
     .inner
+}
+
+pub(crate) fn card_margins(ctx: &egui::Context) -> Vec2 {
+    crate::ui::organic_border::frame_margins(
+        ctx,
+        card_frame(ctx),
+        theme::border().gamma_multiply(0.55),
+    )
+}
+
+fn card_frame(ctx: &egui::Context) -> Frame {
+    Frame::new()
+        .fill(theme::panel_fill(ctx, theme::surface_subtle()))
+        .corner_radius(theme::container_radius(16))
+        .inner_margin(Margin::same(16))
+        .shadow(egui::Shadow::NONE)
 }
 
 pub fn responsive_settings_button(

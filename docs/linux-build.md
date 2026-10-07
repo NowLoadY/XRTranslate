@@ -93,6 +93,9 @@ to appear in the picker. Their streams are discovered again while capture is
 running, so a stream that is recreated can resume capture. PipeWire-native
 applications that bypass `pipewire-pulse` are not listed as individual capture
 targets; their output is still included in system audio capture. The default
-playback device is selected when no specific device is chosen. MPV's embedded
-child window is Windows-only;
-Linux MPV support can still handle non-embedded playback and audio extraction.
+playback device is selected when no specific device is chosen. Local media audio
+playback is included in the default build through Symphonia and CPAL. The media
+playback bar supports seeking, and clicking a subtitle plays from its timestamp.
+Unavailable playback does not block task details or subtitle export.
+MPV's embedded child window is Windows-only; optional Linux MPV support can
+handle additional playback formats and audio extraction.

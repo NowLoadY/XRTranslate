@@ -12,7 +12,11 @@ pub(super) fn render_audio_card(
     language: crate::i18n::UiLanguage,
     ui: &mut egui::Ui,
 ) {
-    components::card(ui, |ui| playback_controls(controller, language, ui));
+    components::card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        playback_controls(controller, language, ui);
+    });
+    ui.add_space(8.0);
 }
 
 pub(super) fn render_viewport_card(
@@ -90,16 +94,30 @@ fn playback_controls(
     language: crate::i18n::UiLanguage,
     ui: &mut egui::Ui,
 ) {
-    let duration = controller.get_duration_ms().max(1) as f64 / 1000.0;
-    let mut position = controller.get_time_ms().max(0) as f64 / 1000.0;
+    let duration = controller.get_duration_ms().max(0) as f64 / 1000.0;
+    let mut position = (controller.get_time_ms().max(0) as f64 / 1000.0).min(duration);
     ui.spacing_mut().slider_width = ui.available_width();
-    if ui
-        .add(egui::Slider::new(&mut position, 0.0..=duration).show_value(false))
-        .changed()
-        && let Some(backend) = &mut controller.backend
-    {
-        backend.seek((position * 1000.0) as i64);
+    let response = ui.add_enabled(
+        duration > 0.0,
+        egui::Slider::new(&mut position, 0.0..=duration.max(1.0)).show_value(false),
+    );
+    let automated = crate::ui::automation::record_slider(
+        ui,
+        response.id,
+        tr(language, "Playback position"),
+        position,
+        duration > 0.0,
+        response.rect,
+    );
+    if let Some(value) = automated {
+        position = value.clamp(0.0, duration);
     }
+    if response.changed() || automated.is_some() {
+        controller.seek_to((position * 1000.0) as i64, false);
+    }
+    // Native playback changes on an audio worker, including reaching EOF.
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(100));
     flow_row(ui, |ui| {
         let playing = controller.get_status() == PlaybackStatus::Playing;
         if components::secondary_button(ui, tr(language, if playing { "Pause" } else { "Play" }))

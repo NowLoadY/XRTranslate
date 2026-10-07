@@ -133,6 +133,15 @@ impl MediaPlugin {
         position: Duration,
         duration: Option<Duration>,
     ) {
+        if let Some(duration) = duration
+            && let Some(task) = self
+                .controller
+                .active_task_id
+                .as_deref()
+                .and_then(|id| self.controller.store.get_mut(id))
+        {
+            task.duration_ms = duration.as_millis().min(i64::MAX as u128) as i64;
+        }
         match stage {
             ImportProgressStage::Extracting => {
                 self.controller.is_extracting = true;

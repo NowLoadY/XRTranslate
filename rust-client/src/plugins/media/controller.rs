@@ -68,7 +68,16 @@ impl Default for MediaController {
                     Ok(b) => Some(Box::new(b)),
                     Err(e) => {
                         log::warn!("MPV backend not initialized on startup: {}", e);
-                        None
+                        #[cfg(any(windows, target_os = "linux"))]
+                        {
+                            super::backend::audio::AudioBackend::new()
+                                .ok()
+                                .map(|backend| Box::new(backend) as Box<dyn MediaBackend>)
+                        }
+                        #[cfg(not(any(windows, target_os = "linux")))]
+                        {
+                            None
+                        }
                     }
                 }
             };
@@ -257,6 +266,10 @@ impl MediaController {
         }
         self.route = MediaRoute::Detail;
         self.error = None;
+        self.recognize_duration = None;
+        self.recognition_progress = None;
+        self.last_manual_scroll = None;
+        self.last_auto_scrolled_cue_id = None;
         self.playback_loaded = false;
         self.video_unavailable = false;
 
@@ -301,6 +314,10 @@ impl MediaController {
 
     pub fn can_show_video(&self) -> bool {
         cfg!(windows)
+            && self
+                .backend
+                .as_ref()
+                .is_some_and(|backend| backend.supports_video())
             && !self.video_unavailable
             && self.parent_window != 0
             && self.can_play()
@@ -333,6 +350,11 @@ impl MediaController {
     }
 
     pub fn start_task(&mut self) {
+        self.is_extracting = false;
+        self.extraction_progress = None;
+        self.recognition_progress = None;
+        self.recognize_duration = None;
+        self.recognize_position = None;
         if let Some(task_id) = &self.active_task_id {
             if let Some(task) = self.store.get_mut(task_id) {
                 task.is_task_running = true;
@@ -442,13 +464,25 @@ impl MediaController {
     }
 
     pub fn try_init_backend(&mut self) -> bool {
-        if self.backend.is_some() {
+        if self
+            .backend
+            .as_ref()
+            .is_some_and(|backend| backend.supports_video())
+        {
             return true;
         }
         match super::backend::mpv::MpvBackend::new() {
             Ok(b) => {
+                self.release_native_host();
                 self.backend = Some(Box::new(b));
+                if let Some(backend) = &mut self.backend {
+                    backend.set_volume(self.volume);
+                    backend.set_mute(self.muted);
+                }
                 self.error = None;
+                if let Some(id) = self.active_task_id.clone() {
+                    let _ = self.open_task(&id);
+                }
                 log::info!("MPV backend initialized successfully.");
                 true
             }
@@ -469,9 +503,13 @@ impl MediaController {
 
         if let Some(backend) = &mut self.backend {
             backend.tick();
+            if let Some(error) = backend.take_error() {
+                self.error = Some(error);
+            }
 
             // Synchronize detected audio channels from backend stream
-            if let Some(active_id) = &self.active_task_id
+            if self.playback_loaded
+                && let Some(active_id) = &self.active_task_id
                 && let Some(detected_count) = backend.get_audio_channel_count()
                 && detected_count > 0
                 && let Some(task) = self.store.get_mut(active_id)
@@ -525,7 +563,53 @@ impl MediaController {
         self.backend.as_ref().map(|b| b.get_time_ms()).unwrap_or(0)
     }
 
+    pub fn seek_to(&mut self, ms: i64, play: bool) {
+        if let Some(backend) = &mut self.backend {
+            backend.seek(ms);
+            if play {
+                backend.play();
+            }
+            self.last_manual_scroll = None;
+            self.last_auto_scrolled_cue_id = None;
+        }
+    }
+
+    /// File delivery is separate from backend recognition/translation progress.
+    pub fn translation_progress(&self) -> Option<f32> {
+        let duration = self
+            .recognize_duration
+            .map(|duration| duration.as_millis() as f64)
+            .filter(|duration| *duration > 0.0)
+            .or_else(|| {
+                self.active_task_id
+                    .as_deref()
+                    .and_then(|id| self.store.get(id))
+                    .map(|task| task.duration_ms as f64)
+                    .filter(|duration| *duration > 0.0)
+            })
+            .or_else(|| (self.get_duration_ms() > 0).then_some(self.get_duration_ms() as f64))?;
+        let translated_to = self
+            .subtitles
+            .cues()
+            .iter()
+            .filter(|cue| {
+                cue.translated_text
+                    .as_ref()
+                    .is_some_and(|text| !text.trim().is_empty())
+            })
+            .map(|cue| cue.end_ms)
+            .max()
+            .unwrap_or(0)
+            .max(0) as f64;
+        // Only the session Finished event can declare completion; rounded percentages
+        // must not advertise 100% while the backend is still draining its last turn.
+        Some((translated_to / duration).clamp(0.0, 0.99) as f32)
+    }
+
     pub fn get_duration_ms(&self) -> i64 {
+        if !self.can_play() {
+            return 0;
+        }
         self.backend
             .as_ref()
             .map(|b| b.get_duration_ms())
@@ -544,5 +628,46 @@ impl MediaController {
             .as_ref()
             .map(|b| b.get_diagnostics())
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::subtitles::SubtitleCue;
+    use super::*;
+
+    #[test]
+    fn delivering_all_audio_does_not_complete_translation_progress() {
+        let mut controller = MediaController {
+            backend: None,
+            ..Default::default()
+        };
+        controller.recognize_duration = Some(std::time::Duration::from_secs(100));
+        controller.recognition_progress = Some(1.0);
+        assert_eq!(controller.translation_progress(), Some(0.0));
+        controller.subtitles.add_cue_with_metadata(
+            SubtitleCue {
+                id: "first".into(),
+                start_ms: 0,
+                end_ms: 30_000,
+                original_text: "source".into(),
+                translated_text: Some("translation".into()),
+                speaker_name: None,
+            },
+            Default::default(),
+        );
+        assert_eq!(controller.translation_progress(), Some(0.3));
+        controller.subtitles.add_cue_with_metadata(
+            SubtitleCue {
+                id: "last".into(),
+                start_ms: 30_000,
+                end_ms: 100_000,
+                original_text: "source".into(),
+                translated_text: Some("translation".into()),
+                speaker_name: None,
+            },
+            Default::default(),
+        );
+        assert_eq!(controller.translation_progress(), Some(0.99));
     }
 }

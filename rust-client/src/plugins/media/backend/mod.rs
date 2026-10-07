@@ -1,3 +1,5 @@
+#[cfg(any(windows, target_os = "linux"))]
+pub mod audio;
 #[cfg(feature = "mpv")]
 pub mod mpv;
 #[cfg(not(feature = "mpv"))]
@@ -33,6 +35,12 @@ pub struct PlayerDiagnostics {
 }
 
 pub trait MediaBackend: Send {
+    fn supports_video(&self) -> bool {
+        true
+    }
+    fn take_error(&mut self) -> Option<String> {
+        None
+    }
     fn load_local_file(&mut self, path: PathBuf) -> Result<(), String>;
     fn load_stream_url(&mut self, url: String) -> Result<(), String>;
 

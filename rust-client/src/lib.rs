@@ -4589,7 +4589,7 @@ impl XRTranslateApp {
         }
         if host_completed {
             self.host_audio_import = None;
-            self.set_connection_status("Media translation completed");
+            self.set_connection_status("Finishing media translation");
         }
     }
 

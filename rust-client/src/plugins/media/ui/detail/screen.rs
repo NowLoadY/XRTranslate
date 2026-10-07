@@ -50,7 +50,9 @@ pub(in crate::plugins::media::ui) fn render_detail(
         render_viewport_card(controller, language, ui);
     } else {
         egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
+            .id_salt("media_detail_controls")
+            .max_height((ui.available_height() - 160.0).max(100.0))
+            .auto_shrink([false, true])
             .show(ui, |ui| {
                 if controller.can_play() {
                     if !controller.can_show_video() {
@@ -63,8 +65,8 @@ pub(in crate::plugins::media::ui) fn render_detail(
                 if next != MediaAction::None {
                     action = next;
                 }
-                super::super::subtitles::render_subtitles_card(controller, language, ui);
             });
+        super::super::subtitles::render_subtitles_card(controller, language, ui);
     }
     action
 }
