@@ -12,6 +12,8 @@ use super::avatar::AvatarOverlay;
 use super::graphics;
 use super::openvr::{OpenVrApi, OpenVrOverlay, OpenVrSession, OverlayError};
 use super::renderer::{VrOverlayRenderer, VrSubtitleCard};
+use crate::client_settings::CaptureSource;
+use crate::session_coordinator::AudioSourceFilter;
 use crate::ui::components::avatar::Presentation;
 
 const RENDER_WIDTH: u32 = 640;
@@ -19,6 +21,8 @@ const RENDER_HEIGHT: u32 = 320;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VrOverlaySettings {
+    #[serde(default)]
+    pub audio_source_filter: AudioSourceFilter,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -127,6 +131,7 @@ impl VrOverlaySettings {
 impl Default for VrOverlaySettings {
     fn default() -> Self {
         Self {
+            audio_source_filter: AudioSourceFilter::default(),
             enabled: true,
             avatar_enabled: false,
             captions_enabled: true,
@@ -162,6 +167,8 @@ pub struct VrRuntimeStatus {
 pub enum VrCommand {
     Caption {
         stream_id: u64,
+        audio_source: CaptureSource,
+        is_typing: bool,
         source: String,
         translated: String,
         additional_translations: Vec<String>,
@@ -170,6 +177,8 @@ pub enum VrCommand {
     },
     RollStream {
         stream_id: u64,
+        audio_source: CaptureSource,
+        is_typing: bool,
         source: String,
         translated: String,
         additional_translations: Vec<String>,
@@ -188,6 +197,8 @@ pub enum VrCommand {
 #[derive(Clone, Debug)]
 struct StreamEntry {
     stream_id: u64,
+    audio_source: CaptureSource,
+    is_typing: bool,
     source: String,
     translated: String,
     additional_translations: Vec<String>,
@@ -292,6 +303,8 @@ impl VrOverlayHandle {
     pub fn add_caption(
         &self,
         stream_id: u64,
+        audio_source: CaptureSource,
+        is_typing: bool,
         source: &str,
         translated: &str,
         additional_translations: &[xrtranslate_protocol::AdditionalTranslation],
@@ -300,6 +313,8 @@ impl VrOverlayHandle {
     ) {
         let _ = self.command_tx.send(VrCommand::Caption {
             stream_id,
+            audio_source,
+            is_typing,
             source: source.to_owned(),
             translated: translated.to_owned(),
             additional_translations: additional_caption_lines(additional_translations),
@@ -311,6 +326,8 @@ impl VrOverlayHandle {
     pub fn roll_stream(
         &self,
         stream_id: u64,
+        audio_source: CaptureSource,
+        is_typing: bool,
         source: &str,
         translated: &str,
         additional_translations: &[xrtranslate_protocol::AdditionalTranslation],
@@ -318,6 +335,8 @@ impl VrOverlayHandle {
     ) {
         let _ = self.command_tx.send(VrCommand::RollStream {
             stream_id,
+            audio_source,
+            is_typing,
             source: source.to_owned(),
             translated: translated.to_owned(),
             additional_translations: additional_caption_lines(additional_translations),
@@ -499,15 +518,22 @@ fn run_vr_worker(
                 }
                 Ok(VrCommand::Caption {
                     stream_id,
+                    audio_source,
+                    is_typing,
                     source,
                     translated,
                     additional_translations,
                     speaker,
                     live,
                 }) => {
+                    if !settings.audio_source_filter.allows(audio_source, is_typing) {
+                        continue;
+                    }
                     upsert_caption(
                         &mut entries,
                         stream_id,
+                        audio_source,
+                        is_typing,
                         source,
                         translated,
                         additional_translations,
@@ -520,14 +546,21 @@ fn run_vr_worker(
                 }
                 Ok(VrCommand::RollStream {
                     stream_id,
+                    audio_source,
+                    is_typing,
                     source,
                     translated,
                     additional_translations,
                     speaker,
                 }) => {
+                    if !settings.audio_source_filter.allows(audio_source, is_typing) {
+                        continue;
+                    }
                     upsert_caption(
                         &mut entries,
                         stream_id,
+                        audio_source,
+                        is_typing,
                         source,
                         translated,
                         additional_translations,
@@ -561,6 +594,11 @@ fn run_vr_worker(
                         }
                     }
                     settings = updated;
+                    entries.retain(|entry| {
+                        settings
+                            .audio_source_filter
+                            .allows(entry.audio_source, entry.is_typing)
+                    });
                     clamp_entries(&mut entries, settings.max_items);
                     needs_redraw = true;
                 }
@@ -766,6 +804,8 @@ fn redraw_overlay(
 fn upsert_caption(
     entries: &mut Vec<StreamEntry>,
     stream_id: u64,
+    audio_source: CaptureSource,
+    is_typing: bool,
     source: String,
     translated: String,
     additional_translations: Vec<String>,
@@ -781,6 +821,8 @@ fn upsert_caption(
     }
     let entry = StreamEntry {
         stream_id,
+        audio_source,
+        is_typing,
         source,
         translated,
         additional_translations,
@@ -916,7 +958,16 @@ mod tests {
         let stopped = Arc::clone(&manager.shutdown);
         let producer = std::thread::spawn(move || {
             for i in 0..500 {
-                handle.add_caption(i, "caption", "字幕", &[], "", true);
+                handle.add_caption(
+                    i,
+                    CaptureSource::Microphone,
+                    false,
+                    "caption",
+                    "字幕",
+                    &[],
+                    "",
+                    true,
+                );
             }
             handle
         });
@@ -945,6 +996,8 @@ mod tests {
         upsert_caption(
             &mut entries,
             1,
+            CaptureSource::Microphone,
+            false,
             "partial".into(),
             "初稿".into(),
             Vec::new(),
@@ -955,6 +1008,8 @@ mod tests {
         upsert_caption(
             &mut entries,
             2,
+            CaptureSource::Microphone,
+            false,
             "other".into(),
             "另一任务".into(),
             Vec::new(),
@@ -966,6 +1021,8 @@ mod tests {
             upsert_caption(
                 &mut entries,
                 1,
+                CaptureSource::Microphone,
+                false,
                 format!("revision {i}"),
                 "更新".into(),
                 Vec::new(),
@@ -979,6 +1036,8 @@ mod tests {
         upsert_caption(
             &mut entries,
             1,
+            CaptureSource::Microphone,
+            false,
             "final".into(),
             "定稿".into(),
             Vec::new(),
@@ -989,6 +1048,8 @@ mod tests {
         upsert_caption(
             &mut entries,
             1,
+            CaptureSource::Microphone,
+            false,
             "next".into(),
             "下一句".into(),
             Vec::new(),
@@ -1009,6 +1070,8 @@ mod tests {
         upsert_caption(
             &mut entries,
             1,
+            CaptureSource::Microphone,
+            false,
             "stale live".into(),
             String::new(),
             Vec::new(),
@@ -1019,6 +1082,8 @@ mod tests {
         upsert_caption(
             &mut entries,
             2,
+            CaptureSource::Microphone,
+            false,
             "history".into(),
             String::new(),
             Vec::new(),
@@ -1029,6 +1094,8 @@ mod tests {
         upsert_caption(
             &mut entries,
             3,
+            CaptureSource::Microphone,
+            false,
             "fresh".into(),
             String::new(),
             Vec::new(),
@@ -1072,6 +1139,8 @@ mod tests {
         for i in 0..10 {
             entries.push(StreamEntry {
                 stream_id: i,
+                audio_source: CaptureSource::Microphone,
+                is_typing: false,
                 source: format!("source {i}"),
                 translated: format!("trans {i}"),
                 additional_translations: Vec::new(),

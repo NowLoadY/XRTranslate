@@ -10,6 +10,7 @@
 ## Beta Testers
 
 - **小雨安然** — [VRChat](https://vrchat.com/home/user/usr_7fd3c0d2-c1db-4d93-8e9d-9cce9472a326)
+  - Suggestion: filter plugin translations by audio source.(2026.10)
   - Created the prompt named "Chinese" in Prompt Studio that makes Chinese translations sound more natural.(2026.9.26)
   - With **Tony** and **LittleFox**, we found and solved a runtime bug in the just-released v0.2.8, quick enough that other users never even noticed.(2026.8.22)
   - Resolved issues with translation contextual fluency and localized natural phrasing (2026.8.20)

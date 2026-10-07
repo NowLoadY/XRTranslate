@@ -117,6 +117,17 @@ Both plugins omit the source for tagged ASR-only output. These display rules
 remain inside their plugin subscribers and renderers; shared translation
 infrastructure does not contain plugin-specific formatting.
 
+OSC and SteamVR independently persist an `AudioSourceFilter`, defaulting to
+both microphone and system audio. Their pages reuse the shared audio-filter
+controls and apply changes immediately through their existing settings paths.
+Each output worker rejects excluded captions before retaining them and removes
+excluded live and completed entries when settings change, including pending
+OSC snapshots. Re-enabling a source accepts future updates without replaying
+discarded captions. Text/OCR results and direct OSC messages remain independent
+of the audio filter. Live capture identifies each route separately; a legacy
+mixed-source caption requires both sources to be allowed. Capture, translation,
+host history and other subscribers are unaffected.
+
 Each channel owns its result adapter and cancellation scope. Domain subscribers
 receive results before host presentation policy is applied, so `PluginOnly`
 tasks still receive complete results and terminal outcomes. `Host` additionally

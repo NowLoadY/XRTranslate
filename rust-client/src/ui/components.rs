@@ -2,6 +2,8 @@ use crate::ui::theme;
 use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Stroke, Ui, Vec2};
 
 pub mod annotated_text;
+mod audio_source_filter;
+pub use audio_source_filter::audio_source_filter;
 pub mod avatar;
 pub mod faded_scroll_text;
 mod segmented_switch;

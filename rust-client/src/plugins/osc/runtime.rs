@@ -2,6 +2,7 @@ use super::chatbox::{
     HistoryMessage, ManualMessage, build_chatbox_text, render_entry, sanitize_chatbox_segment,
 };
 use crate::client_settings::CaptureSource;
+use crate::session_coordinator::AudioSourceFilter;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use parking_lot::Mutex;
 use rosc::{OscBundle, OscMessage, OscPacket, OscType, decoder, encoder};
@@ -186,6 +187,8 @@ fn default_typing_target_lang() -> String {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OscSettings {
     pub enabled: bool,
+    #[serde(default)]
+    pub audio_source_filter: AudioSourceFilter,
     pub ip: String,
     pub send_port: u16,
     pub listen_port: u16,
@@ -227,6 +230,7 @@ impl Default for OscSettings {
     fn default() -> Self {
         Self {
             enabled: true,
+            audio_source_filter: AudioSourceFilter::default(),
             ip: "127.0.0.1".into(),
             send_port: 9000,
             listen_port: 9001,
@@ -331,6 +335,19 @@ impl OscSettings {
             OscInputSource::SystemAudio => &self.system_audio_prefix,
             OscInputSource::Typing => &self.typing_prefix,
             OscInputSource::Unknown => "",
+        }
+    }
+
+    fn accepts_source(&self, source: OscInputSource) -> bool {
+        match source {
+            OscInputSource::Microphone => self
+                .audio_source_filter
+                .allows(CaptureSource::Microphone, false),
+            OscInputSource::SystemAudio => self
+                .audio_source_filter
+                .allows(CaptureSource::SystemAudio, false),
+            OscInputSource::Unknown => self.audio_source_filter.allows(CaptureSource::Both, false),
+            OscInputSource::Typing => true,
         }
     }
 }
@@ -752,7 +769,9 @@ fn dispatch_loop(
                             Duration::from_secs_f64(settings.history_ttl_seconds)
                         }),
                 };
-                if !render_entry(&entry, &settings).is_empty() {
+                if settings.accepts_source(entry.source_kind)
+                    && !render_entry(&entry, &settings).is_empty()
+                {
                     clear_pending = false;
                     live.retain(|item: &HistoryMessage| item.stream_id != stream_id);
                     if ongoing {
@@ -771,7 +790,7 @@ fn dispatch_loop(
                 source,
                 translated,
                 speaker_id,
-            }) if settings.enabled => {
+            }) if settings.enabled && (is_typing || settings.accepts_source(audio_source)) => {
                 clear_pending = false;
                 if let Some(index) = live.iter().position(|entry| entry.stream_id == stream_id) {
                     history.push(live.remove(index));
@@ -821,6 +840,8 @@ fn dispatch_loop(
                     last_send = now;
                 }
                 settings = updated;
+                history.retain(|entry| settings.accepts_source(entry.source_kind));
+                live.retain(|entry| settings.accepts_source(entry.source_kind));
                 next_banner_refresh = banner_refresh_deadline(&settings, now);
                 changed = true;
             }

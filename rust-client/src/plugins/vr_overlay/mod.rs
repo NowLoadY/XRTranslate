@@ -26,6 +26,8 @@ impl HostOutputSubscriber for VrOverlayHandle {
             HostOutputEvent::CommittedTranslation { .. } | HostOutputEvent::StreamCancelled(_) => {}
             HostOutputEvent::Caption {
                 stream_id,
+                audio_source,
+                is_typing,
                 source,
                 translated,
                 additional_translations,
@@ -35,6 +37,8 @@ impl HostOutputSubscriber for VrOverlayHandle {
                 ..
             } => self.roll_stream(
                 stream_id,
+                audio_source,
+                is_typing,
                 if asr_only { "" } else { source },
                 translated,
                 additional_translations,
@@ -42,6 +46,8 @@ impl HostOutputSubscriber for VrOverlayHandle {
             ),
             HostOutputEvent::Caption {
                 stream_id,
+                audio_source,
+                is_typing,
                 source,
                 translated,
                 additional_translations,
@@ -51,6 +57,8 @@ impl HostOutputSubscriber for VrOverlayHandle {
                 ..
             } => self.add_caption(
                 stream_id,
+                audio_source,
+                is_typing,
                 if asr_only { "" } else { source },
                 translated,
                 additional_translations,

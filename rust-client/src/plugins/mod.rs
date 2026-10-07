@@ -14,6 +14,9 @@ pub mod osc;
 pub mod player;
 pub mod vr_overlay;
 
+#[cfg(test)]
+mod output_filter_tests;
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{collections::BTreeMap, fmt};
 

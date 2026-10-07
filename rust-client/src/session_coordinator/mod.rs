@@ -14,10 +14,10 @@ mod subscriber;
 pub use owner::{PluginSessionOwner, TranslationSessionOwner};
 pub use plugin_session::{PluginSessionBinding, SessionOutputPolicy, TranslationSessionPlugin};
 pub(crate) use request::{TranslationInput, TranslationTask};
-pub use result::{TranslationEvent, TranslationOutcome, TranslationSegment};
 pub(crate) use result::TranslationEventAdapter;
+pub use result::{TranslationEvent, TranslationOutcome, TranslationSegment};
 pub use subscriber::{
-    CaptionUpdate, HostOutputEvent, HostOutputSubscriber, SessionEventSubscriber,
+    AudioSourceFilter, CaptionUpdate, HostOutputEvent, HostOutputSubscriber, SessionEventSubscriber,
 };
 
 #[cfg(test)]

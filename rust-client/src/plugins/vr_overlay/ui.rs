@@ -389,6 +389,10 @@ pub fn render(
 
     render_header(settings, ui, context, &mut actions);
     ui.add_space(10.0);
+    card(ui, |ui| {
+        crate::ui::components::audio_source_filter(ui, &mut settings.audio_source_filter, lang);
+    });
+    ui.add_space(10.0);
 
     let is_wide = (ui.available_width() > ui.available_height() && ui.available_width() >= 540.0)
         || ui.available_width() >= 800.0;

@@ -60,6 +60,13 @@ pub fn render_toolbar(
                         })
                         .inner;
 
+                    ui.add_space(8.0);
+                    changed |= components::audio_source_filter(
+                        ui,
+                        &mut plugin.draft_mut().audio_source_filter,
+                        language,
+                    );
+
                     settings.show_body_unindented(ui, |ui| {
                         ui.add_space(8.0);
                         let mut mute_gate_enabled = mute_gate_enabled;
