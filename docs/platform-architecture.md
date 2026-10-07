@@ -239,8 +239,13 @@ independent of concrete plugins and operating systems.
 
 ## Android packages and application updates
 
-Build the default ARM64 APK with `python3 scripts/android.py build --profile release`.
+Build a signed ARM64 APK with `./scripts/build-android-release.sh`.
+The script uses the current signing environment or loads
+`~/.config/xrtranslate/signing/android-release.env` (under `XDG_CONFIG_HOME` when
+set). Set `XRT_ANDROID_SIGNING_ENV` to use another environment file. Missing
+signing values stop the build before compilation. The output goes to `dist/`.
 Use `--abis x86_64` for x64, or `--abis arm64-v8a,x86_64` for a universal APK.
+The shared cross-platform entry remains `python3 scripts/android.py build --profile release`.
 Prerequisites and SDK setup are available through `python3 scripts/android.py --help`
 and `python3 scripts/android.py setup`. Python is build tooling only.
 

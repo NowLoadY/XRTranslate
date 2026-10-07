@@ -47,6 +47,9 @@ fn transform_vertex(input: VertexInput) -> VertexOutput {
     return output;
 }
 @vertex fn model_vertex(input: VertexInput) -> VertexOutput { return transform_vertex(input); }
+@vertex fn depth_vertex(input: VertexInput) -> @builtin(position) vec4<f32> {
+    return transform_vertex(input).position;
+}
 @vertex fn shadow_vertex(input: VertexInput) -> @builtin(position) vec4<f32> {
     let vertex = transform_vertex(input);
     return camera.light_projection * vec4<f32>(vertex.world, 1.0);

@@ -68,6 +68,7 @@ struct Target {
     occlusion: wgpu::BindGroup,
     msaa: wgpu::TextureView,
     depth: wgpu::TextureView,
+    contact_depth: wgpu::TextureView,
     shadow: wgpu::TextureView,
     lighting: wgpu::BindGroup,
     composite: wgpu::BindGroup,
@@ -116,16 +117,20 @@ impl Target {
         let color = color_texture.create_view(&Default::default());
         let msaa = texture(COLOR, SAMPLES, wgpu::TextureUsages::RENDER_ATTACHMENT)
             .create_view(&Default::default());
-        let depth_texture = texture(
+        let depth = texture(
             MASKED_DEPTH,
             SAMPLES,
+            wgpu::TextureUsages::RENDER_ATTACHMENT,
+        )
+        .create_view(&Default::default());
+        // Read a single-sample depth image as unfiltered floats for OpenGL compatibility.
+        // The visible model retains its multisampled color and stencil targets.
+        let contact_depth = texture(
+            DEPTH,
+            1,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        );
-        let depth = depth_texture.create_view(&Default::default());
-        let depth_sample = depth_texture.create_view(&wgpu::TextureViewDescriptor {
-            aspect: wgpu::TextureAspect::DepthOnly,
-            ..Default::default()
-        });
+        )
+        .create_view(&Default::default());
         let output_texture = texture(
             COLOR,
             1,
@@ -144,7 +149,7 @@ impl Target {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&depth_sample),
+                    resource: wgpu::BindingResource::TextureView(&contact_depth),
                 },
             ],
         });
@@ -218,6 +223,7 @@ impl Target {
             occlusion,
             msaa,
             depth,
+            contact_depth,
             shadow,
             lighting,
             composite,
@@ -236,6 +242,7 @@ struct Renderer {
     model_pipeline: wgpu::RenderPipeline,
     outline_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
+    contact_depth_pipeline: wgpu::RenderPipeline,
     shadow_layout: wgpu::BindGroupLayout,
     shadow_sampler: wgpu::Sampler,
     composite_pipeline: wgpu::RenderPipeline,
@@ -337,9 +344,9 @@ impl Renderer {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: true,
+                        multisampled: false,
                     },
                     count: None,
                 },
@@ -487,6 +494,24 @@ impl Renderer {
             None,
             None,
         );
+        let contact_depth_pipeline = pipeline(
+            &model_shader,
+            &[Some(&camera_layout)],
+            "depth_vertex",
+            None,
+            &buffers,
+            COLOR,
+            Some(wgpu::DepthStencilState {
+                format: DEPTH,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            1,
+            None,
+            None,
+        );
         let composite_pipeline = pipeline(
             &composite_shader,
             &[Some(&texture_layout)],
@@ -565,6 +590,7 @@ impl Renderer {
             model_pipeline,
             outline_pipeline,
             shadow_pipeline,
+            contact_depth_pipeline,
             shadow_layout,
             shadow_sampler,
             composite_pipeline,
@@ -729,12 +755,23 @@ impl CallbackTrait for Draw {
         target.last_batches.clone_from(&self.batches);
         queue.write_buffer(&target.parts, 0, bytemuck::cast_slice(&self.parts));
         let target = &renderer.targets[&self.id];
-        {
-            let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("avatar shadow pass"),
+        for (label, view, pipeline) in [
+            (
+                "avatar shadow pass",
+                &target.shadow,
+                &renderer.shadow_pipeline,
+            ),
+            (
+                "avatar contact depth pass",
+                &target.contact_depth,
+                &renderer.contact_depth_pipeline,
+            ),
+        ] {
+            let mut depth_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(label),
                 color_attachments: &[],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &target.shadow,
+                    view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -745,8 +782,8 @@ impl CallbackTrait for Draw {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            shadow_pass.set_pipeline(&renderer.shadow_pipeline);
-            self.draw_parts(&mut shadow_pass, renderer, target, false);
+            depth_pass.set_pipeline(pipeline);
+            self.draw_parts(&mut depth_pass, renderer, target, false);
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("avatar 3D pass"),
@@ -763,7 +800,7 @@ impl CallbackTrait for Draw {
                 view: &target.depth,
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
+                    store: wgpu::StoreOp::Discard,
                 }),
                 stencil_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(0),

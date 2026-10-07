@@ -6,7 +6,7 @@ struct Camera {
 }
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(1) @binding(0) var color: texture_2d<f32>;
-@group(1) @binding(1) var depth: texture_depth_multisampled_2d;
+@group(1) @binding(1) var depth: texture_2d<f32>;
 
 @vertex fn vertex(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
     let uv = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
@@ -15,7 +15,7 @@ struct Camera {
 
 fn world(pixel: vec2<i32>, dimensions: vec2<f32>) -> vec3<f32> {
     let uv = (vec2<f32>(pixel) + 0.5) / dimensions;
-    let z = textureLoad(depth, pixel, 0);
+    let z = textureLoad(depth, pixel, 0).r;
     let position = camera.inverse_view_projection * vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), z, 1.0);
     return position.xyz / position.w;
 }
