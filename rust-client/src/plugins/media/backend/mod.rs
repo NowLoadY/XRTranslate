@@ -14,22 +14,10 @@ pub enum MediaSource {
     NetworkStream(String),
 }
 
-impl MediaSource {
-    pub fn display_title(&self) -> String {
-        match self {
-            Self::LocalFile(path) => path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("Local Media")
-                .to_string(),
-            Self::NetworkStream(url) => url.clone(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackStatus {
     Playing,
+    #[cfg_attr(not(feature = "mpv"), allow(dead_code))]
     Paused,
     Stopped,
 }
@@ -65,7 +53,6 @@ pub trait MediaBackend: Send {
     /// Attach to a native video host. A null handle detaches the current host.
     fn attach_native_host(&mut self, host_handle: *mut std::ffi::c_void);
     fn set_osd_subtitle(&mut self, text: &str);
-    fn show_osd_title(&mut self, title: &str);
     fn get_audio_channel_count(&self) -> Option<usize>;
     #[allow(dead_code)]
     fn get_audio_layout(&self) -> Option<String>;

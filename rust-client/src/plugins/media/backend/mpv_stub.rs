@@ -46,7 +46,6 @@ impl MediaBackend for MpvBackend {
     fn tick(&mut self) {}
     fn attach_native_host(&mut self, _host_handle: *mut std::ffi::c_void) {}
     fn set_osd_subtitle(&mut self, _text: &str) {}
-    fn show_osd_title(&mut self, _title: &str) {}
     fn get_audio_channel_count(&self) -> Option<usize> {
         None
     }

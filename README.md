@@ -95,6 +95,10 @@ Keep your microphone, system audio, and translation routes easy to follow with A
 
 Download the latest Windows version from [GitHub Releases](https://github.com/NowLoadY/XRTranslate/releases), extract it, and open XRTranslate. The first-run guide prepares the runtime and models automatically; once it finishes, you can start translating.
 
+- **Quick translation:** select or copy text in another app, then press `Ctrl+Alt+Y`. The floating window shows the source and translation, with copy and close controls. Change or disable the shortcut in Settings → General. Selection access depends on the source app; copying text is the fallback. Wayland requires a desktop with global-shortcut portal support.
+- **Translation history:** open “Search translation history” on the translation page. Local saving is off by default; enable it to retain and search future results across restarts. Delete individual entries or review a date range for bulk deletion; dates use local time and include both days.
+- **Media:** Media and Meeting plugins are enabled by default. Open Media to create an audio, video or SRT/VTT task. Subtitle translation preserves cue times and supports pause/resume and SRT/VTT/LRC export. Playback components are optional. Manage plugin visibility in Settings → Plugins.
+
 Linux build instructions are available in [docs/linux-build.md](docs/linux-build.md); the platform boundary is described in [docs/platform-architecture.md](docs/platform-architecture.md).
 
 ---
@@ -105,6 +109,8 @@ Linux build instructions are available in [docs/linux-build.md](docs/linux-build
 | :--- | :--- | :--- |
 | **Model Assets** | `models/` | Stores speech recognition and translation model packages |
 | **Terminology Corpora** | [XR Corpus](https://github.com/NowLoadY/XR-Corpus) | SQLite terminology graph stored in `runtime/xr-corpus.sqlite` |
+| **Translation History** | `runtime/translation-history.sqlite3` | Optional local translation archive |
+| **Media Tasks** | `runtime/video_tasks.json` | Media tasks and subtitles; the existing storage path is retained |
 | **Execution Logs** | `runtime/logs/` | Service & client execution logs |
 | **Local Config** | `config.json` | Port numbers, model configurations, and rendering parameters |
 

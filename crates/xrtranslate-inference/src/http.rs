@@ -273,7 +273,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = [0; 4096];
-            socket.read(&mut request).await.unwrap();
+            assert!(socket.read(&mut request).await.unwrap() > 0);
             let first = "data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n";
             let final_chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"好。\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
             socket.write_all(format!(

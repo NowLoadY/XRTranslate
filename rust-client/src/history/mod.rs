@@ -1,5 +1,6 @@
 //! Recognition and translation history models plus deterministic stream merging.
 
+pub(crate) mod archive;
 mod merge;
 mod model;
 

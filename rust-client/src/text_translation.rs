@@ -69,7 +69,6 @@ struct TextTask {
     scope: Arc<ChannelScope>,
     pending: Option<String>,
     languages: LanguageSelection,
-    publish_to_host_outputs: bool,
     connection: TextConnection,
     started: Instant,
     segments: BTreeMap<u32, String>,
@@ -81,7 +80,7 @@ impl TextTask {
     fn same_conversation(&self, other: &Self) -> bool {
         self.scope.owner.same_conversation(&other.scope.owner)
             && self.languages == other.languages
-            && self.publish_to_host_outputs == other.publish_to_host_outputs
+            && self.scope.publish_to_host_outputs == other.scope.publish_to_host_outputs
     }
 
     fn send_pending(&mut self) -> Result<(), String> {
@@ -116,7 +115,7 @@ impl TextTask {
         self.connection.close();
         self.emit(SessionEvent::Error(error.clone()), target);
         self.finish(error.clone(), target);
-        if self.publish_to_host_outputs {
+        if self.scope.publish_to_host_outputs {
             errors.push(error);
         }
     }
@@ -312,7 +311,7 @@ impl TextTranslation {
             .plugin
             .as_ref()
             .is_none_or(|binding| binding.publish_to_host_outputs());
-        let scope = ChannelScope::text(owner);
+        let scope = ChannelScope::text(owner, publish_to_host_outputs);
         scope
             .asr_only
             .store(task.languages.asr_only(), Ordering::Release);
@@ -320,7 +319,6 @@ impl TextTranslation {
             scope,
             pending: Some(text),
             languages: task.languages,
-            publish_to_host_outputs,
             connection: TextConnection::default(),
             started: Instant::now(),
             segments: BTreeMap::new(),
@@ -399,7 +397,7 @@ impl TextTranslation {
                                 server_url: server_url.to_owned(),
                                 languages: task.languages,
                                 external_audio_gate: ExternalAudioGate::default(),
-                                publish_to_host_outputs: task.publish_to_host_outputs,
+                                publish_to_host_outputs: task.scope.publish_to_host_outputs,
                                 tts: None,
                                 egui_ctx: ctx.clone(),
                                 vad_threshold: 0.0,
@@ -443,7 +441,7 @@ impl TextTranslation {
                         task.connection.close();
                         task.emit(event, target);
                         task.finish(error.clone(), target);
-                        if task.publish_to_host_outputs {
+                        if task.scope.publish_to_host_outputs {
                             errors.push(error);
                         }
                     }
@@ -659,8 +657,8 @@ mod tests {
         assert!(controller.owner_active("example"));
         assert!(controller.preparing_for("example"));
         assert!(!controller.preparing_for("other"));
-        assert!(!controller.tasks[0].publish_to_host_outputs);
-        assert!(controller.tasks[1].publish_to_host_outputs);
+        assert!(!controller.tasks[0].scope.publish_to_host_outputs);
+        assert!(controller.tasks[1].scope.publish_to_host_outputs);
         assert_eq!(controller.tasks[0].pending.as_deref(), Some("first"));
         assert_eq!(controller.tasks[0].languages, first);
         assert_eq!(controller.tasks[1].pending.as_deref(), Some("second"));

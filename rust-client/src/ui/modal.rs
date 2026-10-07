@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, RichText};
+use eframe::egui::{self, Color32, Frame, Margin, RichText};
 
 #[derive(Clone, Debug)]
 pub struct ModalPage {
@@ -331,9 +331,9 @@ fn dialog_with_width(
             id.with("border"),
             Frame::new()
                 .fill(crate::ui::theme::modal_backdrop())
-                .corner_radius(CornerRadius::same(20))
+                .corner_radius(crate::ui::theme::container_radius(16))
                 .inner_margin(Margin::same(16)),
-            20.0,
+            crate::ui::theme::container_radius_f32(16.0),
             crate::ui::theme::text_weak(),
             |ui| {
                 ui.set_width(width);

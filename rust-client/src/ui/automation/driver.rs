@@ -211,7 +211,7 @@ impl AutomationDriver {
                         let plugin = target.strip_prefix("plugin:").unwrap_or(&target);
                         let plugin = match plugin {
                             "vroverlay" => "vr_overlay",
-                            "videoplayer" | "player" => "video_player",
+                            "media" | "videoplayer" | "player" => "video_player",
                             plugin => plugin,
                         };
                         crate::plugins::PluginId::parse(plugin)

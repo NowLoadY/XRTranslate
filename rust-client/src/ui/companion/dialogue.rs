@@ -84,7 +84,7 @@ impl Context {
                     Page::Settings => Cue::Settings,
                     Page::Plugin(PluginId::OSC) => Cue::Osc,
                     Page::Plugin(PluginId::MEETING) => Cue::Meeting,
-                    Page::Plugin(PluginId::VIDEO_PLAYER) => Cue::Player,
+                    Page::Plugin(PluginId::MEDIA) => Cue::Player,
                     Page::Plugin(PluginId::VR_OVERLAY) => Cue::Vr,
                     Page::Plugin(_) => Cue::Translation,
                 },

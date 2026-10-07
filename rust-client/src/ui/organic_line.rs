@@ -31,6 +31,8 @@ pub fn paint_hand_drawn_line(
 
         // Endpoints fade to exactly zero displacement to preserve layout alignment
         let edge_fade = (t * std::f32::consts::PI).sin();
+        // A fixed visual-noise coefficient, not an angle; preserve existing strokes.
+        #[allow(clippy::approx_constant)]
         let phase1 = (t * std::f32::consts::TAU * 1.5 + seed * 3.14).sin();
         let phase2 = (t * std::f32::consts::TAU * 3.7 + seed * 1.73).cos() * 0.35;
         let offset = (phase1 + phase2) * 0.70 * edge_fade;
@@ -54,12 +56,7 @@ pub fn paint_hand_drawn_bottom_line(
 }
 
 /// Paints an organic hand-drawn bounding rectangle.
-pub fn paint_hand_drawn_rect(
-    painter: &egui::Painter,
-    id: egui::Id,
-    rect: Rect,
-    stroke: Stroke,
-) {
+pub fn paint_hand_drawn_rect(painter: &egui::Painter, id: egui::Id, rect: Rect, stroke: Stroke) {
     let tl = rect.left_top();
     let tr = rect.right_top();
     let br = rect.right_bottom();
@@ -78,9 +75,18 @@ pub fn paint_hand_drawn_checkmark(
     rect: Rect,
     stroke: Stroke,
 ) {
-    let start = egui::pos2(rect.left() + rect.width() * 0.22, rect.top() + rect.height() * 0.52);
-    let mid = egui::pos2(rect.left() + rect.width() * 0.44, rect.bottom() - rect.height() * 0.22);
-    let end = egui::pos2(rect.right() - rect.width() * 0.18, rect.top() + rect.height() * 0.22);
+    let start = egui::pos2(
+        rect.left() + rect.width() * 0.22,
+        rect.top() + rect.height() * 0.52,
+    );
+    let mid = egui::pos2(
+        rect.left() + rect.width() * 0.44,
+        rect.bottom() - rect.height() * 0.22,
+    );
+    let end = egui::pos2(
+        rect.right() - rect.width() * 0.18,
+        rect.top() + rect.height() * 0.22,
+    );
 
     paint_hand_drawn_line(painter, id.with("check_down"), start, mid, stroke);
     paint_hand_drawn_line(painter, id.with("check_up"), mid, end, stroke);

@@ -2,11 +2,16 @@ use crate::CaptureSource;
 use crate::ui::components::{self, danger_button, status_badge};
 use eframe::egui;
 
+mod archive;
 pub(crate) mod history;
 pub use history::FullscreenHistory;
 use history::{render_fullscreen_history, render_history_feeds};
 
 pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
+    if app.history_archive.open {
+        archive::render(app, ui);
+        return;
+    }
     if let Some(mode) = app.fullscreen_history {
         render_fullscreen_history(app, ui, mode);
         return;
@@ -34,6 +39,15 @@ fn render_content(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 .color(crate::ui::theme::text_strong())
                 .strong(),
         );
+        if components::secondary_button(
+            ui,
+            crate::i18n::tr(app.ui_language, "Search translation history"),
+        )
+        .clicked()
+        {
+            app.history_archive.open = true;
+            app.history_archive.refresh(false);
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.max_rect().width() < 680.0 {
                 ui.add_space(56.0);

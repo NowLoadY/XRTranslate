@@ -83,6 +83,10 @@ pub struct ClientSettings {
     #[serde(default)]
     pub asr_only: bool,
     #[serde(default)]
+    pub save_translation_history: bool,
+    #[serde(default)]
+    pub quick_translation: crate::desktop_shortcut::Settings,
+    #[serde(default)]
     pub history_display: crate::ui::pages::translation::history::HistoryDisplay,
     #[serde(default = "default_true")]
     pub denoise_enabled: bool,
@@ -187,6 +191,8 @@ impl Default for ClientSettings {
             additional_target_lang: None,
             asr_only: false,
             history_display: Default::default(),
+            save_translation_history: false,
+            quick_translation: Default::default(),
             denoise_enabled: true,
             tts_enabled: false,
             microphone_clone_state: None,

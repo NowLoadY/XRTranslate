@@ -26,11 +26,13 @@ mod backend;
 mod child_process;
 mod client_settings;
 pub(crate) mod contributors;
+mod desktop_shortcut;
 mod feature_access;
 mod file_dialog;
 mod focused_input;
 mod history;
 mod i18n;
+mod media_host;
 pub(crate) mod media_import;
 mod model_install;
 mod network;
@@ -47,6 +49,8 @@ mod overlay_manager;
 mod overlay_native;
 mod plugins;
 mod presentation;
+#[cfg(any(windows, target_os = "linux"))]
+mod quick_translate;
 mod runtime_install;
 #[cfg(any(windows, target_os = "linux"))]
 mod screen_capture;
@@ -679,7 +683,7 @@ struct XRTranslateApp {
     voicemeeter_route: Option<voicemeeter::VoiceMeeterStripRouteGuard>,
     audio_studio_started_voicemeeter: bool,
     meeting_plugin: MeetingPlugin,
-    player_plugin: plugins::player::VideoPlayerPlugin,
+    media_plugin: plugins::media::MediaPlugin,
     #[cfg(any(windows, target_os = "linux"))]
     ocr: ocr_host::OcrHost,
     host_audio_import: Option<media_import::AudioImportHandle>,
@@ -701,6 +705,12 @@ struct XRTranslateApp {
     corpus_studio: ui::pages::corpus_studio::CorpusStudioController,
     tts_center: ui::pages::tts_center::TtsCenterController,
     pub modal_dialog: ui::modal::ModalDialog,
+    notifications: ui::notifications::Notifications,
+    history_archive: history::archive::Archive,
+    #[cfg(any(windows, target_os = "linux"))]
+    quick_translate: quick_translate::QuickTranslate,
+    #[cfg(not(any(windows, target_os = "linux")))]
+    quick_translation_settings: desktop_shortcut::Settings,
     pending_resource_deletion: Option<PendingResourceDeletion>,
     pub first_run: bool,
     pub model_defaults_initialized: bool,
@@ -937,7 +947,21 @@ impl Default for XRTranslateApp {
                 None
             }
         };
-        let player_plugin = plugins::player::VideoPlayerPlugin::new();
+        let media_plugin = plugins::media::MediaPlugin::new();
+        const HISTORY_PRODUCERS: &[&str] = &[
+            PluginId::OCR.as_str(),
+            PluginId::MEDIA.as_str(),
+            PluginId::MEETING.as_str(),
+            "quick_translate",
+        ];
+        let history_archive = history::archive::Archive::new(
+            &backend_manager.project_root(),
+            settings.save_translation_history,
+            HISTORY_PRODUCERS,
+        );
+        #[cfg(any(windows, target_os = "linux"))]
+        let quick_translate =
+            quick_translate::QuickTranslate::new(settings.quick_translation.clone());
         let auto_input_plugin = plugins::auto_input::AutoInputPlugin::default();
         #[cfg(any(windows, target_os = "linux"))]
         let ocr = ocr_host::OcrHost::default();
@@ -986,8 +1010,11 @@ impl Default for XRTranslateApp {
         let loopback_vad_active_clone = Arc::clone(&loopback_vad_active);
         let rx = event_rx.clone();
         let session_event_subscribers: Arc<Vec<Box<dyn SessionEventSubscriber>>> = Arc::new(vec![
+            Box::new(history_archive.subscriber()),
+            #[cfg(any(windows, target_os = "linux"))]
+            Box::new(quick_translate.sink.clone()),
             Box::new(meeting_plugin.event_sink.clone()),
-            Box::new(player_plugin.event_sink.clone()),
+            Box::new(media_plugin.event_sink.clone()),
             #[cfg(any(windows, target_os = "linux"))]
             Box::new(ocr.plugin.event_sink.clone()),
         ]);
@@ -1602,6 +1629,9 @@ impl Default for XRTranslateApp {
                             message,
                             configuration_required,
                         } => {
+                            if !scope.publish_to_host_outputs {
+                                continue;
+                            }
                             state
                                 .translation_previews
                                 .retain(|entry| entry.stream_id != Some(scoped_stream));
@@ -1609,6 +1639,9 @@ impl Default for XRTranslateApp {
                             state.provider_configuration_required |= configuration_required;
                         }
                         SessionEvent::Error(error) => {
+                            if !scope.publish_to_host_outputs {
+                                continue;
+                            }
                             state
                                 .translation_previews
                                 .retain(|entry| entry.stream_id != Some(scoped_stream));
@@ -1712,7 +1745,7 @@ impl Default for XRTranslateApp {
             voicemeeter_route: None,
             audio_studio_started_voicemeeter: false,
             meeting_plugin,
-            player_plugin,
+            media_plugin,
             #[cfg(any(windows, target_os = "linux"))]
             ocr,
             host_audio_import: None,
@@ -1739,6 +1772,12 @@ impl Default for XRTranslateApp {
             corpus_studio: ui::pages::corpus_studio::CorpusStudioController::default(),
             tts_center: Default::default(),
             modal_dialog: ui::modal::ModalDialog::default(),
+            notifications: ui::notifications::Notifications::default(),
+            history_archive,
+            #[cfg(any(windows, target_os = "linux"))]
+            quick_translate,
+            #[cfg(not(any(windows, target_os = "linux")))]
+            quick_translation_settings: settings.quick_translation.clone(),
             pending_resource_deletion: None,
             first_run,
             model_defaults_initialized: settings.model_defaults_initialized || !settings.first_run,
@@ -2033,7 +2072,10 @@ impl XRTranslateApp {
                             .set_file_name(&default_name)
                             .save(json)
                         {
-                            self.last_error = Some(error);
+                            self.notify_error(
+                                "Could not export the prompt. Please try again.",
+                                error,
+                            );
                         }
                     }
                 }
@@ -2594,9 +2636,9 @@ impl XRTranslateApp {
                 .meeting_plugin
                 .disable_block_reason()
                 .map(str::to_owned),
-            PluginId::VIDEO_PLAYER => {
-                if self.plugin_task_active(PluginId::VIDEO_PLAYER.as_str())
-                    || self.player_plugin.has_active_task()
+            PluginId::MEDIA => {
+                if self.plugin_task_active(PluginId::MEDIA.as_str())
+                    || self.media_plugin.has_active_task()
                 {
                     Some("Stop the active video playback before disabling this plugin".into())
                 } else {
@@ -2613,7 +2655,7 @@ impl XRTranslateApp {
             return;
         }
         if !enabled && let Some(reason) = self.plugin_disable_block_reason(id) {
-            self.last_error = Some(reason);
+            self.notify_error("Stop active tasks before disabling this plugin.", reason);
             return;
         }
 
@@ -2628,7 +2670,7 @@ impl XRTranslateApp {
             _ => Ok(()),
         };
         if let Err(error) = lifecycle {
-            self.last_error = Some(error);
+            self.notify_error("Could not apply plugin settings.", error);
             return;
         }
 
@@ -2670,7 +2712,7 @@ impl XRTranslateApp {
                 OscUiAction::SaveSettings => self.save_settings(),
                 OscUiAction::SettingsApplied(result) => match result {
                     Ok(()) => self.last_error = None,
-                    Err(error) => self.last_error = Some(error),
+                    Err(error) => self.notify_error("Could not apply OSC settings.", error),
                 },
                 OscUiAction::SetLanguageRoute {
                     source_lang,
@@ -2919,88 +2961,6 @@ impl XRTranslateApp {
         self.apply_meeting_action(action, ui.ctx().clone());
     }
 
-    fn render_player_plugin_page(&mut self, ui: &mut egui::Ui) {
-        let snapshot = plugins::player::VideoPlayerUiSnapshot {
-            language: self.ui_language,
-            languages: self.language_capabilities(),
-        };
-        let action = self.player_plugin.render_page(&snapshot, ui);
-        self.apply_video_player_action(action, ui.ctx().clone());
-    }
-
-    fn apply_video_player_action(
-        &mut self,
-        action: plugins::player::VideoPlayerAction,
-        ctx: egui::Context,
-    ) {
-        match action {
-            plugins::player::VideoPlayerAction::None => {}
-            plugins::player::VideoPlayerAction::StopTranslation => {
-                self.stop_plugin_task(PluginId::VIDEO_PLAYER);
-            }
-            plugins::player::VideoPlayerAction::StartTranslation { request, restart } => {
-                use plugins::player::PlayerTranslationRequest;
-                let (source, target) = match &request {
-                    PlayerTranslationRequest::ImportMediaFile {
-                        source_language,
-                        target_language,
-                        ..
-                    }
-                    | PlayerTranslationRequest::LiveStream {
-                        source_language,
-                        target_language,
-                        ..
-                    } => (source_language, target_language),
-                };
-                let Some(languages) = self.select_languages(source, target) else {
-                    return;
-                };
-                self.stop_plugin_task(PluginId::VIDEO_PLAYER);
-                if restart {
-                    self.player_plugin.controller.clear_and_restart_task();
-                } else {
-                    self.player_plugin.controller.start_task();
-                }
-                let previous_recognition = self.loopback_recognition.clone();
-                let input = match request {
-                    PlayerTranslationRequest::ImportMediaFile {
-                        path,
-                        recognition,
-                        audio_channels,
-                        ..
-                    } => TranslationInput::File {
-                        path,
-                        recognition,
-                        options: media_import::AudioImportOptions {
-                            chunk_frames: 1_600,
-                            pacing: media_import::AudioImportPacing::AsFastAsPossible,
-                            recognition_channels: audio_channels
-                                .iter()
-                                .filter(|channel| channel.recognition)
-                                .map(|channel| channel.index)
-                                .collect(),
-                            ..media_import::AudioImportOptions::default()
-                        },
-                    },
-                    PlayerTranslationRequest::LiveStream { recognition, .. } => {
-                        self.loopback_recognition = recognition;
-                        TranslationInput::Live(CaptureSource::SystemAudio)
-                    }
-                };
-                self.start_translation_task(
-                    TranslationTask {
-                        languages,
-                        plugin: self.player_plugin.translation_session_binding(),
-                        input,
-                        profiles: Vec::new(),
-                    },
-                    Some(ctx),
-                );
-                self.loopback_recognition = previous_recognition;
-            }
-        }
-    }
-
     fn start_audio_file_session(&mut self, task: TranslationTask, ctx: Option<egui::Context>) {
         use translation_service::{AudioTask, ChannelScope, TaskChannel, scoped_events};
         let owner = task.owner();
@@ -3077,7 +3037,7 @@ impl XRTranslateApp {
     fn render_plugin_page(&mut self, id: PluginId, ui: &mut egui::Ui) {
         match id {
             PluginId::MEETING => self.render_meeting_plugin_page(ui),
-            PluginId::VIDEO_PLAYER => self.render_player_plugin_page(ui),
+            PluginId::MEDIA => self.render_media_plugin_page(ui),
             PluginId::VR_OVERLAY => self.render_vr_overlay_plugin_page(ui),
             PluginId::OSC => self.render_osc_plugin_page(ui),
             _ => self.navigation.page = Page::Translation,
@@ -3213,6 +3173,11 @@ impl XRTranslateApp {
             target_lang: self.target_lang.clone(),
             asr_only: self.asr_only,
             history_display: self.history_display,
+            save_translation_history: self.history_archive.enabled(),
+            #[cfg(any(windows, target_os = "linux"))]
+            quick_translation: self.quick_translate.settings.clone(),
+            #[cfg(not(any(windows, target_os = "linux")))]
+            quick_translation: self.quick_translation_settings.clone(),
             additional_target_lang: self.additional_target_lang.clone(),
             denoise_enabled: self.denoise_enabled,
             tts_enabled: self.tts_enabled,
@@ -3356,7 +3321,7 @@ impl XRTranslateApp {
                         self.save_settings();
                     }
                 }
-                Err(error) => self.last_error = Some(error),
+                Err(error) => self.notify_error("Could not load the background image.", error),
             }
         }
         self.background_image
@@ -3369,7 +3334,36 @@ impl XRTranslateApp {
 
     pub fn check_for_updates(&mut self) {
         if let Err(error) = self.app_update_manager.check() {
-            self.last_error = Some(error);
+            self.notify_error("Could not check for updates. Try again later.", error);
+        }
+    }
+
+    fn notify_error(&self, message: &'static str, details: impl Into<String>) {
+        self.notifications
+            .error(crate::i18n::tr(self.ui_language, message), details);
+    }
+
+    fn poll_app_update(&mut self) {
+        let was_checking = matches!(
+            self.app_update_manager.state(),
+            app_update::AppUpdateState::Checking
+        );
+        let was_failed = matches!(
+            self.app_update_manager.state(),
+            app_update::AppUpdateState::Failed(_)
+        );
+        self.app_update_manager.poll();
+        if !was_failed
+            && let app_update::AppUpdateState::Failed(error) = self.app_update_manager.state()
+        {
+            self.notify_error(
+                if was_checking {
+                    "Could not check for updates. Try again later."
+                } else {
+                    "Could not complete the update. Please try again."
+                },
+                error,
+            );
         }
     }
 
@@ -3422,14 +3416,14 @@ impl XRTranslateApp {
 
     pub fn download_update(&mut self) {
         if let Err(error) = self.app_update_manager.download(self.project_root()) {
-            self.last_error = Some(error);
+            self.notify_error("Could not complete the update. Please try again.", error);
         }
     }
 
     #[cfg(target_os = "android")]
     pub fn install_update_and_restart(&mut self) {
         if let Err(error) = self.app_update_manager.begin_install() {
-            self.last_error = Some(error);
+            self.notify_error("Could not complete the update. Please try again.", error);
         }
     }
 
@@ -3438,7 +3432,7 @@ impl XRTranslateApp {
         let install = match self.app_update_manager.begin_install() {
             Ok(install) => install,
             Err(error) => {
-                self.last_error = Some(error);
+                self.notify_error("Could not complete the update. Please try again.", error);
                 return;
             }
         };
@@ -3802,11 +3796,11 @@ impl XRTranslateApp {
                 self.meeting_plugin.event_sink.cancel_sessions();
                 self.meeting_plugin.event_sink.finish_active();
             }
-            PluginId::VIDEO_PLAYER => {
-                self.player_plugin.poll_translation_events();
+            PluginId::MEDIA => {
+                self.media_plugin.poll_translation_events();
                 self.host_audio_import = None;
-                self.player_plugin.stop_import();
-                self.player_plugin.pause_task();
+                self.media_plugin.stop_import();
+                self.media_plugin.pause_task();
             }
             _ => {}
         }
@@ -3852,9 +3846,9 @@ impl XRTranslateApp {
         }
         self.audio_tasks = kept;
         for task in ended {
-            if task.owner.is_plugin(PluginId::VIDEO_PLAYER.as_str()) {
+            if task.owner.is_plugin(PluginId::MEDIA.as_str()) {
                 self.host_audio_import = None;
-                self.player_plugin.pause_task();
+                self.media_plugin.pause_task();
             }
             if task.owner.is_plugin(PluginId::MEETING.as_str()) {
                 self.meeting_plugin.clear_audio_import();
@@ -3994,9 +3988,9 @@ impl XRTranslateApp {
         if owner.is_plugin(PluginId::MEETING.as_str()) {
             self.meeting_plugin.fail_active_startup(error);
         }
-        if owner.is_plugin(PluginId::VIDEO_PLAYER.as_str()) {
-            self.player_plugin.pause_task();
-            self.player_plugin.set_error(error);
+        if owner.is_plugin(PluginId::MEDIA.as_str()) {
+            self.media_plugin.pause_task();
+            self.media_plugin.set_error(error);
         }
     }
 
@@ -4072,12 +4066,11 @@ impl XRTranslateApp {
             self.navigation.page = Page::Plugin(PluginId::MEETING);
             return;
         }
-        if self.plugin_task_active(PluginId::VIDEO_PLAYER.as_str())
-            || self.player_plugin.has_active_task()
+        if self.plugin_task_active(PluginId::MEDIA.as_str()) || self.media_plugin.has_active_task()
         {
-            self.player_plugin
+            self.media_plugin
                 .set_error("Stop the active video task before changing service configuration");
-            self.navigation.page = Page::Plugin(PluginId::VIDEO_PLAYER);
+            self.navigation.page = Page::Plugin(PluginId::MEDIA);
             return;
         }
         self.prompt_studio
@@ -4356,7 +4349,7 @@ impl XRTranslateApp {
             });
         if let Err(error) = spawn_result {
             self.device_refresh_rx = None;
-            self.last_error = Some(format!("Could not refresh audio devices: {error}"));
+            self.notify_error("Could not refresh audio devices.", error.to_string());
         }
     }
 
@@ -4398,7 +4391,10 @@ impl XRTranslateApp {
             Err(crossbeam_channel::TryRecvError::Empty) => {}
             Err(crossbeam_channel::TryRecvError::Disconnected) => {
                 self.device_refresh_rx = None;
-                self.last_error = Some("Audio device refresh stopped unexpectedly".into());
+                self.notify_error(
+                    "Could not refresh audio devices.",
+                    "Audio device refresh stopped unexpectedly",
+                );
             }
         }
     }
@@ -4538,8 +4534,8 @@ impl XRTranslateApp {
                     let percentage = progress.fraction.map(|value| value * 100.0);
                     match progress.stage {
                         media_import::AudioImportStage::Extracting => {
-                            self.player_plugin.update_import_progress(
-                                plugins::player::ImportProgressStage::Extracting,
+                            self.media_plugin.update_import_progress(
+                                plugins::media::ImportProgressStage::Extracting,
                                 progress.fraction,
                                 progress.position,
                                 progress.duration,
@@ -4555,8 +4551,8 @@ impl XRTranslateApp {
                             ));
                         }
                         media_import::AudioImportStage::Recognizing => {
-                            self.player_plugin.update_import_progress(
-                                plugins::player::ImportProgressStage::Recognizing,
+                            self.media_plugin.update_import_progress(
+                                plugins::media::ImportProgressStage::Recognizing,
                                 progress.fraction,
                                 progress.position,
                                 progress.duration,
@@ -4574,19 +4570,19 @@ impl XRTranslateApp {
                     }
                 }
                 media_import::AudioImportEvent::Completed { .. } => {
-                    self.player_plugin.complete_import();
+                    self.media_plugin.complete_import();
                     host_completed = true;
                 }
                 media_import::AudioImportEvent::Stopped { .. } => {
-                    self.player_plugin.stop_import();
+                    self.media_plugin.stop_import();
                     self.host_audio_import = None;
                 }
                 media_import::AudioImportEvent::Error(error) => {
                     log::error!("Host audio import error: {error}");
-                    self.player_plugin.stop_import();
-                    self.player_plugin.set_error(error.clone());
+                    self.media_plugin.stop_import();
+                    self.media_plugin.set_error(error.clone());
                     self.last_error = Some(error);
-                    self.stop_plugin_task(PluginId::VIDEO_PLAYER);
+                    self.stop_plugin_task(PluginId::MEDIA);
                     self.host_audio_import = None;
                 }
             }
@@ -5092,9 +5088,9 @@ impl XRTranslateApp {
         self.finalize_meeting_recording();
         self.meeting_plugin.event_sink.cancel_sessions();
         self.meeting_plugin.event_sink.finish_active();
-        self.player_plugin.poll_translation_events();
-        self.player_plugin.stop_import();
-        self.player_plugin.pause_task();
+        self.media_plugin.poll_translation_events();
+        self.media_plugin.stop_import();
+        self.media_plugin.pause_task();
         self.active_languages = None;
         self.partial_text.clear();
         self.reset_audio_levels();
@@ -5432,7 +5428,7 @@ impl XRTranslateApp {
                 Page::Plugin(PluginId::OSC) => "Plugin:OSC".to_string(),
                 Page::Plugin(PluginId::MEETING) => "Plugin:Meeting".to_string(),
                 Page::Plugin(PluginId::VR_OVERLAY) => "Plugin:VROverlay".to_string(),
-                Page::Plugin(PluginId::VIDEO_PLAYER) => "Plugin:VideoPlayer".to_string(),
+                Page::Plugin(PluginId::MEDIA) => "Plugin:Media".to_string(),
                 Page::Plugin(_) => "Plugin".to_string(),
             }
         }
@@ -5457,14 +5453,23 @@ impl eframe::App for XRTranslateApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.media_plugin.controller.tick();
+        #[cfg(any(windows, target_os = "linux"))]
+        if !self.first_run {
+            self.poll_quick_translation(ctx);
+        }
         #[cfg(target_os = "android")]
         self.poll_android_text_actions(ctx);
         if !ctx.input(|input| input.viewport().visible().unwrap_or(true)) {
             if !self.first_run {
                 self.poll_backend_startup(Some(ctx.clone()));
                 self.poll_text_translation(ctx);
+                self.media_plugin.poll_translation_events();
+                if let Some(task) = self.media_plugin.next_subtitle_task() {
+                    self.start_translation_task(task, Some(ctx.clone()));
+                }
                 self.poll_session_events();
-                self.player_plugin.poll_translation_events();
+                self.media_plugin.poll_translation_events();
             }
             // A provider failure can reopen configuration while the main window
             // is hidden. Keep an existing companion reading its queued error.
@@ -5475,7 +5480,21 @@ impl eframe::App for XRTranslateApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        #[cfg(windows)]
+        if self.media_plugin.controller.parent_window == 0 {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(handle) = _frame.window_handle()
+                && let RawWindowHandle::Win32(handle) = handle.as_raw()
+            {
+                self.media_plugin.controller.parent_window = handle.hwnd.get() as usize;
+            }
+        }
         ui::theme::install_context(ui.ctx(), self.ui_theme);
+        self.notifications.install(ui.ctx());
+        self.history_archive.poll(ui.ctx());
+        if let Some(error) = self.history_archive.error.take() {
+            self.notify_error("Could not access translation history.", error);
+        }
         ui::layout::begin_frame(ui.ctx());
         self.poll_file_dialogs();
         self.poll_background_image(ui.ctx());
@@ -5560,8 +5579,8 @@ impl eframe::App for XRTranslateApp {
         {
             self.last_error = Some(error);
         }
-        self.app_update_manager.poll();
-        self.player_plugin
+        self.poll_app_update();
+        self.media_plugin
             .controller
             .mpv_installer
             .set_proxy_url(Some(self.download_proxy_url.clone()));
@@ -5570,8 +5589,8 @@ impl eframe::App for XRTranslateApp {
         self.discover_audio_sources_on_page_entry();
         self.reconcile_audio_studio_live_routing();
         self.poll_audio_import();
-        self.player_plugin
-            .on_visibility_changed(self.navigation.page == Page::Plugin(PluginId::VIDEO_PLAYER));
+        self.media_plugin
+            .on_visibility_changed(self.navigation.page == Page::Plugin(PluginId::MEDIA));
         let idle_repaint_interval = if self.translation_enabled {
             std::time::Duration::from_millis(33)
         } else {
@@ -5593,7 +5612,7 @@ impl eframe::App for XRTranslateApp {
                 .preview_voice(&pcm, xrtranslate_assets::voices::SAMPLE_RATE)
             {
                 Ok(()) => self.tts_center.previewing = Some(id),
-                Err(error) => self.tts_center.error = Some(error),
+                Err(error) => self.notify_error("Could not play the voice preview.", error),
             }
         }
         if self.first_run || self.navigation.page != Page::TtsCenter {
@@ -5606,8 +5625,8 @@ impl eframe::App for XRTranslateApp {
             self.tts_center.previewing = None;
         }
         let is_player_fullscreen = !self.first_run
-            && self.navigation.page == Page::Plugin(PluginId::VIDEO_PLAYER)
-            && self.player_plugin.controller.fullscreen_mode;
+            && self.navigation.page == Page::Plugin(PluginId::MEDIA)
+            && self.media_plugin.controller.fullscreen_mode;
         let custom_background = !is_player_fullscreen
             && self.background_image.paint(
                 ui.painter(),
@@ -5626,6 +5645,7 @@ impl eframe::App for XRTranslateApp {
                 ui::companion::Layout::Onboarding(companion_layout),
             );
             ui::layout::finish_frame(ui.ctx());
+            self.notifications.show(ui.ctx(), self.ui_language);
             ui::automation::finish_frame(&self.current_page_name());
             return;
         }
@@ -5635,8 +5655,12 @@ impl eframe::App for XRTranslateApp {
 
         self.poll_backend_startup(Some(ui.ctx().clone()));
         self.poll_text_translation(ui.ctx());
+        self.media_plugin.poll_translation_events();
+        if let Some(task) = self.media_plugin.next_subtitle_task() {
+            self.start_translation_task(task, Some(ui.ctx().clone()));
+        }
         self.poll_session_events();
-        self.player_plugin.poll_translation_events();
+        self.media_plugin.poll_translation_events();
         if self.plugin_enabled(PluginId::MEETING) {
             self.meeting_plugin.controller.poll_live_view();
         }
@@ -5727,9 +5751,8 @@ impl eframe::App for XRTranslateApp {
             }
             if self.navigation.collapsed != prev_collapsed || self.navigation.page != prev_page {
                 self.save_settings();
-                self.player_plugin.on_visibility_changed(
-                    self.navigation.page == Page::Plugin(PluginId::VIDEO_PLAYER),
-                );
+                self.media_plugin
+                    .on_visibility_changed(self.navigation.page == Page::Plugin(PluginId::MEDIA));
             }
         }
 
@@ -5910,6 +5933,7 @@ impl eframe::App for XRTranslateApp {
             },
         );
         ui::layout::finish_frame(ui.ctx());
+        self.notifications.show(ui.ctx(), self.ui_language);
         ui::automation::finish_frame(&self.current_page_name());
     }
 
@@ -5922,7 +5946,7 @@ impl eframe::App for XRTranslateApp {
 fn configure_dll_search_paths() {
     use windows::Win32::System::LibraryLoader::SetDllDirectoryW;
     use windows::core::HSTRING;
-    for bin_dir in crate::plugins::player::runtime_bin_directories() {
+    for bin_dir in crate::plugins::media::runtime_bin_directories() {
         if bin_dir.is_dir() {
             if let Ok(abs) = bin_dir.canonicalize() {
                 let _ = unsafe { SetDllDirectoryW(&HSTRING::from(abs.as_os_str())) };
@@ -6266,7 +6290,7 @@ mod tests {
             false,
         );
         let (file, _file_controls) = fixture_task(
-            plugin_owner(crate::plugins::PluginId::VIDEO_PLAYER, "video-1"),
+            plugin_owner(crate::plugins::PluginId::MEDIA, "video-1"),
             &[CaptureSource::SystemAudio],
             true,
         );
@@ -6319,7 +6343,7 @@ mod tests {
             false,
         );
         let (file, _c) = fixture_task(
-            plugin_owner(crate::plugins::PluginId::VIDEO_PLAYER, "video-1"),
+            plugin_owner(crate::plugins::PluginId::MEDIA, "video-1"),
             &[CaptureSource::SystemAudio],
             true,
         );
@@ -6483,7 +6507,7 @@ mod tests {
         let mut app = XRTranslateApp::default();
         app.enable_translation_service();
         let (file, _a) = fixture_task(
-            plugin_owner(crate::plugins::PluginId::VIDEO_PLAYER, "video-1"),
+            plugin_owner(crate::plugins::PluginId::MEDIA, "video-1"),
             &[CaptureSource::SystemAudio],
             true,
         );
@@ -7089,7 +7113,7 @@ impl XRTranslateApp {
             match result {
                 Ok(Some(path)) => complete(self, path),
                 Ok(None) => {}
-                Err(error) => self.last_error = Some(error),
+                Err(error) => self.notify_error("Could not open the file picker.", error),
             }
         } else {
             self.pending_file_dialogs
@@ -7101,12 +7125,12 @@ impl XRTranslateApp {
             match request.poll() {
                 Some(Ok(Some(path))) => complete(self, path),
                 Some(Ok(None)) => {}
-                Some(Err(error)) => self.last_error = Some(error),
+                Some(Err(error)) => self.notify_error("Could not open the file picker.", error),
                 None => self.pending_file_dialogs.push((request, complete)),
             }
         }
         for error in file_dialog::take_errors() {
-            self.last_error = Some(error);
+            self.notify_error("Could not complete the file operation.", error);
         }
     }
 }

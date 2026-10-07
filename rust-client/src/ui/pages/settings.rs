@@ -280,6 +280,71 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
     );
     ui.add_space(14.0);
 
+    section(
+        ui,
+        crate::i18n::tr(app.ui_language, "Translation history"),
+        |ui| {
+            let mut save = app.history_archive.enabled();
+            if components::toggle_with_label(
+                ui,
+                &mut save,
+                crate::i18n::tr(app.ui_language, "Save translation history locally"),
+            )
+            .changed()
+            {
+                app.history_archive.set_enabled(save);
+                app.save_settings();
+            }
+            ui.weak(crate::i18n::tr(
+                app.ui_language,
+                "Saving starts when enabled. Turning it off keeps existing records.",
+            ));
+        },
+    );
+    ui.add_space(14.0);
+
+    #[cfg(any(windows, target_os = "linux"))]
+    section(
+        ui,
+        crate::i18n::tr(app.ui_language, "Quick translation"),
+        |ui| {
+            let lang = app.ui_language;
+            if components::toggle_with_label(
+                ui,
+                &mut app.quick_translate.settings.enabled,
+                crate::i18n::tr(lang, "Enable global shortcut"),
+            )
+            .changed()
+            {
+                app.save_settings();
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.label(crate::i18n::tr(lang, "Shortcut"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut app.quick_translate.shortcut_draft)
+                        .desired_width(150.0),
+                );
+                if components::secondary_button(ui, crate::i18n::tr(lang, "Apply")).clicked() {
+                    app.quick_translate.apply_shortcut();
+                    app.save_settings();
+                }
+                if components::secondary_button(ui, crate::i18n::tr(lang, "Translate clipboard"))
+                    .clicked()
+                {
+                    app.begin_quick_translation(
+                        crate::desktop_shortcut::clipboard_text(),
+                        ui.ctx(),
+                    );
+                }
+            });
+            ui.weak(crate::i18n::tr(lang, "Select or copy text, then press the shortcut. Uses the languages on the translation page."));
+            if let Some(error) = &app.quick_translate.shortcut_error {
+                ui.add(egui::Label::new(crate::i18n::tr_dynamic(lang, error)).wrap());
+            }
+        },
+    );
+    ui.add_space(14.0);
+
     section(ui, crate::i18n::tr(app.ui_language, "Downloads"), |ui| {
         crate::ui::layout::flow_row(ui, |ui| {
             ui.label(
@@ -614,9 +679,12 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             AppUpdateState::Downloading { .. } => crate::i18n::tr(language, "Downloading..."),
             AppUpdateState::Ready(_) => crate::i18n::tr(language, "Ready to install"),
             AppUpdateState::Installing => crate::i18n::tr(language, "Installing..."),
-            AppUpdateState::Failed(_) => crate::i18n::tr(language, "Check failed"),
+            AppUpdateState::Failed(_) => crate::i18n::tr(language, "Update failed"),
         };
-        ui.label(egui::RichText::new(status).color(crate::ui::theme::text_weak()));
+        let response = ui.label(egui::RichText::new(status).color(crate::ui::theme::text_weak()));
+        if let AppUpdateState::Failed(error) = &state {
+            response.on_hover_text(error);
+        }
         match &state {
             AppUpdateState::Available(info) | AppUpdateState::Ready(info) => {
                 ui.add_space(10.0);
@@ -663,10 +731,6 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             _ => {}
         }
     });
-    if let AppUpdateState::Failed(error) = app.app_update_state() {
-        ui.add_space(6.0);
-        components::error_notice(ui, language, error);
-    }
     ui.add_space(10.0);
     crate::ui::layout::flow_row(ui, |ui| {
         render_update_action_button(app, ui);

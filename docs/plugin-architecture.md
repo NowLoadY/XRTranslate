@@ -492,11 +492,25 @@ Current plugin ownership is:
   `TranslationSessionPlugin` binding, and a non-blocking
   `SessionEventSubscriber` that persists normalized results. It uses
   `PluginOnly` output and requests host-owned `media_import` for files.
-- `plugins::player`: media tasks, playback, subtitles, player UI, and a
-  `TranslationSessionPlugin` binding with `Host` output. Its
-  `SessionEventSubscriber` queues normalized results for subtitle updates,
-  filtered by the active operation. It uses the same host-owned `media_import`
-  capability for transcription.
+- `plugins::media`: audio, video and subtitle tasks. Playback is optional;
+  task creation, details, translation and export work without it. Audio/video
+  transcription uses shared `media_import` with `Host` output. Authored SRT/VTT
+  cues use private text tasks, preserve original times and resume untranslated
+  cues in one conversation. Task files retain the legacy `video_player` ID and
+  `runtime/video_tasks.json` path; atomic saves keep previous data intact.
+- `quick_translate`: a desktop shortcut and a separate result viewport. The host
+  adapter submits private text tasks using the current translation-page languages.
+  Replacing or closing a request cancels only that request. Windows selection
+  uses UI Automation, X11 uses PRIMARY, and clipboard text is the fallback.
+  Wayland shortcuts use the desktop portal and depend on desktop support.
+- `history::archive`: optional local SQLite history, disabled by default. The
+  event subscriber queues finalized results from the host and built-in text/media/meeting producers;
+  a bounded worker writes and searches with Unicode-aware lowercase matching and pagination.
+  Disabling saving keeps previous records and skips stale queued disk writes.
+  The latest 1,000 results remain searchable in memory for the current session.
+  Single-entry and local-date-range deletion previews snapshot stable identities,
+  deduplicate both stores, and exclude later arrivals. Confirmed deletion removes
+  both copies; session tombstones prevent late revisions from restoring them.
 - `plugins::vr_overlay`: SteamVR overlay runtime, rendering, settings, and UI.
   Its `HostOutputSubscriber` consumes shared captions; it does not start a
   separate translation pipeline.

@@ -1,3 +1,5 @@
+mod formats;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -94,6 +96,12 @@ pub struct SubtitleTimeline {
     metadata: BTreeMap<String, SubtitleMetadata>,
     #[serde(skip)]
     snapshot_cues: BTreeMap<u64, BTreeSet<String>>,
+    #[serde(default)]
+    origins: BTreeMap<String, formats::CueOrigin>,
+    #[serde(skip)]
+    revision: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    vtt_prelude: Vec<String>,
     pub enabled: bool,
 }
 
@@ -103,11 +111,17 @@ impl SubtitleTimeline {
             cues: Vec::new(),
             metadata: BTreeMap::new(),
             snapshot_cues: BTreeMap::new(),
+            origins: BTreeMap::new(),
+            revision: 0,
+            vtt_prelude: Vec::new(),
             enabled: true,
         }
     }
 
     pub fn clear(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        self.vtt_prelude.clear();
+        self.origins.clear();
         self.cues.clear();
         self.metadata.clear();
         self.snapshot_cues.clear();
@@ -132,6 +146,7 @@ impl SubtitleTimeline {
         stream_id: u64,
         cues: impl IntoIterator<Item = (SubtitleCue, SubtitleMetadata)>,
     ) {
+        self.revision = self.revision.wrapping_add(1);
         let previous = self.snapshot_cues.remove(&stream_id).unwrap_or_default();
         let prefix = format!("stream_{stream_id}_");
         self.cues.retain(|cue| {
@@ -160,6 +175,7 @@ impl SubtitleTimeline {
         turn_id: &str,
         sources: impl IntoIterator<Item = (u32, &'a str)>,
     ) {
+        self.revision = self.revision.wrapping_add(1);
         let sources = sources.into_iter().collect::<BTreeMap<_, _>>();
         let prefix = format!("stream_{stream_id}_turn_{turn_id}_segment_");
         self.cues.retain(|cue| {
@@ -194,11 +210,12 @@ impl SubtitleTimeline {
     }
 
     pub fn add_cue_with_metadata(&mut self, cue: SubtitleCue, metadata: SubtitleMetadata) -> bool {
+        self.revision = self.revision.wrapping_add(1);
         if cue.original_text.trim().is_empty()
             && cue
                 .translated_text
                 .as_ref()
-                .map_or(true, |t| t.trim().is_empty())
+                .is_none_or(|t| t.trim().is_empty())
         {
             return false;
         }
@@ -267,10 +284,15 @@ impl SubtitleTimeline {
         // (~250ms advance) to match natural human reading rhythm and visual perception.
         const SUBTITLE_LEAD_IN_MS: i64 = 250;
         let query_ms = current_ms + SUBTITLE_LEAD_IN_MS;
-        self.cues.iter().enumerate().rev().find_map(|(index, cue)| {
-            let effective_end = self.effective_end_at(index);
-            (query_ms >= cue.start_ms && current_ms <= effective_end).then_some(cue)
-        })
+        let end = self.cues.partition_point(|cue| cue.start_ms <= query_ms);
+        self.cues[..end]
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, cue)| {
+                let effective_end = self.effective_end_at(index);
+                (query_ms >= cue.start_ms && current_ms <= effective_end).then_some(cue)
+            })
     }
 
     fn effective_end_at(&self, index: usize) -> i64 {
@@ -291,6 +313,10 @@ impl SubtitleTimeline {
             .map_or(padded_end, |next| padded_end.min(next.start_ms))
     }
 
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub fn count(&self) -> usize {
         self.cues.len()
     }
@@ -299,39 +325,22 @@ impl SubtitleTimeline {
         &self.cues
     }
 
-    pub fn metadata_for(&self, cue_id: &str) -> SubtitleMetadata {
-        self.metadata.get(cue_id).copied().unwrap_or_default()
+    pub(crate) fn set_translation(&mut self, id: &str, translated: String) {
+        self.revision = self.revision.wrapping_add(1);
+        if let Some(cue) = self.cues.iter_mut().find(|cue| cue.id == id) {
+            cue.translated_text = Some(translated);
+        }
     }
 
-    pub fn export_srt(&self) -> String {
-        let mut out = String::new();
-        for (idx, cue) in self.cues().iter().enumerate() {
-            let start = format_timestamp_srt(cue.start_ms);
-            let metadata = self.metadata_for(&cue.id);
-            let end_ms = if metadata.timing == SegmentTiming::Unknown {
-                cue.end_ms.max(cue.start_ms + 2000)
-            } else if cue.end_ms <= cue.start_ms {
-                cue.start_ms + 3000
-            } else {
-                cue.end_ms
-            };
-            let end = format_timestamp_srt(end_ms);
-            out.push_str(&format!("{}\n{} --> {}\n", idx + 1, start, end));
-            let orig = cue.original_text.trim();
-            if !orig.is_empty() {
-                out.push_str(orig);
-                out.push('\n');
-            }
-            if let Some(trans) = &cue.translated_text {
-                let trans_trim = trans.trim();
-                if trans_trim != orig && !trans_trim.is_empty() {
-                    out.push_str(trans_trim);
-                    out.push('\n');
-                }
-            }
-            out.push('\n');
+    pub(crate) fn clear_translations(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        for cue in &mut self.cues {
+            cue.translated_text = None;
         }
-        out
+    }
+
+    pub fn metadata_for(&self, cue_id: &str) -> SubtitleMetadata {
+        self.metadata.get(cue_id).copied().unwrap_or_default()
     }
 
     pub fn export_lrc(&self, title: Option<&str>) -> String {
@@ -373,15 +382,6 @@ fn format_timestamp_lrc(ms: i64) -> String {
     let secs = (ms_max % 60000) / 1000;
     let hundredths = (ms_max % 1000) / 10;
     format!("[{:02}:{:02}.{:02}]", mins, secs, hundredths)
-}
-
-fn format_timestamp_srt(ms: i64) -> String {
-    let ms_max = ms.max(0);
-    let hours = ms_max / 3600000;
-    let mins = (ms_max % 3600000) / 60000;
-    let secs = (ms_max % 60000) / 1000;
-    let millis = ms_max % 1000;
-    format!("{:02}:{:02}:{:02},{:03}", hours, mins, secs, millis)
 }
 
 #[cfg(test)]

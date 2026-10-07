@@ -433,10 +433,6 @@ impl MediaBackend for MpvBackend {
         }
     }
 
-    fn show_osd_title(&mut self, title: &str) {
-        let _ = self.mpv.command(&["show-text", title, "3000", "1"]);
-    }
-
     fn get_audio_channel_count(&self) -> Option<usize> {
         let count = self.mpv.get_property_i64("audio-params/channel-count")?;
         if count > 0 {
@@ -523,7 +519,7 @@ impl MediaBackend for MpvBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::player::task::AudioChannelItem;
+    use crate::plugins::media::task::AudioChannelItem;
 
     #[test]
     fn mpv_backend_initializes_when_dll_present() {

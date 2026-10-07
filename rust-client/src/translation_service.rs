@@ -17,6 +17,7 @@ use xrtranslate_engine::language::LanguageSelection;
 pub(crate) struct ChannelScope {
     pub owner: TranslationSessionOwner,
     pub is_text: bool,
+    pub publish_to_host_outputs: bool,
     pub asr_only: AtomicBool,
     pub active: AtomicBool,
     pub finished: AtomicBool,
@@ -28,17 +29,22 @@ pub(crate) struct ChannelScope {
 
 impl ChannelScope {
     pub fn new(owner: TranslationSessionOwner) -> Arc<Self> {
-        Self::create(owner, false)
+        Self::create(owner, false, true)
     }
 
-    pub fn text(owner: TranslationSessionOwner) -> Arc<Self> {
-        Self::create(owner, true)
+    pub fn text(owner: TranslationSessionOwner, publish_to_host_outputs: bool) -> Arc<Self> {
+        Self::create(owner, true, publish_to_host_outputs)
     }
 
-    fn create(owner: TranslationSessionOwner, is_text: bool) -> Arc<Self> {
+    fn create(
+        owner: TranslationSessionOwner,
+        is_text: bool,
+        publish_to_host_outputs: bool,
+    ) -> Arc<Self> {
         Arc::new(Self {
             owner,
             is_text,
+            publish_to_host_outputs,
             asr_only: AtomicBool::new(false),
             active: AtomicBool::new(true),
             finished: AtomicBool::new(false),

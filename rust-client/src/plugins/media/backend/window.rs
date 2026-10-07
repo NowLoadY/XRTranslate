@@ -36,57 +36,9 @@ unsafe impl Send for NativeVideoHost {}
 unsafe impl Sync for NativeVideoHost {}
 
 #[cfg(windows)]
-unsafe extern "system" fn enum_thread_wnd_proc(
-    hwnd: HWND,
-    lparam: windows::Win32::Foundation::LPARAM,
-) -> windows::core::BOOL {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GWL_STYLE, GetWindowLongW, WS_CHILD, WS_VISIBLE,
-    };
-    let target = lparam.0 as *mut HWND;
-    unsafe {
-        let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-        if (style & WS_VISIBLE.0) != 0 && (style & WS_CHILD.0) == 0 {
-            *target = hwnd;
-            return windows::core::BOOL(0);
-        }
-    }
-    windows::core::BOOL(1)
-}
-
-#[cfg(windows)]
-fn get_thread_main_window() -> Result<HWND, String> {
-    use windows::Win32::Foundation::LPARAM;
-    use windows::Win32::System::Threading::GetCurrentThreadId;
-    use windows::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
-    use windows::Win32::UI::WindowsAndMessaging::EnumThreadWindows;
-
-    let mut found_hwnd = HWND::default();
-    unsafe {
-        let thread_id = GetCurrentThreadId();
-        let _ = EnumThreadWindows(
-            thread_id,
-            Some(enum_thread_wnd_proc),
-            LPARAM(&mut found_hwnd as *mut _ as isize),
-        );
-    }
-
-    if found_hwnd.0.is_null() {
-        let active = unsafe { GetActiveWindow() };
-        if !active.0.is_null() {
-            return Ok(active);
-        }
-        return Err("Could not locate main application window handle for thread".into());
-    }
-
-    Ok(found_hwnd)
-}
-
-#[cfg(windows)]
 impl NativeVideoHost {
-    pub fn new() -> Result<Self, String> {
-        let parent_hwnd = get_thread_main_window()?;
-        Self::new_with_parent(parent_hwnd)
+    pub fn new(parent: usize) -> Result<Self, String> {
+        Self::new_with_parent(HWND(parent as *mut std::ffi::c_void))
     }
 
     pub fn new_with_parent(parent_hwnd: HWND) -> Result<Self, String> {
@@ -149,7 +101,7 @@ impl NativeVideoHost {
     /// Linux uses eframe's native window directly. Embedding an external mpv
     /// child window is intentionally unavailable until a Wayland/X11 host is
     /// selected, so callers can fall back without platform conditionals.
-    pub fn new() -> Result<Self, String> {
+    pub fn new(_parent: usize) -> Result<Self, String> {
         Err("embedded video windows are not available on this platform".into())
     }
 

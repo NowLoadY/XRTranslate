@@ -934,6 +934,59 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[test]
+    fn update_check_failure_notifies_once_without_opening_an_error_modal() {
+        use eframe::egui;
+        let mut app = crate::XRTranslateApp::default();
+        app.ui_language = crate::i18n::UiLanguage::English;
+        app.last_error = None;
+        app.modal_dialog = Default::default();
+        app.notifications = Default::default();
+        let ctx = egui::Context::default();
+        app.notifications.install(&ctx);
+        let expected = "Could not check for updates. Try again later.";
+
+        for attempt in 0..2 {
+            let (sender, receiver) = unbounded();
+            app.app_update_manager = AppUpdateManager {
+                state: AppUpdateState::Checking,
+                events: Some(receiver),
+                ..Default::default()
+            };
+            sender
+                .send(Event::Checked(Err("Network unavailable".into())))
+                .unwrap();
+            app.poll_app_update();
+            assert!(matches!(app.app_update_state(), AppUpdateState::Failed(_)));
+            assert!(app.last_error.is_none());
+            assert!(!app.modal_dialog.open);
+            for (offset, visible) in [(0.0, true), (0.3, true), (10.0, false)] {
+                app.poll_app_update();
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        time: Some(attempt as f64 * 20.0 + offset),
+                        ..Default::default()
+                    },
+                    |_| {
+                        crate::ui::automation::begin_frame(&ctx, "update-test");
+                        app.render_modal_layer(&ctx);
+                        app.notifications.show(&ctx, app.ui_language);
+                        crate::ui::automation::finish_frame("update-test");
+                    },
+                );
+                let driver = crate::ui::automation::driver();
+                let state = driver.frame_state.lock().unwrap();
+                let notice = state.last_snapshot.find_element("Notification");
+                assert_eq!(notice.is_some(), visible);
+                if let Some(notice) = notice {
+                    assert_eq!(notice.value.as_text().as_deref(), Some(expected));
+                }
+                assert!(ctx.memory(|memory| memory.top_modal_layer()).is_none());
+                output.textures_delta.clear();
+            }
+        }
+    }
+
     #[cfg(not(target_os = "android"))]
     #[test]
     fn begin_install_targets_the_project_root() {

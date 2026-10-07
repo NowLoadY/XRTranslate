@@ -163,24 +163,38 @@ fn visible_variable_row_range(
     first_visible.saturating_sub(1)..(end_visible + 1).min(row_heights.len())
 }
 
+#[derive(Clone, Copy)]
+pub enum ScrollTarget {
+    None,
+    End,
+    Row(usize),
+}
+impl From<bool> for ScrollTarget {
+    fn from(end: bool) -> Self {
+        if end { Self::End } else { Self::None }
+    }
+}
+
 /// Virtualizes a dynamic text list whose wrapped rows do not share one height.
 ///
 /// Prepare text after the scrollbar has reserved its width, then reuse that
 /// layout for measurement and rendering.
-pub fn show_variable_virtual_rows<T>(
+pub fn show_variable_virtual_rows<T, R: AsRef<[(f32, T)]>>(
     ui: &mut egui::Ui,
     id_salt: &'static str,
     row_gap: f32,
-    scroll_to_end: bool,
-    prepare_rows: impl FnOnce(&egui::Ui) -> Vec<(f32, T)>,
+    scroll_target: impl Into<ScrollTarget>,
+    prepare_rows: impl FnOnce(&egui::Ui) -> R,
     mut render_row: impl FnMut(&mut egui::Ui, usize, f32, &T),
 ) {
+    let scroll_target = scroll_target.into();
     egui::ScrollArea::vertical()
         .id_salt(id_salt)
         .animated(false)
         .auto_shrink([false, false])
         .show_viewport(ui, |ui, viewport| {
-            let rows = prepare_rows(ui);
+            let prepared = prepare_rows(ui);
+            let rows = prepared.as_ref();
             let row_heights = rows.iter().map(|(height, _)| *height).collect::<Vec<_>>();
             let offsets = variable_row_offsets(&row_heights, row_gap);
             let content_height = offsets.last().copied().unwrap_or_default();
@@ -202,13 +216,20 @@ pub fn show_variable_virtual_rows<T>(
                     |ui| render_row(ui, index, row_height, &rows[index].1),
                 );
             }
-            if scroll_to_end {
+            let target = match scroll_target {
+                ScrollTarget::None => None,
+                ScrollTarget::End => Some((content_height, 0.0, egui::Align::Max)),
+                ScrollTarget::Row(index) => row_heights
+                    .get(index)
+                    .map(|height| (offsets[index], *height, egui::Align::Center)),
+            };
+            if let Some((offset, height, align)) = target {
                 ui.scroll_to_rect(
                     egui::Rect::from_min_size(
-                        egui::pos2(content_left, content_top + content_height),
-                        Vec2::ZERO,
+                        egui::pos2(content_left, content_top + offset),
+                        Vec2::new(content_width, height),
                     ),
-                    Some(egui::Align::Max),
+                    Some(align),
                 );
             }
         });

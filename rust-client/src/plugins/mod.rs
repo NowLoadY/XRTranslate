@@ -7,11 +7,11 @@
 //! remains explicit in the host adapter.
 
 pub(crate) mod auto_input;
+pub mod media;
 pub mod meeting;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 pub mod ocr;
 pub mod osc;
-pub mod player;
 pub mod vr_overlay;
 
 #[cfg(test)]
@@ -27,7 +27,7 @@ pub struct PluginId(&'static str);
 impl PluginId {
     pub const OSC: Self = Self("osc");
     pub const MEETING: Self = Self("meeting");
-    pub const VIDEO_PLAYER: Self = Self("video_player");
+    pub const MEDIA: Self = Self("video_player");
     pub const VR_OVERLAY: Self = Self("vr_overlay");
     pub const OCR: Self = Self("ocr");
     pub const AUTO_INPUT: Self = Self("auto_input");
@@ -36,7 +36,7 @@ impl PluginId {
         match self {
             Self::AUTO_INPUT => cfg!(windows),
             Self::OCR => cfg!(any(target_os = "windows", target_os = "linux")),
-            Self::VR_OVERLAY | Self::VIDEO_PLAYER => !cfg!(target_os = "android"),
+            Self::VR_OVERLAY => !cfg!(target_os = "android"),
             _ => true,
         }
     }
@@ -49,7 +49,7 @@ impl PluginId {
         match value {
             "osc" => Some(Self::OSC),
             "meeting" => Some(Self::MEETING),
-            "video_player" => Some(Self::VIDEO_PLAYER),
+            "video_player" | "media" => Some(Self::MEDIA),
             "vr_overlay" => Some(Self::VR_OVERLAY),
             "ocr" => Some(Self::OCR),
             "auto_input" => Some(Self::AUTO_INPUT),
@@ -140,20 +140,20 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 4] = [
         },
         scroll_policy: PluginScrollPolicy::Plugin,
         settings_contribution: PluginSettingsContribution::EnablementOnly,
-        default_enabled: false,
+        default_enabled: true,
     },
     PluginDescriptor {
-        id: PluginId::VIDEO_PLAYER,
-        title_key: "Media Player",
-        description_key: "Play video files and streams with real-time synchronized subtitles.",
+        id: PluginId::MEDIA,
+        title_key: "Media",
+        description_key: "Translate audio, video and subtitle files.",
         navigation_order: 150,
         icon: PluginIcon {
-            uri: "bytes://plugins/player/icon.svg",
-            bytes: include_bytes!("../../resources/plugins/player/icon.svg"),
+            uri: "bytes://plugins/media/icon.svg",
+            bytes: include_bytes!("../../resources/plugins/media/icon.svg"),
         },
         scroll_policy: PluginScrollPolicy::Plugin,
         settings_contribution: PluginSettingsContribution::EnablementOnly,
-        default_enabled: false,
+        default_enabled: true,
     },
     PluginDescriptor {
         id: PluginId::VR_OVERLAY,
@@ -278,8 +278,8 @@ mod tests {
         let preferences = PluginPreferences::default();
         assert!(preferences.is_enabled(PluginId::OSC));
         assert!(preferences.is_enabled(PluginId::VR_OVERLAY));
-        assert!(!preferences.is_enabled(PluginId::MEETING));
-        assert!(!preferences.is_enabled(PluginId::VIDEO_PLAYER));
+        assert!(preferences.is_enabled(PluginId::MEETING));
+        assert!(preferences.is_enabled(PluginId::MEDIA));
     }
 
     #[test]

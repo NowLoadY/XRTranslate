@@ -21,10 +21,10 @@ pub fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
         border_id,
         Frame::new()
             .fill(theme::panel_fill(ui.ctx(), theme::surface_subtle()))
-            .corner_radius(CornerRadius::same(16))
+            .corner_radius(theme::container_radius(16))
             .inner_margin(Margin::same(16))
             .shadow(egui::Shadow::NONE),
-        16.0,
+        theme::container_radius_f32(16.0),
         theme::border().gamma_multiply(0.55),
         add_contents,
     )
@@ -76,9 +76,9 @@ pub fn action_card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R
         border_id,
         Frame::new()
             .fill(theme::panel_fill(ui.ctx(), Color32::TRANSPARENT))
-            .corner_radius(CornerRadius::same(10))
+            .corner_radius(theme::container_radius(12))
             .inner_margin(Margin::symmetric(16, 12)),
-        10.0,
+        theme::container_radius_f32(12.0),
         theme::border(),
         add_contents,
     )
@@ -89,19 +89,10 @@ pub fn dark_container_frame<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -
     Frame::new()
         .fill(Color32::from_rgb(15, 23, 42))
         .stroke(Stroke::new(1.0, Color32::from_rgb(51, 65, 85)))
-        .corner_radius(CornerRadius::same(10))
+        .corner_radius(theme::container_radius(12))
         .inner_margin(Margin::same(12))
         .show(ui, add_contents)
         .inner
-}
-
-pub fn speaker_badge(ui: &mut Ui, speaker: &str) {
-    ui.label(
-        egui::RichText::new(speaker)
-            .color(theme::primary_dark())
-            .size(11.5)
-            .strong(),
-    );
 }
 
 pub fn swap_capsule_button(ui: &mut Ui, enabled: bool) -> egui::Response {
@@ -432,14 +423,6 @@ pub fn animated_button(ui: &mut Ui, text: &str) -> egui::Response {
     animated_button_enabled(ui, text, true)
 }
 
-pub fn animated_button_with_id(
-    ui: &mut Ui,
-    id_source: impl std::hash::Hash + std::fmt::Debug,
-    text: &str,
-) -> egui::Response {
-    animated_button_enabled_with_id(ui, id_source, text, true)
-}
-
 /// Formats a byte count for display.
 pub fn format_file_size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
@@ -637,14 +620,6 @@ pub fn animated_button_enabled_with_id(
 
 pub fn primary_button(ui: &mut Ui, text: &str) -> egui::Response {
     primary_button_enabled(ui, text, true)
-}
-
-pub fn primary_button_with_id(
-    ui: &mut Ui,
-    id_source: impl std::hash::Hash + std::fmt::Debug,
-    text: &str,
-) -> egui::Response {
-    primary_button_enabled_with_id(ui, id_source, text, true)
 }
 
 pub fn primary_button_enabled(ui: &mut Ui, text: &str, enabled: bool) -> egui::Response {
@@ -1247,7 +1222,7 @@ pub fn search_bar(ui: &mut Ui, query: &mut String, hint: &str) -> bool {
         Frame::new()
             .fill(theme::surface_control())
             .stroke(Stroke::new(1.0, theme::border()))
-            .corner_radius(CornerRadius::same(10))
+            .corner_radius(theme::container_radius(12))
             .inner_margin(Margin::symmetric(12, 8))
     };
 
@@ -1426,7 +1401,7 @@ pub fn validation_notice(ui: &mut Ui, language: crate::i18n::UiLanguage, details
     Frame::new()
         .fill(theme::panel_fill(ui.ctx(), theme::surface_subtle()))
         .stroke(Stroke::new(1.0, crate::ui::theme::danger()))
-        .corner_radius(CornerRadius::same(10))
+        .corner_radius(theme::container_radius(8))
         .inner_margin(Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -1808,14 +1783,6 @@ pub fn language_selector(
 
 pub fn danger_button(ui: &mut Ui, text: &str) -> egui::Response {
     danger_button_enabled(ui, text, true)
-}
-
-pub fn danger_button_with_id(
-    ui: &mut Ui,
-    id_source: impl std::hash::Hash + std::fmt::Debug,
-    text: &str,
-) -> egui::Response {
-    danger_button_enabled_with_id(ui, id_source, text, true)
 }
 
 pub fn danger_button_enabled(ui: &mut Ui, text: &str, enabled: bool) -> egui::Response {
@@ -2590,9 +2557,9 @@ pub fn sub_sidebar<T: Copy + PartialEq>(
                 border_id,
                 Frame::new()
                     .fill(theme::panel_fill(ui.ctx(), Color32::TRANSPARENT))
-                    .corner_radius(CornerRadius::same(10))
+                    .corner_radius(theme::container_radius(10))
                     .inner_margin(Margin::symmetric(8, 10)),
-                10.0,
+                theme::container_radius_f32(10.0),
                 theme::border(),
                 |ui| {
                     ui.set_width(width);
@@ -3431,4 +3398,28 @@ mod automation_button_tests {
             }
         }
     }
+}
+
+pub fn format_timestamp(ms: i64) -> String {
+    if ms <= 0 {
+        return "-".to_string();
+    }
+    let secs = ms / 1000;
+    let days = (secs / 86400) as i64;
+    let daytime = (secs % 86400) as i64;
+    let hours = daytime / 3600;
+    let minutes = (daytime % 3600) / 60;
+
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{y:04}-{m:02}-{d:02} {hours:02}:{minutes:02}")
 }

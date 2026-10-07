@@ -101,6 +101,19 @@ pub fn border_stroke(color: Color32) -> Stroke {
     Stroke::new(1.0, color)
 }
 
+pub const WIDGET_RADIUS: u8 = 8;
+
+/// Calculates the mathematically correct outer radius for a container to achieve
+/// perfect concentric harmony with standard child widgets inside it.
+/// Outer Radius = Inner Radius + Padding.
+pub fn container_radius(padding: u8) -> CornerRadius {
+    CornerRadius::same(WIDGET_RADIUS.saturating_add(padding))
+}
+
+pub fn container_radius_f32(padding: f32) -> f32 {
+    (WIDGET_RADIUS as f32) + padding
+}
+
 pub fn apply_theme(ctx: &egui::Context) {
     let mut visuals = Visuals::light();
 
@@ -119,31 +132,31 @@ pub fn apply_theme(ctx: &egui::Context) {
     visuals.widgets.noninteractive.bg_fill = Color32::TRANSPARENT;
     visuals.widgets.noninteractive.weak_bg_fill = Color32::TRANSPARENT;
     visuals.widgets.noninteractive.bg_stroke = border_stroke;
-    visuals.widgets.noninteractive.corner_radius = CornerRadius::same(8);
+    visuals.widgets.noninteractive.corner_radius = CornerRadius::same(WIDGET_RADIUS);
     visuals.widgets.noninteractive.expansion = 0.0;
 
     visuals.widgets.inactive.bg_fill = surface_control();
     visuals.widgets.inactive.weak_bg_fill = surface_control();
     visuals.widgets.inactive.bg_stroke = border_stroke;
-    visuals.widgets.inactive.corner_radius = CornerRadius::same(8);
+    visuals.widgets.inactive.corner_radius = CornerRadius::same(WIDGET_RADIUS);
     visuals.widgets.inactive.expansion = 0.0;
 
     visuals.widgets.hovered.bg_fill = surface_control_hover();
     visuals.widgets.hovered.weak_bg_fill = surface_control_hover();
     visuals.widgets.hovered.bg_stroke = border_stroke;
-    visuals.widgets.hovered.corner_radius = CornerRadius::same(8);
+    visuals.widgets.hovered.corner_radius = CornerRadius::same(WIDGET_RADIUS);
     visuals.widgets.hovered.expansion = 0.0;
 
     visuals.widgets.active.bg_fill = surface_control_active();
     visuals.widgets.active.weak_bg_fill = surface_control_active();
     visuals.widgets.active.bg_stroke = border_stroke;
-    visuals.widgets.active.corner_radius = CornerRadius::same(8);
+    visuals.widgets.active.corner_radius = CornerRadius::same(WIDGET_RADIUS);
     visuals.widgets.active.expansion = 0.0;
 
     visuals.widgets.open.bg_fill = Color32::TRANSPARENT;
     visuals.widgets.open.weak_bg_fill = Color32::TRANSPARENT;
     visuals.widgets.open.bg_stroke = border_stroke;
-    visuals.widgets.open.corner_radius = CornerRadius::same(8);
+    visuals.widgets.open.corner_radius = CornerRadius::same(WIDGET_RADIUS);
     visuals.widgets.open.expansion = 0.0;
 
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, text_normal());
@@ -157,7 +170,7 @@ pub fn apply_theme(ctx: &egui::Context) {
     visuals.hyperlink_color = primary_dark();
 
     visuals.slider_trailing_fill = true;
-    visuals.menu_corner_radius = CornerRadius::same(8);
+    visuals.menu_corner_radius = CornerRadius::same(WIDGET_RADIUS);
     visuals.popup_shadow = egui::Shadow::NONE;
     visuals.window_shadow = egui::Shadow::NONE;
 
@@ -260,10 +273,6 @@ pub fn primary_dark() -> Color32 {
 
 pub fn primary_fill() -> Color32 {
     Color32::from_rgba_unmultiplied(37, 99, 235, 150)
-}
-
-pub fn success() -> Color32 {
-    Color32::from_rgb(48, 91, 78)
 }
 
 pub fn danger() -> Color32 {

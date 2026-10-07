@@ -338,3 +338,25 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+pub(crate) fn test_segment(source: &str, translated: &str) -> TranslationSegment {
+    TranslationSegment {
+        stream_id: 1,
+        audio_source: CaptureSource::Microphone,
+        turn_id: "turn".into(),
+        segment_index: 0,
+        segment_count: 1,
+        source: source.into(),
+        translated: Some(translated.into()),
+        additional_translations: Vec::new(),
+        asr_only: false,
+        speaker_id: String::new(),
+        source_start_ms: 0.0,
+        source_end_ms: 1000.0,
+        timing: SegmentTiming::Authored,
+        boundary: SegmentBoundary::InputBoundary,
+        revisable: false,
+        live: false,
+    }
+}

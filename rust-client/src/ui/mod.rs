@@ -10,6 +10,7 @@ pub(crate) mod graph_style;
 pub mod layout;
 pub mod modal;
 pub(crate) mod model_comparison;
+pub(crate) mod notifications;
 pub mod organic_border;
 pub mod organic_line;
 pub mod pages;

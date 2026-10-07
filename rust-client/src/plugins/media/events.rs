@@ -6,26 +6,26 @@ use crate::session_coordinator::{
 };
 
 use super::{
-    VideoPlayerPlugin,
+    MediaPlugin,
     subtitles::{SubtitleCue, SubtitleMetadata, TranslationCueInput, cue_from_translation},
 };
 
 #[derive(Clone)]
-pub struct PlayerTranslationSink {
+pub struct MediaTranslationSink {
     tx: Sender<(String, TranslationEvent)>,
     rx: Receiver<(String, TranslationEvent)>,
 }
 
-impl Default for PlayerTranslationSink {
+impl Default for MediaTranslationSink {
     fn default() -> Self {
         let (tx, rx) = unbounded();
         Self { tx, rx }
     }
 }
 
-impl SessionEventSubscriber for PlayerTranslationSink {
+impl SessionEventSubscriber for MediaTranslationSink {
     fn accepts_owner(&self, owner: &TranslationSessionOwner) -> bool {
-        owner.is_plugin(super::super::PluginId::VIDEO_PLAYER.as_str())
+        owner.is_plugin(super::super::PluginId::MEDIA.as_str())
     }
 
     fn on_translation_event(&self, owner: &TranslationSessionOwner, event: &TranslationEvent) {
@@ -40,12 +40,16 @@ impl SessionEventSubscriber for PlayerTranslationSink {
     }
 }
 
-impl VideoPlayerPlugin {
+impl MediaPlugin {
     pub fn poll_translation_events(&mut self) {
         while let Ok((operation, event)) = self.event_sink.rx.try_recv() {
+            if self.accept_subtitle_event(&operation, &event) {
+                continue;
+            }
             if self.controller.active_task_id.as_deref() != Some(operation.as_str()) {
                 continue;
             }
+            self.controller.dirty = true;
             match event {
                 TranslationEvent::Segment(segment) => {
                     let stream_id = segment.stream_id;
@@ -77,6 +81,7 @@ impl VideoPlayerPlugin {
                 }
                 TranslationEvent::Finished { stream_id, outcome } => {
                     self.controller.subtitles.finish_stream(stream_id);
+                    self.controller.pause_task();
                     if let TranslationOutcome::Failed(error) = outcome {
                         self.set_error(error);
                     }

@@ -3,6 +3,7 @@ pub mod controller;
 pub mod events;
 pub mod i18n;
 pub mod installer;
+mod subtitle_job;
 pub mod subtitles;
 pub mod task;
 pub mod ui;
@@ -11,14 +12,14 @@ use crate::i18n::UiLanguage;
 use crate::session_coordinator::{
     PluginSessionBinding, PluginSessionOwner, SessionOutputPolicy, TranslationSessionPlugin,
 };
-use controller::VideoPlayerController;
+use controller::MediaController;
 use std::path::PathBuf;
 use std::time::Duration;
 #[allow(unused_imports)]
 pub use task::MediaType;
 
 #[derive(Clone, Debug)]
-pub struct VideoPlayerUiSnapshot {
+pub struct MediaUiSnapshot {
     pub language: UiLanguage,
     pub languages: xrtranslate_engine::language::LanguageCapabilities,
 }
@@ -38,7 +39,7 @@ pub(crate) fn runtime_bin_directories() -> Vec<PathBuf> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum PlayerTranslationRequest {
+pub enum MediaTranslationRequest {
     ImportMediaFile {
         path: PathBuf,
         source_language: String,
@@ -55,45 +56,50 @@ pub enum PlayerTranslationRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
-pub enum VideoPlayerAction {
+pub enum MediaAction {
     #[default]
     None,
     StartTranslation {
-        request: PlayerTranslationRequest,
+        request: MediaTranslationRequest,
         restart: bool,
     },
     StopTranslation,
+    TranslateSubtitles {
+        restart: bool,
+    },
 }
 
-pub struct VideoPlayerPlugin {
-    pub controller: VideoPlayerController,
-    pub event_sink: events::PlayerTranslationSink,
+pub struct MediaPlugin {
+    subtitle_job: Option<subtitle_job::SubtitleJob>,
+    pub controller: MediaController,
+    pub event_sink: events::MediaTranslationSink,
 }
 
-impl Default for VideoPlayerPlugin {
+impl Default for MediaPlugin {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl VideoPlayerPlugin {
+impl MediaPlugin {
     pub fn new() -> Self {
         Self {
-            controller: VideoPlayerController::default(),
-            event_sink: events::PlayerTranslationSink::default(),
+            subtitle_job: None,
+            controller: MediaController::default(),
+            event_sink: events::MediaTranslationSink::default(),
         }
     }
 
     pub fn render_page(
         &mut self,
-        snapshot: &VideoPlayerUiSnapshot,
+        snapshot: &MediaUiSnapshot,
         ui: &mut eframe::egui::Ui,
-    ) -> VideoPlayerAction {
+    ) -> MediaAction {
         ui::render(self, snapshot, ui)
     }
 
     pub fn on_visibility_changed(&mut self, is_visible: bool) {
-        if !is_visible || self.controller.route != controller::VideoPlayerRoute::Player {
+        if !is_visible || self.controller.route != controller::MediaRoute::Detail {
             self.controller.fullscreen_mode = false;
             self.controller.release_native_host();
         }
@@ -104,6 +110,7 @@ impl VideoPlayerPlugin {
         cue: subtitles::SubtitleCue,
         metadata: subtitles::SubtitleMetadata,
     ) {
+        self.controller.dirty = true;
         self.controller
             .subtitles
             .add_cue_with_metadata(cue, metadata);
@@ -113,6 +120,7 @@ impl VideoPlayerPlugin {
         self.controller.active_task_id.is_some()
     }
     pub fn pause_task(&mut self) {
+        self.subtitle_job = None;
         self.controller.pause_task();
     }
     pub fn set_error(&mut self, error: impl Into<String>) {
@@ -157,7 +165,7 @@ pub enum ImportProgressStage {
     Recognizing,
 }
 
-impl TranslationSessionPlugin for VideoPlayerPlugin {
+impl TranslationSessionPlugin for MediaPlugin {
     fn translation_session_binding(&self) -> Option<PluginSessionBinding> {
         let task_id = self.controller.active_task_id.clone()?;
         let is_file = matches!(
@@ -166,10 +174,10 @@ impl TranslationSessionPlugin for VideoPlayerPlugin {
         );
         Some(PluginSessionBinding {
             owner: PluginSessionOwner::new(
-                super::PluginId::VIDEO_PLAYER.as_str(),
+                super::PluginId::MEDIA.as_str(),
                 task_id,
-                "Media Player",
-                "Open Media Player",
+                "Media",
+                "Media",
                 "Media Player owns the active translation session",
             ),
             output_policy: SessionOutputPolicy::Host,
@@ -186,7 +194,7 @@ mod session_binding_tests {
 
     #[test]
     fn local_files_disable_live_only_session_capabilities() {
-        let mut plugin = VideoPlayerPlugin::new();
+        let mut plugin = MediaPlugin::new();
         plugin.controller.active_task_id = Some("file-task".into());
         plugin.controller.current_source =
             Some(backend::MediaSource::LocalFile("movie.mp4".into()));
@@ -200,7 +208,7 @@ mod session_binding_tests {
 
     #[test]
     fn network_streams_inherit_host_live_capabilities() {
-        let mut plugin = VideoPlayerPlugin::new();
+        let mut plugin = MediaPlugin::new();
         plugin.controller.active_task_id = Some("stream-task".into());
         plugin.controller.current_source = Some(backend::MediaSource::NetworkStream(
             "https://example.test/live".into(),

@@ -67,7 +67,7 @@ mod architecture_tests {
             assert!(
                 !source.contains("crate::plugins")
                     && !source.contains("plugins::meeting")
-                    && !source.contains("plugins::player")
+                    && !source.contains("plugins::media")
                     && !source.contains("plugins::osc"),
                 "shared infrastructure must not import a concrete plugin: {path}"
             );
@@ -85,3 +85,6 @@ mod architecture_tests {
         assert!(!osc_ui.contains("SetSpeakerRecognitionEnabled"));
     }
 }
+
+#[cfg(test)]
+pub(crate) use result::test_segment;

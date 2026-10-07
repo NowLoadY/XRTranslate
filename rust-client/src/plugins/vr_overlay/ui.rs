@@ -92,18 +92,18 @@ fn render_header(
             actions.push(VrOverlayUiAction::VisitAvatar);
         }
     });
-    if let Some(error) = &context.status.last_error {
-        crate::ui::components::error_notice(ui, lang, error);
-    }
-    if let Some(error) = &context.status.avatar_error {
-        ui.push_id("vr_avatar_error", |ui| {
-            crate::ui::components::error_notice(
-                ui,
-                lang,
-                &format!("{}: {error}", tr("Avatar unavailable")),
-            );
-        });
-    }
+    crate::ui::notifications::observe_error(
+        ui.ctx(),
+        egui::Id::new("steamvr_subtitles"),
+        tr("SteamVR subtitles are unavailable."),
+        context.status.last_error.as_deref(),
+    );
+    crate::ui::notifications::observe_error(
+        ui.ctx(),
+        egui::Id::new("steamvr_avatar"),
+        tr("VR avatar is unavailable."),
+        context.status.avatar_error.as_deref(),
+    );
 }
 
 fn render_position_card(
