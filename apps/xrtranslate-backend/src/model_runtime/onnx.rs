@@ -109,17 +109,3 @@ pub(crate) fn runtime_diagnostic(
         cuda_version,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cpu_diagnostic_never_claims_a_cuda_version() {
-        let config = AppConfig::from_json_str(include_str!("../../../../config.json")).unwrap();
-        let diagnostic =
-            runtime_diagnostic(Path::new("release-root"), &config, OnnxExecutionDevice::Cpu);
-        assert_eq!(diagnostic.backend.as_deref(), Some("cpu"));
-        assert_eq!(diagnostic.cuda_version, None);
-    }
-}

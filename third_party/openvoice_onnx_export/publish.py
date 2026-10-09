@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shutil
@@ -11,26 +10,17 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-import requests
-
 # HF Xet uploads can indefinitely stall behind otherwise healthy HTTP proxies.
 # The deterministic publisher intentionally uses the ordinary single-file LFS
 # path so each completed transfer has one visible commit and verification step.
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
-from huggingface_hub import HfApi, get_token, hf_hub_url
-from huggingface_hub.utils import build_hf_headers
+from huggingface_hub import HfApi, get_token
+
+from artifacts import file_record
 
 
 REPOSITORY = "NowLoadY/XRTranslate-OpenVoice-ONNX"
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _validate_release_root(build_root: Path, release_root: Path) -> None:
@@ -169,8 +159,8 @@ are not official MyShell or NVIDIA artifacts.
 
 Each package is self-contained: its language-specific frontend and feature
 graph, MeloTTS acoustic graph, OpenVoice V2 converter, reference speaker
-encoder, source tone embedding, licenses, and a machine-readable per-file
-SHA-256 manifest. XRTranslate returns converted audio at 22,050 Hz mono PCM16.
+encoder, source tone embedding, licenses, and a machine-readable file-size
+manifest. XRTranslate returns converted audio at 22,050 Hz mono PCM16.
 
 ## Reproducibility
 
@@ -184,8 +174,8 @@ conda run -n torch211cu128 python third_party/openvoice_onnx_export/build.py `
   --output runtime/.temp/openvoice-onnx-export
 ```
 
-Exact upstream commits, source hashes, graph tensor contracts, conversion
-versions, smoke-test results, and produced file hashes are recorded in each
+Exact upstream commits, graph tensor contracts, conversion versions,
+smoke-test results, and produced file sizes are recorded in each
 `packages/<language-key>/v1/package-manifest.json`.
 
 ## Upstream and licenses
@@ -209,17 +199,13 @@ language pack.
 """
     (release_root / "README.md").write_text(readme, encoding="utf-8")
     files = [
-        {
-            "path": path.relative_to(release_root).as_posix(),
-            "bytes": path.stat().st_size,
-            "sha256": sha256(path),
-        }
+        file_record(path, release_root)
         for path in sorted(release_root.rglob("*"))
         if path.is_file()
         and ".cache" not in path.parts
         and path.name != "release-manifest.json"
     ]
-    release_manifest = {"schema_version": 1, "packages": packages, "files": files}
+    release_manifest = {"schema_version": 2, "packages": packages, "files": files}
     (release_root / "release-manifest.json").write_text(
         json.dumps(release_manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -234,68 +220,20 @@ def _release_files(release_root: Path) -> list[Path]:
     ]
 
 
-def _state_path(release_root: Path) -> Path:
-    return release_root.parent / f".{release_root.name}.publish-state.json"
-
-
-def _load_state(release_root: Path) -> dict:
-    path = _state_path(release_root)
-    if not path.is_file():
-        return {"schema_version": 1, "repository": REPOSITORY, "files": {}}
-    state = json.loads(path.read_text(encoding="utf-8"))
-    if state.get("schema_version") != 1 or state.get("repository") != REPOSITORY:
-        raise RuntimeError(f"Unexpected publication state: {path}")
-    return state
-
-
-def _save_state(release_root: Path, state: dict) -> None:
-    path = _state_path(release_root)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    os.replace(temporary, path)
-
-
 def _verify_hub_file(
-    api: HfApi,
-    token: str,
-    relative_path: str,
-    expected_bytes: int,
-    expected_sha256: str,
-    revision: str,
+    api: HfApi, relative_path: str, expected_bytes: int, revision: str
 ) -> bool:
     entries = api.get_paths_info(
         REPOSITORY,
         [relative_path],
-        expand=True,
         revision=revision,
         repo_type="model",
     )
-    if len(entries) != 1 or getattr(entries[0], "path", None) != relative_path:
-        return False
-    remote = entries[0]
-    if remote.size != expected_bytes:
-        return False
-
-    lfs = getattr(remote, "lfs", None)
-    if lfs is not None:
-        return lfs.sha256.casefold() == expected_sha256.casefold()
-
-    with requests.get(
-        hf_hub_url(REPOSITORY, relative_path, revision=revision),
-        headers=build_hf_headers(token=token),
-        stream=True,
-        timeout=(15, 120),
-    ) as response:
-        response.raise_for_status()
-        digest = hashlib.sha256()
-        received = 0
-        for block in response.iter_content(chunk_size=4 * 1024 * 1024):
-            if block:
-                digest.update(block)
-                received += len(block)
-    return received == expected_bytes and digest.hexdigest() == expected_sha256
+    return (
+        len(entries) == 1
+        and getattr(entries[0], "path", None) == relative_path
+        and entries[0].size == expected_bytes
+    )
 
 
 def upload(release_root: Path, *, allow_public_update: bool = False) -> str:
@@ -317,12 +255,10 @@ def upload(release_root: Path, *, allow_public_update: bool = False) -> str:
         )
 
     files = _release_files(release_root)
-    state = _load_state(release_root)
     head = repository.sha
     for index, path in enumerate(files, start=1):
         relative_path = path.relative_to(release_root).as_posix()
         expected_bytes = path.stat().st_size
-        expected_sha256 = sha256(path)
         print(
             f"[{index}/{len(files)}] {relative_path} ({expected_bytes} bytes)",
             flush=True,
@@ -333,36 +269,21 @@ def upload(release_root: Path, *, allow_public_update: bool = False) -> str:
             raise RuntimeError(
                 f"Hub HEAD changed concurrently: expected {head}, found {current}"
             )
-        if _verify_hub_file(
-            api, token, relative_path, expected_bytes, expected_sha256, head
-        ):
-            print(f"[{index}/{len(files)}] already verified at {head}", flush=True)
-        else:
-            commit = api.upload_file(
-                path_or_fileobj=path,
-                path_in_repo=relative_path,
-                repo_id=REPOSITORY,
-                repo_type="model",
-                token=token,
-                commit_message=f"Publish {relative_path}",
-                parent_commit=head,
-            )
-            head = commit.oid
-            if not _verify_hub_file(
-                api, token, relative_path, expected_bytes, expected_sha256, head
-            ):
-                raise RuntimeError(
-                    f"Hub verification failed for {relative_path} at {head}"
-                )
-            print(f"[{index}/{len(files)}] uploaded and verified at {head}", flush=True)
-
-        state["files"][relative_path] = {
-            "bytes": expected_bytes,
-            "sha256": expected_sha256,
-            "revision": head,
-        }
-        state["head"] = head
-        _save_state(release_root, state)
+        # Let the Hub SDK identify existing content; equal sizes alone cannot
+        # distinguish a changed model from the previous release.
+        commit = api.upload_file(
+            path_or_fileobj=path,
+            path_in_repo=relative_path,
+            repo_id=REPOSITORY,
+            repo_type="model",
+            token=token,
+            commit_message=f"Publish {relative_path}",
+            parent_commit=head,
+        )
+        head = commit.oid
+        if not _verify_hub_file(api, relative_path, expected_bytes, head):
+            raise RuntimeError(f"Hub verification failed for {relative_path} at {head}")
+        print(f"[{index}/{len(files)}] uploaded and verified at {head}", flush=True)
 
     final = api.model_info(REPOSITORY, files_metadata=True)
     if final.private != initially_private or final.sha != head:

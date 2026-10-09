@@ -20,7 +20,7 @@ application release.
   archive extraction, staging, integrity verification, deletion, and atomic
   activation.
 - `xrtranslate-config` declares immutable runtime archives and their target,
-  CUDA ABI, extraction metadata, required files, size, and checksum. It does
+  CUDA ABI, extraction metadata, required files, size. It does
   not probe the host or perform downloads.
 - The desktop host probes NVIDIA capabilities and converts configured ASR,
   translation, and TTS providers into neutral `RuntimeRequirements`.
@@ -114,7 +114,7 @@ CUDA redistributables are shared with llama.cpp when the selected ABI and
 declared artifact identity match. cuDNN is a separate ONNX GPU dependency and
 is stored by CUDA major. Files from CUDA 12 and CUDA 13 are never placed in one
 directory. Every archive is selected from configuration, downloaded through
-the shared downloader, verified by SHA-256, and extracted to staging before
+the shared downloader, checked for the expected byte count, and extracted to staging before
 activation.
 
 The desktop publishes `<runtime_root>/native-runtime.json`. It records the

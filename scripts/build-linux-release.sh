@@ -48,7 +48,7 @@ target/release/xrtranslate-installer --config "${RESOURCE_DIR}/config.json" \
 ONNX_ARCHIVE="${RESOURCE_DIR}/onnxruntime-linux-x64-1.28.0.tgz"
 cargo run --locked --release -p xrtranslate-download --example fetch -- \
   https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-1.28.0.tgz \
-  9125960 a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407 "${ONNX_ARCHIVE}"
+  9125960 "${ONNX_ARCHIVE}"
 tar -xzf "${ONNX_ARCHIVE}" -C "${RESOURCE_DIR}" \
   onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0 \
   onnxruntime-linux-x64-1.28.0/LICENSE \

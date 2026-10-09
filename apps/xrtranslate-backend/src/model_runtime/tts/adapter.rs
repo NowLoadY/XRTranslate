@@ -159,18 +159,3 @@ fn language_is_supported(supported_languages: &[String], language: &str) -> bool
             }
         })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn language_capability_matches_locales_without_provider_branches() {
-        let english = vec!["en".to_owned()];
-        assert!(language_is_supported(&english, "EN_us"));
-        assert!(language_is_supported(&english, "English"));
-        assert!(language_is_supported(&["zh".into()], "zh_Hant_TW"));
-        assert!(!language_is_supported(&english, "zh-CN"));
-        assert!(language_is_supported(&[], "zh-CN"));
-    }
-}

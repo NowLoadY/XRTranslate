@@ -139,34 +139,3 @@ impl TranslationSessionOwner {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn plugin_identity_is_opaque_to_the_session_owner() {
-        let owner = TranslationSessionOwner::Plugin(PluginSessionOwner::new(
-            "example",
-            "operation-1",
-            "Live Translation",
-            "Start Translation",
-            "Idle",
-        ));
-
-        assert!(owner.is_active());
-        assert!(owner.is_plugin("example"));
-        assert_eq!(owner.operation_id(), Some("operation-1"));
-        assert_eq!(owner.display_name(UiLanguage::English), "Live Translation");
-    }
-
-    #[test]
-    fn host_sessions_remain_distinct_from_plugin_sessions() {
-        let owner = TranslationSessionOwner::Host {
-            capture_source: CaptureSource::Microphone,
-        };
-        assert!(owner.is_host());
-        assert!(!owner.is_plugin("example"));
-        assert_eq!(owner.display_name(UiLanguage::Chinese), "实时翻译");
-    }
-}

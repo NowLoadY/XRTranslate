@@ -9,7 +9,6 @@ description = "Create an atomic Python-free native XRTranslate release layout."
 [dependencies]
 clap = { version = "4.5.58", features = ["derive"] }
 serde_json = "1.0.151"
-sha2 = "0.10.9"
 xrtranslate-assets = { path = "../../crates/xrtranslate-assets" }
 xrtranslate-config = { path = "../../crates/xrtranslate-config" }
 xr-corpus-core = { path = "../../XR-Corpus/crates/core" }

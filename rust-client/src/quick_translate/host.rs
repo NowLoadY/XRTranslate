@@ -30,7 +30,7 @@ impl XRTranslateApp {
             Ok(text) if !text.trim().is_empty() => text,
             Ok(_) => {
                 self.quick_translate
-                    .fail("Select or copy text, then use the shortcut again.".into());
+                    .fail("Copy some text, then try again.".into());
                 return;
             }
             Err(error) => {
@@ -85,9 +85,12 @@ impl XRTranslateApp {
         ctx.request_repaint();
     }
     pub(crate) fn poll_quick_translation(&mut self, ctx: &egui::Context) {
-        self.quick_translate.register(ctx);
-        if let Some(text) = self.quick_translate.take_capture() {
-            self.begin_quick_translation(text, ctx);
+        #[cfg(windows)]
+        {
+            self.quick_translate.register(ctx);
+            if let Some(text) = self.quick_translate.take_capture() {
+                self.begin_quick_translation(text, ctx);
+            }
         }
         while let Some(action) = self.quick_translate.take_action() {
             match action {

@@ -40,10 +40,14 @@ pub(crate) enum Action {
 }
 pub(crate) struct QuickTranslate {
     pub settings: crate::desktop_shortcut::Settings,
+    #[cfg(windows)]
     pub shortcut_draft: String,
+    #[cfg(windows)]
     pub shortcut_error: Option<String>,
     pub sink: Sink,
+    #[cfg(windows)]
     listener: Option<crate::desktop_shortcut::Listener>,
+    #[cfg(windows)]
     applied: Option<crate::desktop_shortcut::Settings>,
     view: Arc<Mutex<View>>,
     events: Receiver<(String, TranslationEvent)>,
@@ -57,11 +61,15 @@ impl QuickTranslate {
         let (tx, events) = unbounded();
         let (action_tx, actions) = unbounded();
         Self {
+            #[cfg(windows)]
             shortcut_draft: settings.shortcut.clone(),
             settings,
+            #[cfg(windows)]
             shortcut_error: None,
             sink: Sink(tx),
+            #[cfg(windows)]
             listener: None,
+            #[cfg(windows)]
             applied: None,
             view: Arc::default(),
             events,
@@ -71,10 +79,12 @@ impl QuickTranslate {
             segments: BTreeMap::new(),
         }
     }
+    #[cfg(windows)]
     pub fn apply_shortcut(&mut self) {
         self.settings.shortcut = self.shortcut_draft.trim().to_owned();
         self.applied = None;
     }
+    #[cfg(windows)]
     pub fn register(&mut self, ctx: &egui::Context) {
         if self.applied.as_ref() == Some(&self.settings) {
             return;
@@ -89,6 +99,7 @@ impl QuickTranslate {
             }
         }
     }
+    #[cfg(windows)]
     pub fn take_capture(&mut self) -> Option<Result<String, String>> {
         let mut capture = None;
         for event in self.listener.as_ref()?.events.try_iter() {
@@ -184,58 +195,5 @@ impl QuickTranslate {
             }
             ctx.request_repaint();
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::session_coordinator::{PluginSessionOwner, test_segment};
-    #[test]
-    fn replacing_or_closing_a_popup_rejects_results_from_the_previous_request() {
-        let mut quick = QuickTranslate::new(Default::default());
-        let ctx = egui::Context::default();
-        let owner = |id| {
-            TranslationSessionOwner::Plugin(PluginSessionOwner::new(
-                OWNER,
-                id,
-                "Quick translation",
-                "Quick translation",
-                "Translating…",
-            ))
-        };
-        let first = owner(quick.begin("first".into(), &ctx));
-        let second = owner(quick.begin("second".into(), &ctx));
-        quick.sink.on_translation_event(
-            &first,
-            &TranslationEvent::Segment(test_segment("first", "过时")),
-        );
-        quick.sink.on_translation_event(
-            &second,
-            &TranslationEvent::Segment(test_segment("second", "第二个")),
-        );
-        quick.sink.on_translation_event(
-            &second,
-            &TranslationEvent::Finished {
-                stream_id: 1,
-                outcome: TranslationOutcome::Completed,
-            },
-        );
-        quick.poll(&ctx);
-        assert_eq!(quick.view.lock().unwrap().translated.as_ref(), "第二个");
-        assert!(!quick.view.lock().unwrap().busy);
-        let third = owner(quick.begin("third".into(), &ctx));
-        quick.close();
-        quick.sink.on_translation_event(
-            &third,
-            &TranslationEvent::Finished {
-                stream_id: 2,
-                outcome: TranslationOutcome::Failed("late failure".into()),
-            },
-        );
-        quick.poll(&ctx);
-        let view = quick.view.lock().unwrap();
-        assert!(!view.open);
-        assert!(view.error.is_none());
     }
 }

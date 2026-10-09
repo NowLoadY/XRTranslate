@@ -43,7 +43,7 @@ enum Command {
         #[arg(value_parser = package_value_parser())]
         package: String,
     },
-    /// Read and hash installed packages without changing any active files.
+    /// Check the required files and sizes of installed packages without changing any active files.
     Verify {
         #[arg(value_parser = package_value_parser())]
         package: Option<String>,
@@ -136,12 +136,10 @@ fn verify(
     assets: &ResolvedModelAssets,
     package: Option<ModelAssetId>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let preflight = assets.verify_integrity();
-    let diagnostics = preflight
-        .diagnostics()
-        .iter()
-        .filter(|diagnostic| package.is_none_or(|id| diagnostic.asset_id == id))
-        .collect::<Vec<_>>();
+    let diagnostics = match package {
+        Some(id) => assets.asset(id).check(),
+        None => assets.check().diagnostics().to_vec(),
+    };
     if diagnostics.is_empty() {
         println!("Installed model files match the native manifest.");
         return Ok(());
@@ -159,8 +157,6 @@ async fn prepare_resources(
     output: &std::path::Path,
     cache: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
     use xrtranslate_download::{DownloadClient, DownloadSpec};
     let client = DownloadClient::new("XRTranslate-build")?;
     let mut included = std::collections::HashSet::new();
@@ -177,47 +173,68 @@ async fn prepare_resources(
             return Err("Invalid resource path".into());
         }
         let destination = output.join(relative);
-        let (bytes, digest) = match asset.relative_path.as_str() {
-            RuntimeLayout::VAD_MODEL_PATH => (
-                RuntimeLayout::VAD_MODEL_BYTES,
-                RuntimeLayout::VAD_MODEL_SHA256,
-            ),
-            RuntimeLayout::DENOISE_MODEL_PATH => (
-                RuntimeLayout::DENOISE_MODEL_BYTES,
-                RuntimeLayout::DENOISE_MODEL_SHA256,
-            ),
-            RuntimeLayout::SPEAKER_MODEL_PATH => (
-                RuntimeLayout::SPEAKER_MODEL_BYTES,
-                RuntimeLayout::SPEAKER_MODEL_SHA256,
-            ),
+        let bytes = match asset.relative_path.as_str() {
+            RuntimeLayout::VAD_MODEL_PATH => RuntimeLayout::VAD_MODEL_BYTES,
+            RuntimeLayout::DENOISE_MODEL_PATH => RuntimeLayout::DENOISE_MODEL_BYTES,
+            RuntimeLayout::SPEAKER_MODEL_PATH => RuntimeLayout::SPEAKER_MODEL_BYTES,
             _ => return Err("Unknown bundled resource".into()),
         };
         if destination.is_file() && destination.metadata()?.len() == bytes {
-            let content = std::fs::read(&destination)?;
-            if format!("{:x}", Sha256::digest(&content)) == digest {
-                continue;
-            }
+            continue;
         }
         std::fs::create_dir_all(destination.parent().ok_or("Resource directory missing")?)?;
-        let spec = DownloadSpec::verified(&asset.label, &asset.url, asset.bytes, &asset.sha256);
+        let spec = DownloadSpec::new(&asset.label, &asset.url, asset.bytes);
         if let Some(archive_path) = &asset.archive_path {
             std::fs::create_dir_all(&cache)?;
             let archive = cache.join(format!("{}.zip", asset.name));
             client.download_to(spec, &archive, |_| {}).await?;
-            let mut zip = zip::ZipArchive::new(std::fs::File::open(&archive)?)?;
-            let file = zip.by_name(archive_path)?;
-            if file.size() != bytes {
-                return Err("Bundled resource size does not match".into());
-            }
-            let mut data = Vec::new();
-            file.take(bytes + 1).read_to_end(&mut data)?;
-            if data.len() as u64 != bytes || format!("{:x}", Sha256::digest(&data)) != digest {
-                return Err("Bundled resource checksum does not match".into());
-            }
+            let data = read_bundled_resource(&archive, archive_path, bytes)?;
             std::fs::write(&destination, data)?;
         } else {
             client.download_to(spec, &destination, |_| {}).await?;
         }
     }
     Ok(())
+}
+
+/// Read completely before publishing so a failed ZIP/CRC check leaves no resource.
+fn read_bundled_resource(
+    archive: &std::path::Path,
+    entry: &str,
+    expected_bytes: u64,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    use std::io::{ErrorKind, Read};
+    use zip::result::ZipError;
+    let result = (|| -> zip::result::ZipResult<Vec<u8>> {
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(archive)?)?;
+        let file = zip.by_name(entry)?;
+        if file.size() != expected_bytes {
+            return Err(ZipError::InvalidArchive(
+                "Bundled resource size does not match",
+            ));
+        }
+        let mut data = Vec::new();
+        file.take(expected_bytes + 1).read_to_end(&mut data)?;
+        if data.len() as u64 != expected_bytes {
+            return Err(ZipError::InvalidArchive(
+                "Bundled resource size does not match",
+            ));
+        }
+        Ok(data)
+    })();
+    if let Err(error) = &result {
+        let invalid = match error {
+            ZipError::InvalidArchive(_) | ZipError::FileNotFound => true,
+            ZipError::Io(error) => matches!(
+                error.kind(),
+                ErrorKind::InvalidData | ErrorKind::UnexpectedEof
+            ),
+            _ => false,
+        };
+        if invalid {
+            // Only the completed cache is discarded; download progress remains resumable.
+            std::fs::remove_file(archive)?;
+        }
+    }
+    result.map_err(Into::into)
 }

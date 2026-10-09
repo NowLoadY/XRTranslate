@@ -2,16 +2,11 @@ use xrtranslate_download::{DownloadClient, DownloadSpec};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    if arguments.len() != 4 {
-        return Err("Usage: fetch URL BYTES SHA256 DESTINATION".into());
+    if arguments.len() != 3 {
+        return Err("Usage: fetch URL BYTES DESTINATION".into());
     }
-    let spec = DownloadSpec::verified(
-        "Build resource",
-        &arguments[0],
-        arguments[1].parse()?,
-        &arguments[2],
-    );
-    let destination = std::path::Path::new(&arguments[3]);
+    let spec = DownloadSpec::new("Build resource", &arguments[0], arguments[1].parse()?);
+    let destination = std::path::Path::new(&arguments[2]);
     if let Some(directory) = destination.parent() {
         std::fs::create_dir_all(directory)?;
     }

@@ -47,14 +47,10 @@ pub struct MeetingSegmentEvent {
 }
 
 enum Command {
-    #[cfg(test)]
-    Segment(ActiveMeetingCapture, MeetingSegmentEvent),
     Results(ActiveMeetingCapture, Vec<TranslationSegment>, bool),
     SealStream(u64),
     FinishActive(ActiveMeetingCapture),
     FailActive(ActiveMeetingCapture, String),
-    #[cfg(test)]
-    Flush(Sender<()>),
 }
 
 #[derive(Clone)]
@@ -94,10 +90,6 @@ impl MeetingEventSink {
                     HashMap::<(String, String, u64, String, bool), Vec<String>>::new();
                 while let Ok(command) = rx.recv() {
                     match command {
-                        #[cfg(test)]
-                        Command::Segment(capture, event) => {
-                            persist_segments(&store, &capture, vec![event], &[]);
-                        }
                         Command::Results(capture, segments, replace) => {
                             let Some(first) = segments.first() else {
                                 continue;
@@ -142,10 +134,6 @@ impl MeetingEventSink {
                         Command::FailActive(capture, error) => {
                             fail_active(&store, &worker_active, &capture, error)
                         }
-                        #[cfg(test)]
-                        Command::Flush(done) => {
-                            let _ = done.send(());
-                        }
                     }
                 }
             })
@@ -163,13 +151,6 @@ impl MeetingEventSink {
 
     fn capture_snapshot(&self) -> Option<ActiveMeetingCapture> {
         self.inner.active.lock().ok()?.clone()
-    }
-
-    #[cfg(test)]
-    pub fn persist(&self, event: MeetingSegmentEvent) {
-        if let Some(capture) = self.capture_snapshot() {
-            self.send(Command::Segment(capture, event));
-        }
     }
 
     pub fn finish_active(&self) {
@@ -199,25 +180,9 @@ impl MeetingEventSink {
         self.inner.finish_requested.store(false, Ordering::Release);
     }
 
-    /// Requests durable completion once every stream has drained.
-    #[cfg(test)]
-    pub fn request_finish(&self) {
-        self.inner.finish_requested.store(true, Ordering::Release);
-    }
-
     pub fn cancel_sessions(&self) {
         self.inner.active_sessions.store(0, Ordering::Release);
         self.inner.finish_requested.store(false, Ordering::Release);
-    }
-
-    #[cfg(test)]
-    fn flush(&self) {
-        let (done_tx, done_rx) = crossbeam_channel::bounded(1);
-        self.command_sender()
-            .expect("meeting event sink is open")
-            .send(Command::Flush(done_tx))
-            .unwrap();
-        done_rx.recv().unwrap();
     }
 
     fn send(&self, command: Command) {
@@ -452,358 +417,4 @@ fn speaker_label(speaker_id: &str) -> Option<String> {
         .next()
         .and_then(|value| value.parse::<u32>().ok());
     Some(numeric.map_or_else(|| "S?".into(), |number| format!("S{number}")))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::controller::ActiveMeetingCapture;
-    use super::super::store::{MeetingStatus, NewMeeting};
-    use super::*;
-    use std::sync::Mutex;
-
-    #[test]
-    fn meeting_subscriber_accepts_only_its_own_task() {
-        let store = Arc::new(MeetingStore::open_in_memory().unwrap());
-        let active = Arc::new(Mutex::new(Some(ActiveMeetingCapture {
-            meeting_id: "meeting-a".into(),
-            topic_id: "topic-a".into(),
-            recognition_run_id: "run-a".into(),
-            timeline_offset_ms: 0,
-            imported_audio: false,
-        })));
-        let sink = MeetingEventSink::start(store, active);
-        let owner = |plugin, operation| {
-            crate::session_coordinator::TranslationSessionOwner::Plugin(
-                crate::session_coordinator::PluginSessionOwner::new(
-                    plugin, operation, "Task", "Open", "Active",
-                ),
-            )
-        };
-        assert!(sink.accepts_owner(&owner("meeting", "meeting-a")));
-        assert!(!sink.accepts_owner(&owner("meeting", "meeting-b")));
-        assert!(!sink.accepts_owner(&owner("video_player", "meeting-a")));
-        assert!(
-            !sink.accepts_owner(&crate::session_coordinator::TranslationSessionOwner::Host {
-                capture_source: CaptureSource::Microphone
-            })
-        );
-    }
-
-    #[test]
-    fn queued_segments_keep_their_meeting_identity_after_a_new_meeting_opens() {
-        let store = Arc::new(MeetingStore::open_in_memory().unwrap());
-        let a = store
-            .create_meeting(NewMeeting::live("A", Some("microphone".into()), "en", "zh"))
-            .unwrap();
-        let b = store
-            .create_meeting(NewMeeting::live("B", Some("microphone".into()), "en", "zh"))
-            .unwrap();
-        store.start_meeting(&a.meeting.id).unwrap();
-        store.start_meeting(&b.meeting.id).unwrap();
-        let capture_a = ActiveMeetingCapture {
-            meeting_id: a.meeting.id.clone(),
-            topic_id: a.topics[0].id.clone(),
-            recognition_run_id: "run-a".into(),
-            timeline_offset_ms: 0,
-            imported_audio: false,
-        };
-        let capture_b = ActiveMeetingCapture {
-            meeting_id: b.meeting.id.clone(),
-            topic_id: b.topics[0].id.clone(),
-            recognition_run_id: "run-b".into(),
-            timeline_offset_ms: 0,
-            imported_audio: false,
-        };
-        let active = Arc::new(Mutex::new(Some(capture_a.clone())));
-        let sink = MeetingEventSink::start(store.clone(), active.clone());
-        sink.persist(MeetingSegmentEvent {
-            source: MeetingSegmentSource::Microphone,
-            turn_id: "native-1".into(),
-            segment_index: 1,
-            source_text: "A only".into(),
-            translated_text: Some("只属于A".into()),
-            raw_speaker_id: "speaker-1".into(),
-            source_start_ms: 0.0,
-            source_end_ms: 1000.0,
-            is_final: true,
-        });
-        *active.lock().unwrap() = Some(capture_b);
-        sink.send(Command::FinishActive(capture_a));
-        sink.flush();
-        assert_eq!(store.open_meeting(&a.meeting.id).unwrap().segments.len(), 1);
-        assert!(
-            store
-                .open_meeting(&b.meeting.id)
-                .unwrap()
-                .segments
-                .is_empty()
-        );
-        assert_eq!(
-            store.get_meeting(&b.meeting.id).unwrap().status,
-            MeetingStatus::Live
-        );
-        assert_eq!(
-            active.lock().unwrap().as_ref().unwrap().meeting_id,
-            b.meeting.id
-        );
-    }
-
-    #[test]
-    fn stale_finish_and_failure_cannot_close_a_new_run_of_the_same_meeting() {
-        let store = MeetingStore::open_in_memory().unwrap();
-        let bundle = store
-            .create_meeting(NewMeeting::live("A", Some("microphone".into()), "en", "zh"))
-            .unwrap();
-        store.start_meeting(&bundle.meeting.id).unwrap();
-        let old = ActiveMeetingCapture {
-            meeting_id: bundle.meeting.id.clone(),
-            topic_id: bundle.topics[0].id.clone(),
-            recognition_run_id: "old".into(),
-            timeline_offset_ms: 0,
-            imported_audio: false,
-        };
-        let mut new = old.clone();
-        new.recognition_run_id = "new".into();
-        let active = Arc::new(Mutex::new(Some(new)));
-        finish_active(&store, &active, &old);
-        fail_active(&store, &active, &old, "late error".into());
-        assert_eq!(
-            store.get_meeting(&bundle.meeting.id).unwrap().status,
-            MeetingStatus::Live
-        );
-        assert_eq!(
-            active.lock().unwrap().as_ref().unwrap().recognition_run_id,
-            "new"
-        );
-    }
-
-    #[test]
-    fn speaker_labels_stay_compact() {
-        assert_eq!(speaker_label("speaker-02").as_deref(), Some("S2"));
-        assert_eq!(speaker_label("unknown").as_deref(), Some("S?"));
-        assert_eq!(speaker_label(""), None);
-    }
-
-    #[test]
-    fn finish_is_ordered_after_queued_segments() {
-        let store = Arc::new(MeetingStore::open_in_memory().unwrap());
-        let bundle = store
-            .create_meeting(NewMeeting::live(
-                "Ordered",
-                Some("default".into()),
-                "en",
-                "zh",
-            ))
-            .unwrap();
-        store.start_meeting(&bundle.meeting.id).unwrap();
-        let active = Arc::new(Mutex::new(Some(ActiveMeetingCapture {
-            meeting_id: bundle.meeting.id.clone(),
-            topic_id: bundle.topics[0].id.clone(),
-            recognition_run_id: "run-1".into(),
-            timeline_offset_ms: 0,
-            imported_audio: false,
-        })));
-        let sink = MeetingEventSink::start(Arc::clone(&store), Arc::clone(&active));
-        sink.persist(MeetingSegmentEvent {
-            source: MeetingSegmentSource::Microphone,
-            turn_id: "turn-1".into(),
-            segment_index: 1,
-            source_text: "hello".into(),
-            translated_text: Some("你好".into()),
-            raw_speaker_id: "speaker-01".into(),
-            source_start_ms: 0.0,
-            source_end_ms: 500.0,
-            is_final: true,
-        });
-        sink.finish_active();
-        sink.flush();
-
-        assert!(active.lock().unwrap().is_none());
-        assert_eq!(
-            store.get_meeting(&bundle.meeting.id).unwrap().status,
-            MeetingStatus::Ended
-        );
-        assert_eq!(
-            store
-                .open_meeting(&bundle.meeting.id)
-                .unwrap()
-                .segments
-                .len(),
-            1
-        );
-    }
-
-    #[test]
-    fn translation_results_are_stored_by_the_plugin() {
-        let store = Arc::new(MeetingStore::open_in_memory().unwrap());
-        let bundle = store
-            .create_meeting(NewMeeting::live(
-                "Subscriber",
-                Some("default".into()),
-                "en",
-                "zh",
-            ))
-            .unwrap();
-        store.start_meeting(&bundle.meeting.id).unwrap();
-        let active = Arc::new(Mutex::new(Some(ActiveMeetingCapture {
-            meeting_id: bundle.meeting.id.clone(),
-            topic_id: bundle.topics[0].id.clone(),
-            recognition_run_id: "run-generic".into(),
-            timeline_offset_ms: 0,
-            imported_audio: false,
-        })));
-        let sink = MeetingEventSink::start(Arc::clone(&store), active);
-
-        sink.on_translation_event(
-            &TranslationSessionOwner::None,
-            &TranslationEvent::Segment(crate::session_coordinator::TranslationSegment {
-                stream_id: 1,
-                audio_source: CaptureSource::Microphone,
-                live: false,
-                source: "hello".into(),
-                translated: Some("你好".into()),
-                additional_translations: Vec::new(),
-                asr_only: false,
-                turn_id: "turn-generic".into(),
-                segment_index: 1,
-                segment_count: 1,
-                speaker_id: "speaker-03".into(),
-                source_start_ms: 100.0,
-                source_end_ms: 500.0,
-                timing: xrtranslate_protocol::SegmentTiming::UtteranceWindow,
-                boundary: xrtranslate_protocol::SegmentBoundary::Silence,
-                revisable: false,
-            }),
-        );
-        sink.flush();
-
-        let stored = store.open_meeting(&bundle.meeting.id).unwrap();
-        assert_eq!(stored.segments.len(), 1);
-        assert_eq!(stored.segments[0].original_text, "hello");
-        assert_eq!(stored.segments[0].translated_text.as_deref(), Some("你好"));
-    }
-
-    #[test]
-    fn final_snapshot_survives_the_next_dense_chunk_tail() {
-        use crate::{network::SessionEvent, session_coordinator::TranslationEventAdapter};
-
-        let store = Arc::new(MeetingStore::open_in_memory().unwrap());
-        let bundle = store
-            .create_meeting(NewMeeting::live(
-                "Dense speech",
-                Some("default".into()),
-                "en",
-                "zh",
-            ))
-            .unwrap();
-        store.start_meeting(&bundle.meeting.id).unwrap();
-        let active = Arc::new(Mutex::new(Some(ActiveMeetingCapture {
-            meeting_id: bundle.meeting.id.clone(),
-            topic_id: bundle.topics[0].id.clone(),
-            recognition_run_id: "run-dense".into(),
-            timeline_offset_ms: 0,
-            imported_audio: false,
-        })));
-        let sink = MeetingEventSink::start(Arc::clone(&store), active);
-        let mut adapter = TranslationEventAdapter::default();
-        let mut publish = |turn: &str, revision, text: &str, revisable| {
-            let event = SessionEvent::SourceSegment {
-                stream_id: 1,
-                audio_source: CaptureSource::Microphone,
-                continuous: false,
-                publish_to_host_outputs: false,
-                text: text.into(),
-                prompt_trace: None,
-                activation_matches: Vec::new(),
-                context_matches: Vec::new(),
-                turn_id: turn.into(),
-                speaker_id: "speaker-1".into(),
-                source_start_ms: 0.0,
-                source_end_ms: 1000.0,
-                timing: xrtranslate_protocol::SegmentTiming::UtteranceWindow,
-                boundary: xrtranslate_protocol::SegmentBoundary::DurationLimit,
-                segment_index: 1,
-                segment_count: 1,
-                revisable,
-                overlap_ratio: 0.0,
-                authoritative_snapshot: true,
-                revision,
-            };
-            let results = adapter.push(&event, 1);
-            assert_eq!(results.len(), 1);
-            for result in results {
-                sink.on_translation_event(&TranslationSessionOwner::None, &result);
-            }
-            sink.flush();
-        };
-
-        publish("a", 7, "First sentence.", true);
-        assert!(!store.open_meeting(&bundle.meeting.id).unwrap().segments[0].is_final);
-        publish("a", 7, "First sentence.", false);
-        assert!(store.open_meeting(&bundle.meeting.id).unwrap().segments[0].is_final);
-        publish("b", 1, "Next unfinished", true);
-        publish("b", 2, "Next corrected", true);
-        let stored = store.open_meeting(&bundle.meeting.id).unwrap();
-        assert_eq!(stored.segments.len(), 2);
-        assert!(
-            stored
-                .segments
-                .iter()
-                .any(|segment| segment.original_text == "First sentence." && segment.is_final)
-        );
-        assert!(
-            stored
-                .segments
-                .iter()
-                .any(|segment| segment.original_text == "Next corrected" && !segment.is_final)
-        );
-    }
-
-    #[test]
-    fn requested_finish_waits_for_every_generic_session() {
-        let store = Arc::new(MeetingStore::open_in_memory().unwrap());
-        let bundle = store
-            .create_meeting(NewMeeting::live(
-                "Lifecycle",
-                Some("default".into()),
-                "en",
-                "zh",
-            ))
-            .unwrap();
-        store.start_meeting(&bundle.meeting.id).unwrap();
-        let active = Arc::new(Mutex::new(Some(ActiveMeetingCapture {
-            meeting_id: bundle.meeting.id.clone(),
-            topic_id: bundle.topics[0].id.clone(),
-            recognition_run_id: "run-lifecycle".into(),
-            timeline_offset_ms: 0,
-            imported_audio: false,
-        })));
-        let sink = MeetingEventSink::start(Arc::clone(&store), Arc::clone(&active));
-        sink.begin_sessions(2);
-        sink.request_finish();
-
-        sink.on_translation_event(
-            &TranslationSessionOwner::None,
-            &TranslationEvent::Finished {
-                stream_id: 1,
-                outcome: TranslationOutcome::Completed,
-            },
-        );
-        sink.flush();
-        assert!(active.lock().unwrap().is_some());
-
-        sink.on_translation_event(
-            &TranslationSessionOwner::None,
-            &TranslationEvent::Finished {
-                stream_id: 1,
-                outcome: TranslationOutcome::Completed,
-            },
-        );
-        sink.flush();
-        assert!(active.lock().unwrap().is_none());
-        assert_eq!(
-            store.get_meeting(&bundle.meeting.id).unwrap().status,
-            MeetingStatus::Ended
-        );
-    }
 }

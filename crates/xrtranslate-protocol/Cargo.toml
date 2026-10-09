@@ -9,6 +9,3 @@ repository.workspace = true
 serde = { version = "1.0.229", features = ["derive"] }
 xr-corpus-protocol = { path = "../../XR-Corpus/crates/protocol" }
 xrtranslate-prompt = { path = "../xrtranslate-prompt" }
-
-[dev-dependencies]
-serde_json = "1.0.151"

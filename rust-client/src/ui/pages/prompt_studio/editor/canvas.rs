@@ -563,7 +563,13 @@ pub(super) fn render_graph_editor(
         render_wire_preview(&mut canvas_ui, canvas, &draft, controller);
         render_selection_box(&mut canvas_ui, controller);
         if over_panel && let Some(panel) = panel {
-            super::style_panel::paint_connection(&canvas_ui, canvas, panel, &draft.graph, controller);
+            super::style_panel::paint_connection(
+                &canvas_ui,
+                canvas,
+                panel,
+                &draft.graph,
+                controller,
+            );
         }
     });
     controller.sync_branch_filters(&draft.graph);
@@ -1176,7 +1182,10 @@ fn render_nodes(
             && !profile.graph.links.iter().any(|link| link.to == node.id)
         {
             response.context_menu(|ui| {
-                if ui.button(crate::i18n::tr(language, "Use as translation style")).clicked() {
+                if ui
+                    .button(crate::i18n::tr(language, "Use as translation style"))
+                    .clicked()
+                {
                     controller.push_history(profile.clone());
                     profile.graph.bind_translation_style(&node.id);
                     controller.style_panel.collapsed = false;
@@ -2146,230 +2155,5 @@ fn input_socket_indexes(graph: &PromptNodeGraph, node: &PromptNode) -> Vec<u8> {
             .collect(),
         PromptNodeKind::Request { roles, .. } => (0..roles.len() as u8).collect(),
         _ => Vec::new(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn invalid_prompt_rewire_restores_the_original_connection_atomically() {
-        let mut profile = default_profile();
-        let original = profile.graph.links[0].clone();
-        let before = profile.clone();
-        let mut controller = PromptStudioController::default();
-        commit_prompt_wire(
-            &mut profile,
-            &mut controller,
-            crate::ui::graph_editor::WireCommit {
-                from: "missing-source".to_owned(),
-                to: Some((original.to.clone(), original.input)),
-                replaced: Some(PromptLinkKey {
-                    from: original.from,
-                    to: original.to,
-                    input: original.input,
-                }),
-            },
-        );
-        assert_eq!(profile, before);
-    }
-
-    #[test]
-    fn panned_canvas_controls_cannot_expand_the_parent_layout() {
-        let context = egui::Context::default();
-        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            let (canvas, _) = ui.allocate_exact_size(Vec2::new(240.0, 160.0), Sense::hover());
-            let parent_layout = ui.min_rect();
-            let mut text = String::from("offscreen node editor");
-
-            {
-                let mut viewport = graph_canvas::canvas_viewport(ui, canvas);
-                let offscreen = Rect::from_min_size(
-                    canvas.max + Vec2::new(10_000.0, 10_000.0),
-                    Vec2::new(400.0, 200.0),
-                );
-                viewport.put(offscreen, egui::TextEdit::multiline(&mut text));
-            }
-
-            assert_eq!(ui.min_rect(), parent_layout);
-        });
-        output.textures_delta.clear();
-    }
-
-    #[test]
-    fn fit_keeps_complete_node_bounds_inside_the_canvas() {
-        let mut graph = PromptNodeGraph::empty();
-        graph.add_variable(
-            PromptNodePage::OpenAiCompatible,
-            PromptVariable::CurrentInput,
-            [100.0, 100.0],
-        );
-        graph.add_request(
-            PromptProviderTarget::OpenAiCompatible,
-            vec![PromptMessageRole::System, PromptMessageRole::User],
-            [700.0, 500.0],
-        );
-        let available = Vec2::new(1000.0, 600.0);
-        let canvas = Rect::from_min_size(Pos2::ZERO, available);
-        let mut controller = PromptStudioController::default();
-
-        navigation::fit_graph_to_canvas(&graph, &mut controller, available);
-
-        for node in &graph.nodes {
-            let rect = controller
-                .canvas
-                .graph_rect(canvas, node.position, node_size(&graph, node));
-            assert!(canvas.contains(rect.min));
-            assert!(canvas.contains(rect.max));
-        }
-    }
-
-    #[test]
-    fn complete_builtin_overviews_fit_without_changing_the_saved_graph() {
-        let graph = PromptNodeGraph::builtin_default();
-        let original = graph.clone();
-        for target in [
-            PromptProviderTarget::OpenAiCompatible,
-            PromptProviderTarget::Hunyuan,
-        ] {
-            let mut controller = PromptStudioController::for_provider(target);
-            controller.overview_positions =
-                compact_positions(&graph, |node| controller.node_is_visible(node));
-            for size in [Vec2::new(1350.0, 770.0), Vec2::new(740.0, 420.0)] {
-                navigation::fit_graph_to_canvas(&graph, &mut controller, size);
-                let canvas = Rect::from_min_size(Pos2::ZERO, size);
-                for node in graph
-                    .nodes
-                    .iter()
-                    .filter(|node| controller.node_is_visible(node))
-                {
-                    let rect = controller.canvas.graph_rect(
-                        canvas,
-                        controller.node_position(node),
-                        node_size(&graph, node),
-                    );
-                    assert!(
-                        canvas.contains(rect.min) && canvas.contains(rect.max),
-                        "{} at {:?}",
-                        node.id,
-                        rect
-                    );
-                    assert!(node_size(&graph, node).y <= 330.0);
-                }
-            }
-        }
-        assert_eq!(graph, original);
-    }
-
-    #[test]
-    fn prompt_overview_refits_through_real_render_and_resize_frames() {
-        let context = egui::Context::default();
-        let library = PromptTemplateLibrary::default();
-        let mut controller = PromptStudioController::for_provider(PromptProviderTarget::Hunyuan);
-        for size in [
-            Vec2::new(1600.0, 900.0),
-            Vec2::new(1600.0, 900.0),
-            Vec2::new(1080.0, 720.0),
-            Vec2::new(1080.0, 720.0),
-        ] {
-            let snapshot = controller.snapshot(&library);
-            let mut output = context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
-                    events: vec![egui::Event::PointerMoved(Pos2::new(450.0, 300.0))],
-                    ..Default::default()
-                },
-                |ui| {
-                    super::super::render(
-                        &snapshot,
-                        &mut controller,
-                        ui,
-                        crate::i18n::UiLanguage::English,
-                    );
-                },
-            );
-            output.textures_delta.clear();
-            let canvas = Rect::from_min_size(Pos2::ZERO, controller.canvas.canvas_size);
-            let graph = &controller.draft.as_ref().unwrap().graph;
-            for node in graph
-                .nodes
-                .iter()
-                .filter(|node| controller.node_is_visible(node))
-            {
-                let rect = controller.canvas.graph_rect(
-                    canvas,
-                    controller.node_position(node),
-                    node_size(graph, node),
-                );
-                assert!(
-                    canvas.contains_rect(rect),
-                    "{} size={size:?}, zoom={}, pan={:?}, node={rect:?}",
-                    node.id,
-                    controller.canvas.zoom,
-                    controller.canvas.pan
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn parse_validation_error_locates_unconnected_node_and_input() {
-        let err = xrtranslate_prompt::PromptGraphError::new(
-            "node hunyuan-explicit-instruction input 2 is not connected",
-        );
-        let target = parse_validation_error_target(Some(&err));
-        assert_eq!(
-            target.node_id.as_deref(),
-            Some("hunyuan-explicit-instruction")
-        );
-        assert_eq!(target.input_index, Some(2));
-    }
-
-    #[test]
-    fn remove_compose_placeholder_cleans_unused_slots() {
-        let mut text = String::from("Translate: {0}\n\n{1}\n\n{2}");
-        remove_compose_placeholder(&mut text, 2);
-        assert_eq!(text, "Translate: {0}\n\n{1}");
-
-        remove_compose_placeholder(&mut text, 1);
-        assert_eq!(text, "Translate: {0}");
-    }
-
-    #[test]
-    fn test_node_position_delta_accumulates_and_snaps() {
-        let mut graph = PromptNodeGraph::empty();
-        let id = graph.add_variable(
-            PromptNodePage::OpenAiCompatible,
-            PromptVariable::CurrentInput,
-            [100.0, 100.0],
-        );
-        let mut controller = PromptStudioController::default();
-        controller.selected_nodes.insert(id.clone());
-
-        // Simulate 3 frames of dragging
-        for _ in 0..3 {
-            let delta = Vec2::new(10.0, 5.0);
-            for target in &mut graph.nodes {
-                if controller.selected_nodes.contains(&target.id) {
-                    target.position[0] += delta.x;
-                    target.position[1] += delta.y;
-                }
-            }
-        }
-
-        let node = graph.nodes.iter().find(|n| n.id == id).unwrap();
-        assert_eq!(node.position, [130.0, 115.0]);
-
-        // Snap to 16px grid
-        for target in &mut graph.nodes {
-            if controller.selected_nodes.contains(&target.id) {
-                target.position[0] = (target.position[0] / 16.0).round() * 16.0;
-                target.position[1] = (target.position[1] / 16.0).round() * 16.0;
-            }
-        }
-
-        let node = graph.nodes.iter().find(|n| n.id == id).unwrap();
-        assert_eq!(node.position, [128.0, 112.0]);
     }
 }

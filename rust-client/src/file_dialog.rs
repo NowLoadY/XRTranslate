@@ -14,9 +14,6 @@ pub fn set_context(context: egui::Context) {
 pub fn take_errors() -> Vec<String> {
     std::mem::take(&mut *ERRORS.lock().unwrap())
 }
-pub const fn folders_available() -> bool {
-    !cfg!(target_os = "android")
-}
 
 fn report_error(error: String) {
     ERRORS.lock().unwrap().push(error);
@@ -104,16 +101,6 @@ impl FileDialog {
                 context.request_repaint_after(std::time::Duration::from_millis(100));
                 None
             }
-        }
-    }
-    pub fn pick_folder(self) -> Option<PathBuf> {
-        #[cfg(not(target_os = "android"))]
-        {
-            self.native.pick_folder()
-        }
-        #[cfg(target_os = "android")]
-        {
-            None
         }
     }
     pub fn save(self, content: impl AsRef<[u8]>) -> Result<(), String> {

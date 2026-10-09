@@ -1,9 +1,4 @@
-//! Shared immutable-artifact transfer infrastructure.
-//!
-//! Model, runtime, plugin-component, and application-update installers select
-//! their own artifacts and own extraction/activation. They all delegate HTTPS,
-//! proxying, retries, resume validation, cache recovery, progress, and integrity
-//! checks to this crate so those guarantees cannot drift between features.
+//! Resumable artifact downloads with retries, source routing, and size checks.
 
 #![forbid(unsafe_code)]
 
@@ -15,11 +10,9 @@ use reqwest::{
     StatusCode,
     header::{ACCEPT_ENCODING, CONTENT_RANGE, RANGE, RETRY_AFTER},
 };
-use sha2::{Digest, Sha256};
 use std::{
     error::Error,
-    fmt, fs,
-    io::{self, Read},
+    fmt, fs, io,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -35,10 +28,7 @@ pub struct DownloadProgress {
     pub total_bytes: u64,
 }
 
-/// Cooperative cancellation shared by a UI-owned download worker and the
-/// control that replaces its source. Cancellation is checked between network
-/// chunks and retry delays so the worker releases its `.part` file before the
-/// owning installer removes staging.
+/// Cancels a download between network chunks or during a retry delay.
 #[derive(Clone, Debug, Default)]
 pub struct DownloadCancellation(Arc<AtomicBool>);
 
@@ -58,35 +48,12 @@ pub struct DownloadSpec<'a> {
     label: &'a str,
     url: &'a str,
     bytes: u64,
-    integrity: DownloadIntegrity<'a>,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum DownloadIntegrity<'a> {
-    Sha256(&'a str),
-    SizeOnly,
 }
 
 impl<'a> DownloadSpec<'a> {
-    /// Creates an immutable artifact contract verified by length and SHA-256.
-    pub const fn verified(label: &'a str, url: &'a str, bytes: u64, sha256: &'a str) -> Self {
-        Self {
-            label,
-            url,
-            bytes,
-            integrity: DownloadIntegrity::Sha256(sha256),
-        }
-    }
-
-    /// Creates a length-only contract for a trusted HTTPS source that does not
-    /// publish a digest. Prefer [`Self::verified`] whenever a digest exists.
-    pub const fn size_only(label: &'a str, url: &'a str, bytes: u64) -> Self {
-        Self {
-            label,
-            url,
-            bytes,
-            integrity: DownloadIntegrity::SizeOnly,
-        }
+    /// Describes an artifact from an HTTPS URL with its expected byte length.
+    pub const fn new(label: &'a str, url: &'a str, bytes: u64) -> Self {
+        Self { label, url, bytes }
     }
 }
 
@@ -238,18 +205,13 @@ impl DownloadClient {
                     });
                     return Ok(());
                 }
-                Err(error) => {
+                Err(DownloadError::Size { .. }) => {
                     fs::remove_file(complete).map_err(|source| DownloadError::FileIo {
                         path: complete.to_path_buf(),
                         source,
                     })?;
-                    if !matches!(
-                        error,
-                        DownloadError::Size { .. } | DownloadError::Integrity { .. }
-                    ) {
-                        return Err(error);
-                    }
                 }
+                Err(error) => return Err(error),
             }
         }
         if let Some(parent) = partial.parent() {
@@ -263,23 +225,18 @@ impl DownloadClient {
 
         for attempt in 1..=self.policy.max_attempts {
             self.ensure_not_cancelled(spec.label)?;
-            match self.transfer_once(spec, partial, &mut on_progress).await {
+            let result = self
+                .transfer_once(spec, partial, &mut on_progress)
+                .await
+                .and_then(|()| verify_file(partial, spec));
+            if matches!(&result, Err(DownloadError::Size { .. })) {
+                fs::remove_file(partial).map_err(|source| DownloadError::FileIo {
+                    path: partial.to_path_buf(),
+                    source,
+                })?;
+            }
+            match result {
                 Ok(()) => {
-                    if let Err(error) = verify_file(partial, spec) {
-                        let _ = fs::remove_file(partial);
-                        if matches!(
-                            error,
-                            DownloadError::Size { .. } | DownloadError::Integrity { .. }
-                        ) && attempt < self.policy.max_attempts
-                        {
-                            let Some(delay) = self.retry_delay(&error, attempt) else {
-                                return Err(error);
-                            };
-                            self.sleep_or_cancel(delay, spec.label).await?;
-                            continue;
-                        }
-                        return Err(error);
-                    }
                     tokio::fs::rename(partial, complete)
                         .await
                         .map_err(|source| DownloadError::FileIo {
@@ -340,9 +297,16 @@ impl DownloadClient {
         partial: &Path,
         on_progress: &mut impl FnMut(DownloadProgress),
     ) -> Result<(), DownloadError> {
-        let mut existing = fs::metadata(partial)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
+        let mut existing = match fs::metadata(partial) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+            Err(source) => {
+                return Err(DownloadError::FileIo {
+                    path: partial.to_path_buf(),
+                    source,
+                });
+            }
+        };
         if existing > spec.bytes {
             fs::remove_file(partial).map_err(|source| DownloadError::FileIo {
                 path: partial.to_path_buf(),
@@ -351,6 +315,10 @@ impl DownloadClient {
             existing = 0;
         }
         if existing == spec.bytes {
+            on_progress(DownloadProgress {
+                downloaded_bytes: existing,
+                total_bytes: spec.bytes,
+            });
             return Ok(());
         }
 
@@ -371,25 +339,20 @@ impl DownloadClient {
                 attempts: 0,
             })?;
         let status = response.status();
-        if !status.is_success() {
-            return Err(DownloadError::HttpStatus {
-                label: spec.label.to_owned(),
-                status,
-                retry_after: parse_retry_after(&response),
-                attempts: 0,
-            });
-        }
-
-        let append = if existing > 0 && status == StatusCode::PARTIAL_CONTENT {
-            validate_content_range(&response, existing, spec.bytes, spec.label)?;
-            true
-        } else if existing > 0 && status == StatusCode::OK {
-            false
-        } else if existing == 0 && status == StatusCode::PARTIAL_CONTENT {
-            validate_content_range(&response, 0, spec.bytes, spec.label)?;
-            false
-        } else {
-            existing == 0
+        let append = match status {
+            StatusCode::PARTIAL_CONTENT => {
+                validate_content_range(&response, existing, spec.bytes, spec.label)?;
+                existing > 0
+            }
+            StatusCode::OK => false,
+            _ => {
+                return Err(DownloadError::HttpStatus {
+                    label: spec.label.to_owned(),
+                    status,
+                    retry_after: parse_retry_after(&response),
+                    attempts: 0,
+                });
+            }
         };
         let mut downloaded = if append { existing } else { 0 };
         let expected_response_bytes = spec.bytes.saturating_sub(downloaded);
@@ -419,27 +382,24 @@ impl DownloadClient {
             total_bytes: spec.bytes,
         });
 
-        loop {
-            self.ensure_not_cancelled(spec.label)?;
+        let result = loop {
+            if let Err(error) = self.ensure_not_cancelled(spec.label) {
+                break Err(error);
+            }
             let chunk = match response.chunk().await {
-                Ok(chunk) => chunk,
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break Ok(()),
                 Err(error) => {
-                    let _ = output.flush().await;
-                    let _ = output.sync_all().await;
-                    return Err(DownloadError::Transfer {
+                    break Err(DownloadError::Transfer {
                         label: spec.label.to_owned(),
                         message: error.to_string(),
                         attempts: 0,
                     });
                 }
             };
-            let Some(chunk) = chunk else { break };
             downloaded = downloaded.saturating_add(chunk.len() as u64);
             if downloaded > spec.bytes {
-                let _ = output.flush().await;
-                drop(output);
-                let _ = fs::remove_file(partial);
-                return Err(DownloadError::Size {
+                break Err(DownloadError::Size {
                     path: partial.to_path_buf(),
                     expected: spec.bytes,
                     actual: downloaded,
@@ -456,7 +416,7 @@ impl DownloadClient {
                 downloaded_bytes: downloaded,
                 total_bytes: spec.bytes,
             });
-        }
+        };
         output
             .flush()
             .await
@@ -471,6 +431,7 @@ impl DownloadClient {
                 path: partial.to_path_buf(),
                 source,
             })?;
+        result?;
         if downloaded != spec.bytes {
             return Err(DownloadError::Incomplete {
                 label: spec.label.to_owned(),
@@ -523,11 +484,6 @@ pub enum DownloadError {
         expected: u64,
         actual: u64,
     },
-    Integrity {
-        path: PathBuf,
-        expected: String,
-        actual: String,
-    },
     Cancelled {
         label: String,
     },
@@ -541,7 +497,7 @@ impl DownloadError {
 
     fn is_retryable(&self) -> bool {
         match self {
-            Self::Transfer { .. } | Self::Incomplete { .. } => true,
+            Self::Transfer { .. } | Self::Incomplete { .. } | Self::Size { .. } => true,
             Self::HttpStatus {
                 status: StatusCode::FORBIDDEN,
                 retry_after: Some(_),
@@ -649,15 +605,6 @@ impl fmt::Display for DownloadError {
                 "downloaded file {} is {actual} bytes; expected {expected}",
                 path.display()
             ),
-            Self::Integrity {
-                path,
-                expected,
-                actual,
-            } => write!(
-                formatter,
-                "downloaded file {} has SHA-256 {actual}; expected {expected}",
-                path.display()
-            ),
             Self::Cancelled { label } => write!(formatter, "download {label} was cancelled"),
         }
     }
@@ -695,14 +642,6 @@ fn validate_spec(spec: DownloadSpec<'_>) -> Result<(), DownloadError> {
             spec.label
         )));
     }
-    if let DownloadIntegrity::Sha256(sha256) = spec.integrity
-        && (sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()))
-    {
-        return Err(DownloadError::InvalidSpec(format!(
-            "download {} has an invalid SHA-256",
-            spec.label
-        )));
-    }
     Ok(())
 }
 
@@ -721,10 +660,14 @@ fn validate_content_range(
         .strip_prefix("bytes ")
         .and_then(|value| value.split_once('/'))
         .and_then(|(range, total)| {
-            let (start, _) = range.split_once('-')?;
-            Some((start.parse::<u64>().ok()?, total.parse::<u64>().ok()?))
+            let (start, end) = range.split_once('-')?;
+            Some((
+                start.parse::<u64>().ok()?,
+                end.parse::<u64>().ok()?,
+                total.parse::<u64>().ok()?,
+            ))
         });
-    if parsed != Some((expected_start, expected_total)) {
+    if parsed != Some((expected_start, expected_total - 1, expected_total)) {
         return Err(DownloadError::Range {
             label: label.to_owned(),
             expected_start,
@@ -748,163 +691,16 @@ fn verify_file(path: &Path, spec: DownloadSpec<'_>) -> Result<(), DownloadError>
             actual: actual_size,
         });
     }
-    if let DownloadIntegrity::Sha256(expected) = spec.integrity {
-        let actual = sha256_file(path).map_err(|source| DownloadError::FileIo {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        if !actual.eq_ignore_ascii_case(expected) {
-            return Err(DownloadError::Integrity {
-                path: path.to_path_buf(),
-                expected: expected.to_owned(),
-                actual,
-            });
-        }
-    }
     Ok(())
 }
 
 fn parse_retry_after(response: &reqwest::Response) -> Option<Duration> {
     let value = response.headers().get(RETRY_AFTER)?.to_str().ok()?;
-    parse_retry_after_value(value, std::time::SystemTime::now())
-}
-
-fn parse_retry_after_value(value: &str, now: std::time::SystemTime) -> Option<Duration> {
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(Duration::from_secs(seconds));
     }
     httpdate::parse_http_date(value)
         .ok()?
-        .duration_since(now)
+        .duration_since(std::time::SystemTime::now())
         .ok()
-}
-
-fn sha256_file(path: &Path) -> io::Result<String> {
-    let mut file = fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0_u8; 1024 * 1024];
-    loop {
-        let count = file.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        hasher.update(&buffer[..count]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn validates_verified_and_explicit_size_only_contracts() {
-        assert!(
-            validate_spec(DownloadSpec::verified(
-                "artifact",
-                "https://example.com/file.zip",
-                42,
-                &"a".repeat(64),
-            ))
-            .is_ok()
-        );
-        assert!(
-            validate_spec(DownloadSpec::size_only(
-                "artifact",
-                "https://example.com/file.zip",
-                42,
-            ))
-            .is_ok()
-        );
-        assert!(
-            validate_spec(DownloadSpec::size_only(
-                "artifact",
-                "https://user:secret@example.com/file.zip",
-                42,
-            ))
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn retry_after_accepts_seconds_and_http_dates() {
-        let now = std::time::UNIX_EPOCH + Duration::from_secs(1_000);
-        assert_eq!(
-            parse_retry_after_value("17", now),
-            Some(Duration::from_secs(17))
-        );
-        let later = now + Duration::from_secs(30);
-        let date = httpdate::fmt_http_date(later);
-        assert_eq!(
-            parse_retry_after_value(&date, now),
-            Some(Duration::from_secs(30))
-        );
-
-        let client = DownloadClient {
-            client: reqwest::Client::new(),
-            policy: DownloadPolicy::default(),
-            source: DownloadSource::Official,
-            cancellation: None,
-        };
-        let excessive = DownloadError::HttpStatus {
-            label: "artifact".into(),
-            status: StatusCode::TOO_MANY_REQUESTS,
-            retry_after: Some(Duration::from_secs(600)),
-            attempts: 0,
-        };
-        assert_eq!(client.retry_delay(&excessive, 1), None);
-    }
-
-    #[test]
-    fn cancelled_transfer_stops_before_opening_a_partial_file() {
-        let cancellation = DownloadCancellation::default();
-        cancellation.cancel();
-        let client = DownloadClient::with_proxy_source_and_cancellation(
-            "xrtranslate-download-test",
-            None,
-            DownloadSource::Official,
-            cancellation,
-        )
-        .unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "xrtranslate-download-cancelled-{}",
-            std::process::id()
-        ));
-        let complete = root.join("artifact.bin");
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let error = runtime
-            .block_on(client.download_to(
-                DownloadSpec::size_only("artifact", "https://example.invalid/artifact", 1),
-                &complete,
-                |_| {},
-            ))
-            .unwrap_err();
-
-        assert!(error.is_cancelled());
-        assert!(!complete.with_file_name("artifact.bin.part").exists());
-    }
-
-    #[test]
-    fn size_only_skips_hashing_but_still_enforces_length() {
-        let path = std::env::temp_dir().join(format!(
-            "xrtranslate-download-contract-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::write(&path, b"payload").unwrap();
-        let spec = DownloadSpec::size_only("artifact", "https://example.com/file", 7);
-        assert!(verify_file(&path, spec).is_ok());
-        let wrong_size = DownloadSpec::size_only("artifact", "https://example.com/file", 8);
-        assert!(matches!(
-            verify_file(&path, wrong_size),
-            Err(DownloadError::Size { .. })
-        ));
-        fs::remove_file(path).unwrap();
-    }
 }

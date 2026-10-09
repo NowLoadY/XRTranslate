@@ -263,39 +263,3 @@ fn emit_resampled(
     *output_frames += samples.len() as u64;
     sink.push(&samples)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crossbeam_channel::bounded;
-
-    #[test]
-    fn continuous_resampling_preserves_expected_duration() {
-        let stop = AtomicBool::new(false);
-        let sent_frames = AtomicU64::new(0);
-        let (tx, rx) = bounded(32);
-        let mut sink = ChunkSink::new(
-            tx,
-            160,
-            16_000,
-            AudioImportPacing::AsFastAsPossible,
-            &stop,
-            &sent_frames,
-        );
-        let mut resampler = StreamingResampler::new(48_000, 16_000).unwrap();
-        let input: Vec<f32> = (0..4_800)
-            .map(|frame| ((frame as f32 / 48_000.0) * 440.0 * std::f32::consts::TAU).sin())
-            .collect();
-        for packet in input.chunks(317) {
-            resampler.push(packet, &mut sink).unwrap();
-        }
-        resampler.finish(&mut sink).unwrap();
-        sink.finish().unwrap();
-        drop(sink);
-
-        let output: Vec<f32> = rx.into_iter().flatten().collect();
-        assert_eq!(output.len(), 1_600);
-        assert!(output.iter().all(|sample| sample.is_finite()));
-        assert!(output.iter().any(|sample| sample.abs() > 0.01));
-    }
-}

@@ -38,9 +38,7 @@ impl Target {
                 rect: avatar.rect,
             });
         }
-        // Only the first welcome page offers hints for hovered controls.
         let layout = layout?;
-        layout.features?;
         if let Some(pointer) = ctx.pointer_hover_pos() {
             if let Some(cards) = layout.features
                 && let Some(index) = cards.iter().position(|rect| rect.contains(pointer))
@@ -57,6 +55,9 @@ impl Target {
                 });
             }
         }
+        // Every step can explain its disabled Continue button; general control
+        // discovery remains limited to the welcome page.
+        layout.features?;
         let hovered = ctx
             .interaction_snapshot(|snapshot| snapshot.hovered.iter().copied().collect::<Vec<_>>());
         let read = |id| {

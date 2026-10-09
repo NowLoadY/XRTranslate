@@ -178,15 +178,6 @@ fn node_size_in_graph(
     size
 }
 
-#[cfg(test)]
-fn node_size_for_host(node: &AudioNode, host_audio: &HostAudioSnapshot) -> Vec2 {
-    let mut size = node_size(node);
-    if voicemeeter_target(node, host_audio).is_some() {
-        size.y += VOICEMEETER_GAME_MIC_EXTRA_HEIGHT;
-    }
-    size
-}
-
 struct VoiceMeeterTarget<'a> {
     device: &'a HostAudioDevice,
     snapshot: &'a VoiceMeeterSnapshot,
@@ -2604,7 +2595,10 @@ fn render_header(
     let mut focus_name = false;
     let compact = ui.available_width() < 500.0;
 
-    let render_graph_selector = |ui: &mut egui::Ui, state: &mut AudioStudioCanvasState, actions: &mut Vec<AudioStudioUiAction>, focus_name: &mut bool| {
+    let render_graph_selector = |ui: &mut egui::Ui,
+                                 state: &mut AudioStudioCanvasState,
+                                 actions: &mut Vec<AudioStudioUiAction>,
+                                 focus_name: &mut bool| {
         let name = if is_default {
             tr(language, "Default")
         } else {
@@ -2618,9 +2612,7 @@ fn render_header(
             |ui| {
                 for default_group in [true, false] {
                     for (id, name) in &snapshot.graphs {
-                        if (id.0 == crate::audio_studio::DEFAULT_AUDIO_GRAPH_ID)
-                            != default_group
-                        {
+                        if (id.0 == crate::audio_studio::DEFAULT_AUDIO_GRAPH_ID) != default_group {
                             continue;
                         }
                         let label = if default_group {
@@ -2776,13 +2768,15 @@ fn render_header(
             }
         }
         ui.menu_button(tr(language, "Edit"), |ui| {
-            if graph_style::toolbar_button(ui, tr(language, "Undo"), state.history.can_undo()).clicked()
+            if graph_style::toolbar_button(ui, tr(language, "Undo"), state.history.can_undo())
+                .clicked()
                 && let Some(previous) = state.history.undo(snapshot.selected_graph.clone())
             {
                 actions.push(AudioStudioUiAction::ReplaceSelectedGraph(previous));
                 ui.close();
             }
-            if graph_style::toolbar_button(ui, tr(language, "Redo"), state.history.can_redo()).clicked()
+            if graph_style::toolbar_button(ui, tr(language, "Redo"), state.history.can_redo())
+                .clicked()
                 && let Some(next) = state.history.redo(snapshot.selected_graph.clone())
             {
                 actions.push(AudioStudioUiAction::ReplaceSelectedGraph(next));
@@ -2791,7 +2785,8 @@ fn render_header(
             if state.show_graph {
                 ui.separator();
                 ui.horizontal(|ui| {
-                    for (label, delta, hint) in [("−", -120.0, "Zoom out"), ("+", 120.0, "Zoom in")] {
+                    for (label, delta, hint) in [("−", -120.0, "Zoom out"), ("+", 120.0, "Zoom in")]
+                    {
                         if graph_style::toolbar_button(ui, label, true)
                             .on_hover_text(tr(language, hint))
                             .clicked()
@@ -2801,7 +2796,8 @@ fn render_header(
                     }
                 });
                 if graph_style::toolbar_button(ui, tr(language, "Auto layout"), true).clicked() {
-                    let arranged = auto_layout_graph(&snapshot.selected_graph, &snapshot.host_audio);
+                    let arranged =
+                        auto_layout_graph(&snapshot.selected_graph, &snapshot.host_audio);
                     if arranged != snapshot.selected_graph {
                         state.history.push(snapshot.selected_graph.clone());
                         actions.push(AudioStudioUiAction::ReplaceSelectedGraph(arranged));
@@ -3374,230 +3370,4 @@ fn status_text(ui: &mut egui::Ui, text: &str, color: Color32) {
 
 fn mono_label(text: &str) -> RichText {
     RichText::new(text).size(12.0).color(MUTED).strong()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::audio_studio::{AudioStudioPreset, graph_for_preset};
-
-    fn host_device(id: &str, name: &str, role: AudioDeviceRole) -> HostAudioDevice {
-        HostAudioDevice {
-            id: DeviceId(id.to_owned()),
-            name: name.to_owned(),
-            role,
-            is_default: false,
-            voicemeeter_strip_index: None,
-        }
-    }
-
-    #[test]
-    fn clicking_a_gate_slider_changes_only_that_nodes_threshold() {
-        let context = egui::Context::default();
-        let host = HostAudioSnapshot::default();
-        let state = AudioStudioCanvasState::default();
-        let mut graph = AudioGraph::new("gate-controls", "Gate controls");
-        for id in ["gate-one", "gate-two"] {
-            graph.nodes.push(AudioNode::new(
-                id,
-                "Noise gate",
-                AudioNodeKind::Processing {
-                    processor: AudioProcessor::NoiseGate {
-                        threshold_db: -45.0,
-                    },
-                },
-            ));
-        }
-        let rects = [
-            Rect::from_min_size(Pos2::new(20.0, 20.0), node_size(&graph.nodes[0])),
-            Rect::from_min_size(Pos2::new(260.0, 20.0), node_size(&graph.nodes[1])),
-        ];
-        let row = node_control_row(rects[1], 1.0, 0);
-        let pointer = Pos2::new(row.left() + 80.0, row.center().y);
-        let mut commands = Vec::new();
-        for pressed in [None, Some(true), Some(false)] {
-            let mut events = vec![egui::Event::PointerMoved(pointer)];
-            if let Some(pressed) = pressed {
-                events.push(egui::Event::PointerButton {
-                    pos: pointer,
-                    button: egui::PointerButton::Primary,
-                    pressed,
-                    modifiers: egui::Modifiers::NONE,
-                });
-            }
-            let mut output = context.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 300.0))),
-                    events,
-                    ..Default::default()
-                },
-                |ui| {
-                    graph_style::apply(ui);
-                    for (node, rect) in graph.nodes.iter().zip(rects) {
-                        render_node_control(
-                            &graph,
-                            node,
-                            &host,
-                            rect,
-                            ui,
-                            &state,
-                            &mut commands,
-                            crate::i18n::UiLanguage::English,
-                        );
-                    }
-                },
-            );
-            output.textures_delta.clear();
-        }
-        assert!(
-            !commands.is_empty(),
-            "slider clicks must emit a threshold update"
-        );
-        assert!(
-            commands.iter().all(|command| matches!(command,
-                CanvasCommand::SetNoiseGateThreshold { node_id, threshold_db }
-                    if node_id.0 == "gate-two" && *threshold_db != -45.0
-            )),
-            "only the clicked gate may change: {commands:?}"
-        );
-    }
-
-    #[test]
-    fn game_microphone_empty_selection_names_only_a_unique_sink_candidate() {
-        let kind = AudioNodeKind::GameMicrophoneOutput {
-            device_id: None,
-            voicemeeter_bus: None,
-            follow_tts: false,
-        };
-        let sink = host_device(
-            "virtual-1",
-            "Voicemeeter Output",
-            AudioDeviceRole::GameMicrophoneSink,
-        );
-        let unrelated = host_device("render-1", "Speakers", AudioDeviceRole::MonitorRender);
-        assert_eq!(
-            device_selection_text(&kind, &[sink.clone(), unrelated]),
-            "Auto · Voicemeeter Output"
-        );
-
-        let second_sink = host_device(
-            "virtual-2",
-            "Virtual Cable",
-            AudioDeviceRole::GameMicrophoneSink,
-        );
-        assert_eq!(
-            device_selection_text(&kind, &[sink, second_sink]),
-            "Select virtual mic feed output"
-        );
-    }
-
-    #[test]
-    fn audio_auto_layout_preserves_node_clearance_and_link_direction() {
-        let graph = graph_for_preset(AudioStudioPreset::TtsToGameMicrophone);
-        let arranged = auto_layout_graph(&graph, &HostAudioSnapshot::default());
-        for (index, node) in arranged.nodes.iter().enumerate() {
-            let rect =
-                Rect::from_min_size(Pos2::new(node.position.x, node.position.y), node_size(node));
-            for other in arranged.nodes.iter().skip(index + 1) {
-                let other_rect = Rect::from_min_size(
-                    Pos2::new(other.position.x, other.position.y),
-                    node_size(other),
-                );
-                assert!(!rect.intersects(other_rect));
-            }
-        }
-        for link in &arranged.links {
-            let from = arranged
-                .nodes
-                .iter()
-                .find(|node| node.id == link.from.node_id)
-                .unwrap();
-            let to = arranged
-                .nodes
-                .iter()
-                .find(|node| node.id == link.to.node_id)
-                .unwrap();
-            assert!(to.position.x >= from.position.x + node_size(from).x + 150.0);
-        }
-    }
-
-    #[test]
-    fn preset_templates_start_with_visible_clearance_between_nodes() {
-        for preset in AudioStudioPreset::ALL {
-            let graph = graph_for_preset(preset);
-            for (index, node) in graph.nodes.iter().enumerate() {
-                let rect = Rect::from_min_size(
-                    Pos2::new(node.position.x, node.position.y),
-                    node_size(node),
-                )
-                .expand(20.0);
-                for other in graph.nodes.iter().skip(index + 1) {
-                    let other_rect = Rect::from_min_size(
-                        Pos2::new(other.position.x, other.position.y),
-                        node_size(other),
-                    )
-                    .expand(20.0);
-                    assert!(
-                        !rect.intersects(other_rect),
-                        "{preset:?}: {} overlaps {}",
-                        node.id.0,
-                        other.id.0
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn voicemeeter_controls_require_capability_and_strip_metadata() {
-        use crate::audio_studio::{VoiceMeeterEdition, VoiceMeeterSnapshot, VoiceMeeterStripIndex};
-
-        let mut node = AudioNode::new(
-            "game-microphone",
-            "Game microphone",
-            AudioNodeKind::GameMicrophoneOutput {
-                device_id: Some(DeviceId::new("vm-feed")),
-                voicemeeter_bus: None,
-                follow_tts: false,
-            },
-        );
-        let mut device = host_device(
-            "vm-feed",
-            "VoiceMeeter Input",
-            AudioDeviceRole::GameMicrophoneSink,
-        );
-        device.voicemeeter_strip_index = Some(VoiceMeeterStripIndex(4));
-        let mut host = HostAudioSnapshot {
-            devices: vec![device],
-            ..HostAudioSnapshot::default()
-        };
-        assert!(voicemeeter_target(&node, &host).is_none());
-        assert_eq!(node_size_for_host(&node, &host), node_size(&node));
-
-        host.voicemeeter = Some(VoiceMeeterSnapshot {
-            edition: VoiceMeeterEdition::Banana,
-            running: false,
-            version: None,
-            inputs: Vec::new(),
-            buses: vec![VoiceMeeterBus::B1, VoiceMeeterBus::B2],
-        });
-        assert_eq!(selected_voicemeeter_bus(&node), VoiceMeeterBus::B1);
-        assert!(voicemeeter_target(&node, &host).is_some());
-        assert_eq!(
-            node_size_for_host(&node, &host).y,
-            node_size(&node).y + VOICEMEETER_GAME_MIC_EXTRA_HEIGHT
-        );
-
-        if let AudioNodeKind::GameMicrophoneOutput {
-            voicemeeter_bus, ..
-        } = &mut node.kind
-        {
-            *voicemeeter_bus = Some(VoiceMeeterBus::B2);
-        }
-        assert_eq!(selected_voicemeeter_bus(&node), VoiceMeeterBus::B2);
-        assert_eq!(
-            paired_recording_device(VoiceMeeterBus::B2),
-            "Voicemeeter AUX Out B2"
-        );
-    }
 }

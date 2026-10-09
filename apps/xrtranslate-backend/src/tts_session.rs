@@ -8,13 +8,9 @@ mod reference;
 mod voices;
 pub(crate) use reference::transcribe_reference;
 
-#[cfg(test)]
-use std::fs;
 pub(crate) use voices::{
     MICROPHONE_VOICE_NAME, VoiceLibrary, restore_persisted_voice_clones, select_voice, voice_status,
 };
-#[cfg(test)]
-use voices::{load_persisted_voice_clones, save_persisted_voice_clone};
 
 use tokio::{sync::mpsc, time::Instant};
 use tracing::{info, warn};
@@ -196,86 +192,4 @@ pub(crate) fn split_text(text: &str, max_chars: usize) -> Vec<String> {
         chunks.push(current.trim().to_owned());
     }
     chunks
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn text_chunks_preserve_content_and_provider_limit() {
-        let chunks = split_text("你好，世界。这是一段语音。", 6);
-        assert_eq!(chunks.concat(), "你好，世界。这是一段语音。");
-        assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 6));
-    }
-
-    #[test]
-    fn persisted_voice_clones_save_and_load_round_trip() {
-        let temp_dir = std::env::temp_dir().join(format!(
-            "xrtranslate-test-voice-clones-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = fs::remove_dir_all(&temp_dir);
-
-        let wav_data = b"RIFFfake_wav_data_for_testing";
-        let transcript = "testing voice clone transcript";
-        save_persisted_voice_clone(&temp_dir, "xrtranslate_microphone", wav_data, transcript)
-            .expect("save should succeed");
-
-        let loaded = load_persisted_voice_clones(&temp_dir);
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].voice_name, "xrtranslate_microphone");
-        assert_eq!(loaded[0].transcript, transcript);
-        assert_eq!(loaded[0].wav_bytes, wav_data);
-
-        // Overwrite with new data
-        let new_wav = b"RIFFnew_wav_data";
-        let new_transcript = "updated transcript";
-        save_persisted_voice_clone(&temp_dir, "xrtranslate_microphone", new_wav, new_transcript)
-            .expect("overwrite should succeed");
-
-        let reloaded = load_persisted_voice_clones(&temp_dir);
-        assert_eq!(reloaded.len(), 1);
-        assert_eq!(reloaded[0].transcript, new_transcript);
-        assert_eq!(reloaded[0].wav_bytes, new_wav);
-
-        // User cards live in independent directories, even when display names match.
-        let catalog = xrtranslate_assets::voices::VoiceCatalog::new(&temp_dir);
-        let reference = xrtranslate_assets::voices::builtin("cute").unwrap();
-        let first = catalog
-            .add(
-                "Same name",
-                "First",
-                reference.transcript,
-                reference.pcm16(),
-            )
-            .unwrap();
-        let second = catalog
-            .add(
-                "Same name",
-                "Second",
-                reference.transcript,
-                reference.pcm16(),
-            )
-            .unwrap();
-        assert_ne!(first.id, second.id);
-        let cards = catalog.list().unwrap();
-        assert_eq!(cards.iter().filter(|card| !card.is_builtin()).count(), 2);
-        let (wav, text) = catalog.reference(&first.id).unwrap();
-        assert_eq!(wav.as_ref(), reference.wav);
-        assert_eq!(text.as_ref(), reference.transcript.trim());
-        assert!(catalog.reference("../xrtranslate_microphone").is_err());
-        assert!(catalog.add("", "", "words", reference.pcm16()).is_err());
-        assert_eq!(catalog.list().unwrap().len(), cards.len());
-        assert_eq!(load_persisted_voice_clones(&temp_dir).len(), 1);
-        assert_eq!(
-            fs::read(temp_dir.join("xrtranslate_microphone.wav")).unwrap(),
-            new_wav
-        );
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
 }

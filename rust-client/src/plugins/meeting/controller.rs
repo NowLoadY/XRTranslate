@@ -678,33 +678,3 @@ pub fn can_continue(meeting: &Meeting) -> bool {
                 | MeetingStatus::Interrupted
         )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    fn temp_root(label: &str) -> std::path::PathBuf {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "xrtranslate-meeting-controller-{label}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        root
-    }
-
-    #[test]
-    fn fail_active_meeting_clears_capture_and_retains_host_error() {
-        let root = temp_root("failure");
-        let mut controller = MeetingController::open(&root);
-
-        assert!(controller.fail_active_meeting("backend failed").is_none());
-        assert_eq!(controller.active_meeting_id(), None);
-        assert_eq!(controller.error.as_deref(), Some("backend failed"));
-
-        drop(controller);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-}

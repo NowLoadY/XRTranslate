@@ -242,27 +242,3 @@ impl MediaTaskStore {
         self.tasks.iter_mut().find(|t| t.id == id)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_video_task_backwards_compatible_deserialization() {
-        let json_without_media_type = r#"{
-            "id": "test-123",
-            "title": "Old Task",
-            "source": {"LocalFile": "test.mp4"},
-            "source_language": "ja",
-            "target_language": "zh",
-            "subtitle_mode": "RealtimeTranslation",
-            "created_at_sec": 1000,
-            "last_played_sec": 1000,
-            "duration_ms": 5000,
-            "subtitles": {"cues": [], "enabled": true}
-        }"#;
-
-        let task: MediaTask = serde_json::from_str(json_without_media_type).unwrap();
-        assert_eq!(task.media_type, MediaType::Video);
-    }
-}

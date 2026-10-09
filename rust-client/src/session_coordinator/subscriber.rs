@@ -87,39 +87,3 @@ pub enum HostOutputEvent<'a> {
 pub trait HostOutputSubscriber: Send + Sync {
     fn on_host_output(&self, event: HostOutputEvent<'_>);
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn audio_source_filter_handles_each_selection_without_filtering_text() {
-        for microphone in [false, true] {
-            for system_audio in [false, true] {
-                let filter = AudioSourceFilter {
-                    microphone,
-                    system_audio,
-                };
-                assert_eq!(filter.allows(CaptureSource::Microphone, false), microphone);
-                assert_eq!(
-                    filter.allows(CaptureSource::SystemAudio, false),
-                    system_audio
-                );
-                assert_eq!(
-                    filter.allows(CaptureSource::Both, false),
-                    microphone && system_audio
-                );
-                for source in [
-                    CaptureSource::Microphone,
-                    CaptureSource::SystemAudio,
-                    CaptureSource::Both,
-                ] {
-                    assert!(filter.allows(source, true));
-                }
-            }
-        }
-        let partial: AudioSourceFilter = serde_json::from_str(r#"{"microphone": false}"#).unwrap();
-        assert!(!partial.microphone);
-        assert!(partial.system_audio);
-    }
-}

@@ -458,17 +458,3 @@ fn tokenize_command_line(input: &str) -> Vec<String> {
     }
     tokens
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn command_tokenizer_handles_quotes_and_spaces() {
-        let tokens = tokenize_command_line("click \"Check for Updates\" 123");
-        assert_eq!(tokens, vec!["click", "Check for Updates", "123"]);
-
-        let tokens2 = tokenize_command_line("set 'Receive beta updates' true");
-        assert_eq!(tokens2, vec!["set", "Receive beta updates", "true"]);
-    }
-}

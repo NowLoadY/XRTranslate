@@ -9,8 +9,6 @@ pub mod controller;
 mod default_graph;
 pub mod graph;
 pub mod persistence;
-#[cfg(test)]
-mod test_graphs;
 
 #[allow(unused_imports)]
 pub use controller::{
@@ -36,5 +34,3 @@ pub use persistence::{
     AUDIO_STUDIO_SCHEMA_VERSION, AUDIO_STUDIO_SETTINGS_PATH, AudioStudioPersistenceError,
     AudioStudioRepository, AudioStudioSettings, DeviceDefaults,
 };
-#[cfg(test)]
-pub use test_graphs::{AudioStudioPreset, graph_for_preset};

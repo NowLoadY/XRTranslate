@@ -140,7 +140,7 @@ a future, separately specified TTS semantic capability requires them.
    implement.
 2. Add one immutable `ModelAssetManifest` under
    `crates/xrtranslate-assets/src/catalog/tts/`. Declare every installed file,
-   source revision, byte size, SHA-256, archive mapping, required license,
+   source revision, byte size, archive mapping, required license,
    synthesis language tags, and hardware requirement. Add one manifest per
    independently installable language pack; do not put an unverified language
    in editable provider configuration. Mutually exclusive quality variants
@@ -151,7 +151,7 @@ a future, separately specified TTS semantic capability requires them.
    do not hide distinct frontend resources behind one duplicated generic role.
    Re-export it through the TTS catalogue and aggregate registry.
 3. Reuse `xrtranslate-download` through the assets installer. Do not add HTTP,
-   mirror, resume, proxy, retry, checksum, or staging logic to the provider or
+   mirror, resume, proxy, retry, byte-count validation, or staging logic to the provider or
    UI.
 4. Implement the model under
    `crates/xrtranslate-inference/src/tts/providers/<provider>/`. Reuse

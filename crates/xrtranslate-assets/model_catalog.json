@@ -61,15 +61,13 @@
         "role": "Weights",
         "relative_path": "Qwen3-ASR-1.7B.Q4_K_M.gguf",
         "purpose": "Qwen3-ASR quantized GGUF model",
-        "bytes": 1282435552,
-        "sha256": "3893b8926065bbff3da7586d21d8711a9b4fa4fa8f12cd0cefad58e31b2660b6"
+        "bytes": 1282435552
       },
       {
         "role": "MultimodalProjection",
         "relative_path": "Qwen3-ASR-1.7B.mmproj-f16.gguf",
         "purpose": "Qwen3-ASR multimodal projection GGUF",
-        "bytes": 641774112,
-        "sha256": "5bc361e19bfdf3617c85247f9b706f7186ce0d156d9ed3c5d8bca8900b8fc3b7"
+        "bytes": 641774112
       }
     ],
     "source": {
@@ -154,15 +152,13 @@
         "role": "Weights",
         "relative_path": "Qwen3-ASR-0.6B-Q8_0.gguf",
         "purpose": "Qwen3-ASR 0.6B Q8_0 GGUF model",
-        "bytes": 804749248,
-        "sha256": "bca259818b50ca7c4c05e9bdb35a5dc04fa039653a6d6f3f0f331f96f6aa1971"
+        "bytes": 804749248
       },
       {
         "role": "MultimodalProjection",
         "relative_path": "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
         "purpose": "Qwen3-ASR 0.6B Q8_0 multimodal projection GGUF",
-        "bytes": 214392480,
-        "sha256": "41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d"
+        "bytes": 214392480
       }
     ],
     "source": {
@@ -228,22 +224,19 @@
         "role": "Weights",
         "relative_path": "Confucius4-R2T2-Q8_0.gguf",
         "purpose": "Confucius4-R2T2 Q8_0 GGUF model",
-        "bytes": 1834422208,
-        "sha256": "151097e43957a19984ea7de66e8144ce69b95039eb31c93da4f58db367e455c3"
+        "bytes": 1834422208
       },
       {
         "role": "MultimodalProjection",
         "relative_path": "mmproj-Confucius4-R2T2-Q8_0.gguf",
         "purpose": "Confucius4-R2T2 Q8_0 multimodal projection GGUF",
-        "bytes": 348336544,
-        "sha256": "8dc2c67e6a0484114928142d098db7ad94ae9f34c78948ef9d37a9678418cb65"
+        "bytes": 348336544
       },
       {
         "role": "License",
         "relative_path": "MODEL_LICENSE",
         "purpose": "NetEase Youdao model use license agreement",
-        "bytes": 11071,
-        "sha256": "4d9321cdad58182faa878b015de7d60069881614ddd7571de70f751a9b8e3811"
+        "bytes": 11071
       }
     ],
     "source": {
@@ -304,22 +297,19 @@
         "role": "Weights",
         "relative_path": "model.int8.onnx",
         "purpose": "SenseVoiceSmall INT8 ONNX recognizer",
-        "bytes": 239233841,
-        "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51"
+        "bytes": 239233841
       },
       {
         "role": "Tokenizer",
         "relative_path": "tokens.txt",
         "purpose": "SenseVoiceSmall token vocabulary",
-        "bytes": 315894,
-        "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc"
+        "bytes": 315894
       },
       {
         "role": "License",
         "relative_path": "LICENSE",
         "purpose": "SenseVoiceSmall model license notice",
-        "bytes": 71,
-        "sha256": "221c6df10b0931a5629adad671ea48fb7747e034c414b6d2bfa275bc3dd4ea17"
+        "bytes": 71
       }
     ],
     "source": {
@@ -409,8 +399,7 @@
         "role": "Weights",
         "relative_path": "Hy-MT2-1.8B-Q4_K_M.gguf",
         "purpose": "Hy-MT2 quantized GGUF model",
-        "bytes": 1133080448,
-        "sha256": "dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699"
+        "bytes": 1133080448
       }
     ],
     "source": {
@@ -495,8 +484,7 @@
         "role": "Weights",
         "relative_path": "Hy-MT2-1.8B.i1-Q2_K.gguf",
         "purpose": "Hy-MT2 1.8B imatrix Q2_K GGUF model",
-        "bytes": 777483264,
-        "sha256": "cb561d0c478e6a3e8d0eaf3dc2003f822dd80b43f7b3dfd29a2c1706341da499"
+        "bytes": 777483264
       }
     ],
     "source": {
@@ -591,8 +579,7 @@
         "role": "Weights",
         "relative_path": "Hy-MT2-7B-Q4_K_M.gguf",
         "purpose": "Hy-MT2 7B quantized GGUF model",
-        "bytes": 4624648896,
-        "sha256": "9f96256500f3fc1ab4d64336b58f52a949a95ad7516b0c229476eef782f9f77b"
+        "bytes": 4624648896
       }
     ],
     "source": {
@@ -641,8 +628,7 @@
         "role": "Weights",
         "relative_path": "Haidass-Translate-143M.Q8_0.gguf",
         "purpose": "Haidass Translate 143M Q8_0 GGUF model",
-        "bytes": 153655008,
-        "sha256": "2f96047bc633752aefe0462df270f9f8f39bd3fb484a90dc4e08314f78507d13"
+        "bytes": 153655008
       }
     ],
     "source": {
@@ -725,106 +711,91 @@
         "role": "ModelConfig",
         "relative_path": "model_config.json",
         "purpose": "OpenVoice v2 acoustic model configuration",
-        "bytes": 5221,
-        "sha256": "6b04f64591b436f0aa5b70f67669ab2e3f6daeb5bda1047ee3f78426a4c33e0a"
+        "bytes": 5221
       },
       {
         "role": "BertGraph",
         "relative_path": "models/bert.onnx",
         "purpose": "BERT base uncased QINT8 text embedding graph",
-        "bytes": 95482314,
-        "sha256": "bb8ccc9916e02055b883386957f275797c5e320082ea7adb3f7c10a4af50236e"
+        "bytes": 95482314
       },
       {
         "role": "BaseTtsGraph",
         "relative_path": "models/melo.onnx",
         "purpose": "MeloTTS English v2 FP16 multi-accent base voice graph",
-        "bytes": 86187824,
-        "sha256": "88007ebc449e77f9be964be73ea0e96bf8aa29e879652a1005a590e52805dadc"
+        "bytes": 86187824
       },
       {
         "role": "ToneConverterGraph",
         "relative_path": "models/converter.onnx",
         "purpose": "OpenVoice V2 FP16 tone-color converter graph",
-        "bytes": 66284171,
-        "sha256": "72e65cd74c273df1677f8941affcbfef974f48066ab71d0658b1ef4b42c90d8b"
+        "bytes": 66284171
       },
       {
         "role": "SpeakerEncoderGraph",
         "relative_path": "models/reference_encoder.onnx",
         "purpose": "OpenVoice V2 FP32 reference speaker encoder graph",
-        "bytes": 3259275,
-        "sha256": "3dd4918cab90e1acf7fa5c6f7539c27710e7a3cdfba550468c5ea49399178bf7"
+        "bytes": 3259275
       },
       {
         "role": "PronunciationDictionary",
         "relative_path": "frontend/cmudict.json",
         "purpose": "English CMU pronunciation dictionary",
-        "bytes": 4498493,
-        "sha256": "b0609f32b65f4d04466897a37fb55d3d5e877b65f3df46c145c3c2217b1ff55d"
+        "bytes": 4498493
       },
       {
         "role": "Vocabulary",
         "relative_path": "frontend/bert_vocab.txt",
         "purpose": "BERT base uncased WordPiece vocabulary",
-        "bytes": 231508,
-        "sha256": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3"
+        "bytes": 231508
       },
       {
         "role": "SpeakerEmbedding",
         "relative_path": "voices/en_us.bin",
         "purpose": "MeloTTS English v2 American source speaker embedding",
-        "bytes": 1024,
-        "sha256": "6c710b5d75bdaff359cc3b81b646e5b87376c9dcfe478f215d9b1e68ccd67cd4"
+        "bytes": 1024
       },
       {
         "role": "SpeakerEmbedding",
         "relative_path": "voices/en_british.bin",
         "purpose": "MeloTTS English v2 British source speaker embedding",
-        "bytes": 1024,
-        "sha256": "f85ace7f50c2179bb74f96491c566a329fe2feab4107a8b82780e795927fab03"
+        "bytes": 1024
       },
       {
         "role": "SpeakerEmbedding",
         "relative_path": "voices/en_india.bin",
         "purpose": "MeloTTS English v2 Indian source speaker embedding",
-        "bytes": 1024,
-        "sha256": "caf0a7018db11607f35a597be5ddf5e5bf7da5c738a29a0f3d37cfab49575603"
+        "bytes": 1024
       },
       {
         "role": "SpeakerEmbedding",
         "relative_path": "voices/en_au.bin",
         "purpose": "MeloTTS English v2 Australian source speaker embedding",
-        "bytes": 1024,
-        "sha256": "1074ec1809c39f0ffff4e1327323ab39d876689144610d2559a845ed32c2b9e8"
+        "bytes": 1024
       },
       {
         "role": "SpeakerEmbedding",
         "relative_path": "voices/en_default.bin",
         "purpose": "MeloTTS English v2 default source speaker embedding",
-        "bytes": 1024,
-        "sha256": "1b1a57fa0159dffb761901966baa2c0cba08bfe04f75080c1827bf4c7b6e4180"
+        "bytes": 1024
       },
       {
         "role": "License",
         "relative_path": "licenses/openvoice-melotts.txt",
         "purpose": "OpenVoice and MeloTTS MIT license",
-        "bytes": 1071,
-        "sha256": "7018bd16b0dca61f76e7a7c901c3e97b64a0636b9574ae8be36856cade9e11a1"
+        "bytes": 1071
       },
       {
         "role": "License",
         "relative_path": "licenses/bert-apache-2.0.txt",
         "purpose": "BERT Apache 2.0 license",
-        "bytes": 11502,
-        "sha256": "0c18145191a225d94bb6d36a1dbc993c73b56ffc480af12b000b7b1f493e7789"
+        "bytes": 11502
       },
       {
         "role": "License",
         "relative_path": "licenses/cmudict.txt",
         "purpose": "CMU pronunciation dictionary license notice",
-        "bytes": 107,
-        "sha256": "cb5f74a5aa680e8253784fe72d4b4b8d0c5ae8ba253ea092a229c4a2acc42026"
+        "bytes": 107
       }
     ],
     "source": {
@@ -848,7 +819,6 @@
         "filename": "openvoice-v2-ngc.zip",
         "url": "https://api.ngc.nvidia.com/v2/models/nvidia/nvigisdk/openvoice/versions/OpenVoice%20v2/files/%7B09F5E010-5D94-413C-8852-ABC34464DDF8%7D.zip",
         "bytes": 204579050,
-        "sha256": "266dc4662965858e07a1c8cb086f17e1c30f0fdc3202e8934103dc7927314811",
         "entries": [
           {
             "relative_path": "model_config.json",
@@ -948,113 +918,97 @@
         "role": "RuntimeManifest",
         "relative_path": "package-manifest.json",
         "purpose": "Reproducible conversion provenance and graph contract",
-        "bytes": 7646,
-        "sha256": "72bc0596b9cfa9f337181865d5516903059620fc8f73e497b92c4c810c5df1e8"
+        "bytes": 7646
       },
       {
         "role": "ModelConfig",
         "relative_path": "model_config.json",
         "purpose": "MeloTTS Chinese acoustic model configuration",
-        "bytes": 2296,
-        "sha256": "d58b5acdab89ad2bbd65325affab309ae3cb964834b02f9a60587474e81c8bb9"
+        "bytes": 2296
       },
       {
         "role": "BaseTtsGraph",
         "relative_path": "models/melo.onnx",
         "purpose": "MeloTTS Chinese mixed-English FP32-text/FP16-acoustic base voice graph",
-        "bytes": 100934380,
-        "sha256": "b5ad831b584c5a4c289e4a39c3821cefde0df794614dbc28ee56c9770154e8e6"
+        "bytes": 100934380
       },
       {
         "role": "BertGraph",
         "relative_path": "models/bert.onnx",
         "purpose": "Multilingual BERT FP16 text embedding graph",
-        "bytes": 305406373,
-        "sha256": "ef99a7db948fa82616c5407808ac9c04691a53afc106cc284f84c22a9f6ed353"
+        "bytes": 305406373
       },
       {
         "role": "ToneConverterGraph",
         "relative_path": "models/converter.onnx",
         "purpose": "OpenVoice V2 FP16 tone-color converter graph",
-        "bytes": 66284171,
-        "sha256": "72e65cd74c273df1677f8941affcbfef974f48066ab71d0658b1ef4b42c90d8b"
+        "bytes": 66284171
       },
       {
         "role": "SpeakerEncoderGraph",
         "relative_path": "models/reference_encoder.onnx",
         "purpose": "OpenVoice V2 FP32 reference speaker encoder graph",
-        "bytes": 3259275,
-        "sha256": "3dd4918cab90e1acf7fa5c6f7539c27710e7a3cdfba550468c5ea49399178bf7"
+        "bytes": 3259275
       },
       {
         "role": "Vocabulary",
         "relative_path": "frontend/bert_vocab.txt",
         "purpose": "Multilingual BERT WordPiece vocabulary",
-        "bytes": 871891,
-        "sha256": "87b44292b452f6c05afa49b2e488e7eedf79ea4f4c39db6f2f4b37764228ef3f"
+        "bytes": 871891
       },
       {
         "role": "PhonemeMap",
         "relative_path": "frontend/opencpop-strict.txt",
         "purpose": "OpenCPOP Chinese pinyin-to-phone mapping",
-        "bytes": 4513,
-        "sha256": "86c4b30928e3a4305c9148058c9e2e56b04ce741363fedff382421f4a1e3709d"
+        "bytes": 4513
       },
       {
         "role": "LanguageLexicon",
         "relative_path": "frontend/chinese_lexicon.json",
         "purpose": "Pinned Chinese phrase and pinyin lexicon",
-        "bytes": 1985652,
-        "sha256": "5c1ba81aa69c6d79ef413256d3e274b1b832434df373ee10929b2ffc059f5752"
+        "bytes": 1985652
       },
       {
         "role": "PronunciationDictionary",
         "relative_path": "frontend/cmudict.json",
         "purpose": "English CMU pronunciation dictionary for code-switching",
-        "bytes": 4498493,
-        "sha256": "b0609f32b65f4d04466897a37fb55d3d5e877b65f3df46c145c3c2217b1ff55d"
+        "bytes": 4498493
       },
       {
         "role": "SpeakerEmbedding",
         "relative_path": "voices/zh.bin",
         "purpose": "MeloTTS Chinese source speaker embedding",
-        "bytes": 1024,
-        "sha256": "1e185b041cde958f51990c736e4f5fa878f3be5ae088fd6441b6ff5a2cd82932"
+        "bytes": 1024
       },
       {
         "role": "License",
         "relative_path": "licenses/openvoice-melotts.txt",
         "purpose": "OpenVoice and MeloTTS MIT license",
-        "bytes": 1071,
-        "sha256": "7018bd16b0dca61f76e7a7c901c3e97b64a0636b9574ae8be36856cade9e11a1"
+        "bytes": 1071
       },
       {
         "role": "License",
         "relative_path": "licenses/apache-2.0.txt",
         "purpose": "BERT Apache 2.0 license",
-        "bytes": 11502,
-        "sha256": "0c18145191a225d94bb6d36a1dbc993c73b56ffc480af12b000b7b1f493e7789"
+        "bytes": 11502
       },
       {
         "role": "License",
         "relative_path": "licenses/cmudict.txt",
         "purpose": "CMU pronunciation dictionary license notice",
-        "bytes": 1754,
-        "sha256": "bd4ce8e44170a5f9f481310ca85c51de3c4f851a65e679b40e603b143bd3542a"
+        "bytes": 1754
       },
       {
         "role": "License",
         "relative_path": "licenses/pypinyin.txt",
         "purpose": "pypinyin MIT license",
-        "bytes": 1105,
-        "sha256": "1e6c90014b4912815c296ee64bb6f6280af47e6d4c5d80e86232dfc5defe764c"
+        "bytes": 1105
       },
       {
         "role": "License",
         "relative_path": "licenses/chinese-frontend-notice.txt",
         "purpose": "Chinese frontend generated-data provenance notice",
-        "bytes": 178,
-        "sha256": "998ef5c85f099aeb285102935b1ac21345e37727ac16987164dd69015082b034"
+        "bytes": 178
       }
     ],
     "source": {
@@ -1106,78 +1060,67 @@
         "role": "ModelConfig",
         "relative_path": "model_config.json",
         "purpose": "OpenVoice acoustic model configuration",
-        "bytes": 4539,
-        "sha256": "d4747fbe59d10669cbdc4d819537005534934adc1da7b34e511f1e3ef3ff323b"
+        "bytes": 4539
       },
       {
         "role": "BertGraph",
         "relative_path": "models/bert.onnx",
         "purpose": "BERT base uncased QINT8 text embedding graph",
-        "bytes": 95482314,
-        "sha256": "bb8ccc9916e02055b883386957f275797c5e320082ea7adb3f7c10a4af50236e"
+        "bytes": 95482314
       },
       {
         "role": "BaseTtsGraph",
         "relative_path": "models/melo.onnx",
         "purpose": "MeloTTS English v3 FP16 base voice graph",
-        "bytes": 86056493,
-        "sha256": "1edd539359d9b1a38080736f975077857b556b0377393d939e557d28f4c0f7fe"
+        "bytes": 86056493
       },
       {
         "role": "ToneConverterGraph",
         "relative_path": "models/converter.onnx",
         "purpose": "OpenVoice V2 FP16 tone-color converter graph",
-        "bytes": 66284171,
-        "sha256": "72e65cd74c273df1677f8941affcbfef974f48066ab71d0658b1ef4b42c90d8b"
+        "bytes": 66284171
       },
       {
         "role": "SpeakerEncoderGraph",
         "relative_path": "models/reference_encoder.onnx",
         "purpose": "OpenVoice V2 FP32 reference speaker encoder graph",
-        "bytes": 3259275,
-        "sha256": "3dd4918cab90e1acf7fa5c6f7539c27710e7a3cdfba550468c5ea49399178bf7"
+        "bytes": 3259275
       },
       {
         "role": "PronunciationDictionary",
         "relative_path": "frontend/cmudict.json",
         "purpose": "English CMU pronunciation dictionary",
-        "bytes": 4498493,
-        "sha256": "b0609f32b65f4d04466897a37fb55d3d5e877b65f3df46c145c3c2217b1ff55d"
+        "bytes": 4498493
       },
       {
         "role": "Vocabulary",
         "relative_path": "frontend/bert_vocab.txt",
         "purpose": "BERT base uncased WordPiece vocabulary",
-        "bytes": 231508,
-        "sha256": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3"
+        "bytes": 231508
       },
       {
         "role": "SpeakerEmbedding",
         "relative_path": "voices/en_newest.bin",
         "purpose": "MeloTTS English v3 EN-Newest source speaker embedding",
-        "bytes": 1024,
-        "sha256": "8c14e1a9e6db9eabda1e4a0c5f81bda5e1569fab6299bc65df7b13f7e25df34d"
+        "bytes": 1024
       },
       {
         "role": "License",
         "relative_path": "licenses/openvoice-melotts.txt",
         "purpose": "OpenVoice and MeloTTS MIT license",
-        "bytes": 1071,
-        "sha256": "7018bd16b0dca61f76e7a7c901c3e97b64a0636b9574ae8be36856cade9e11a1"
+        "bytes": 1071
       },
       {
         "role": "License",
         "relative_path": "licenses/bert-apache-2.0.txt",
         "purpose": "BERT Apache 2.0 license",
-        "bytes": 11502,
-        "sha256": "0c18145191a225d94bb6d36a1dbc993c73b56ffc480af12b000b7b1f493e7789"
+        "bytes": 11502
       },
       {
         "role": "License",
         "relative_path": "licenses/cmudict.txt",
         "purpose": "CMU pronunciation dictionary license notice",
-        "bytes": 107,
-        "sha256": "cb5f74a5aa680e8253784fe72d4b4b8d0c5ae8ba253ea092a229c4a2acc42026"
+        "bytes": 107
       }
     ],
     "source": {
@@ -1201,7 +1144,6 @@
         "filename": "openvoice-v3-ngc.zip",
         "url": "https://api.ngc.nvidia.com/v2/models/nvidia/nvigisdk/openvoice/versions/OpenVoice%20v3/files/%7B428E784B-61DC-4393-8F37-52C12DBAD791%7D.zip",
         "bytes": 204513198,
-        "sha256": "08b3e41a93cd598b2dc0b712da9d313d1cf54099d8a915f8a916deb1b2874a59",
         "entries": [
           {
             "relative_path": "model_config.json",
@@ -1288,64 +1230,55 @@
         "role": "SlowArGraph",
         "relative_path": "slow_ar_fp16.onnx",
         "purpose": "Audio8 slow autoregressive FP16 ONNX graph",
-        "bytes": 1348765672,
-        "sha256": "7b58e12eddca63b45d52a833d6f697b02d5431a8538b6cd8f1b115ecd9bded82"
+        "bytes": 1348765672
       },
       {
         "role": "FastArGraph",
         "relative_path": "fast_ar_fp16.onnx",
         "purpose": "Audio8 fast autoregressive FP16 ONNX graph",
-        "bytes": 134041582,
-        "sha256": "33dd894dc73dad4c3f74fc1a3505b88a2489684a441052bc94fc6700ea106ccd"
+        "bytes": 134041582
       },
       {
         "role": "CodecDecoder",
         "relative_path": "codec_decoder_fp16.onnx",
         "purpose": "Audio8 FP16 codec decoder graph",
-        "bytes": 594319,
-        "sha256": "6e379be31db6c1b0c111e0e3d2aeb10717ee96b197462b926de411e75a1fd019"
+        "bytes": 594319
       },
       {
         "role": "CodecDecoderData",
         "relative_path": "codec_decoder_fp16.onnx.data",
         "purpose": "Audio8 FP16 codec decoder weights",
-        "bytes": 260741440,
-        "sha256": "18838f686aa7c1528fb69ec11e1ab404fdc4dc823d13219abfd4b327988527c0"
+        "bytes": 260741440
       },
       {
         "role": "CodecEncoder",
         "relative_path": "registration/codec_encoder_fp16.onnx",
         "purpose": "Audio8 voice registration codec encoder",
-        "bytes": 940787,
-        "sha256": "e856d7999442cdc8f1f2ed0d2c055532cf359f0dd6d9a44fd4b98584c5d5dfa5"
+        "bytes": 940787
       },
       {
         "role": "CodecEncoderData",
         "relative_path": "registration/codec_encoder_fp16.onnx.data",
         "purpose": "Audio8 voice registration codec encoder weights",
-        "bytes": 414425088,
-        "sha256": "19c740fcc4d45aa2546e9ab86e31c6200955c4b0a139758296fbf1064bf009cd"
+        "bytes": 414425088
       },
       {
         "role": "RuntimeManifest",
         "relative_path": "runtime_manifest.json",
         "purpose": "Audio8 runtime manifest",
-        "bytes": 1080,
-        "sha256": "6473ae7d0106a2e369e442c72a71d2d46d8fbd3fe18c80d80b1b46e4aa241930"
+        "bytes": 1080
       },
       {
         "role": "RegistrationManifest",
         "relative_path": "registration/registration_manifest.json",
         "purpose": "Audio8 voice registration manifest",
-        "bytes": 165,
-        "sha256": "36ef9d2f435f0f7b5ab66dc78a44411a24c0ab9e3a2c63738babe575747a584f"
+        "bytes": 165
       },
       {
         "role": "Tokenizer",
         "relative_path": "tokenizer/tokenizer.json",
         "purpose": "Audio8 tokenizer",
-        "bytes": 12217872,
-        "sha256": "f24e08099d45a8adf3f52f5f0b03276e433bb9d689bb15fcbcc48ce58744588b"
+        "bytes": 12217872
       }
     ],
     "source": {
@@ -1407,29 +1340,25 @@
         "role": "TextDetectionGraph",
         "relative_path": "det.onnx",
         "purpose": "PP-OCRv6 text detection",
-        "bytes": 9880512,
-        "sha256": "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e"
+        "bytes": 9880512
       },
       {
         "role": "TextRecognitionGraph",
         "relative_path": "rec.onnx",
         "purpose": "PP-OCRv6 text recognition",
-        "bytes": 21159378,
-        "sha256": "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634"
+        "bytes": 21159378
       },
       {
         "role": "ModelConfig",
         "relative_path": "inference.yml",
         "purpose": "Recognition configuration and character dictionary",
-        "bytes": 150579,
-        "sha256": "ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1"
+        "bytes": 150579
       },
       {
         "role": "License",
         "relative_path": "LICENSE",
         "purpose": "PaddleOCR Apache-2.0 license",
-        "bytes": 11376,
-        "sha256": "3840c5c0c61c294264d2dd77b8777be6ddd90121ef4e0e64abcd22edea581d6e"
+        "bytes": 11376
       }
     ],
     "source": {
@@ -1498,22 +1427,19 @@
         "role": "Weights",
         "relative_path": "PaddleOCR-VL-1.6-GGUF.gguf",
         "purpose": "PaddleOCR-VL 1.6 F16 model",
-        "bytes": 935769056,
-        "sha256": "f3ae46ec885050acf4b3d31944431e1fd90d50664fb09126af4a3c050ba14ee8"
+        "bytes": 935769056
       },
       {
         "role": "MultimodalProjection",
         "relative_path": "PaddleOCR-VL-1.6-GGUF-mmproj.gguf",
         "purpose": "PaddleOCR-VL 1.6 vision projection",
-        "bytes": 881770560,
-        "sha256": "204d757d7610d9b3faab10d506d69e5b244e32bf765e2bab2d0167e65e0a058a"
+        "bytes": 881770560
       },
       {
         "role": "License",
         "relative_path": "LICENSE",
         "purpose": "PaddleOCR Apache-2.0 license",
-        "bytes": 11376,
-        "sha256": "3840c5c0c61c294264d2dd77b8777be6ddd90121ef4e0e64abcd22edea581d6e"
+        "bytes": 11376
       }
     ],
     "source": {

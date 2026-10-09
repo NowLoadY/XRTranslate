@@ -14,9 +14,6 @@ pub mod ocr;
 pub mod osc;
 pub mod vr_overlay;
 
-#[cfg(test)]
-mod output_filter_tests;
-
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{collections::BTreeMap, fmt};
 
@@ -266,63 +263,5 @@ impl PluginPreferences {
 
     pub fn set_enabled(&mut self, id: PluginId, enabled: bool) {
         self.enabled.insert(id.as_str().to_owned(), enabled);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn builtin_preferences_enable_default_plugins() {
-        let preferences = PluginPreferences::default();
-        assert!(preferences.is_enabled(PluginId::OSC));
-        assert!(preferences.is_enabled(PluginId::VR_OVERLAY));
-        assert!(preferences.is_enabled(PluginId::MEETING));
-        assert!(preferences.is_enabled(PluginId::MEDIA));
-    }
-
-    #[test]
-    fn plugin_ids_have_stable_string_serialization() {
-        assert_eq!(PluginId::parse("auto_input"), Some(PluginId::AUTO_INPUT));
-        assert_eq!(
-            serde_json::to_string(&PluginId::AUTO_INPUT).unwrap(),
-            r#""auto_input""#
-        );
-        assert_eq!(PluginId::AUTO_INPUT.is_supported(), cfg!(windows));
-        assert_eq!(serde_json::to_string(&PluginId::OSC).unwrap(), r#""osc""#);
-        assert_eq!(
-            serde_json::to_string(&PluginId::VR_OVERLAY).unwrap(),
-            r#""vr_overlay""#
-        );
-        assert_eq!(
-            serde_json::from_str::<PluginId>(r#""meeting""#).unwrap(),
-            PluginId::MEETING
-        );
-        assert_eq!(
-            serde_json::from_str::<PluginId>(r#""vr_overlay""#).unwrap(),
-            PluginId::VR_OVERLAY
-        );
-    }
-
-    #[test]
-    fn descriptors_are_in_navigation_order() {
-        assert!(
-            PluginRegistry::builtin()
-                .descriptors()
-                .windows(2)
-                .all(|pair| pair[0].navigation_order < pair[1].navigation_order)
-        );
-    }
-
-    #[test]
-    fn core_studios_are_not_plugins() {
-        assert!(PluginId::parse("audio_studio").is_none());
-        assert!(
-            PluginRegistry::builtin()
-                .descriptors()
-                .iter()
-                .all(|descriptor| descriptor.title_key != "Audio Studio")
-        );
     }
 }

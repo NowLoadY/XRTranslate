@@ -73,22 +73,21 @@ def toolchain(sdk, abi):
         environment[variable] = environment.get(variable, '') + ' ' + ' '.join(shlex.quote(flag) for flag in prefix_flags)
     archive_directory = ROOT / 'target/android/sherpa'
     archive = archive_directory / 'sherpa-onnx-v1.13.8-android.tar.bz2'
-    fetch('https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/' + archive.name, 46093321, '2ff63469a71cb6009aa2e3ed5f4a670f8abdcbe4bb9ffd23776afc792a6b4f44', archive)
+    fetch('https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/' + archive.name, 46093321, archive)
     environment['SHERPA_ONNX_ARCHIVE_DIR'] = str(archive_directory)
     return target, environment
 
-def fetch(url, size, checksum, destination):
-    run('cargo', 'run', '--locked', '-p', 'xrtranslate-download', '--example', 'fetch', '--', url, str(size), checksum, destination)
+def fetch(url, size, destination):
+    run('cargo', 'run', '--locked', '-p', 'xrtranslate-download', '--example', 'fetch', '--', url, str(size), destination)
 
 def llama_server(sdk, abi, destination):
     revision = '08659901c43b51de735740f1cf61bb82fbe0c4e4'
-    checksum = 'a2bede8630caff229791cded6955a0946ed354ed08199a915cc9f596fd931843'
     cache = ROOT / 'target/android/llama'
     source = cache / ('llama.cpp-' + revision)
     if not source.exists():
         cache.mkdir(parents=True, exist_ok=True)
         archive = cache / 'source.tar.gz'
-        fetch('https://codeload.github.com/ggml-org/llama.cpp/tar.gz/' + revision, 36736254, checksum, archive)
+        fetch('https://codeload.github.com/ggml-org/llama.cpp/tar.gz/' + revision, 36736254, archive)
         with tarfile.open(archive) as contents: contents.extractall(cache, filter='data')
     # This pinned source archive has explicit build metadata and intentionally no Web UI.
     for relative, original, replacement in [

@@ -5,7 +5,7 @@
 //! packages' memory requirements. Managed
 //! model packages never fall back to CPU. Bundled small ONNX components remain
 //! a separate resource class; their missing files can be repaired here, reusing
-//! a verified local ONNX core before scheduling any download.
+//! a compatible local ONNX core before scheduling any download.
 
 use crossbeam_channel::{Receiver, TryRecvError, unbounded};
 use std::{
@@ -35,8 +35,6 @@ pub use hardware::LocalModelAvailability;
 pub(crate) use hardware::NVIDIA_APP_URL;
 #[cfg(any(not(target_os = "android"), test))]
 use hardware::{NvidiaCuda, VulkanGpu};
-#[cfg(test)]
-use hardware::{cuda_version_from_nvidia_smi, local_model_availability, parse_nvidia_gpu_rows};
 
 type RuntimeBackend = NativeRuntimeBackend;
 
@@ -596,7 +594,6 @@ struct ReleaseAsset {
     name: String,
     browser_download_url: String,
     size: u64,
-    sha256: String,
     archive_format: LlamaCppArchiveFormat,
     archive_directory: String,
     kind: LlamaCppAssetKind,
@@ -614,7 +611,6 @@ struct ManagedRuntimeAsset {
     name: String,
     browser_download_url: String,
     size: u64,
-    sha256: String,
     archive_format: LlamaCppArchiveFormat,
     #[cfg(any(not(target_os = "android"), test))]
     target: String,
@@ -747,9 +743,11 @@ async fn install_onnx_runtime(
             }
         } else {
             let archive = downloads.join(&cuda_runtime.name);
-            download_runtime_asset(
+            download_file(
                 &client,
-                cuda_runtime,
+                &cuda_runtime.name,
+                &cuda_runtime.browser_download_url,
+                cuda_runtime.size,
                 &archive,
                 progress_base.saturating_add(completed),
                 progress_total,
@@ -789,9 +787,11 @@ async fn install_onnx_runtime(
             }
         } else {
             let archive = downloads.join(&cuda_dependency.name);
-            download_managed_runtime_asset(
+            download_file(
                 &client,
-                cuda_dependency,
+                &cuda_dependency.name,
+                &cuda_dependency.browser_download_url,
+                cuda_dependency.size,
                 &archive,
                 progress_base.saturating_add(completed),
                 progress_total,
@@ -814,9 +814,11 @@ async fn install_onnx_runtime(
 
     if !cudnn_ready {
         let archive = downloads.join(&cudnn.name);
-        download_managed_runtime_asset(
+        download_file(
             &client,
-            cudnn,
+            &cudnn.name,
+            &cudnn.browser_download_url,
+            cudnn.size,
             &archive,
             progress_base.saturating_add(completed),
             progress_total,
@@ -840,9 +842,11 @@ async fn install_onnx_runtime(
 
     if !provider_ready {
         let archive = downloads.join(&provider.name);
-        download_managed_runtime_asset(
+        download_file(
             &client,
-            provider,
+            &provider.name,
+            &provider.browser_download_url,
+            provider.size,
             &archive,
             progress_base.saturating_add(completed),
             progress_total,
@@ -899,18 +903,17 @@ async fn install_onnx_runtime(
     Ok(layout.native_runtime_selection_file())
 }
 
-async fn download_verified_file(
+async fn download_file(
     client: &DownloadClient,
     label: &str,
     url: &str,
     bytes: u64,
-    sha256: &str,
     destination: &Path,
     completed: u64,
     total: u64,
     sender: &crossbeam_channel::Sender<Event>,
 ) -> Result<(), String> {
-    let spec = DownloadSpec::verified(label, url, bytes, sha256);
+    let spec = DownloadSpec::new(label, url, bytes);
     let label_owned = label.to_owned();
     client
         .download_to(spec, destination, move |progress| {
@@ -924,48 +927,63 @@ async fn download_verified_file(
         .map_err(|error| error.to_string())
 }
 
-async fn download_runtime_asset(
-    client: &DownloadClient,
-    asset: &ReleaseAsset,
-    archive: &Path,
-    completed: u64,
-    total: u64,
-    sender: &crossbeam_channel::Sender<Event>,
-) -> Result<(), String> {
-    download_verified_file(
-        client,
-        &asset.name,
-        &asset.browser_download_url,
-        asset.size,
-        &asset.sha256,
-        archive,
-        completed,
-        total,
-        sender,
-    )
-    .await
+fn file_has_expected_size(path: &Path, expected: Option<u64>) -> bool {
+    fs::metadata(path).is_ok_and(|metadata| {
+        metadata.is_file() && expected.map_or(metadata.len() > 0, |bytes| metadata.len() == bytes)
+    })
 }
 
-async fn download_managed_runtime_asset(
-    client: &DownloadClient,
-    asset: &ManagedRuntimeAsset,
+fn expected_cpu_core_bytes(config: &AppConfig) -> Option<u64> {
+    // The Windows packaged constant describes the CUDA core, while its CPU
+    // download is a different build whose extracted size is not catalogued.
+    if cfg!(windows) {
+        return None;
+    }
+    let target = current_runtime_target();
+    let configured = config.model_manager.onnxruntime.resolved_cpu_downloads();
+    let defaults = OnnxRuntimeConfig::default_cpu_downloads();
+    let expected = defaults.iter().find(|archive| archive.target == target)?;
+    (configured
+        .iter()
+        .find(|archive| archive.target.trim() == target)
+        == Some(expected))
+    .then_some(RuntimeLayout::ONNX_CPU_CORE_LINUX_BYTES)
+}
+
+fn expected_bundled_model_bytes(asset: &xrtranslate_config::BundledModelAsset) -> Option<u64> {
+    match asset.relative_path.as_str() {
+        RuntimeLayout::VAD_MODEL_PATH => Some(RuntimeLayout::VAD_MODEL_BYTES),
+        RuntimeLayout::DENOISE_MODEL_PATH => Some(RuntimeLayout::DENOISE_MODEL_BYTES),
+        RuntimeLayout::SPEAKER_MODEL_PATH => Some(RuntimeLayout::SPEAKER_MODEL_BYTES),
+        _ if asset.archive_format.is_none() => Some(asset.bytes),
+        _ => None,
+    }
+}
+
+fn validate_extracted_file(
     archive: &Path,
-    completed: u64,
-    total: u64,
-    sender: &crossbeam_channel::Sender<Event>,
+    path: &Path,
+    expected: Option<u64>,
 ) -> Result<(), String> {
-    download_verified_file(
-        client,
-        &asset.name,
-        &asset.browser_download_url,
-        asset.size,
-        &asset.sha256,
-        archive,
-        completed,
-        total,
-        sender,
-    )
-    .await
+    let metadata = fs::metadata(path).map_err(|error| {
+        let message = format!("Cannot inspect extracted file {}: {error}", path.display());
+        if error.kind() == std::io::ErrorKind::NotFound {
+            archive_content_error(archive, message)
+        } else {
+            message
+        }
+    })?;
+    if !metadata.is_file() || !expected.map_or(metadata.len() > 0, |bytes| metadata.len() == bytes)
+    {
+        return Err(archive_content_error(
+            archive,
+            format!(
+                "Archive contains an incorrectly sized file: {}",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 async fn install_base_bundled_resources(
@@ -980,7 +998,10 @@ async fn install_base_bundled_resources(
     let layout = config.runtime_layout(project_root);
     let target = current_runtime_target();
 
-    if !layout.onnx_cpu_core_library().is_file() {
+    if !file_has_expected_size(
+        &layout.onnx_cpu_core_library(),
+        expected_cpu_core_bytes(config),
+    ) {
         if let Some(archive) = config
             .model_manager
             .onnxruntime
@@ -999,12 +1020,11 @@ async fn install_base_bundled_resources(
                     .map_err(|e| format!("Cannot create CPU ONNX staging: {e}"))?;
                 let archive_file = downloads_dir.join(&archive.name);
 
-                download_verified_file(
+                download_file(
                     client,
                     "ONNX Runtime (CPU)",
                     &archive.url,
                     archive.bytes,
-                    &archive.sha256,
                     &archive_file,
                     *completed,
                     total,
@@ -1013,26 +1033,36 @@ async fn install_base_bundled_resources(
                 .await?;
                 *completed = completed.saturating_add(archive.bytes);
 
-                let destination = layout.onnx_cpu_runtime_directory();
-                fs::create_dir_all(&destination)
-                    .map_err(|e| format!("Cannot create {}: {e}", destination.display()))?;
+                let payload = staging.join("payload");
+                if payload.exists() {
+                    fs::remove_dir_all(&payload)
+                        .map_err(|error| format!("Cannot reset CPU ONNX staging: {error}"))?;
+                }
+                fs::create_dir_all(&payload)
+                    .map_err(|error| format!("Cannot create CPU ONNX staging: {error}"))?;
                 extract_declared_files(
                     &archive_file,
                     archive.archive_format,
                     Path::new(&archive.archive_directory),
                     &archive.required_files,
-                    &destination,
+                    &payload,
+                )?;
+                validate_extracted_file(
+                    &archive_file,
+                    &payload.join(RuntimeLayout::ONNX_CORE_LIBRARY),
+                    expected_cpu_core_bytes(config),
                 )?;
 
                 #[cfg(unix)]
                 {
-                    let link = destination.join("libonnxruntime.so");
+                    let link = payload.join("libonnxruntime.so");
                     let symlink_target = Path::new(RuntimeLayout::ONNX_CORE_LIBRARY);
                     if !link.exists() {
                         let _ = std::os::unix::fs::symlink(symlink_target, &link);
                     }
                 }
 
+                activate_runtime_directory(&payload, &layout.onnx_cpu_runtime_directory())?;
                 let _ = fs::remove_dir_all(&staging);
             }
         }
@@ -1054,7 +1084,7 @@ async fn install_base_bundled_resources(
             continue;
         }
         let destination = project_root.join(&bundled.relative_path);
-        if destination.is_file() {
+        if file_has_expected_size(&destination, expected_bundled_model_bytes(&bundled)) {
             continue;
         }
         if let Some(parent) = destination.parent() {
@@ -1072,12 +1102,11 @@ async fn install_base_bundled_resources(
                 .map_err(|e| format!("Cannot create model staging: {e}"))?;
             let archive_file = staging.join(format!("{}.zip", bundled.name));
 
-            download_verified_file(
+            download_file(
                 client,
                 &bundled.label,
                 &bundled.url,
                 bundled.bytes,
-                &bundled.sha256,
                 &archive_file,
                 *completed,
                 total,
@@ -1094,25 +1123,35 @@ async fn install_base_bundled_resources(
                 .ok_or_else(|| {
                     format!("Invalid archive_path in {}: {archive_path}", bundled.name)
                 })?;
-            let dest_dir = destination
-                .parent()
-                .ok_or_else(|| format!("Invalid destination: {}", destination.display()))?;
-
+            let payload = destination.with_file_name(format!(".{entry_file}-installing"));
+            if payload.exists() {
+                fs::remove_dir_all(&payload)
+                    .map_err(|error| format!("Cannot reset model staging: {error}"))?;
+            }
+            fs::create_dir_all(&payload)
+                .map_err(|error| format!("Cannot create model staging: {error}"))?;
             extract_declared_files(
                 &archive_file,
                 archive_format,
                 entry_dir,
                 &[entry_file.to_owned()],
-                dest_dir,
+                &payload,
             )?;
+            let extracted = payload.join(entry_file);
+            validate_extracted_file(
+                &archive_file,
+                &extracted,
+                expected_bundled_model_bytes(&bundled),
+            )?;
+            atomic_replace_file(&extracted, &destination)?;
+            let _ = fs::remove_dir_all(&payload);
             let _ = fs::remove_dir_all(&staging);
         } else {
-            download_verified_file(
+            download_file(
                 client,
                 &bundled.label,
                 &bundled.url,
                 bundled.bytes,
-                &bundled.sha256,
                 &destination,
                 *completed,
                 total,
@@ -1199,13 +1238,16 @@ async fn install_runtime_plan(
             )
             .await?,
         );
-    } else if layout.onnx_cpu_core_library().is_file() {
+    } else if file_has_expected_size(
+        &layout.onnx_cpu_core_library(),
+        expected_cpu_core_bytes(&config),
+    ) {
         runtime_marker = Some(persist_cpu_onnx_marker(&layout, None)?);
     }
     #[cfg(not(target_os = "android"))]
     if restore_cpu_from_provider && !bundled_cpu::restore_cpu_core(&layout, &config)? {
         return Err(
-            "The installed ONNX archive does not contain the verified bundled CPU core. Repair the runtime configuration and try again."
+            "The installed ONNX archive does not contain the expected bundled CPU core. Repair the runtime configuration and try again."
                 .into(),
         );
     }
@@ -1305,9 +1347,11 @@ async fn install(
             || (asset.kind != LlamaCppAssetKind::CudaRuntime && !server_ready)
     }) {
         let archive = downloads.join(&asset.name);
-        download_runtime_asset(
+        download_file(
             &client,
-            asset,
+            &asset.name,
+            &asset.browser_download_url,
+            asset.size,
             &archive,
             progress_base.saturating_add(completed),
             progress_total,
@@ -1436,6 +1480,69 @@ fn prune_named_runtime_staging(
     Ok(())
 }
 
+pub(crate) fn archive_content_error(archive: &Path, message: String) -> String {
+    let _ = fs::remove_file(archive);
+    message
+}
+
+pub(crate) struct ArchiveReadError {
+    message: String,
+    invalid_content: bool,
+}
+
+impl ArchiveReadError {
+    fn invalid(message: String) -> Self {
+        Self {
+            message,
+            invalid_content: true,
+        }
+    }
+
+    pub(crate) fn finish(self, archive: &Path) -> String {
+        if self.invalid_content {
+            archive_content_error(archive, self.message)
+        } else {
+            self.message
+        }
+    }
+}
+
+impl From<String> for ArchiveReadError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            invalid_content: false,
+        }
+    }
+}
+
+pub(crate) fn archive_read_error(archive: &Path, error: std::io::Error) -> ArchiveReadError {
+    use std::io::ErrorKind;
+    // tar reports malformed headers as Other; operating-system I/O errors
+    // retain their errno and must not trigger another download.
+    let invalid_content = matches!(
+        error.kind(),
+        ErrorKind::InvalidData | ErrorKind::UnexpectedEof
+    ) || (error.kind() == ErrorKind::Other
+        && error.raw_os_error().is_none()
+        && error
+            .get_ref()
+            .is_some_and(|source| source.source().is_none()));
+    ArchiveReadError {
+        message: format!("Cannot read archive {}: {error}", archive.display()),
+        invalid_content,
+    }
+}
+
+pub(crate) fn zip_read_error(archive: &Path, error: zip::result::ZipError) -> ArchiveReadError {
+    match error {
+        zip::result::ZipError::Io(error) => archive_read_error(archive, error),
+        error => {
+            ArchiveReadError::invalid(format!("Invalid archive {}: {error}", archive.display()))
+        }
+    }
+}
+
 fn extract_archive(
     archive: &Path,
     destination: &Path,
@@ -1454,64 +1561,81 @@ fn extract_declared_files(
     files: &[String],
     destination: &Path,
 ) -> Result<(), String> {
-    match format {
-        LlamaCppArchiveFormat::Zip => {
-            let input = fs::File::open(archive)
-                .map_err(|error| format!("Cannot open {}: {error}", archive.display()))?;
-            let mut zip = zip::ZipArchive::new(input)
-                .map_err(|error| format!("Invalid archive {}: {error}", archive.display()))?;
-            for file in files {
-                let source = archive_directory.join(file);
-                let source = source.to_string_lossy().replace('\\', "/");
-                let mut entry = zip.by_name(&source).map_err(|error| {
-                    format!("Archive {} is missing {source}: {error}", archive.display())
-                })?;
-                let output = destination.join(file);
-                let mut target = fs::File::create(&output)
-                    .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
-                std::io::copy(&mut entry, &mut target)
-                    .map_err(|error| format!("Cannot extract {}: {error}", output.display()))?;
+    let result = (|| -> Result<(), ArchiveReadError> {
+        match format {
+            LlamaCppArchiveFormat::Zip => {
+                let input = fs::File::open(archive)
+                    .map_err(|error| format!("Cannot open {}: {error}", archive.display()))?;
+                let mut zip =
+                    zip::ZipArchive::new(input).map_err(|error| zip_read_error(archive, error))?;
+                for file in files {
+                    let source = archive_directory.join(file);
+                    let source = source.to_string_lossy().replace('\\', "/");
+                    let mut entry = zip
+                        .by_name(&source)
+                        .map_err(|error| zip_read_error(archive, error))?;
+                    let output = destination.join(file);
+                    let mut target = fs::File::create(&output)
+                        .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
+                    let expected_bytes = entry.size();
+                    let copied = std::io::copy(&mut entry, &mut target)
+                        .map_err(|error| archive_read_error(archive, error))?;
+                    if copied != expected_bytes {
+                        return Err(ArchiveReadError::invalid(format!(
+                            "Archive entry {} was truncated.",
+                            output.display()
+                        )));
+                    }
+                }
+            }
+            LlamaCppArchiveFormat::TarGz => {
+                let input = fs::File::open(archive)
+                    .map_err(|error| format!("Cannot open {}: {error}", archive.display()))?;
+                let decoder = flate2::read::GzDecoder::new(input);
+                let mut tar = tar::Archive::new(decoder);
+                let expected = files
+                    .iter()
+                    .map(|file| (archive_directory.join(file), file))
+                    .collect::<Vec<_>>();
+                let mut found = HashSet::new();
+                for entry in tar
+                    .entries()
+                    .map_err(|error| archive_read_error(archive, error))?
+                {
+                    let mut entry = entry.map_err(|error| archive_read_error(archive, error))?;
+                    let path = entry
+                        .path()
+                        .map_err(|error| archive_read_error(archive, error))?;
+                    let Some((_, file)) = expected.iter().find(|(expected, _)| path == *expected)
+                    else {
+                        continue;
+                    };
+                    let output = destination.join(file);
+                    let mut target = fs::File::create(&output)
+                        .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
+                    let expected_bytes = entry.size();
+                    let copied = std::io::copy(&mut entry, &mut target)
+                        .map_err(|error| archive_read_error(archive, error))?;
+                    if copied != expected_bytes {
+                        return Err(ArchiveReadError::invalid(format!(
+                            "Archive entry {} was truncated.",
+                            output.display()
+                        )));
+                    }
+                    found.insert((*file).clone());
+                }
+                if let Some(missing) = files.iter().find(|file| !found.contains(*file)) {
+                    return Err(ArchiveReadError::invalid(format!(
+                        "Archive {} is missing {}",
+                        archive.display(),
+                        archive_directory.join(missing).display()
+                    )));
+                }
             }
         }
-        LlamaCppArchiveFormat::TarGz => {
-            let input = fs::File::open(archive)
-                .map_err(|error| format!("Cannot open {}: {error}", archive.display()))?;
-            let decoder = flate2::read::GzDecoder::new(input);
-            let mut tar = tar::Archive::new(decoder);
-            let expected = files
-                .iter()
-                .map(|file| (archive_directory.join(file), file))
-                .collect::<Vec<_>>();
-            let mut found = HashSet::new();
-            for entry in tar
-                .entries()
-                .map_err(|error| format!("Invalid tar.gz archive: {error}"))?
-            {
-                let mut entry = entry.map_err(|error| format!("Cannot read tar entry: {error}"))?;
-                let path = entry
-                    .path()
-                    .map_err(|error| format!("Cannot read tar entry path: {error}"))?;
-                let Some((_, file)) = expected.iter().find(|(expected, _)| path == *expected)
-                else {
-                    continue;
-                };
-                let output = destination.join(file);
-                let mut target = fs::File::create(&output)
-                    .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
-                std::io::copy(&mut entry, &mut target)
-                    .map_err(|error| format!("Cannot extract {}: {error}", output.display()))?;
-                found.insert((*file).clone());
-            }
-            if let Some(missing) = files.iter().find(|file| !found.contains(*file)) {
-                return Err(format!(
-                    "Archive {} is missing {}",
-                    archive.display(),
-                    archive_directory.join(missing).display()
-                ));
-            }
-        }
-    }
-    Ok(())
+        Ok(())
+    })();
+    result.map_err(|error| error.finish(archive))
 }
 
 fn safe_archive_path(destination: &Path, name: &Path) -> Result<PathBuf, String> {
@@ -1533,118 +1657,131 @@ fn safe_archive_path(destination: &Path, name: &Path) -> Result<PathBuf, String>
 }
 
 fn extract_zip(archive: &Path, destination: &Path) -> Result<(), String> {
-    let file = fs::File::open(archive)
-        .map_err(|error| format!("Cannot open {}: {error}", archive.display()))?;
-    let mut zip = zip::ZipArchive::new(file)
-        .map_err(|error| format!("Invalid archive {}: {error}", archive.display()))?;
-    for index in 0..zip.len() {
-        let mut entry = zip
-            .by_index(index)
-            .map_err(|error| format!("Cannot read archive entry: {error}"))?;
-        let name = entry.enclosed_name().ok_or_else(|| {
-            format!(
-                "archive entry escapes extraction directory: {}",
-                entry.name()
-            )
-        })?;
-        let output = safe_archive_path(destination, &name)?;
-        if entry.is_dir() {
-            fs::create_dir_all(&output)
+    let result = (|| -> Result<(), ArchiveReadError> {
+        let file = fs::File::open(archive)
+            .map_err(|error| format!("Cannot open {}: {error}", archive.display()))?;
+        let mut zip = zip::ZipArchive::new(file).map_err(|error| zip_read_error(archive, error))?;
+        for index in 0..zip.len() {
+            let mut entry = zip
+                .by_index(index)
+                .map_err(|error| zip_read_error(archive, error))?;
+            let name = entry.enclosed_name().ok_or_else(|| {
+                format!(
+                    "archive entry escapes extraction directory: {}",
+                    entry.name()
+                )
+            })?;
+            let output = safe_archive_path(destination, &name)?;
+            if entry.is_dir() {
+                fs::create_dir_all(&output)
+                    .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
+                continue;
+            }
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
+            }
+            let mut file = fs::File::create(&output)
                 .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
-            continue;
+            std::io::copy(&mut entry, &mut file)
+                .map_err(|error| archive_read_error(archive, error))?;
         }
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
-        }
-        let mut file = fs::File::create(&output)
-            .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
-        std::io::copy(&mut entry, &mut file)
-            .map_err(|error| format!("Cannot extract {}: {error}", output.display()))?;
-    }
-    Ok(())
+        Ok(())
+    })();
+    result.map_err(|error| error.finish(archive))
 }
 
 fn extract_tar_gz(archive: &Path, destination: &Path) -> Result<(), String> {
-    let file = fs::File::open(archive)
-        .map_err(|error| format!("Cannot open {}: {error}", archive.display()))?;
-    let decoder = flate2::read::GzDecoder::new(file);
-    let mut archive = tar::Archive::new(decoder);
-    #[cfg(unix)]
-    let mut links = Vec::new();
-    for entry in archive
-        .entries()
-        .map_err(|error| format!("Invalid tar.gz archive: {error}"))?
-    {
-        let mut entry = entry.map_err(|error| format!("Cannot read tar entry: {error}"))?;
-        let name = entry
-            .path()
-            .map_err(|error| format!("Cannot read tar entry path: {error}"))?
-            .into_owned();
-        let output = safe_archive_path(destination, &name)?;
-        if entry.header().entry_type().is_dir() {
-            fs::create_dir_all(&output)
-                .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
-            continue;
-        }
+    let result = (|| -> Result<(), ArchiveReadError> {
+        let file = fs::File::open(archive)
+            .map_err(|error| format!("Cannot open {}: {error}", archive.display()))?;
+        let decoder = flate2::read::GzDecoder::new(file);
+        let mut tar = tar::Archive::new(decoder);
         #[cfg(unix)]
-        if entry.header().entry_type().is_symlink() {
-            let target = entry
-                .link_name()
-                .map_err(|error| format!("Cannot read tar link: {error}"))?
-                .ok_or_else(|| format!("Tar link has no target: {}", name.display()))?;
-            if target.components().count() != 1
-                || !matches!(
-                    target.components().next(),
-                    Some(std::path::Component::Normal(_))
-                )
-            {
-                return Err(format!("Tar link leaves its directory: {}", name.display()));
+        let mut links = Vec::new();
+        for entry in tar
+            .entries()
+            .map_err(|error| archive_read_error(archive, error))?
+        {
+            let mut entry = entry.map_err(|error| archive_read_error(archive, error))?;
+            let name = entry
+                .path()
+                .map_err(|error| archive_read_error(archive, error))?
+                .into_owned();
+            let output = safe_archive_path(destination, &name)?;
+            if entry.header().entry_type().is_dir() {
+                fs::create_dir_all(&output)
+                    .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
+                continue;
             }
-            links.push((output, target.into_owned()));
-            continue;
+            #[cfg(unix)]
+            if entry.header().entry_type().is_symlink() {
+                let target = entry
+                    .link_name()
+                    .map_err(|error| format!("Cannot read tar link: {error}"))?
+                    .ok_or_else(|| format!("Tar link has no target: {}", name.display()))?;
+                if target.components().count() != 1
+                    || !matches!(
+                        target.components().next(),
+                        Some(std::path::Component::Normal(_))
+                    )
+                {
+                    return Err(ArchiveReadError::invalid(format!(
+                        "Tar link leaves its directory: {}",
+                        name.display()
+                    )));
+                }
+                links.push((output, target.into_owned()));
+                continue;
+            }
+            if !entry.header().entry_type().is_file() {
+                return Err(ArchiveReadError::invalid(format!(
+                    "unsupported tar entry type: {}",
+                    name.display()
+                )));
+            }
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
+            }
+            let mut file = fs::File::create(&output)
+                .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
+            std::io::copy(&mut entry, &mut file)
+                .map_err(|error| archive_read_error(archive, error))?;
+            #[cfg(unix)]
+            if let Ok(mode) = entry.header().mode() {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&output, fs::Permissions::from_mode(mode)).map_err(
+                    |error| {
+                        format!(
+                            "Cannot restore permissions for {}: {error}",
+                            output.display()
+                        )
+                    },
+                )?;
+            }
         }
-        if !entry.header().entry_type().is_file() {
-            return Err(format!("unsupported tar entry type: {}", name.display()));
-        }
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
-        }
-        let mut file = fs::File::create(&output)
-            .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
-        std::io::copy(&mut entry, &mut file)
-            .map_err(|error| format!("Cannot extract {}: {error}", output.display()))?;
         #[cfg(unix)]
-        if let Ok(mode) = entry.header().mode() {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&output, fs::Permissions::from_mode(mode)).map_err(|error| {
-                format!(
-                    "Cannot restore permissions for {}: {error}",
+        for (output, target) in &links {
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
+            }
+            std::os::unix::fs::symlink(target, output)
+                .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
+        }
+        #[cfg(unix)]
+        for (output, _) in &links {
+            if !output.is_file() {
+                return Err(ArchiveReadError::invalid(format!(
+                    "Tar link does not resolve to a file: {}",
                     output.display()
-                )
-            })?;
+                )));
+            }
         }
-    }
-    #[cfg(unix)]
-    for (output, target) in &links {
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
-        }
-        std::os::unix::fs::symlink(target, output)
-            .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
-    }
-    #[cfg(unix)]
-    for (output, _) in &links {
-        if !output.is_file() {
-            return Err(format!(
-                "Tar link does not resolve to a file: {}",
-                output.display()
-            ));
-        }
-    }
-    Ok(())
+        Ok(())
+    })();
+    result.map_err(|error| error.finish(archive))
 }
 
 fn activate_runtime_directory(staged: &Path, target: &Path) -> Result<(), String> {
@@ -1856,7 +1993,7 @@ fn persist_llama_runtime_marker(
 #[cfg(windows)]
 fn atomic_replace_file(source: &Path, destination: &Path) -> Result<(), String> {
     move_file_windows(source, destination, true)
-        .map_err(|error| format!("Cannot atomically replace native runtime marker: {error}"))
+        .map_err(|error| format!("Cannot publish {}: {error}", destination.display()))
 }
 
 #[cfg(windows)]
@@ -1906,7 +2043,7 @@ fn move_file_windows(
 #[cfg(not(windows))]
 fn atomic_replace_file(source: &Path, destination: &Path) -> Result<(), String> {
     fs::rename(source, destination)
-        .map_err(|error| format!("Cannot atomically replace native runtime marker: {error}"))
+        .map_err(|error| format!("Cannot publish {}: {error}", destination.display()))
 }
 
 fn load_app_config(project_root: &Path) -> Result<AppConfig, String> {
@@ -2207,7 +2344,11 @@ fn missing_base_bundled_downloads(
     let target = current_runtime_target();
     let mut downloads = Vec::new();
 
-    if !layout.onnx_cpu_core_library().is_file() && !cpu_from_provider {
+    if !file_has_expected_size(
+        &layout.onnx_cpu_core_library(),
+        expected_cpu_core_bytes(config),
+    ) && !cpu_from_provider
+    {
         if let Some(archive) = config
             .model_manager
             .onnxruntime
@@ -2230,7 +2371,7 @@ fn missing_base_bundled_downloads(
             .map_or(true, |t| t.trim() == target)
         {
             let destination = project_root.join(&bundled.relative_path);
-            if !destination.is_file() {
+            if !file_has_expected_size(&destination, expected_bundled_model_bytes(&bundled)) {
                 downloads.push(RuntimeDownload {
                     label: bundled.label,
                     archive_name: bundled.name,
@@ -2591,12 +2732,6 @@ fn managed_runtime_assets_from_config(
                     "{config_path}[{name}] must declare an HTTPS URL and non-zero byte size."
                 ));
             }
-            let sha256 = download.sha256.trim();
-            if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return Err(format!(
-                    "{config_path}[{name}].sha256 must be a 64-character hexadecimal digest."
-                ));
-            }
             let cuda_version = download.cuda_version.trim();
             if cuda_version.parse::<u16>().is_err() {
                 return Err(format!(
@@ -2621,7 +2756,6 @@ fn managed_runtime_assets_from_config(
                 name: name.into(),
                 browser_download_url: url.into(),
                 size: download.bytes,
-                sha256: sha256.to_ascii_lowercase(),
                 archive_format: download.archive_format,
                 target: download.target.trim().into(),
                 cuda_version: cuda_version.into(),
@@ -2745,12 +2879,6 @@ fn release_assets_from_config(config: &LlamaCppRuntimeConfig) -> Result<Vec<Rele
                     "model_manager.llama_cpp.downloads[{name}].bytes must be greater than zero."
                 ));
             }
-            let sha256 = download.sha256.trim();
-            if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return Err(format!(
-                    "model_manager.llama_cpp.downloads[{name}].sha256 must be a 64-character hexadecimal digest."
-                ));
-            }
             let target = if download.target.trim().is_empty() {
                 legacy_target_from_name(name)
             } else {
@@ -2762,7 +2890,6 @@ fn release_assets_from_config(config: &LlamaCppRuntimeConfig) -> Result<Vec<Rele
                 name: name.into(),
                 browser_download_url: url.into(),
                 size: download.bytes,
-                sha256: sha256.to_ascii_lowercase(),
                 archive_format: download.archive_format,
                 archive_directory: download.archive_directory.trim().into(),
                 kind,
@@ -3121,1012 +3248,4 @@ fn directory_contains_file_prefix(directory: &Path, prefix: &str) -> Result<bool
         }
     }
     Ok(false)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn poll_returns_the_installed_executable_to_host_coordination() {
-        let executable = PathBuf::from("runtime/llama.cpp/llama-server.exe");
-        let (sender, receiver) = unbounded();
-        sender
-            .send(Event::Finished(Ok(Some(executable.clone()))))
-            .unwrap();
-        let mut installer = RuntimeInstaller {
-            events: Some(receiver),
-            ..RuntimeInstaller::default()
-        };
-
-        assert_eq!(installer.poll(), Some(executable));
-        assert!(matches!(installer.state(), RuntimeInstallState::Installed));
-        assert!(installer.events.is_none());
-    }
-
-    #[test]
-    fn onnx_only_completion_does_not_report_a_llama_executable() {
-        let (sender, receiver) = unbounded();
-        sender.send(Event::Finished(Ok(None))).unwrap();
-        let mut installer = RuntimeInstaller {
-            events: Some(receiver),
-            ..RuntimeInstaller::default()
-        };
-
-        assert_eq!(installer.poll(), None);
-        assert!(matches!(installer.state(), RuntimeInstallState::Installed));
-        assert!(installer.events.is_none());
-    }
-
-    #[test]
-    fn packaged_cpu_resources_need_no_acceleration_marker_or_download() {
-        let root = std::env::temp_dir().join(format!(
-            "xrtranslate-packaged-cpu-bootstrap-{}",
-            uuid::Uuid::new_v4()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("config.json"), include_str!("../../config.json")).unwrap();
-        let config = load_app_config(&root).unwrap();
-        let layout = config.runtime_layout(&root);
-        fs::create_dir_all(layout.onnx_cpu_runtime_directory()).unwrap();
-        fs::write(layout.onnx_cpu_core_library(), b"packaged core").unwrap();
-        for model in config.model_manager.resolved_bundled_models() {
-            if model
-                .target
-                .as_deref()
-                .is_some_and(|target| target != current_runtime_target())
-            {
-                continue;
-            }
-            let path = root.join(model.relative_path);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, b"packaged model").unwrap();
-        }
-
-        assert!(missing_base_bundled_downloads(&root, &config, false).is_empty());
-        assert!(runtime_marker_matches_plan(&root, None, None));
-        assert!(!layout.native_runtime_selection_file().exists());
-        assert!(!layout.llama_cpp_directory().exists());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    #[ignore = "audits the developer machine's configured local runtime and GPU"]
-    fn installed_configuration_runtime_plan_is_ready() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let config = load_app_config(root).unwrap();
-        let plan = configured_runtime_plan(root, config.runtime_requirements()).unwrap();
-        assert!(
-            plan.is_ready(),
-            "blocking_error={:?}; downloads={:?}; marker_ready={}",
-            plan.blocking_error,
-            plan.downloads,
-            plan.marker_ready
-        );
-    }
-
-    fn asset(name: &str) -> ReleaseAsset {
-        let is_cuda_runtime = name.contains("cudart");
-        ReleaseAsset {
-            name: name.into(),
-            browser_download_url: "https://example.invalid/file.zip".into(),
-            size: 1,
-            sha256: "0".repeat(64),
-            archive_format: LlamaCppArchiveFormat::Zip,
-            archive_directory: String::new(),
-            kind: if is_cuda_runtime {
-                LlamaCppAssetKind::CudaRuntime
-            } else if name.contains("cuda") {
-                LlamaCppAssetKind::ServerCuda
-            } else {
-                LlamaCppAssetKind::ServerCpu
-            },
-            target: current_runtime_target(),
-            cuda_version: name
-                .contains("cuda-12.4")
-                .then(|| "12.4".into())
-                .or_else(|| name.contains("cuda-13.1").then(|| "13.1".into()))
-                .or_else(|| name.contains("cuda-13.3").then(|| "13.3".into())),
-            executable: "llama-server.exe".into(),
-            required_files: vec!["ggml.dll".into()],
-            required_file_prefixes: if is_cuda_runtime {
-                vec!["cudart64_".into(), "cublasLt64_".into(), "cublas64_".into()]
-            } else {
-                Vec::new()
-            },
-        }
-    }
-
-    fn onnx_asset(cuda_version: &str) -> ManagedRuntimeAsset {
-        ManagedRuntimeAsset {
-            name: format!("onnxruntime-cuda-{cuda_version}.zip"),
-            browser_download_url: "https://example.invalid/onnx.zip".into(),
-            size: 1,
-            sha256: "0".repeat(64),
-            archive_format: LlamaCppArchiveFormat::Zip,
-            target: current_runtime_target(),
-            cuda_version: cuda_version.into(),
-            archive_directory: "onnx/lib".into(),
-            required_files: vec![
-                "onnxruntime_providers_shared.dll".into(),
-                "onnxruntime_providers_cuda.dll".into(),
-            ],
-        }
-    }
-
-    fn cudnn_asset(cuda_version: &str) -> ManagedRuntimeAsset {
-        ManagedRuntimeAsset {
-            name: format!("cudnn-cuda-{cuda_version}.zip"),
-            browser_download_url: "https://example.invalid/cudnn.zip".into(),
-            size: 1,
-            sha256: "0".repeat(64),
-            archive_format: LlamaCppArchiveFormat::Zip,
-            target: current_runtime_target(),
-            cuda_version: cuda_version.into(),
-            archive_directory: "cudnn/bin".into(),
-            required_files: vec!["cudnn64_9.dll".into()],
-        }
-    }
-
-    fn cuda_dependency_asset(cuda_version: &str) -> ManagedRuntimeAsset {
-        ManagedRuntimeAsset {
-            name: format!("cufft-cuda-{cuda_version}.zip"),
-            browser_download_url: "https://example.invalid/cufft.zip".into(),
-            size: 1,
-            sha256: "0".repeat(64),
-            archive_format: LlamaCppArchiveFormat::Zip,
-            target: current_runtime_target(),
-            cuda_version: cuda_version.into(),
-            archive_directory: "cufft/bin".into(),
-            required_files: vec![format!(
-                "cufft64_{}.dll",
-                if cuda_version == "13" { "12" } else { "11" }
-            )],
-        }
-    }
-
-    #[test]
-    fn onnx_and_llama_choose_the_same_cuda_major() {
-        let cuda_runtimes = vec![
-            asset("cudart-llama-bin-win-cuda-12.4-x64.zip"),
-            asset("cudart-llama-bin-win-cuda-13.1-x64.zip"),
-            asset("cudart-llama-bin-win-cuda-13.3-x64.zip"),
-        ];
-        let providers = vec![onnx_asset("12"), onnx_asset("13")];
-        for (driver, expected) in [("12.9", "12.4"), ("13.2", "13.1"), ("13.3", "13.3")] {
-            let selection = select_onnx_assets_for_hardware(
-                &providers,
-                &cuda_runtimes,
-                &[cuda_dependency_asset("12"), cuda_dependency_asset("13")],
-                &[cudnn_asset("12"), cudnn_asset("13")],
-                Some(&NvidiaCuda {
-                    gpu: "NVIDIA GeForce RTX 4090".into(),
-                    compute_capability: (8, 9),
-                    driver_cuda: driver.into(),
-                    memory_bytes: 24 * 1024 * 1024 * 1024,
-                }),
-            )
-            .unwrap();
-            assert_eq!(selection.backend, RuntimeBackend::Cuda);
-            assert_eq!(selection.cuda_version.as_deref(), Some(expected));
-            assert_eq!(
-                selection.provider.as_ref().unwrap().cuda_version,
-                expected.split('.').next().unwrap()
-            );
-            assert_eq!(
-                selection.cudnn.as_ref().unwrap().cuda_version,
-                expected.split('.').next().unwrap()
-            );
-        }
-    }
-
-    #[test]
-    fn onnx_rejects_missing_compatible_cuda_bundle() {
-        let error = select_onnx_assets_for_hardware(
-            &[onnx_asset("13")],
-            &[asset("cudart-llama-bin-win-cuda-13.3-x64.zip")],
-            &[cuda_dependency_asset("13")],
-            &[cudnn_asset("13")],
-            Some(&NvidiaCuda {
-                gpu: "NVIDIA GeForce RTX 5080".into(),
-                compute_capability: (12, 0),
-                driver_cuda: "13.2".into(),
-                memory_bytes: 16 * 1024 * 1024 * 1024,
-            }),
-        )
-        .unwrap_err();
-        assert!(error.contains("no complete ONNX Runtime"));
-    }
-
-    #[test]
-    fn union_missing_size_counts_shared_cuda_archive_once() {
-        let root =
-            std::env::temp_dir().join(format!("xrtranslate-runtime-union-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let server = asset("llama-b1-bin-win-cuda-13.3-x64.zip");
-        let cuda = asset("cudart-llama-bin-win-cuda-13.3-x64.zip");
-        let llama = RuntimeSelection {
-            assets: vec![server, cuda.clone()],
-            backend: RuntimeBackend::Cuda,
-            executable: "llama-server.exe".into(),
-            vulkan_device: None,
-            fallback_reason: None,
-        };
-        let onnx = OnnxRuntimeSelection {
-            backend: RuntimeBackend::Cuda,
-            provider: Some(onnx_asset("13")),
-            cuda_runtime: Some(cuda),
-            cuda_dependency: Some(cuda_dependency_asset("13")),
-            cudnn: Some(cudnn_asset("13")),
-            cuda_version: Some("13.3".into()),
-            fallback_reason: None,
-        };
-        assert_eq!(missing_runtime_bytes(&root, Some(&llama), Some(&onnx)), 5);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn complete_onnx_files_without_a_marker_are_repaired_automatically() {
-        let root = std::env::temp_dir().join(format!(
-            "xrtranslate-runtime-marker-repair-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("config.json"), include_str!("../../config.json")).unwrap();
-        let layout = RuntimeLayout::for_project_root(&root);
-        let cuda = asset("cudart-llama-bin-win-cuda-13.1-x64.zip");
-        let mut provider = onnx_asset("13");
-        provider.required_files.push("onnxruntime.dll".into());
-        let cudnn = cudnn_asset("13");
-        let cuda_dependency = cuda_dependency_asset("13");
-        let selection = OnnxRuntimeSelection {
-            backend: RuntimeBackend::Cuda,
-            provider: Some(provider.clone()),
-            cuda_runtime: Some(cuda.clone()),
-            cuda_dependency: Some(cuda_dependency.clone()),
-            cudnn: Some(cudnn.clone()),
-            cuda_version: Some("13.1".into()),
-            fallback_reason: None,
-        };
-        let cuda_directory = layout.cuda_runtime_directory("13.1");
-        let provider_directory = layout.onnx_runtime_directory("13");
-        let cudnn_directory = layout.cudnn_runtime_directory("13");
-        for (directory, files) in [
-            (&cuda_directory, &cuda.required_file_prefixes),
-            (&cuda_directory, &cuda_dependency.required_files),
-            (&provider_directory, &provider.required_files),
-            (&cudnn_directory, &cudnn.required_files),
-        ] {
-            fs::create_dir_all(directory).unwrap();
-            for file in files {
-                let filename = if file.ends_with('_') {
-                    format!("{file}13.dll")
-                } else {
-                    file.clone()
-                };
-                fs::write(directory.join(filename), b"runtime").unwrap();
-            }
-        }
-
-        assert_eq!(missing_runtime_bytes(&root, None, Some(&selection)), 0);
-        assert!(!runtime_marker_matches_plan(&root, None, Some(&selection)));
-
-        let plan = RuntimePlan {
-            llama_cpp: None,
-            onnx: Some(selection.clone()),
-            downloads: Vec::new(),
-            marker_ready: false,
-            requirements: RuntimeRequirements {
-                onnx_tts: true,
-                onnx_cuda: true,
-                ..RuntimeRequirements::default()
-            },
-            model_assets: Vec::new(),
-            local_models: LocalModelAvailability::Available {
-                gpu: "test GPU".into(),
-                memory_bytes: 16 * 1024 * 1024 * 1024,
-                cuda_memory_bytes: 16 * 1024 * 1024 * 1024,
-                all_gpus: Vec::new(),
-            },
-            blocking_error: None,
-        };
-        assert!(plan.requires_marker_repair());
-        let (sender, receiver) = unbounded();
-        sender.send(Event::Prepared(Ok(plan))).unwrap();
-        let mut installer = RuntimeInstaller {
-            state: RuntimeInstallState::Detecting,
-            events: Some(receiver),
-            active_project_root: Some(root.clone()),
-            ..RuntimeInstaller::default()
-        };
-        installer.poll();
-        for _ in 0..100 {
-            assert_eq!(installer.poll(), None);
-            if matches!(installer.state(), RuntimeInstallState::Installed) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-
-        assert!(layout.native_runtime_selection_file().is_file());
-        assert!(matches!(installer.state(), RuntimeInstallState::Installed));
-        assert!(runtime_marker_matches_plan(&root, None, Some(&selection)));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn onnx_extraction_keeps_only_declared_runtime_dlls() {
-        use std::io::Write;
-        let root =
-            std::env::temp_dir().join(format!("xrtranslate-onnx-extract-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let archive = root.join("runtime.zip");
-        let file = fs::File::create(&archive).unwrap();
-        let mut zip = zip::ZipWriter::new(file);
-        let options = zip::write::SimpleFileOptions::default();
-        for name in [
-            "onnx/lib/onnxruntime.dll",
-            "onnx/lib/onnxruntime_providers_shared.dll",
-            "onnx/lib/onnxruntime_providers_cuda.dll",
-            "onnx/lib/onnxruntime_providers_cuda.pdb",
-        ] {
-            zip.start_file(name, options).unwrap();
-            zip.write_all(name.as_bytes()).unwrap();
-        }
-        zip.finish().unwrap();
-        let output = root.join("output");
-        fs::create_dir_all(&output).unwrap();
-        let files = vec![
-            "onnxruntime.dll".into(),
-            "onnxruntime_providers_shared.dll".into(),
-            "onnxruntime_providers_cuda.dll".into(),
-        ];
-        extract_declared_files(
-            &archive,
-            LlamaCppArchiveFormat::Zip,
-            Path::new("onnx/lib"),
-            &files,
-            &output,
-        )
-        .unwrap();
-        assert!(output.join(&files[0]).is_file());
-        assert!(output.join(&files[1]).is_file());
-        assert!(output.join(&files[2]).is_file());
-        assert!(!output.join("onnxruntime_providers_cuda.pdb").exists());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn cuda_preload_order_is_cudart_then_cublas_lt_then_cublas() {
-        let root =
-            std::env::temp_dir().join(format!("xrtranslate-cuda-preload-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        for file in ["cublas64_13.dll", "cudart64_13.dll", "cublasLt64_13.dll"] {
-            fs::write(root.join(file), b"runtime").unwrap();
-        }
-        let ordered = resolve_required_prefixes(
-            &root,
-            &["cudart64_".into(), "cublasLt64_".into(), "cublas64_".into()],
-        )
-        .unwrap();
-        assert_eq!(
-            ordered
-                .iter()
-                .filter_map(|path| path.file_name())
-                .collect::<Vec<_>>(),
-            ["cudart64_13.dll", "cublasLt64_13.dll", "cublas64_13.dll",]
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn onnx_cpu_marker_preserves_llama_cuda_search_directory() {
-        let root =
-            std::env::temp_dir().join(format!("xrtranslate-runtime-marker-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let layout = RuntimeLayout::for_project_root(&root);
-        persist_native_runtime_selection(
-            &layout,
-            &NativeRuntimeSelection {
-                schema_version: 1,
-                backend: NativeRuntimeBackend::Cuda,
-                llama_cpp_backend: Some(NativeRuntimeBackend::Cuda),
-                vulkan_device: None,
-                onnx_backend: None,
-                cuda_version: Some("13.3".into()),
-                provider_dir: None,
-                onnx_core_library: None,
-                cuda_bin_dir: Some(PathBuf::from("runtime/cuda/13.3")),
-                cudnn_bin_dir: None,
-                preload_libraries: Vec::new(),
-                fallback_reason: None,
-            },
-        )
-        .unwrap();
-        let (sender, _receiver) = unbounded();
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(install_onnx_runtime(
-                root.clone(),
-                OnnxRuntimeSelection {
-                    backend: RuntimeBackend::Cpu,
-                    provider: None,
-                    cuda_runtime: None,
-                    cuda_dependency: None,
-                    cudnn: None,
-                    cuda_version: None,
-                    fallback_reason: Some("CUDA provider unavailable; using CPU inference.".into()),
-                },
-                sender,
-                None,
-                DownloadSource::Official,
-                DownloadCancellation::default(),
-                0,
-                0,
-            ))
-            .unwrap();
-        let marker = load_native_runtime_selection(&layout).unwrap().unwrap();
-        assert_eq!(marker.backend, NativeRuntimeBackend::Cpu);
-        assert_eq!(marker.llama_cpp_backend, Some(NativeRuntimeBackend::Cuda));
-        assert_eq!(marker.onnx_backend, Some(NativeRuntimeBackend::Cpu));
-        let expected_core =
-            Path::new("runtime/onnxruntime/cpu").join(RuntimeLayout::ONNX_CORE_LIBRARY);
-        assert_eq!(
-            marker.onnx_core_library.as_deref(),
-            Some(expected_core.as_path())
-        );
-        assert_eq!(
-            marker.cuda_bin_dir.as_deref(),
-            Some(Path::new("runtime/cuda/13.3"))
-        );
-        assert!(marker.preload_libraries.is_empty());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn configured_downloads_reject_duplicate_names_and_non_https_urls() {
-        let config = LlamaCppRuntimeConfig {
-            release: "test".into(),
-            release_page: "https://example.invalid/releases/test".into(),
-            downloads: vec![
-                xrtranslate_config::LlamaCppDownload {
-                    name: "llama-test-bin-win-cpu-x64.zip".into(),
-                    url: "https://example.invalid/one.zip".into(),
-                    bytes: 1,
-                    sha256: "0".repeat(64),
-                    ..Default::default()
-                },
-                xrtranslate_config::LlamaCppDownload {
-                    name: "llama-test-bin-win-cpu-x64.zip".into(),
-                    url: "http://example.invalid/two.zip".into(),
-                    bytes: 1,
-                    sha256: "0".repeat(64),
-                    ..Default::default()
-                },
-            ],
-        };
-        let error = release_assets_from_config(&config).unwrap_err();
-        assert!(error.contains("duplicate archive"));
-    }
-
-    #[test]
-    fn selects_complete_cuda_runtime_for_blackwell() {
-        let assets = vec![
-            asset("llama-b1-bin-win-cpu-x64.zip"),
-            asset("llama-b1-bin-win-cuda-12.4-x64.zip"),
-            asset("cudart-llama-bin-win-cuda-12.4-x64.zip"),
-            asset("llama-b1-bin-win-cuda-13.3-x64.zip"),
-            asset("cudart-llama-bin-win-cuda-13.3-x64.zip"),
-        ];
-        let nvidia = NvidiaCuda {
-            gpu: "NVIDIA GeForce RTX 5080".into(),
-            compute_capability: (12, 0),
-            driver_cuda: "13.3".into(),
-            memory_bytes: 16 * 1024 * 1024 * 1024,
-        };
-        let selected = select_cuda_assets(&assets, Some(&nvidia)).unwrap();
-        assert_eq!(selected.backend, RuntimeBackend::Cuda);
-        assert_eq!(
-            selected
-                .assets
-                .iter()
-                .map(|asset| asset.name.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "llama-b1-bin-win-cuda-13.3-x64.zip",
-                "cudart-llama-bin-win-cuda-13.3-x64.zip"
-            ]
-        );
-    }
-
-    #[test]
-    fn pre_turing_gpu_never_selects_cuda_13() {
-        let assets = vec![
-            asset("llama-b1-bin-win-cuda-12.4-x64.zip"),
-            asset("cudart-llama-bin-win-cuda-12.4-x64.zip"),
-            asset("llama-b1-bin-win-cuda-13.3-x64.zip"),
-            asset("cudart-llama-bin-win-cuda-13.3-x64.zip"),
-        ];
-        for (gpu, compute_capability) in [
-            ("NVIDIA GeForce GTX 1080", (6, 1)),
-            ("NVIDIA TITAN V", (7, 0)),
-        ] {
-            let selected = select_cuda_assets(
-                &assets,
-                Some(&NvidiaCuda {
-                    gpu: gpu.into(),
-                    compute_capability,
-                    driver_cuda: "13.3".into(),
-                    memory_bytes: 16 * 1024 * 1024 * 1024,
-                }),
-            )
-            .unwrap();
-            assert_eq!(
-                selected.assets[0].name,
-                "llama-b1-bin-win-cuda-12.4-x64.zip"
-            );
-        }
-    }
-
-    #[test]
-    fn turing_and_newer_can_select_cuda_13() {
-        assert!(!cuda_supports_compute_capability((13, 3), (7, 0)));
-        assert!(cuda_supports_compute_capability((13, 3), (7, 5)));
-        assert!(cuda_supports_compute_capability((13, 3), (8, 9)));
-    }
-
-    #[test]
-    fn blackwell_selects_cuda_13_1_when_the_driver_cannot_load_cuda_13_3() {
-        let assets = vec![
-            asset("llama-b1-bin-win-cpu-x64.zip"),
-            asset("llama-b1-bin-win-cuda-12.4-x64.zip"),
-            asset("cudart-llama-bin-win-cuda-12.4-x64.zip"),
-            asset("llama-b1-bin-win-cuda-13.1-x64.zip"),
-            asset("cudart-llama-bin-win-cuda-13.1-x64.zip"),
-            asset("llama-b1-bin-win-cuda-13.3-x64.zip"),
-            asset("cudart-llama-bin-win-cuda-13.3-x64.zip"),
-        ];
-        let nvidia = NvidiaCuda {
-            gpu: "NVIDIA GeForce RTX 5080".into(),
-            compute_capability: (12, 0),
-            driver_cuda: "13.2".into(),
-            memory_bytes: 16 * 1024 * 1024 * 1024,
-        };
-        let selected = select_cuda_assets(&assets, Some(&nvidia)).unwrap();
-        assert_eq!(selected.backend, RuntimeBackend::Cuda);
-        assert_eq!(selected.assets[0].cuda_version.as_deref(), Some("13.1"));
-        let notice = selected.fallback_reason.unwrap();
-        assert!(notice.contains("NVIDIA App"));
-        assert!(notice.contains(NVIDIA_APP_URL));
-    }
-
-    #[test]
-    fn blackwell_driver_below_13_1_reports_the_minimum_complete_gpu_package() {
-        let assets = vec![
-            asset("llama-b1-bin-win-cpu-x64.zip"),
-            asset("llama-b1-bin-win-cuda-12.4-x64.zip"),
-            asset("cudart-llama-bin-win-cuda-12.4-x64.zip"),
-            asset("llama-b1-bin-win-cuda-13.1-x64.zip"),
-            asset("cudart-llama-bin-win-cuda-13.1-x64.zip"),
-            asset("llama-b1-bin-win-cuda-13.3-x64.zip"),
-            asset("cudart-llama-bin-win-cuda-13.3-x64.zip"),
-        ];
-        let error = select_cuda_assets(
-            &assets,
-            Some(&NvidiaCuda {
-                gpu: "NVIDIA GeForce RTX 5080".into(),
-                compute_capability: (12, 0),
-                driver_cuda: "13.0".into(),
-                memory_bytes: 16 * 1024 * 1024 * 1024,
-            }),
-        )
-        .unwrap_err();
-        assert!(error.contains("CUDA 13.1-capable"));
-        assert!(!error.contains("needs a CUDA 13.3-capable"));
-        assert!(error.contains(NVIDIA_APP_URL));
-    }
-
-    #[test]
-    fn missing_cudart_is_rejected_without_cpu_fallback() {
-        let assets = vec![
-            asset("llama-b1-bin-win-cpu-x64.zip"),
-            asset("llama-b1-bin-win-cuda-13.3-x64.zip"),
-        ];
-        let nvidia = NvidiaCuda {
-            gpu: "NVIDIA GeForce RTX 5080".into(),
-            compute_capability: (12, 0),
-            driver_cuda: "13.3".into(),
-            memory_bytes: 16 * 1024 * 1024 * 1024,
-        };
-        let error = select_cuda_assets(&assets, Some(&nvidia)).unwrap_err();
-        assert!(error.contains("missing the CUDA runtime package"));
-    }
-
-    #[test]
-    fn parses_all_nvidia_gpus_instead_of_only_the_first() {
-        let gpus = parse_nvidia_gpu_rows(
-            "Unavailable virtual adapter, N/A, N/A\nNVIDIA GeForce GTX 580, 2.0, 1536\nNVIDIA GeForce RTX 5080, 12.0, 16384\n",
-        )
-        .unwrap();
-        assert_eq!(gpus.len(), 2);
-        assert_eq!(gpus[1].gpu, "NVIDIA GeForce RTX 5080");
-        assert_eq!(gpus[1].compute_capability, (12, 0));
-        assert_eq!(gpus[1].memory_bytes, 16 * 1024 * 1024 * 1024);
-    }
-
-    #[test]
-    fn compact_local_models_can_use_one_gib_of_vram() {
-        let low_memory = NvidiaCuda {
-            gpu: "NVIDIA GeForce RTX test".into(),
-            compute_capability: (8, 9),
-            driver_cuda: "13.0".into(),
-            memory_bytes: 512 * 1024 * 1024,
-        };
-        assert!(matches!(
-            local_model_availability(Some(&low_memory), None),
-            LocalModelAvailability::InsufficientVram {
-                memory_bytes,
-                required_bytes,
-                ..
-            } if memory_bytes == 512 * 1024 * 1024
-                && required_bytes == 1024 * 1024 * 1024
-        ));
-        let minimum_memory = NvidiaCuda {
-            memory_bytes: 1024 * 1024 * 1024,
-            ..low_memory.clone()
-        };
-        assert!(matches!(
-            local_model_availability(Some(&minimum_memory), None),
-            LocalModelAvailability::Available { .. }
-        ));
-        assert!(matches!(
-            local_model_availability(None, None),
-            LocalModelAvailability::Unavailable(reason) if reason.contains("NVIDIA CUDA or AMD Vulkan")
-        ));
-        let amd = VulkanGpu {
-            gpu: "AMD Radeon".into(),
-            memory_bytes: 8 * 1024 * 1024 * 1024,
-            index: 2,
-        };
-        let availability = local_model_availability(None, Some(&amd));
-        assert!(availability.supports(xrtranslate_assets::MANAGED_SMALL_MODEL_HARDWARE));
-        assert!(!availability.supports(xrtranslate_assets::MANAGED_LOCAL_MODEL_HARDWARE));
-        let mixed = local_model_availability(Some(&minimum_memory), Some(&amd));
-        assert!(!mixed.supports(xrtranslate_assets::MANAGED_LOCAL_MODEL_HARDWARE));
-        let config = AppConfig::from_json_str(include_str!("../../config.json")).unwrap();
-        let assets = release_assets_from_config(&config.model_manager.llama_cpp).unwrap();
-        let vulkan = select_llama_assets(&assets, None, Some(&amd)).unwrap();
-        assert_eq!(vulkan.backend, RuntimeBackend::Vulkan);
-        assert_eq!(vulkan.vulkan_device, Some(2));
-        assert_eq!(vulkan.assets.len(), 1);
-        assert_eq!(vulkan.assets[0].kind, LlamaCppAssetKind::ServerVulkan);
-        assert!(vulkan.assets[0].cuda_version.is_none());
-        assert!(select_llama_assets(&[], None, Some(&amd)).is_err());
-    }
-
-    #[test]
-    fn multi_gpu_selection_and_preference_behavior() {
-        use hardware::resolve_hardware_selection;
-
-        let nvidia = NvidiaCuda {
-            gpu: "NVIDIA GeForce RTX 3050 Laptop GPU".into(),
-            compute_capability: (8, 6),
-            driver_cuda: "13.0".into(),
-            memory_bytes: 4 * 1024 * 1024 * 1024,
-        };
-        let nvidia_vulkan = VulkanGpu {
-            gpu: "NVIDIA GeForce RTX 3050 Laptop GPU".into(),
-            memory_bytes: 4 * 1024 * 1024 * 1024,
-            index: 0,
-        };
-        let amd = VulkanGpu {
-            gpu: "AMD Radeon Graphics (RADV RENOIR)".into(),
-            memory_bytes: 6 * 1024 * 1024 * 1024,
-            index: 1,
-        };
-        let vulkan_gpus = vec![nvidia_vulkan, amd];
-
-        // 1. Without user preference, prioritize dedicated NVIDIA CUDA GPU even if integrated AMD has larger shared VRAM
-        let (selected_n, selected_a, avail) =
-            resolve_hardware_selection(&[nvidia.clone()], &vulkan_gpus, None);
-        assert!(selected_n.is_some());
-        assert!(selected_a.is_none());
-        assert_eq!(avail.available_gpus().len(), 3);
-        if let LocalModelAvailability::Available {
-            gpu,
-            memory_bytes,
-            cuda_memory_bytes,
-            all_gpus,
-        } = avail
-        {
-            assert_eq!(gpu, "NVIDIA GeForce RTX 3050 Laptop GPU (CUDA)");
-            assert_eq!(memory_bytes, 4 * 1024 * 1024 * 1024);
-            assert_eq!(cuda_memory_bytes, 4 * 1024 * 1024 * 1024);
-            assert_eq!(all_gpus.len(), 3);
-        } else {
-            panic!("Expected Available variant");
-        }
-
-        // 2. With user preference for NVIDIA Vulkan, select NVIDIA Vulkan GPU
-        let (selected_n, selected_a, avail) = resolve_hardware_selection(
-            &[nvidia.clone()],
-            &vulkan_gpus,
-            Some("NVIDIA GeForce RTX 3050 Laptop GPU (Vulkan)"),
-        );
-        assert!(selected_n.is_none());
-        assert!(selected_a.is_some());
-        assert_eq!(selected_a.as_ref().unwrap().index, 0);
-        if let LocalModelAvailability::Available {
-            gpu,
-            memory_bytes,
-            cuda_memory_bytes,
-            ..
-        } = avail
-        {
-            assert_eq!(gpu, "NVIDIA GeForce RTX 3050 Laptop GPU (Vulkan)");
-            assert_eq!(memory_bytes, 4 * 1024 * 1024 * 1024);
-            assert_eq!(cuda_memory_bytes, 0);
-        } else {
-            panic!("Expected Available variant");
-        }
-
-        // 3. With user preference for AMD (raw name fallback), select AMD Vulkan GPU
-        let (selected_n, selected_a, avail) = resolve_hardware_selection(
-            &[nvidia.clone()],
-            &vulkan_gpus,
-            Some("AMD Radeon Graphics (RADV RENOIR)"),
-        );
-        assert!(selected_n.is_none());
-        assert!(selected_a.is_some());
-        assert_eq!(selected_a.as_ref().unwrap().index, 1);
-        if let LocalModelAvailability::Available {
-            gpu,
-            memory_bytes,
-            cuda_memory_bytes,
-            ..
-        } = avail
-        {
-            assert_eq!(gpu, "AMD Radeon Graphics (RADV RENOIR) (Vulkan)");
-            assert_eq!(memory_bytes, 6 * 1024 * 1024 * 1024);
-            assert_eq!(cuda_memory_bytes, 0);
-        } else {
-            panic!("Expected Available variant");
-        }
-    }
-
-    #[test]
-    fn runtime_vram_gate_tracks_the_selected_model_assets() {
-        let mut document: serde_json::Value =
-            serde_json::from_str(include_str!("../../config.json")).unwrap();
-        let normal = AppConfig::from_value(document.clone()).unwrap();
-        assert_eq!(
-            required_local_model_vram_bytes(&normal),
-            7 * 1024 * 1024 * 1024
-        );
-        document["asr"]["providers"]["qwen3-gguf"]["model_asset"] =
-            serde_json::Value::from("qwen3-asr-0.6b-q8-gguf");
-        document["translation"]["providers"]["hunyuan"]["model_asset"] =
-            serde_json::Value::from("hy-mt2-1.8b-q2-k");
-        let small = AppConfig::from_value(document.clone()).unwrap();
-        assert_eq!(
-            required_local_model_vram_bytes(&small),
-            3 * 1024 * 1024 * 1024
-        );
-        document["tts"]["provider"] = serde_json::Value::from("openvoice");
-        let with_tts = AppConfig::from_value(document).unwrap();
-        assert_eq!(
-            required_local_model_vram_bytes(&with_tts),
-            7 * 1024 * 1024 * 1024
-        );
-    }
-
-    #[test]
-    fn runtime_assets_use_declared_cuda_versions() {
-        let assets = release_assets_from_config(&LlamaCppRuntimeConfig {
-            release: "test".into(),
-            downloads: vec![xrtranslate_config::LlamaCppDownload {
-                name: "server.zip".into(),
-                url: "https://example.invalid/server.zip".into(),
-                archive_format: LlamaCppArchiveFormat::Zip,
-                bytes: 1,
-                sha256: "0".repeat(64),
-                kind: LlamaCppAssetKind::ServerCuda,
-                target: current_runtime_target(),
-                cuda_version: Some("13.3".into()),
-                executable: "llama-server".into(),
-                required_files: vec!["libggml.so".into()],
-                required_file_prefixes: Vec::new(),
-                archive_directory: String::new(),
-            }],
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(assets[0].cuda_version.as_deref(), Some("13.3"));
-    }
-
-    #[test]
-    fn declared_tar_gz_format_is_preserved_without_filename_inference() {
-        let assets = release_assets_from_config(&LlamaCppRuntimeConfig {
-            release: "test".into(),
-            downloads: vec![xrtranslate_config::LlamaCppDownload {
-                name: "server.tar.gz".into(),
-                url: "https://example.invalid/server.tar.gz".into(),
-                bytes: 1,
-                sha256: "0".repeat(64),
-                archive_format: LlamaCppArchiveFormat::TarGz,
-                target: current_runtime_target(),
-                kind: LlamaCppAssetKind::ServerCpu,
-                executable: "bin/llama-server".into(),
-                required_files: vec!["lib/libggml.so".into()],
-                ..Default::default()
-            }],
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(assets[0].archive_format, LlamaCppArchiveFormat::TarGz);
-        assert_eq!(assets[0].kind, LlamaCppAssetKind::ServerCpu);
-    }
-
-    #[test]
-    fn archive_paths_reject_parent_and_absolute_entries() {
-        let root = Path::new("runtime/staging");
-        assert!(safe_archive_path(root, Path::new("../escape")).is_err());
-        assert!(safe_archive_path(root, Path::new("/absolute")).is_err());
-        assert_eq!(
-            safe_archive_path(root, Path::new("bin/server")).unwrap(),
-            root.join("bin/server")
-        );
-    }
-
-    #[test]
-    fn source_switch_cleanup_removes_only_declared_runtime_staging() {
-        let root = std::env::temp_dir().join(format!(
-            "xrtranslate-runtime-source-switch-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("config.json"), include_str!("../../config.json")).unwrap();
-        let config = load_app_config(&root).unwrap();
-        let layout = load_runtime_layout(&root);
-        let llama_staging = layout.runtime_root().join(format!(
-            ".llama.cpp-{}-staging",
-            config.model_manager.llama_cpp.release
-        ));
-        let onnx_staging = layout.runtime_root().join(format!(
-            ".onnxruntime-{}-staging",
-            config.model_manager.onnxruntime.release
-        ));
-        let installed = layout.llama_cpp_directory();
-        std::fs::create_dir_all(&llama_staging).unwrap();
-        std::fs::create_dir_all(&onnx_staging).unwrap();
-        std::fs::create_dir_all(&installed).unwrap();
-
-        clear_runtime_staging(&root).unwrap();
-
-        assert!(!llama_staging.exists());
-        assert!(!onnx_staging.exists());
-        assert!(installed.exists());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn deleting_managed_runtime_keeps_the_packaged_cpu_core() {
-        let root =
-            std::env::temp_dir().join(format!("xrtranslate-runtime-delete-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("config.json"), include_str!("../../config.json")).unwrap();
-        let config = load_app_config(&root).unwrap();
-        let layout = load_runtime_layout(&root);
-        std::fs::create_dir_all(layout.llama_cpp_directory()).unwrap();
-        for version in config
-            .model_manager
-            .llama_cpp
-            .downloads
-            .iter()
-            .filter_map(|asset| asset.cuda_version.as_deref())
-        {
-            std::fs::create_dir_all(layout.cuda_runtime_directory(version)).unwrap();
-        }
-        for asset in &config.model_manager.onnxruntime.downloads {
-            std::fs::create_dir_all(layout.onnx_runtime_directory(&asset.cuda_version)).unwrap();
-        }
-        for asset in &config.model_manager.onnxruntime.cudnn_downloads {
-            std::fs::create_dir_all(layout.cudnn_runtime_directory(&asset.cuda_version)).unwrap();
-        }
-        let cpu_core = layout.onnx_cpu_core_library();
-        std::fs::create_dir_all(cpu_core.parent().unwrap()).unwrap();
-        std::fs::write(&cpu_core, b"packaged").unwrap();
-        std::fs::write(layout.native_runtime_selection_file(), b"{}").unwrap();
-
-        let mut installer = RuntimeInstaller::default();
-        installer.delete_managed_resources(&root).unwrap();
-
-        assert!(!layout.llama_cpp_directory().exists());
-        assert!(!layout.native_runtime_selection_file().exists());
-        assert!(!layout.cudnn_runtime_directory("13").exists());
-        assert!(cpu_core.is_file());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn reads_current_nvidia_smi_cuda_umd_output() {
-        let output = "| NVIDIA-SMI 610.47  CUDA UMD Version: 13.3 |";
-        assert_eq!(
-            cuda_version_from_nvidia_smi(output).as_deref(),
-            Some("13.3")
-        );
-    }
-
-    #[test]
-    fn legacy_cuda_13_dlls_are_migrated_to_shared_cuda_13_directory() {
-        let root =
-            std::env::temp_dir().join(format!("xrtranslate-legacy-cuda13-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let layout = RuntimeLayout::new(&root, Some(Path::new("runtime")));
-        let llama_dir = layout.llama_cpp_directory();
-        std::fs::create_dir_all(&llama_dir).unwrap();
-        std::fs::write(llama_dir.join("llama-server.exe"), b"bin").unwrap();
-        std::fs::write(llama_dir.join("cudart64_13.dll"), b"cuda13").unwrap();
-        std::fs::write(llama_dir.join("cublas64_13.dll"), b"cublas13").unwrap();
-        std::fs::write(llama_dir.join("cublasLt64_13.dll"), b"cublaslt13").unwrap();
-
-        migrate_legacy_runtime_layout(&layout);
-
-        let cuda13_dir = layout.cuda_runtime_directory("13.3");
-        assert!(cuda13_dir.join("cudart64_13.dll").is_file());
-        assert!(cuda13_dir.join("cublas64_13.dll").is_file());
-        assert!(cuda13_dir.join("cublasLt64_13.dll").is_file());
-        assert!(!layout.cuda_runtime_directory("12.4").exists());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn legacy_cuda_12_dlls_are_migrated_to_shared_cuda_12_directory() {
-        let root =
-            std::env::temp_dir().join(format!("xrtranslate-legacy-cuda12-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let layout = RuntimeLayout::new(&root, Some(Path::new("runtime")));
-        let llama_dir = layout.llama_cpp_directory();
-        std::fs::create_dir_all(&llama_dir).unwrap();
-        std::fs::write(llama_dir.join("llama-server.exe"), b"bin").unwrap();
-        std::fs::write(llama_dir.join("cudart64_12.dll"), b"cuda12").unwrap();
-        std::fs::write(llama_dir.join("cublas64_12.dll"), b"cublas12").unwrap();
-        std::fs::write(llama_dir.join("cublasLt64_12.dll"), b"cublaslt12").unwrap();
-
-        migrate_legacy_runtime_layout(&layout);
-
-        let cuda12_dir = layout.cuda_runtime_directory("12.4");
-        assert!(cuda12_dir.join("cudart64_12.dll").is_file());
-        assert!(cuda12_dir.join("cublas64_12.dll").is_file());
-        assert!(cuda12_dir.join("cublasLt64_12.dll").is_file());
-        assert!(!layout.cuda_runtime_directory("13.3").exists());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn legacy_cpu_runtime_does_not_create_cuda_directories() {
-        let root =
-            std::env::temp_dir().join(format!("xrtranslate-legacy-cpu-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let layout = RuntimeLayout::new(&root, Some(Path::new("runtime")));
-        let llama_dir = layout.llama_cpp_directory();
-        std::fs::create_dir_all(&llama_dir).unwrap();
-        std::fs::write(llama_dir.join("llama-server.exe"), b"bin").unwrap();
-        std::fs::write(llama_dir.join("ggml-cpu.dll"), b"cpu").unwrap();
-
-        migrate_legacy_runtime_layout(&layout);
-
-        assert!(!layout.cuda_runtime_directory("13.3").exists());
-        assert!(!layout.cuda_runtime_directory("12.4").exists());
-        let _ = std::fs::remove_dir_all(&root);
-    }
 }

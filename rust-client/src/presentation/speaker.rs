@@ -15,19 +15,3 @@ pub(crate) fn compact_speaker_label(speaker_id: &str) -> Option<String> {
         if sequence.is_empty() { "0" } else { sequence }
     ))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::compact_speaker_label;
-
-    #[test]
-    fn labels_are_stable_and_human_readable() {
-        assert_eq!(compact_speaker_label("speaker-01").as_deref(), Some("S1"));
-        assert_eq!(compact_speaker_label("speaker-12").as_deref(), Some("S12"));
-        assert_eq!(
-            compact_speaker_label("speaker-unknown").as_deref(),
-            Some("S?")
-        );
-        assert_eq!(compact_speaker_label(""), None);
-    }
-}

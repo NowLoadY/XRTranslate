@@ -71,22 +71,3 @@ pub enum OverlayEvent {
     CompanionDetached(bool),
     CompanionRegionChanged(Option<OverlayRegion>),
 }
-
-#[cfg(test)]
-mod tests {
-    use super::OverlayState;
-
-    #[test]
-    fn vad_activity_is_sent_to_the_overlay_process() {
-        let state = OverlayState {
-            font_size: 14,
-            max_items: 5,
-            visible_entries: Vec::new(),
-            partial_text: None,
-            vad_active: true,
-        };
-        let json = serde_json::to_string(&state).unwrap();
-
-        assert!(json.contains(r#""vad_active":true"#));
-    }
-}

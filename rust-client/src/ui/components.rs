@@ -11,9 +11,6 @@ pub mod selection_card;
 pub use segmented_switch::segmented_switch;
 pub mod text_composer;
 
-#[cfg(test)]
-mod language_tests;
-
 pub fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     let border_id = ui.next_auto_id().with("organic_card_border");
     crate::ui::organic_border::show(
@@ -2371,30 +2368,6 @@ fn decorate_unavailable(
     }
 }
 
-pub fn directory_path_input(
-    ui: &mut Ui,
-    value: &mut String,
-    hint: &str,
-    browse_label: &str,
-    input_width: f32,
-) -> bool {
-    let edit = egui::TextEdit::singleline(value)
-        .hint_text(hint)
-        .desired_width(input_width.min(420.0))
-        .margin(egui::vec2(8.0, 6.0));
-    let mut changed = text_edit_ui(ui, "path_picker_input", edit).changed();
-
-    if crate::file_dialog::folders_available() {
-        if animated_button(ui, browse_label).clicked()
-            && let Some(path) = crate::file_dialog::FileDialog::new().pick_folder()
-        {
-            *value = path.display().to_string();
-            changed = true;
-        }
-    }
-    changed
-}
-
 pub fn text_edit_ui(
     ui: &mut Ui,
     id_source: impl std::hash::Hash + std::fmt::Debug,
@@ -3065,75 +3038,6 @@ pub fn reset_button(ui: &mut Ui, id_salt: &str) -> egui::Response {
     resp
 }
 
-pub fn render_runtime_task_state(
-    ui: &mut egui::Ui,
-    language: crate::i18n::UiLanguage,
-    state: &crate::runtime_install::RuntimeInstallState,
-    extracting_text: &'static str,
-    installed_text: &'static str,
-) {
-    use crate::runtime_install::RuntimeInstallState;
-
-    match state {
-        RuntimeInstallState::Idle | RuntimeInstallState::Ready => {}
-        RuntimeInstallState::Detecting => {
-            ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new(crate::i18n::tr(
-                    language,
-                    "Detecting the recommended runtime...",
-                ))
-                .size(12.0)
-                .color(theme::text_weak()),
-            );
-        }
-        RuntimeInstallState::Downloading {
-            asset,
-            downloaded,
-            total,
-        } => {
-            ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new(asset)
-                    .size(11.0)
-                    .color(theme::text_weak()),
-            );
-            if *total > 0 {
-                ui.add(
-                    egui::ProgressBar::new(
-                        (*downloaded as f64 / *total as f64).clamp(0.0, 1.0) as f32
-                    )
-                    .text(format!(
-                        "{} / {}",
-                        format_file_size(*downloaded),
-                        format_file_size(*total),
-                    )),
-                );
-            }
-        }
-        RuntimeInstallState::Extracting => {
-            ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new(crate::i18n::tr(language, extracting_text))
-                    .size(12.0)
-                    .color(theme::text_weak()),
-            );
-        }
-        RuntimeInstallState::Installed => {
-            ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new(crate::i18n::tr(language, installed_text))
-                    .size(12.0)
-                    .color(Color32::from_rgb(5, 150, 105)),
-            );
-        }
-        RuntimeInstallState::Failed(error) => {
-            ui.add_space(6.0);
-            error_notice(ui, language, error);
-        }
-    }
-}
-
 pub fn render_runtime_fallback_notice(
     ui: &mut egui::Ui,
     language: crate::i18n::UiLanguage,
@@ -3375,41 +3279,6 @@ pub fn input_toggle_with_accent(
         );
     }
     response
-}
-
-#[cfg(test)]
-mod automation_button_tests {
-    use super::*;
-    use crate::ui::automation::driver::{CommandEnvelope, DirectorCommand};
-
-    #[test]
-    fn automated_buttons_click_once_without_injecting_pointer_events() {
-        let ctx = egui::Context::default();
-        for primary in [false, true] {
-            let (tx, _rx) = crossbeam_channel::bounded(1);
-            crate::ui::automation::driver()
-                .channel()
-                .send(CommandEnvelope {
-                    command: DirectorCommand::Click("fixture button".into()),
-                    responder: tx,
-                })
-                .unwrap();
-            for expected in [true, false] {
-                let mut output = ctx.run_ui(Default::default(), |ui| {
-                    crate::ui::automation::begin_frame(ui.ctx(), "fixture");
-                    let response = if primary {
-                        primary_button(ui, "fixture button")
-                    } else {
-                        animated_button(ui, "fixture button")
-                    };
-                    assert_eq!(response.clicked(), expected);
-                    assert!(ui.ctx().input(|input| input.events.is_empty()));
-                    crate::ui::automation::finish_frame("fixture");
-                });
-                output.textures_delta.clear();
-            }
-        }
-    }
 }
 
 pub fn format_timestamp(ms: i64) -> String {

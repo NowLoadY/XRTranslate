@@ -1,11 +1,7 @@
 use crossbeam_channel::{Receiver, bounded};
-#[cfg(target_os = "linux")]
-#[path = "linux.rs"]
-mod linux;
-#[cfg(windows)]
 #[path = "windows.rs"]
 mod windows;
-use super::Settings;
+use super::{Settings, clipboard_text};
 #[derive(Clone, Copy)]
 struct Shortcut {
     control: bool,
@@ -61,10 +57,7 @@ impl Listener {
             let _ = tx.try_send(result);
             ctx.request_repaint();
         });
-        #[cfg(windows)]
         let (cancel, worker) = windows::start(key, emit)?;
-        #[cfg(target_os = "linux")]
-        let (cancel, worker) = linux::start(key, emit)?;
         Ok(Self {
             events,
             cancel: Some(cancel),
@@ -83,25 +76,8 @@ impl Drop for Listener {
     }
 }
 
-pub(crate) fn clipboard_text() -> Result<String, String> {
-    arboard::Clipboard::new()
-        .and_then(|mut clipboard| clipboard.get_text())
-        .map_err(|_| "Select or copy text, then use the shortcut again.".into())
-}
 fn selected_text() -> Result<String, String> {
-    #[cfg(windows)]
     let selection = windows::selection();
-    #[cfg(target_os = "linux")]
-    let selection = {
-        use arboard::{GetExtLinux, LinuxClipboardKind};
-        arboard::Clipboard::new().ok().and_then(|mut clipboard| {
-            clipboard
-                .get()
-                .clipboard(LinuxClipboardKind::Primary)
-                .text()
-                .ok()
-        })
-    };
     let text = match selection.filter(|text| !text.trim().is_empty()) {
         Some(text) => text,
         None => clipboard_text()?,

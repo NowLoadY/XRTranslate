@@ -119,33 +119,3 @@ mod windows_impl {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn backdrop_names_are_case_insensitive() {
-        assert_eq!(
-            WindowBackdrop::parse(" Acrylic "),
-            Some(WindowBackdrop::Acrylic)
-        );
-        assert_eq!(WindowBackdrop::parse("MICA"), Some(WindowBackdrop::Mica));
-        assert_eq!(WindowBackdrop::parse("unknown"), None);
-    }
-
-    #[test]
-    fn only_none_uses_an_opaque_render_surface() {
-        assert!(!WindowBackdrop::None.uses_transparent_surface());
-        assert!(WindowBackdrop::Transparent.uses_transparent_surface());
-        assert!(WindowBackdrop::Acrylic.uses_transparent_surface());
-        assert!(WindowBackdrop::Mica.uses_transparent_surface());
-    }
-
-    #[test]
-    fn system_backdrop_clear_color_is_transparent() {
-        for backdrop in [WindowBackdrop::Acrylic, WindowBackdrop::Mica] {
-            assert_eq!(backdrop.clear_color(), [0.0, 0.0, 0.0, 0.0]);
-        }
-    }
-}

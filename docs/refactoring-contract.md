@@ -58,8 +58,9 @@ shared domain/runtime/UI capability
 - All immutable remote-file transfers use `xrtranslate-download`. Feature
   modules own artifact selection, extraction, installation, and UI state, but
   must not implement their own HTTP chunk loop, range-resume, retry, proxy, or
-  checksum policy. SHA-256 verification is the default; size-only verification
-  is an explicit fallback only when a trusted source publishes no digest.
+  transfer validation. Verify the expected byte count and HTTP range before
+  publishing a download. Preserve interrupted progress; do not add full-file
+  hash scans. Artifact owners check extraction and required installed files.
   Source switching must use cooperative cancellation. Staging cleanup remains
   with the artifact owner and happens only after the shared transfer releases
   its file handle; UI code must not delete `.part` files directly.
@@ -120,19 +121,22 @@ different or likely to evolve independently.
   `common`, `manager`, or `misc`. Name the capability or policy precisely.
 - Keep implementation details private. Use `pub(crate)` only for intentional
   crate-level seams and `pub` only for actual package contracts.
-- Keep tests next to the rule they protect. A moved rule takes its tests with it.
+- Retain checks that exercise real workflows and inspect useful outputs, such
+  as recorded speech, model roundtrips, or installation. Do not add unit or
+  regression suites for implementation details.
 
 ## Refactoring workflow
 
 1. Inspect `git status`, the complete diff, callers, tests, and module ownership.
 2. State the concrete smell, consumers, proposed owner, invariants, and risk.
-3. Establish a green baseline with formatting, compile, and relevant tests.
+3. Reuse existing verification evidence and identify the affected workflow.
 4. Make one coherent move or extraction at a time. Avoid mixing feature work,
    visual redesign, renaming, and architecture cleanup in one batch.
 5. Search for stale paths, compatibility aliases, duplicate implementations,
    widened visibility, and reversed dependencies.
-6. Run formatting, workspace compilation, and focused tests after each batch;
-   run the full workspace test suite before handoff when practical.
+6. Check formatting and compilation, then exercise the affected real workflow
+   once changes are integrated. Inspect its output; state any platform or model
+   prerequisites that prevent verification. Avoid repeated full test runs.
 7. Report files moved, APIs introduced or removed, preserved compatibility, and
    any risk that could not be verified automatically.
 
@@ -143,6 +147,6 @@ A batch is complete when:
 - all call sites use the intended owner and no accidental duplicate remains;
 - module names and placement make the dependency direction apparent;
 - the public surface is no broader than before unless justified;
-- formatting, compilation, and relevant tests pass without new warnings;
+- formatting, compilation, and applicable workflow checks pass without new warnings;
 - observable behavior and visuals remain unchanged;
 - the diff contains no unrelated cleanup and preserves prior user changes.

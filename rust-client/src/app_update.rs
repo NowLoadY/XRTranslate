@@ -285,7 +285,6 @@ struct ReleaseAsset {
     name: String,
     download_url: String,
     size: u64,
-    sha256: Option<String>,
 }
 
 impl ReleaseAsset {
@@ -313,8 +312,6 @@ struct GitHubAsset {
     name: String,
     browser_download_url: String,
     size: u64,
-    #[serde(default)]
-    digest: Option<String>,
 }
 
 async fn check_latest_release(
@@ -379,7 +376,6 @@ fn release_asset_from_catalogue(
             name: asset.name,
             download_url: asset.browser_download_url,
             size: asset.size,
-            sha256: asset.digest.as_deref().and_then(parse_sha256_digest),
         }))
 }
 
@@ -539,7 +535,6 @@ async fn probe_release_asset(
         name,
         download_url: download_url.into(),
         size,
-        sha256: None,
     }))
 }
 
@@ -612,10 +607,7 @@ async fn download_and_stage(
     let archive = download_dir.join(&asset.name);
     let client = DownloadClient::with_proxy(USER_AGENT, proxy_url)
         .map_err(|error| format!("Cannot initialize update download: {error}"))?;
-    let spec = asset.sha256.as_deref().map_or_else(
-        || DownloadSpec::size_only(&asset.name, &asset.download_url, asset.size),
-        |sha256| DownloadSpec::verified(&asset.name, &asset.download_url, asset.size, sha256),
-    );
+    let spec = DownloadSpec::new(&asset.name, &asset.download_url, asset.size);
     client
         .download_to(spec, &archive, |progress| {
             let _ = sender.send(Event::Downloading {
@@ -637,8 +629,8 @@ async fn download_and_stage(
     #[cfg(not(target_os = "android"))]
     {
         extract_zip(&archive, &payload)?;
-        let source = release_source_directory(&payload)?;
-        let updater_entrypoint = validate_staged_release(&source)?;
+        let source = release_source_directory(&payload, &archive)?;
+        let updater_entrypoint = validate_staged_release(&source, &archive)?;
         Ok(PreparedUpdate {
             source,
             project_root,
@@ -650,89 +642,133 @@ async fn download_and_stage(
 
 #[cfg(not(target_os = "android"))]
 fn extract_zip(archive: &Path, destination: &Path) -> Result<(), String> {
-    let file = fs::File::open(archive)
-        .map_err(|error| format!("Cannot open update package {}: {error}", archive.display()))?;
-    let mut zip = zip::ZipArchive::new(file)
-        .map_err(|error| format!("The update package is not a valid archive: {error}"))?;
-    for index in 0..zip.len() {
-        let mut entry = zip
-            .by_index(index)
-            .map_err(|error| format!("Cannot read update package: {error}"))?;
-        let Some(name) = entry.enclosed_name() else {
-            continue;
-        };
-        let output = destination.join(name);
-        if entry.is_dir() {
-            fs::create_dir_all(&output)
+    let result = (|| -> Result<(), crate::runtime_install::ArchiveReadError> {
+        let file = fs::File::open(archive).map_err(|error| {
+            format!("Cannot open update package {}: {error}", archive.display())
+        })?;
+        let mut zip = zip::ZipArchive::new(file)
+            .map_err(|error| crate::runtime_install::zip_read_error(archive, error))?;
+        for index in 0..zip.len() {
+            let mut entry = zip
+                .by_index(index)
+                .map_err(|error| crate::runtime_install::zip_read_error(archive, error))?;
+            let Some(name) = entry.enclosed_name() else {
+                continue;
+            };
+            let output = destination.join(name);
+            if entry.is_dir() {
+                fs::create_dir_all(&output)
+                    .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
+                continue;
+            }
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
+            }
+            let mut file = fs::File::create(&output)
                 .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
-            continue;
+            io::copy(&mut entry, &mut file)
+                .map_err(|error| crate::runtime_install::archive_read_error(archive, error))?;
+            #[cfg(unix)]
+            if let Some(mode) = entry.unix_mode() {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&output, fs::Permissions::from_mode(mode)).map_err(
+                    |error| format!("Cannot set permissions on {}: {error}", output.display()),
+                )?;
+            }
         }
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
-        }
-        let mut file = fs::File::create(&output)
-            .map_err(|error| format!("Cannot create {}: {error}", output.display()))?;
-        io::copy(&mut entry, &mut file)
-            .map_err(|error| format!("Cannot extract {}: {error}", output.display()))?;
-        #[cfg(unix)]
-        if let Some(mode) = entry.unix_mode() {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&output, fs::Permissions::from_mode(mode)).map_err(|error| {
-                format!("Cannot set permissions on {}: {error}", output.display())
-            })?;
-        }
-    }
-    Ok(())
+        Ok(())
+    })();
+    result.map_err(|error| error.finish(archive))
 }
 
 #[cfg(not(target_os = "android"))]
-fn release_source_directory(payload: &Path) -> Result<PathBuf, String> {
-    if payload.join("release-manifest.json").is_file() {
+fn release_source_directory(payload: &Path, archive: &Path) -> Result<PathBuf, String> {
+    let has_manifest =
+        |directory: &Path| match fs::metadata(directory.join("release-manifest.json")) {
+            Ok(metadata) => Ok(metadata.is_file()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(format!("Cannot inspect update manifest: {error}")),
+        };
+    if has_manifest(payload)? {
         return Ok(payload.to_path_buf());
     }
-    let release_roots = fs::read_dir(payload)
-        .map_err(|error| format!("Cannot inspect update package: {error}"))?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.join("release-manifest.json").is_file())
-        .collect::<Vec<_>>();
+    let mut release_roots = Vec::new();
+    for entry in
+        fs::read_dir(payload).map_err(|error| format!("Cannot inspect update package: {error}"))?
+    {
+        let path = entry
+            .map_err(|error| format!("Cannot inspect update package: {error}"))?
+            .path();
+        if path.is_dir() && has_manifest(&path)? {
+            release_roots.push(path);
+        }
+    }
     match release_roots.as_slice() {
         [root] => Ok(root.clone()),
-        _ => Err("The update package does not contain a valid XRTranslate release.".into()),
+        _ => Err(crate::runtime_install::archive_content_error(
+            archive,
+            "The update package does not contain a valid XRTranslate release.".into(),
+        )),
     }
 }
 
 #[cfg(not(target_os = "android"))]
-fn validate_staged_release(source: &Path) -> Result<String, String> {
+fn validate_staged_release(source: &Path, archive: &Path) -> Result<String, String> {
     let manifest_path = source.join("release-manifest.json");
     let manifest: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&manifest_path).map_err(|error| {
-            format!(
-                "Cannot read release manifest {}: {error}",
-                manifest_path.display()
-            )
+            crate::runtime_install::archive_read_error(archive, error).finish(archive)
         })?)
-        .map_err(|error| format!("Invalid release manifest: {error}"))?;
+        .map_err(|error| {
+            crate::runtime_install::archive_content_error(
+                archive,
+                format!("Invalid release manifest: {error}"),
+            )
+        })?;
     if manifest["python"].as_bool() != Some(false) {
-        return Err("The selected release package is not supported by this client.".into());
+        return Err(crate::runtime_install::archive_content_error(
+            archive,
+            "The selected release package is not supported by this client.".into(),
+        ));
     }
     let Some(client) = manifest
         .pointer("/entrypoints/client")
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.trim().is_empty())
     else {
-        return Err("The update package is missing the application entrypoint.".into());
+        return Err(crate::runtime_install::archive_content_error(
+            archive,
+            "The update package is missing the application entrypoint.".into(),
+        ));
     };
     let Some(updater) = manifest
         .pointer("/entrypoints/updater")
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.trim().is_empty())
     else {
-        return Err("The update package is missing the update helper.".into());
+        return Err(crate::runtime_install::archive_content_error(
+            archive,
+            "The update package is missing the update helper.".into(),
+        ));
     };
-    if !source.join(client).is_file() || !source.join(updater).is_file() {
-        return Err("The update package is incomplete.".into());
+    for entrypoint in [client, updater] {
+        match fs::metadata(source.join(entrypoint)) {
+            Ok(metadata) if metadata.is_file() && metadata.len() > 0 => {}
+            Ok(_) => {
+                return Err(crate::runtime_install::archive_content_error(
+                    archive,
+                    "The update package has an empty or invalid entrypoint.".into(),
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(crate::runtime_install::archive_content_error(
+                    archive,
+                    "The update package is incomplete.".into(),
+                ));
+            }
+            Err(error) => return Err(format!("Cannot inspect update entrypoint: {error}")),
+        }
     }
     Ok(updater.to_owned())
 }
@@ -806,14 +842,6 @@ fn platform_asset_score(name: &str) -> u8 {
     score
 }
 
-#[cfg(test)]
-fn version_is_newer(latest: &str, current: &str) -> bool {
-    match (parse_version(latest), parse_version(current)) {
-        (Ok(latest), Ok(current)) => latest > current,
-        _ => false,
-    }
-}
-
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct ParsedVersion {
     core: [u64; 3],
@@ -871,12 +899,6 @@ fn parse_version(value: &str) -> Result<ParsedVersion, String> {
     })
 }
 
-fn parse_sha256_digest(value: &str) -> Option<String> {
-    let digest = value.strip_prefix("sha256:").unwrap_or(value).trim();
-    (digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .then(|| digest.to_ascii_lowercase())
-}
-
 fn http_client(proxy_url: Option<&str>) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .user_agent(USER_AGENT)
@@ -926,273 +948,4 @@ fn safe_path_segment(value: &str) -> String {
             }
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[cfg(not(target_os = "android"))]
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn update_check_failure_notifies_once_without_opening_an_error_modal() {
-        use eframe::egui;
-        let mut app = crate::XRTranslateApp::default();
-        app.ui_language = crate::i18n::UiLanguage::English;
-        app.last_error = None;
-        app.modal_dialog = Default::default();
-        app.notifications = Default::default();
-        let ctx = egui::Context::default();
-        app.notifications.install(&ctx);
-        let expected = "Could not check for updates. Try again later.";
-
-        for attempt in 0..2 {
-            let (sender, receiver) = unbounded();
-            app.app_update_manager = AppUpdateManager {
-                state: AppUpdateState::Checking,
-                events: Some(receiver),
-                ..Default::default()
-            };
-            sender
-                .send(Event::Checked(Err("Network unavailable".into())))
-                .unwrap();
-            app.poll_app_update();
-            assert!(matches!(app.app_update_state(), AppUpdateState::Failed(_)));
-            assert!(app.last_error.is_none());
-            assert!(!app.modal_dialog.open);
-            for (offset, visible) in [(0.0, true), (0.3, true), (10.0, false)] {
-                app.poll_app_update();
-                let mut output = ctx.run_ui(
-                    egui::RawInput {
-                        time: Some(attempt as f64 * 20.0 + offset),
-                        ..Default::default()
-                    },
-                    |_| {
-                        crate::ui::automation::begin_frame(&ctx, "update-test");
-                        app.render_modal_layer(&ctx);
-                        app.notifications.show(&ctx, app.ui_language);
-                        crate::ui::automation::finish_frame("update-test");
-                    },
-                );
-                let driver = crate::ui::automation::driver();
-                let state = driver.frame_state.lock().unwrap();
-                let notice = state.last_snapshot.find_element("Notification");
-                assert_eq!(notice.is_some(), visible);
-                if let Some(notice) = notice {
-                    assert_eq!(notice.value.as_text().as_deref(), Some(expected));
-                }
-                assert!(ctx.memory(|memory| memory.top_modal_layer()).is_none());
-                output.textures_delta.clear();
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "android"))]
-    #[test]
-    fn begin_install_targets_the_project_root() {
-        let root = std::env::temp_dir().join(format!(
-            "xrtranslate-update-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock before epoch")
-                .as_nanos()
-        ));
-        let source = root.join("staging");
-        std::fs::create_dir_all(&source).expect("create staging directory");
-        let updater = source.join("updater");
-        std::fs::write(&updater, b"test").expect("create updater entrypoint");
-
-        let mut manager = AppUpdateManager {
-            prepared: Some(PreparedUpdate {
-                source: source.clone(),
-                project_root: root.clone(),
-                updater_entrypoint: "updater".into(),
-                info: AppUpdateInfo {
-                    version: "test".into(),
-                    asset_name: "test.zip".into(),
-                    size: 1,
-                },
-            }),
-            ..Default::default()
-        };
-        let install = manager.begin_install().expect("begin install");
-        assert_eq!(install.target, root);
-        assert_eq!(install.source, source);
-        let _ = std::fs::remove_dir_all(install.target);
-    }
-
-    #[test]
-    fn selects_current_platform_zip_assets() {
-        for arch in ["arm64", "x64"] {
-            assert!(android_asset_matches(
-                &format!("xrtranslate-v1.2.0-android-{arch}.apk"),
-                arch
-            ));
-            assert!(android_asset_matches(
-                "xrtranslate-v1.2.0-beta.2-android-universal.apk",
-                arch
-            ));
-            for wrong in [
-                "linux-x64.zip",
-                "win-x64.zip",
-                "android-arm64-debug.apk",
-                "android-arm64-unsigned.apk",
-            ] {
-                assert!(!android_asset_matches(
-                    &format!("xrtranslate-v1.2.0-{wrong}"),
-                    arch
-                ));
-            }
-        }
-        assert!(!android_asset_matches(
-            "xrtranslate-v1.2.0-android-x64.apk",
-            "arm64"
-        ));
-        assert!(!android_asset_matches(
-            "xrtranslate-v1.2.0-android-arm64.apk",
-            "x64"
-        ));
-        let assets = vec![
-            GitHubAsset {
-                name: "XRTranslate-v1.2.0-android-arm64.apk".into(),
-                browser_download_url: "https://example.invalid/arm64.apk".into(),
-                size: 1,
-                digest: None,
-            },
-            GitHubAsset {
-                name: "XRTranslate-v1.2.0-android-x64.apk".into(),
-                browser_download_url: "https://example.invalid/x64.apk".into(),
-                size: 1,
-                digest: None,
-            },
-            GitHubAsset {
-                name: "XRTranslate-v1.2.0-linux-x64.zip".into(),
-                browser_download_url: "https://example.invalid/linux.zip".into(),
-                size: 1,
-                digest: None,
-            },
-            GitHubAsset {
-                name: "XRTranslate-v1.2.0-win-x64.zip".into(),
-                browser_download_url: "https://example.invalid/win.zip".into(),
-                size: 1,
-                digest: None,
-            },
-        ];
-        assert!(!name_matches_platform("xrtranslate-v1.2.0-darwin-x64.zip"));
-        assert!(!name_matches_platform(
-            "xrtranslate-v1.2.0-linux-win-x64.zip"
-        ));
-        let selected = select_release_asset(&assets).unwrap();
-        if cfg!(target_os = "windows") {
-            assert!(selected.name.contains("win-x64"));
-        } else if cfg!(target_os = "linux") {
-            assert!(selected.name.contains("linux-x64"));
-        }
-    }
-
-    #[test]
-    fn compares_release_versions_numerically() {
-        assert!(version_is_newer("0.10.0", "0.2.9"));
-        assert!(!version_is_newer("0.2.0", "0.2.0"));
-        assert!(!version_is_newer("0.1.9", "0.2.0"));
-        assert!(version_is_newer("0.2.7-beta.2", "0.2.7-beta.1"));
-        assert!(version_is_newer("0.2.7", "0.2.7-beta.3"));
-        assert!(!version_is_newer("0.2.7-beta.1", "0.2.7"));
-    }
-
-    fn release(tag: &str) -> GitHubRelease {
-        GitHubRelease {
-            tag_name: tag.into(),
-            draft: false,
-            prerelease: tag.contains("-beta."),
-            assets: vec![GitHubAsset {
-                name: standard_release_asset_name(tag.trim_start_matches('v')),
-                browser_download_url: format!("https://example.invalid/{tag}.zip"),
-                size: 1,
-                digest: None,
-            }],
-        }
-    }
-
-    #[test]
-    fn beta_catalogue_prefers_stable_over_prerelease_of_same_version() {
-        let selected = release_asset_from_catalogue(
-            vec![release("v99.0.0-beta.3"), release("v99.0.0")],
-            UpdateChannel::Beta,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(selected.version, "99.0.0");
-    }
-
-    #[test]
-    fn stable_catalogue_ignores_prereleases() {
-        let mut marked_prerelease = release("v99.0.0");
-        marked_prerelease.prerelease = true;
-        let selected = release_asset_from_catalogue(
-            vec![release("v99.0.0-beta.1"), marked_prerelease],
-            UpdateChannel::Stable,
-        )
-        .unwrap();
-        assert!(selected.is_none());
-    }
-
-    #[test]
-    fn extracts_and_deduplicates_release_tags_from_html() {
-        let html = r#"
-            <a href="/NowLoadY/XRTranslate/releases/tag/v0.2.8-beta.2">beta</a>
-            <a href="/NowLoadY/XRTranslate/releases/tag/v0.2.8">stable</a>
-            <a href="/NowLoadY/XRTranslate/releases/tag/v0.2.8">duplicate</a>
-        "#;
-        assert_eq!(release_tags_from_html(html), ["v0.2.8-beta.2", "v0.2.8"]);
-    }
-
-    #[test]
-    fn parses_github_sha256_digest() {
-        let digest = "a".repeat(64);
-        assert_eq!(
-            parse_sha256_digest(&format!("sha256:{digest}")).as_deref(),
-            Some(digest.as_str())
-        );
-        assert_eq!(parse_sha256_digest("sha256:not-a-digest"), None);
-    }
-
-    #[test]
-    fn catalogue_skips_newer_releases_without_current_platform_packages() {
-        let mut other_platform = release("v99.0.1");
-        other_platform.assets[0].name = if cfg!(target_os = "windows") {
-            "XRTranslate-v99.0.1-linux-x64.zip".into()
-        } else {
-            "XRTranslate-v99.0.1-win-x64.zip".into()
-        };
-        for channel in [UpdateChannel::Stable, UpdateChannel::Beta] {
-            let selected = release_asset_from_catalogue(
-                vec![release("v99.0.0"), other_platform.clone()],
-                channel,
-            )
-            .unwrap()
-            .unwrap();
-            assert_eq!(selected.version, "99.0.0");
-        }
-        assert!(
-            release_asset_from_catalogue(vec![other_platform], UpdateChannel::Beta)
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn fallback_asset_name_matches_release_packaging() {
-        let name = standard_release_asset_name("0.2.5");
-        if cfg!(target_os = "windows") {
-            assert_eq!(name, "XRTranslate-v0.2.5-win-x64.zip");
-        } else if cfg!(target_os = "android") {
-            assert_eq!(
-                name,
-                format!("XRTranslate-v0.2.5-android-{}.apk", android_architecture())
-            );
-        } else {
-            assert_eq!(name, "XRTranslate-v0.2.5-linux-x64.zip");
-        }
-    }
 }

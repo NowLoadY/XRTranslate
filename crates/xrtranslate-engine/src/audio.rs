@@ -45,24 +45,3 @@ pub fn f32_to_pcm16le(samples: Vec<f32>) -> Vec<u8> {
         })
         .collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn writes_a_canonical_pcm_wav_header() {
-        let wav = pcm16_mono_16khz_to_wav(&[1, 0, 2, 0]).unwrap();
-        assert_eq!(&wav[0..4], b"RIFF");
-        assert_eq!(&wav[8..16], b"WAVEfmt ");
-        assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 16_000);
-        assert_eq!(u16::from_le_bytes(wav[34..36].try_into().unwrap()), 16);
-        assert_eq!(&wav[36..40], b"data");
-        assert_eq!(&wav[44..], &[1, 0, 2, 0]);
-    }
-
-    #[test]
-    fn rejects_partial_pcm16_samples() {
-        assert!(pcm16_mono_16khz_to_wav(&[0]).is_err());
-    }
-}

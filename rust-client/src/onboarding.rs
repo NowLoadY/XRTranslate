@@ -35,7 +35,7 @@ pub fn has_unmet_prerequisites(
     // 2. Every selected provider-declared local model package.
     let packages = model_install::configured_model_packages(project_root).unwrap_or_default();
     if !packages.iter().all(|package| {
-        model_task_manager.is_model_present(package.id)
+        model_task_manager.is_model_ready(package.id)
             || model_install::model_asset_is_present(project_root, package.id).unwrap_or(false)
     }) {
         return true;
@@ -89,7 +89,7 @@ pub fn evaluate_step_requirement(
                 Err(_) => return Some("Download every required model package to continue."),
             };
             if !packages.iter().all(|package| {
-                model_task_manager.is_model_present(package.id)
+                model_task_manager.is_model_ready(package.id)
                     || model_install::model_asset_is_present(project_root, package.id)
                         .unwrap_or(false)
             }) {
@@ -101,67 +101,11 @@ pub fn evaluate_step_requirement(
             let onnx_ready = !(requirements.onnx_tts || requirements.onnx_cpu)
                 || runtime_installer.plan_is_ready();
             if !llama_ready || !onnx_ready {
-                Some("Choose or install the runtime to continue.")
+                Some("Install the runtime to continue.")
             } else {
                 None
             }
         }
         _ => None,
-    }
-}
-
-/// Completed setup stays complete. Each task checks its own resources when
-/// started, so missing audio models do not block text or other independent inputs.
-#[must_use]
-pub fn resolve_startup_onboarding_state(
-    is_first_run: bool,
-    _project_root: &Path,
-    _service_config: &ServiceConfigEditor,
-    _backend_manager: &BackendManager,
-    _model_task_manager: &NativeModelTaskManager,
-    _runtime_installer: &RuntimeInstaller,
-) -> (bool, usize) {
-    (is_first_run, 0)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn missing_audio_resources_do_not_reopen_completed_setup() {
-        let root = std::env::temp_dir().join("xrtranslate-onboarding-no-audio-assets");
-        let (first_run, _) = resolve_startup_onboarding_state(
-            false,
-            &root,
-            &ServiceConfigEditor::load(),
-            &BackendManager::load(),
-            &NativeModelTaskManager::default(),
-            &RuntimeInstaller::default(),
-        );
-        assert!(!first_run);
-    }
-
-    #[test]
-    fn first_run_always_resolves_to_welcome_page() {
-        let root = std::env::temp_dir().join(format!(
-            "xrtranslate-onboarding-test-1-{}",
-            std::process::id()
-        ));
-        let backend_manager = BackendManager::load();
-        let service_config = ServiceConfigEditor::load();
-        let model_task_manager = NativeModelTaskManager::default();
-        let runtime_installer = RuntimeInstaller::default();
-
-        let (first_run, page) = resolve_startup_onboarding_state(
-            true,
-            &root,
-            &service_config,
-            &backend_manager,
-            &model_task_manager,
-            &runtime_installer,
-        );
-        assert!(first_run);
-        assert_eq!(page, 0);
     }
 }

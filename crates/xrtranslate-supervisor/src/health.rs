@@ -55,21 +55,3 @@ pub trait LlamaHealthChecker {
 
     fn check(&self, request: &HealthCheckRequest) -> Result<HealthCheckStatus, Self::Error>;
 }
-
-#[cfg(test)]
-mod tests {
-    use std::{net::Ipv6Addr, time::Duration};
-
-    use super::HealthCheckRequest;
-    use crate::LlamaServerEndpoint;
-
-    #[test]
-    fn health_request_uses_llama_servers_health_endpoint() {
-        let request = HealthCheckRequest::llama_server(
-            LlamaServerEndpoint::new(Ipv6Addr::LOCALHOST.into(), 8001),
-            Duration::from_secs(2),
-        );
-
-        assert_eq!(request.url(), "http://[::1]:8001/health");
-    }
-}

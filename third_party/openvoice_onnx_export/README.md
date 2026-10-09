@@ -19,7 +19,7 @@ selection, immutable downloads, and installation remain owned by
   `f36e7edfe1684461a8343844af60babc2efbb727`
 
 `languages.py` records immutable model, BERT, vocabulary and source-embedding
-digests for the official Chinese, Spanish, French, Japanese and Korean V2 base
+locations for the official Chinese, Spanish, French, Japanese and Korean V2 base
 voices. This is an upstream candidate matrix, not an availability list:
 
 | Key | Frontend | Workflow state |
@@ -56,7 +56,9 @@ The script refuses to run unless the environment still has the recorded
 PyTorch build (`2.11.0+cu128`). It downloads immutable upstream revisions via
 the Hugging Face cache, exports the mixed FP32-text/FP16-acoustic MeloTTS graph,
 copies the matching OpenVoice source embedding, and writes a machine-readable
-build manifest with every source and output SHA-256.
+build manifest with source revisions and output file sizes. Direct archive and
+license downloads use `xrtranslate-download` through its `fetch` entrypoint;
+Cargo must be available, and interrupted downloads retain their progress.
 
 The export wrapper preserves control operators such as `Range` in FP32 while
 keeping the acoustic graph and its public tensor ABI in FP16. This avoids an
@@ -83,13 +85,8 @@ all convolution, matrix, activation and normalization work must execute on CUDA,
 while only profiled metadata operations, integer/boolean shape arithmetic, and
 scalar control casts may remain host-side. Any unclassified CPU node or floating
 tensor computation fails release validation. CPU compute fallback is never
-accepted. The
-static contract tests do not require a GPU or load PyTorch:
-
-```powershell
-conda run -n torch211cu128 python -m unittest discover `
-  -s third_party/openvoice_onnx_export/tests -p "test_*.py" -v
-```
+accepted. Validation runs on the exported graphs and generated audio during
+the build workflow.
 
 The workflow never reads Hugging Face credentials. Authentication is required
 only by the separate publishing step, and credentials must be supplied through
@@ -99,9 +96,11 @@ command-line arguments.
 ## Publish
 
 `publish.py` stages a deterministic release, takes a repository-wide local
-lock, and uploads one file at a time with an exact `parent_commit`. It records
-atomic recovery state only after the Hub confirms the uploaded size and
-SHA-256. The first publication requires a private repository.
+lock, and uploads one file at a time with an exact `parent_commit`. The Hugging
+Face SDK owns content identification and upload deduplication; the publisher
+checks each uploaded file's size at the returned commit. Re-running publication
+reuses content already on the Hub. The first publication requires a private
+repository.
 
 After that release passes anonymous fixed-revision verification and the
 repository becomes public, a later language addition must pass

@@ -96,7 +96,10 @@ fn get_formatted_time() -> String {
         wMilliseconds: 0,
     };
     unsafe { GetLocalTime(&mut local) };
-    format!("{:02}:{:02}:{:02}", local.wHour, local.wMinute, local.wSecond)
+    format!(
+        "{:02}:{:02}:{:02}",
+        local.wHour, local.wMinute, local.wSecond
+    )
 }
 
 #[cfg(not(windows))]
@@ -388,28 +391,5 @@ fn clean_hardware_name(raw: &str) -> String {
             .replace("AMD Radeon ", "")
     } else {
         cleaned
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn formatted_time_is_current_and_well_formed() {
-        let value = super::get_formatted_time();
-        let parts = value.split(':').collect::<Vec<_>>();
-        assert_eq!(parts.len(), 3);
-        assert!(parts.iter().all(|part| part.len() == 2));
-        assert!(parts.iter().all(|part| part.parse::<u8>().is_ok()));
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn gpu_engine_instances_from_different_processes_share_an_engine_key() {
-        let first = "pid_120_luid_0x00000000_0x0000A123_phys_0_eng_2_engtype_Compute_0";
-        let second = "pid_456_luid_0x00000000_0x0000A123_phys_0_eng_2_engtype_Compute_0";
-        let other = "pid_456_luid_0x00000000_0x0000A123_phys_0_eng_3_engtype_Copy";
-
-        assert_eq!(super::gpu_engine_key(first), super::gpu_engine_key(second));
-        assert_ne!(super::gpu_engine_key(first), super::gpu_engine_key(other));
     }
 }

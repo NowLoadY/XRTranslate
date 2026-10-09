@@ -13,26 +13,14 @@ pub use server::{DEFAULT_DIRECTOR_PORT, DirectorServer};
 
 use crate::ui::Page;
 
-#[cfg(not(test))]
 static GLOBAL_DRIVER: OnceLock<Arc<AutomationDriver>> = OnceLock::new();
 static GLOBAL_SERVER: OnceLock<DirectorServer> = OnceLock::new();
 
-#[cfg(not(test))]
 #[must_use]
 pub fn driver() -> Arc<AutomationDriver> {
     GLOBAL_DRIVER
         .get_or_init(|| Arc::new(AutomationDriver::new()))
         .clone()
-}
-
-#[cfg(test)]
-thread_local! {
-    static TEST_DRIVER: Arc<AutomationDriver> = Arc::new(AutomationDriver::new());
-}
-#[cfg(test)]
-#[must_use]
-pub fn driver() -> Arc<AutomationDriver> {
-    TEST_DRIVER.with(Arc::clone)
 }
 
 pub fn init(egui_ctx: egui::Context, port: Option<u16>) {

@@ -98,7 +98,7 @@ start inference, or choose storage locations.
   lifecycle. It receives an executable path and never selects a platform or
   model asset.
 - `xrtranslate-config` describes runtime archives declaratively. Each archive
-  declares `target`, `archive_format`, required files, size, checksum, and
+  declares `target`, `archive_format`, required files, size, and
   (when relevant) `cuda_version`; executable archives additionally declare
   `kind` and `executable`.
   Adding Linux assets is a configuration/catalogue change, not a second

@@ -112,7 +112,7 @@ fails; it is not rebuilt on CPU.
 ## Asset provenance
 
 The asset manifest is the only installation contract. It fixes every installed
-file by immutable revision, byte size, and SHA-256 and activates the package
+file by immutable revision and byte size and activates the package
 only after complete preflight.
 
 - The English archives are NVIDIA's signed
@@ -124,7 +124,7 @@ only after complete preflight.
   checkpoint and the Chinese source embedding from
   [`myshell-ai/OpenVoiceV2`](https://huggingface.co/myshell-ai/OpenVoiceV2).
   XRTranslate's ONNX conversion records the exact upstream commits,
-  checkpoint revisions, graph ABI, toolchain versions, and output hashes in
+  checkpoint revisions, graph ABI, toolchain versions, and output sizes in
   its package manifest. The verified package is published at immutable
   revision
   [`NowLoadY/XRTranslate-OpenVoice-ONNX@961ef7e`](https://huggingface.co/NowLoadY/XRTranslate-OpenVoice-ONNX/tree/961ef7e65b63b7793dda61c7fe159a6e5a4b2f04).
@@ -138,7 +138,7 @@ only after complete preflight.
 
 The application never downloads a moving branch. A community conversion is
 eligible for the catalogue only after it is available without authentication
-at a public immutable commit. The catalogue's required-file sizes and hashes,
+at a public immutable commit. The catalogue's required-file sizes,
 not a repository README, drive onboarding size display and installation.
 
 Current English package totals are:
@@ -158,7 +158,7 @@ environment is bundled into the default XRTranslate release.
 Concrete OpenVoice knowledge is limited to these owners:
 
 - `crates/xrtranslate-assets/src/catalog/tts/openvoice.rs`: immutable files,
-  source revisions, hashes, licenses, provider identity, synthesis languages,
+  source revisions, file sizes, licenses, provider identity, synthesis languages,
   package labels, and base-speaker presets;
 - `crates/xrtranslate-inference/src/tts/providers/openvoice/`: language
   frontends, tensor contracts, source embeddings, reference encoding,

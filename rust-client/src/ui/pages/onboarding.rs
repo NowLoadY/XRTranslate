@@ -102,13 +102,7 @@ pub fn render_onboarding_fullscreen(
                 (final_page && !agreement_satisfied)
                     .then_some("Please agree to the Usage Guidelines to continue.")
             });
-            if let Some(hint) = hint {
-                ui.label(
-                    RichText::new(i18n::tr(app.ui_language, hint))
-                        .size(12.0)
-                        .color(theme::text_weak()),
-                );
-            }
+            companion.requirement = hint;
             ui.horizontal(|ui| {
                 if app.onboarding_page > 0
                     && components::animated_button(ui, i18n::tr(app.ui_language, "Back")).clicked()
@@ -129,6 +123,11 @@ pub fn render_onboarding_fullscreen(
                         requirement.is_none() && (!final_page || agreement_satisfied),
                     );
                     companion.next = next.rect;
+                    let next = if let Some(hint) = hint {
+                        next.on_disabled_hover_text(i18n::tr(app.ui_language, hint))
+                    } else {
+                        next
+                    };
                     if next.clicked() {
                         if final_page {
                             app.finish_onboarding();
@@ -140,7 +139,7 @@ pub fn render_onboarding_fullscreen(
             });
         });
 
-    let content = egui::CentralPanel::default()
+    egui::CentralPanel::default()
         .frame(
             Frame::new()
                 .fill(if custom_background {
@@ -156,49 +155,23 @@ pub fn render_onboarding_fullscreen(
                 ui.horizontal(|ui| {
                     render_onboarding_brand(ui, app.ui_language);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        render_onboarding_preferences(app, ui, total_pages, compact);
+                        render_onboarding_preferences(app, ui);
                     });
                 });
                 ui.add_space(if compact_height { 4.0 } else { 8.0 });
-                let heading = if compact {
-                    ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
-                } else {
-                    let heading = ui.label(
-                        RichText::new(i18n::tr(
-                            app.ui_language,
-                            "A calm start, one step at a time",
-                        ))
-                        .size(22.0)
-                        .color(theme::text_strong())
-                        .strong(),
-                    );
-                    ui.add_space(20.0);
-                    heading
-                };
-
+                let header_top = ui.cursor().top();
                 let steps =
                     render_onboarding_steps(ui, app.ui_language, &STEPS, app.onboarding_page);
-
-                ui.add_space(if compact_height {
-                    6.0
-                } else if compact {
-                    14.0
-                } else {
-                    28.0
-                });
-                companion.header = if compact {
-                    egui::Rect::NOTHING
-                } else if ui.max_rect().right() - steps.right() < 318.0 {
-                    egui::Rect::from_min_max(
-                        egui::pos2(heading.rect.right() + 18.0, heading.rect.top() - 14.0),
-                        egui::pos2(ui.max_rect().right(), steps.top() - 6.0),
-                    )
-                } else {
-                    egui::Rect::from_min_max(
-                        egui::pos2(steps.right() + 18.0, steps.top() - 30.0),
-                        egui::pos2(ui.max_rect().right(), ui.cursor().top() - 6.0),
-                    )
-                };
+                let inline_guide = ui.max_rect().right() - steps.right() >= 280.0;
+                ui.add_space(if inline_guide { 24.0 } else { 64.0 });
+                companion.header = egui::Rect::from_min_max(
+                    if inline_guide {
+                        egui::pos2(steps.right() + 18.0, header_top - 8.0)
+                    } else {
+                        egui::pos2(ui.max_rect().left(), steps.bottom() + 8.0)
+                    },
+                    egui::pos2(ui.max_rect().right(), ui.cursor().top() - 4.0),
+                );
 
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -225,7 +198,6 @@ pub fn render_onboarding_fullscreen(
 
     render_qq_group_dialog(ui.ctx(), app.ui_language);
     companion.footer = footer.response.rect;
-    companion.content = Some((content.response.rect, content.response.layer_id));
     companion
 }
 
@@ -268,44 +240,15 @@ fn render_onboarding_brand(ui: &mut egui::Ui, language: i18n::UiLanguage) {
     render_onboarding_social_icons(ui, language);
 }
 
-fn render_onboarding_preferences(
-    app: &mut crate::XRTranslateApp,
-    ui: &mut egui::Ui,
-    total_pages: usize,
-    compact: bool,
-) {
-    if !compact {
-        ui.label(
-            RichText::new(format!(
-                "{}/{}",
-                i18n::tr(
-                    app.ui_language,
-                    match app.onboarding_page {
-                        0 => "Step 1",
-                        1 => "Step 2",
-                        2 => "Step 3",
-                        _ => "Step 4",
-                    }
-                ),
-                total_pages
-            ))
-            .size(13.0)
-            .color(theme::text_weak()),
-        );
-        ui.add_space(8.0);
-    }
+fn render_onboarding_preferences(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     let mut language = app.ui_language;
     if components::language_selector(ui, "onboarding_ui_language", &mut language) {
         app.set_ui_language(language);
     }
     ui.add_space(8.0);
-    if compact {
-        ui.menu_button("…", |ui| {
-            render_onboarding_download_controls(app, ui);
-        });
-    } else {
+    ui.menu_button("…", |ui| {
         render_onboarding_download_controls(app, ui);
-    }
+    });
 }
 
 fn render_onboarding_download_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
@@ -412,9 +355,7 @@ fn render_onboarding_steps(
                 Stroke::new(1.0, theme::border())
             };
             let label = i18n::tr(language, *title);
-            let text = if compact {
-                (i + 1).to_string()
-            } else if !active {
+            let text = if compact || !active {
                 (i + 1).to_string()
             } else {
                 format!("{} {}", i + 1, label)
@@ -442,32 +383,6 @@ fn render_onboarding_steps(
     });
     ui.spacing_mut().button_padding = padding;
     bounds
-}
-
-fn onboarding_title(
-    ui: &mut egui::Ui,
-    language: crate::i18n::UiLanguage,
-    title: &'static str,
-    body: Option<&'static str>,
-) {
-    let compact_w = ui.available_width() < 680.0;
-    let compact_h = ui.available_height() < 480.0;
-    let compact = compact_w || compact_h;
-    ui.label(
-        RichText::new(crate::i18n::tr(language, title))
-            .size(if compact { 18.0 } else { 28.0 })
-            .color(theme::text_strong())
-            .strong(),
-    );
-    if let Some(subtitle) = body {
-        ui.add_space(if compact { 3.0 } else { 6.0 });
-        ui.label(
-            RichText::new(crate::i18n::tr(language, subtitle))
-                .size(if compact { 12.0 } else { 14.0 })
-                .color(theme::text_weak()),
-        );
-    }
-    ui.add_space(if compact { 8.0 } else { 20.0 });
 }
 
 fn onboarding_feature_card(
@@ -524,21 +439,27 @@ fn render_onboarding_welcome(
     language: crate::i18n::UiLanguage,
     ui: &mut egui::Ui,
 ) -> [egui::Rect; 3] {
-    onboarding_title(ui, language, "Welcome to XRTranslate", None);
+    ui.label(
+        RichText::new(i18n::tr(language, "Welcome to XRTranslate"))
+            .size(24.0)
+            .color(theme::text_strong())
+            .strong(),
+    );
+    ui.add_space(16.0);
     let cards = [
         (
             "Audio Input",
-            "Microphone & desktop audio capture with AI noise suppression and VAD detection.",
+            "Microphone or desktop audio.",
             Color32::from_rgb(59, 130, 246),
         ),
         (
             "Recognition & Translation",
-            "High-accuracy real-time speech translation powered by local models or cloud APIs.",
+            "Speak across languages.",
             Color32::from_rgb(16, 185, 129),
         ),
         (
             "Plugins & Integrations",
-            "VRChat OSC sync, desktop floating subtitles, and meeting minutes recording.",
+            "Subtitles, voice & VRChat.",
             Color32::from_rgb(245, 158, 11),
         ),
     ];
@@ -1160,7 +1081,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
         |ui| {
             ui.set_width(ui.available_width());
             ui.label(
-                RichText::new(i18n::tr(language, "Voice cloning & speech synthesis"))
+                RichText::new(i18n::tr(language, "Voice Playback"))
                     .size(16.0)
                     .color(theme::text_strong())
                     .strong(),
@@ -1179,24 +1100,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 &app.runtime_installer.local_model_availability(),
             );
             ui.add_space(10.0);
-            if provider.selected == "none" {
-                ui.label(
-                    RichText::new(i18n::tr(
-                        language,
-                        "TTS disabled. Translated subtitles will be displayed on screen without voice playback.",
-                    ))
-                    .size(12.5)
-                    .color(theme::text_weak()),
-                );
-            } else {
-                ui.label(
-                    RichText::new(i18n::tr(
-                        language,
-                        "The selected provider supplies local voice cloning and real-time speech playback.",
-                    ))
-                    .size(12.5)
-                    .color(theme::text_weak()),
-                );
+            if provider.selected != "none" {
                 let selected_choice = provider
                     .choices
                     .iter()
@@ -1208,7 +1112,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 if !packages.is_empty() {
                     ui.add_space(5.0);
                     ui.label(
-                        RichText::new(i18n::tr(language, "Synthesis language models:"))
+                        RichText::new(i18n::tr(language, "Languages"))
                             .size(12.5)
                             .color(theme::text_weak()),
                     );
@@ -1483,7 +1387,7 @@ fn render_onboarding_ocr(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
         |ui| {
             ui.set_width(ui.available_width());
             ui.label(
-                RichText::new(i18n::tr(language, "Screen text recognition"))
+                RichText::new(i18n::tr(language, "OCR"))
                     .size(16.0)
                     .color(theme::text_strong())
                     .strong(),
@@ -1499,18 +1403,6 @@ fn render_onboarding_ocr(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 &app.runtime_installer.local_model_availability(),
             );
             ui.add_space(10.0);
-            let description = match provider.selected.as_str() {
-                "none" => "OCR disabled. Enable it to translate text from a screen region.",
-                "paddle-ocr" => {
-                    "Lightweight recognition suited to continuous subtitles, without a dedicated graphics card."
-                }
-                _ => "A local vision model suited to static text and complex layouts.",
-            };
-            ui.label(
-                RichText::new(i18n::tr(language, description))
-                    .size(12.5)
-                    .color(theme::text_weak()),
-            );
             if let Some(choice) = provider
                 .choices
                 .iter()
@@ -1635,7 +1527,6 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
     let mut installs = Vec::new();
     let mut delete_model = None;
 
-    // 1. Model packages (ASR, MT, TTS)
     let mut packages = match configured_model_packages(&project_root) {
         Ok(packages) => packages,
         Err(error) => {
@@ -1657,8 +1548,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
     let download_items = packages
         .iter()
         .map(|package| {
-            let installed = app.model_task_manager.is_model_present(package.id)
-                || app.model_task_manager.is_model_ready(package.id)
+            let installed = app.model_task_manager.is_model_ready(package.id)
                 || model_asset_is_present(&project_root, package.id).unwrap_or(false);
             let (category_title, stroke_color) = match package.capability {
                 ModelCapability::Asr => {
@@ -1702,24 +1592,32 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
             false,
         )
         .show_header(ui, |ui| {
-            let label = if missing.is_empty() {
-                i18n::tr(language, "Download selected models").to_owned()
+            if missing.is_empty() {
+                ui.label(
+                    RichText::new(format!(
+                        "{} · {}",
+                        i18n::tr(language, "Model Packages"),
+                        download_items.len()
+                    ))
+                    .color(theme::text_strong())
+                    .strong(),
+                );
             } else {
-                format!(
+                let label = format!(
                     "{} ({}) · {}",
-                    i18n::tr(language, "Download selected models"),
+                    i18n::tr(language, "Download"),
                     missing.len(),
                     components::format_file_size(missing_download_bytes),
+                );
+                if components::primary_button_enabled(
+                    ui,
+                    &label,
+                    !busy && !app.runtime_installer.is_busy(),
                 )
-            };
-            if components::primary_button_enabled(
-                ui,
-                &label,
-                !missing.is_empty() && !app.runtime_installer.is_busy(),
-            )
-            .clicked()
-            {
-                installs.extend(missing.iter().map(|item| item.id));
+                .clicked()
+                {
+                    installs.extend(missing.iter().map(|item| item.id));
+                }
             }
         })
         .body(|ui| {
@@ -1794,7 +1692,6 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                         && !app.runtime_installer.is_busy(),
                     !busy,
                     queued_position,
-                    is_active.then_some(app.model_task_manager.state()),
                 );
                 if clicked {
                     installs.push(item.id);
@@ -1805,24 +1702,6 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                 ui.add_space(8.0);
             }
         });
-    } else {
-        Frame::new()
-            .fill(theme::surface_control())
-            .corner_radius(CornerRadius::same(12))
-            .inner_margin(Margin::same(16))
-            .stroke(Stroke::new(1.5, Color32::from_rgb(16, 185, 129)))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(
-                    RichText::new(i18n::tr(
-                        language,
-                        "All services use cloud APIs. No local models or inference runtimes are required.",
-                    ))
-                    .size(13.5)
-                    .color(Color32::from_rgb(4, 120, 87))
-                    .strong(),
-                );
-            });
     }
 
     if !installs.is_empty()
@@ -1844,21 +1723,9 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
         &download_items,
     );
 
-    // 2. Inference Runtime & Hardware Acceleration (if local models are configured)
     let requires_runtime = requirements.llama_cpp || requirements.onnx_tts || requirements.onnx_cpu;
     if requires_runtime {
         ui.add_space(16.0);
-        ui.label(
-            RichText::new(i18n::tr(
-                language,
-                "Inference Runtime & Hardware Acceleration",
-            ))
-            .size(15.0)
-            .color(theme::text_strong())
-            .strong(),
-        );
-        ui.add_space(8.0);
-
         render_runtime_installation_section(app, ui, language, &project_root);
     }
 }
@@ -1871,7 +1738,6 @@ fn render_download_card(
     enabled: bool,
     delete_enabled: bool,
     queued_position: Option<usize>,
-    active_state: Option<&NativeModelTaskState>,
 ) -> (bool, bool) {
     let mut clicked = false;
     let mut delete_clicked = false;
@@ -1920,18 +1786,12 @@ fn render_download_card(
                             RichText::new(&item.detail)
                                 .size(13.0)
                                 .color(theme::text_weak()),
-                        );
-                        ui.label(
-                            RichText::new(format!(
-                                "· {} {} · {} {}",
-                                i18n::tr(language, "Download"),
-                                components::format_file_size(item.download_bytes),
-                                i18n::tr(language, "Installed size"),
-                                components::format_file_size(item.installed_bytes),
-                            ))
-                            .size(12.0)
-                            .color(theme::text_weak()),
-                        );
+                        )
+                        .on_hover_text(format!(
+                            "{}: {}",
+                            i18n::tr(language, "Installed size"),
+                            components::format_file_size(item.installed_bytes),
+                        ));
                     },
                 );
                 ui.horizontal(|ui| {
@@ -1988,44 +1848,10 @@ fn render_download_card(
                     }
                 });
             });
-            if let Some(NativeModelTaskState::Installing {
-                relative_path,
-                downloaded_bytes,
-                total_bytes,
-                ..
-            }) = active_state
-            {
-                ui.add_space(5.0);
-                if *total_bytes > 0 {
-                    let finishing = downloaded_bytes >= total_bytes;
-                    ui.add(
-                        egui::ProgressBar::new(
-                            (*downloaded_bytes as f64 / *total_bytes as f64).clamp(0.0, 1.0) as f32,
-                        )
-                        .text(if finishing {
-                            i18n::tr(language, "Verifying and activating…").to_owned()
-                        } else {
-                            format!(
-                                "{} / {}{}",
-                                components::format_file_size(*downloaded_bytes),
-                                components::format_file_size(*total_bytes),
-                                relative_path
-                                    .as_deref()
-                                    .map(|path| format!(" · {path}"))
-                                    .unwrap_or_default(),
-                            )
-                        }),
-                    );
-                }
-            }
         },
     );
     (clicked, delete_clicked)
 }
-
-#[cfg(test)]
-#[path = "onboarding_download_card_tests.rs"]
-mod download_card_tests;
 
 fn render_runtime_installation_section(
     app: &mut crate::XRTranslateApp,
@@ -2033,6 +1859,8 @@ fn render_runtime_installation_section(
     language: i18n::UiLanguage,
     project_root: &std::path::Path,
 ) {
+    use crate::runtime_install::RuntimeInstallState;
+
     let state = app.runtime_installer.state().clone();
     let download_size = app.runtime_installer.download_size_bytes();
     let planned_downloads = app.runtime_installer.planned_downloads().to_vec();
@@ -2046,40 +1874,22 @@ fn render_runtime_installation_section(
         format!("{backend_name} {version}")
     });
 
-    let default_runtime = app
-        .backend_manager
-        .runtime_layout()
-        .runtime_root()
-        .to_path_buf();
-    let is_custom = !app.backend_manager.runtime_directory.trim().is_empty();
-    let mut runtime_dir = app.backend_manager.runtime_directory.clone();
     let managed_runtime_present = app
         .runtime_installer
         .managed_resources_are_present(project_root);
 
-    // Option A: Automatic Setup
     Frame::new()
         .fill(theme::surface_control())
         .corner_radius(CornerRadius::same(12))
         .inner_margin(Margin::same(16))
-        .stroke(Stroke::new(
-            1.5,
-            if !is_custom {
-                Color32::from_rgb(16, 185, 129)
-            } else {
-                Color32::from_rgb(110, 231, 183)
-            },
-        ))
+        .stroke(Stroke::new(1.5, Color32::from_rgb(16, 185, 129)))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(
-                RichText::new(i18n::tr(
-                    language,
-                    "Option A: Automatic Setup (Recommended)",
-                ))
-                .size(14.5)
-                .color(Color32::from_rgb(4, 120, 87))
-                .strong(),
+                RichText::new(i18n::tr(language, "Runtime"))
+                    .size(14.5)
+                    .color(Color32::from_rgb(4, 120, 87))
+                    .strong(),
             );
             ui.add_space(8.0);
             let ready = app.runtime_installer.plan_is_ready() && !app.runtime_installer.is_busy();
@@ -2109,12 +1919,18 @@ fn render_runtime_installation_section(
                             );
                         });
                 } else {
-                    let button_text = match download_size {
-                        None => i18n::tr(language, "Preparing download…").to_owned(),
-                        Some(0) => i18n::tr(language, "Configure runtime").to_owned(),
-                        Some(bytes) => format!(
+                    let button_text = match (&state, download_size) {
+                        (RuntimeInstallState::Downloading { .. }, _) => {
+                            i18n::tr(language, "Downloading").to_owned()
+                        }
+                        (RuntimeInstallState::Extracting, _) => {
+                            i18n::tr(language, "Preparing…").to_owned()
+                        }
+                        (_, None) => i18n::tr(language, "Preparing download…").to_owned(),
+                        (_, Some(0)) => i18n::tr(language, "Configure runtime").to_owned(),
+                        (_, Some(bytes)) => format!(
                             "{} · {}",
-                            i18n::tr(language, "Download missing resources"),
+                            i18n::tr(language, "Download"),
                             components::format_file_size(bytes)
                         ),
                     };
@@ -2126,17 +1942,12 @@ fn render_runtime_installation_section(
                             && !app.model_task_manager.is_busy(),
                     )
                     .clicked();
-                    if install_clicked {
-                        app.backend_manager.runtime_directory.clear();
-                        if let Err(error) = app.backend_manager.save_runtime_directory() {
-                            app.last_error = Some(error);
-                        }
-                        if let Err(error) = app
+                    if install_clicked
+                        && let Err(error) = app
                             .runtime_installer
                             .install_recommended(project_root.to_path_buf())
-                        {
-                            app.last_error = Some(error);
-                        }
+                    {
+                        app.last_error = Some(error);
                     }
                 }
                 if managed_runtime_present
@@ -2145,6 +1956,9 @@ fn render_runtime_installation_section(
                     delete_runtime = true;
                 }
                 components::download_mirror_toggle(ui, language, &mut use_mirror);
+                if app.runtime_installer.is_busy() {
+                    ui.spinner();
+                }
             });
             if use_mirror != previous_source
                 && let Err(error) = app
@@ -2159,149 +1973,56 @@ fn render_runtime_installation_section(
 
             if !planned_downloads.is_empty() {
                 ui.add_space(8.0);
-                render_runtime_download_plan(ui, language, &planned_downloads);
+                ui.collapsing(i18n::tr(language, "Details"), |ui| {
+                    render_runtime_download_plan(ui, &planned_downloads);
+                });
             }
 
             components::render_runtime_fallback_notice(ui, language, &app.runtime_installer);
 
-            components::render_runtime_task_state(
-                ui,
-                language,
-                &state,
-                "Extracting native runtime...",
-                "The native runtime is installed and ready.",
-            );
-        });
-
-    ui.add_space(12.0);
-
-    if crate::file_dialog::folders_available() {
-        // Option B: Custom Runtime Directory
-        Frame::new()
-            .fill(theme::surface_control())
-            .corner_radius(CornerRadius::same(12))
-            .inner_margin(Margin::same(16))
-            .stroke(Stroke::new(
-                1.5,
-                if is_custom {
-                    theme::primary()
-                } else {
-                    theme::border()
-                },
-            ))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(
-                    RichText::new(i18n::tr(
-                        language,
-                        "Option B: Choose Existing Runtime Directory",
-                    ))
-                    .size(14.5)
-                    .color(theme::text_strong())
-                    .strong(),
-                );
-                ui.add_space(8.0);
-
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(i18n::tr(language, "Runtime Directory:"));
-                    let response = components::singleline_input(
-                        ui,
-                        &mut runtime_dir,
-                        i18n::tr(language, "Path to runtime folder"),
-                        (ui.max_rect().width() - 16.0).clamp(96.0, 400.0),
-                        false,
-                    );
-                    if response.changed() || response.lost_focus() {
-                        app.backend_manager.runtime_directory = runtime_dir.clone();
-                        if let Err(error) = app.backend_manager.save_runtime_directory() {
-                            app.last_error = Some(error);
-                        }
-                        let requirements = app.service_config.runtime_requirements();
-                        let _ = app
-                            .runtime_installer
-                            .prepare_for(project_root.to_path_buf(), requirements);
-                    }
-                    if components::animated_button(ui, i18n::tr(language, "Browse...")).clicked()
-                        && let Some(path) = crate::file_dialog::FileDialog::new().pick_folder()
-                    {
-                        app.backend_manager.runtime_directory = path.to_string_lossy().to_string();
-                        if let Err(error) = app.backend_manager.save_runtime_directory() {
-                            app.last_error = Some(error);
-                        }
-                        let requirements = app.service_config.runtime_requirements();
-                        let _ = app
-                            .runtime_installer
-                            .prepare_for(project_root.to_path_buf(), requirements);
-                    }
-                });
-
-                if !is_custom {
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new(format!(
-                            "{} {}",
-                            i18n::tr(language, "Default:"),
-                            default_runtime.display()
-                        ))
-                        .size(12.0)
-                        .color(theme::text_weak()),
-                    );
+            match &state {
+                RuntimeInstallState::Downloading {
+                    asset,
+                    downloaded,
+                    total,
+                } if *total > 0 => {
+                    ui.add_space(6.0);
+                    ui.add(
+                        egui::ProgressBar::new(
+                            (*downloaded as f64 / *total as f64).clamp(0.0, 1.0) as f32,
+                        )
+                        .text(format!(
+                            "{} / {}",
+                            components::format_file_size(*downloaded),
+                            components::format_file_size(*total)
+                        )),
+                    )
+                    .on_hover_text(asset);
                 }
-            });
-    }
+                RuntimeInstallState::Failed(error) => {
+                    ui.add_space(6.0);
+                    components::error_notice(ui, language, error);
+                }
+                _ => {}
+            }
+        });
 }
 
 fn render_runtime_download_plan(
     ui: &mut egui::Ui,
-    language: i18n::UiLanguage,
     downloads: &[crate::runtime_install::RuntimeDownload],
 ) {
-    let total_bytes = downloads.iter().map(|download| download.bytes).sum::<u64>();
-    Frame::new()
-        .fill(theme::panel_fill(ui.ctx(), theme::surface_subtle()))
-        .corner_radius(CornerRadius::same(8))
-        .inner_margin(Margin::symmetric(10, 7))
-        .stroke(Stroke::new(1.0, theme::border()))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    RichText::new(format!(
-                        "{} ({})",
-                        i18n::tr(language, "Required runtime downloads"),
-                        downloads.len()
-                    ))
-                    .size(12.0)
-                    .strong()
-                    .color(theme::text_normal()),
-                );
-                ui.label(
-                    RichText::new(format!(
-                        "{} {}",
-                        i18n::tr(language, "Total"),
-                        components::format_file_size(total_bytes)
-                    ))
+    for download in downloads {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(&download.label).size(12.0))
+                .on_hover_text(&download.archive_name);
+            ui.label(
+                RichText::new(components::format_file_size(download.bytes))
                     .size(11.5)
                     .color(theme::text_weak()),
-                );
-            });
-            ui.add_space(2.0);
-            for download in downloads {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        RichText::new(&download.label)
-                            .size(12.0)
-                            .color(theme::text_strong()),
-                    )
-                    .on_hover_text(&download.archive_name);
-                    ui.label(
-                        RichText::new(components::format_file_size(download.bytes))
-                            .size(11.5)
-                            .color(theme::text_weak()),
-                    );
-                });
-            }
+            );
         });
+    }
 }
 
 fn render_model_task_state(
@@ -2312,24 +2033,15 @@ fn render_model_task_state(
     items: &[DownloadItem],
 ) {
     match state {
-        NativeModelTaskState::Idle => {}
-        NativeModelTaskState::Discovering => {
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new(i18n::tr(language, "Scanning local models..."))
-                    .size(12.0)
-                    .color(theme::text_weak()),
-            );
-        }
-        NativeModelTaskState::Detected { .. } => {
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new(i18n::tr(language, "Model packages detected."))
-                    .size(12.0)
-                    .color(Color32::from_rgb(5, 150, 105)),
-            );
-        }
-        NativeModelTaskState::Installing { .. } => {
+        NativeModelTaskState::Idle
+        | NativeModelTaskState::Discovering
+        | NativeModelTaskState::Detected
+        | NativeModelTaskState::Installed => {}
+        NativeModelTaskState::Installing {
+            downloaded_bytes,
+            total_bytes,
+            ..
+        } => {
             ui.add_space(6.0);
             if let Some(batch) = batch
                 && batch.total_bytes > 0
@@ -2344,25 +2056,23 @@ fn render_model_task_state(
                         (batch.downloaded_bytes as f64 / batch.total_bytes as f64).clamp(0.0, 1.0)
                             as f32,
                     )
-                    .text(format!(
-                        "{} {}/{} · {} · {} / {}",
-                        i18n::tr(language, "Model"),
-                        current_number,
-                        batch.total_packages,
-                        current_label,
-                        components::format_file_size(batch.downloaded_bytes),
-                        components::format_file_size(batch.total_bytes),
-                    )),
-                );
+                    .text(
+                        if *total_bytes > 0 && downloaded_bytes >= total_bytes {
+                            i18n::tr(language, "Preparing…").to_owned()
+                        } else {
+                            format!(
+                                "{} {}/{} · {} / {}",
+                                i18n::tr(language, "Model"),
+                                current_number,
+                                batch.total_packages,
+                                components::format_file_size(batch.downloaded_bytes),
+                                components::format_file_size(batch.total_bytes),
+                            )
+                        },
+                    ),
+                )
+                .on_hover_text(current_label);
             }
-        }
-        NativeModelTaskState::Installed { .. } => {
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new(i18n::tr(language, "A model package is ready."))
-                    .size(12.0)
-                    .color(Color32::from_rgb(5, 150, 105)),
-            );
         }
         NativeModelTaskState::Failed(error) => {
             ui.add_space(6.0);

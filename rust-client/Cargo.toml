@@ -85,7 +85,7 @@ windows = { version = "0.60.0", features = [
 
 [target.'cfg(target_os = "linux")'.dependencies]
 eframe = { version = "0.36.1", features = ["glow"] }
-ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "screencast", "global_shortcuts"] }
+ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "screencast"] }
 pipewire = "0.10.1"
 libloading = "0.8.9"
 x11rb = { version = "0.13.2", features = ["shape", "randr"] }

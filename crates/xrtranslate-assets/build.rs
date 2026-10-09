@@ -1,6 +1,6 @@
 //! Turn the single reviewed JSON model catalog into immutable Rust manifests.
 //! Build-time generation keeps runtime lookup allocation-free and lets one card
-//! own its capabilities, resource estimate, files, hashes and source revision.
+//! own its capabilities, resource estimate, files and source revision.
 
 use serde_json::Value;
 use std::{collections::HashSet, fs, path::PathBuf};
@@ -48,12 +48,11 @@ fn strings(value: &Value) -> String {
 }
 fn required_file(value: &Value) -> String {
     format!(
-        "RequiredModelFile {{ role: {}, relative_path: {}, purpose: {}, bytes: {}, sha256: {} }}",
+        "RequiredModelFile {{ role: {}, relative_path: {}, purpose: {}, bytes: {} }}",
         enum_value("ModelFileRole", field(value, "role")),
         string(field(value, "relative_path")),
         string(field(value, "purpose")),
-        number(field(value, "bytes")),
-        string(field(value, "sha256"))
+        number(field(value, "bytes"))
     )
 }
 fn file_override(value: &Value) -> String {
@@ -92,11 +91,10 @@ fn archive(value: &Value) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "Some(ModelArchiveSource {{ filename: {}, url: {}, bytes: {}, sha256: {}, entries: &[{}] }})",
+        "Some(ModelArchiveSource {{ filename: {}, url: {}, bytes: {}, entries: &[{}] }})",
         string(field(value, "filename")),
         string(field(value, "url")),
         number(field(value, "bytes")),
-        string(field(value, "sha256")),
         entries
     )
 }

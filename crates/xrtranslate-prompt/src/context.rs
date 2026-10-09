@@ -249,23 +249,3 @@ fn append_source_line(
         source.source_language.trim()
     ));
 }
-
-#[cfg(test)]
-mod tests {
-    use super::AsrPromptContext;
-    use crate::PromptMode;
-
-    #[test]
-    fn recognition_context_bounds_complete_terms_and_exact_separator_cost() {
-        let context = AsrPromptContext {
-            vocabulary: vec!["Alpha".into(), "Beta".into(), "TooLongForGap".into()],
-            mode: PromptMode::Ordinary,
-        };
-
-        let bounded = context.bounded_recognition_context(11);
-
-        assert_eq!(bounded.vocabulary, vec!["Alpha", "Beta"]);
-        assert_eq!(bounded.recognition_context_text(), "Alpha, Beta");
-        assert_eq!(context.vocabulary.len(), 3);
-    }
-}

@@ -14,4 +14,3 @@ xrtranslate-config = { path = "../../crates/xrtranslate-config" }
 
 xrtranslate-download = { path = "../../crates/xrtranslate-download" }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
-sha2 = "0.10.9"

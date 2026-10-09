@@ -309,6 +309,7 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
         crate::i18n::tr(app.ui_language, "Quick translation"),
         |ui| {
             let lang = app.ui_language;
+            #[cfg(windows)]
             if components::toggle_with_label(
                 ui,
                 &mut app.quick_translate.settings.enabled,
@@ -319,14 +320,17 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
                 app.save_settings();
             }
             ui.horizontal_wrapped(|ui| {
-                ui.label(crate::i18n::tr(lang, "Shortcut"));
-                ui.add(
-                    egui::TextEdit::singleline(&mut app.quick_translate.shortcut_draft)
-                        .desired_width(150.0),
-                );
-                if components::secondary_button(ui, crate::i18n::tr(lang, "Apply")).clicked() {
-                    app.quick_translate.apply_shortcut();
-                    app.save_settings();
+                #[cfg(windows)]
+                {
+                    ui.label(crate::i18n::tr(lang, "Shortcut"));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.quick_translate.shortcut_draft)
+                            .desired_width(150.0),
+                    );
+                    if components::secondary_button(ui, crate::i18n::tr(lang, "Apply")).clicked() {
+                        app.quick_translate.apply_shortcut();
+                        app.save_settings();
+                    }
                 }
                 if components::secondary_button(ui, crate::i18n::tr(lang, "Translate clipboard"))
                     .clicked()
@@ -337,7 +341,14 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
                     );
                 }
             });
+            #[cfg(windows)]
             ui.weak(crate::i18n::tr(lang, "Select or copy text, then press the shortcut. Uses the languages on the translation page."));
+            #[cfg(target_os = "linux")]
+            ui.weak(crate::i18n::tr(
+                lang,
+                "Copy text, then translate it here. Uses the languages on the translation page.",
+            ));
+            #[cfg(windows)]
             if let Some(error) = &app.quick_translate.shortcut_error {
                 ui.add(egui::Label::new(crate::i18n::tr_dynamic(lang, error)).wrap());
             }
@@ -740,48 +751,23 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 fn render_server_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     let compact = ui.available_width() < 480.0;
     section(ui, crate::i18n::tr(app.ui_language, "Backend"), |ui| {
-        if compact {
-            ui.vertical(|ui| {
-                ui.label(format!(
-                    "{}:",
-                    crate::i18n::tr(app.ui_language, "Runtime Directory")
-                ));
-                ui.add_space(4.0);
-                let dir_changed = components::directory_path_input(
-                    ui,
-                    &mut app.backend_manager.runtime_directory,
-                    crate::i18n::tr(app.ui_language, "Choose runtime directory"),
-                    crate::i18n::tr(app.ui_language, "Browse…"),
-                    ui.available_width(),
-                );
-                if dir_changed {
-                    match app.backend_manager.save_runtime_directory() {
-                        Ok(()) => app.last_error = None,
-                        Err(error) => app.last_error = Some(error),
-                    }
-                }
-            });
-        } else {
-            crate::ui::layout::flow_row(ui, |ui| {
-                ui.label(format!(
-                    "{}:",
-                    crate::i18n::tr(app.ui_language, "Runtime Directory")
-                ));
-                let dir_changed = components::directory_path_input(
-                    ui,
-                    &mut app.backend_manager.runtime_directory,
-                    crate::i18n::tr(app.ui_language, "Choose runtime directory"),
-                    crate::i18n::tr(app.ui_language, "Browse…"),
-                    (ui.available_width() - 170.0).max(160.0),
-                );
-                if dir_changed {
-                    match app.backend_manager.save_runtime_directory() {
-                        Ok(()) => app.last_error = None,
-                        Err(error) => app.last_error = Some(error),
-                    }
-                }
-            });
-        }
+        ui.label(format!(
+            "{}:",
+            crate::i18n::tr(app.ui_language, "Runtime Directory")
+        ));
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(
+                    app.backend_manager
+                        .runtime_layout()
+                        .runtime_root()
+                        .display()
+                        .to_string(),
+                )
+                .color(crate::ui::theme::text_weak()),
+            )
+            .wrap(),
+        );
     });
 
     ui.add_space(14.0);

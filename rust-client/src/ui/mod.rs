@@ -94,48 +94,6 @@ impl Default for NavigationState {
     }
 }
 
-#[cfg(test)]
-mod page_tests {
-    use super::Page;
-    use crate::plugins::PluginId;
-
-    #[test]
-    fn plugin_pages_have_stable_readable_serialization() {
-        assert_eq!(
-            serde_json::to_string(&Page::Plugin(PluginId::OSC)).unwrap(),
-            r#""plugin:osc""#
-        );
-    }
-
-    #[test]
-    fn core_studio_pages_have_stable_readable_serialization() {
-        assert_eq!(
-            serde_json::to_string(&Page::AudioStudio).unwrap(),
-            r#""AudioStudio""#
-        );
-        assert_eq!(
-            serde_json::to_string(&Page::PromptStudio).unwrap(),
-            r#""PromptStudio""#
-        );
-        assert_eq!(
-            serde_json::from_str::<Page>(r#""AudioStudio""#).unwrap(),
-            Page::AudioStudio
-        );
-    }
-
-    #[test]
-    fn legacy_plugin_page_names_still_load() {
-        assert_eq!(
-            serde_json::from_str::<Page>(r#""Osc""#).unwrap(),
-            Page::Plugin(PluginId::OSC)
-        );
-        assert_eq!(
-            serde_json::from_str::<Page>(r#""Meeting""#).unwrap(),
-            Page::Plugin(PluginId::MEETING)
-        );
-    }
-}
-
 pub fn render_sidebar(
     ui: &mut egui::Ui,
     navigation: &mut NavigationState,

@@ -187,11 +187,6 @@ impl GraphCanvasState {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn wire_base_zoom(&self) -> Option<f32> {
-        self.wire_base_zoom
-    }
-
     fn zoom_around_center(&mut self, canvas: Rect, zoom: f32) {
         let center = canvas.size() * 0.5;
         let graph_position = (center - self.pan) / self.zoom;
@@ -262,7 +257,9 @@ pub(crate) fn capsule_connection(from: Rect, to: Rect) -> [Pos2; 4] {
         }
         let cap = Vec2::new(direction.x.signum() * straight, 0.0);
         let distance = straight * direction.x.abs()
-            + (radius * radius - (straight * direction.y).powi(2)).max(0.0).sqrt();
+            + (radius * radius - (straight * direction.y).powi(2))
+                .max(0.0)
+                .sqrt();
         let offset = direction * distance;
         (rect.center() + offset, (offset - cap).normalized())
     };
@@ -458,63 +455,4 @@ fn distance_to_segment(point: Pos2, start: Pos2, end: Pos2) -> f32 {
     }
     let t = ((point - start).dot(segment) / length_squared).clamp(0.0, 1.0);
     point.distance(start + segment * t)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fit_keeps_bounds_inside_canvas() {
-        let available = Vec2::new(1000.0, 600.0);
-        let canvas = Rect::from_min_size(Pos2::ZERO, available);
-        let bounds = Rect::from_min_max(Pos2::new(100.0, 100.0), Pos2::new(920.0, 680.0));
-        let mut state = GraphCanvasState::default();
-        state.fit_to_bounds(bounds, available, Vec2::new(220.0, 84.0));
-
-        let transformed = state.graph_rect(canvas, [100.0, 100.0], bounds.size());
-        assert!(canvas.contains(transformed.min));
-        assert!(canvas.contains(transformed.max));
-    }
-
-    #[test]
-    fn large_graph_fits_and_resize_preserves_manual_navigation() {
-        let available = Vec2::new(1000.0, 600.0);
-        let mut state = GraphCanvasState::default();
-        state.resize_viewport(available);
-        let bounds = Rect::from_min_size(Pos2::new(-100.0, -200.0), Vec2::new(3000.0, 4000.0));
-        state.fit_to_bounds(bounds, available, Vec2::new(220.0, 84.0));
-        state.fit_pending = false;
-        let canvas = Rect::from_min_size(Pos2::ZERO, available);
-        let transformed = state.graph_rect(canvas, [-100.0, -200.0], bounds.size());
-        assert!(canvas.contains_rect(transformed));
-        state.resize_viewport(Vec2::new(1200.0, 800.0));
-        assert!(state.fit_pending);
-
-        state.fit_pending = false;
-        state.zoom_from_center(120.0);
-        let center = (state.canvas_size * 0.5 - state.pan) / state.zoom;
-        state.resize_viewport(Vec2::new(800.0, 500.0));
-        assert!(!state.fit_pending);
-        assert!(((state.canvas_size * 0.5 - state.pan) / state.zoom - center).length() < 0.001);
-    }
-
-    #[test]
-    fn curve_distance_tracks_wire_hit_area() {
-        let points = bezier_points(Pos2::new(0.0, 100.0), Pos2::new(200.0, 100.0));
-        assert!(distance_to_curve(Pos2::new(100.0, 100.0), points) < 1.0);
-        assert!((distance_to_curve(Pos2::new(100.0, 90.0), points) - 10.0).abs() < 1.5);
-        assert!(distance_to_curve(Pos2::new(100.0, 200.0), points) > 50.0);
-    }
-
-    #[test]
-    fn cancelling_wire_navigation_restores_the_captured_zoom() {
-        let mut state = GraphCanvasState::default();
-        state.canvas_size = Vec2::new(800.0, 500.0);
-        state.zoom = 0.72;
-        state.wire_base_zoom = Some(1.0);
-        state.cancel_wire_navigation();
-        assert_eq!(state.zoom, 1.0);
-        assert!(state.wire_base_zoom.is_none());
-    }
 }

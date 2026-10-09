@@ -15,16 +15,18 @@ pub fn render(
             |ui| {
                 ui.vertical(|ui| {
                     let status = plugin.manager().listener_status();
-                    let is_active =
-                        status.contains("Listening") || status.contains("Active");
+                    let is_active = status.contains("Listening") || status.contains("Active");
                     let compact = ui.available_width() < 420.0;
                     if compact {
                         ui.vertical(|ui| {
                             ui.label(
-                                egui::RichText::new(crate::i18n::tr(language, "OSC Network Settings"))
-                                    .size(14.0)
-                                    .color(crate::ui::theme::text_strong())
-                                    .strong(),
+                                egui::RichText::new(crate::i18n::tr(
+                                    language,
+                                    "OSC Network Settings",
+                                ))
+                                .size(14.0)
+                                .color(crate::ui::theme::text_strong())
+                                .strong(),
                             );
                             ui.add_space(4.0);
                             components::status_badge(ui, &status, is_active, false);
@@ -32,14 +34,20 @@ pub fn render(
                     } else {
                         ui.horizontal(|ui| {
                             ui.label(
-                                egui::RichText::new(crate::i18n::tr(language, "OSC Network Settings"))
-                                    .size(14.0)
-                                    .color(crate::ui::theme::text_strong())
-                                    .strong(),
+                                egui::RichText::new(crate::i18n::tr(
+                                    language,
+                                    "OSC Network Settings",
+                                ))
+                                .size(14.0)
+                                .color(crate::ui::theme::text_strong())
+                                .strong(),
                             );
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                components::status_badge(ui, &status, is_active, false);
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    components::status_badge(ui, &status, is_active, false);
+                                },
+                            );
                         });
                     }
 

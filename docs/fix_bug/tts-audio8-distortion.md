@@ -23,7 +23,7 @@ Rust 实现曾被怀疑与官方 runtime 存在提示词、位置编码、attent
 
 ## 修复方法
 
-1. Slow AR 和 Fast AR 改用与 Audio8 官方模型同权重、同 tensor/cache 契约的 FP16 ONNX 导出；注册编码器、声码器、tokenizer 和 manifest 继续使用官方固定版本。FP16 Slow/Fast 图与其余文件分别固定到不可变 revision，并为每个文件校验大小与 SHA-256。
+1. Slow AR 和 Fast AR 改用与 Audio8 官方模型同权重、同 tensor/cache 契约的 FP16 ONNX 导出；注册编码器、声码器、tokenizer 和 manifest 继续使用官方固定版本。FP16 Slow/Fast 图与其余文件分别固定到不可变 revision，并为每个文件校验大小。
 2. 新模型作为 `audio8-tts-onnx-fp16` 接入现有模型清单、原子安装器和统一下载进度管理器，安装到 `models/Audio8-TTS-Preview-0.6B-ONNX-FP16`，不打包进 release。
 3. Rust runtime 同时接受 FP16 logits 和官方图的完整序列输出，始终只采样最后一个时间步；保留每阶段的 NaN/Inf 和 shape 校验，异常结果不会进入播放设备。
 4. `auto` 执行策略为 CUDA 优先、不可用时回退 CPU。界面与配置均不再提供 DirectML 或 Vulkan；DirectML 的旧配置会迁移为 `auto`。注册编码器和声码器仍遵循官方配置使用 CPU。

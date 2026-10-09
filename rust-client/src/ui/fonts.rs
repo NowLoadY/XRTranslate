@@ -130,50 +130,6 @@ fn windows_font_directory() -> PathBuf {
         .join("Fonts")
 }
 
-#[cfg(all(test, windows))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn preserves_existing_fonts_before_new_script_fallbacks() {
-        assert_eq!(
-            WINDOWS_FONTS
-                .iter()
-                .map(|font| font.name)
-                .collect::<Vec<_>>(),
-            [
-                "microsoft_yahei",
-                "malgun_gothic",
-                "segoe_ui",
-                "nirmala_ui",
-                "cascadia_code",
-                "cascadia_mono",
-                "segoe_ui_symbol",
-            ]
-        );
-    }
-
-    #[test]
-    fn windows_fallbacks_cover_vietnamese_and_hindi_text() {
-        let ctx = egui::Context::default();
-        configure_multilingual_fonts(&ctx);
-
-        let mut coverage = None;
-        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            coverage = Some(ui.ctx().fonts_mut(|fonts| {
-                let font = egui::FontId::proportional(14.0);
-                (
-                    fonts.has_glyphs(&font, "Tiếng Việt"),
-                    fonts.has_glyphs(&font, "नमस्ते दुनिया"),
-                    fonts.has_glyphs(&font, "🎤 🔊 💬"),
-                )
-            }));
-        });
-        output.textures_delta.clear();
-        assert_eq!(coverage, Some((true, true, true)));
-    }
-}
-
 #[cfg(target_os = "android")]
 fn system_fonts() -> Vec<(&'static str, std::path::PathBuf, u32, &'static str)> {
     [

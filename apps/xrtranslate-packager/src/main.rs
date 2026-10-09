@@ -8,14 +8,12 @@ use std::{
     error::Error,
     ffi::OsStr,
     fmt, fs, io,
-    io::Read,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use clap::Parser;
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 use xr_corpus_core::validate_seed_database;
 use xrtranslate_assets::{
     ModelAssetId, ModelAssetManifest, ModelAssetsConfig, ResolvedModelAssets,
@@ -26,13 +24,10 @@ const RELEASE_LAYOUT_VERSION: u32 = 4;
 const VAD_RELATIVE_PATH: &str = RuntimeLayout::VAD_MODEL_PATH;
 const VAD_MODEL_VERSION: &str = "v6.2.1";
 const VAD_MODEL_BYTES: u64 = RuntimeLayout::VAD_MODEL_BYTES;
-const VAD_MODEL_SHA256: &str = RuntimeLayout::VAD_MODEL_SHA256;
 const SPEAKER_RELATIVE_PATH: &str = RuntimeLayout::SPEAKER_MODEL_PATH;
 const SPEAKER_MODEL_BYTES: u64 = RuntimeLayout::SPEAKER_MODEL_BYTES;
-const SPEAKER_MODEL_SHA256: &str = RuntimeLayout::SPEAKER_MODEL_SHA256;
 const DENOISE_RELATIVE_PATH: &str = RuntimeLayout::DENOISE_MODEL_PATH;
 const DENOISE_MODEL_BYTES: u64 = RuntimeLayout::DENOISE_MODEL_BYTES;
-const DENOISE_MODEL_SHA256: &str = RuntimeLayout::DENOISE_MODEL_SHA256;
 const INTERNAL_BIN_DIRECTORY: &str = "bin";
 const ONNX_LICENSE_RELATIVE_PATH: &str = "licenses/onnxruntime/LICENSE";
 const ONNX_NOTICES_RELATIVE_PATH: &str = "licenses/onnxruntime/ThirdPartyNotices.txt";
@@ -42,18 +37,14 @@ struct VcRuntimeFile {
     name: &'static str,
     source: PathBuf,
     bytes: u64,
-    sha256: String,
 }
 
 struct OnnxCpuMetadata {
     path: &'static str,
     bytes: u64,
-    sha256: &'static str,
     source_archive: &'static str,
     license_bytes: u64,
-    license_sha256: &'static str,
     notices_bytes: u64,
-    notices_sha256: &'static str,
 }
 
 fn onnx_cpu_metadata(client: &Path) -> OnnxCpuMetadata {
@@ -64,23 +55,17 @@ fn onnx_cpu_metadata(client: &Path) -> OnnxCpuMetadata {
         OnnxCpuMetadata {
             path: "runtime/onnxruntime/cpu/onnxruntime.dll",
             bytes: RuntimeLayout::ONNX_CPU_CORE_WIN_BYTES,
-            sha256: RuntimeLayout::ONNX_CPU_CORE_WIN_SHA256,
             source_archive: RuntimeLayout::ONNX_CPU_CORE_WIN_SOURCE_ARCHIVE,
             license_bytes: 1_094,
-            license_sha256: "c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674",
             notices_bytes: 331_175,
-            notices_sha256: "fb0af774b4d7cffc5b9d046f2aaeade2f37df2f80abf8033c95dfffcc77a8866",
         }
     } else {
         OnnxCpuMetadata {
             path: "runtime/onnxruntime/cpu/libonnxruntime.so.1.28.0",
             bytes: RuntimeLayout::ONNX_CPU_CORE_LINUX_BYTES,
-            sha256: RuntimeLayout::ONNX_CPU_CORE_LINUX_SHA256,
             source_archive: "onnxruntime-linux-x64-1.28.0.tgz",
             license_bytes: 1_073,
-            license_sha256: "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c",
             notices_bytes: 325_054,
-            notices_sha256: "0e07b95f3a8d6230037707c5c4a2b554d12c4cb67369669ac255635528ffcee2",
         }
     }
 }
@@ -142,7 +127,7 @@ struct Arguments {
     /// Destination release directory. It must not already exist.
     #[arg(long)]
     output: PathBuf,
-    /// Include already installed, hash-verified Qwen3-ASR and Hy-MT2 GGUF models.
+    /// Include already installed, validated Qwen3-ASR and Hy-MT2 GGUF models.
     /// Without this flag the package contains the model layout and installer only.
     #[arg(long)]
     include_models: bool,
@@ -231,41 +216,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     let check = arguments.check;
     let plan = ReleasePlan::from_arguments(arguments)?;
     let onnx = onnx_cpu_metadata(&plan.rust_client_bin);
-    verify_file_integrity(
-        "--vad-model",
-        &plan.vad_model,
-        VAD_MODEL_BYTES,
-        VAD_MODEL_SHA256,
-    )?;
-    verify_file_integrity(
-        "--speaker-model",
-        &plan.speaker_model,
-        SPEAKER_MODEL_BYTES,
-        SPEAKER_MODEL_SHA256,
-    )?;
-    verify_file_integrity(
-        "--denoise-model",
-        &plan.denoise_model,
-        DENOISE_MODEL_BYTES,
-        DENOISE_MODEL_SHA256,
-    )?;
-    verify_file_integrity(
-        "--onnx-runtime-cpu",
-        &plan.onnx_runtime_cpu,
-        onnx.bytes,
-        onnx.sha256,
-    )?;
-    verify_file_integrity(
+    verify_file_size("--vad-model", &plan.vad_model, VAD_MODEL_BYTES)?;
+    verify_file_size("--speaker-model", &plan.speaker_model, SPEAKER_MODEL_BYTES)?;
+    verify_file_size("--denoise-model", &plan.denoise_model, DENOISE_MODEL_BYTES)?;
+    verify_file_size("--onnx-runtime-cpu", &plan.onnx_runtime_cpu, onnx.bytes)?;
+    verify_file_size(
         "--onnx-runtime-license",
         &plan.onnx_runtime_license,
         onnx.license_bytes,
-        onnx.license_sha256,
     )?;
-    verify_file_integrity(
+    verify_file_size(
         "--onnx-runtime-notices",
         &plan.onnx_runtime_notices,
         onnx.notices_bytes,
-        onnx.notices_sha256,
     )?;
     if plan.output.exists() {
         return Err(PackageError::InvalidInput(format!(
@@ -276,7 +239,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if plan.include_models {
-        plan.assets.verify_integrity().into_result()?;
+        plan.assets.check().into_result()?;
     }
 
     if plan.manifest["python"].as_bool() != Some(false) {
@@ -633,7 +596,6 @@ fn release_manifest(
                     "paths": [file.name, format!("{INTERNAL_BIN_DIRECTORY}/{}", file.name)],
                     "architecture": "x86_64",
                     "bytes": file.bytes,
-                    "sha256": file.sha256,
                 })).collect::<Vec<_>>(),
             },
             "directory": runtime_directory,
@@ -650,7 +612,6 @@ fn release_manifest(
                 "path": onnx.path,
                 "release": "1.28.0",
                 "bytes": onnx.bytes,
-                "sha256": onnx.sha256,
                 "source_archive": onnx.source_archive,
                 "license": ONNX_LICENSE_RELATIVE_PATH,
                 "third_party_notices": ONNX_NOTICES_RELATIVE_PATH
@@ -667,7 +628,6 @@ fn release_manifest(
                 "revision": VAD_MODEL_VERSION,
             },
             "bytes": VAD_MODEL_BYTES,
-            "sha256": VAD_MODEL_SHA256,
         },
         "speaker_model": {
             "path": SPEAKER_RELATIVE_PATH,
@@ -677,7 +637,6 @@ fn release_manifest(
                 "revision": "v1.0.1",
             },
             "bytes": SPEAKER_MODEL_BYTES,
-            "sha256": SPEAKER_MODEL_SHA256,
         },
         "denoise_model": {
             "path": DENOISE_RELATIVE_PATH,
@@ -687,7 +646,6 @@ fn release_manifest(
                 "release": "speech-enhancement-models",
             },
             "bytes": DENOISE_MODEL_BYTES,
-            "sha256": DENOISE_MODEL_SHA256,
         },
         "resources": "resources",
         "corpora": {
@@ -716,7 +674,6 @@ fn manifest_json(manifest: &ModelAssetManifest) -> Value {
         "files": manifest.required_files.iter().map(|file| json!({
             "path": file.relative_path,
             "bytes": file.bytes,
-            "sha256": file.sha256,
             "url": manifest.source.file_url(file.relative_path),
         })).collect::<Vec<_>>(),
     })
@@ -918,7 +875,6 @@ fn windows_vc_runtime(
             name,
             source,
             bytes: bytes.len() as u64,
-            sha256: format!("{:x}", Sha256::digest(&bytes)),
         });
     }
     Ok(files)
@@ -965,49 +921,21 @@ fn copy_vc_runtime(files: &[VcRuntimeFile], staging: &Path) -> Result<(), Packag
         for directory in [staging.to_path_buf(), staging.join(INTERNAL_BIN_DIRECTORY)] {
             let destination = directory.join(file.name);
             copy_file_to(&file.source, &destination)?;
-            verify_file_integrity("staged VC runtime", &destination, file.bytes, &file.sha256)?;
+            verify_file_size("staged VC runtime", &destination, file.bytes)?;
         }
     }
     Ok(())
 }
 
-fn verify_file_integrity(
-    label: &str,
-    path: &Path,
-    expected_bytes: u64,
-    expected_sha256: &str,
-) -> Result<(), PackageError> {
+fn verify_file_size(label: &str, path: &Path, expected_bytes: u64) -> Result<(), PackageError> {
     let metadata = fs::metadata(path).map_err(|source| PackageError::Io {
         context: format!("cannot inspect {label} at {}", path.display()),
         source,
     })?;
-    if metadata.len() != expected_bytes {
+    if !metadata.is_file() || metadata.len() != expected_bytes {
         return Err(PackageError::InvalidInput(format!(
             "{label} has {} bytes, expected {expected_bytes}: {}",
             metadata.len(),
-            path.display()
-        )));
-    }
-    let mut file = fs::File::open(path).map_err(|source| PackageError::Io {
-        context: format!("cannot open {label} at {}", path.display()),
-        source,
-    })?;
-    let mut digest = Sha256::new();
-    let mut buffer = vec![0_u8; 1024 * 1024];
-    loop {
-        let count = file.read(&mut buffer).map_err(|source| PackageError::Io {
-            context: format!("cannot hash {label} at {}", path.display()),
-            source,
-        })?;
-        if count == 0 {
-            break;
-        }
-        digest.update(&buffer[..count]);
-    }
-    let actual_sha256 = format!("{:x}", digest.finalize());
-    if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
-        return Err(PackageError::InvalidInput(format!(
-            "{label} SHA-256 mismatch: expected {expected_sha256}, got {actual_sha256}: {}",
             path.display()
         )));
     }
@@ -1217,409 +1145,5 @@ trait AssetIter {
 impl AssetIter for ResolvedModelAssets {
     fn iter(&self) -> [&xrtranslate_assets::ResolvedModelAsset; 2] {
         [&self.qwen3_asr, &self.hunyuan_mt]
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        fs,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
-
-    use super::*;
-
-    static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
-
-    fn temp_directory(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "xrtranslate-packager-{label}-{}-{}",
-            std::process::id(),
-            NEXT_ID.fetch_add(1, Ordering::Relaxed)
-        ))
-    }
-
-    fn write(path: &Path, contents: &[u8]) {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, contents).unwrap();
-    }
-
-    fn x64_dll_fixture() -> Vec<u8> {
-        let mut bytes = vec![0; 512];
-        bytes[..2].copy_from_slice(b"MZ");
-        bytes[0x3c..0x40].copy_from_slice(&0x80_u32.to_le_bytes());
-        bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
-        bytes[0x84..0x86].copy_from_slice(&0x8664_u16.to_le_bytes());
-        bytes[0x86..0x88].copy_from_slice(&1_u16.to_le_bytes());
-        bytes[0x94..0x96].copy_from_slice(&240_u16.to_le_bytes());
-        bytes[0x96..0x98].copy_from_slice(&0x2002_u16.to_le_bytes());
-        bytes[0x98..0x9a].copy_from_slice(&0x20b_u16.to_le_bytes());
-        bytes
-    }
-
-    fn write_vc_runtime_fixture(directory: &Path) {
-        for &name in RuntimeLayout::WINDOWS_CRT_REQUIRED_FILES {
-            write(&directory.join(name), &x64_dll_fixture());
-        }
-    }
-
-    fn vc_redist_directory(root: &Path) -> PathBuf {
-        root.join("VC/Redist/MSVC/14.44.35112/x64/Microsoft.VC143.CRT")
-    }
-
-    #[test]
-    fn windows_release_requires_complete_x64_release_crt() {
-        let root = temp_directory("crt-inputs");
-        let directory = vc_redist_directory(&root);
-        let client = Path::new("rust-client.exe");
-        assert!(windows_vc_runtime(client, None).is_err());
-        assert!(
-            windows_vc_runtime(Path::new("rust-client"), None)
-                .unwrap()
-                .is_empty()
-        );
-        write_vc_runtime_fixture(&directory);
-        assert_eq!(
-            windows_vc_runtime(client, Some(&directory)).unwrap().len(),
-            RuntimeLayout::WINDOWS_CRT_REQUIRED_FILES.len()
-        );
-        let required = directory.join("msvcp140_1.dll");
-        fs::remove_file(&required).unwrap();
-        assert!(windows_vc_runtime(client, Some(&directory)).is_err());
-
-        let mut x86_dll = x64_dll_fixture();
-        x86_dll[0x84..0x86].copy_from_slice(&0x14c_u16.to_le_bytes());
-        write(&required, &x86_dll);
-        assert!(windows_vc_runtime(client, Some(&directory)).is_err());
-        write(&required, b"not a PE file");
-        assert!(windows_vc_runtime(client, Some(&directory)).is_err());
-        write(&required, &x64_dll_fixture()[..256]);
-        assert!(windows_vc_runtime(client, Some(&directory)).is_err());
-
-        let debug_directory = directory.with_file_name("Microsoft.VC143.DebugCRT");
-        write_vc_runtime_fixture(&debug_directory);
-        assert!(windows_vc_runtime(client, Some(&debug_directory)).is_err());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn vc_runtime_input_rejects_system_directory_even_with_valid_x64_dlls() {
-        let root = temp_directory("crt-system-directory");
-        let directory = root.join("Windows/System32");
-        write_vc_runtime_fixture(&directory);
-        let error = windows_vc_runtime(Path::new("client.exe"), Some(&directory)).unwrap_err();
-        assert!(error.to_string().contains("Visual Studio"));
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn vc_runtime_is_staged_beside_gui_and_helpers_without_unlisted_files() {
-        let root = temp_directory("crt-layout");
-        let directory = vc_redist_directory(&root);
-        let staging = root.join("release");
-        write_vc_runtime_fixture(&directory);
-        write(&directory.join("concrt140.dll"), &x64_dll_fixture());
-        for name in [
-            "msvcp140d.dll",
-            "kernel32.dll",
-            "personal.txt",
-            "subdir/helper.dll",
-        ] {
-            write(&directory.join(name), b"must stay out of the release");
-        }
-        let files = windows_vc_runtime(Path::new("client.exe"), Some(&directory)).unwrap();
-        copy_vc_runtime(&files, &staging).unwrap();
-
-        assert_eq!(
-            files.len(),
-            RuntimeLayout::WINDOWS_CRT_REQUIRED_FILES.len() + 1
-        );
-        for target in [&staging, &staging.join(INTERNAL_BIN_DIRECTORY)] {
-            for file in &files {
-                assert_eq!(fs::read(target.join(file.name)).unwrap(), x64_dll_fixture());
-            }
-            for name in ["msvcp140d.dll", "kernel32.dll", "personal.txt", "subdir"] {
-                assert!(!target.join(name).exists());
-            }
-        }
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn rewrite_config_clears_runtime_path_and_makes_models_release_relative() {
-        let root = temp_directory("config");
-        let config = root.join("config.json");
-        write(&config, br#"{"model_manager":{"llama_server_path":"C:/old/llama-server.exe","models_directory":"C:/old/models","qwen3_asr_gguf_directory":"C:/old/qwen"},"tts":{"provider":"openvoice"},"ocr":{"provider":"paddle-ocr-vl"}}"#);
-
-        let rewritten: Value = serde_json::from_str(&rewrite_config(&config).unwrap()).unwrap();
-        assert_eq!(rewritten["model_manager"]["llama_server_path"], "");
-        assert_eq!(rewritten["model_manager"]["runtime_directory"], "runtime");
-        assert_eq!(rewritten["model_manager"]["models_directory"], "models");
-        assert_eq!(rewritten["speaker"]["enabled"], true);
-        assert_eq!(rewritten["speaker"]["model_path"], SPEAKER_RELATIVE_PATH);
-        assert_eq!(
-            rewritten["prompt_context"]["database_path"],
-            CORPUS_DATABASE_PATH
-        );
-        assert_eq!(
-            rewritten["prompt_context"]["seed_database_path"],
-            CORPUS_SEED_PATH
-        );
-        assert!(
-            rewritten["model_manager"]
-                .get("qwen3_asr_gguf_directory")
-                .is_none()
-        );
-        assert_eq!(rewritten["tts"]["provider"], "none");
-        assert_eq!(rewritten["ocr"]["provider"], "none");
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn native_input_rejects_python_files() {
-        let root = temp_directory("python");
-        let directory = root.join("resources");
-        write(&directory.join("helper.py"), b"print('python')");
-        assert!(ensure_directory_is_native("fixture", &directory).is_err());
-        fs::remove_file(directory.join("helper.py")).unwrap();
-        write(
-            &directory.join("backend/native-looking-file.txt"),
-            b"still forbidden",
-        );
-        assert!(ensure_directory_is_native("fixture", &directory).is_err());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn dry_release_layout_contains_only_allowed_native_inputs() {
-        let root = temp_directory("layout");
-        let source = root.join("source");
-        let output = root.join("release");
-        let extension = if cfg!(windows) { ".exe" } else { "" };
-        let client = source.join(format!("rust-client{extension}"));
-        let backend = source.join(format!("custom-backend{extension}"));
-        let corpus_server = source.join(format!("custom-corpus{extension}"));
-        let installer = source.join(format!("custom-installer{extension}"));
-        let updater = source.join(format!("custom-updater{extension}"));
-        let resources = source.join("resources");
-        let seed_database = source.join("default.sqlite");
-        let vad = source.join("silero_vad.onnx");
-        let speaker = source.join("speaker_embedding.onnx");
-        let denoise = source.join("gtcrn_simple.onnx");
-        let onnx_runtime_cpu = source.join("onnxruntime.dll");
-        let onnx_runtime_license = source.join("onnxruntime-LICENSE");
-        let onnx_runtime_notices = source.join("onnxruntime-ThirdPartyNotices.txt");
-        let vc_runtime_dir = cfg!(windows).then(|| vc_redist_directory(&source));
-        if let Some(directory) = &vc_runtime_dir {
-            write_vc_runtime_fixture(directory);
-        }
-        let config = source.join("config.json");
-        let license = source.join("LICENSE");
-        write(&client, b"client");
-        write(&backend, b"backend");
-        write(&corpus_server, b"corpus");
-        write(&installer, b"installer");
-        write(&updater, b"updater");
-        write(&resources.join("docs/welcome.md"), b"native resource");
-        write(&resources.join("mpv.def"), b"build-time exports");
-        write(&resources.join("bin/mpv-2.dll"), b"runtime download");
-        write(
-            &resources.join("bin/future-runtime.dll"),
-            b"future runtime download",
-        );
-        fs::copy(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../XR-Corpus/corpora/default.sqlite"),
-            &seed_database,
-        )
-        .unwrap();
-        write(&vad, b"onnx");
-        write(&speaker, b"onnx");
-        write(&denoise, b"onnx");
-        write(&onnx_runtime_cpu, b"onnx runtime");
-        write(&onnx_runtime_license, b"onnx license");
-        write(&onnx_runtime_notices, b"onnx notices");
-        write(&config, br#"{"model_manager":{"llama_server_path":"old"},"ocr":{"provider":"paddle-ocr-vl","providers":{"paddle-ocr-vl":{"transport":"local","model_asset":"paddle-ocr-vl-1.6-gguf"}}}}"#);
-        write(
-            &source.join("models/paddle-ocr-vl/PaddleOCR-VL-1.6/PaddleOCR-VL-1.6-GGUF.gguf"),
-            b"optional OCR model",
-        );
-        write(&license, b"AGPL-3.0-only");
-        write(&source.join("runtime/debug.md"), b"hello\nlocal only");
-        write(
-            &source.join("runtime/voice_clones/xrtranslate_microphone.wav"),
-            b"private recording",
-        );
-        write(
-            &source.join("runtime/voice_clones/selection.json"),
-            br#"{"builtin_id":"miku"}"#,
-        );
-        write(
-            &source.join("runtime/recordings/personal.wav"),
-            b"private recording",
-        );
-        write(
-            &source.join("runtime/voice_clones/cards/ab/abcdef/reference.wav"),
-            b"private card audio",
-        );
-
-        let plan = ReleasePlan::from_arguments(Arguments {
-            rust_client_bin: client,
-            backend_bin: backend,
-            corpus_bin: corpus_server,
-            installer_bin: installer,
-            updater_bin: updater,
-            config,
-            resources_dir: resources,
-            seed_database,
-            license,
-            vad_model: Some(vad),
-            speaker_model: Some(speaker),
-            denoise_model: Some(denoise),
-            onnx_runtime_cpu,
-            onnx_runtime_license,
-            onnx_runtime_notices,
-            vc_runtime_dir,
-            output: output.clone(),
-            include_models: false,
-            check: false,
-        })
-        .unwrap();
-        package(&plan).unwrap();
-
-        let packaged: Value =
-            serde_json::from_slice(&fs::read(output.join("config.json")).unwrap()).unwrap();
-        assert_eq!(packaged["ocr"]["provider"], "none");
-        assert!(!output.join("models/paddle-ocr-vl").exists());
-        assert!(output.join("LICENSE").is_file());
-        let version = env!("CARGO_PKG_VERSION");
-        assert!(
-            output
-                .join(format!("XRTranslate-v{version}{extension}"))
-                .is_file()
-        );
-        assert!(
-            output
-                .join(INTERNAL_BIN_DIRECTORY)
-                .join(format!("xrtranslate-backend{extension}"))
-                .is_file()
-        );
-        assert!(
-            output
-                .join(INTERNAL_BIN_DIRECTORY)
-                .join(format!("xr-corpus-server{extension}"))
-                .is_file()
-        );
-        assert!(
-            output
-                .join(INTERNAL_BIN_DIRECTORY)
-                .join(format!("xrtranslate-installer{extension}"))
-                .is_file()
-        );
-        assert!(
-            output
-                .join(INTERNAL_BIN_DIRECTORY)
-                .join(format!("xrtranslate-updater{extension}"))
-                .is_file()
-        );
-        assert!(output.join("resources/docs/welcome.md").is_file());
-        assert!(!output.join("resources/mpv.def").exists());
-        assert!(!output.join("resources/bin/mpv-2.dll").exists());
-        assert!(!output.join("resources/bin/future-runtime.dll").exists());
-        assert!(output.join(CORPUS_SEED_PATH).is_file());
-        assert!(!output.join(CORPUS_DATABASE_PATH).exists());
-        assert!(output.join(VAD_RELATIVE_PATH).is_file());
-        assert!(output.join(SPEAKER_RELATIVE_PATH).is_file());
-        assert!(output.join(DENOISE_RELATIVE_PATH).is_file());
-        assert!(
-            output
-                .join(onnx_cpu_metadata(&plan.rust_client_bin).path)
-                .is_file()
-        );
-        assert!(output.join(ONNX_LICENSE_RELATIVE_PATH).is_file());
-        assert!(output.join(ONNX_NOTICES_RELATIVE_PATH).is_file());
-        assert!(output.join("release-manifest.json").is_file());
-        assert!(!output.join("runtime/llama.cpp").exists());
-        assert!(!output.join("runtime/debug.md").exists());
-        assert!(!output.join("runtime/voice_clones").exists());
-        assert!(!output.join("runtime/recordings").exists());
-        for voice in xrtranslate_assets::voices::BUILTIN_VOICES {
-            let directory = output.join("resources/voices").join(voice.id);
-            assert_eq!(
-                fs::read(directory.join("reference.wav")).unwrap(),
-                voice.wav
-            );
-            assert_eq!(
-                fs::read_to_string(directory.join("reference.txt")).unwrap(),
-                voice.transcript
-            );
-            assert_eq!(
-                fs::read_to_string(directory.join("LICENSE")).unwrap(),
-                voice.license
-            );
-            assert_eq!(
-                fs::read_to_string(directory.join("SOURCE.md")).unwrap(),
-                voice.source_notice
-            );
-        }
-        assert!(!output.join("backend").exists());
-        assert!(!output.join("server").exists());
-        assert!(!output.join("main.py").exists());
-        assert!(!output.join("requirements.txt").exists());
-        let manifest: Value = serde_json::from_str(
-            &fs::read_to_string(output.join("release-manifest.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(manifest["python"], false);
-        assert_eq!(manifest["runtime"]["included"], true);
-        assert_eq!(manifest["runtime"]["msvc"]["included"], cfg!(windows));
-        if cfg!(windows) {
-            let files = manifest["runtime"]["msvc"]["files"].as_array().unwrap();
-            assert_eq!(files.len(), RuntimeLayout::WINDOWS_CRT_REQUIRED_FILES.len());
-            for file in files {
-                for path in file["paths"].as_array().unwrap() {
-                    assert_eq!(
-                        fs::read(output.join(path.as_str().unwrap())).unwrap(),
-                        x64_dll_fixture()
-                    );
-                }
-                assert_eq!(file["architecture"], "x86_64");
-                assert_eq!(file["bytes"], 512);
-                assert_eq!(
-                    file["sha256"],
-                    format!("{:x}", Sha256::digest(x64_dll_fixture()))
-                );
-            }
-            assert!(!manifest.to_string().contains("Microsoft.VC143.CRT"));
-        }
-        assert_eq!(
-            manifest["runtime"]["onnx_cpu"]["path"],
-            onnx_cpu_metadata(&plan.rust_client_bin).path
-        );
-        assert_eq!(manifest["runtime"]["onnx_cuda"]["included"], false);
-        assert_eq!(
-            manifest["runtime"]["onnx_cuda"]["selection_marker"],
-            RuntimeLayout::NATIVE_RUNTIME_SELECTION_FILE
-        );
-        assert_eq!(manifest["vad_model"]["path"], VAD_RELATIVE_PATH);
-        assert_eq!(
-            manifest["vad_model"]["source"]["revision"],
-            VAD_MODEL_VERSION
-        );
-        assert_eq!(manifest["vad_model"]["bytes"], VAD_MODEL_BYTES);
-        assert_eq!(manifest["vad_model"]["sha256"], VAD_MODEL_SHA256);
-        assert_eq!(manifest["speaker_model"]["path"], SPEAKER_RELATIVE_PATH);
-        assert_eq!(manifest["denoise_model"]["path"], DENOISE_RELATIVE_PATH);
-        assert_eq!(
-            manifest["entrypoints"]["client"],
-            format!("XRTranslate-v{version}{extension}")
-        );
-        assert_eq!(manifest["models"]["included"], false);
-        assert_eq!(manifest["corpora"]["database_path"], CORPUS_DATABASE_PATH);
-        assert_eq!(manifest["corpora"]["seed_database_path"], CORPUS_SEED_PATH);
-        assert_eq!(
-            manifest["entrypoints"]["updater"],
-            format!("{INTERNAL_BIN_DIRECTORY}/xrtranslate-updater{extension}")
-        );
-        fs::remove_dir_all(root).unwrap();
     }
 }

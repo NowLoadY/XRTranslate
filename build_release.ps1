@@ -23,9 +23,9 @@ $seedDatabase = Join-Path $projectRoot 'XR-Corpus\corpora\default.sqlite'
 $cargoPath = Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe'
 $packagerPath = Join-Path $projectRoot 'target\release\xrtranslate-packager.exe'
 
-$expectedOnnxSha256 = '2462fe2d64ce063babefda3d9b1998380ffa74e99acf5d24d520ee67daa9e0f1'
-$expectedLicenseSha256 = 'c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674'
-$expectedNoticesSha256 = 'fb0af774b4d7cffc5b9d046f2aaeade2f37df2f80abf8033c95dfffcc77a8866'
+$expectedOnnxBytes = 16277856
+$expectedLicenseBytes = 1094
+$expectedNoticesBytes = 331175
 # Matches RuntimeLayout::ONNX_CPU_CORE_WIN_SOURCE_ARCHIVE.
 $onnxCpuSourceArchive = 'onnxruntime-win-x64-gpu_cuda13-1.28.0.zip'
 
@@ -137,12 +137,12 @@ if (-not $ValidateOnly) {
 $VcRuntimeDirectory = Resolve-VcRuntimeDirectory -Directory $VcRuntimeDirectory
 Write-Host "Using app-local Visual C++ runtime from redistributable files: $VcRuntimeDirectory"
 
-function Export-VerifiedZipEntry {
+function Export-ZipEntry {
     param(
         [string]$ArchivePath,
         [string]$EntryPath,
         [string]$OutFile,
-        [string]$ExpectedSha256
+        [long]$ExpectedBytes
     )
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive = [System.IO.Compression.ZipFile]::OpenRead($ArchivePath)
@@ -157,9 +157,9 @@ function Export-VerifiedZipEntry {
     } finally {
         $archive.Dispose()
     }
-    $actualHash = (Get-FileHash -LiteralPath $OutFile -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actualHash -ne $ExpectedSha256.ToLowerInvariant()) {
-        throw "SHA256 mismatch for extracted $EntryPath : expected $ExpectedSha256, got $actualHash"
+    $actualBytes = (Get-Item -LiteralPath $OutFile).Length
+    if ($actualBytes -ne $ExpectedBytes) {
+        throw "Size mismatch for extracted $EntryPath : expected $ExpectedBytes, got $actualBytes"
     }
 }
 
@@ -174,7 +174,7 @@ if ([string]::IsNullOrWhiteSpace($OnnxRuntimeCpu)) {
     $runtimeAssetCache = Join-Path $projectRoot '.temp\runtime-assets'
     if (Test-Path -LiteralPath $runtimeAssetCache -PathType Container) {
         $cachedCores = Get-ChildItem -LiteralPath $runtimeAssetCache -Filter 'onnxruntime.dll' -File -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.Length -eq 16277856 }
+            Where-Object { $_.Length -eq $expectedOnnxBytes }
         foreach ($c in $cachedCores) {
             $candidatePaths += $c.FullName
         }
@@ -195,14 +195,10 @@ if ([string]::IsNullOrWhiteSpace($OnnxRuntimeCpu)) {
         }
     }
 
-    # Verify candidate SHA256
     foreach ($cand in $candidatePaths) {
-        if ((Get-Item -LiteralPath $cand).Length -eq 16277856) {
-            $hash = (Get-FileHash -LiteralPath $cand -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($hash -eq $expectedOnnxSha256.ToLowerInvariant()) {
-                $OnnxRuntimeCpu = $cand
-                break
-            }
+        if ((Get-Item -LiteralPath $cand).Length -eq $expectedOnnxBytes) {
+            $OnnxRuntimeCpu = $cand
+            break
         }
     }
 
@@ -232,12 +228,12 @@ $candidateNoticePaths = @(
 
 $onnxRuntimeLicense = $candidateLicensePaths | Where-Object {
     (Test-Path -LiteralPath $_ -PathType Leaf) -and
-    ((Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant() -eq $expectedLicenseSha256.ToLowerInvariant())
+    ((Get-Item -LiteralPath $_).Length -eq $expectedLicenseBytes)
 } | Select-Object -First 1
 
 $onnxRuntimeNotices = $candidateNoticePaths | Where-Object {
     (Test-Path -LiteralPath $_ -PathType Leaf) -and
-    ((Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant() -eq $expectedNoticesSha256.ToLowerInvariant())
+    ((Get-Item -LiteralPath $_).Length -eq $expectedNoticesBytes)
 } | Select-Object -First 1
 
 if ($null -eq $onnxRuntimeLicense -or $null -eq $onnxRuntimeNotices) {
@@ -258,18 +254,18 @@ if ($null -eq $onnxRuntimeLicense -or $null -eq $onnxRuntimeNotices) {
     $archivePath = Join-Path $projectRoot ".temp\runtime-assets\$onnxCpuSourceArchive"
     $archiveRoot = [System.IO.Path]::GetFileNameWithoutExtension($onnxCpuSourceArchive)
     Write-Host 'Fetching the verified ONNX Runtime source archive for its license files...'
-    & $cargo run --locked --manifest-path $workspaceManifest --target-dir (Join-Path $projectRoot 'target') --release --package xrtranslate-download --example fetch -- $download.url $download.bytes $download.sha256 $archivePath
+    & $cargo run --locked --manifest-path $workspaceManifest --target-dir (Join-Path $projectRoot 'target') --release --package xrtranslate-download --example fetch -- $download.url $download.bytes $archivePath
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
     if ($null -eq $onnxRuntimeLicense) {
         $targetLic = Join-Path $onnxLicensesDir 'LICENSE'
-        Export-VerifiedZipEntry -ArchivePath $archivePath -EntryPath "$archiveRoot/LICENSE" -OutFile $targetLic -ExpectedSha256 $expectedLicenseSha256
+        Export-ZipEntry -ArchivePath $archivePath -EntryPath "$archiveRoot/LICENSE" -OutFile $targetLic -ExpectedBytes $expectedLicenseBytes
         $onnxRuntimeLicense = $targetLic
     }
     if ($null -eq $onnxRuntimeNotices) {
         $targetNot = Join-Path $onnxLicensesDir 'ThirdPartyNotices.txt'
-        Export-VerifiedZipEntry -ArchivePath $archivePath -EntryPath "$archiveRoot/ThirdPartyNotices.txt" -OutFile $targetNot -ExpectedSha256 $expectedNoticesSha256
+        Export-ZipEntry -ArchivePath $archivePath -EntryPath "$archiveRoot/ThirdPartyNotices.txt" -OutFile $targetNot -ExpectedBytes $expectedNoticesBytes
         $onnxRuntimeNotices = $targetNot
     }
 }

@@ -8,23 +8,24 @@
 
 | 类型 | 所有者 | 存储位置 | 交付方式 | 更新与校验 |
 | --- | --- | --- | --- | --- |
-| 模型包 | `xrtranslate-assets` | `models/<package>` | Windows 默认发布包按需下载；Linux 本地打包复制已安装的 `models/` | 每文件固定 revision、大小、SHA-256；支持 `models_directory` 自定义 |
-| 推理引擎核心 | `xrtranslate-config` / release packager | `<runtime_root>/<engine>` | Windows 发布包内置 CPU ONNX 核心；Linux 本地打包复制已安装核心；llama.cpp 与 CUDA ONNX provider 按需下载 | 固定版本、归档大小、SHA-256、必需文件集合；支持 `runtime_directory` 自定义 |
+| 模型包 | `xrtranslate-assets` | `models/<package>` | Windows 默认发布包按需下载；Linux 本地打包复制已安装的 `models/` | 每文件固定 revision、大小；支持 `models_directory` 自定义 |
+| 推理引擎核心 | `xrtranslate-config` / release packager | `<runtime_root>/<engine>` | Windows 发布包内置 CPU ONNX 核心；Linux 本地打包复制已安装核心；llama.cpp 与 CUDA ONNX provider 按需下载 | 固定版本、归档大小、必需文件集合；旧 `runtime_directory` 配置保留读取兼容 |
 | 设备加速包 | `xrtranslate-config` | `<runtime_root>/cuda/<version>` 与 `<runtime_root>/cudnn/<major>` | 仅兼容 NVIDIA 设备按需下载 | CUDA ABI 与驱动能力匹配；llama.cpp 与 ONNX 复用 CUDA，ONNX 另消费匹配 major 的 cuDNN |
-| 应用启动依赖 | `xrtranslate-config` / release packager | 应用根目录与 `bin/` | Windows 随包携带 VS 正式可分发 MSVC CRT，不能等应用启动后下载 | 共享必需/可选文件声明、PE x64 校验，发布清单记录每项大小与 SHA-256；更新器随应用文件替换 |
+| 应用启动依赖 | `xrtranslate-config` / release packager | 应用根目录与 `bin/` | Windows 随包携带 VS 正式可分发 MSVC CRT，不能等应用启动后下载 | 共享必需/可选文件声明、PE x64 校验，发布清单记录每项大小；更新器随应用文件替换 |
 
 所有网络传输统一经过 `xrtranslate-download`，因此模型和运行时共用断点续传、
-代理、重试、进度、大小与 SHA-256 校验。模型与 runtime installer 只传递中立的
+代理、重试、进度、大小与 HTTP Range 校验。模型与 runtime installer 只传递中立的
 `DownloadSource`；GitHub/Hugging Face 官方地址到镜像地址的转换由下载 crate 的
-单一镜像路由负责。后端不下载资源，也不需要 Python 解释器。Windows 默认发布包
+单一镜像路由负责。后端不下载资源，也不需要 Python 解释器。欢迎页统一自动配置运行环境，
+不再提供手动选择目录的方案；设置页仅显示当前路径。Windows 默认发布包
 不包含 TTS、ASR 或翻译大模型；其离线打包选项可显式加入已校验的 ASR/翻译
 GGUF。Linux 本地打包则复制已有的 `models/`，缺少的模型仍由客户端按需下载。
 
 模型包的传输上方只有一个桌面任务管理器。用户快速点击多个下载按钮或选择
 “下载全部”时，请求按 `ModelAssetId` 去重并串行排队；同一时刻只有一个模型包或
 runtime installer 持有传输任务。任务快照同时保存当前包/文件、当前包进度、整个
-批次进度、排队列表和失败状态。每张卡片只渲染属于自己的包状态，批次进度独立
-显示，因此一个大文件的字节数不会覆盖另一个模型的进度条。provider、欢迎页和
+批次进度、排队列表和失败状态。欢迎页只显示一条批次进度，
+卡片显示各自的安装、下载或排队状态。provider、欢迎页和
 设置页不得另建下载线程或共享一个无资产身份的进度变量。
 
 欢迎页的 `small`、`normal`、`big`、`ultra` 是显示分组。持久化配置始终写入
@@ -66,7 +67,7 @@ llama.cpp CUDA 12.8、ONNX Runtime 1.28 CUDA 12 及匹配的 cuDNN 9。
 
 Windows CPU ONNX 核心为 16,277,856 B，取自官方
 `onnxruntime-win-x64-gpu_cuda13-1.28.0.zip` 的 `onnxruntime.dll`；该核心本身可独立
-执行 CPU session，随 release 提供并由 packager 校验 SHA-256。
+执行 CPU session，随 release 提供并由 packager 校验文件类型和大小。
 Windows CUDA12 provider 归档为 455,344,532 B，CUDA13 为 365,825,268 B；cuDNN
 9.20.0.48 CUDA12 归档为 634,960,681 B，CUDA13 为 349,802,474 B。它们只在
 TTS 请求 CUDA 时下载。共享 CUDA 12.4/13.1/13.3 归档按所选版本使用资源并集去重，
@@ -133,7 +134,7 @@ runtime/cudnn/
 - 检测旧版平铺在 `runtime/onnxruntime/` 根目录下的 DLL 并安全归档迁移至 `runtime/onnxruntime/cuda-13/`，无需用户重新下载。
 
 Windows 运行时规划在后台优先修复缺失的 CPU 核心：若配置声明的 CUDA 目录中已有
-与发布包 CPU 核心大小和 SHA-256 完全一致的 `onnxruntime.dll`，将其复制至
+与受支持配置声明相符且大小一致的 `onnxruntime.dll`，将其复制至
 `onnxruntime/cpu/`。保留 CUDA 原件、选择清单和已存在的 CPU 核心，遵循自定义
 `runtime_directory`。OCR 独立加载 CPU 目录；后端继续按清单加载 CUDA 核心，
 两者都能创建 CPU session，无需为同一核心重复下载归档。
@@ -164,8 +165,7 @@ Windows 运行时规划在后台优先修复缺失的 CPU 核心：若配置声�
 
 - 本机个人设置放在 `runtime/user-config.json`；根目录 `config.json` 是可发行的
   资源目录。Windows 发布脚本要求它与当前提交一致，避免工作区个人设置进入发布包。
-- Packager 校验 CPU ONNX 核心、VAD、说话人识别、降噪及 ONNX 许可文件的大小和
-  SHA-256，默认发布包无需用户另外下载 CPU 核心。大模型和 GPU 加速依赖仍按配置下载。
+- Packager 校验 CPU ONNX 核心、VAD、说话人识别、降噪及 ONNX 许可文件的类型与大小，默认发布包无需用户另外下载 CPU 核心。大模型和 GPU 加速依赖仍按配置下载。
 - 发布脚本补齐 ONNX 许可时，也通过 `xrtranslate-download` 获取配置声明的同源归档，
   校验完整归档后只提取许可文件；不另建 HTTP 下载实现，也不依赖归档列表的排序。
 - Windows 客户端和 ONNX 核心依赖 MSVC CRT。发布脚本从 Visual Studio 的 x64
@@ -201,7 +201,7 @@ UI 只显示 `计划 CUDA 13/12`、下载/修复进度、以及后端确认后�
 ### AMD llama.cpp runtime
 
 The same `config.json` runtime catalogue includes pinned Windows and Linux x64
-Vulkan archives (b10333), with verified SHA256 and explicit extracted files.
+Vulkan archives (b10333), with expected download sizes and explicit extracted files.
 `LlamaGpu` model cards can use NVIDIA CUDA or AMD Vulkan 1.2 with 16-bit storage
 and enough device-local memory. No ROCm SDK, separate downloader, CUDA runtime
 or cuDNN download is needed for the Vulkan path. Current ONNX TTS cards retain

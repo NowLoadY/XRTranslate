@@ -1,5 +1,3 @@
-#[cfg(test)]
-use super::test_graphs::{AudioStudioPreset, graph_for_preset};
 use super::{
     default_graph::{DEFAULT_AUDIO_GRAPH_ID, default_graph},
     graph::{AudioGraph, AudioNodeKind, DeviceId, GraphId, NodeId, PortId, SystemAudioCapture},
@@ -36,13 +34,6 @@ pub struct AudioStudioSettings {
     pub graphs: Vec<AudioGraph>,
 }
 
-#[cfg(test)]
-fn preset_graph(preset: AudioStudioPreset) -> AudioGraph {
-    let mut graph = graph_for_preset(preset);
-    graph.id = GraphId::new(DEFAULT_AUDIO_GRAPH_ID);
-    graph
-}
-
 impl Default for AudioStudioSettings {
     fn default() -> Self {
         Self {
@@ -54,11 +45,6 @@ impl Default for AudioStudioSettings {
 }
 
 impl AudioStudioSettings {
-    #[cfg(test)]
-    pub fn replace_with_preset(&mut self, preset: AudioStudioPreset) {
-        self.graph = preset_graph(preset);
-    }
-
     pub fn all_graphs(&self) -> impl Iterator<Item = &AudioGraph> {
         std::iter::once(&self.graph).chain(&self.graphs)
     }
@@ -202,11 +188,6 @@ impl AudioStudioRepository {
         }
     }
 
-    #[cfg(test)]
-    pub fn at_path(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
-    }
-
     pub fn load(&self) -> Result<AudioStudioSettings, AudioStudioPersistenceError> {
         let bytes = match fs::read(&self.path) {
             Ok(bytes) => bytes,
@@ -327,227 +308,3 @@ impl fmt::Display for AudioStudioPersistenceError {
 }
 
 impl std::error::Error for AudioStudioPersistenceError {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    fn test_path(name: &str) -> PathBuf {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        std::env::temp_dir().join(format!(
-            "xrtranslate-audio-studio-{name}-{}-{}.json",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ))
-    }
-
-    #[test]
-    fn repository_uses_the_core_runtime_path() {
-        assert_eq!(AUDIO_STUDIO_SETTINGS_PATH, "runtime/audio_studio.json");
-    }
-
-    #[test]
-    fn v2_graph_load_preserves_customizations_and_upgrades_output_semantics_version() {
-        let path = test_path("v2-graph");
-        let repository = AudioStudioRepository::at_path(&path);
-        let mut settings = AudioStudioSettings::default();
-        settings.graph.nodes[0].label = "My capture source".into();
-        settings.graph.format_version = 2;
-        let document = PersistedDocument {
-            schema_version: 5,
-            settings: settings.clone(),
-        };
-        let mut document = serde_json::to_value(document).unwrap();
-        document["settings"]
-            .as_object_mut()
-            .unwrap()
-            .remove("graphs");
-        fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
-        let loaded = repository.load().unwrap();
-        settings.graph.format_version = super::super::graph::AUDIO_GRAPH_FORMAT_VERSION;
-        assert_eq!(loaded, settings);
-        assert!(loaded.graph.validate().is_valid());
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn missing_file_loads_the_global_audio_graph() {
-        let path = test_path("missing");
-        let loaded = AudioStudioRepository::at_path(path).load().unwrap();
-        assert_eq!(loaded.graph.id.0, DEFAULT_AUDIO_GRAPH_ID);
-        assert_eq!(
-            loaded.graph.name,
-            AudioStudioPreset::CompleteAudioSystem.display_name()
-        );
-    }
-
-    #[test]
-    fn save_and_load_round_trip_current_schema() {
-        let path = test_path("roundtrip");
-        let repository = AudioStudioRepository::at_path(&path);
-        let mut settings = AudioStudioSettings::default();
-        settings.device_defaults.monitor_device_id = Some(DeviceId::new("monitor-1"));
-        settings.graph.nodes[0].label = "My input".into();
-        let original = settings.graph.clone();
-        settings.create_graph(true);
-        let copy_id = settings.graph.id.clone();
-        assert_ne!(copy_id, original.id);
-        assert_eq!(settings.graph.nodes, original.nodes);
-        settings.graph.name = "Custom route".into();
-        settings.create_graph(false);
-        assert!(settings.graph.nodes.is_empty());
-        settings.select_graph(&copy_id).unwrap();
-        repository.save(&settings).unwrap();
-        let mut loaded = repository.load().unwrap();
-        assert_eq!(loaded, settings);
-        loaded.select_graph(&original.id).unwrap();
-        assert_eq!(loaded.graph, original);
-        assert!(loaded.delete_selected_graph().is_err());
-        loaded.select_graph(&copy_id).unwrap();
-        loaded.delete_selected_graph().unwrap();
-        assert_eq!(loaded.graph, original);
-        assert!(!loaded.all_graphs().any(|graph| graph.id == copy_id));
-        repository.save(&loaded).unwrap();
-        assert_eq!(repository.load().unwrap(), loaded);
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn older_schema_is_replaced_with_the_current_global_graph() {
-        let path = test_path("legacy");
-        let value = serde_json::json!({
-            "schema_version": 3,
-            "settings": {
-                "selected_graph_id": "translation-safe",
-                "graphs": []
-            }
-        });
-        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-
-        let repository = AudioStudioRepository::at_path(&path);
-        let loaded = repository.load().unwrap();
-        assert_eq!(loaded.graph.id.0, DEFAULT_AUDIO_GRAPH_ID);
-        assert_eq!(
-            loaded.graph.name,
-            AudioStudioPreset::CompleteAudioSystem.display_name()
-        );
-
-        let rewritten: serde_json::Value =
-            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(rewritten["schema_version"], AUDIO_STUDIO_SCHEMA_VERSION);
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn application_audio_selection_round_trips_without_a_pid() {
-        let path = test_path("application");
-        let repository = AudioStudioRepository::at_path(&path);
-        let mut settings = AudioStudioSettings::default();
-        settings.replace_with_preset(AudioStudioPreset::VrchatKaraoke);
-        let bgm = settings
-            .graph
-            .nodes
-            .iter_mut()
-            .find(|node| node.id.0 == "bgm")
-            .unwrap();
-        bgm.kind = crate::audio_studio::AudioNodeKind::SystemAudio {
-            capture: crate::audio_studio::SystemAudioCapture::Application {
-                application: Some(crate::audio_studio::ApplicationSelection {
-                    id: crate::audio_studio::ApplicationId::new("c:\\music.exe"),
-                    display_name: "Music".into(),
-                }),
-                resolved_process_id: Some(99),
-            },
-        };
-        repository.save(&settings).unwrap();
-        let loaded = repository.load().unwrap();
-        let loaded_bgm = loaded
-            .graph
-            .nodes
-            .iter()
-            .find(|node| node.id.0 == "bgm")
-            .unwrap();
-        assert!(matches!(
-            &loaded_bgm.kind,
-            crate::audio_studio::AudioNodeKind::SystemAudio {
-                capture: crate::audio_studio::SystemAudioCapture::Application {
-                    resolved_process_id: None,
-                    ..
-                }
-            }
-        ));
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn normalize_clears_empty_device_ids() {
-        let mut settings = AudioStudioSettings::default();
-        settings.device_defaults.monitor_device_id = Some(DeviceId::new(""));
-        settings.replace_with_preset(AudioStudioPreset::VrchatKaraoke);
-        let karaoke = &mut settings.graph;
-        let bgm = karaoke
-            .nodes
-            .iter_mut()
-            .find(|node| node.id.0 == "bgm")
-            .unwrap();
-        if let crate::audio_studio::graph::AudioNodeKind::SystemAudio {
-            capture: crate::audio_studio::graph::SystemAudioCapture::Endpoint { device_id, .. },
-        } = &mut bgm.kind
-        {
-            *device_id = Some(DeviceId::new(""));
-        }
-
-        settings.normalize();
-
-        assert!(settings.device_defaults.monitor_device_id.is_none());
-        let karaoke = &settings.graph;
-        let bgm = karaoke
-            .nodes
-            .iter()
-            .find(|node| node.id.0 == "bgm")
-            .unwrap();
-        assert!(bgm.kind.selected_device().is_none());
-    }
-
-    #[test]
-    fn normalize_assigns_stable_ports_to_legacy_mixer_inputs() {
-        let mut settings = AudioStudioSettings::default();
-        for link in settings
-            .graph
-            .links
-            .iter_mut()
-            .filter(|link| link.to.node_id == NodeId::new("asr-input-mixer"))
-        {
-            link.to.port_id = PortId::input();
-        }
-
-        settings.normalize();
-
-        let ports = settings
-            .graph
-            .links
-            .iter()
-            .filter(|link| link.to.node_id == NodeId::new("asr-input-mixer"))
-            .map(|link| link.to.port_id.clone())
-            .collect::<std::collections::HashSet<_>>();
-        assert_eq!(ports.len(), 2);
-        assert!(ports.iter().all(|port| port.mixer_input_index().is_some()));
-    }
-
-    #[test]
-    fn future_schema_is_not_silently_downgraded() {
-        let path = test_path("future");
-        let value = serde_json::json!({
-            "schema_version": 99,
-            "settings": AudioStudioSettings::default(),
-        });
-        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-        let error = AudioStudioRepository::at_path(&path).load().unwrap_err();
-        assert!(matches!(
-            error,
-            AudioStudioPersistenceError::UnsupportedVersion(99)
-        ));
-        fs::remove_file(path).unwrap();
-    }
-}

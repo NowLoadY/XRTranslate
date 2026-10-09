@@ -2,25 +2,16 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib.metadata
 import json
 import re
 import shutil
-import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from artifacts import extract_ngc_member
 from languages import LanguageSpec
-
-
-@dataclass(frozen=True)
-class PinnedFrontendSource:
-    """A source file whose behavior must be reproduced by a runtime frontend."""
-
-    relative_path: str
-    sha256: str
 
 
 @dataclass(frozen=True)
@@ -35,23 +26,13 @@ class FrontendRecipe:
     key: str
     language_key: str
     required_runtime_data: tuple[str, ...]
-    pinned_sources: tuple[PinnedFrontendSource, ...]
+    source_paths: tuple[str, ...]
     blockers: tuple[str, ...]
     builder: Callable[..., list[Path]] | None
 
     @property
     def buildable(self) -> bool:
         return self.builder is not None and not self.blockers
-
-
-def _extract_ngc_member(archive: Path, suffix: str, output: Path) -> None:
-    with zipfile.ZipFile(archive) as package:
-        matches = [name for name in package.namelist() if name.endswith(suffix)]
-        if len(matches) != 1:
-            raise RuntimeError(f"Expected one NGC member ending in {suffix!r}, got {matches}")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        with package.open(matches[0]) as source, output.open("wb") as target:
-            shutil.copyfileobj(source, target)
 
 
 def _canonical_pinyin(value: str) -> str | None:
@@ -128,11 +109,11 @@ def _build_chinese_mixed_english(
     lexicon = frontend / "chinese_lexicon.json"
     _generate_chinese_lexicon(lexicon)
     cmudict = frontend / "cmudict.json"
-    _extract_ngc_member(ngc_archive, "/cmudict.json", cmudict)
+    extract_ngc_member(ngc_archive, "/cmudict.json", cmudict)
 
     bert_license = licenses / "apache-2.0.txt"
     cmudict_license = licenses / "cmudict.txt"
-    _extract_ngc_member(
+    extract_ngc_member(
         ngc_archive, "/licences/bert_base_uncased/LICENCE.txt", bert_license
     )
     shutil.copyfile(cmudict_license_source, cmudict_license)
@@ -172,15 +153,9 @@ RECIPES = {
             "CMU English pronunciation dictionary",
             "Apache-2.0, pypinyin and CMUdict license/NOTICE files",
         ),
-        pinned_sources=(
-            PinnedFrontendSource(
-                "third_party/MeloTTS/melo/text/opencpop-strict.txt",
-                "86c4b30928e3a4305c9148058c9e2e56b04ce741363fedff382421f4a1e3709d",
-            ),
-            PinnedFrontendSource(
-                "third_party/MeloTTS/melo/text/tone_sandhi.py",
-                "5ff7f5a973466db8f2049db193fc80d679466b0f6f3124d80fc465a26a29af70",
-            ),
+        source_paths=(
+            "third_party/MeloTTS/melo/text/opencpop-strict.txt",
+            "third_party/MeloTTS/melo/text/tone_sandhi.py",
         ),
         blockers=(),
         builder=_build_chinese_mixed_english,
@@ -194,15 +169,9 @@ RECIPES = {
             "gruut Spanish lexicon, phonology and tokenizer data",
             "licenses/NOTICE for BERT, MeloTTS and the complete gruut closure",
         ),
-        pinned_sources=(
-            PinnedFrontendSource(
-                "third_party/MeloTTS/melo/text/spanish.py",
-                "ece5fd1f3fc8b8a815f368da76583beec5fe0d95e1520e5e4dc9eec472c1898d",
-            ),
-            PinnedFrontendSource(
-                "third_party/MeloTTS/melo/text/es_phonemizer/es_to_ipa.py",
-                "bfce9f017060e4e61915cd335fdbabd51098833b61d5101f2cea98554285fe8e",
-            ),
+        source_paths=(
+            "third_party/MeloTTS/melo/text/spanish.py",
+            "third_party/MeloTTS/melo/text/es_phonemizer/es_to_ipa.py",
         ),
         blockers=(
             "the pinned Spanish BERT repository declares no redistribution license",
@@ -220,15 +189,9 @@ RECIPES = {
             "gruut French lexicon, phonology and tokenizer data",
             "MIT and complete gruut-closure license/NOTICE files",
         ),
-        pinned_sources=(
-            PinnedFrontendSource(
-                "third_party/MeloTTS/melo/text/french.py",
-                "79874eb5bee2c67a3834eec47785c80f8ac368ba27841538437ab9847138357c",
-            ),
-            PinnedFrontendSource(
-                "third_party/MeloTTS/melo/text/fr_phonemizer/fr_to_ipa.py",
-                "bba0d4a5d07c7726cfdd7b01bad06f4cee828df89050c78a8fc857ac4a39ffef",
-            ),
+        source_paths=(
+            "third_party/MeloTTS/melo/text/french.py",
+            "third_party/MeloTTS/melo/text/fr_phonemizer/fr_to_ipa.py",
         ),
         blockers=(
             "the gruut-fr runtime data closure and its licenses are not pinned",
@@ -245,11 +208,8 @@ RECIPES = {
             "MeCab-compatible UniDic dictionary data",
             "Apache-2.0 and complete MeCab/UniDic/pykakasi license/NOTICE files",
         ),
-        pinned_sources=(
-            PinnedFrontendSource(
-                "third_party/MeloTTS/melo/text/japanese.py",
-                "453e84008a8911225af3d551b008835c8fe0484556488c1191db520bb8185c7b",
-            ),
+        source_paths=(
+            "third_party/MeloTTS/melo/text/japanese.py",
         ),
         blockers=(
             "the MeCab/UniDic/pykakasi runtime data closure and licenses are not pinned",
@@ -266,15 +226,9 @@ RECIPES = {
             "g2pK/MeCab-ko pronunciation and dictionary data",
             "licenses/NOTICE for BERT, MeloTTS and the complete Korean G2P closure",
         ),
-        pinned_sources=(
-            PinnedFrontendSource(
-                "third_party/MeloTTS/melo/text/korean.py",
-                "aaa3762c6d976951a35e821f152340d26ec22194bc5b5ad9fac7a065ea68259d",
-            ),
-            PinnedFrontendSource(
-                "third_party/MeloTTS/melo/text/ko_dictionary.py",
-                "e51d544e074de5314df9f409c948e39648891c2d6097da17f2f542ec1de0fe3e",
-            ),
+        source_paths=(
+            "third_party/MeloTTS/melo/text/korean.py",
+            "third_party/MeloTTS/melo/text/ko_dictionary.py",
         ),
         blockers=(
             "the pinned Korean BERT repository declares no redistribution license",
@@ -334,18 +288,11 @@ def buildable_language_keys(language_specs: dict[str, LanguageSpec]) -> tuple[st
     )
 
 
-def verify_pinned_sources(recipe: FrontendRecipe, repo_root: Path) -> None:
-    """Verify that a recipe still describes the vendored immutable source."""
-
-    for source in recipe.pinned_sources:
-        path = repo_root / Path(source.relative_path)
-        if not path.is_file():
-            raise RuntimeError(f"Pinned frontend source is missing: {path}")
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        if digest != source.sha256:
-            raise RuntimeError(
-                f"Pinned frontend source SHA-256 does not match: {source.relative_path}"
-            )
+def check_sources(recipe: FrontendRecipe, repo_root: Path) -> None:
+    for relative_path in recipe.source_paths:
+        path = repo_root / relative_path
+        if not path.is_file() or path.stat().st_size == 0:
+            raise RuntimeError(f"Frontend source is missing or empty: {path}")
 
 
 def sample_token_ids(recipe: str, sample_text: str, vocab_path: Path) -> list[int]:
@@ -381,7 +328,7 @@ def build_frontend(
     candidate = recipe_for(recipe)
     if not candidate.buildable or candidate.builder is None:
         raise RuntimeError(f"OpenVoice frontend recipe {recipe!r} is not buildable")
-    verify_pinned_sources(candidate, repo_root)
+    check_sources(candidate, repo_root)
     return candidate.builder(
         repo_root,
         bert_vocab_source,

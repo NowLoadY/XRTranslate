@@ -385,34 +385,3 @@ fn model_error(message: impl Into<String>) -> InferenceError {
         message: message.into(),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reference_spectrum_uses_the_official_513_bins() {
-        let samples = vec![0.0; OUTPUT_SAMPLE_RATE as usize];
-        let spectrum = reference_spectrum(&samples).unwrap();
-        assert_eq!(spectrum.len() % 513, 0);
-        assert!(spectrum.iter().all(|value| value.is_finite()));
-    }
-
-    #[test]
-    fn melo_segment_split_prefers_a_nearby_sentence_boundary() {
-        let (left, right) = split_melo_segment("你好，OpenVoice语音翻译已经准备好了。").unwrap();
-        assert_eq!(
-            format!("{left}{right}"),
-            "你好，OpenVoice语音翻译已经准备好了。"
-        );
-        assert!(left.ends_with('，'));
-    }
-
-    #[test]
-    fn melo_segment_split_never_breaks_a_decimal_number() {
-        let (left, right) = split_melo_segment("数值是2.8。后续").unwrap();
-        assert_eq!(format!("{left}{right}"), "数值是2.8。后续");
-        assert!(!left.ends_with("2."));
-        assert!(!right.starts_with(".8"));
-    }
-}

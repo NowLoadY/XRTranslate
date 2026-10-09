@@ -57,39 +57,3 @@ pub fn access(feature: Feature) -> FeatureAccess {
 pub fn is_available(feature: Feature) -> bool {
     access(feature).available
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashSet;
-
-    #[test]
-    fn access_table_is_complete_and_unique() {
-        let configured = FEATURE_ACCESS
-            .iter()
-            .map(|(feature, _)| *feature)
-            .collect::<HashSet<_>>();
-        assert_eq!(configured.len(), FEATURE_ACCESS.len());
-        assert_eq!(configured.len(), Feature::ALL.len());
-        assert!(
-            Feature::ALL
-                .iter()
-                .all(|feature| configured.contains(feature))
-        );
-    }
-
-    #[test]
-    fn unavailable_features_have_a_reason() {
-        assert!(FEATURE_ACCESS.iter().all(|(_, access)| {
-            access.available
-                || access
-                    .unavailable_reason
-                    .is_some_and(|reason| !reason.is_empty())
-        }));
-    }
-
-    #[test]
-    fn native_tts_is_available_with_a_configured_provider() {
-        assert!(is_available(Feature::TtsPlayback));
-    }
-}

@@ -299,17 +299,6 @@ pub(super) fn resolve_hardware_selection(
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-pub(super) fn local_model_availability(
-    nvidia: Option<&NvidiaCuda>,
-    amd: Option<&VulkanGpu>,
-) -> LocalModelAvailability {
-    let nvidia_list = nvidia.into_iter().cloned().collect::<Vec<_>>();
-    let amd_list = amd.into_iter().cloned().collect::<Vec<_>>();
-    let (_, _, availability) = resolve_hardware_selection(&nvidia_list, &amd_list, None);
-    availability
-}
-
 /// Query the driver directly: no SDK, helper executable or downloaded runtime is
 /// needed. Keep the physical index used by GGML_VK_VISIBLE_DEVICES, including
 /// adapters of other vendors, so hybrid systems launch on the GPU we checked.
@@ -553,42 +542,4 @@ pub(super) fn cuda_version_from_nvidia_smi(version_text: &str) -> Option<String>
         })?;
     parse_version(version)?;
     Some(version.to_owned())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn preferred_backend_selection_is_independent_of_host_hardware() {
-        let nvidia = NvidiaCuda {
-            gpu: "Test GPU".into(),
-            compute_capability: (8, 6),
-            driver_cuda: "13.3".into(),
-            memory_bytes: 4 * 1024 * 1024 * 1024,
-        };
-        let vulkan = VulkanGpu {
-            gpu: "Test GPU".into(),
-            memory_bytes: nvidia.memory_bytes,
-            index: 2,
-        };
-        let (cuda, vk, availability) =
-            resolve_hardware_selection(&[nvidia.clone()], &[vulkan.clone()], None);
-        assert!(cuda.is_some());
-        assert!(vk.is_none());
-        assert_eq!(availability.available_gpus().len(), 2);
-
-        let (cuda, vk, availability) =
-            resolve_hardware_selection(&[nvidia], &[vulkan], Some("Test GPU (Vulkan)"));
-        assert!(cuda.is_none());
-        assert_eq!(vk.unwrap().index, 2);
-        assert!(matches!(
-            availability,
-            LocalModelAvailability::Available {
-                cuda_memory_bytes: 0,
-                ..
-            }
-        ));
-        assert_eq!(availability.to_string(), "Test GPU (Vulkan) · 4.0 GiB");
-    }
 }

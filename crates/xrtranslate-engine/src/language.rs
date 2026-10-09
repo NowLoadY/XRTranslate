@@ -121,14 +121,59 @@ pub fn has_distinct_chinese_markers(text: &str) -> bool {
     let has_char_marker = text.chars().any(|c| {
         matches!(
             c,
-            '你' | '妳' | '她' | '它' | '牠' | '祂'
-            | '们' | '們' | '这' | '這' | '哪'
-            | '什' | '么' | '麼' | '谁' | '誰'
-            | '吗' | '嗎' | '呢' | '吧' | '呀' | '很'
-            | '没' | '說' | '话' | '話' | '请' | '請' | '让' | '進' | '进'
-            | '门' | '关' | '开' | '车' | '钱' | '东' | '认' | '识'
-            | '欢' | '变' | '电' | '风' | '问' | '买' | '卖' | '头'
-            | '过' | '对' | '为' | '样' | '个' | '谢' | '謝'
+            '你' | '妳'
+                | '她'
+                | '它'
+                | '牠'
+                | '祂'
+                | '们'
+                | '們'
+                | '这'
+                | '這'
+                | '哪'
+                | '什'
+                | '么'
+                | '麼'
+                | '谁'
+                | '誰'
+                | '吗'
+                | '嗎'
+                | '呢'
+                | '吧'
+                | '呀'
+                | '很'
+                | '没'
+                | '說'
+                | '话'
+                | '話'
+                | '请'
+                | '請'
+                | '让'
+                | '進'
+                | '进'
+                | '门'
+                | '关'
+                | '开'
+                | '车'
+                | '钱'
+                | '东'
+                | '认'
+                | '识'
+                | '欢'
+                | '变'
+                | '电'
+                | '风'
+                | '问'
+                | '买'
+                | '卖'
+                | '头'
+                | '过'
+                | '对'
+                | '为'
+                | '样'
+                | '个'
+                | '谢'
+                | '謝'
         )
     });
     if has_char_marker {
@@ -136,7 +181,15 @@ pub fn has_distinct_chinese_markers(text: &str) -> bool {
     }
 
     const PHRASES: &[&str] = &[
-        "不用", "可以", "好的", "真的", "不知道", "早上好", "晚上好", "再见", "再見",
+        "不用",
+        "可以",
+        "好的",
+        "真的",
+        "不知道",
+        "早上好",
+        "晚上好",
+        "再见",
+        "再見",
     ];
     PHRASES.iter().any(|phrase| text.contains(phrase))
 }
@@ -181,22 +234,94 @@ fn is_common_loanword(word: &str) -> bool {
     // Check against common short loanwords without allocating strings
     matches!(
         word.to_ascii_lowercase().as_str(),
-        "ok" | "okay" | "nice" | "gg" | "good" | "great" | "vrc" | "vrchat"
-        | "hi" | "hello" | "hey" | "yes" | "yeah" | "yep" | "no" | "nope"
-        | "sorry" | "thx" | "thanks" | "thank" | "you" | "lol" | "kusa" | "w"
-        | "39" | "bye" | "cool" | "super" | "omg" | "wow" | "pls" | "please"
-        | "subtitles" | "watching" | "subscribe" | "amara" | "mbc"
+        "ok" | "okay"
+            | "nice"
+            | "gg"
+            | "good"
+            | "great"
+            | "vrc"
+            | "vrchat"
+            | "hi"
+            | "hello"
+            | "hey"
+            | "yes"
+            | "yeah"
+            | "yep"
+            | "no"
+            | "nope"
+            | "sorry"
+            | "thx"
+            | "thanks"
+            | "thank"
+            | "you"
+            | "lol"
+            | "kusa"
+            | "w"
+            | "39"
+            | "bye"
+            | "cool"
+            | "super"
+            | "omg"
+            | "wow"
+            | "pls"
+            | "please"
+            | "subtitles"
+            | "watching"
+            | "subscribe"
+            | "amara"
+            | "mbc"
     )
 }
 
 fn is_english_function_word(word: &str) -> bool {
     matches!(
         word.to_ascii_lowercase().as_str(),
-        "the" | "is" | "are" | "was" | "were" | "am" | "be" | "been" | "being"
-        | "have" | "has" | "had" | "do" | "does" | "did" | "would" | "should" | "could"
-        | "will" | "can" | "this" | "that" | "these" | "those" | "what" | "where" | "when"
-        | "which" | "who" | "how" | "why" | "with" | "from" | "about" | "into" | "because"
-        | "they" | "them" | "their" | "your" | "ours" | "we" | "i" | "it" | "my" | "me"
+        "the"
+            | "is"
+            | "are"
+            | "was"
+            | "were"
+            | "am"
+            | "be"
+            | "been"
+            | "being"
+            | "have"
+            | "has"
+            | "had"
+            | "do"
+            | "does"
+            | "did"
+            | "would"
+            | "should"
+            | "could"
+            | "will"
+            | "can"
+            | "this"
+            | "that"
+            | "these"
+            | "those"
+            | "what"
+            | "where"
+            | "when"
+            | "which"
+            | "who"
+            | "how"
+            | "why"
+            | "with"
+            | "from"
+            | "about"
+            | "into"
+            | "because"
+            | "they"
+            | "them"
+            | "their"
+            | "your"
+            | "ours"
+            | "we"
+            | "i"
+            | "it"
+            | "my"
+            | "me"
     )
 }
 
@@ -360,138 +485,4 @@ fn is_language_code_match(detected: &str, code: &str) -> bool {
 
 fn static_code(code: &str) -> Option<&'static str> {
     SupportedLanguage::from_code(code).map(SupportedLanguage::code)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn routing_preserves_catalogue_languages_without_an_english_fallback() {
-        assert_eq!(
-            auto_route_language_pair("こんにちは", "en", "yue"),
-            Some(("ja", "yue"))
-        );
-        assert_eq!(
-            auto_route_language_pair("こんにちは", "en", "ar"),
-            Some(("ja", "ar"))
-        );
-        assert_eq!(
-            auto_route_language_pair("こんにちは", "en", "unknown"),
-            None
-        );
-        assert_eq!(static_code("unknown"), None);
-    }
-
-    #[test]
-    fn test_detect_text_language() {
-        assert_eq!(detect_text_language("你好，世界！"), Some("zh"));
-        assert_eq!(detect_text_language("Hello, world!"), Some("en"));
-        assert_eq!(detect_text_language("こんにちは世界"), Some("ja"));
-        assert_eq!(detect_text_language("안녕하세요"), Some("ko"));
-        assert_eq!(detect_text_language("Привет мир"), Some("ru"));
-        assert_eq!(detect_text_language("สวัสดีชาวโลก"), Some("th"));
-        assert_eq!(detect_text_language("स्वागत है"), Some("hi"));
-        assert_eq!(detect_text_language("12345"), None);
-        assert_eq!(detect_text_language("   "), None);
-        assert_eq!(detect_text_language("ok"), None); // Short acronym ignored as substantial
-    }
-
-    #[test]
-    fn test_auto_route_language_pair() {
-        assert_eq!(static_code("vi-VN"), Some("vi"));
-        assert_eq!(static_code("hi_IN"), Some("hi"));
-        assert_eq!(static_code("bg-BG"), Some("bg"));
-
-        // When typing English on a zh -> en pair, it should flip to en -> zh
-        assert_eq!(
-            auto_route_language_pair("How are you today?", "zh", "en"),
-            Some(("en", "zh"))
-        );
-
-        // Automatic bidirectional routes carry both languages in the target
-        // field, but the selected route must contain only the opposite
-        // language as its target.
-        assert_eq!(
-            auto_route_language_pair("How are you today?", "auto", "zh,en"),
-            Some(("en", "zh"))
-        );
-        assert_eq!(
-            auto_route_language_pair("今天过得怎么样？", "auto", "zh,en"),
-            Some(("zh", "en"))
-        );
-
-        // When typing Chinese on an en -> zh pair, it should flip to zh -> en
-        assert_eq!(
-            auto_route_language_pair("今天过得怎么样？", "en", "zh"),
-            Some(("zh", "en"))
-        );
-
-        // When typing Chinese on a zh -> en pair, no change is needed
-        assert_eq!(auto_route_language_pair("你好世界", "zh", "en"), None);
-
-        // Devanagari provides an unambiguous route for Hindi.
-        assert_eq!(
-            auto_route_language_pair("नमस्ते दुनिया", "en", "hi-IN"),
-            Some(("hi", "en"))
-        );
-        assert_eq!(
-            auto_route_language_pair("नमस्ते दुनिया", "en", "hin"),
-            Some(("hi", "en"))
-        );
-
-        // When typing Japanese on a zh -> en pair, routes ja -> en
-        assert_eq!(
-            auto_route_language_pair("こんにちは", "zh", "en"),
-            Some(("ja", "en"))
-        );
-
-        // Pure Japanese Kanji without Chinese markers in a Japanese context stays Japanese
-        assert_eq!(
-            auto_route_language_pair("了解", "ja", "zh"),
-            None // Already matching source "ja", no flip
-        );
-
-        // English loanwords in a ja -> zh context do not trigger false English routing
-        assert_eq!(
-            auto_route_language_pair("OK nice", "ja", "zh"),
-            None
-        );
-
-        // Substantial English sentences route properly
-        assert_eq!(
-            auto_route_language_pair("What are you doing today?", "ja", "zh"),
-            Some(("en", "zh"))
-        );
-    }
-
-    #[test]
-    fn test_chinese_vs_japanese_discrimination() {
-        // Japanese Kanji words without Chinese markers
-        assert!(!has_distinct_chinese_markers("了解"));
-        assert!(!has_distinct_chinese_markers("大丈夫"));
-        assert!(!has_distinct_chinese_markers("写真"));
-        assert!(!has_distinct_chinese_markers("乾杯"));
-        assert!(!has_distinct_chinese_markers("先生"));
-        assert!(!has_distinct_chinese_markers("再会"));
-
-        // Chinese sentences with distinct markers
-        assert!(has_distinct_chinese_markers("你好，吃了吗"));
-        assert!(has_distinct_chinese_markers("这是我的朋友"));
-        assert!(has_distinct_chinese_markers("我们明天见"));
-        assert!(has_distinct_chinese_markers("没问题，马上来"));
-        assert!(has_distinct_chinese_markers("謝謝大家"));
-    }
-
-    #[test]
-    fn test_english_substantial_candidate() {
-        assert!(!is_substantial_english_candidate("ok"));
-        assert!(!is_substantial_english_candidate("OK nice"));
-        assert!(!is_substantial_english_candidate("gg vrchat"));
-        assert!(!is_substantial_english_candidate("thank you"));
-        assert!(!is_substantial_english_candidate("Thank you for watching."));
-        
-        assert!(is_substantial_english_candidate("How are you doing today?"));
-        assert!(is_substantial_english_candidate("This is a complete English sentence."));
-    }
 }

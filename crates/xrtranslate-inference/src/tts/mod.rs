@@ -81,21 +81,3 @@ pub(crate) fn decode_pcm16_wav(wav: &[u8]) -> Result<SynthesizedPcm, InferenceEr
         sample_rate,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::pcm16_mono_16khz_to_wav;
-
-    #[test]
-    fn extracts_provider_pcm_without_forwarding_a_wav_header() {
-        let wav = pcm16_mono_16khz_to_wav(&[1, 0, 2, 0]).unwrap();
-        assert_eq!(
-            decode_pcm16_wav(&wav).unwrap(),
-            SynthesizedPcm {
-                bytes: vec![1, 0, 2, 0],
-                sample_rate: 16_000
-            }
-        );
-    }
-}

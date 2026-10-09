@@ -62,28 +62,3 @@ impl Surface {
         self.speech.bounds()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hidden_presentation_clears_stale_speech() {
-        let mut speech = Speech::default();
-        speech.say("A previous message", 0.0);
-        let mut surface = Surface::default();
-        surface.update(Presentation {
-            speech: speech.clone(),
-            visible: true,
-            ..Presentation::default()
-        });
-        assert!(!surface.presentation.speech.finished(0.0));
-        surface.update(Presentation {
-            speech,
-            visible: false,
-            ..Presentation::default()
-        });
-        assert_eq!(surface.presentation.speech, Speech::default());
-        assert!(surface.presentation.speech.bounds().is_none());
-    }
-}

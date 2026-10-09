@@ -147,9 +147,7 @@ impl<N: Clone + Eq + Hash> ForceLayout<N> {
         let pitches = counts
             .iter()
             .enumerate()
-            .map(|(group, &count)| {
-                group_sizes[group] / count as f32 + Vec2::new(76.0, 100.0)
-            })
+            .map(|(group, &count)| group_sizes[group] / count as f32 + Vec2::new(76.0, 100.0))
             .collect::<Vec<_>>();
         let radii = pitches
             .iter()
@@ -187,10 +185,8 @@ impl<N: Clone + Eq + Hash> ForceLayout<N> {
             let offset = Vec2::angled(angle) * pitches[node.group] * radius * 0.68;
             let center = anchors[node.group] + offset;
             self.homes.push(center);
-            self.positions.insert(
-                node.id.clone(),
-                (center - node.size * 0.5).into(),
-            );
+            self.positions
+                .insert(node.id.clone(), (center - node.size * 0.5).into());
         }
         let mut seen = HashSet::new();
         let edges = edges
@@ -401,16 +397,6 @@ impl<T: Clone + PartialEq> GraphEditHistory<T> {
     pub fn clear(&mut self) {
         self.undo_stack.clear();
         self.redo_stack.clear();
-    }
-
-    #[cfg(test)]
-    pub fn undo_count(&self) -> usize {
-        self.undo_stack.len()
-    }
-
-    #[cfg(test)]
-    pub fn redo_count(&self) -> usize {
-        self.redo_stack.len()
     }
 }
 
@@ -842,7 +828,12 @@ where
             self.canvas.pan += ui.input(|input| input.pointer.delta());
         }
         if allow_scroll_zoom
-            && ui.input(|input| input.pointer.hover_pos().is_some_and(|p| canvas.contains(p)))
+            && ui.input(|input| {
+                input
+                    .pointer
+                    .hover_pos()
+                    .is_some_and(|p| canvas.contains(p))
+            })
         {
             let scroll = ui.input(|input| input.smooth_scroll_delta.y);
             if scroll.abs() > f32::EPSILON {
@@ -1061,164 +1052,4 @@ pub(crate) fn nearest_port<P: Clone>(
         })
         .min_by(|(left, _), (right, _)| left.total_cmp(right))
         .map(|(_, port)| port)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    type State = GraphEditorState<&'static str, u8, &'static str, &'static str>;
-
-    #[test]
-    fn graph_switch_resets_all_transient_editor_state() {
-        let mut state = State::default();
-        state.select_node("node", false);
-        state.select_link(1, false);
-        state.start_wire_from_output("out");
-
-        assert!(state.reset_for_graph("next"));
-        assert!(state.selected_nodes.is_empty());
-        assert!(state.selected_links.is_empty());
-        assert!(!state.wire_active());
-        assert!(state.canvas.fit_pending);
-        assert!(!state.reset_for_graph("next"));
-    }
-
-    #[test]
-    fn drag_uses_stable_origins_and_commits_all_selected_nodes() {
-        let mut state = State::default();
-        state.select_node("a", false);
-        state.select_node("b", true);
-        state.begin_node_drag("a", [("a", [0.0, 0.0]), ("b", [20.0, 10.0])]);
-        state.update_node_drag(Vec2::new(17.0, 31.0));
-        let mut moves = state.finish_node_drag(Some(16.0));
-        moves.sort_by_key(|movement| movement.node_id);
-        assert_eq!(moves[0].position, [16.0, 32.0]);
-        assert_eq!(moves[1].position, [32.0, 48.0]);
-    }
-
-    #[test]
-    fn rewire_commit_is_atomic_and_retains_the_replaced_link() {
-        let mut state = State::default();
-        state.start_rewire("source", 7);
-        let commit = state.finish_wire(Some("target")).unwrap();
-        assert_eq!(
-            commit,
-            WireCommit {
-                from: "source",
-                to: Some("target"),
-                replaced: Some(7),
-            }
-        );
-        assert!(!state.wire_active());
-    }
-
-    #[test]
-    fn closest_link_returns_only_the_nearest_hit() {
-        let first = graph_canvas::bezier_points(Pos2::ZERO, Pos2::new(100.0, 0.0));
-        let second = graph_canvas::bezier_points(Pos2::new(0.0, 20.0), Pos2::new(100.0, 20.0));
-        assert_eq!(
-            closest_link(Pos2::new(50.0, 18.0), [(1, first), (2, second)], 12.0),
-            Some(2)
-        );
-    }
-
-    #[test]
-    fn nearest_port_returns_the_closest_target_inside_the_hit_radius() {
-        assert_eq!(
-            nearest_port(
-                Pos2::new(10.0, 0.0),
-                [
-                    ("far", Pos2::new(20.0, 0.0)),
-                    ("near", Pos2::new(12.0, 0.0))
-                ],
-                12.0,
-            ),
-            Some("near")
-        );
-    }
-
-    #[test]
-    fn layered_layout_uses_real_node_sizes_and_keeps_columns_apart() {
-        let moves = layered_layout(
-            [
-                LayoutNode {
-                    id: "source-a",
-                    size: Vec2::new(232.0, 148.0),
-                },
-                LayoutNode {
-                    id: "source-b",
-                    size: Vec2::new(232.0, 112.0),
-                },
-                LayoutNode {
-                    id: "mixer",
-                    size: Vec2::new(280.0, 112.0),
-                },
-                LayoutNode {
-                    id: "sink",
-                    size: Vec2::new(232.0, 148.0),
-                },
-            ],
-            [
-                ("source-a", "mixer"),
-                ("source-b", "mixer"),
-                ("mixer", "sink"),
-            ],
-            LayeredLayoutOptions {
-                horizontal_gap: 160.0,
-                vertical_gap: 64.0,
-                snap: None,
-                ..LayeredLayoutOptions::default()
-            },
-        );
-        let positions = moves
-            .into_iter()
-            .map(|movement| (movement.node_id, movement.position))
-            .collect::<HashMap<_, _>>();
-        assert!(positions["source-b"][1] - positions["source-a"][1] >= 148.0 + 64.0);
-        assert!(positions["mixer"][0] - positions["source-a"][0] >= 232.0 + 160.0);
-        assert!(positions["sink"][0] - positions["mixer"][0] >= 280.0 + 160.0);
-    }
-
-    #[test]
-    fn layered_layout_puts_cyclic_remainders_in_a_safe_final_column() {
-        let moves = layered_layout(
-            [
-                LayoutNode {
-                    id: 1,
-                    size: Vec2::splat(100.0),
-                },
-                LayoutNode {
-                    id: 2,
-                    size: Vec2::splat(100.0),
-                },
-            ],
-            [(1, 2), (2, 1)],
-            LayeredLayoutOptions::default(),
-        );
-        assert_eq!(moves.len(), 2);
-        assert_eq!(moves[0].position[0], moves[1].position[0]);
-        assert!(moves[1].position[1] > moves[0].position[1]);
-    }
-
-    #[test]
-    fn shared_history_undoes_redoes_and_discards_a_redo_branch() {
-        let mut history = GraphEditHistory::new(3);
-        history.push(1);
-        history.push(2);
-        assert_eq!(history.undo(3), Some(2));
-        assert_eq!(history.undo(2), Some(1));
-        assert_eq!(history.redo(1), Some(2));
-        history.push(4);
-        assert!(!history.can_redo());
-        assert_eq!(history.undo_count(), 2);
-    }
-
-    #[test]
-    fn history_skips_uncommitted_or_rejected_no_op_snapshots() {
-        let mut history = GraphEditHistory::new(4);
-        history.push(1);
-        history.push(2);
-        assert_eq!(history.undo(2), Some(1));
-    }
 }

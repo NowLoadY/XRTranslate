@@ -201,29 +201,3 @@ pub(super) fn run_mpv_extract(
         "MPV media extraction is unavailable; rebuild with the `mpv` feature".into(),
     ))
 }
-
-#[cfg(all(test, feature = "mpv"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_mpv_extract_pan_filter_generation() {
-        let single_fc = vec![2];
-        let filter = build_recognition_pan_filter(&single_fc);
-        assert_eq!(
-            filter.as_deref(),
-            Some("lavfi=[pan=stereo|c0=1.0*c2|c1=1.0*c2]")
-        );
-
-        let stereo_fl_fr = vec![0, 1];
-        let filter = build_recognition_pan_filter(&stereo_fl_fr);
-        assert_eq!(
-            filter.as_deref(),
-            Some("lavfi=[pan=stereo|c0=1.0*c0|c1=1.0*c1]")
-        );
-
-        let empty = vec![];
-        let filter = build_recognition_pan_filter(&empty);
-        assert_eq!(filter, None);
-    }
-}

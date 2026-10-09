@@ -102,7 +102,6 @@
             "mtmd.dll",
             "libomp140.x86_64.dll"
           ],
-          "sha256": "117bca1f594cffd96a77703aa23d98450800bc22022a307d1e3567187fbb50fe",
           "target": "windows-x86_64",
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10333/llama-b10333-bin-win-vulkan-x64.zip"
         },
@@ -121,7 +120,6 @@
             "libggml-base.so.0",
             "libggml-cpu-x64.so"
           ],
-          "sha256": "f14e312fbee33ce60d2eed7036de5debe31c1d7f4d8f0e37920eb0a2de0854a5",
           "target": "linux-x86_64",
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10333/llama-b10333-bin-ubuntu-vulkan-x64.tar.gz",
           "archive_format": "tar-gz",
@@ -135,7 +133,6 @@
           "required_files": [
             "ggml.dll"
           ],
-          "sha256": "563ab97cd003cf7cd4843677e6fea2f6162aee0c9580589c8d9e5816923076d5",
           "target": "windows-x86_64",
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10333/llama-b10333-bin-win-cpu-x64.zip"
         },
@@ -154,7 +151,6 @@
             "llama-b10333/libggml-base.so.0",
             "llama-b10333/libggml-cpu-x64.so"
           ],
-          "sha256": "936ce04d98abe2a977e9dd2ff92659bb96947e136acee8f2bc3e21d8eaebbf23",
           "target": "linux-x86_64",
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10333/llama-b10333-bin-ubuntu-x64.tar.gz"
         },
@@ -168,7 +164,6 @@
             "ggml.dll",
             "ggml-cuda.dll"
           ],
-          "sha256": "ddb316fb0d6e801cb772d87c4650c85225dca8b35ac0244a06ce7bb042aac64e",
           "target": "windows-x86_64",
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10333/llama-b10333-bin-win-cuda-12.4-x64.zip"
         },
@@ -182,7 +177,6 @@
             "cublasLt64_",
             "cublas64_"
           ],
-          "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
           "target": "windows-x86_64",
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10333/cudart-llama-bin-win-cuda-12.4-x64.zip"
         },
@@ -196,7 +190,6 @@
             "ggml.dll",
             "ggml-cuda.dll"
           ],
-          "sha256": "16cb6fb46efe3923833dc08eaeb7ab29c6251e29a11d9ae32581e226172e2af0",
           "target": "windows-x86_64",
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8913/llama-b8913-bin-win-cuda-13.1-x64.zip"
         },
@@ -210,7 +203,6 @@
             "cublasLt64_",
             "cublas64_"
           ],
-          "sha256": "f96935e7e385e3b2d0189239077c10fe8fd7e95690fea4afec455b1b6c7e3f18",
           "target": "windows-x86_64",
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b8913/cudart-llama-bin-win-cuda-13.1-x64.zip"
         },
@@ -224,7 +216,6 @@
             "ggml.dll",
             "ggml-cuda.dll"
           ],
-          "sha256": "d966ecd7519222814dbb3a7cd136e70747950ffad6e52800eb37387f47daaf77",
           "target": "windows-x86_64",
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10333/llama-b10333-bin-win-cuda-13.3-x64.zip"
         },
@@ -238,7 +229,6 @@
             "cublasLt64_",
             "cublas64_"
           ],
-          "sha256": "1462a050eb4c684921ba51dcc4cc488a036674c3e73e9945ee705b854808d03e",
           "target": "windows-x86_64",
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10333/cudart-llama-bin-win-cuda-13.3-x64.zip"
         },
@@ -260,7 +250,6 @@
             "libggml-base.so.0",
             "libggml-cpu-x64.so"
           ],
-          "sha256": "af4e9ebf4be46f6daf78f83d63266d12b1591b1147d8f08e297c1bda9bac7eb1",
           "target": "linux-x86_64",
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10978/llama-b10978-bin-ubuntu-cuda-12.8-x64.tar.gz"
         },
@@ -276,7 +265,6 @@
             "libcublasLt.so.12",
             "libcublas.so.12"
           ],
-          "sha256": "37465cf805289a93e1ee4df027d59df6c11209956ca38a77bf847cfcefe74767",
           "target": "linux-x86_64",
           "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10978/cudart-llama-b10978-bin-ubuntu-cuda-12.8-x64.tar.gz"
         }
@@ -295,7 +283,6 @@
           "required_files": [
             "libonnxruntime.so.1.28.0"
           ],
-          "sha256": "a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407",
           "target": "linux-x86_64",
           "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-1.28.0.tgz"
         },
@@ -306,7 +293,6 @@
           "required_files": [
             "onnxruntime.dll"
           ],
-          "sha256": "abef733dacbe2f571547a7150b479b5cb9cc0df22f96c24983a42cadb1b4f8bc",
           "target": "windows-x86_64",
           "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-win-x64-1.28.0.zip"
         }
@@ -322,7 +308,6 @@
             "onnxruntime_providers_shared.dll",
             "onnxruntime_providers_cuda.dll"
           ],
-          "sha256": "6b7bf16d6d30180db7f386fb179aa4e4f1313f0924531a2879b7b090b56518c1",
           "target": "windows-x86_64",
           "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-win-x64-gpu_cuda12-1.28.0.zip"
         },
@@ -336,7 +321,6 @@
             "onnxruntime_providers_shared.dll",
             "onnxruntime_providers_cuda.dll"
           ],
-          "sha256": "137f0822a4923b1d84d3e09496e0792ebbb221eb3a61a0657f71a12ab68ab1e2",
           "target": "windows-x86_64",
           "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-win-x64-gpu_cuda13-1.28.0.zip"
         },
@@ -351,7 +335,6 @@
             "libonnxruntime_providers_shared.so",
             "libonnxruntime_providers_cuda.so"
           ],
-          "sha256": "ea6bd2b65d7dfabbeb92c4af5dd8f12e5aed8601e544ad378d2f872275438b1a",
           "target": "linux-x86_64",
           "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-gpu_cuda12-1.28.0.tgz"
         }
@@ -365,7 +348,6 @@
           "required_files": [
             "cufft64_11.dll"
           ],
-          "sha256": "df1594afd3de4e23779511eb8eccc1f77faacd9fa64e6154828b9bdd68d9a785",
           "bytes": 209047054,
           "target": "windows-x86_64",
           "url": "https://developer.download.nvidia.com/compute/cuda/redist/libcufft/windows-x86_64/libcufft-windows-x86_64-11.2.1.3-archive.zip"
@@ -378,7 +360,6 @@
           "required_files": [
             "cufft64_12.dll"
           ],
-          "sha256": "83df908ae67e2b3a86201de8463562ab49dd9ee8b3b5efc3fdc2e681b14b5dd9",
           "bytes": 182627436,
           "target": "windows-x86_64",
           "url": "https://developer.download.nvidia.com/compute/cuda/redist/libcufft/windows-x86_64/libcufft-windows-x86_64-12.3.0.29-archive.zip"
@@ -392,7 +373,6 @@
           "required_files": [
             "libcurand.so.10"
           ],
-          "sha256": "49b274db4780d421bd2ccd362e1415c13887c53c214f0d4b761752b8f9f6aa1e",
           "target": "linux-x86_64",
           "url": "https://files.pythonhosted.org/packages/31/44/193a0e171750ca9f8320626e8a1f2381e4077a65e69e2fb9708bd479e34a/nvidia_curand_cu12-10.3.10.19-py3-none-manylinux_2_27_x86_64.whl"
         }
@@ -413,7 +393,6 @@
             "cudnn_adv64_9.dll",
             "cudnn_cnn64_9.dll"
           ],
-          "sha256": "003a5d022899268f7deef0c3530f1587a3195a93905a16fd0e3c9da0c46b88ab",
           "target": "windows-x86_64",
           "url": "https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.20.0.48_cuda12-archive.zip"
         },
@@ -432,7 +411,6 @@
             "cudnn_adv64_9.dll",
             "cudnn_cnn64_9.dll"
           ],
-          "sha256": "d3ccce59130f10f68fe09365feea65b622bcecace79a0682fe43ee07b88a6a29",
           "target": "windows-x86_64",
           "url": "https://developer.download.nvidia.com/compute/cudnn/redist/cudnn/windows-x86_64/cudnn-windows-x86_64-9.20.0.48_cuda13-archive.zip"
         },
@@ -452,7 +430,6 @@
             "libcudnn_adv.so.9",
             "libcudnn_cnn.so.9"
           ],
-          "sha256": "55e49fca81d6873c585eb724a47dfdf17faeceae501e9428bb1c527a085ab4d6",
           "target": "linux-x86_64",
           "url": "https://files.pythonhosted.org/packages/b1/b1/6b944dd4cf0a1d1e70d659f35a2202c735916cbd47cb93beccc4f2e8e696/nvidia_cudnn_cu12-9.17.0.29-py3-none-manylinux_2_27_x86_64.whl"
         }
@@ -465,7 +442,6 @@
         "label": "Silero VAD",
         "name": "silero_vad.onnx",
         "relative_path": "models/silero-vad/src/silero_vad/data/silero_vad.onnx",
-        "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
         "url": "https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx"
       },
       {
@@ -473,7 +449,6 @@
         "label": "GTCRN Speech Enhancement",
         "name": "gtcrn_simple.onnx",
         "relative_path": "models/gtcrn/gtcrn_simple.onnx",
-        "sha256": "e77603ac0c23dac3227dd2d7135b3a585cbee2679048aecfa886657d3ae1b534",
         "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx"
       },
       {
@@ -483,7 +458,6 @@
         "label": "3D-Speaker Diarization",
         "name": "speaker_embedding.onnx",
         "relative_path": "models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx",
-        "sha256": "0ad55dd88808d4d85838bc3774503921024ab21e0880ca7b3841e2034958a560",
         "target": "linux-x86_64",
         "url": "https://github.com/NowLoadY/XRTranslate/releases/download/v0.2.11/XRTranslate-v0.2.11-linux-x64.zip"
       },
@@ -494,7 +468,6 @@
         "label": "3D-Speaker Diarization",
         "name": "speaker_embedding.onnx",
         "relative_path": "models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx",
-        "sha256": "dc19d6a533f1b7cc4f7586907ad0a8061f42d43184b83e0c1e03904e566db09c",
         "target": "windows-x86_64",
         "url": "https://github.com/NowLoadY/XRTranslate/releases/download/v0.2.11/XRTranslate-v0.2.11-win-x64.zip"
       }

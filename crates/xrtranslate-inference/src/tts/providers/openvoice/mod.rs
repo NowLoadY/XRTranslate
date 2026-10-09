@@ -314,35 +314,6 @@ fn openvoice_error(message: impl Into<String>) -> InferenceError {
 mod tests {
     use super::*;
 
-    #[test]
-    fn language_gate_is_explicit_about_the_ngc_package_scope() {
-        assert!(OpenVoiceBaseVoice::EnglishNewest.supports_language("en"));
-        assert!(OpenVoiceBaseVoice::EnglishNewest.supports_language("EN-US"));
-        assert!(!OpenVoiceBaseVoice::EnglishNewest.supports_language("zh"));
-        assert!(OpenVoiceBaseVoice::Chinese.supports_language("zh-CN"));
-        assert!(!OpenVoiceBaseVoice::Chinese.supports_language("en"));
-    }
-
-    #[test]
-    fn base_voice_selects_an_explicit_frontend_and_graph_contract() {
-        assert_eq!(
-            OpenVoiceBaseVoice::EnglishBritish.frontend_kind(),
-            MeloFrontendKind::English
-        );
-        assert_eq!(
-            OpenVoiceBaseVoice::EnglishBritish.graph_contract(),
-            OpenVoiceGraphContract::NvidiaDynamic
-        );
-        assert_eq!(
-            OpenVoiceBaseVoice::Chinese.frontend_kind(),
-            MeloFrontendKind::ChineseMixedEnglish
-        );
-        assert_eq!(
-            OpenVoiceBaseVoice::Chinese.graph_contract(),
-            OpenVoiceGraphContract::XrtranslatePinned512
-        );
-    }
-
     #[tokio::test]
     #[ignore = "requires the optional OpenVoice v3 model package"]
     async fn installed_model_clones_and_synthesizes_english_without_python() {

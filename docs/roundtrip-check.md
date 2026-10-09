@@ -35,7 +35,7 @@ cargo run -p xrtranslate-backend --features managed-ort -- --config config.json 
 此入口直接检验软件推理层，不启动桌面 UI、WebSocket 服务或 XR Corpus，
 不覆盖麦克风采集、VAD、声卡播放、OSC 或语料检索，也不加载桌面保存的自定义提示词图。
 需要验证录音经 WebSocket/VAD 的路径时使用 [录音检查](speech-check.md)。
-已有模型专项测试覆盖语言恢复、提供方协议及模型细节，与这个回环并不等价，故保留。
+效果验证以真实输入、阶段文本、报告和音频为准；没有实际运行的模型或平台不视为通过。
 回环代码集中在 `apps/xrtranslate-backend/src/diagnostics/`，没有为回环另外增加回归测试。
 
 ## 已安装模型及语种查询

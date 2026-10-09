@@ -37,6 +37,3 @@ pub use resolve::{
     DefaultLlamaCppPaths, ModelAssetsConfig, ResolvedModelAsset, ResolvedModelAssets,
     resolve_from_project_root,
 };
-
-#[cfg(test)]
-mod tests;

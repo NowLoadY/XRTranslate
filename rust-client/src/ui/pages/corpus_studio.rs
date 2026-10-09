@@ -552,7 +552,8 @@ pub(crate) fn render(
             return;
         };
         let height = ui.available_height().max(360.0);
-        let is_wide = (ui.available_width() > ui.available_height() && ui.available_width() >= 540.0)
+        let is_wide = (ui.available_width() > ui.available_height()
+            && ui.available_width() >= 540.0)
             || ui.available_width() >= 700.0;
         if controller.node_draft.is_some() && !is_wide {
             egui::ScrollArea::vertical()
@@ -587,9 +588,11 @@ pub(crate) fn render(
     });
     if controller.confirm_delete_domain {
         let domain = controller.snapshot.as_ref().and_then(|snapshot| {
-            snapshot.domains.iter().find(|domain| {
-                controller.selected_domain.as_deref() == Some(domain.id.as_str())
-            }).cloned()
+            snapshot
+                .domains
+                .iter()
+                .find(|domain| controller.selected_domain.as_deref() == Some(domain.id.as_str()))
+                .cloned()
         });
         if let Some(domain) = domain {
             if let Some(confirmed) = crate::ui::modal::confirm(
@@ -614,7 +617,10 @@ pub(crate) fn render(
             let message = format!(
                 "{}\n\n{}",
                 node_label(&draft, language),
-                tr(language, "Delete this term? Connections will remain idle until a matching term is added."),
+                tr(
+                    language,
+                    "Delete this term? Connections will remain idle until a matching term is added."
+                ),
             );
             if let Some(confirmed) = crate::ui::modal::confirm(
                 ui.ctx(),

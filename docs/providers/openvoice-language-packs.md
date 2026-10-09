@@ -27,11 +27,11 @@ Every conversion recipe records all inputs needed to reproduce its bytes:
 
 - MeloTTS source repository and full commit SHA;
 - OpenVoice source repository and full commit SHA;
-- language checkpoint repository, immutable revision, configuration SHA-256,
-  checkpoint SHA-256, upstream speaker key, and numeric speaker ID;
+- language checkpoint repository, immutable revision, configuration and
+  checkpoint paths, upstream speaker key, and numeric speaker ID;
 - matching OpenVoice V2 source-embedding path, immutable revision, shape,
-  dtype, and SHA-256;
-- BERT repository, immutable revision, vocabulary and weight hashes, selected
+  and dtype;
+- BERT repository, immutable revision, vocabulary and weight paths, selected
   hidden state, output width, and dtype;
 - frontend source data and versions, including tokenizer, normalization,
   segmentation, pronunciation, tone, and license inputs;
@@ -97,7 +97,7 @@ newlines, English code switching, camel-case English, unknown characters, and
 the 512-token boundary.
 
 If a deliberate behavior differs from upstream, document the input, both
-outputs, quality rationale, and a regression test. A non-silent synthesis
+outputs, quality rationale, and a real synthesis check. A non-silent synthesis
 smoke does not establish frontend parity.
 
 ## Stable ONNX boundary
@@ -149,10 +149,15 @@ licenses/
 ```
 
 `package-manifest.json` records provenance, conversion versions, graph ABI,
-validation evidence, and every other packaged file's size and SHA-256. The
-release manifest may hash package files and README content but must not hash
-itself. Staging starts from an empty directory so results do not depend on an
-earlier run.
+validation evidence, and every other packaged file's size. New package and
+release manifests use schema version 2 without per-file hash fields. Staging
+starts from an empty directory so results do not depend on an earlier run.
+
+Direct archive and license downloads use `xrtranslate-download` for retries,
+resume, and size checks. Hugging Face source downloads and publication use the
+official SDK's cache and content identification. The publisher checks each
+uploaded file's path and size at the returned immutable commit; it does not
+download the file again for a separate hash pass.
 
 Before catalogue registration:
 
@@ -162,17 +167,17 @@ Before catalogue registration:
    unauthenticated downloads;
 3. obtain the resulting immutable commit SHA;
 4. verify every file again through that commit's public resolve URL;
-5. copy exact relative paths, sizes, and SHA-256 values into the asset
-   catalogue.
+5. copy exact relative paths and sizes into the asset catalogue.
 
-Moving branches, private repositories, LFS pointer bytes, size-only checks,
-and placeholder revisions are not valid installation contracts.
+Moving branches, private repositories, LFS pointer bytes, and placeholder
+revisions are not valid installation contracts. Installation checks required
+files, readability, sizes, and successful archive extraction.
 
 ## Integration without duplicate infrastructure
 
 1. Add the manifest and semantic file roles in
-   `xrtranslate-assets/src/catalog/tts/openvoice.rs`; re-export it through the
-   existing TTS and aggregate catalogues.
+   `crates/xrtranslate-assets/model_catalog.json`; the build generates the
+   shared catalogue from these model cards.
 2. Add only the frontend/model behavior that differs inside
    `xrtranslate-inference/src/tts/providers/openvoice/`. Keep the provider
    entry module as the readable language-to-frontend composition map.
@@ -186,8 +191,8 @@ and placeholder revisions are not valid installation contracts.
 
 ## Acceptance gates
 
-- catalogue roles, paths, public URLs, sizes, hashes, languages, voice
-  presets, and package composition tests pass;
+- a real package resolves its declared roles, paths, public URLs, sizes,
+  languages, and voice presets through the shared catalogue;
 - provider configuration accepts complementary languages, rejects overlapping
   variants, and preserves/removes language-to-preset entries correctly;
 - official frontend fixtures pass for the new language;

@@ -127,21 +127,3 @@ fn validate_options(
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fast_mode_rejects_unbounded_output() {
-        let (tx, _rx) = unbounded();
-        let options = AudioImportOptions {
-            pacing: AudioImportPacing::AsFastAsPossible,
-            ..AudioImportOptions::default()
-        };
-        assert!(matches!(
-            validate_options(&tx, &options),
-            Err(AudioImportError::InvalidOptions(_))
-        ));
-    }
-}

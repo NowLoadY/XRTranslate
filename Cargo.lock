@@ -8709,7 +8709,6 @@ version = "0.3.2"
 dependencies = [
  "serde",
  "serde_json",
- "sha2",
  "tokio",
  "uuid",
  "xrtranslate-download",
@@ -8773,7 +8772,6 @@ dependencies = [
  "httpdate",
  "reqwest",
  "rustls",
- "sha2",
  "tokio",
  "webpki-roots 1.0.9",
 ]
@@ -8816,7 +8814,6 @@ name = "xrtranslate-installer"
 version = "0.3.2"
 dependencies = [
  "clap",
- "sha2",
  "tokio",
  "xrtranslate-assets",
  "xrtranslate-config",
@@ -8830,7 +8827,6 @@ version = "0.3.2"
 dependencies = [
  "clap",
  "serde_json",
- "sha2",
  "xr-corpus-core",
  "xrtranslate-assets",
  "xrtranslate-config",
@@ -8849,7 +8845,6 @@ name = "xrtranslate-protocol"
 version = "0.3.2"
 dependencies = [
  "serde",
- "serde_json",
  "xr-corpus-protocol",
  "xrtranslate-prompt",
 ]

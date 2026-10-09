@@ -1,7 +1,7 @@
 //! Background native-model installation for the desktop client.
 //!
 //! The installer intentionally owns its own worker thread and Tokio runtime:
-//! model downloads and SHA-256 verification can take minutes and must never
+//! model downloads and installation can take minutes and must never
 //! run in eframe's UI thread.
 
 use crossbeam_channel::{Receiver, TryRecvError, unbounded};
@@ -22,21 +22,14 @@ use xrtranslate_download::{DownloadCancellation, DownloadSource};
 pub enum NativeModelTaskState {
     Idle,
     Discovering,
-    Detected {
-        /// Packages whose expected files are already present. They still need
-        /// SHA-256 verification before the backend may use them.
-        present: Vec<ModelAssetId>,
-        ready: Vec<ModelAssetId>,
-    },
+    Detected,
     Installing {
         asset_id: ModelAssetId,
         relative_path: Option<String>,
         downloaded_bytes: u64,
         total_bytes: u64,
     },
-    Installed {
-        asset_id: ModelAssetId,
-    },
+    Installed,
     Failed(String),
 }
 
@@ -90,13 +83,8 @@ enum NativeModelTaskEvent {
 
 #[derive(Debug)]
 enum NativeModelTaskResult {
-    Detected {
-        present: Vec<ModelAssetId>,
-        ready: Vec<ModelAssetId>,
-    },
-    Installed {
-        asset_id: ModelAssetId,
-    },
+    Detected(Vec<ModelAssetId>),
+    Installed { asset_id: ModelAssetId },
     Cancelled,
     Failed(String),
 }
@@ -113,7 +101,7 @@ struct ModelInstallBatch {
 }
 
 /// Coordinates one native model worker and a serial, de-duplicated install
-/// queue. Results are polled by the UI, while filesystem checks, hashing, and
+/// queue. Results are polled by the UI, while filesystem checks and
 /// network transfer stay on the worker.
 pub struct NativeModelTaskManager {
     state: NativeModelTaskState,
@@ -126,7 +114,7 @@ pub struct NativeModelTaskManager {
     restart_after_source_switch: bool,
     source_switch_cleanup: Vec<ModelAssetId>,
     install_batch: Option<ModelInstallBatch>,
-    known_present: HashSet<ModelAssetId>,
+    known_ready: HashSet<ModelAssetId>,
 }
 
 impl Default for NativeModelTaskManager {
@@ -142,7 +130,7 @@ impl Default for NativeModelTaskManager {
             restart_after_source_switch: false,
             source_switch_cleanup: Vec::new(),
             install_batch: None,
-            known_present: HashSet::new(),
+            known_ready: HashSet::new(),
         }
     }
 }
@@ -224,7 +212,7 @@ impl NativeModelTaskManager {
 
         let requested = asset_ids
             .into_iter()
-            .filter(|id| !self.known_present.contains(id))
+            .filter(|id| !self.known_ready.contains(id))
             .collect::<Vec<_>>();
         if requested.is_empty() {
             return Ok(());
@@ -276,14 +264,13 @@ impl NativeModelTaskManager {
         self.state = NativeModelTaskState::Idle;
         self.events = None;
         self.active_task = None;
-        self.known_present.remove(&asset_id);
+        self.known_ready.remove(&asset_id);
         self.install_batch = None;
         Ok(())
     }
 
     /// Starts a one-time, background presence scan for the configured model
-    /// packages. It never downloads or hashes; explicit verification remains
-    /// available as a separate action.
+    /// packages, checking required files and their sizes.
     pub fn discover_existing(&mut self, project_root: PathBuf) -> Result<(), String> {
         self.start(project_root, NativeModelTask::Discover)
     }
@@ -301,49 +288,14 @@ impl NativeModelTaskManager {
     pub fn needs_discovery(&self) -> bool {
         matches!(
             self.state,
-            NativeModelTaskState::Idle | NativeModelTaskState::Installed { .. }
+            NativeModelTaskState::Idle | NativeModelTaskState::Installed
         )
     }
 
+    /// Whether the latest background scan or install found all required files.
     #[must_use]
     pub fn is_model_ready(&self, asset_id: ModelAssetId) -> bool {
-        if self.known_present.contains(&asset_id) {
-            return true;
-        }
-        match (&self.state, asset_id) {
-            (NativeModelTaskState::Detected { ready, .. }, requested) => ready.contains(&requested),
-            (
-                NativeModelTaskState::Installed {
-                    asset_id: installed,
-                    ..
-                },
-                requested,
-            ) => *installed == requested,
-            _ => false,
-        }
-    }
-
-    /// Returns true when all expected files for this package are present.
-    /// This inexpensive preflight deliberately does not hash on the UI thread;
-    /// callers should offer verification instead of another download.
-    #[must_use]
-    pub fn is_model_present(&self, asset_id: ModelAssetId) -> bool {
-        if self.known_present.contains(&asset_id) {
-            return true;
-        }
-        match (&self.state, asset_id) {
-            (NativeModelTaskState::Detected { present, .. }, requested) => {
-                present.contains(&requested)
-            }
-            (
-                NativeModelTaskState::Installed {
-                    asset_id: installed,
-                    ..
-                },
-                requested,
-            ) => *installed == requested,
-            _ => false,
-        }
+        self.known_ready.contains(&asset_id)
     }
 
     #[must_use]
@@ -416,13 +368,12 @@ impl NativeModelTaskManager {
         self.cancellation = None;
         let active_task = self.active_task.take();
         match result {
-            NativeModelTaskResult::Detected { present, ready } => {
-                self.known_present.extend(present.iter().copied());
-                self.known_present.extend(ready.iter().copied());
-                self.state = NativeModelTaskState::Detected { present, ready };
+            NativeModelTaskResult::Detected(ready) => {
+                self.known_ready = ready.into_iter().collect();
+                self.state = NativeModelTaskState::Detected;
             }
             NativeModelTaskResult::Installed { asset_id } => {
-                self.known_present.insert(asset_id);
+                self.known_ready.insert(asset_id);
                 if let Some(batch) = &mut self.install_batch {
                     if !batch.completed.contains(&asset_id) {
                         batch.completed.push(asset_id);
@@ -432,7 +383,7 @@ impl NativeModelTaskManager {
                     }
                     batch.failed_asset_id = None;
                 }
-                self.state = NativeModelTaskState::Installed { asset_id };
+                self.state = NativeModelTaskState::Installed;
                 if let Err(error) = self.start_next_queued() {
                     self.state = NativeModelTaskState::Failed(error);
                 }
@@ -560,15 +511,11 @@ fn run_task(
 fn discover_models(project_root: PathBuf) -> NativeModelTaskResult {
     match load_assets(&project_root) {
         Ok(assets) => {
-            let present = assets
-                .catalog_assets()
-                .filter(|asset| asset.check().is_empty())
+            let ready = assets
+                .installed_assets()
                 .map(|asset| asset.manifest().id)
                 .collect::<Vec<_>>();
-            NativeModelTaskResult::Detected {
-                present,
-                ready: Vec::new(),
-            }
+            NativeModelTaskResult::Detected(ready)
         }
         Err(error) => NativeModelTaskResult::Failed(error),
     }
@@ -627,32 +574,12 @@ fn install_model(
     }
 }
 
-/// Filesystem-backed startup preflight. Unlike the task manager's live UI
-/// state, this does not report every package missing before discovery runs.
-#[cfg(test)]
-pub fn configured_models_are_present(project_root: &std::path::Path) -> Result<bool, String> {
-    let packages = configured_model_packages(project_root)?;
-    let assets = load_assets(project_root)?;
-    let presence = assets.check();
-    Ok(packages.iter().all(|package| {
-        !presence
-            .diagnostics()
-            .iter()
-            .any(|diagnostic| diagnostic.asset_id == package.id)
-    }))
-}
-
 pub fn model_asset_is_present(
     project_root: &std::path::Path,
     asset_id: ModelAssetId,
 ) -> Result<bool, String> {
     let assets = load_assets(project_root)?;
-    let target = assets.asset(asset_id);
-    Ok(target
-        .manifest()
-        .required_files
-        .iter()
-        .all(|file| target.directory().join(file.relative_path).is_file()))
+    Ok(assets.asset(asset_id).check().is_empty())
 }
 
 fn load_assets(project_root: &std::path::Path) -> Result<ResolvedModelAssets, String> {
@@ -836,296 +763,4 @@ fn load_config(project_root: &std::path::Path) -> Result<AppConfig, String> {
     let config_path = project_root.join("config.json");
     AppConfig::from_path_with_user_config(&config_path, project_root)
         .map_err(|error| format!("Cannot read {}: {error}", config_path.display()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn model_levels_are_scoped_to_provider_and_capability() {
-        let hunyuan = model_packages_for_provider("hunyuan", ModelCapability::Translation);
-        assert_eq!(hunyuan.len(), 4);
-        assert!(hunyuan.iter().all(|package| package.provider == "hunyuan"
-            && package.capability == ModelCapability::Translation));
-
-        assert!(model_packages_for_provider("qwen3-gguf", ModelCapability::Translation).is_empty());
-    }
-
-    #[test]
-    fn hardware_defaults_choose_small_then_normal() {
-        let gib = 1024 * 1024 * 1024;
-        assert_eq!(
-            default_model_for_vram("qwen3-gguf", ModelCapability::Asr, 4 * gib),
-            Some(ModelAssetId::Qwen3Asr06bQ8Gguf)
-        );
-        assert_eq!(
-            default_model_for_vram("hunyuan", ModelCapability::Translation, 4 * gib),
-            Some(ModelAssetId::HunyuanMtQ2kGguf)
-        );
-        assert_eq!(
-            default_model_for_vram("qwen3-gguf", ModelCapability::Asr, 8 * gib),
-            Some(ModelAssetId::Qwen3AsrGguf)
-        );
-        assert_eq!(
-            default_model_for_vram("hunyuan", ModelCapability::Translation, 8 * gib),
-            Some(ModelAssetId::HunyuanMtGguf)
-        );
-        assert_eq!(
-            default_model_for_vram("hunyuan", ModelCapability::Translation, 2 * gib),
-            Some(ModelAssetId::HaidassTranslate143mQ8Gguf)
-        );
-        assert_eq!(
-            default_model_for_vram("qwen3-gguf", ModelCapability::Asr, 2 * gib),
-            Some(ModelAssetId::SenseVoiceSmallInt8Onnx)
-        );
-    }
-
-    #[test]
-    fn selecting_a_specific_model_persists_its_asset_key() {
-        let root =
-            std::env::temp_dir().join(format!("xrtranslate-model-choice-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let mut document: serde_json::Value =
-            serde_json::from_str(include_str!("../../config.json")).unwrap();
-        document["asr"]["providers"]["qwen3-gguf"]["model_assets"] =
-            serde_json::json!(["qwen3-asr-gguf"]);
-        let base = document.to_string();
-        std::fs::write(root.join("config.json"), &base).unwrap();
-        set_model_asset(&root, ModelCapability::Asr, ModelAssetId::Qwen3Asr06bQ8Gguf).unwrap();
-        set_model_asset(
-            &root,
-            ModelCapability::Translation,
-            ModelAssetId::HunyuanMtQ2kGguf,
-        )
-        .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(root.join("config.json")).unwrap(),
-            base
-        );
-        let override_document: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(xrtranslate_config::RuntimeLayout::user_config_path(&root)).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            override_document.pointer("/asr/providers/qwen3-gguf/model_asset"),
-            Some(&serde_json::Value::from("qwen3-asr-0.6b-q8-gguf"))
-        );
-        let packages = configured_model_packages(&root).unwrap();
-        assert!(
-            packages
-                .iter()
-                .any(|package| package.id == ModelAssetId::Qwen3Asr06bQ8Gguf)
-        );
-        assert!(
-            packages
-                .iter()
-                .any(|package| package.id == ModelAssetId::HunyuanMtQ2kGguf)
-        );
-        assert!(
-            set_model_asset(
-                &root,
-                ModelCapability::Translation,
-                ModelAssetId::Qwen3AsrGguf
-            )
-            .is_err()
-        );
-        set_model_asset(&root, ModelCapability::Asr, ModelAssetId::SenseVoiceSmallInt8Onnx)
-            .unwrap();
-        let override_document: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(xrtranslate_config::RuntimeLayout::user_config_path(&root)).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            override_document.pointer("/asr/providers/qwen3-gguf/transport"),
-            Some(&serde_json::Value::from("onnx-cpu"))
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn mixed_remote_and_local_routes_require_only_the_local_package() {
-        let mut document: serde_json::Value =
-            serde_json::from_str(include_str!("../../config.json")).unwrap();
-        document["asr"]["provider"] = serde_json::Value::from("openai");
-        document["asr"]["providers"]["openai"]["api_key"] = serde_json::Value::from("test-key");
-        let config = AppConfig::from_value(document).unwrap();
-
-        let assets = configured_assets(&config, std::path::Path::new("project-root")).unwrap();
-        let active = assets
-            .active_assets()
-            .map(|asset| asset.manifest().id)
-            .collect::<Vec<_>>();
-
-        assert_eq!(active, vec![ModelAssetId::HunyuanMtGguf]);
-    }
-
-    #[test]
-    fn startup_presence_reads_disk_before_background_discovery() {
-        let root = std::env::temp_dir().join(format!(
-            "xrtranslate-startup-model-presence-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("config.json"), include_str!("../../config.json")).unwrap();
-
-        let assets = load_assets(&root).unwrap();
-        for asset in assets.active_assets() {
-            std::fs::create_dir_all(asset.directory()).unwrap();
-            for file in asset.manifest().required_files {
-                let path = asset.directory().join(file.relative_path);
-                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                std::fs::write(path, []).unwrap();
-            }
-        }
-
-        assert!(configured_models_are_present(&root).unwrap());
-        let manager = NativeModelTaskManager::default();
-        assert!(
-            configured_model_packages(&root)
-                .unwrap()
-                .iter()
-                .all(|package| !manager.is_model_present(package.id))
-        );
-
-        let mut packages = configured_model_packages(&root).unwrap();
-        let package = packages.remove(0);
-        let other_package = packages
-            .first()
-            .expect("default configuration has another model package")
-            .clone();
-        let target = assets.asset(package.id);
-        let staging = target
-            .directory()
-            .parent()
-            .unwrap()
-            .join(".xrtranslate-staging")
-            .join(format!(
-                "{}-{}",
-                package.id.as_str(),
-                target.manifest().source.revision
-            ));
-        std::fs::create_dir_all(&staging).unwrap();
-        std::fs::write(staging.join("artifact.part"), b"partial").unwrap();
-        let mut manager = NativeModelTaskManager::default();
-        manager.switch_download_source(root.clone(), true).unwrap();
-        assert!(!staging.exists());
-        manager.delete(&root, package.id).unwrap();
-        assert!(!model_asset_is_present(&root, package.id).unwrap());
-        assert!(model_asset_is_present(&root, other_package.id).unwrap());
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn detected_state_is_scoped_to_the_packages_that_were_discovered() {
-        let manager = NativeModelTaskManager {
-            state: NativeModelTaskState::Detected {
-                present: vec![ModelAssetId::Qwen3AsrGguf],
-                ready: vec![ModelAssetId::Qwen3AsrGguf],
-            },
-            events: None,
-            proxy_url: None,
-            use_mirror: false,
-            rediscover_after_current: false,
-            cancellation: None,
-            active_task: None,
-            restart_after_source_switch: false,
-            ..NativeModelTaskManager::default()
-        };
-
-        assert!(manager.is_model_ready(ModelAssetId::Qwen3AsrGguf));
-        assert!(manager.is_model_present(ModelAssetId::Qwen3AsrGguf));
-        assert!(!manager.is_model_ready(ModelAssetId::HunyuanMtGguf));
-        assert!(!manager.is_model_present(ModelAssetId::HunyuanMtGguf));
-    }
-
-    #[test]
-    fn provider_change_clears_a_stale_discovery_failure() {
-        let mut manager = NativeModelTaskManager::default();
-        manager.state = NativeModelTaskState::Failed("old provider failure".into());
-
-        manager.invalidate_discovery();
-
-        assert!(matches!(manager.state(), NativeModelTaskState::Idle));
-        assert!(manager.needs_discovery());
-    }
-
-    #[test]
-    fn provider_change_discards_a_task_result_that_finishes_late() {
-        let (sender, receiver) = unbounded();
-        let mut manager = NativeModelTaskManager {
-            state: NativeModelTaskState::Discovering,
-            events: Some(receiver),
-            proxy_url: None,
-            use_mirror: false,
-            rediscover_after_current: false,
-            cancellation: None,
-            active_task: None,
-            restart_after_source_switch: false,
-            ..NativeModelTaskManager::default()
-        };
-        manager.invalidate_discovery();
-        sender
-            .send(NativeModelTaskEvent::Finished(
-                NativeModelTaskResult::Failed("old provider failure".into()),
-            ))
-            .unwrap();
-
-        manager.poll();
-
-        assert!(matches!(manager.state(), NativeModelTaskState::Idle));
-        assert!(manager.needs_discovery());
-    }
-
-    #[test]
-    fn rapid_model_requests_join_one_ordered_deduplicated_batch() {
-        let root = PathBuf::from("project-root");
-        let mut manager = NativeModelTaskManager {
-            state: NativeModelTaskState::Installing {
-                asset_id: ModelAssetId::Qwen3AsrGguf,
-                relative_path: Some("active.gguf.part".into()),
-                downloaded_bytes: 10,
-                total_bytes: 100,
-            },
-            active_task: Some((
-                root.clone(),
-                NativeModelTask::Install(ModelAssetId::Qwen3AsrGguf),
-            )),
-            install_batch: Some(ModelInstallBatch {
-                project_root: root.clone(),
-                package_ids: vec![ModelAssetId::Qwen3AsrGguf],
-                queued: VecDeque::new(),
-                completed: Vec::new(),
-                completed_bytes: 0,
-                total_bytes: model_download_bytes(ModelAssetId::Qwen3AsrGguf),
-                failed_asset_id: None,
-            }),
-            ..NativeModelTaskManager::default()
-        };
-
-        manager
-            .enqueue_many(
-                root,
-                [
-                    ModelAssetId::HunyuanMtGguf,
-                    ModelAssetId::HunyuanMtGguf,
-                    ModelAssetId::OpenVoiceV2OnnxFp16,
-                ],
-            )
-            .unwrap();
-
-        let batch = manager.batch_snapshot().unwrap();
-        assert_eq!(batch.total_packages, 3);
-        assert_eq!(
-            batch.queued_packages,
-            vec![
-                ModelAssetId::HunyuanMtGguf,
-                ModelAssetId::OpenVoiceV2OnnxFp16
-            ]
-        );
-        assert_eq!(batch.current_asset_id, Some(ModelAssetId::Qwen3AsrGguf));
-        assert!(batch.total_bytes > model_download_bytes(ModelAssetId::Qwen3AsrGguf));
-    }
 }

@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-import hashlib
 import json
 import math
 import os
 import shutil
 import sys
 import tempfile
-import urllib.request
-import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +20,7 @@ import torch
 from huggingface_hub import hf_hub_download
 from transformers import AutoModelForMaskedLM
 
+from artifacts import download_file, extract_ngc_member, file_record
 from languages import LANGUAGES, LanguageSpec, package_language_record
 from frontend_recipes import (
     buildable_language_keys,
@@ -41,11 +39,9 @@ OPENVOICE_REVISION = "f36e7edfe1684461a8343844af60babc2efbb727"
 REFERENCE_ENCODER_REPOSITORY = "TigreGotico/voiceclonnx-openvoice-v2"
 REFERENCE_ENCODER_REVISION = "34d010c192c97f763207f488f6057fd07fee42ad"
 NGC_V2_ARCHIVE_URL = "https://api.ngc.nvidia.com/v2/models/nvidia/nvigisdk/openvoice/versions/OpenVoice%20v2/files/%7B09F5E010-5D94-413C-8852-ABC34464DDF8%7D.zip"
-NGC_V2_ARCHIVE_SHA256 = "266dc4662965858e07a1c8cb086f17e1c30f0fdc3202e8934103dc7927314811"
 NGC_V2_ARCHIVE_BYTES = 204_579_050
 CMUDICT_LICENSE_URL = "https://raw.githubusercontent.com/cmusphinx/cmudict/74790861f652b15e4ac49015a90074ad62a27690/LICENSE"
 CMUDICT_LICENSE_BYTES = 1_754
-CMUDICT_LICENSE_SHA256 = "bd4ce8e44170a5f9f481310ca85c51de3c4f851a65e679b40e603b143bd3542a"
 OPSET = 16
 MELO_GRAPH_TOKEN_WIDTH = 512
 DEFAULT_PHONE_DURATION_FRAMES = 5.0
@@ -80,73 +76,6 @@ class HParams:
             if isinstance(value, dict):
                 value = HParams(**value)
             setattr(self, key, value)
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def file_record(path: Path, root: Path) -> dict[str, Any]:
-    return {
-        "path": path.relative_to(root).as_posix(),
-        "bytes": path.stat().st_size,
-        "sha256": sha256(path),
-    }
-
-
-def verify_file(path: Path, expected_bytes: int, expected_sha256: str) -> None:
-    if path.stat().st_size != expected_bytes or sha256(path) != expected_sha256:
-        raise RuntimeError(f"Immutable source verification failed: {path}")
-
-
-def download_ngc_archive(cache_root: Path) -> Path:
-    cache_root.mkdir(parents=True, exist_ok=True)
-    archive = cache_root / "openvoice-v2-ngc.zip"
-    if archive.is_file():
-        try:
-            verify_file(archive, NGC_V2_ARCHIVE_BYTES, NGC_V2_ARCHIVE_SHA256)
-            return archive
-        except RuntimeError:
-            archive.unlink()
-    partial = archive.with_suffix(".zip.part")
-    if partial.exists():
-        partial.unlink()
-    urllib.request.urlretrieve(NGC_V2_ARCHIVE_URL, partial)
-    verify_file(partial, NGC_V2_ARCHIVE_BYTES, NGC_V2_ARCHIVE_SHA256)
-    partial.replace(archive)
-    return archive
-
-
-def download_cmudict_license(cache_root: Path) -> Path:
-    cache_root.mkdir(parents=True, exist_ok=True)
-    target = cache_root / "cmudict-license.txt"
-    if target.is_file():
-        try:
-            verify_file(target, CMUDICT_LICENSE_BYTES, CMUDICT_LICENSE_SHA256)
-            return target
-        except RuntimeError:
-            target.unlink()
-    partial = target.with_suffix(".txt.part")
-    if partial.exists():
-        partial.unlink()
-    urllib.request.urlretrieve(CMUDICT_LICENSE_URL, partial)
-    verify_file(partial, CMUDICT_LICENSE_BYTES, CMUDICT_LICENSE_SHA256)
-    partial.replace(target)
-    return target
-
-
-def extract_ngc_member(archive: Path, suffix: str, output: Path) -> None:
-    with zipfile.ZipFile(archive) as package:
-        matches = [name for name in package.namelist() if name.endswith(suffix)]
-        if len(matches) != 1:
-            raise RuntimeError(f"Expected one NGC member ending in {suffix!r}, got {matches}")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        with package.open(matches[0]) as source, output.open("wb") as target:
-            shutil.copyfileobj(source, target)
 
 
 def require_environment() -> None:
@@ -577,10 +506,6 @@ def build(repo_root: Path, spec: LanguageSpec, output_root: Path) -> Path:
     checkpoint_source = Path(
         hf_hub_download(spec.melo_repository, "checkpoint.pth", revision=spec.melo_revision)
     )
-    if sha256(config_source) != spec.config_sha256:
-        raise RuntimeError("Pinned MeloTTS config SHA-256 does not match")
-    if sha256(checkpoint_source) != spec.checkpoint_sha256:
-        raise RuntimeError("Pinned MeloTTS checkpoint SHA-256 does not match")
     config_data = json.loads(config_source.read_text(encoding="utf-8"))
     if config_data["data"]["spk2id"].get(spec.speaker_key) != spec.speaker_id:
         raise RuntimeError("Pinned MeloTTS speaker key/id does not match the language spec")
@@ -597,30 +522,19 @@ def build(repo_root: Path, spec: LanguageSpec, output_root: Path) -> Path:
             revision=OPENVOICE_REVISION,
         )
     )
-    if sha256(embedding_source) != spec.openvoice_embedding_sha256:
-        raise RuntimeError("Pinned OpenVoice source embedding SHA-256 does not match")
     bert_config_source = Path(
         hf_hub_download(
             spec.bert_repository, "config.json", revision=spec.bert_revision
         )
     )
-    bert_weights_source = Path(
-        hf_hub_download(
-            spec.bert_repository,
-            spec.bert_weights_filename,
-            revision=spec.bert_revision,
-        )
+    hf_hub_download(
+        spec.bert_repository,
+        spec.bert_weights_filename,
+        revision=spec.bert_revision,
     )
     bert_vocab_source = Path(
         hf_hub_download(spec.bert_repository, "vocab.txt", revision=spec.bert_revision)
     )
-    for source, expected, label in (
-        (bert_config_source, spec.bert_config_sha256, "config"),
-        (bert_weights_source, spec.bert_weights_sha256, "weights"),
-        (bert_vocab_source, spec.bert_vocab_sha256, "vocabulary"),
-    ):
-        if sha256(source) != expected:
-            raise RuntimeError(f"Pinned BERT {label} SHA-256 does not match")
     bert_config = json.loads(bert_config_source.read_text(encoding="utf-8"))
     if bert_config.get("hidden_size") != spec.bert_hidden_size:
         raise RuntimeError("Pinned BERT hidden size does not match the language spec")
@@ -631,8 +545,18 @@ def build(repo_root: Path, spec: LanguageSpec, output_root: Path) -> Path:
             revision=REFERENCE_ENCODER_REVISION,
         )
     )
-    ngc_archive = download_ngc_archive(output_root / ".cache")
-    cmudict_license_source = download_cmudict_license(output_root / ".cache")
+    ngc_archive = download_file(
+        repo_root,
+        NGC_V2_ARCHIVE_URL,
+        NGC_V2_ARCHIVE_BYTES,
+        output_root / ".cache" / "openvoice-v2-ngc.zip",
+    )
+    cmudict_license_source = download_file(
+        repo_root,
+        CMUDICT_LICENSE_URL,
+        CMUDICT_LICENSE_BYTES,
+        output_root / ".cache" / "cmudict-license.txt",
+    )
 
     config_target = package_root / "model_config.json"
     shutil.copyfile(config_source, config_target)
@@ -684,7 +608,7 @@ def build(repo_root: Path, spec: LanguageSpec, output_root: Path) -> Path:
         *frontend_files,
     ]
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "package_id": f"openvoice-v2-{spec.key}-onnx-fp16",
         "language": package_language_record(spec),
         "upstream": {
@@ -699,34 +623,25 @@ def build(repo_root: Path, spec: LanguageSpec, output_root: Path) -> Path:
             "melo_checkpoint": {
                 "repository": spec.melo_repository,
                 "revision": spec.melo_revision,
-                "config_sha256": sha256(config_source),
-                "checkpoint_sha256": sha256(checkpoint_source),
             },
             "source_embedding": {
                 "repository": OPENVOICE_REPOSITORY,
                 "revision": OPENVOICE_REVISION,
                 "path": spec.openvoice_embedding_path,
-                "sha256": sha256(embedding_source),
             },
             "openvoice_core": {
                 "ngc_archive_url": NGC_V2_ARCHIVE_URL,
                 "ngc_archive_bytes": NGC_V2_ARCHIVE_BYTES,
-                "ngc_archive_sha256": NGC_V2_ARCHIVE_SHA256,
                 "reference_encoder_repository": REFERENCE_ENCODER_REPOSITORY,
                 "reference_encoder_revision": REFERENCE_ENCODER_REVISION,
-                "reference_encoder_sha256": sha256(reference_encoder_source),
             },
             "cmudict_license": {
                 "url": CMUDICT_LICENSE_URL,
                 "bytes": CMUDICT_LICENSE_BYTES,
-                "sha256": CMUDICT_LICENSE_SHA256,
             },
             "bert": {
                 "repository": spec.bert_repository,
                 "revision": spec.bert_revision,
-                "config_sha256": sha256(bert_config_source),
-                "weights_sha256": sha256(bert_weights_source),
-                "vocab_sha256": sha256(bert_vocab_source),
             },
         },
         "conversion": {

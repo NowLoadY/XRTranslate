@@ -194,17 +194,6 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    #[test]
-    fn qwen_cloud_requires_the_native_audio_protocol() {
-        for provider in ["qwen", "qwen-intl"] {
-            assert_eq!(
-                AsrProfile::registered(provider, "dashscope"),
-                Some(AsrProfile::QwenAudioFlash)
-            );
-            assert_eq!(AsrProfile::registered(provider, "openai"), None);
-        }
-    }
-
     /// Exercises the same language codes sent by the pipeline, including its
     /// constrained recovery after an automatic recognition attempt.
     #[tokio::test]

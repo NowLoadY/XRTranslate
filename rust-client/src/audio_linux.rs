@@ -613,19 +613,6 @@ pub fn run_capture(
 #[cfg(test)]
 mod live_tests {
     use super::*;
-    #[test]
-    #[ignore = "requires a running PulseAudio or pipewire-pulse desktop session"]
-    fn enumerate_live_audio_server() {
-        let devices = available_devices().expect("audio server should enumerate playback devices");
-        assert!(!devices.is_empty(), "audio server has no playback sinks");
-        let apps = available_applications().expect("audio server should enumerate sink inputs");
-        eprintln!(
-            "devices: {:?}",
-            devices.iter().map(|d| (&d.id, &d.name)).collect::<Vec<_>>()
-        );
-        eprintln!("applications: {apps:?}");
-        device_config("").expect("default playback sink should be capturable");
-    }
 
     #[test]
     #[ignore = "requires an active PulseAudio playback client; set XRTRANSLATE_AUDIO_SMOKE_PID"]

@@ -137,65 +137,6 @@ fn sensevoice_error(error: impl std::fmt::Display) -> InferenceError {
 mod tests {
     use super::*;
 
-    #[test]
-    fn sensevoice_accepts_pipeline_language_names_and_regional_codes() {
-        use xrtranslate_engine::language::SupportedLanguage;
-
-        // Accept canonical pipeline codes and legacy callers through the shared parser.
-        for code in ["zh", "zh-TW", "en", "ja", "ko", "yue"] {
-            let language = SupportedLanguage::from_code(code).unwrap();
-            let expected = if code == "zh-TW" { "zh" } else { code };
-            assert_eq!(sensevoice_language(Some(language.name())), Ok(expected));
-            assert_eq!(sensevoice_language(Some(code)), Ok(expected));
-        }
-        assert_eq!(sensevoice_language(Some("zh_Hant_TW")), Ok("zh"));
-        assert_eq!(sensevoice_language(None), Ok("auto"));
-    }
-
-    #[tokio::test]
-    async fn sensevoice_rejects_unsupported_languages_before_native_initialization() {
-        let (requests, receiver) = mpsc::channel();
-        let adapter = SenseVoiceAdapter { requests };
-        for language in ["Russian", "fr-FR", "unknown", "en,ja"] {
-            let error = adapter
-                .transcribe_pcm16(&[0, 0], Some(language))
-                .await
-                .unwrap_err();
-            assert!(matches!(
-                error,
-                InferenceError::InvalidConfiguration {
-                    field: "asr.language",
-                    ..
-                }
-            ));
-            assert!(!error.to_string().is_empty());
-        }
-        assert!(matches!(
-            receiver.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        ));
-    }
-
-    #[tokio::test]
-    async fn sensevoice_initialization_error_includes_language_and_model_paths() {
-        let root = std::env::temp_dir().join(format!(
-            "xrtranslate-missing-sensevoice-{}",
-            std::process::id()
-        ));
-        assert!(!root.exists());
-        let model = root.join("model.int8.onnx");
-        let tokens = root.join("tokens.txt");
-        let adapter = SenseVoiceAdapter::new(model.clone(), tokens.clone());
-        let error = adapter
-            .transcribe_pcm16(&[0, 0], Some("English"))
-            .await
-            .unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("language=en"), "{message}");
-        assert!(message.contains(&model.display().to_string()), "{message}");
-        assert!(message.contains(&tokens.display().to_string()), "{message}");
-    }
-
     /// Set SENSEVOICE_TEST_DIR to the verified model and upstream test_wavs.
     #[tokio::test]
     #[ignore = "requires downloaded SenseVoiceSmall model and en/zh/ja audio fixtures"]

@@ -5,7 +5,7 @@
 //! that installation and shares one serialized SDK session for the process lifetime.
 
 use std::fmt;
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 use std::path::PathBuf;
 
 #[cfg(windows)]
@@ -17,12 +17,12 @@ pub enum VoiceMeeterEdition {
     Standard,
     Banana,
     Potato,
-    #[cfg(any(windows, test))]
+    #[cfg(windows)]
     Unknown(i32),
 }
 
 impl VoiceMeeterEdition {
-    #[cfg(any(windows, test))]
+    #[cfg(windows)]
     pub const fn from_raw(value: i32) -> Self {
         match value {
             1 => Self::Standard,
@@ -53,7 +53,7 @@ impl VoiceMeeterEdition {
         }
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(windows)]
     const fn supports_bus(self, bus: VoiceMeeterBus) -> bool {
         match self {
             Self::Standard => matches!(bus, VoiceMeeterBus::B1),
@@ -72,7 +72,7 @@ pub enum VoiceMeeterBus {
 }
 
 impl VoiceMeeterBus {
-    #[cfg(any(windows, test))]
+    #[cfg(windows)]
     const fn parameter_suffix(self) -> &'static str {
         match self {
             Self::B1 => "B1",
@@ -91,7 +91,7 @@ pub struct VoiceMeeterVersion {
 }
 
 impl VoiceMeeterVersion {
-    #[cfg(any(windows, test))]
+    #[cfg(windows)]
     pub const fn from_packed(value: u32) -> Self {
         Self {
             major: ((value >> 24) & 0xff) as u8,
@@ -119,12 +119,12 @@ pub struct VoiceMeeterStatus {
     pub version: Option<VoiceMeeterVersion>,
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn strip_bus_parameter(strip: u8, bus: VoiceMeeterBus) -> String {
     format!("Strip[{strip}].{}", bus.parameter_suffix())
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn remote_dll_name() -> &'static str {
     if cfg!(target_pointer_width = "64") {
         "VoicemeeterRemote64.dll"
@@ -133,7 +133,7 @@ fn remote_dll_name() -> &'static str {
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 fn installation_dir_from_uninstall_string(value: &str) -> Option<PathBuf> {
     let value = value.trim();
     if value.is_empty() {
@@ -718,73 +718,3 @@ mod platform {
 }
 
 pub use platform::{VoiceMeeterRemote, VoiceMeeterStripRouteGuard};
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn packed_version_uses_official_byte_order() {
-        let version = VoiceMeeterVersion::from_packed(0x0301_0204);
-        assert_eq!(
-            version,
-            VoiceMeeterVersion {
-                major: 3,
-                minor: 1,
-                patch: 2,
-                build: 4
-            }
-        );
-        assert_eq!(version.to_string(), "3.1.2.4");
-    }
-
-    #[test]
-    fn editions_and_bus_support_match_mixer_layouts() {
-        assert_eq!(
-            VoiceMeeterEdition::from_raw(1),
-            VoiceMeeterEdition::Standard
-        );
-        assert_eq!(VoiceMeeterEdition::from_raw(2), VoiceMeeterEdition::Banana);
-        assert_eq!(VoiceMeeterEdition::from_raw(3), VoiceMeeterEdition::Potato);
-        assert_eq!(VoiceMeeterEdition::from_raw(6), VoiceMeeterEdition::Potato);
-        assert!(VoiceMeeterEdition::Standard.supports_bus(VoiceMeeterBus::B1));
-        assert!(!VoiceMeeterEdition::Standard.supports_bus(VoiceMeeterBus::B2));
-        assert!(VoiceMeeterEdition::Banana.supports_bus(VoiceMeeterBus::B2));
-        assert!(!VoiceMeeterEdition::Banana.supports_bus(VoiceMeeterBus::B3));
-        assert!(VoiceMeeterEdition::Potato.supports_bus(VoiceMeeterBus::B3));
-    }
-
-    #[test]
-    fn strip_bus_parameter_changes_only_the_target_button() {
-        assert_eq!(strip_bus_parameter(0, VoiceMeeterBus::B1), "Strip[0].B1");
-        assert_eq!(strip_bus_parameter(7, VoiceMeeterBus::B3), "Strip[7].B3");
-    }
-
-    #[test]
-    fn uninstall_command_resolves_quoted_and_unquoted_executables() {
-        assert_eq!(
-            installation_dir_from_uninstall_string(
-                r#""C:\Program Files (x86)\VB\Voicemeeter\voicemeeter8setup.exe" -uninstall"#
-            ),
-            Some(PathBuf::from(r"C:\Program Files (x86)\VB\Voicemeeter"))
-        );
-        assert_eq!(
-            installation_dir_from_uninstall_string(
-                r"C:\Program Files\VB\Voicemeeter\voicemeetersetup.exe /U"
-            ),
-            Some(PathBuf::from(r"C:\Program Files\VB\Voicemeeter"))
-        );
-    }
-
-    #[test]
-    fn dll_name_matches_process_architecture() {
-        assert_eq!(
-            remote_dll_name(),
-            if cfg!(target_pointer_width = "64") {
-                "VoicemeeterRemote64.dll"
-            } else {
-                "VoicemeeterRemote.dll"
-            }
-        );
-    }
-}

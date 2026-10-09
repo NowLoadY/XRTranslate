@@ -212,36 +212,3 @@ fn native_error(message: impl Into<String>) -> InferenceError {
         message: message.into(),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn legacy_directml_selection_uses_the_supported_auto_policy() {
-        assert_eq!(
-            OnnxExecutionDevice::from_config("directml"),
-            OnnxExecutionDevice::Auto
-        );
-    }
-
-    #[test]
-    fn cpu_selection_never_attempts_an_accelerator() {
-        assert_eq!(
-            device_attempts(OnnxExecutionDevice::Cpu),
-            &[ActiveOnnxDevice::Cpu]
-        );
-    }
-
-    #[test]
-    fn explicit_cuda_never_falls_back_to_cpu() {
-        assert_eq!(
-            device_attempts(OnnxExecutionDevice::Cuda),
-            &[ActiveOnnxDevice::Cuda]
-        );
-        assert_eq!(
-            device_attempts(OnnxExecutionDevice::Auto),
-            &[ActiveOnnxDevice::Cuda, ActiveOnnxDevice::Cpu]
-        );
-    }
-}

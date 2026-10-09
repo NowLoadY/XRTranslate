@@ -30,7 +30,7 @@ PCM16/16 kHz
 models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx
 ```
 
-其输入为动态长度 `[batch, frames, 80]`，输出为 `[batch, 192]`。当前导出文件大小为 71,964,309 字节，SHA-256 为 `0dde34a7c212b7b4ece05b2a120409507971d1cc504e30ed05ec61c7e5dc5d9b`。
+其输入为动态长度 `[batch, frames, 80]`，输出为 `[batch, 192]`。当前导出文件大小为 71,964,309 字节。
 
 `build_release.ps1` 将 Silero VAD 与该声纹 ONNX 一并作为每个 Release 的必带原生资源；它不受 `-IncludeModels` 控制。打包器会把发布包中的 `speaker.enabled` 改为 `true`，并固定相对模型路径。Release 运行时不需要 Python、Conda、PyTorch 或 3D-Speaker 源码。
 

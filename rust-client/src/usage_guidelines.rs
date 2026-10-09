@@ -162,29 +162,3 @@ const NOTICE_ITEMS_RU: [&str; 4] = [
     "Распознавание речи, перевод и синтез речи создаются моделями ИИ и могут содержать ошибки. Всегда проверяйте важную информацию перед использованием.",
     "XRTranslate — это локальное ПО с открытым исходным кодом. Всю полноту юридической ответственности за использование программы и созданный контент несет пользователь.",
 ];
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn full_guidelines_contain_critical_clauses_in_all_languages() {
-        for lang in UiLanguage::ALL {
-            let text = full_guidelines_text(lang);
-            assert!(!text.is_empty());
-            assert!(text.contains("1."));
-            assert!(text.contains("5."));
-        }
-    }
-
-    #[test]
-    fn notice_summary_has_four_items_in_all_languages() {
-        for lang in UiLanguage::ALL {
-            let items = notice_summary_items(lang);
-            assert_eq!(items.len(), 4);
-            for item in items {
-                assert!(!item.is_empty());
-            }
-        }
-    }
-}

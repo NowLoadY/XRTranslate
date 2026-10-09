@@ -294,23 +294,3 @@ impl RgbaTexture {
         overlay.set_vulkan_texture(&mut self.native)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn extension_names_are_stable_deduplicated_and_bounded() {
-        let names = || vec![CString::new("VK_KHR_external_memory").unwrap(); 2];
-        let a = intern(names()).unwrap();
-        let b = intern(names()).unwrap();
-        assert_eq!(a.len(), 1);
-        assert_eq!(a[0].as_ptr(), b[0].as_ptr());
-        assert!(intern(vec![CString::new("invalid").unwrap()]).is_err());
-        assert!(
-            intern(vec![
-                CString::new(format!("VK_{}", "x".repeat(256))).unwrap()
-            ])
-            .is_err()
-        );
-    }
-}

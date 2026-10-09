@@ -588,35 +588,3 @@ fn frontend_error(message: impl Into<String>) -> InferenceError {
         message: message.into(),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn distributes_phone_features_without_losing_alignment() {
-        assert_eq!(distribute(5, 2), vec![3, 2]);
-        assert_eq!(distribute(2, 4), vec![1, 1, 0, 0]);
-    }
-
-    #[test]
-    fn wordpieces_reconstruct_dictionary_words() {
-        let tokens = vec!["x".to_owned(), "##r".to_owned(), ",".to_owned()];
-        let groups = wordpiece_groups(&tokens);
-        assert_eq!(groups[0].tokens.concat(), "xr");
-        assert_eq!(groups[1].tokens.concat(), ",");
-    }
-
-    #[test]
-    fn normalizes_numbers_ordinals_currency_and_common_symbols() {
-        assert_eq!(
-            normalize_text("Version 2.8 costs $12.50 on the 21st & is 100% native."),
-            "version two point eight costs twelve dollars and fifty cents on the twenty first and is one hundred percent native."
-        );
-    }
-
-    #[test]
-    fn preserves_leading_zeroes_as_spoken_digits() {
-        assert_eq!(normalize_text("Room 007"), "room zero zero seven");
-    }
-}

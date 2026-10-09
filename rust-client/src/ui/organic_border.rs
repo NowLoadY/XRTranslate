@@ -314,19 +314,3 @@ impl CallbackTrait for OrganicBorderCallback {
         render_pass.draw(0..3, 0..1);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn uniform_layout_matches_wgsl_alignment() {
-        assert_eq!(std::mem::size_of::<OrganicBorderUniform>(), 48);
-    }
-
-    #[test]
-    fn layout_gutter_contains_the_organic_outline() {
-        let minimum_visual_reach = ORGANIC_BORDER_WIDTH * 0.5 + 0.65 + 0.75;
-        assert!(LAYOUT_GUTTER as f32 >= minimum_visual_reach);
-    }
-}

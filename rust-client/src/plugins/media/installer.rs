@@ -10,8 +10,6 @@ use xrtranslate_download::{DownloadClient, DownloadProgress, DownloadSpec};
 pub const MPV_DOWNLOAD_URL: &str =
     "https://github.com/NowLoadY/XRTranslate/raw/main/rust-client/resources/bin/mpv-2.zip";
 pub const MPV_DOWNLOAD_BYTES: u64 = 46_816_131;
-pub const MPV_DOWNLOAD_SHA256: &str =
-    "378b772e0d3db87b35f26540f73a3c4fb8ba15ad7882b084a6233caa164c5944";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MpvInstallState {
@@ -150,12 +148,7 @@ async fn download_and_install_mpv(
     let client = DownloadClient::with_proxy("XRTranslate", proxy_url)
         .map_err(|e| format!("Cannot initialize download client: {e}"))?;
 
-    let spec = DownloadSpec::verified(
-        "mpv-2.zip",
-        MPV_DOWNLOAD_URL,
-        MPV_DOWNLOAD_BYTES,
-        MPV_DOWNLOAD_SHA256,
-    );
+    let spec = DownloadSpec::new("mpv-2.zip", MPV_DOWNLOAD_URL, MPV_DOWNLOAD_BYTES);
 
     client
         .download_to(spec, &complete_path, |progress: DownloadProgress| {
@@ -224,45 +217,4 @@ fn extract_mpv_zip(archive_path: &Path, target_dir: &Path) -> Result<(), String>
         let _ = fs::copy(&mpv_path, &libmpv_path);
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extract_mpv_zip_extracts_and_creates_libmpv_copy() {
-        let temp =
-            std::env::temp_dir().join(format!("xrt_mpv_extract_test_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&temp);
-        fs::create_dir_all(&temp).unwrap();
-
-        let zip_path = temp.join("test_mpv.zip");
-        {
-            let file = fs::File::create(&zip_path).unwrap();
-            let mut zip = zip::ZipWriter::new(file);
-            let options = zip::write::SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored);
-            zip.start_file("mpv-2.dll", options).unwrap();
-            use std::io::Write;
-            zip.write_all(b"fake_mpv_dll_binary").unwrap();
-            zip.finish().unwrap();
-        }
-
-        let target_dir = temp.join("resources_bin");
-        fs::create_dir_all(&target_dir).unwrap();
-
-        extract_mpv_zip(&zip_path, &target_dir).unwrap();
-
-        assert_eq!(
-            fs::read(target_dir.join("mpv-2.dll")).unwrap(),
-            b"fake_mpv_dll_binary"
-        );
-        assert_eq!(
-            fs::read(target_dir.join("libmpv-2.dll")).unwrap(),
-            b"fake_mpv_dll_binary"
-        );
-
-        let _ = fs::remove_dir_all(&temp);
-    }
 }

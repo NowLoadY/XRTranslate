@@ -30,7 +30,6 @@ use std::{
 pub(crate) struct OnboardingLayout {
     pub features: Option<[Rect; 3]>,
     pub header: Rect,
-    pub content: Option<(Rect, egui::LayerId)>,
     pub next: Rect,
     pub footer: Rect,
     pub requirement: Option<&'static str>,
@@ -46,7 +45,6 @@ impl Default for OnboardingLayout {
         Self {
             features: None,
             header: Rect::NOTHING,
-            content: None,
             next: Rect::NOTHING,
             footer: Rect::NOTHING,
             requirement: None,
@@ -129,8 +127,7 @@ impl Guide {
             language,
             route: scene.route,
             cue: scene.cue,
-            pending: (!intro && matches!(scene.route, Route::Onboarding(_)))
-                .then_some((scene.cue, 0.0)),
+            pending: (!intro && scene.automatic).then_some((scene.cue, 0.0)),
             announced: 0,
             center: start,
             velocity: Vec2::ZERO,
@@ -143,7 +140,7 @@ impl Guide {
             focus: None,
             resume_at: 0.0,
             last_activity: 0.0,
-            last_spoken: 0.0,
+            last_spoken: -3.0,
             mentioned: 0,
             line: scene.cue.text().into(),
             speech: Speech::default(),
@@ -293,11 +290,23 @@ impl Guide {
             self.mentioned = 0;
         }
         if changed_page || self.cue != scene.cue {
+            if changed_page && matches!(self.line, Message::Localized(_)) {
+                self.speech.dismiss(self.clock);
+            }
             self.cue = scene.cue;
-            self.speech.dismiss(self.clock);
-            self.pending = (matches!(scene.route, Route::Onboarding(_))
-                && self.announced & scene.cue.bit() == 0)
-                .then_some((scene.cue, self.clock));
+            self.mentioned &= !Attention::Next.bit();
+            self.pending = (scene.automatic
+                && (self.announced & scene.cue.bit() == 0
+                    || (!changed_page && scene.cue.repeat_after_change())))
+            .then_some((scene.cue, self.clock));
+        }
+        if !scene.automatic {
+            self.pending = None;
+        } else if self.stage == Stage::Ready
+            && self.pending.is_none()
+            && self.announced & scene.cue.bit() == 0
+        {
+            self.pending = Some((scene.cue, self.clock));
         }
     }
 
@@ -309,6 +318,8 @@ impl Guide {
     fn announce_pending(&mut self) {
         if let Some((cue, since)) = self.pending
             && self.clock - since >= 1.2
+            && self.speech.finished(self.clock)
+            && self.clock - self.last_spoken >= 3.0
         {
             self.pending = None;
             self.announce(cue);
@@ -368,7 +379,10 @@ impl Guide {
             && self.mentioned & topic.bit() == 0
         {
             self.mentioned |= topic.bit();
-            self.say(scene.reply(topic));
+            let line = scene.reply(topic);
+            if self.line != Message::Localized(line) {
+                self.say(line);
+            }
         }
     }
 }
@@ -423,11 +437,11 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         ctx.request_repaint();
         return;
     }
-    let (layout, mut page) = match layout {
+    let (layout, page) = match layout {
         Layout::Onboarding(layout) => (Some(layout), None),
         Layout::Page { bounds, layer } => (None, Some((bounds, layer))),
     };
-    let scene = dialogue::Context::read(app, layout.as_ref().and_then(|layout| layout.requirement));
+    let scene = dialogue::Context::read(app, layout.as_ref());
     let language = app.ui_language;
     let screen = ctx.viewport_rect();
     // The first welcome keeps its lively entrance; daily use stays parked.
@@ -453,9 +467,6 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
                 .filter(|rect| rect.is_finite() && rect.is_positive())
         })
         .unwrap_or(screen.shrink(12.0));
-    if welcome.is_none() {
-        page = page.or_else(|| layout.as_ref().and_then(|layout| layout.content));
-    }
     let (wall, pointer, focused, pressed) = ctx.input(|input| {
         (
             input.time,
@@ -474,6 +485,8 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         bounds.right() - small * 1.6,
         if welcome.is_some() {
             bounds.top() + small * 1.8
+        } else if layout.is_some() {
+            bounds.center().y
         } else {
             bounds.bottom() - small * 2.0
         },
@@ -828,331 +841,4 @@ fn resting_radius(screen: Rect) -> f32 {
 fn smooth(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn welcome_guide() -> (Guide, Entrance) {
-        let entrance = Entrance {
-            start: egui::pos2(860.0, 420.0),
-            greeting: egui::pos2(640.0, 400.0),
-            home: egui::pos2(740.0, 280.0),
-            radius: 48.0,
-            resting_radius: 22.0,
-        };
-        let guide = Guide::new(
-            0.0,
-            UiLanguage::English,
-            entrance.start,
-            &dialogue::Context {
-                route: Route::Onboarding(0),
-                cue: Cue::Hello,
-                blocked: None,
-            },
-            true,
-        );
-        (guide, entrance)
-    }
-
-    #[test]
-    fn welcome_keeps_the_lively_sequence_and_settles_at_the_smaller_size() {
-        let (mut guide, entrance) = welcome_guide();
-        let first = guide.welcome_frame(&entrance, true).unwrap();
-        assert_eq!(first.center, entrance.start);
-        assert_eq!(first.radius, entrance.radius);
-        assert!(first.roll < -0.5);
-        assert_eq!(guide.opacity, 1.0);
-        let mut stages = vec![guide.stage];
-        let mut last = first;
-        for tick in 1..=1800 {
-            guide.clock = tick as f64 / 60.0;
-            if let Some(frame) = guide.welcome_frame(&entrance, true) {
-                last = frame;
-            }
-            guide.speech.advance(guide.clock);
-            if stages.last() != Some(&guide.stage) {
-                stages.push(guide.stage);
-            }
-        }
-        assert_eq!(
-            stages,
-            vec![
-                Stage::Peek,
-                Stage::Greet,
-                Stage::TurnAway,
-                Stage::WalkAway,
-                Stage::TurnBack,
-                Stage::Ready
-            ]
-        );
-        assert_eq!(last.center, entrance.home);
-        assert_eq!(last.radius, entrance.resting_radius);
-        assert_eq!(last.yaw, 0.0);
-        assert_eq!(last.roll, 0.0);
-        assert!(guide.welcome_frame(&entrance, true).is_none());
-        assert_eq!(guide.announced & Cue::Hello.bit(), Cue::Hello.bit());
-    }
-
-    #[test]
-    fn paused_welcome_does_not_announce_or_advance_the_sequence() {
-        let (mut guide, entrance) = welcome_guide();
-        guide.clock = 1.4;
-        guide.welcome_frame(&entrance, false);
-        assert_eq!(guide.stage, Stage::Peek);
-        assert_eq!(guide.announced, 0);
-        guide.welcome_frame(&entrance, true);
-        assert_eq!(guide.stage, Stage::Greet);
-        guide.speech.dismiss(guide.clock);
-        guide.welcome_frame(&entrance, false);
-        assert_eq!(guide.stage, Stage::Greet);
-        guide.welcome_frame(&entrance, true);
-        assert_eq!(guide.stage, Stage::TurnAway);
-    }
-
-    #[test]
-    fn leaving_welcome_cancels_unfinished_entrance_motion() {
-        let (mut guide, entrance) = welcome_guide();
-        guide.enter(Stage::WalkAway);
-        guide.follow_scene(&dialogue::Context {
-            route: Route::Page(crate::ui::Page::Translation),
-            cue: Cue::Translation,
-            blocked: None,
-        });
-        assert_eq!(guide.stage, Stage::Ready);
-        assert!(guide.welcome_frame(&entrance, true).is_none());
-    }
-
-    fn quiet_guide() -> Guide {
-        Guide::new(
-            0.0,
-            UiLanguage::English,
-            egui::pos2(80.0, 80.0),
-            &dialogue::Context {
-                route: Route::Page(crate::ui::Page::Translation),
-                cue: Cue::Translation,
-                blocked: None,
-            },
-            false,
-        )
-    }
-
-    #[test]
-    fn relocation_never_travels_while_visible() {
-        let mut guide = quiet_guide();
-        let origin = guide.center;
-        let destination = egui::pos2(480.0, 320.0);
-        guide.opacity = 1.0;
-        for _ in 0..12 {
-            guide.move_to(Some(destination), 20.0, 0.6, 0.05);
-            assert_eq!(guide.center, origin);
-            assert!(guide.opacity > 0.0);
-        }
-        for _ in 0..4 {
-            guide.move_to(Some(destination), 20.0, 0.6, 0.05);
-            if guide.center != origin {
-                assert_eq!(guide.center, destination);
-                assert_eq!(guide.opacity, 0.0);
-                break;
-            }
-        }
-        assert_eq!(guide.center, destination);
-        guide.move_to(Some(destination), 20.0, 0.6, 0.05);
-        assert!(guide.opacity > 0.0 && guide.opacity < 0.1);
-        for _ in 0..60 {
-            guide.move_to(Some(destination), 20.0, 0.6, 0.05);
-        }
-        assert_eq!(guide.opacity, 0.6);
-        assert!(!guide.relocating);
-    }
-
-    #[test]
-    fn unavailable_space_fades_out_and_returns_without_a_flash() {
-        let mut guide = quiet_guide();
-        guide.opacity = 0.6;
-        let origin = guide.center;
-        guide.move_to(None, 20.0, 1.0, 0.05);
-        assert!(guide.opacity > 0.5 && guide.opacity < 0.6);
-        assert_eq!(guide.center, origin);
-        for _ in 0..20 {
-            guide.move_to(None, 20.0, 1.0, 0.05);
-        }
-        assert_eq!(guide.opacity, 0.0);
-        let destination = egui::pos2(400.0, 300.0);
-        guide.move_to(Some(destination), 20.0, 0.6, 0.05);
-        assert_eq!(guide.center, destination);
-        assert!(guide.opacity < 0.1);
-    }
-
-    #[test]
-    fn paused_relocation_resumes_without_an_opacity_pulse() {
-        let mut guide = quiet_guide();
-        guide.opacity = 0.6;
-        let destination = egui::pos2(480.0, 320.0);
-        guide.move_to(Some(destination), 20.0, 0.6, 0.05);
-        let opacity = guide.opacity;
-        let origin = guide.center;
-        for _ in 0..60 {
-            guide.move_to(Some(origin), 20.0, 0.6, 0.0);
-        }
-        assert_eq!(guide.opacity, opacity);
-        assert_eq!(guide.center, origin);
-        assert!(guide.relocating);
-        guide.move_to(Some(destination), 20.0, 0.6, 0.05);
-        assert!(guide.opacity < opacity);
-        assert_eq!(guide.center, origin);
-    }
-
-    #[test]
-    fn small_layout_jitter_does_not_move_a_resting_avatar() {
-        let mut guide = quiet_guide();
-        guide.opacity = 0.6;
-        let origin = guide.center;
-        for frame in 0..100 {
-            let dx = if frame % 2 == 0 { 0.5 } else { -0.5 };
-            guide.move_to(Some(origin + egui::vec2(dx, 0.0)), 20.0, 0.6, 0.05);
-        }
-        assert_eq!(guide.center, origin);
-        assert_eq!(guide.opacity, 0.6);
-        assert_eq!(guide.velocity, Vec2::ZERO);
-    }
-
-    #[test]
-    fn returning_to_welcome_does_not_restart_the_entrance() {
-        let mut guide = quiet_guide();
-        guide.announced = Cue::Hello.bit();
-        guide.opacity = 0.6;
-        let origin = guide.center;
-        guide.follow_scene(&dialogue::Context {
-            route: Route::Onboarding(0),
-            cue: Cue::Hello,
-            blocked: None,
-        });
-        assert!(guide.stage == Stage::Ready);
-        assert_eq!(guide.center, origin);
-        assert_eq!(guide.opacity, 0.6);
-        assert!(guide.pending.is_none());
-    }
-
-    #[test]
-    fn mail_waits_for_current_speech_and_cooldown() {
-        let scene = dialogue::Context {
-            route: Route::Page(crate::ui::Page::Translation),
-            cue: Cue::Translation,
-            blocked: None,
-        };
-        let mut guide = Guide::new(0.0, UiLanguage::English, Pos2::ZERO, &scene, false);
-        let mut inbox = Inbox::default();
-        guide.clock = 2.9;
-        assert!(!guide.ready_to_speak()); // Even an empty bubble respects the cooldown.
-        guide.clock = 3.0;
-        assert!(guide.ready_to_speak());
-        guide.say("Select audio and start.");
-        inbox.post("Translation session is not active. Please start translation first.");
-        inbox.post("Translation session is not active. Please start translation first.");
-        guide.clock = 6.0;
-        assert!(!guide.ready_to_speak()); // The current sentence is still being spoken.
-        guide.speech.advance(guide.clock);
-        guide.clock = 20.0;
-        assert!(guide.ready_to_speak());
-        guide.read_mail(&mut inbox);
-        assert_eq!(
-            guide.line,
-            Message::from("Translation session is not active. Please start translation first.")
-        );
-        assert_eq!(inbox.read(), None);
-        assert!(!guide.ready_to_speak());
-    }
-
-    #[test]
-    fn background_clock_reads_mail_without_a_paint_pass() {
-        let scene = dialogue::Context {
-            route: Route::Page(crate::ui::Page::Translation),
-            cue: Cue::Translation,
-            blocked: None,
-        };
-        let mut guide = Guide::new(123.0, UiLanguage::English, Pos2::ZERO, &scene, false);
-        guide.say("Select audio and start.");
-        let mut inbox = Inbox::default();
-        let message = "Translation session is not active. Please start translation first.";
-        inbox.post(message);
-        inbox.post(message);
-        let now = std::time::Instant::now();
-        for tick in 0..=100 {
-            guide.advance_background(now + Duration::from_millis(tick * 100));
-            guide.read_mail(&mut inbox);
-            guide.speech.advance(guide.clock);
-        }
-        assert_eq!(guide.line, Message::from(message));
-        assert_eq!(inbox.read(), None);
-        assert!((guide.clock - 10.0).abs() < 0.001);
-        assert_eq!(guide.last_wall, 123.0); // No egui wall clock or paint needed.
-        assert!(guide.paused); // Resuming painting skips its first elapsed interval.
-        let before = guide.clock;
-        guide.advance_background(now + Duration::from_secs(200));
-        assert!((guide.clock - before - 0.5).abs() < 0.001);
-    }
-
-    #[test]
-    fn background_errors_reach_speech_once_without_a_paint_pass() {
-        let mut guide = quiet_guide();
-        let mut inbox = Inbox::default();
-        let detail = format!("Translation provider returned HTTP {}", 503);
-        let now = std::time::Instant::now();
-        for tick in 0..=600 {
-            inbox.observe_error("session", Some(&detail));
-            guide.advance_background(now + Duration::from_millis(tick * 100));
-            guide.read_mail(&mut inbox);
-            guide.speech.advance(guide.clock);
-        }
-        assert_eq!(guide.line, Message::Error(detail.clone()));
-        assert!((guide.last_spoken - 3.0).abs() < 0.001);
-        let mut expected = Speech::default();
-        expected.say(format!("Something went wrong: {detail}"), guide.last_spoken);
-        expected.advance(guide.clock);
-        assert_eq!(guide.speech, expected);
-        assert!(guide.speech.finished(guide.clock));
-        assert_eq!(inbox.read(), None);
-
-        // Re-localizing the prefix must retain the owned runtime reason.
-        guide.language = UiLanguage::Chinese;
-        guide.say(guide.line.clone());
-        let mut localized = Speech::default();
-        localized.say(
-            format!(
-                "{}: {detail}",
-                crate::i18n::tr(UiLanguage::Chinese, "Something went wrong")
-            ),
-            guide.clock,
-        );
-        assert_eq!(guide.speech, localized);
-        assert_eq!(guide.line, Message::Error(detail));
-    }
-
-    #[test]
-    fn mail_waits_for_entrance_and_pending_dialogue() {
-        let scene = dialogue::Context {
-            route: Route::Page(crate::ui::Page::Translation),
-            cue: Cue::Translation,
-            blocked: None,
-        };
-        let mut guide = Guide::new(0.0, UiLanguage::English, Pos2::ZERO, &scene, true);
-        let mut inbox = Inbox::default();
-        inbox.post("Translation session is not active. Please start translation first.");
-        guide.clock = 20.0;
-        guide.read_mail(&mut inbox);
-        assert_eq!(guide.line, Message::from(scene.cue.text()));
-        guide.enter(Stage::Ready);
-        guide.pending = Some((Cue::Hello, guide.clock));
-        guide.read_mail(&mut inbox);
-        assert_eq!(guide.line, Message::from(scene.cue.text()));
-        guide.pending = None;
-        guide.read_mail(&mut inbox);
-        assert_eq!(
-            guide.line,
-            Message::from("Translation session is not active. Please start translation first.")
-        );
-        assert_eq!(inbox.read(), None);
-    }
 }

@@ -236,8 +236,6 @@ pub struct RequiredModelFile {
     pub purpose: &'static str,
     /// Exact byte length recorded in the versioned source manifest.
     pub bytes: u64,
-    /// Lowercase SHA-256 digest of the complete file.
-    pub sha256: &'static str,
 }
 
 /// Repository metadata retained for installers and release packaging.
@@ -299,7 +297,7 @@ pub enum ModelFileSource {
     },
     DirectUrl {
         relative_path: &'static str,
-        /// Use an immutable revision in the URL; bytes and SHA-256 are checked.
+        /// Use an immutable revision in the URL; the file size is checked.
         url: &'static str,
     },
 }
@@ -331,7 +329,6 @@ pub struct ModelArchiveSource {
     pub filename: &'static str,
     pub url: &'static str,
     pub bytes: u64,
-    pub sha256: &'static str,
     pub entries: &'static [ModelArchiveEntry],
 }
 

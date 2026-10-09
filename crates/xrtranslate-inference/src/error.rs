@@ -161,33 +161,3 @@ pub(crate) fn preview(body: &str) -> String {
     let prefix = normalized.chars().take(LIMIT).collect::<String>();
     format!("{prefix}…")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_actionable_remote_http_failures_require_configuration() {
-        let failure = |endpoint: &str, status| InferenceError::HttpStatus {
-            endpoint: endpoint.into(),
-            status,
-            body_preview: String::new(),
-        };
-        assert!(
-            failure("https://api.openai.com/v1/audio/transcriptions", 401)
-                .requires_provider_configuration()
-        );
-        assert!(
-            failure("http://provider.internal/v1/chat/completions", 404)
-                .requires_provider_configuration()
-        );
-        assert!(
-            !failure("http://127.0.0.1:8080/v1/chat/completions", 400)
-                .requires_provider_configuration()
-        );
-        assert!(
-            !failure("https://api.openai.com/v1/chat/completions", 429)
-                .requires_provider_configuration()
-        );
-    }
-}

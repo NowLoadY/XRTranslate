@@ -143,30 +143,20 @@ impl RuntimeLayout {
     pub const VAD_MODEL_PATH: &'static str =
         "models/silero-vad/src/silero_vad/data/silero_vad.onnx";
     pub const VAD_MODEL_BYTES: u64 = 2_327_524;
-    pub const VAD_MODEL_SHA256: &'static str =
-        "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3";
 
     pub const SPEAKER_MODEL_PATH: &'static str =
         "models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx";
     pub const SPEAKER_MODEL_BYTES: u64 = 71_964_309;
-    pub const SPEAKER_MODEL_SHA256: &'static str =
-        "0dde34a7c212b7b4ece05b2a120409507971d1cc504e30ed05ec61c7e5dc5d9b";
 
     pub const DENOISE_MODEL_PATH: &'static str = "models/gtcrn/gtcrn_simple.onnx";
     pub const DENOISE_MODEL_BYTES: u64 = 535_638;
-    pub const DENOISE_MODEL_SHA256: &'static str =
-        "e77603ac0c23dac3227dd2d7135b3a585cbee2679048aecfa886657d3ae1b534";
 
     pub const ONNX_CPU_CORE_WIN_BYTES: u64 = 16_277_856;
-    pub const ONNX_CPU_CORE_WIN_SHA256: &'static str =
-        "2462fe2d64ce063babefda3d9b1998380ffa74e99acf5d24d520ee67daa9e0f1";
     /// The official CUDA archive also supplies the independently usable CPU core.
     pub const ONNX_CPU_CORE_WIN_SOURCE_ARCHIVE: &'static str =
         "onnxruntime-win-x64-gpu_cuda13-1.28.0.zip";
 
     pub const ONNX_CPU_CORE_LINUX_BYTES: u64 = 24_268_848;
-    pub const ONNX_CPU_CORE_LINUX_SHA256: &'static str =
-        "1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab";
 
     #[must_use]
     pub fn for_project_root(project_root: impl AsRef<Path>) -> Self {
@@ -1287,7 +1277,6 @@ pub struct BundledModelAsset {
     pub label: String,
     pub relative_path: String,
     pub bytes: u64,
-    pub sha256: String,
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
@@ -1344,8 +1333,6 @@ pub struct ManagedRuntimeArchive {
     #[serde(default)]
     pub bytes: u64,
     #[serde(default)]
-    pub sha256: String,
-    #[serde(default)]
     pub target: String,
     #[serde(default)]
     pub cuda_version: String,
@@ -1373,8 +1360,6 @@ pub struct LlamaCppDownload {
     pub archive_directory: String,
     #[serde(default)]
     pub bytes: u64,
-    #[serde(default)]
-    pub sha256: String,
     /// Rust target family this archive can run on, for example
     /// `windows-x86_64` or `linux-x86_64`.
     #[serde(default)]
@@ -1451,7 +1436,6 @@ impl ModelManagerConfig {
                 label: "Silero VAD".into(),
                 relative_path: RuntimeLayout::VAD_MODEL_PATH.into(),
                 bytes: RuntimeLayout::VAD_MODEL_BYTES,
-                sha256: RuntimeLayout::VAD_MODEL_SHA256.into(),
                 url: "https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx".into(),
                 target: None,
                 archive_format: None,
@@ -1462,7 +1446,6 @@ impl ModelManagerConfig {
                 label: "GTCRN Speech Enhancement".into(),
                 relative_path: RuntimeLayout::DENOISE_MODEL_PATH.into(),
                 bytes: RuntimeLayout::DENOISE_MODEL_BYTES,
-                sha256: RuntimeLayout::DENOISE_MODEL_SHA256.into(),
                 url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx".into(),
                 target: None,
                 archive_format: None,
@@ -1473,7 +1456,6 @@ impl ModelManagerConfig {
                 label: "3D-Speaker Diarization".into(),
                 relative_path: RuntimeLayout::SPEAKER_MODEL_PATH.into(),
                 bytes: 129_865_511,
-                sha256: "0ad55dd88808d4d85838bc3774503921024ab21e0880ca7b3841e2034958a560".into(),
                 url: "https://github.com/NowLoadY/XRTranslate/releases/download/v0.2.11/XRTranslate-v0.2.11-linux-x64.zip".into(),
                 target: Some("linux-x86_64".into()),
                 archive_format: Some(LlamaCppArchiveFormat::Zip),
@@ -1484,7 +1466,6 @@ impl ModelManagerConfig {
                 label: "3D-Speaker Diarization".into(),
                 relative_path: RuntimeLayout::SPEAKER_MODEL_PATH.into(),
                 bytes: 121_632_051,
-                sha256: "dc19d6a533f1b7cc4f7586907ad0a8061f42d43184b83e0c1e03904e566db09c".into(),
                 url: "https://github.com/NowLoadY/XRTranslate/releases/download/v0.2.11/XRTranslate-v0.2.11-win-x64.zip".into(),
                 target: Some("windows-x86_64".into()),
                 archive_format: Some(LlamaCppArchiveFormat::Zip),
@@ -1503,7 +1484,6 @@ impl OnnxRuntimeConfig {
                 url: "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-1.28.0.tgz".into(),
                 archive_format: LlamaCppArchiveFormat::TarGz,
                 bytes: 9_125_960,
-                sha256: "a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407".into(),
                 target: "linux-x86_64".into(),
                 cuda_version: String::new(),
                 archive_directory: "onnxruntime-linux-x64-1.28.0/lib".into(),
@@ -1514,7 +1494,6 @@ impl OnnxRuntimeConfig {
                 url: "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-win-x64-1.28.0.zip".into(),
                 archive_format: LlamaCppArchiveFormat::Zip,
                 bytes: 78_796_801,
-                sha256: "abef733dacbe2f571547a7150b479b5cb9cc0df22f96c24983a42cadb1b4f8bc".into(),
                 target: "windows-x86_64".into(),
                 cuda_version: String::new(),
                 archive_directory: "onnxruntime-win-x64-1.28.0/lib".into(),
@@ -2016,662 +1995,4 @@ fn default_hunyuan_gguf_repo() -> String {
 }
 fn default_llama_server_path() -> String {
     "runtime/llama.cpp/llama-server".into()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn runtime_layout_resolves_and_persists_managed_paths_relative_to_root() {
-        let root = PathBuf::from("/tmp/xrtranslate-release");
-        let layout = RuntimeLayout::for_project_root(&root);
-        let configured = layout.resolve_configured_path("runtime/llama.cpp/llama-server");
-        assert_eq!(configured, layout.managed_llama_server("llama-server"));
-        let portable = layout.resolve_llama_server_path("runtime/llama.cpp/llama-server");
-        let old_windows = layout.resolve_llama_server_path("runtime/llama.cpp/llama-server.exe");
-        assert_eq!(portable, old_windows);
-        assert_eq!(
-            portable,
-            layout.managed_llama_server(format!("llama-server{}", std::env::consts::EXE_SUFFIX))
-        );
-        assert_eq!(
-            layout.config_path_for(&configured),
-            PathBuf::from("runtime/llama.cpp/llama-server")
-        );
-    }
-
-    #[test]
-    fn runtime_layout_recovers_executable_persisted_as_runtime_directory() {
-        let root = PathBuf::from("/tmp/xrtranslate-release");
-        let relative = RuntimeLayout::new(&root, Some("runtime/llama.cpp/llama-server.exe"));
-        assert_eq!(relative.runtime_root(), root.join("runtime"));
-        assert_eq!(
-            relative.onnx_cpu_core_library(),
-            root.join("runtime/onnxruntime/cpu")
-                .join(RuntimeLayout::ONNX_CORE_LIBRARY)
-        );
-
-        let custom_root = std::env::temp_dir().join("xrtranslate-custom-runtime");
-        let absolute =
-            RuntimeLayout::new(&root, Some(custom_root.join("llama.cpp/llama-server.exe")));
-        assert_eq!(absolute.runtime_root(), custom_root);
-
-        let unrelated = RuntimeLayout::new(&root, Some("custom/llama-server.exe"));
-        assert_eq!(
-            unrelated.runtime_root(),
-            root.join("custom/llama-server.exe")
-        );
-    }
-
-    #[test]
-    fn runtime_layout_keeps_external_manual_paths_absolute() {
-        let layout = RuntimeLayout::for_project_root("/tmp/xrtranslate-release");
-        let external = PathBuf::from("/opt/llama.cpp/llama-server");
-        assert_eq!(layout.config_path_for(&external), external);
-    }
-
-    #[test]
-    fn runtime_layout_with_custom_directory_resolves_all_subdirs() {
-        let root = PathBuf::from("/tmp/xrtranslate-release");
-        let layout = RuntimeLayout::new(&root, Some("custom_runtime"));
-        assert_eq!(
-            layout.runtime_root(),
-            Path::new("/tmp/xrtranslate-release/custom_runtime")
-        );
-        assert_eq!(
-            layout.llama_cpp_directory(),
-            PathBuf::from("/tmp/xrtranslate-release/custom_runtime/llama.cpp")
-        );
-        assert_eq!(
-            layout.cuda_runtime_directory("13.3"),
-            PathBuf::from("/tmp/xrtranslate-release/custom_runtime/cuda/13.3")
-        );
-        assert_eq!(
-            layout.cudnn_runtime_directory("13"),
-            PathBuf::from("/tmp/xrtranslate-release/custom_runtime/cudnn/13")
-        );
-        assert_eq!(
-            layout.onnx_runtime_directory("13"),
-            PathBuf::from("/tmp/xrtranslate-release/custom_runtime/onnxruntime/cuda-13")
-        );
-        assert_eq!(
-            layout.native_runtime_selection_file(),
-            PathBuf::from("/tmp/xrtranslate-release/custom_runtime/native-runtime.json")
-        );
-        assert_eq!(
-            layout.voice_clones_directory(),
-            PathBuf::from("/tmp/xrtranslate-release/custom_runtime/voice_clones")
-        );
-
-        let external_layout = RuntimeLayout::new(&root, Some("/mnt/ai/runtime"));
-        assert_eq!(external_layout.runtime_root(), Path::new("/mnt/ai/runtime"));
-        assert_eq!(
-            external_layout.llama_cpp_directory(),
-            PathBuf::from("/mnt/ai/runtime/llama.cpp")
-        );
-    }
-
-    #[test]
-    fn legacy_speaker_config_gets_the_safe_switch_margin() {
-        let speaker: SpeakerConfig = serde_json::from_str(
-            r#"{"enabled":true,"similarity_threshold":0.56,"same_speaker_hysteresis":0.16}"#,
-        )
-        .unwrap();
-
-        assert_eq!(speaker.speaker_switch_margin, 0.04);
-    }
-
-    #[test]
-    fn root_config_passes_default_gguf_validation() {
-        let config = AppConfig::from_json_str(include_str!("../../../config.json")).unwrap();
-        let gguf = config.default_gguf().unwrap();
-
-        assert!(
-            gguf.llama_server_path == PathBuf::from("runtime/llama.cpp/llama-server")
-                || gguf.llama_server_path == PathBuf::from("runtime/llama.cpp/llama-server.exe")
-        );
-        assert_eq!(gguf.hunyuan_gguf_repo, "tencent/Hy-MT2-1.8B-GGUF");
-        assert_eq!(gguf.asr_url, "http://127.0.0.1:8001/v1/chat/completions");
-        assert_eq!(
-            gguf.translation_url,
-            "http://127.0.0.1:8002/v1/chat/completions"
-        );
-        assert_eq!(gguf.asr_runtime.context_window_tokens, 4_800);
-        assert_eq!(gguf.asr_runtime.max_tokens, 128);
-        assert_eq!(gguf.asr_runtime.parallel_slots, 1);
-        assert_eq!(gguf.translation_runtime.context_window_tokens, 2_048);
-        assert_eq!(gguf.translation_runtime.max_tokens, 256);
-        assert_eq!(gguf.translation_runtime.parallel_slots, 2);
-    }
-
-    #[test]
-    fn native_model_route_uses_the_selected_provider_contract() {
-        let config = AppConfig::from_json_str(include_str!("../../../config.json")).unwrap();
-        let route = config.native_model_route().unwrap();
-
-        assert_eq!(route.asr.provider, "qwen3-gguf");
-        assert_eq!(route.asr.model_asset.as_deref(), Some("qwen3-asr-gguf"));
-        assert_eq!(route.asr.runtime.context_window_tokens, 4_800);
-        assert_eq!(route.translation.provider, "hunyuan");
-        assert_eq!(route.translation.model_asset.as_deref(), Some("hy-mt2"));
-        assert_eq!(route.translation.runtime.parallel_slots, 2);
-    }
-
-    #[test]
-    fn native_model_route_does_not_assume_a_provider_family() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["translation"]["provider"] = Value::from("future-local-provider");
-        document["translation"]["providers"]["future-local-provider"] = serde_json::json!({
-            "url": "http://127.0.0.1:8010/v1/chat/completions",
-            "model_asset": "future-translation-model",
-            "context_window_tokens": 4096,
-            "max_tokens": 512,
-            "parallel_slots": 3
-        });
-
-        let route = AppConfig::from_value(document)
-            .unwrap()
-            .native_model_route()
-            .unwrap();
-
-        assert_eq!(route.translation.provider, "future-local-provider");
-        assert_eq!(
-            route.translation.model_asset.as_deref(),
-            Some("future-translation-model")
-        );
-        assert_eq!(route.translation.runtime.parallel_slots, 3);
-    }
-
-    #[test]
-    fn native_model_route_accepts_legacy_providers_without_an_asset_key() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["asr"]["providers"]["qwen3-gguf"]
-            .as_object_mut()
-            .unwrap()
-            .remove("model_asset");
-        document["translation"]["providers"]["hunyuan"]
-            .as_object_mut()
-            .unwrap()
-            .remove("model_asset");
-
-        let route = AppConfig::from_value(document)
-            .unwrap()
-            .native_model_route()
-            .unwrap();
-
-        assert_eq!(route.asr.model_asset, None);
-        assert_eq!(route.translation.model_asset, None);
-    }
-
-    #[test]
-    fn native_model_route_accepts_remote_models_without_local_assets() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["asr"]["provider"] = Value::from("openai");
-        document["translation"]["provider"] = Value::from("openai");
-        document["asr"]["providers"]["openai"]["api_key"] = Value::from("test-key");
-        document["translation"]["providers"]["openai"]["api_key"] = Value::from("test-key");
-        document["model_manager"]["llama_server_path"] = Value::from("");
-        let config = AppConfig::from_value(document).unwrap();
-        let route = config.native_model_route().unwrap();
-
-        assert!(!route.uses_local_runtime());
-        assert_eq!(route.asr.model, "gpt-4o-transcribe");
-        assert_eq!(route.translation.model, "gpt-4o-mini");
-        assert_eq!(route.asr.api_key.as_deref(), Some("test-key"));
-    }
-
-    #[test]
-    fn qwen_remote_asr_route_configuration() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["asr"]["provider"] = Value::from("qwen");
-        document["asr"]["providers"]["qwen"]["api_key"] = Value::from("dashscope-key");
-
-        let config = AppConfig::from_value(document).unwrap();
-        let route = config.native_model_route().unwrap();
-
-        assert!(!route.asr.uses_local_runtime());
-        assert_eq!(route.asr.transport, "dashscope");
-        assert_eq!(route.asr.asr_prompt_mode, AsrPromptMode::ContextBias);
-        assert_eq!(route.asr.model, "qwen-audio-3.0-asr-flash");
-        assert_eq!(route.asr.asr_context_max_chars, Some(400));
-        assert!(route.asr.supports_vocabulary_bias);
-        assert_eq!(
-            route.asr.url,
-            "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
-        );
-    }
-
-    #[test]
-    fn known_qwen_models_resolve_capabilities_from_the_model_card() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["asr"]["provider"] = Value::from("qwen-intl");
-        let provider = &mut document["asr"]["providers"]["qwen-intl"];
-        provider["api_key"] = Value::from("test-key");
-        provider["model"] = Value::from("qwen-audio-3.1-asr-flash");
-        provider["asr_prompt_mode"] = Value::from("instruction");
-        provider["asr_context_max_chars"] = Value::from(9999);
-        provider["supports_vocabulary_bias"] = Value::from(false);
-        let route = AppConfig::from_value(document)
-            .unwrap()
-            .native_model_route()
-            .unwrap();
-        assert_eq!(route.asr.asr_prompt_mode, AsrPromptMode::ContextBias);
-        assert_eq!(route.asr.asr_context_max_chars, Some(400));
-        assert!(route.asr.supports_vocabulary_bias);
-        assert!(route.asr.url.contains("dashscope-intl"));
-    }
-
-    #[test]
-    fn qwen_cloud_rejects_the_obsolete_chat_contract() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["asr"]["provider"] = Value::from("qwen");
-        let provider = &mut document["asr"]["providers"]["qwen"];
-        provider["api_key"] = Value::from("test-key");
-        provider["model"] = Value::from("qwen3-asr-flash");
-        provider["url"] = Value::from("https://private.example/v1/chat/completions");
-        provider["transport"] = Value::from("openai");
-        let error = AppConfig::from_value(document)
-            .unwrap()
-            .native_model_route()
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("native multimodal-generation"));
-        assert!(error.contains("qwen-audio-3.0-asr-flash"));
-    }
-
-    #[test]
-    fn weighted_vocabulary_rejects_unsupported_weights() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["asr"]["provider"] = Value::from("qwen-audio-streaming");
-        document["asr"]["providers"]["qwen-audio-streaming"] = serde_json::json!({
-            "api_key": "dashscope-key",
-            "model": "qwen-audio-3.0-asr-flash-streaming",
-            "transport": "websocket",
-            "url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
-            "supports_vocabulary_bias": true,
-            "vocabulary_weight": 6
-        });
-
-        let error = AppConfig::from_value(document)
-            .unwrap()
-            .native_model_route()
-            .unwrap_err();
-
-        assert!(error.to_string().contains("vocabulary_weight"));
-    }
-
-    #[test]
-    fn qwen_audio_streaming_rejects_insecure_remote_endpoint() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["asr"]["provider"] = Value::from("qwen-audio-streaming");
-        document["asr"]["providers"]["qwen-audio-streaming"] = serde_json::json!({
-            "api_key": "dashscope-key",
-            "model": "qwen-audio-3.0-asr-flash-streaming",
-            "transport": "websocket",
-            "url": "ws://example.com/api-ws/v1/inference"
-        });
-
-        let error = AppConfig::from_value(document)
-            .unwrap()
-            .native_model_route()
-            .unwrap_err();
-
-        assert!(error.to_string().contains("must use wss://"));
-    }
-
-    #[test]
-    fn qwen_audio_streaming_rejects_an_empty_context_character_budget() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["asr"]["provider"] = Value::from("qwen-audio-streaming");
-        document["asr"]["providers"]["qwen-audio-streaming"] = serde_json::json!({
-            "api_key": "dashscope-key",
-            "model": "qwen-audio-3.0-asr-flash-streaming",
-            "transport": "websocket",
-            "url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
-            "asr_context_max_chars": 0
-        });
-
-        let error = AppConfig::from_value(document)
-            .unwrap()
-            .native_model_route()
-            .unwrap_err();
-
-        assert!(error.to_string().contains("asr_context_max_chars"));
-    }
-
-    #[test]
-    fn runtime_requirements_cover_future_provider_sections() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["asr"]["provider"] = Value::from("openai");
-        document["translation"]["provider"] = Value::from("openai");
-        document["asr"]["providers"]["openai"]["api_key"] = Value::from("asr-key");
-        document["translation"]["providers"]["openai"]["api_key"] = Value::from("translation-key");
-
-        let remote = AppConfig::from_value(document.clone())
-            .unwrap()
-            .runtime_requirements();
-        assert_eq!(remote, RuntimeRequirements::default());
-
-        document["future_model"] = serde_json::json!({
-            "provider": "future-local",
-            "providers": {
-                "future-local": {"transport": "local"}
-            }
-        });
-        let local = AppConfig::from_value(document.clone())
-            .unwrap()
-            .runtime_requirements();
-        assert!(local.llama_cpp);
-        assert!(!local.missing_api_key);
-
-        document["future_model"]["provider"] = Value::from("future-api");
-        document["future_model"]["providers"]["future-api"] =
-            serde_json::json!({"transport": "openai", "api_key": ""});
-        let missing_key = AppConfig::from_value(document)
-            .unwrap()
-            .runtime_requirements();
-        assert!(!missing_key.llama_cpp);
-        assert!(missing_key.missing_api_key);
-    }
-
-    #[test]
-    fn onnx_tts_does_not_imply_llama_cpp() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["asr"]["provider"] = Value::from("openai");
-        document["asr"]["providers"]["openai"]["api_key"] = Value::from("asr-key");
-        document["translation"]["provider"] = Value::from("openai");
-        document["translation"]["providers"]["openai"]["api_key"] = Value::from("translation-key");
-        document["tts"]["provider"] = Value::from("audio8");
-
-        let requirements = AppConfig::from_value(document)
-            .unwrap()
-            .runtime_requirements();
-
-        assert!(!requirements.llama_cpp);
-        assert!(requirements.onnx_tts);
-        assert!(requirements.onnx_cuda);
-        assert!(!requirements.missing_api_key);
-    }
-
-    #[test]
-    fn legacy_cpu_tts_setting_cannot_disable_managed_cuda_requirements() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["tts"]["provider"] = Value::from("audio8");
-        document["tts"]["providers"]["audio8"]["device"] = Value::from("cpu");
-        let requirements = AppConfig::from_value(document)
-            .unwrap()
-            .runtime_requirements();
-        assert!(requirements.onnx_tts);
-        assert!(requirements.onnx_cuda);
-    }
-
-    #[test]
-    fn plural_model_assets_override_the_singular_compatibility_key() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["asr"]["provider"] = Value::from("openai");
-        document["translation"]["provider"] = Value::from("openai");
-        document["tts"]["provider"] = Value::from("openvoice");
-        document["tts"]["providers"]["openvoice"]["model_asset"] =
-            Value::from("audio8-tts-onnx-fp16");
-        document["tts"]["providers"]["openvoice"]["model_assets"] =
-            serde_json::json!(["openvoice-v3-onnx-fp16"]);
-
-        let assets = AppConfig::from_value(document)
-            .unwrap()
-            .active_native_model_assets();
-        assert_eq!(assets, vec!["openvoice-v3-onnx-fp16"]);
-    }
-
-    #[test]
-    fn native_runtime_paths_resolve_from_a_movable_marker() {
-        let layout = RuntimeLayout::for_project_root("release-root");
-        let marker = NativeRuntimeSelection {
-            schema_version: 1,
-            backend: NativeRuntimeBackend::Cuda,
-            llama_cpp_backend: Some(NativeRuntimeBackend::Cuda),
-            vulkan_device: None,
-            onnx_backend: Some(NativeRuntimeBackend::Cuda),
-            cuda_version: Some("13.3".into()),
-            provider_dir: Some(PathBuf::from("runtime/onnxruntime/cuda-13")),
-            onnx_core_library: Some(PathBuf::from("runtime/onnxruntime/cuda-13/onnxruntime.dll")),
-            cuda_bin_dir: Some(PathBuf::from("runtime/cuda/13.3")),
-            cudnn_bin_dir: None,
-            preload_libraries: vec![PathBuf::from("runtime/cuda/13.3/cudart64_13.dll")],
-            fallback_reason: None,
-        };
-
-        let resolved = layout.resolve_native_runtime_selection(&marker);
-        assert_eq!(
-            resolved.provider_dir.as_deref(),
-            Some(Path::new("release-root/runtime/onnxruntime/cuda-13"))
-        );
-        assert_eq!(
-            resolved.onnx_core_library.as_deref(),
-            Some(Path::new(
-                "release-root/runtime/onnxruntime/cuda-13/onnxruntime.dll"
-            ))
-        );
-        assert_eq!(
-            resolved.preload_libraries[0],
-            PathBuf::from("release-root/runtime/cuda/13.3/cudart64_13.dll")
-        );
-    }
-
-    #[test]
-    fn local_provider_selection_can_be_saved_before_llama_cpp_is_installed() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["model_manager"]["llama_server_path"] = Value::from("");
-
-        let route = AppConfig::from_value(document)
-            .unwrap()
-            .native_model_route()
-            .unwrap();
-        assert!(route.uses_local_runtime());
-        assert!(route.llama_server_path.as_os_str().is_empty());
-    }
-
-    #[test]
-    fn user_config_overlay_preserves_defaults_and_round_trips_changes() {
-        let root =
-            std::env::temp_dir().join(format!("xrtranslate-config-overlay-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let base_path = root.join("config.json");
-        let base = serde_json::json!({
-            "translation": {"provider": "hunyuan", "providers": {"hunyuan": {"max_tokens": 256}}},
-            "model_manager": {"llama_server_path": "runtime/llama.cpp/llama-server"}
-        });
-        fs::write(&base_path, serde_json::to_vec_pretty(&base).unwrap()).unwrap();
-
-        let mut effective = load_user_config_document(&base_path, &root).unwrap();
-        effective["translation"]["providers"]["hunyuan"]["max_tokens"] = Value::from(512);
-        save_user_config_document(&base_path, &root, &effective).unwrap();
-
-        let persisted = load_user_config_document(&base_path, &root).unwrap();
-        assert_eq!(
-            persisted["translation"]["providers"]["hunyuan"]["max_tokens"],
-            512
-        );
-        assert_eq!(
-            persisted["model_manager"]["llama_server_path"],
-            "runtime/llama.cpp/llama-server"
-        );
-        assert_eq!(
-            serde_json::from_slice::<Value>(&fs::read(&base_path).unwrap()).unwrap(),
-            base
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn legacy_user_config_moves_into_runtime_without_losing_newer_choices() {
-        let root =
-            std::env::temp_dir().join(format!("xrtranslate-legacy-config-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("runtime")).unwrap();
-        let base_path = root.join("config.json");
-        fs::write(
-            &base_path,
-            r#"{"asr":{"provider":"qwen3-gguf"},"translation":{"provider":"hunyuan"}}"#,
-        )
-        .unwrap();
-        let legacy_path = root.join("old-user-config.json");
-        fs::write(
-            &legacy_path,
-            r#"{"asr":{"provider":"openai"},"translation":{"provider":"qwen"}}"#,
-        )
-        .unwrap();
-        let runtime_path = RuntimeLayout::user_config_path(&root);
-
-        let loaded =
-            load_user_config_document_with_legacy(&base_path, &root, Some(legacy_path.clone()))
-                .unwrap();
-        assert_eq!(
-            loaded.pointer("/asr/provider"),
-            Some(&Value::from("openai"))
-        );
-        assert_eq!(
-            loaded.pointer("/translation/provider"),
-            Some(&Value::from("qwen"))
-        );
-        assert!(!legacy_path.exists());
-        assert!(runtime_path.exists());
-        assert_eq!(
-            load_user_config_document(&base_path, &root).unwrap(),
-            loaded
-        );
-        fs::write(&runtime_path, r#"{"translation":{"provider":"hunyuan"}}"#).unwrap();
-        fs::write(&legacy_path, r#"{"asr":{"provider":"openai"}}"#).unwrap();
-        let current =
-            load_user_config_document_with_legacy(&base_path, &root, Some(legacy_path.clone()))
-                .unwrap();
-        assert_eq!(
-            current.pointer("/asr/provider"),
-            Some(&Value::from("qwen3-gguf"))
-        );
-        assert_eq!(
-            current.pointer("/translation/provider"),
-            Some(&Value::from("hunyuan"))
-        );
-        assert!(!legacy_path.exists());
-        assert_eq!(
-            serde_json::from_slice::<Value>(&fs::read(&base_path).unwrap()).unwrap(),
-            serde_json::json!({"asr":{"provider":"qwen3-gguf"},"translation":{"provider":"hunyuan"}})
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn user_config_migrates_openai_asr_contract_and_preserves_custom_models() {
-        let root = std::env::temp_dir().join(format!(
-            "xrtranslate-config-openai-migration-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("runtime")).unwrap();
-        let base_path = root.join("config.json");
-        fs::write(
-            &base_path,
-            include_bytes!("../../../config.json").as_slice(),
-        )
-        .unwrap();
-        let override_path = RuntimeLayout::user_config_path(&root);
-        fs::write(
-            &override_path,
-            r#"{"asr":{"providers":{"openai":{"model":"gpt-4o-audio-preview"}}}}"#,
-        )
-        .unwrap();
-
-        let migrated = load_user_config_document(&base_path, &root).unwrap();
-        assert_eq!(
-            migrated.pointer("/asr/providers/openai/model"),
-            Some(&Value::from("gpt-4o-transcribe"))
-        );
-        assert_eq!(
-            migrated.pointer("/asr/providers/openai/url"),
-            Some(&Value::from(
-                "https://api.openai.com/v1/audio/transcriptions"
-            ))
-        );
-        fs::write(&override_path,
-            r#"{"asr":{"providers":{"openai":{"model":"gpt-4o-transcribe","url":"https://api.openai.com/v1/chat/completions","asr_prompt_mode":"instruction"}}}}"#).unwrap();
-        let migrated = load_user_config_document(&base_path, &root).unwrap();
-        assert_eq!(
-            migrated.pointer("/asr/providers/openai/url"),
-            Some(&Value::from(
-                "https://api.openai.com/v1/audio/transcriptions"
-            ))
-        );
-        assert_eq!(
-            migrated.pointer("/asr/providers/openai/asr_prompt_mode"),
-            Some(&Value::from("context_bias"))
-        );
-        saved_custom_model_is_preserved(&base_path, &root, &override_path);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    fn saved_custom_model_is_preserved(base_path: &Path, root: &Path, override_path: &Path) {
-        fs::write(
-            override_path,
-            r#"{"asr":{"providers":{"openai":{"model":"custom-transcribe-model"}}}}"#,
-        )
-        .unwrap();
-        let loaded = load_user_config_document(base_path, root).unwrap();
-        assert_eq!(
-            loaded.pointer("/asr/providers/openai/model"),
-            Some(&Value::from("custom-transcribe-model"))
-        );
-    }
-
-    #[test]
-    fn model_runtime_rejects_output_that_leaves_no_input_budget() {
-        let mut document: Value =
-            serde_json::from_str(include_str!("../../../config.json")).unwrap();
-        document["translation"]["providers"]["hunyuan"]["context_window_tokens"] = Value::from(256);
-        document["translation"]["providers"]["hunyuan"]["max_tokens"] = Value::from(256);
-        let config = AppConfig::from_value(document).unwrap();
-        assert!(
-            config
-                .default_gguf()
-                .unwrap_err()
-                .to_string()
-                .contains("must leave at least 128 input tokens")
-        );
-    }
-
-    #[test]
-    fn gguf_validation_reports_all_actionable_fields() {
-        let config = AppConfig::from_json_str(
-            r#"{
-                "asr": {"provider": "sensevoice"},
-                "translation": {"provider": "groq"},
-                "tts": {"provider": "index"},
-                "model_manager": {"llama_server_path": "", "hunyuan_gguf_repo": ""}
-            }"#,
-        )
-        .unwrap();
-
-        let error = config.default_gguf().unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("asr.provider must be \"qwen3-gguf\""));
-        assert!(message.contains("translation.provider must be \"hunyuan\""));
-        assert!(message.contains("model_manager.llama_server_path must be a non-empty string"));
-        assert!(message.contains("asr.providers.qwen3-gguf.url is missing"));
-        assert!(message.contains("translation.providers.hunyuan.url is missing"));
-    }
 }

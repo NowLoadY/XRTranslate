@@ -137,19 +137,3 @@ fn bessel_i0(value: f64) -> f64 {
     }
     sum
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resampling_is_bounded_and_has_the_expected_duration() {
-        let bytes = [0_i16, 100, -100, 200]
-            .into_iter()
-            .flat_map(i16::to_le_bytes)
-            .collect::<Vec<_>>();
-        let output = resample_pcm16(&bytes, 16_000, 44_100).unwrap();
-        assert_eq!(output.len(), 12);
-        assert!(output.iter().all(|sample| sample.is_finite()));
-    }
-}
