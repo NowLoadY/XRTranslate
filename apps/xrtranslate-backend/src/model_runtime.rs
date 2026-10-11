@@ -311,6 +311,15 @@ impl NativeProviderPlan {
         self.route.asr.capabilities.context_max_chars
     }
 
+    pub(crate) fn asr_streaming(&self) -> bool {
+        self.route
+            .asr
+            .connector
+            .is_some_and(|connector| connector.supports_audio_streaming())
+            && self.route.asr.capabilities.streaming
+                == xrtranslate_assets::remote::RemoteStreaming::Cumulative
+    }
+
     pub(crate) fn asr_vocabulary_weight(&self) -> u8 {
         self.route.asr.vocabulary_weight
     }
@@ -354,6 +363,7 @@ impl NativeProviderPlan {
             self.asr_url(),
             self.asr_model_alias(),
             self.route.asr.api_key.as_deref(),
+            &self.route.asr.capabilities,
         )
     }
 

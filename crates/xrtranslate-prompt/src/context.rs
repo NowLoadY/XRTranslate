@@ -8,26 +8,38 @@ use crate::PromptMode;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AsrPromptContext {
     pub vocabulary: Vec<String>,
+    /// One transient phrase from preceding audio, never persisted as vocabulary.
+    pub recent_phrase: String,
     pub mode: PromptMode,
 }
 
 impl AsrPromptContext {
     pub fn has_recognition_context(&self) -> bool {
-        self.vocabulary.iter().any(|term| !term.trim().is_empty())
+        !self.recent_phrase.trim().is_empty()
+            || self.vocabulary.iter().any(|term| !term.trim().is_empty())
     }
 
     pub fn recognition_context_text(&self) -> String {
-        self.vocabulary
+        let mut text = self
+            .vocabulary
             .iter()
             .map(|term| term.trim())
             .filter(|term| !term.is_empty())
             .collect::<Vec<_>>()
-            .join(", ")
+            .join(", ");
+        if !self.recent_phrase.trim().is_empty() {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(self.recent_phrase.trim());
+        }
+        text
     }
 
     pub fn without_recognition_context(&self) -> Self {
         Self {
             vocabulary: Vec::new(),
+            recent_phrase: String::new(),
             mode: self.mode,
         }
     }
@@ -52,8 +64,21 @@ impl AsrPromptContext {
             used_chars += separator_chars + term_chars;
             vocabulary.push(term.to_owned());
         }
+        let remaining = max_chars.saturating_sub(used_chars + usize::from(!vocabulary.is_empty()));
+        let phrase = self.recent_phrase.trim();
+        let start = phrase
+            .char_indices()
+            .rev()
+            .nth(remaining.saturating_sub(1))
+            .map_or(0, |(offset, _)| offset);
+        let recent_phrase = if remaining == 0 {
+            String::new()
+        } else {
+            phrase[start..].to_owned()
+        };
         Self {
             vocabulary,
+            recent_phrase,
             mode: self.mode,
         }
     }

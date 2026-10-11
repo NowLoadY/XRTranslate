@@ -71,8 +71,8 @@ impl ChatStream {
         }
         let value: Value = serde_json::from_str(data)
             .map_err(|_| stream_error("completion event was not valid JSON"))?;
-        if value.get("error").is_some() {
-            return Err(stream_error("provider reported a completion stream error"));
+        if let Some(error) = value.get("error") {
+            return Err(stream_error(&error.to_string()));
         }
         let Some(choice) = value
             .get("choices")

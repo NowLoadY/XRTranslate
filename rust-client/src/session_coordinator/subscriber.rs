@@ -59,6 +59,12 @@ pub enum CaptionUpdate {
 /// plugins consume this instead of being named inside the event pump.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HostOutputEvent<'a> {
+    /// Complete replaceable preview set for one stream, separate from history.
+    Previews {
+        stream_id: u64,
+        is_typing: bool,
+        entries: &'a [super::TranslationPreview],
+    },
     /// A validated, completed segment accepted into host history. Stable identity
     /// lets irreversible outputs consume it once even when captions are revised.
     CommittedTranslation {

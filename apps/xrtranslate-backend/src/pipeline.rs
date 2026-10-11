@@ -14,6 +14,9 @@
 //! retains fixed overlapping windows and runs each source in its own session.
 
 mod asr_prompt;
+mod streaming;
+use streaming::LiveCapture;
+pub(crate) use streaming::LiveUtterance;
 
 use std::{
     collections::VecDeque,
@@ -27,7 +30,7 @@ use xrtranslate_config::AppConfig;
 use xrtranslate_denoise::GtcrnDenoiser;
 use xrtranslate_engine::{
     TranslationSegmentPair, remove_asr_stutters, remove_transcript_overlap,
-    strip_filler_edges_for_lang, translation_segment_pairs_for_final_text_with_lang,
+    strip_filler_edges_for_lang, translation_segment_pairs_for_live_text_with_lang,
 };
 use xrtranslate_inference::{
     AsrTranscript, InferenceError, ReqwestClient, TranslationAdapter, TranslationOptions,
@@ -56,18 +59,18 @@ use crate::model_runtime::{NativeAsrAdapter, NativeAsrOptions, NativeProviderPla
 
 use asr_prompt::{AsrPromptDelivery, AsrPromptPolicy};
 
+const STREAM_END_FRAMES: usize = 62;
+
 const SILERO_VAD_MODEL: &str = "models/silero-vad/src/silero_vad/data/silero_vad.onnx";
 
 #[derive(Debug)]
 pub(crate) struct InferenceFailure {
     pub(crate) message: String,
-    pub(crate) configuration_required: bool,
 }
 
 impl InferenceFailure {
     fn request(context: &str, error: InferenceError) -> Self {
         Self {
-            configuration_required: error.requires_provider_configuration(),
             message: format!("{context}: {error}"),
         }
     }
@@ -75,7 +78,6 @@ impl InferenceFailure {
     fn runtime(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
-            configuration_required: false,
         }
     }
 }
@@ -112,6 +114,7 @@ pub(crate) struct TimedUtterance {
 #[derive(Debug)]
 pub(crate) enum PipelineEvent {
     Utterance(TimedUtterance),
+    Streaming(LiveUtterance),
     StreamEnded,
 }
 
@@ -141,15 +144,15 @@ impl RecognizedOutput {
             return;
         }
         self.source_text = corrected;
-        self.segments = translation_segment_pairs_for_final_text_with_lang(
+        self.segments = translation_segment_pairs_for_live_text_with_lang(
             &self.source_text,
             &self.source_language,
         );
     }
 
-    pub(crate) fn prepare_revisable_snapshot(&mut self) {
+    pub(crate) fn prepare_sentence_snapshot(&mut self) {
         let cleaned = strip_filler_edges_for_lang(&self.source_text, &self.source_language);
-        self.segments = xrtranslate_engine::translation_segment_pairs_for_live_text_with_lang(
+        self.segments = translation_segment_pairs_for_live_text_with_lang(
             &self.source_text,
             &self.source_language,
         );
@@ -169,7 +172,7 @@ impl RecognizedOutput {
     /// Returns false when the new result contained only duplicated context.
     pub(crate) fn remove_overlap_with(&mut self, previous: &str) -> bool {
         self.source_text = remove_transcript_overlap(previous, &self.source_text);
-        self.segments = translation_segment_pairs_for_final_text_with_lang(
+        self.segments = translation_segment_pairs_for_live_text_with_lang(
             &self.source_text,
             &self.source_language,
         );
@@ -192,7 +195,7 @@ pub(crate) struct TranslationOutput {
     pub(crate) mt_elapsed: Duration,
 }
 
-/// Per-session state for the fully native default GGUF route.
+/// Per-session audio preprocessing and segmentation for every ASR connector.
 pub(crate) struct NativePipeline {
     vad: SileroVad,
     endpoint: EndpointDetector,
@@ -201,10 +204,12 @@ pub(crate) struct NativePipeline {
     streaming_speaker: Option<StreamingSpeakerSegmenter>,
     speaker_recognition_enabled: bool,
     fixed_window: Option<FixedWindow>,
+    live_capture: Option<LiveCapture>,
     pending_pcm: Vec<u8>,
     pending_denoised_pcm: Vec<u8>,
     processed_samples: u64,
     vad_active: bool,
+    sentence_idle_frames: Option<usize>,
     vad_transitions: Vec<bool>,
     inference: NativeInference,
 }
@@ -237,7 +242,6 @@ impl FixedWindow {
     const PRE_ROLL_SAMPLES: usize = Self::PRE_ROLL_FRAMES * FRAME_SAMPLES;
     const RELEASE_FRAMES: usize = 16;
     const OPENING_FRAMES: usize = 3;
-    const STREAM_END_FRAMES: usize = 62;
 
     fn new(audio_source: AudioSource) -> Self {
         Self {
@@ -267,7 +271,7 @@ impl FixedWindow {
                 self.opening_frames = 0;
                 if self.stream_open {
                     self.idle_frames += 1;
-                    if self.idle_frames >= Self::STREAM_END_FRAMES {
+                    if self.idle_frames >= STREAM_END_FRAMES {
                         self.stream_open = false;
                         self.idle_frames = 0;
                         return vec![FixedWindowEvent::StreamEnded];
@@ -471,6 +475,7 @@ enum FixedWindowEvent {
 pub(crate) struct NativeInference {
     languages: LanguageCapabilities,
     asr: Option<NativeAsrAdapter>,
+    asr_streaming: bool,
     asr_prompt: AsrPromptPolicy,
     translation: TranslationAdapter<ReqwestClient>,
     translation_supports_reference_context: bool,
@@ -495,7 +500,7 @@ struct SpeakerInferenceConfig {
 }
 
 impl NativePipeline {
-    /// Validates the selected native GGUF route and opens a stateful Silero model.
+    /// Validates the selected route and opens a session-owned Silero model.
     ///
     /// The model servers themselves are deliberately not contacted here.  The
     /// first request reports a precise endpoint error while permitting the
@@ -608,10 +613,12 @@ impl NativePipeline {
             streaming_speaker,
             speaker_recognition_enabled: false,
             fixed_window: None,
+            live_capture: None,
             pending_pcm: Vec::new(),
             pending_denoised_pcm: Vec::new(),
             processed_samples: 0,
             vad_active: false,
+            sentence_idle_frames: None,
             vad_transitions: Vec::new(),
             inference: NativeInference::new(model_plan, speaker)?,
         })
@@ -715,12 +722,15 @@ impl NativePipeline {
                             previous_speaker, ..
                         })) => {
                             if let Some(cut_utterance) = self.endpoint.split_on_speaker_change() {
-                                utterances.push(PipelineEvent::Utterance(self.with_timeline(
+                                let timed = self.with_timeline(
                                     cut_utterance,
                                     0,
                                     None,
                                     Some(previous_speaker),
-                                )));
+                                );
+                                if let Some(event) = self.finish_utterance(timed) {
+                                    utterances.push(event);
+                                }
                             }
                         }
                         Ok(_) => {}
@@ -738,6 +748,17 @@ impl NativePipeline {
                 .push(&raw_samples, probability)
                 .map_err(|error| error.to_string())?;
             self.processed_samples = self.processed_samples.saturating_add(FRAME_SAMPLES as u64);
+            if matches!(event, EndpointEvent::SpeechStarted) && self.inference.asr_streaming {
+                let (capture, input) = LiveCapture::begin(
+                    self.endpoint_config,
+                    self.endpoint.active_samples(),
+                    self.processed_samples,
+                )?;
+                self.live_capture = Some(capture);
+                utterances.push(PipelineEvent::Streaming(input));
+            } else if let Some(capture) = &self.live_capture {
+                capture.push(&raw_samples)?;
+            }
             if let EndpointEvent::Finalized(utterance) = event {
                 let speaker_id = if self.speaker_recognition_enabled {
                     self.streaming_speaker.as_mut().map(|streaming| {
@@ -748,9 +769,26 @@ impl NativePipeline {
                 } else {
                     None
                 };
-                utterances.push(PipelineEvent::Utterance(
-                    self.with_timeline(utterance, 0, None, speaker_id),
-                ));
+                let timed = self.with_timeline(utterance, 0, None, speaker_id);
+                if let Some(event) = self.finish_utterance(timed) {
+                    utterances.push(event);
+                }
+            }
+            // Short VAD pauses delimit audio, not unfinished sentences. An
+            // actual idle turn boundary releases an unpunctuated final tail.
+            if active {
+                self.sentence_idle_frames = Some(0);
+            } else if let Some(frames) = &mut self.sentence_idle_frames {
+                *frames += 1;
+                if *frames >= STREAM_END_FRAMES
+                    && matches!(
+                        self.endpoint.state(),
+                        xrtranslate_vad::EndpointState::Listening
+                    )
+                {
+                    self.sentence_idle_frames = None;
+                    utterances.push(PipelineEvent::StreamEnded);
+                }
             }
         }
         Ok(utterances)
@@ -782,6 +820,9 @@ impl NativePipeline {
             let received_samples = frame.len() / 2;
             trailing_padding_samples = FRAME_SAMPLES.saturating_sub(received_samples);
             frame.resize(FRAME_BYTES, 0);
+            if let Some(capture) = &self.live_capture {
+                capture.push(&decode_pcm16le_frame(&frame).map_err(|error| error.to_string())?)?;
+            }
             let probability = self
                 .vad
                 .infer_pcm16le(&frame)
@@ -809,13 +850,10 @@ impl NativePipeline {
         };
         let event = finalized
             .or_else(|| self.endpoint.flush())
-            .map(|utterance| {
-                PipelineEvent::Utterance(self.with_timeline(
-                    utterance,
-                    trailing_padding_samples,
-                    None,
-                    speaker_id,
-                ))
+            .and_then(|utterance| {
+                let timed =
+                    self.with_timeline(utterance, trailing_padding_samples, None, speaker_id);
+                self.finish_utterance(timed)
             });
         self.observe_vad_activity(false);
         Ok(event)
@@ -823,6 +861,8 @@ impl NativePipeline {
 
     /// Drops buffered audio and recurrent VAD state after a route change.
     pub(crate) fn reset(&mut self) {
+        self.live_capture = None;
+        self.sentence_idle_frames = None;
         self.vad.reset();
         self.endpoint.reset();
         if let Some(denoiser) = &mut self.denoiser {
@@ -891,6 +931,15 @@ impl NativePipeline {
     /// Makes a request-capable handle for the session's bounded worker.
     pub(crate) fn inference(&self) -> NativeInference {
         self.inference.clone()
+    }
+
+    fn finish_utterance(&mut self, timed: TimedUtterance) -> Option<PipelineEvent> {
+        if let Some(capture) = self.live_capture.take() {
+            capture.finish(timed);
+            None
+        } else {
+            Some(PipelineEvent::Utterance(timed))
+        }
     }
 
     fn with_timeline(
@@ -973,6 +1022,7 @@ impl NativeInference {
         Ok(Self {
             languages: model_plan.language_capabilities,
             asr,
+            asr_streaming: model_plan.asr_streaming(),
             asr_prompt: AsrPromptPolicy::new(
                 model_plan.asr_prompt_mode(),
                 model_plan.asr_context_max_chars(),
@@ -1013,6 +1063,10 @@ impl NativeInference {
             .transpose()
     }
 
+    pub(crate) fn asr_supports_recognition_bias(&self) -> bool {
+        self.asr_prompt.supports_recognition_bias()
+    }
+
     pub(crate) fn speaker_min_utterance_ms(&self) -> Option<u32> {
         self.speaker.as_ref().map(|config| config.min_utterance_ms)
     }
@@ -1040,8 +1094,42 @@ impl NativeInference {
         )
     }
 
-    /// Runs ASR for a complete utterance and applies the Python-compatible
-    /// stutter removal and sentence/filler segmentation before any MT call.
+    pub(crate) async fn transcribe_stream<F, Fut>(
+        &self,
+        audio: tokio::sync::mpsc::Receiver<Vec<u8>>,
+        source_language: &str,
+        target_language: &str,
+        prompt_graph: &PromptNodeGraph,
+        context: &AsrPromptContext,
+        on_update: F,
+    ) -> Result<AsrTranscript, InferenceFailure>
+    where
+        F: FnMut(String) -> Fut + Send,
+        Fut: Future<Output = ()> + Send,
+    {
+        let delivery =
+            self.asr_prompt
+                .delivery(prompt_graph, source_language, target_language, context)?;
+        self.asr
+            .as_ref()
+            .expect("audio session requires ASR")
+            .transcribe_stream(
+                audio,
+                NativeAsrOptions {
+                    language: asr_language(source_language),
+                    instruction_prompt: delivery.instruction_prompt,
+                    context_bias: delivery.context_bias,
+                    vocabulary_bias: delivery.vocabulary_bias,
+                    max_tokens: self.asr_max_output_tokens,
+                },
+                on_update,
+            )
+            .await
+            .map_err(|error| InferenceFailure::request("Streaming ASR failed", error))
+    }
+
+    /// Accepts a live result or recognizes a completed window, then applies
+    /// shared language routing, quality checks and sentence preparation.
     pub(crate) async fn transcribe(
         &self,
         samples: &[i16],
@@ -1050,8 +1138,9 @@ impl NativeInference {
         asr_only: bool,
         adaptive_route: &mut AdaptiveLanguageRoute,
         prompt_graph: &PromptNodeGraph,
-        prompt_context: AsrPromptContext,
+        mut prompt_context: AsrPromptContext,
         echo_candidates: &[String],
+        streamed: Option<(AsrTranscript, Duration)>,
     ) -> Result<Option<RecognizedOutput>, InferenceFailure> {
         let pcm = samples
             .iter()
@@ -1079,8 +1168,39 @@ impl NativeInference {
             &active_targets,
             &context_free_prompt,
         )?;
-        let Some(auto_result) = self
-            .transcribe_attempt(
+        let (streamed, stream_elapsed) = streamed
+            .map_or((None, Duration::ZERO), |(result, elapsed)| {
+                (Some(result), elapsed)
+            });
+        let auto_result = if let Some(transcript) = streamed {
+            if transcript.text.trim().is_empty() {
+                return Ok(None);
+            }
+            if is_probable_asr_hallucination(
+                &transcript.text,
+                samples.len(),
+                SAMPLE_RATE_HZ,
+                delivery.quality_context().as_deref(),
+                echo_candidates,
+            ) {
+                self.transcribe_attempt(
+                    &pcm,
+                    samples.len(),
+                    asr_language(source_language),
+                    context_free_delivery.clone(),
+                    context_free_delivery.clone(),
+                    &[],
+                    max_tokens,
+                )
+                .await?
+            } else {
+                Some(AsrAttemptResult {
+                    transcript,
+                    prompt_trace: delivery.prompt_trace.clone(),
+                })
+            }
+        } else {
+            self.transcribe_attempt(
                 &pcm,
                 samples.len(),
                 asr_language(source_language),
@@ -1090,7 +1210,8 @@ impl NativeInference {
                 max_tokens,
             )
             .await?
-        else {
+        };
+        let Some(auto_result) = auto_result else {
             return Ok(None);
         };
         let direct_route = match selection.mode {
@@ -1141,6 +1262,7 @@ impl NativeInference {
                     language,
                     candidate: _,
                 } => {
+                    prompt_context.recent_phrase.clear();
                     warn!(
                         detected_language = auto_result
                             .transcript
@@ -1217,7 +1339,7 @@ impl NativeInference {
             transcript,
             prompt_trace,
         } = result;
-        let asr_elapsed = asr_started.elapsed();
+        let asr_elapsed = stream_elapsed + asr_started.elapsed();
         let mut source_text = remove_asr_stutters(&transcript.text);
         if source_text.is_empty() {
             return Ok(None);
@@ -1227,7 +1349,7 @@ impl NativeInference {
             source_text = to_traditional_chinese(&source_text);
         }
         Ok(Some(RecognizedOutput {
-            segments: translation_segment_pairs_for_final_text_with_lang(&source_text, source_code),
+            segments: translation_segment_pairs_for_live_text_with_lang(&source_text, source_code),
             source_text,
             source_language: source_code.to_owned(),
             target_language: if asr_only {
@@ -1403,7 +1525,6 @@ impl NativeInference {
             prompt_context.without_reference_context()
         };
         let mt_started = Instant::now();
-        let mut context_window_retried = false;
         let mut output_retried = false;
         let translated = loop {
             match self
@@ -1418,19 +1539,6 @@ impl NativeInference {
                 .await
             {
                 Ok(translated) => break translated,
-                Err(error)
-                    if !context_window_retried
-                        && options.prompt_context.has_reference_context()
-                        && is_recoverable_provider_error(&error) =>
-                {
-                    warn!(
-                        %error,
-                        "translation provider encountered context or memory pressure; retrying current segment without optional context"
-                    );
-                    context_window_retried = true;
-                    options.prompt_context = options.prompt_context.without_reference_context();
-                    on_update(String::new()).await;
-                }
                 Err(error)
                     if !output_retried
                         && (error.is_rejected_output() || error.is_output_limit()) =>
@@ -1462,7 +1570,7 @@ impl NativeInference {
                 }
                 Err(error) => {
                     on_update(String::new()).await;
-                    let context = if output_retried || context_window_retried {
+                    let context = if output_retried {
                         "translation retry failed"
                     } else {
                         "translation request failed"
@@ -1489,42 +1597,6 @@ impl NativeInference {
             prompt_trace: Some(translated.prompt_trace),
             mt_elapsed: mt_started.elapsed(),
         })
-    }
-}
-
-fn is_context_window_error(error: &InferenceError) -> bool {
-    match error {
-        InferenceError::HttpStatus {
-            status,
-            body_preview,
-            ..
-        } if *status == 400 => {
-            let body = body_preview.to_ascii_lowercase();
-            body.contains("exceed_context_size")
-                || body.contains("exceeds the available context size")
-                || body.contains("context window")
-        }
-        _ => false,
-    }
-}
-
-fn is_recoverable_provider_error(error: &InferenceError) -> bool {
-    if is_context_window_error(error) {
-        return true;
-    }
-    match error {
-        InferenceError::HttpStatus {
-            status,
-            body_preview,
-            ..
-        } if *status == 500 || *status == 400 => {
-            let body = body_preview.to_ascii_lowercase();
-            body.contains("bad allocation")
-                || body.contains("out of memory")
-                || body.contains("cuda out of memory")
-                || body.contains("std::bad_alloc")
-        }
-        _ => false,
     }
 }
 

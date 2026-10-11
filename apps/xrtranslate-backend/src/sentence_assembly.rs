@@ -4,7 +4,6 @@
 //! sentence. Only the uncommitted tail is retained here. Committed sentences
 //! leave the buffer once, while genuine input boundaries release the tail.
 
-use xrtranslate_engine::sentence_end_offsets;
 use xrtranslate_vad::UtteranceEndReason;
 
 use crate::{PipelineGeneration, UtteranceJob, pipeline::RecognizedOutput};
@@ -78,22 +77,13 @@ impl SentenceAssembler {
             }
         }
 
-        if current.job.utterance.end_reason != UtteranceEndReason::MaxActiveFrames {
-            ready.push(current);
-            return Ok(ready);
-        }
-
         let text = &current.recognized.source_text;
         // Offline ASR can insert a period merely because its audio ended.
         // Hold the right-edge sentence for one chunk of lookahead; preserve
         // its punctuation rather than guessing that a genuine period is wrong.
         // This is conservative chunk lookahead, not independent ASR agreement.
-        let right_edge = text.trim_end().len();
-        let complete_end = sentence_end_offsets(text)
-            .into_iter()
-            .filter(|end| *end < right_edge)
-            .next_back()
-            .unwrap_or(0);
+        let complete_end =
+            crate::sentence_gate::completed_prefix(text, current.job.utterance.end_reason);
         let tail = text[complete_end..].trim().to_owned();
         if tail.is_empty() {
             ready.push(current);

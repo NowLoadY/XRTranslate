@@ -2,15 +2,95 @@
 
 use eframe::egui::{self, Color32, Id, Stroke, Vec2};
 use parking_lot::Mutex;
-use std::{collections::VecDeque, sync::Arc, time::Duration};
+use std::{borrow::Cow, collections::VecDeque, sync::Arc, time::Duration};
 
 const MAX_PENDING: usize = 4;
 const FADE_SECONDS: f64 = 0.18;
+
+/// Add a common diagnostic hint without replacing the service's own message.
+pub(crate) fn error_text(error: &str, language: crate::i18n::UiLanguage) -> Cow<'_, str> {
+    match error_hint(error) {
+        Some(hint) => Cow::Owned(format!("{}\n{error}", crate::i18n::tr(language, hint))),
+        None => crate::i18n::tr_dynamic(language, error),
+    }
+}
+
+fn error_hint(error: &str) -> Option<&'static str> {
+    let text = error.to_ascii_lowercase();
+    let contains = |patterns: &[&str]| patterns.iter().any(|pattern| text.contains(pattern));
+    // Explicit diagnostics take precedence: HTTP 429 can mean either exhausted
+    // quota or a temporary rate limit. Keep this independent of provider names.
+    if contains(&[
+        "insufficient_quota",
+        "insufficient balance",
+        "credit balance",
+        "quota exceeded",
+        "quota_exceeded",
+    ]) {
+        return Some("API quota or balance is insufficient.");
+    }
+    if contains(&[
+        "invalid_api_key",
+        "invalid api key",
+        "incorrect api key",
+        "unauthenticated",
+    ]) {
+        return Some("API authentication failed. Check the API key.");
+    }
+    if contains(&[
+        "context_length_exceeded",
+        "exceed_context_size",
+        "maximum context length",
+        "exceeds the available context size",
+    ]) {
+        return Some("The request exceeds the model's context limit.");
+    }
+    if contains(&["out of memory", "bad allocation", "std::bad_alloc"]) {
+        return Some("The model ran out of memory.");
+    }
+    if contains(&["timed out", "timeout:", "deadline_exceeded"]) {
+        return Some("The request timed out. Try again later.");
+    }
+    if contains(&[
+        "connection refused",
+        "dns error",
+        "connect:",
+        "failed to lookup address",
+    ]) {
+        return Some("Could not connect to the service.");
+    }
+    if contains(&["rate_limit", "rate limit", "too many requests"]) {
+        return Some("Too many requests. Try again later.");
+    }
+    let status = ["http ", "status: ", "ask failed ("]
+        .into_iter()
+        .find_map(|prefix| text.split_once(prefix)?.1.get(..3)?.parse::<u16>().ok());
+    match status {
+        Some(401) => Some("API authentication failed. Check the API key."),
+        Some(403) => Some("Access denied. Check the service permissions."),
+        Some(404) => Some("The model or API endpoint was not found."),
+        Some(408 | 504) => Some("The request timed out. Try again later."),
+        Some(429) => Some("Too many requests. Try again later."),
+        Some(400 | 422) => Some("The service rejected the request parameters."),
+        Some(500..=599) => Some("The service is unavailable. Try again later."),
+        _ => None,
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Notice {
     message: String,
     details: String,
+}
+
+impl Notice {
+    fn text(&self) -> &str {
+        if self.details.trim().is_empty() {
+            &self.message
+        } else {
+            &self.details
+        }
+    }
 }
 
 struct ActiveNotice {
@@ -35,7 +115,7 @@ impl Notifications {
             message: message.into(),
             details: details.into(),
         };
-        if notice.message.trim().is_empty() {
+        if notice.text().trim().is_empty() {
             return;
         }
         let mut state = self.0.lock();
@@ -79,6 +159,7 @@ impl Notifications {
                 repaint_after,
             )
         };
+        let text = error_text(notice.text(), language);
         let available = ctx.content_rect();
         let max_width = (available.width() - 48.0).clamp(48.0, 720.0);
         let response = egui::Area::new(Id::new("notification_pill"))
@@ -88,7 +169,7 @@ impl Notifications {
             .show(ctx, |ui| {
                 ui.set_opacity(opacity);
                 let mut job = egui::text::LayoutJob::simple(
-                    notice.message.clone(),
+                    text.to_string(),
                     egui::FontId::proportional(14.0),
                     Color32::BLACK,
                     (max_width - 36.0).max(12.0),
@@ -116,7 +197,7 @@ impl Notifications {
                 super::automation::record_output(
                     ui,
                     "Notification",
-                    super::automation::ElementValue::Text(notice.message.clone()),
+                    super::automation::ElementValue::Text(text.to_string()),
                     rect,
                 );
                 super::automation::button_response(
@@ -127,11 +208,7 @@ impl Notifications {
                     response,
                 )
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text(if notice.details.is_empty() {
-                    &notice.message
-                } else {
-                    &notice.details
-                })
+                .on_hover_text(text.as_ref())
             })
             .inner;
         if response.clicked() {
@@ -154,7 +231,7 @@ impl State {
         if self.active.is_none()
             && let Some(notice) = self.pending.pop_front()
         {
-            let duration = (notice.message.chars().count() as f64 / 14.0).clamp(4.0, 8.0);
+            let duration = (notice.text().chars().count() as f64 / 14.0).clamp(4.0, 8.0);
             self.active = Some(ActiveNotice {
                 notice,
                 started: now,

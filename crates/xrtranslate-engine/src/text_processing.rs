@@ -61,6 +61,13 @@ impl RevisableTranscript {
             self.hypothesis = hypothesis;
             return self.text();
         }
+        if overlap_ratio <= 0.0 {
+            // A pause can close the audio window without ending the sentence.
+            // No audio was repeated, so preserve the entire preceding phrase.
+            append_revision_text(&mut self.stable, &self.hypothesis);
+            self.hypothesis = hypothesis;
+            return self.text();
+        }
 
         let previous_tokens = revision_tokens(&self.hypothesis);
         let next_tokens = revision_tokens(&hypothesis);
@@ -532,7 +539,7 @@ pub fn translation_segment_pairs_for_final_text_with_lang(
 ///
 /// Complete sentences remain separate from the unfinished tail, including
 /// short sentences. The caller displays the whole snapshot immediately and
-/// waits for sentence stability before submitting any segment for translation.
+/// waits for a confirmed sentence boundary before submitting a translation.
 pub fn translation_segment_pairs_for_live_text_with_lang(
     text: &str,
     source_lang: &str,

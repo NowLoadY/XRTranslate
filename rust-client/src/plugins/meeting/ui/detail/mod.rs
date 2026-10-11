@@ -120,3 +120,39 @@ pub(super) fn render_detail(
     }
     action
 }
+
+fn preview_matches(
+    preview: &crate::session_coordinator::TranslationPreview,
+    segment: &crate::plugins::meeting::store::Segment,
+) -> bool {
+    preview.segment_index != 0
+        && preview.source == segment.original_text
+        && segment
+            .external_key
+            .ends_with(&format!(":{}:{}", preview.turn_id, preview.segment_index))
+}
+
+fn segment_preview<'a>(
+    previews: &'a crate::session_coordinator::LivePreviews,
+    segment: &crate::plugins::meeting::store::Segment,
+) -> Option<&'a crate::session_coordinator::TranslationPreview> {
+    previews
+        .entries()
+        .iter()
+        .find(|preview| preview_matches(preview, segment))
+}
+
+fn render_unstored_previews(
+    ui: &mut egui::Ui,
+    previews: &crate::session_coordinator::LivePreviews,
+    segments: &[crate::plugins::meeting::store::Segment],
+) {
+    for preview in previews.entries() {
+        if !segments
+            .iter()
+            .any(|segment| preview_matches(preview, segment))
+        {
+            crate::ui::components::live_preview(ui, preview);
+        }
+    }
+}

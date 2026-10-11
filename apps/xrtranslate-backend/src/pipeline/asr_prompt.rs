@@ -28,6 +28,10 @@ pub(super) struct AsrPromptDelivery {
 }
 
 impl AsrPromptPolicy {
+    pub(super) fn supports_recognition_bias(&self) -> bool {
+        self.mode != AsrPromptMode::None || self.supports_vocabulary_bias
+    }
+
     pub(super) const fn new(
         mode: AsrPromptMode,
         context_max_chars: Option<usize>,
@@ -61,6 +65,32 @@ impl AsrPromptPolicy {
                     weight: self.vocabulary_weight,
                 })
                 .collect();
+            // Prefer the lexical context field when available. For a
+            // vocabulary-only model, keep a short, lightly weighted phrase.
+            if self.mode == AsrPromptMode::None && !context.recent_phrase.is_empty() {
+                let phrase = context.recent_phrase.trim();
+                let text = if phrase.is_ascii() {
+                    let mut words = phrase.split_whitespace().rev().take(5).collect::<Vec<_>>();
+                    words.reverse();
+                    words.join(" ")
+                } else {
+                    let start = phrase
+                        .char_indices()
+                        .rev()
+                        .nth(11)
+                        .map_or(0, |(offset, _)| offset);
+                    phrase[start..].to_owned()
+                };
+                if !delivery
+                    .vocabulary_bias
+                    .iter()
+                    .any(|term| term.text == text)
+                {
+                    delivery
+                        .vocabulary_bias
+                        .push(AsrVocabularyBias { text, weight: 1 });
+                }
+            }
         }
 
         let target = match self.mode {

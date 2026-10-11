@@ -1,8 +1,7 @@
 //! Axum entrypoint for the native XRTranslate backend.
 //!
-//! This bootstrap intentionally exposes the legacy health and WebSocket
-//! contract before model execution is connected.  Keeping transport separate
-//! lets the remaining engine work land without another client protocol change.
+//! Session transport, bounded inference scheduling and shared result delivery.
+//! Live ASR and completed audio windows feed the same recognition/translation path.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -54,14 +53,16 @@ use crate::{
     conversation_context::LogicalTurnRecord,
     language::AdaptiveLanguageRoute,
     pipeline::{
-        InferenceFailure, NativeInference, NativePipeline, PipelineEvent, RecognizedOutput,
-        TimedUtterance, TranslationOutput, validate_input_chunk_size, validate_input_sample_rate,
+        InferenceFailure, LiveUtterance, NativeInference, NativePipeline, PipelineEvent,
+        RecognizedOutput, TimedUtterance, TranslationOutput, validate_input_chunk_size,
+        validate_input_sample_rate,
     },
     prompt_context::prompt_context_for_segment,
     session::{SegmentContext, SessionAdapter, WireOutput},
     terminology::{rewrite_recognition_terms, rewrite_translation_terms},
 };
 
+mod asr_bias;
 mod capabilities;
 mod conversation_context;
 mod diagnostics;
@@ -180,6 +181,33 @@ struct SentenceTranslationKey {
     prompt_graph: String,
 }
 
+struct RevisableRecognition {
+    generation: PipelineGeneration,
+    audio_turn_id: String,
+    logical_turn_id: String,
+    source_language: String,
+    target_language: String,
+    speaker_id: String,
+    start_ms: f64,
+    transcript: RevisableTranscript,
+}
+
+struct CachedSentenceTranslation {
+    source_text: String,
+    result: Arc<tokio::sync::Mutex<Option<TranslationOutput>>>,
+}
+
+async fn drain_translations(
+    pending: &mut futures_util::stream::FuturesUnordered<tokio::task::JoinHandle<()>>,
+) -> bool {
+    while let Some(result) = pending.next().await {
+        if result.is_err() {
+            return false;
+        }
+    }
+    true
+}
+
 fn validate_prompt_graph_set(
     graphs: &PromptGraphSet,
 ) -> Result<(), xrtranslate_prompt::PromptGraphError> {
@@ -188,6 +216,10 @@ fn validate_prompt_graph_set(
 
 enum InferenceJob {
     Utterance(UtteranceJob),
+    LiveUtterance {
+        job: UtteranceJob,
+        input: LiveUtterance,
+    },
     Text(TextJob),
     StreamEnded {
         generation: PipelineGeneration,
@@ -213,11 +245,15 @@ enum InferenceWork {
     ErrorFence {
         generation: PipelineGeneration,
         message: String,
-        configuration_required: bool,
     },
 }
 
 enum InferenceEvent {
+    RecognitionPreview {
+        generation: PipelineGeneration,
+        turn_id: String,
+        text: String,
+    },
     WindowObserved {
         generation: PipelineGeneration,
         text_units: usize,
@@ -265,14 +301,14 @@ enum InferenceEvent {
     Error {
         generation: PipelineGeneration,
         message: String,
-        configuration_required: bool,
     },
 }
 
 impl InferenceEvent {
     const fn generation(&self) -> PipelineGeneration {
         match self {
-            Self::WindowObserved { generation, .. }
+            Self::RecognitionPreview { generation, .. }
+            | Self::WindowObserved { generation, .. }
             | Self::RecognitionReference { generation, .. }
             | Self::Recognized { generation, .. }
             | Self::TranslationActivity { generation, .. }
@@ -888,7 +924,6 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                                 &outbound_sender,
                                 generation,
                                 format!("TTS failed: {error}"),
-                                error.requires_provider_configuration(),
                             )
                             .await
                             .is_err()
@@ -1642,8 +1677,26 @@ fn inference_jobs(
             });
             continue;
         }
-        let PipelineEvent::Utterance(timed) = event else {
-            unreachable!()
+        let (timed, live_input) = match event {
+            PipelineEvent::Utterance(timed) => (timed, None),
+            PipelineEvent::Streaming(input) => (
+                TimedUtterance {
+                    utterance: Utterance {
+                        samples: Vec::new(),
+                        pre_roll_frames: 0,
+                        overlap_frames: 0,
+                        trailing_silence_frames: 0,
+                        end_reason: UtteranceEndReason::Flushed,
+                    },
+                    source_start_ms: input.source_start_ms,
+                    source_end_ms: input.source_start_ms,
+                    revisable: false,
+                    topic_turn_sequence: None,
+                    speaker_id: None,
+                },
+                Some(input),
+            ),
+            PipelineEvent::StreamEnded => unreachable!(),
         };
         let TimedUtterance {
             utterance,
@@ -1667,9 +1720,10 @@ fn inference_jobs(
             duration_ms,
             overlap_frames = utterance.overlap_frames,
             end_reason = ?utterance.end_reason,
-            "VAD finalized an utterance; queuing it for ASR"
+            live = live_input.is_some(),
+            "queuing audio for ASR"
         );
-        jobs.push(InferenceJob::Utterance(UtteranceJob {
+        let job = UtteranceJob {
             utterance,
             source_start_ms,
             source_end_ms,
@@ -1684,7 +1738,11 @@ fn inference_jobs(
             workload,
             enqueued_at: Instant::now(),
             revision,
-        }));
+        };
+        jobs.push(match live_input {
+            Some(input) => InferenceJob::LiveUtterance { job, input },
+            None => InferenceJob::Utterance(job),
+        });
     }
     Ok(jobs)
 }
@@ -1749,6 +1807,55 @@ fn flush_sentence_before_boundary(
     }
 }
 
+fn resolve_speaker(
+    inference: &NativeInference,
+    job: &UtteranceJob,
+    speaker_enabled: bool,
+    diarizer: &mut Option<xrtranslate_speaker::OnlineSpeakerDiarizer>,
+    speaker_load_failed: &mut bool,
+) -> String {
+    let duration_ms = job.source_end_ms - job.source_start_ms;
+    if let Some(assigned) = job.speaker_id.clone() {
+        assigned
+    } else if speaker_enabled
+        && duration_ms >= f64::from(inference.speaker_min_utterance_ms().unwrap_or(0))
+    {
+        if diarizer.is_none() && !*speaker_load_failed {
+            match tokio::task::block_in_place(|| inference.speaker_diarizer()) {
+                Ok(loaded) => *diarizer = loaded,
+                Err(error) => {
+                    *speaker_load_failed = true;
+                    warn!(%error, "speaker model failed to initialize; preserving ASR");
+                }
+            }
+        }
+        match diarizer {
+            Some(diarizer) => {
+                match tokio::task::block_in_place(|| diarizer.identify(&job.utterance.samples)) {
+                    Ok(assignment) => {
+                        info!(
+                            speaker_id = assignment.speaker_id,
+                            similarity = assignment.similarity,
+                            is_new = assignment.is_new,
+                            "speaker voiceprint assigned"
+                        );
+                        assignment.speaker_id
+                    }
+                    Err(error) => {
+                        warn!(%error, "speaker embedding failed; preserving ASR with unknown speaker");
+                        "speaker-unknown".into()
+                    }
+                }
+            }
+            None => "speaker-unknown".into(),
+        }
+    } else if speaker_enabled {
+        "speaker-unknown".into()
+    } else {
+        String::new()
+    }
+}
+
 async fn run_inference_worker(
     inference: NativeInference,
     mut jobs: mpsc::Receiver<InferenceJob>,
@@ -1761,13 +1868,12 @@ async fn run_inference_worker(
     prompt_graphs: Arc<tokio::sync::RwLock<PromptGraphSet>>,
 ) {
     let mut previous_transcript: Option<(PipelineGeneration, String)> = None;
+    let mut recognition_bias = asr_bias::RecognitionBias::default();
     let mut sentence_assembler = sentence_assembly::SentenceAssembler::default();
     let mut prepared_work = VecDeque::new();
-    let mut active_revisable_transcript: Option<(PipelineGeneration, String, RevisableTranscript)> =
-        None;
+    let mut active_revisable_transcript: Option<RevisableRecognition> = None;
     let mut adaptive_route = AdaptiveLanguageRoute::default();
     let mut diarizer: Option<xrtranslate_speaker::OnlineSpeakerDiarizer> = None;
-    let speaker_min_utterance_ms = inference.speaker_min_utterance_ms().unwrap_or(0);
     let mut diarizer_generation: Option<PipelineGeneration> = Some(*generation.borrow());
     let mut speaker_revision_seen = 0;
     let mut speaker_load_failed = false;
@@ -1779,14 +1885,14 @@ async fn run_inference_worker(
                 .send(InferenceEvent::Error {
                     generation: current_generation,
                     message: message.to_string(),
-                    configuration_required: false,
                 })
                 .await;
             return;
         }
     };
     let mut additional_scope = translation_outputs::AdditionalOutputScope::default();
-    let mut pending_translation: Option<tokio::task::JoinHandle<()>> = None;
+    let mut pending_translations =
+        futures_util::stream::FuturesUnordered::<tokio::task::JoinHandle<()>>::new();
     let mut active_sentence_gate: Option<(
         PipelineGeneration,
         String,
@@ -1797,17 +1903,16 @@ async fn run_inference_worker(
     // the stream boundary releases the whole cache.
     let stable_translation_cache = Arc::new(tokio::sync::Mutex::new(HashMap::<
         SentenceTranslationKey,
-        TranslationOutput,
+        CachedSentenceTranslation,
     >::new()));
     loop {
         let work = if let Some(work) = prepared_work.pop_front() {
             Some(work)
-        } else if let Some(pending) = pending_translation.as_mut() {
+        } else if !pending_translations.is_empty() {
             tokio::select! {
                 job = jobs.recv() => job.map(InferenceWork::Queued),
-                completed = pending => {
-                    pending_translation = None;
-                    if completed.is_err() {
+                completed = pending_translations.next() => {
+                    if completed.is_some_and(|result| result.is_err()) {
                         break;
                     }
                     continue;
@@ -1823,12 +1928,11 @@ async fn run_inference_worker(
                 .map(InferenceWork::Prepared)
         });
         let Some(work) = work else {
+            recognition_bias.clear();
             if let Some((_, _, gate)) = &active_sentence_gate {
                 gate.finish();
             }
-            if let Some(pending) = pending_translation.take() {
-                let _ = pending.await;
-            }
+            let _ = drain_translations(&mut pending_translations).await;
             break;
         };
         let work = flush_sentence_before_boundary(
@@ -1837,8 +1941,11 @@ async fn run_inference_worker(
             &mut prepared_work,
             *generation.borrow(),
         );
-        let (mut job, prepared_recognition) = match work {
-            InferenceWork::Queued(InferenceJob::Utterance(job)) => (job, None),
+        let (mut job, prepared_recognition, live_input) = match work {
+            InferenceWork::Queued(InferenceJob::Utterance(job)) => (job, None, None),
+            InferenceWork::Queued(InferenceJob::LiveUtterance { job, input }) => {
+                (job, None, Some(input))
+            }
             InferenceWork::Prepared(prepared) => (
                 prepared.job,
                 Some((
@@ -1846,6 +1953,7 @@ async fn run_inference_worker(
                     prepared.asr_context,
                     prepared.prompt_graph,
                 )),
+                None,
             ),
             InferenceWork::Unfinished(pending) => {
                 if pending.job.generation == *generation.borrow()
@@ -1858,17 +1966,15 @@ async fn run_inference_worker(
             InferenceWork::ErrorFence {
                 generation: event_generation,
                 message,
-                configuration_required,
             } => {
                 if event_generation != *generation.borrow() {
                     continue;
                 }
+                recognition_bias.clear();
                 if let Some((_, _, gate)) = &active_sentence_gate {
                     gate.finish();
                 }
-                if let Some(pending) = pending_translation.take() {
-                    let _ = pending.await;
-                }
+                let _ = drain_translations(&mut pending_translations).await;
                 if event_generation != *generation.borrow() {
                     continue;
                 }
@@ -1876,7 +1982,6 @@ async fn run_inference_worker(
                     .send(InferenceEvent::Error {
                         generation: event_generation,
                         message,
-                        configuration_required,
                     })
                     .await;
                 break;
@@ -1886,30 +1991,27 @@ async fn run_inference_worker(
                     continue;
                 }
                 let _ = emit_unfinished_recognition(&events, &visible).await;
+                recognition_bias.clear();
                 if let Some((_, _, gate)) = &active_sentence_gate {
                     gate.finish();
                 }
-                if let Some(pending) = pending_translation.take() {
-                    let _ = pending.await;
-                }
+                let _ = drain_translations(&mut pending_translations).await;
                 let _ = events.send(InferenceEvent::Error {
                     generation: visible.job.generation,
                     message: format!(
                         "Recognition paused: an unfinished sentence exceeded {} characters. The source text is preserved; restart the session or choose a model that restores sentence punctuation.",
                         sentence_assembly::MAX_PENDING_CHARACTERS,
                     ),
-                    configuration_required: false,
                 }).await;
                 break;
             }
             InferenceWork::Queued(InferenceJob::Text(job)) => {
+                recognition_bias.clear();
                 if let Some((_, _, gate)) = &active_sentence_gate {
                     gate.finish();
                 }
-                if let Some(pending) = pending_translation.take() {
-                    if pending.await.is_err() {
-                        break;
-                    }
+                if !drain_translations(&mut pending_translations).await {
+                    break;
                 }
                 if *generation.borrow() != job.generation {
                     continue;
@@ -1957,7 +2059,6 @@ async fn run_inference_worker(
                             .send(InferenceEvent::Error {
                                 generation: job.generation,
                                 message: message.to_string(),
-                                configuration_required: false,
                             })
                             .await
                             .is_err()
@@ -2001,7 +2102,6 @@ async fn run_inference_worker(
                             .send(InferenceEvent::Error {
                                 generation: job.generation,
                                 message: message.to_string(),
-                                configuration_required: false,
                             })
                             .await
                             .is_err()
@@ -2058,7 +2158,6 @@ async fn run_inference_worker(
                             .send(InferenceEvent::Error {
                                 generation: job.generation,
                                 message,
-                                configuration_required: false,
                             })
                             .await;
                         continue;
@@ -2093,7 +2192,7 @@ async fn run_inference_worker(
                 let prompt_graph_for_turn = prompt_graphs.read().await.graph.clone();
                 let turn_id_for_end = job.turn_id.clone();
                 let translation_events = events.clone();
-                pending_translation = Some(tokio::spawn(async move {
+                pending_translations.push(tokio::spawn(async move {
                     let translations = futures_util::stream::iter(
                         segments
                             .into_iter()
@@ -2251,13 +2350,12 @@ async fn run_inference_worker(
                 if *generation.borrow() != event_generation {
                     continue;
                 }
+                recognition_bias.clear();
                 if let Some((_, _, gate)) = &active_sentence_gate {
                     gate.finish();
                 }
-                if let Some(pending) = pending_translation.take() {
-                    if pending.await.is_err() {
-                        break;
-                    }
+                if !drain_translations(&mut pending_translations).await {
+                    break;
                 }
                 if *generation.borrow() == event_generation
                     && events
@@ -2282,13 +2380,12 @@ async fn run_inference_worker(
                 if *generation.borrow() != event_generation {
                     continue;
                 }
+                recognition_bias.clear();
                 if let Some((_, _, gate)) = &active_sentence_gate {
                     gate.finish();
                 }
-                if let Some(pending) = pending_translation.take() {
-                    if pending.await.is_err() {
-                        break;
-                    }
+                if !drain_translations(&mut pending_translations).await {
+                    break;
                 }
                 if *generation.borrow() == event_generation
                     && events
@@ -2338,7 +2435,6 @@ async fn run_inference_worker(
                         .send(InferenceEvent::Error {
                             generation: job.generation,
                             message: message.to_string(),
-                            configuration_required: false,
                         })
                         .await;
                     continue;
@@ -2346,10 +2442,6 @@ async fn run_inference_worker(
             }
             diarizer_generation = Some(job.generation);
         }
-        let overlap_frames = job.utterance.overlap_frames;
-        let overlap_ratio = (overlap_frames.saturating_mul(FRAME_SAMPLES) as f32
-            / job.utterance.samples.len().max(1) as f32)
-            .clamp(0.0, 1.0);
         let (asr_tokens, translation_tokens) = inference.prompt_context_token_budgets();
         let context_budgets = ContextBudgets {
             asr_tokens,
@@ -2377,7 +2469,6 @@ async fn run_inference_worker(
                     prepared_work.push_back(InferenceWork::ErrorFence {
                         generation: job.generation,
                         message: message.to_string(),
-                        configuration_required: false,
                     });
                     continue;
                 }
@@ -2388,6 +2479,44 @@ async fn run_inference_worker(
             None => prompt_graphs.read().await.graph.clone(),
         };
         let is_prepared = prepared_recognition.is_some();
+        let was_live = live_input.is_some();
+        let audio_turn_id = job.topic_turn_id.clone();
+        if job.revisable
+            && let Some(active) = &active_revisable_transcript
+            && active.generation == job.generation
+            && active.audio_turn_id == audio_turn_id
+        {
+            job.topic_turn_id = active.logical_turn_id.clone();
+        }
+        let speaker_enabled = speaker_recognition_enabled.load(Ordering::Acquire);
+        let speaker_revision = speaker_state_revision.load(Ordering::Acquire);
+        if speaker_revision != speaker_revision_seen {
+            recognition_bias.clear();
+            if let Some(diarizer) = &mut diarizer {
+                diarizer.reset();
+            }
+            speaker_revision_seen = speaker_revision;
+            speaker_load_failed = false;
+        }
+        if job.revisable {
+            // Completed windows already contain the audio needed for identity.
+            // Resolve it before consuming a hint from the preceding speaker.
+            job.speaker_id = Some(resolve_speaker(
+                &inference,
+                &job,
+                speaker_enabled,
+                &mut diarizer,
+                &mut speaker_load_failed,
+            ));
+            if job.speaker_id.as_deref() == Some("speaker-unknown")
+                && let Some(active) = &active_revisable_transcript
+                && active.generation == job.generation
+                && active.audio_turn_id == audio_turn_id
+            {
+                // Too little audio for identity is not evidence of a new speaker.
+                job.speaker_id = Some(active.speaker_id.clone());
+            }
+        }
         let recognized_result = if let Some(recognized) = prepared_recognition {
             Ok(Some(recognized))
         } else {
@@ -2418,24 +2547,67 @@ async fn run_inference_worker(
                 drop(asr_permit);
                 continue;
             }
-            let recognized_result = tokio::select! {
-                result = inference.transcribe(
-                    &job.utterance.samples,
-                    &job.source_language,
-                    &job.target_language,
-                    job.translation_options.asr_only,
-                    &mut adaptive_route,
-                    &prompt_graph_for_revision,
-                    AsrPromptContext {
-                        vocabulary: asr_context.vocabulary.clone(),
-                        mode: if job.revisable {
-                            PromptMode::PseudoStreaming
-                        } else {
-                            PromptMode::Ordinary
-                        },
+            let recognize = async {
+                let prompt_context = AsrPromptContext {
+                    vocabulary: asr_context.vocabulary.clone(),
+                    recent_phrase: recognition_bias.take(&job),
+                    mode: if job.revisable {
+                        PromptMode::PseudoStreaming
+                    } else {
+                        PromptMode::Ordinary
                     },
-                    &asr_context.echo_guard,
-                ) => result,
+                };
+                let streamed = if let Some(input) = live_input {
+                    let started = std::time::Instant::now();
+                    let preview_generation = job.generation;
+                    let preview_turn = job.turn_id.clone();
+                    let transcript = inference
+                        .transcribe_stream(
+                            input.audio,
+                            &job.source_language,
+                            &adaptive_route.active_targets(&job.target_language),
+                            &prompt_graph_for_revision,
+                            &prompt_context,
+                            |text| {
+                                let turn_id = preview_turn.clone();
+                                let events = &events;
+                                async move {
+                                    let _ = events.try_send(InferenceEvent::RecognitionPreview {
+                                        generation: preview_generation,
+                                        turn_id,
+                                        text,
+                                    });
+                                }
+                            },
+                        )
+                        .await?;
+                    let timed = input.finished.await.map_err(|_| InferenceFailure {
+                        message: "Live ASR input ended without a completed audio turn".into(),
+                    })?;
+                    job.utterance = timed.utterance;
+                    job.source_start_ms = timed.source_start_ms;
+                    job.source_end_ms = timed.source_end_ms;
+                    job.speaker_id = timed.speaker_id;
+                    Some((transcript, started.elapsed()))
+                } else {
+                    None
+                };
+                inference
+                    .transcribe(
+                        &job.utterance.samples,
+                        &job.source_language,
+                        &job.target_language,
+                        job.translation_options.asr_only,
+                        &mut adaptive_route,
+                        &prompt_graph_for_revision,
+                        prompt_context,
+                        &asr_context.echo_guard,
+                        streamed,
+                    )
+                    .await
+            };
+            let recognized_result = tokio::select! {
+                result = recognize => result,
                 changed = generation.changed() => {
                     drop(asr_permit);
                     if changed.is_err() {
@@ -2447,11 +2619,23 @@ async fn run_inference_worker(
             drop(asr_permit);
             recognized_result
         };
+        if was_live && !matches!(&recognized_result, Ok(Some(_))) {
+            let _ = events
+                .send(InferenceEvent::RecognitionPreview {
+                    generation: job.generation,
+                    turn_id: job.turn_id.clone(),
+                    text: String::new(),
+                })
+                .await;
+        }
         let mut recognized = match recognized_result {
             Ok(Some(recognized)) => recognized,
             Ok(None) => {
                 if !job.revisable
-                    && job.utterance.end_reason != UtteranceEndReason::MaxActiveFrames
+                    && matches!(
+                        job.utterance.end_reason,
+                        UtteranceEndReason::Flushed | UtteranceEndReason::SpeakerChange
+                    )
                     && let Some(tail) = sentence_assembler.take_pending()
                 {
                     prepared_work.push_back(InferenceWork::Prepared(tail));
@@ -2472,11 +2656,14 @@ async fn run_inference_worker(
                 prepared_work.push_back(InferenceWork::ErrorFence {
                     generation: job.generation,
                     message: failure.message,
-                    configuration_required: failure.configuration_required,
                 });
                 continue;
             }
         };
+        let overlap_frames = job.utterance.overlap_frames;
+        let overlap_ratio = (overlap_frames.saturating_mul(FRAME_SAMPLES) as f32
+            / job.utterance.samples.len().max(1) as f32)
+            .clamp(0.0, 1.0);
         if !is_prepared
             && !job.revisable
             && events
@@ -2500,8 +2687,19 @@ async fn run_inference_worker(
                 overlap_frames,
                 "ASR overlap contained no new text; suppressing duplicate result"
             );
-            if job.utterance.end_reason != UtteranceEndReason::MaxActiveFrames
-                && let Some(tail) = sentence_assembler.take_pending()
+            if was_live {
+                let _ = events
+                    .send(InferenceEvent::RecognitionPreview {
+                        generation: job.generation,
+                        turn_id: job.turn_id.clone(),
+                        text: String::new(),
+                    })
+                    .await;
+            }
+            if matches!(
+                job.utterance.end_reason,
+                UtteranceEndReason::Flushed | UtteranceEndReason::SpeakerChange
+            ) && let Some(tail) = sentence_assembler.take_pending()
             {
                 prepared_work.push_back(InferenceWork::Prepared(tail));
             }
@@ -2517,24 +2715,59 @@ async fn run_inference_worker(
             }
             continue;
         }
+        let speaker_id = resolve_speaker(
+            &inference,
+            &job,
+            speaker_enabled,
+            &mut diarizer,
+            &mut speaker_load_failed,
+        );
+        let window_text_units = text_density_units(&recognized.source_text);
         if job.revisable {
-            let source_snapshot = match &mut active_revisable_transcript {
-                Some((active_generation, active_turn, transcript))
-                    if *active_generation == job.generation
-                        && *active_turn == job.topic_turn_id =>
-                {
-                    transcript.update(&recognized.source_text, overlap_ratio)
+            let same_input = active_revisable_transcript.as_ref().is_some_and(|active| {
+                active.generation == job.generation && active.audio_turn_id == audio_turn_id
+            });
+            let same_speaker_and_language =
+                active_revisable_transcript.as_ref().is_some_and(|active| {
+                    active.source_language == recognized.source_language
+                        && active.target_language == recognized.target_language
+                        && (active.speaker_id == speaker_id
+                            || active.speaker_id == "speaker-unknown")
+                });
+            let source_snapshot = if !same_input || !same_speaker_and_language {
+                if same_input {
+                    job.topic_turn_id = job.turn_id.clone();
                 }
-                _ => {
-                    let transcript = RevisableTranscript::new(&recognized.source_text);
-                    let snapshot = transcript.text();
-                    active_revisable_transcript =
-                        Some((job.generation, job.topic_turn_id.clone(), transcript));
-                    snapshot
-                }
+                active_revisable_transcript = Some(RevisableRecognition {
+                    generation: job.generation,
+                    audio_turn_id,
+                    logical_turn_id: job.topic_turn_id.clone(),
+                    source_language: recognized.source_language.clone(),
+                    target_language: recognized.target_language.clone(),
+                    speaker_id: speaker_id.clone(),
+                    start_ms: job.source_start_ms,
+                    transcript: RevisableTranscript::new(&recognized.source_text),
+                });
+                active_revisable_transcript
+                    .as_ref()
+                    .expect("active recognition")
+                    .transcript
+                    .text()
+            } else {
+                let active = active_revisable_transcript
+                    .as_mut()
+                    .expect("active recognition");
+                active.speaker_id = speaker_id.clone();
+                active
+                    .transcript
+                    .update(&recognized.source_text, overlap_ratio)
             };
+            let active = active_revisable_transcript
+                .as_ref()
+                .expect("active recognition");
+            job.source_start_ms = active.start_ms;
             recognized.apply_source_correction(source_snapshot);
-            recognized.prepare_revisable_snapshot();
+            recognized.prepare_sentence_snapshot();
         }
         if *generation.borrow() != job.generation {
             continue;
@@ -2543,65 +2776,15 @@ async fn run_inference_worker(
             && events
                 .send(InferenceEvent::WindowObserved {
                     generation: job.generation,
-                    text_units: text_density_units(&recognized.source_text),
+                    text_units: window_text_units,
                 })
                 .await
                 .is_err()
         {
             break;
         }
-        // Speaker identity is neutral recognition metadata and belongs to the
-        // logical dialogue turn. Resolve it while the preceding translation
-        // may still be running, then make it available to context selection.
-        let speaker_enabled = speaker_recognition_enabled.load(Ordering::Acquire);
-        let speaker_revision = speaker_state_revision.load(Ordering::Acquire);
-        if speaker_revision != speaker_revision_seen {
-            if let Some(diarizer) = &mut diarizer {
-                diarizer.reset();
-            }
-            speaker_revision_seen = speaker_revision;
-            speaker_load_failed = false;
-        }
-        let duration_ms = job.source_end_ms - job.source_start_ms;
-        let speaker_id = if let Some(assigned) = job.speaker_id.clone() {
-            assigned
-        } else if speaker_enabled && duration_ms >= f64::from(speaker_min_utterance_ms) {
-            if diarizer.is_none() && !speaker_load_failed {
-                match tokio::task::block_in_place(|| inference.speaker_diarizer()) {
-                    Ok(loaded) => diarizer = loaded,
-                    Err(error) => {
-                        speaker_load_failed = true;
-                        warn!(%error, "speaker model failed to initialize; preserving ASR");
-                    }
-                }
-            }
-            match &mut diarizer {
-                Some(diarizer) => {
-                    match tokio::task::block_in_place(|| diarizer.identify(&job.utterance.samples))
-                    {
-                        Ok(assignment) => {
-                            info!(
-                                speaker_id = assignment.speaker_id,
-                                similarity = assignment.similarity,
-                                is_new = assignment.is_new,
-                                "speaker voiceprint assigned"
-                            );
-                            assignment.speaker_id
-                        }
-                        Err(error) => {
-                            warn!(%error, "speaker embedding failed; preserving ASR with unknown speaker");
-                            "speaker-unknown".into()
-                        }
-                    }
-                }
-                None => "speaker-unknown".into(),
-            }
-        } else if speaker_enabled {
-            "speaker-unknown".into()
-        } else {
-            String::new()
-        };
         if !is_prepared && !job.revisable {
+            recognition_bias.clear();
             if let Some((_, _, gate)) = &active_sentence_gate {
                 gate.finish();
             }
@@ -2640,6 +2823,7 @@ async fn run_inference_worker(
                     *epoch != job.generation || *turn != job.topic_turn_id
                 })
             {
+                recognition_bias.clear();
                 if let Some((_, _, gate)) = &active_sentence_gate {
                     gate.finish();
                 }
@@ -2654,20 +2838,36 @@ async fn run_inference_worker(
                 .expect("active sentence gate")
                 .2
         } else {
+            recognition_bias.clear();
             if let Some((_, _, gate)) = &active_sentence_gate {
                 gate.finish();
             }
             standalone_gate = sentence_gate::SentenceGate::new();
             &standalone_gate
         };
-        sentence_gate.observe(job.revision, &recognized.segments, !job.revisable);
-        // ASR for this turn ran while the previous turn translated. Commit the
-        // prior translation before selecting this turn's corpus context so
-        // prompt history and emitted events retain strict stream order.
-        if let Some(pending) = pending_translation.take() {
-            if pending.await.is_err() {
-                break;
-            }
+        let sentence_end = if job.revisable {
+            job.utterance.end_reason
+        } else {
+            // The assembler has already separated complete sentences.
+            UtteranceEndReason::Flushed
+        };
+        let completed_sentences =
+            sentence_gate::completed_sentences(&recognized.segments, sentence_end);
+        if job.revisable && inference.asr_supports_recognition_bias() {
+            recognition_bias.observe(
+                &job,
+                &recognized.source_text,
+                &recognized.source_language,
+                &speaker_id,
+                completed_sentences,
+            );
+        } else {
+            recognition_bias.clear();
+        }
+        // Continuous ASR never waits for an unchanged sentence's translation.
+        // Ordinary turns still select context after the preceding turn commits.
+        if !job.revisable && !drain_translations(&mut pending_translations).await {
+            break;
         }
         if *generation.borrow() != job.generation {
             continue;
@@ -2739,7 +2939,6 @@ async fn run_inference_worker(
                     .send(InferenceEvent::Error {
                         generation: job.generation,
                         message: message.to_string(),
-                        configuration_required: false,
                     })
                     .await
                     .is_err()
@@ -2757,7 +2956,7 @@ async fn run_inference_worker(
             &translation_context_segments,
         );
         let sentence_readiness =
-            sentence_gate.observe(job.revision, &recognized.segments, !job.revisable);
+            sentence_gate.observe(job.revision, &recognized.segments, completed_sentences);
         stable_translation_cache.lock().await.retain(|key, output| {
             key.turn_id == job.topic_turn_id
                 && recognized
@@ -2810,7 +3009,6 @@ async fn run_inference_worker(
                     .send(InferenceEvent::Error {
                         generation: job.generation,
                         message,
-                        configuration_required: false,
                     })
                     .await;
                 continue;
@@ -2854,7 +3052,7 @@ async fn run_inference_worker(
         let cache_turn_id = logical_turn_id.clone();
         let translation_events = events.clone();
         let asr_revision = job.revision;
-        pending_translation = Some(tokio::spawn(async move {
+        pending_translations.push(tokio::spawn(async move {
             let translations = futures_util::stream::iter(
                 segments
                     .into_iter()
@@ -2903,18 +3101,37 @@ async fn run_inference_worker(
                         target_language: target_language.clone(),
                         prompt_graph: prompt_graph_fingerprint,
                     };
-                    let cached = if prompt_mode_for_turn == PromptMode::PseudoStreaming {
-                        stable_translation_cache.lock().await.get(&cache_key)
-                            .filter(|output| output.source_text == segment.source_text)
-                            .cloned()
+                    let sentence_index = segment_context.segment_index.saturating_sub(1) as usize;
+                    if !readiness.contains(sentence_index, &segment.source_text) {
+                        return None;
+                    }
+                    let cell = if prompt_mode_for_turn == PromptMode::PseudoStreaming {
+                        let mut cache = stable_translation_cache.lock().await;
+                        let entry = cache.entry(cache_key).or_insert_with(|| CachedSentenceTranslation {
+                            source_text: segment.source_text.clone(),
+                            result: Arc::new(tokio::sync::Mutex::new(None)),
+                        });
+                        if entry.source_text != segment.source_text {
+                            *entry = CachedSentenceTranslation {
+                                source_text: segment.source_text.clone(),
+                                result: Arc::new(tokio::sync::Mutex::new(None)),
+                            };
+                        }
+                        Arc::clone(&entry.result)
                     } else {
-                        None
+                        Arc::new(tokio::sync::Mutex::new(None))
                     };
+                    let cached_output = tokio::select! {
+                        output = cell.lock_owned() => output,
+                        _ = gate_generation.changed() => return None,
+                        () = readiness.source_changed(sentence_index, &segment.source_text) => return None,
+                    };
+                    let cached = cached_output.clone();
                     let already_translated = cached.is_some();
                     let output = if let Some(output) = cached {
                         Ok(output)
                     } else {
-                        if !readiness.is_current(asr_revision)
+                        if !readiness.contains(sentence_index, &segment.source_text)
                             || *gate_generation.borrow() != event_generation {
                             return None;
                         }
@@ -2936,12 +3153,13 @@ async fn run_inference_worker(
                                 move |translated_text| {
                                     let events = preview_events.clone();
                                     let generation = preview_generation.clone();
-                                    let context = preview_context.clone();
+                                    let mut context = preview_context.clone();
                                     let source_text = preview_source.clone();
                                     let readiness = preview_readiness.clone();
                                     async move {
                                         if *generation.borrow() == event_generation
                                             && readiness.contains(sentence_index, &source_text) {
+                                            context.revision = readiness.revision();
                                             let _ = events.send(InferenceEvent::TranslationPreview {
                                                 generation: event_generation, source_text, translated_text, context,
                                             }).await;
@@ -2951,7 +3169,7 @@ async fn run_inference_worker(
                             )
                             => output,
                             _ = gate_generation.changed() => return None,
-                            () = readiness.revised(asr_revision) => return None,
+                            () = readiness.source_changed(sentence_index, &segment.source_text) => return None,
                         };
                         drop(activity);
                         if !readiness.contains(sentence_index, &segment.source_text)
@@ -2960,7 +3178,7 @@ async fn run_inference_worker(
                         }
                         output
                     };
-                    Some((segment_context, source_for_terms, prompt_terms, output, already_translated, cache_key))
+                    Some((segment_context, source_for_terms, prompt_terms, output, already_translated, cached_output))
                 }
             })
             .buffered(TRANSLATION_CONCURRENCY_PER_SESSION);
@@ -2970,12 +3188,12 @@ async fn run_inference_worker(
             let mut cancelled = false;
             while let Some(result) = translations.next().await {
                 let Some((
-                    segment_context,
+                    mut segment_context,
                     source_for_terms,
                     prompt_terms,
                     mut output,
                     already_translated,
-                    cache_key,
+                    mut cached_output,
                 )) = result
                 else {
                     continue;
@@ -3048,11 +3266,8 @@ async fn run_inference_worker(
                         translated.translated_text.clone(),
                     ));
                 }
-                let cache_output = if prompt_mode_for_turn == PromptMode::PseudoStreaming {
-                    output.as_ref().ok().cloned()
-                } else {
-                    None
-                };
+                *cached_output = output.as_ref().ok().cloned();
+                segment_context.revision = sentence_readiness.revision();
                 permit.send(InferenceEvent::Translation {
                     generation: event_generation,
                     target_language: target_language.clone(),
@@ -3062,13 +3277,10 @@ async fn run_inference_worker(
                     context: segment_context,
                     output,
                 });
-                if let Some(output) = cache_output {
-                    stable_translation_cache
-                        .lock()
-                        .await
-                        .insert(cache_key, output);
-                }
             }
+            // A newer revision records the complete sentence set; an older
+            // task must not overwrite it with a prefix after finishing late.
+            cancelled |= !sentence_readiness.is_current(asr_revision);
             if !cancelled && let Some(additional) = &additional_turn {
                 additional
                     .record(
@@ -3107,7 +3319,7 @@ async fn emit_unfinished_recognition(
     pending: &sentence_assembly::PreparedRecognition,
 ) -> bool {
     let mut recognized = pending.recognized.clone();
-    recognized.prepare_revisable_snapshot();
+    recognized.prepare_sentence_snapshot();
     let mut segments = segment_contexts(
         &recognized.segments,
         &[],
@@ -3160,6 +3372,18 @@ async fn handle_inference_event(
     let mut tts_queued = false;
     match event {
         InferenceEvent::WindowObserved { .. } | InferenceEvent::RecognitionReference { .. } => {}
+        InferenceEvent::RecognitionPreview {
+            generation,
+            turn_id,
+            text,
+        } => {
+            if session
+                .submit_recognized_for_route_and_turn(generation.route_epoch, text, false, turn_id)
+                .map_err(axum::Error::new)?
+            {
+                send_session_output(writer, session, generation).await?;
+            }
+        }
         InferenceEvent::Recognized {
             generation,
             recognized,
@@ -3250,13 +3474,7 @@ async fn handle_inference_event(
             let output = match output {
                 Ok(output) => output,
                 Err(error) if generation.route_epoch == session.route_epoch() => {
-                    send_scoped_error(
-                        writer,
-                        generation,
-                        error.message,
-                        error.configuration_required,
-                    )
-                    .await?;
+                    send_scoped_error(writer, generation, error.message).await?;
                     return Ok(false);
                 }
                 Err(_) => return Ok(false),
@@ -3324,9 +3542,8 @@ async fn handle_inference_event(
         InferenceEvent::Error {
             generation,
             message,
-            configuration_required,
         } if generation.route_epoch == session.route_epoch() => {
-            send_scoped_error(writer, generation, message, configuration_required).await?
+            send_scoped_error(writer, generation, message).await?
         }
         InferenceEvent::Error { .. } => {}
     }
@@ -3497,30 +3714,18 @@ async fn send_error(
     message: String,
 ) -> Result<(), axum::Error> {
     warn!(%message, "session error");
-    send_event(
-        writer,
-        None,
-        ServerEvent::Error(ErrorEvent {
-            message,
-            configuration_required: false,
-        }),
-    )
-    .await
+    send_event(writer, None, ServerEvent::Error(ErrorEvent { message })).await
 }
 
 async fn send_scoped_error(
     writer: &mpsc::Sender<OutboundMessage>,
     generation: PipelineGeneration,
     message: String,
-    configuration_required: bool,
 ) -> Result<(), axum::Error> {
     send_event(
         writer,
         Some(generation),
-        ServerEvent::Error(ErrorEvent {
-            message,
-            configuration_required,
-        }),
+        ServerEvent::Error(ErrorEvent { message }),
     )
     .await
 }

@@ -224,6 +224,12 @@ impl AdaptiveLanguageRoute {
         }
 
         if let Some(language) = pair.language_for_text(text) {
+            // Missing metadata does not make an otherwise clear transcript
+            // suspect. Reuse script evidence instead of uploading it again.
+            if languages().next().is_none() {
+                self.confirm(language);
+                return AutoDecision::Accept(pair.route(language));
+            }
             return AutoDecision::Retry {
                 language,
                 candidate,

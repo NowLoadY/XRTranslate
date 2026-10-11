@@ -23,6 +23,7 @@ pub struct MediaController {
     pub backend: Option<Box<dyn MediaBackend>>,
     pub native_host: Option<NativeVideoHost>,
     pub subtitles: SubtitleTimeline,
+    pub previews: crate::session_coordinator::LivePreviews,
     pub show_subtitles: bool,
     pub fullscreen_mode: bool,
     pub error: Option<String>,
@@ -91,6 +92,7 @@ impl Default for MediaController {
             backend,
             native_host: None,
             subtitles: SubtitleTimeline::new(),
+            previews: Default::default(),
             show_subtitles: true,
             fullscreen_mode: false,
             error: None,
@@ -144,6 +146,7 @@ impl MediaController {
         }
         self.pause_task();
         self.route = MediaRoute::Library;
+        self.previews = Default::default();
         self.active_task_id = None;
         self.current_source = None;
         self.last_auto_scrolled_cue_id = None;
@@ -156,6 +159,7 @@ impl MediaController {
         }
         self.pause_task();
         self.route = MediaRoute::Create;
+        self.previews = Default::default();
         self.active_task_id = None;
         self.current_source = None;
         self.last_auto_scrolled_cue_id = None;
@@ -257,6 +261,7 @@ impl MediaController {
 
     pub fn open_task(&mut self, task_id: &str) -> Result<(), String> {
         let task = self.store.get(task_id).ok_or("Task not found")?.clone();
+        self.previews = Default::default();
         self.active_task_id = Some(task_id.to_string());
         self.current_source = Some(task.source.clone());
         self.subtitles = task.subtitles.clone();
@@ -413,6 +418,7 @@ impl MediaController {
                 backend.stop();
             }
             self.release_native_host();
+            self.previews = Default::default();
             self.active_task_id = None;
             self.current_source = None;
             self.route = MediaRoute::Library;

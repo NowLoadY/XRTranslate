@@ -2,7 +2,10 @@ use serde_json::{Value, json};
 
 mod stream;
 
-use crate::{AsyncHttpClient, HttpRequest, InferenceError, MultipartBody, error::preview};
+use crate::{
+    AsrTranscript, AsyncHttpClient, HttpRequest, InferenceError, MultipartBody, error::preview,
+};
+use xrtranslate_engine::language::SupportedLanguage;
 
 /// Text extracted from the first OpenAI chat-completions choice.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,7 +161,7 @@ impl<C: AsyncHttpClient> OpenAiCompatibleClient<C> {
         &self,
         fields: Vec<(String, String)>,
         wav: Vec<u8>,
-    ) -> Result<String, InferenceError> {
+    ) -> Result<AsrTranscript, InferenceError> {
         let body = self
             .execute(HttpRequest {
                 method: "POST".into(),
@@ -179,14 +182,20 @@ impl<C: AsyncHttpClient> OpenAiCompatibleClient<C> {
                 message: error.to_string(),
                 body_preview: preview(&body),
             })?;
-        value["text"]
+        let text = value["text"]
             .as_str()
-            .map(str::to_owned)
             .ok_or_else(|| InferenceError::InvalidResponse {
                 endpoint: self.endpoint.clone(),
                 message: "missing transcription text".into(),
                 body_preview: preview(&body),
-            })
+            })?;
+        Ok(AsrTranscript {
+            text: text.trim().to_owned(),
+            language: value["language"]
+                .as_str()
+                .and_then(SupportedLanguage::parse)
+                .map(|language| language.code().to_owned()),
+        })
     }
 
     async fn execute(&self, request: HttpRequest) -> Result<String, InferenceError> {

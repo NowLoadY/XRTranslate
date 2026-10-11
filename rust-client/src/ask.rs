@@ -129,7 +129,7 @@ async fn send(server: &str, prompt: String) -> Result<String, String> {
         return Err(serde_json::from_str::<serde_json::Value>(&body)
             .ok()
             .and_then(|value| value["error"].as_str().map(str::to_owned))
-            .unwrap_or_else(|| format!("Ask failed ({status})")));
+            .unwrap_or_else(|| format!("Ask failed ({status}): {body}")));
     }
     let response: AskResponse = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     if response.text.trim().is_empty() {

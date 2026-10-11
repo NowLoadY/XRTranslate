@@ -760,7 +760,6 @@ struct SharedSessionState {
     pending_route_change: Option<(String, String)>,
     latest_asr_prompt_trace: Option<PromptExecutionTrace>,
     latest_translation_prompt_trace: Option<PromptExecutionTrace>,
-    provider_configuration_required: bool,
     retired_streams: Vec<u64>,
     microphone_clone_state: Option<xrtranslate_protocol::VoiceCloneState>,
     loopback_clone_state: Option<xrtranslate_protocol::VoiceCloneState>,
@@ -1034,6 +1033,7 @@ impl Default for XRTranslateApp {
         std::thread::Builder::new()
             .name("session-event-pump".into())
             .spawn(move || {
+                let mut host_previews = session_coordinator::LivePreviews::default();
                 let mut pending_authoritative_sources =
                     Vec::<PendingAuthoritativeRecognition>::new();
                 let mut pending_authoritative_translations =
@@ -1045,6 +1045,8 @@ impl Default for XRTranslateApp {
                         continue;
                     };
                     for retired in state.retired_streams.drain(..) {
+                        host_previews
+                            .observe(&TranslationEvent::StreamEnded { stream_id: retired });
                         pending_authoritative_sources
                             .retain(|snapshot| snapshot.stream_id != retired);
                         pending_authoritative_translations
@@ -1062,6 +1064,25 @@ impl Default for XRTranslateApp {
                         }
                     );
                     let results = scope.publish(&event, &result_subscribers);
+                    if scope.publish_to_host_outputs && !results.is_empty() {
+                        for result in &results {
+                            host_previews.observe(result);
+                        }
+                        let previews = host_previews
+                            .entries()
+                            .iter()
+                            .filter(|preview| preview.stream_id == scoped_stream)
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        publish_host_output(
+                            &output_subscribers,
+                            HostOutputEvent::Previews {
+                                stream_id: scoped_stream,
+                                is_typing: scope.is_text,
+                                entries: &previews,
+                            },
+                        );
+                    }
                     for result in &results {
                         state
                             .companion_reader
@@ -1630,10 +1651,7 @@ impl Default for XRTranslateApp {
                             }
                             CaptureSource::SystemAudio | CaptureSource::Both => {}
                         },
-                        SessionEvent::BackendError {
-                            message,
-                            configuration_required,
-                        } => {
+                        SessionEvent::BackendError { message } => {
                             if !scope.publish_to_host_outputs {
                                 continue;
                             }
@@ -1641,7 +1659,6 @@ impl Default for XRTranslateApp {
                                 .translation_previews
                                 .retain(|entry| entry.stream_id != Some(scoped_stream));
                             state.record_error(message);
-                            state.provider_configuration_required |= configuration_required;
                         }
                         SessionEvent::Error(error) => {
                             if !scope.publish_to_host_outputs {
@@ -3468,6 +3485,7 @@ impl XRTranslateApp {
     }
 
     fn set_startup_error(&mut self, status: &str, error: String) {
+        self.notifications.error("", &error);
         self.companion_inbox
             .observe_error("application", Some(&error));
         let pending = std::mem::take(&mut self.pending_translations);
@@ -3983,6 +4001,7 @@ impl XRTranslateApp {
     }
 
     fn fail_task_startup(&mut self, owner: &TranslationSessionOwner, error: &str) {
+        self.notifications.error("", error);
         self.companion_inbox
             .observe_error("application", Some(error));
         translation_service::publish_result(
@@ -5058,6 +5077,7 @@ impl XRTranslateApp {
             &self.event_tx,
         );
         for error in output.errors {
+            self.notifications.error("", &error);
             self.companion_inbox.observe_error("text", Some(&error));
             self.last_error = Some(error);
         }
@@ -5184,7 +5204,6 @@ impl XRTranslateApp {
         self.poll_ocr();
 
         // Copy latest shared state into self for local rendering when main UI is visible
-        let mut open_provider_configuration = false;
         if let Ok(mut state) = self.shared_session_state.lock() {
             self.connection_status = state.connection_status.clone();
             self.partial_text = state.partial_text.clone();
@@ -5259,21 +5278,17 @@ impl XRTranslateApp {
                 self.last_error = Some(err.clone());
             }
             for error in state.pending_companion_errors.drain(..) {
+                if let Some(error) = &error {
+                    self.notifications.error("", error);
+                }
                 self.companion_inbox
                     .observe_error("session", error.as_deref());
             }
-            open_provider_configuration =
-                std::mem::take(&mut state.provider_configuration_required);
         }
         // Drain final commands before completed tasks retire their streams.
         // Failed and cancelled turns have already been discarded by the reader.
         ui::companion::process_commands(self);
         self.poll_translation_tasks();
-        if open_provider_configuration {
-            self.stop();
-            self.first_run = true;
-            self.onboarding_page = 1;
-        }
     }
 
     fn observe_companion_errors(&mut self) {
@@ -5427,8 +5442,7 @@ impl eframe::App for XRTranslateApp {
                 self.poll_session_events();
                 self.media_plugin.poll_translation_events();
             }
-            // A provider failure can reopen configuration while the main window
-            // is hidden. Keep an existing companion reading its queued error.
+            // Keep an existing companion reading queued errors while hidden.
             self.observe_companion_errors();
             ui::companion::tick_background(ctx, self);
             ctx.request_repaint_after(std::time::Duration::from_millis(100));

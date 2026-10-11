@@ -57,8 +57,13 @@ pub(super) fn render_subtitles_card(
         controller.last_auto_scrolled_cue_id = current.clone();
     }
     ui.label(egui::RichText::new(tr(language, "Subtitles")).strong());
+    for preview in controller.previews.entries() {
+        components::live_preview(ui, preview);
+    }
     if controller.subtitles.count() == 0 {
-        ui.weak(tr(language, "No subtitles yet"));
+        if controller.previews.entries().is_empty() {
+            ui.weak(tr(language, "No subtitles yet"));
+        }
         return;
     }
     let mut seek = None;

@@ -77,6 +77,8 @@ pub(super) fn render_timeline(
                         }
                         render_segment(
                             segment,
+                            super::segment_preview(&controller.previews, segment)
+                                .and_then(|preview| preview.translated.as_deref()),
                             &bundle.speakers,
                             &bundle.markers,
                             evidence_target.as_deref(),
@@ -90,6 +92,7 @@ pub(super) fn render_timeline(
                     ui.add_space(6.0);
                 });
             }
+            super::render_unstored_previews(ui, &controller.previews, &bundle.segments);
         });
     if evidence_reached {
         controller.evidence_target = None;
@@ -98,6 +101,7 @@ pub(super) fn render_timeline(
 
 fn render_segment(
     segment: &Segment,
+    preview_translation: Option<&str>,
     speakers: &[Speaker],
     markers: &[SegmentMarker],
     evidence_target: Option<&str>,
@@ -155,7 +159,7 @@ fn render_segment(
                 )
                 .wrap(),
             );
-            if let Some(translated) = &segment.translated_text {
+            if let Some(translated) = preview_translation.or(segment.translated_text.as_deref()) {
                 ui.add(
                     egui::Label::new(
                         egui::RichText::new(translated)

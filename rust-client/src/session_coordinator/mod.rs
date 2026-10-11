@@ -7,12 +7,14 @@
 
 mod owner;
 mod plugin_session;
+mod preview;
 mod request;
 mod result;
 mod subscriber;
 
 pub use owner::{PluginSessionOwner, TranslationSessionOwner};
 pub use plugin_session::{PluginSessionBinding, SessionOutputPolicy, TranslationSessionPlugin};
+pub use preview::{LivePreviews, TranslationPreview};
 pub(crate) use request::{TranslationInput, TranslationTask};
 pub(crate) use result::TranslationEventAdapter;
 pub use result::{TranslationEvent, TranslationOutcome, TranslationSegment};

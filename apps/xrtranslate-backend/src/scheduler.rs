@@ -43,8 +43,8 @@ struct LimiterInner {
 struct LimiterState {
     available: usize,
     realtime_burst: usize,
-    realtime: VecDeque<oneshot::Sender<()>>,
-    offline: VecDeque<oneshot::Sender<()>>,
+    realtime: VecDeque<oneshot::Sender<InferencePermit>>,
+    offline: VecDeque<oneshot::Sender<InferencePermit>>,
 }
 
 impl PriorityLimiter {
@@ -78,48 +78,65 @@ impl PriorityLimiter {
             }
         };
         if let Some(receiver) = receiver {
-            receiver
+            return receiver
                 .await
                 .expect("inference scheduler closed while a permit was queued");
         }
         InferencePermit {
-            limiter: Arc::clone(&self.inner),
+            limiter: Some(Arc::clone(&self.inner)),
         }
     }
 }
 
 pub(crate) struct InferencePermit {
-    limiter: Arc<LimiterInner>,
+    limiter: Option<Arc<LimiterInner>>,
 }
 
 impl Drop for InferencePermit {
     fn drop(&mut self) {
-        self.limiter.release();
+        if let Some(limiter) = self.limiter.take() {
+            limiter.release();
+        }
     }
 }
 
 impl LimiterInner {
-    fn release(&self) {
-        let mut state = self.state.lock().expect("scheduler lock poisoned");
+    fn release(self: &Arc<Self>) {
         loop {
-            let prefer_offline = !state.offline.is_empty()
-                && (state.realtime.is_empty() || state.realtime_burst >= REALTIME_BURST_LIMIT);
-            let next = if prefer_offline {
-                state.realtime_burst = 0;
-                state.offline.pop_front()
-            } else if let Some(sender) = state.realtime.pop_front() {
-                state.realtime_burst += 1;
-                Some(sender)
-            } else {
-                state.realtime_burst = 0;
-                state.offline.pop_front()
+            let next = {
+                let mut state = self.state.lock().expect("scheduler lock poisoned");
+                let prefer_offline = !state.offline.is_empty()
+                    && (state.realtime.is_empty() || state.realtime_burst >= REALTIME_BURST_LIMIT);
+                let next = if prefer_offline {
+                    state.realtime_burst = 0;
+                    state.offline.pop_front()
+                } else if let Some(sender) = state.realtime.pop_front() {
+                    state.realtime_burst += 1;
+                    Some(sender)
+                } else {
+                    state.realtime_burst = 0;
+                    state.offline.pop_front()
+                };
+                if next.is_none() {
+                    state.available += 1;
+                }
+                next
             };
             let Some(next) = next else {
-                state.available += 1;
                 return;
             };
-            if next.send(()).is_ok() {
-                return;
+            // Transfer ownership of the slot, not just a wake-up. Cancellation
+            // after notification but before the waiter is polled drops the
+            // delivered permit and returns the slot automatically.
+            match next.send(InferencePermit {
+                limiter: Some(Arc::clone(self)),
+            }) {
+                Ok(()) => return,
+                Err(mut permit) => {
+                    // The waiter was already cancelled; keep distributing this
+                    // slot in the loop, outside the state lock and without recursion.
+                    permit.limiter = None;
+                }
             }
         }
     }

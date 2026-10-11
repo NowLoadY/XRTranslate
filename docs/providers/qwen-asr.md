@@ -4,30 +4,35 @@ The default cloud Qwen recognizer is `qwen-audio-3.0-asr-flash`. The regional
 presets use DashScope's native HTTP API (`transport: dashscope`), with one
 recognition result per submitted audio window.
 
-This fits XRTranslate's shared recognition flow: audio segmentation and
-overlap stay in the pipeline, recognition text enters the shared sentence
-stability gate, translation can update incrementally, and TTS receives only
-validated final sentences. The provider does not decide when a sentence is
-ready for translation or playback.
+Both live and overlapping-window ASR use the same sentence boundaries. Source
+previews update immediately; translation starts only for a complete sentence.
+Commas, colons, short pauses and audio-window limits do not release unfinished
+text. A sentence ending inside a window has lookahead; a right-edge ending
+needs a normal VAD pause or a subsequent window. Micro-pause and maximum-duration
+cuts retain the tail. Two seconds of continuous silence, a speaker boundary, or
+explicit input end release an unpunctuated final tail.
 
-Audio windows and sentences have independent boundaries. A maximum-duration
-audio cut does not finish a sentence: its source-text tail carries into
-recognition of the next window. Eligible complete sentences pass the 300 ms
-stability gate. A natural pause, speaker
-change, or input end can release the unfinished final sentence. This lets
-continuous speech cross audio-window limits without translating arbitrary
-word-count fragments. The pending tail is bounded to 4,096 characters, with
-an explicit diagnostic for pathological uninterrupted, unpunctuated input;
-that resource limit is not a sentence-completion rule.
+Pseudo-streaming first reports after about two seconds of audio, then advances
+by about two seconds using three-second overlapping windows (four seconds for
+persistently sparse system audio). Recognition and sentence translation run
+independently. An unchanged sentence shares its in-flight translation and cached
+result across recognition revisions; only a source correction cancels that
+sentence. No fixed 300 ms timer guesses sentence completion.
 
-At a `MaxActiveFrames` cut, the final sentence touching the audio window's
-right edge is held for next-window lookahead even if it has punctuation;
-earlier complete sentences can proceed. This policy does not establish
-agreement between independent ASR hypotheses. Merged or split text receives
-timestamps estimated from text partitions. Voice cloning receives each
-original audio window and its original transcript once through a separate
-internal reference event; reconstructed captions are never paired with
-misaligned or repeated audio-window PCM.
+On models declaring ASR text bias or weighted vocabulary, pseudo-streaming may
+supply the last recognized phrase to the next ASR request. It refreshes at a
+pause, comma or sentence-ending boundary, not on every window. The hint is at
+most 160 characters, bounded again by the model's text-context limit, and remains
+separate from persistent Corpus terms. Vocabulary-only models receive a short,
+lightly weighted phrase. Sentence submission, input end, route or speaker change
+clears the hint; language recovery and quality retries omit it. It never enters
+the translation prompt as recognition bias.
+
+An unfinished non-revisable tail carries across windows, with a 4,096-character
+resource limit and an explicit diagnostic rather than arbitrary translation
+cuts. Merged text receives timestamps estimated from text partitions. Voice
+cloning receives original audio windows with their original transcripts;
+reconstructed captions are not paired with repeated or misaligned PCM.
 
 The HTTP adapter still returns one completed recognition result per audio
 window. Sentence accumulation and incremental translation do not turn it into
@@ -91,9 +96,9 @@ game speech needs evaluation with representative audio before changing the
 default. No measured latency or recognition-quality comparison has been made
 for these two models in XRTranslate.
 
-The separate [WebSocket adapter](qwen-audio-streaming-asr.md) currently replays
-completed audio at real-time pace and consumes final results. It therefore
-does not provide a lower-latency live ASR path in the current pipeline.
+The separate [WebSocket adapter](qwen-audio-streaming-asr.md) sends live PCM as
+it arrives and publishes cumulative recognition previews. Completed-window
+replay remains available for pseudo-streaming and recovery.
 Asynchronous `filetrans` models are intended for recording transcription and
 are not suitable defaults for live game subtitles.
 

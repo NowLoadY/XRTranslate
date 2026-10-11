@@ -13,7 +13,7 @@ use std::{
     sync::{Arc, atomic::Ordering},
     time::{Duration, Instant},
 };
-use xrtranslate_engine::language::{LanguageCapabilities, LanguageSelection};
+use xrtranslate_engine::language::{LanguageCapabilities, LanguageMode, LanguageSelection};
 use xrtranslate_protocol::PromptGraphSet;
 
 pub(crate) fn select_languages_with_options(
@@ -78,8 +78,20 @@ struct TextTask {
 
 impl TextTask {
     fn same_conversation(&self, other: &Self) -> bool {
+        let pair = |mode| match mode {
+            LanguageMode::Fixed { source, target } => Some([source, target]),
+            LanguageMode::Bidirectional(pair) => Some(pair),
+            _ => None,
+        };
+        // Text routing resolves each input before submission. Reversing the
+        // same language pair must retain the conversation and its Corpus history.
+        let same_languages = self.languages == other.languages
+            || (self.languages.additional_target == other.languages.additional_target
+                && pair(self.languages.mode)
+                    .zip(pair(other.languages.mode))
+                    .is_some_and(|(left, right)| left == right || left == [right[1], right[0]]));
         self.scope.owner.same_conversation(&other.scope.owner)
-            && self.languages == other.languages
+            && same_languages
             && self.scope.publish_to_host_outputs == other.scope.publish_to_host_outputs
     }
 
@@ -422,7 +434,7 @@ impl TextTranslation {
                     SessionEvent::Error(error) => {
                         task.fail(error.clone(), target, &mut errors);
                     }
-                    SessionEvent::BackendError { message, .. } => {
+                    SessionEvent::BackendError { message } => {
                         let error = message.clone();
                         task.connection.close();
                         task.emit(event, target);

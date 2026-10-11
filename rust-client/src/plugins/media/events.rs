@@ -29,9 +29,6 @@ impl SessionEventSubscriber for MediaTranslationSink {
     }
 
     fn on_translation_event(&self, owner: &TranslationSessionOwner, event: &TranslationEvent) {
-        if matches!(event, TranslationEvent::Segment(segment) if segment.translated.is_none()) {
-            return;
-        }
         if self.accepts_owner(owner)
             && let Some(operation) = owner.operation_id()
         {
@@ -49,8 +46,10 @@ impl MediaPlugin {
             if self.controller.active_task_id.as_deref() != Some(operation.as_str()) {
                 continue;
             }
+            self.controller.previews.observe(&event);
             self.controller.dirty = true;
             match event {
+                TranslationEvent::Preview(_) => {}
                 TranslationEvent::Segment(segment) => {
                     let stream_id = segment.stream_id;
                     if let Some((cue, metadata)) = translation_cue(segment) {

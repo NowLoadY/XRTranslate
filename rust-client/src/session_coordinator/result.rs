@@ -35,6 +35,8 @@ pub enum TranslationOutcome {
 
 #[derive(Clone, Debug)]
 pub enum TranslationEvent {
+    /// Replaceable presentation only; never a durable result or TTS input.
+    Preview(super::preview::TranslationPreview),
     Segment(TranslationSegment),
     /// Complete replacement for this turn's current source or translation batch.
     ReplaceSegments(Vec<TranslationSegment>),
@@ -75,7 +77,7 @@ impl TranslationEventAdapter {
                 "Cancelled" => TranslationOutcome::Cancelled,
                 _ => TranslationOutcome::Failed("Translation connection was interrupted".into()),
             }),
-            SessionEvent::Error(message) | SessionEvent::BackendError { message, .. } => {
+            SessionEvent::Error(message) | SessionEvent::BackendError { message } => {
                 Some(TranslationOutcome::Failed(message.clone()))
             }
             _ => None,
@@ -96,6 +98,55 @@ impl TranslationEventAdapter {
             return vec![TranslationEvent::StreamEnded {
                 stream_id: *stream_id,
             }];
+        }
+        let preview = match event {
+            SessionEvent::Asr {
+                stream_id,
+                audio_source,
+                kind,
+                text,
+                turn_id,
+                ..
+            } => Some(super::preview::TranslationPreview {
+                stream_id: *stream_id,
+                audio_source: *audio_source,
+                turn_id: turn_id.clone(),
+                segment_index: 0,
+                source: if kind == "partial" {
+                    text.clone()
+                } else {
+                    String::new()
+                },
+                translated: None,
+                revision: 0,
+            }),
+            SessionEvent::TranslationPreview {
+                stream_id,
+                audio_source,
+                preview,
+                ..
+            } => {
+                if self
+                    .published_revision
+                    .get(&(*stream_id, preview.turn_id.clone()))
+                    .is_some_and(|revision| preview.revision < *revision)
+                {
+                    return Vec::new();
+                }
+                Some(super::preview::TranslationPreview {
+                    stream_id: *stream_id,
+                    audio_source: *audio_source,
+                    turn_id: preview.turn_id.clone(),
+                    segment_index: preview.segment_index,
+                    source: preview.source_text.clone(),
+                    translated: Some(preview.translated_text.clone()),
+                    revision: preview.revision,
+                })
+            }
+            _ => None,
+        };
+        if let Some(preview) = preview {
+            return vec![TranslationEvent::Preview(preview)];
         }
         let translated = match event {
             SessionEvent::Translation { translated, .. } => Some(translated.clone()),

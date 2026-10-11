@@ -378,6 +378,11 @@ struct QueuedMessage {
     expires_at: Option<Instant>,
 }
 enum Command {
+    Previews(
+        u64,
+        bool,
+        Vec<crate::session_coordinator::TranslationPreview>,
+    ),
     Message {
         stream_id: u64,
         audio_source: OscInputSource,
@@ -414,6 +419,17 @@ pub struct OscHandle {
 }
 
 impl OscHandle {
+    pub fn set_previews(
+        &self,
+        stream: u64,
+        is_typing: bool,
+        entries: &[crate::session_coordinator::TranslationPreview],
+    ) {
+        let _ = self
+            .tx
+            .send(Command::Previews(stream, is_typing, entries.to_vec()));
+    }
+
     pub fn add_message_for_stream(
         &self,
         stream_id: u64,
@@ -708,6 +724,7 @@ fn dispatch_loop(
     let monitor = super::sys_info::SystemMonitor::new();
     let mut history = Vec::new();
     let mut live = Vec::new();
+    let mut previews: Vec<HistoryMessage> = Vec::new();
     let mut manual_message = None;
     // Keep only the latest snapshot, while preserving a final notification.
     let mut pending: Option<bool> = None;
@@ -719,7 +736,10 @@ fn dispatch_loop(
         let wait = dispatch_wait(
             pending.is_some(),
             last_send,
-            next_content_expiry(&history, &live, manual_message.as_ref()),
+            next_content_expiry(&history, &live, manual_message.as_ref())
+                .into_iter()
+                .chain(previews.iter().map(|entry| entry.expires_at))
+                .min(),
             next_banner_refresh,
         );
         let command = rx.recv_timeout(wait);
@@ -740,6 +760,34 @@ fn dispatch_loop(
                 });
                 changed = true;
                 notify = true;
+            }
+            Ok(Command::Previews(stream_id, is_typing, incoming)) => {
+                previews.retain(|entry| entry.stream_id != stream_id);
+                if settings.enabled {
+                    previews.extend(
+                        incoming
+                            .into_iter()
+                            .map(|entry| HistoryMessage {
+                                stream_id,
+                                source_kind: if is_typing {
+                                    OscInputSource::Typing
+                                } else {
+                                    entry.audio_source.into()
+                                },
+                                source: sanitize_chatbox_segment(&entry.source),
+                                translated: sanitize_chatbox_segment(
+                                    entry.translated.as_deref().unwrap_or_default(),
+                                ),
+                                additional_translations: Vec::new(),
+                                speaker_id: String::new(),
+                                updated_at: now,
+                                expires_at: now
+                                    + Duration::from_secs_f64(settings.history_ttl_seconds),
+                            })
+                            .filter(|entry| settings.accepts_source(entry.source_kind)),
+                    );
+                }
+                changed = true;
             }
             Ok(Command::Message {
                 stream_id,
@@ -813,6 +861,8 @@ fn dispatch_loop(
                 notify = true;
             }
             Ok(Command::EndStream(stream_id)) if settings.enabled => {
+                previews.retain(|entry| entry.stream_id != stream_id);
+                changed = true;
                 if let Some(index) = live.iter().position(|entry| entry.stream_id == stream_id) {
                     history.push(live.remove(index));
                     changed = true;
@@ -820,6 +870,7 @@ fn dispatch_loop(
                 }
             }
             Ok(Command::Clear) => {
+                previews.clear();
                 manual_message = None;
                 history.clear();
                 live.clear();
@@ -837,11 +888,13 @@ fn dispatch_loop(
                     manual_message = None;
                     history.clear();
                     live.clear();
+                    previews.clear();
                     last_send = now;
                 }
                 settings = updated;
                 history.retain(|entry| settings.accepts_source(entry.source_kind));
                 live.retain(|entry| settings.accepts_source(entry.source_kind));
+                previews.retain(|entry| settings.accepts_source(entry.source_kind));
                 next_banner_refresh = banner_refresh_deadline(&settings, now);
                 changed = true;
             }
@@ -850,6 +903,9 @@ fn dispatch_loop(
             }
             _ => {}
         }
+        let previous_preview_count = previews.len();
+        previews.retain(|entry| entry.expires_at > now);
+        changed |= previews.len() != previous_preview_count;
         // Service deadlines even while incoming commands keep the channel busy.
         changed |= refresh_chatbox_entries(
             &mut history,
@@ -877,11 +933,11 @@ fn dispatch_loop(
             } else {
                 build_queued_message(
                     &history,
-                    &live,
+                    &live.iter().chain(&previews).cloned().collect::<Vec<_>>(),
                     manual_message.as_ref(),
                     &settings,
                     &monitor.snapshot(),
-                    !live.is_empty(),
+                    !live.is_empty() || !previews.is_empty(),
                     notify,
                 )
             };

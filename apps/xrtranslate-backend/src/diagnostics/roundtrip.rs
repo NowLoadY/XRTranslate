@@ -227,6 +227,7 @@ async fn execute(args: &Arguments, options: &Options, report: &mut Value) -> Res
             &PromptNodeGraph::builtin_default(),
             AsrPromptContext::default(),
             &[],
+            None,
         )
         .await
         .map_err(|e| e.message)?

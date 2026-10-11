@@ -24,7 +24,10 @@ pub(super) fn render_transcript(
                                 .size(12.5)
                                 .color(crate::ui::theme::text_normal()),
                         );
-                        if let Some(text) = &segment.translated_text {
+                        if let Some(text) = super::segment_preview(&controller.previews, segment)
+                            .and_then(|preview| preview.translated.as_ref())
+                            .or(segment.translated_text.as_ref())
+                        {
                             ui.label(
                                 egui::RichText::new(text)
                                     .strong()
@@ -35,6 +38,7 @@ pub(super) fn render_transcript(
                     });
                     ui.separator();
                 }
+                super::render_unstored_previews(ui, &controller.previews, &bundle.segments);
             });
     }
 }

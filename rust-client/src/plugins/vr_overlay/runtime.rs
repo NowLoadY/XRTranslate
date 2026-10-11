@@ -165,6 +165,11 @@ pub struct VrRuntimeStatus {
 
 #[derive(Debug)]
 pub enum VrCommand {
+    Previews(
+        u64,
+        bool,
+        Vec<crate::session_coordinator::TranslationPreview>,
+    ),
     Caption {
         stream_id: u64,
         audio_source: CaptureSource,
@@ -300,6 +305,17 @@ pub struct VrOverlayHandle {
 }
 
 impl VrOverlayHandle {
+    pub fn set_previews(
+        &self,
+        stream: u64,
+        is_typing: bool,
+        entries: &[crate::session_coordinator::TranslationPreview],
+    ) {
+        let _ = self
+            .command_tx
+            .send(VrCommand::Previews(stream, is_typing, entries.to_vec()));
+    }
+
     pub fn add_caption(
         &self,
         stream_id: u64,
@@ -383,6 +399,7 @@ fn run_vr_worker(
     let mut next_session_check = Instant::now();
 
     let mut entries: Vec<StreamEntry> = Vec::new();
+    let mut previews: Vec<StreamEntry> = Vec::new();
     let mut needs_redraw = false;
     let mut is_overlay_visible = false;
 
@@ -516,6 +533,30 @@ fn run_vr_worker(
                     st.avatar_error = None;
                     st.last_error = None;
                 }
+                Ok(VrCommand::Previews(stream_id, is_typing, incoming)) => {
+                    previews.retain(|entry| entry.stream_id != stream_id);
+                    previews.extend(
+                        incoming
+                            .into_iter()
+                            .filter(|entry| {
+                                settings
+                                    .audio_source_filter
+                                    .allows(entry.audio_source, is_typing)
+                            })
+                            .map(|entry| StreamEntry {
+                                stream_id,
+                                audio_source: entry.audio_source,
+                                is_typing,
+                                source: entry.source,
+                                translated: entry.translated.unwrap_or_default(),
+                                additional_translations: Vec::new(),
+                                speaker: String::new(),
+                                live: true,
+                                updated_at: Instant::now(),
+                            }),
+                    );
+                    needs_redraw = true;
+                }
                 Ok(VrCommand::Caption {
                     stream_id,
                     audio_source,
@@ -572,6 +613,8 @@ fn run_vr_worker(
                     needs_redraw = true;
                 }
                 Ok(VrCommand::EndStream(stream_id)) => {
+                    previews.retain(|entry| entry.stream_id != stream_id);
+                    needs_redraw = true;
                     if let Some(existing) = entries
                         .iter_mut()
                         .find(|e| e.stream_id == stream_id && e.live)
@@ -583,6 +626,7 @@ fn run_vr_worker(
                 }
                 Ok(VrCommand::Clear) => {
                     entries.clear();
+                    previews.clear();
                     needs_redraw = true;
                 }
                 Ok(VrCommand::UpdateSettings(mut updated)) => {
@@ -625,6 +669,12 @@ fn run_vr_worker(
             settings.display_timeout_seconds,
         );
 
+        needs_redraw |= expire_entries(
+            &mut previews,
+            Instant::now(),
+            settings.display_timeout_seconds,
+        );
+
         // Passive session monitor: detect if SteamVR was closed by user or if disabled
         if vr_session.is_some() {
             // Process enumeration is a liveness check, not part of every frame.
@@ -655,6 +705,17 @@ fn run_vr_worker(
 
             let cards: Vec<VrSubtitleCard> = entries
                 .iter()
+                .chain(&previews)
+                .filter(|entry| {
+                    settings
+                        .audio_source_filter
+                        .allows(entry.audio_source, entry.is_typing)
+                })
+                .rev()
+                .take(settings.max_items.clamp(1, 5))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
                 .map(|e| VrSubtitleCard {
                     source: e.source.clone(),
                     translated: e.translated.clone(),

@@ -47,7 +47,7 @@ fn default_schema_guide() -> String {
          * 'current_input': Real-time speech transcript sentence to be translated.\n\
          * 'source_language': Source language name (e.g. 'English', 'Japanese').\n\
          * 'target_language': Target language name (e.g. 'Chinese').\n\
-         * 'recognition_context': Structured ASR terms rendered as text; it is not the current transcript.\n\
+         * 'recognition_context': ASR vocabulary and an optional transient phrase from preceding audio; never a translation instruction.\n\
          * 'recognition_mode': Runtime workflow mode, either 'ordinary' or 'pseudo_streaming'.\n\
        - Input / Data Block (IMPORTANT: built-in blocks ALREADY include descriptive markdown headers):\n\
          * 'terminology': Renders '## Terminology\\n\\n<matched glossary rows>'\n\

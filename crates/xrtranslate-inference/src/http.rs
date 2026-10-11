@@ -84,7 +84,7 @@ impl ReqwestClient {
     pub fn new(timeout: Duration) -> Result<Self, TransportError> {
         client_builder()
             .timeout(timeout)
-            .pool_idle_timeout(Duration::from_secs(3))
+            .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Duration::from_secs(5))
             .tcp_nodelay(true)
             .build()
@@ -111,7 +111,7 @@ impl ReqwestClient {
             .map_err(|error| TransportError::new("client", error.to_string()))
     }
 
-    /// The standard 30-second client for local `llama-server` requests.
+    /// The standard 30-second client for online services.
     pub fn with_default_timeout() -> Result<Self, TransportError> {
         Self::new(Duration::from_secs(30))
     }

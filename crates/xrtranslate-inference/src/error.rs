@@ -117,27 +117,6 @@ impl fmt::Display for InferenceError {
 impl Error for InferenceError {}
 
 impl InferenceError {
-    /// Whether retrying requires the user to correct a remote provider's
-    /// credentials, endpoint, model, or request configuration.
-    #[must_use]
-    pub fn requires_provider_configuration(&self) -> bool {
-        match self {
-            Self::InvalidConfiguration { .. } => true,
-            Self::HttpStatus {
-                endpoint, status, ..
-            } => {
-                [400, 401, 403, 404, 422].contains(status)
-                    && reqwest::Url::parse(endpoint)
-                        .ok()
-                        .and_then(|url| url.host_str().map(str::to_owned))
-                        .is_some_and(|host| {
-                            host != "localhost" && host != "127.0.0.1" && host != "::1"
-                        })
-            }
-            _ => false,
-        }
-    }
-
     /// Whether the provider returned text that failed a deterministic output
     /// quality gate and may be worth regenerating once.
     #[must_use]

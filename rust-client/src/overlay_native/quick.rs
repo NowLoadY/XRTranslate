@@ -129,12 +129,10 @@ impl Capsule {
                 self.dragging = false;
             }
         }
-        let text = self
-            .state
-            .error
-            .as_deref()
-            .unwrap_or(&self.state.translated);
-        let text = crate::i18n::tr_dynamic(language, text);
+        let text = match self.state.error.as_deref() {
+            Some(error) => crate::ui::notifications::error_text(error, language),
+            None => crate::i18n::tr_dynamic(language, &self.state.translated),
+        };
         let max_width = (work.width().min(700.0) - 200.0).max(80.0);
         let galley = ui.painter().layout(
             text.into_owned(),

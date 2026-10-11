@@ -2,6 +2,9 @@
   "asr": {
     "provider": "qwen3-gguf",
     "providers": {
+      "groq": {},
+      "google": {},
+      "siliconflow": {},
       "openai": {},
       "qwen3-gguf": {
         "asr_prompt_mode": "context_bias",
@@ -17,7 +20,8 @@
         "url": "http://127.0.0.1:8001/v1/chat/completions"
       },
       "qwen": {},
-      "qwen-intl": {}
+      "qwen-intl": {},
+      "qwen-audio-streaming": {}
     },
     "vad_adaptive_after_ms": 4000,
     "vad_adaptive_silence_ms": 128,
@@ -492,7 +496,11 @@
       },
       "openai": {},
       "qwen": {},
-      "qwen-intl": {}
+      "qwen-intl": {},
+      "siliconflow": {},
+      "google": {},
+      "groq": {},
+      "openrouter": {}
     },
     "source_lang": "auto",
     "target_lang": "zh,en"

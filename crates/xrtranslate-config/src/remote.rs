@@ -131,6 +131,8 @@ pub(crate) fn resolve(
             } else {
                 AsrPromptMode::None
             },
+            asr_language_hint: get("supports_language").and_then(Value::as_bool),
+            asr_response_format: None,
             context_max_chars: get("asr_context_max_chars")
                 .and_then(Value::as_u64)
                 .and_then(|n| usize::try_from(n).ok()),
@@ -138,6 +140,7 @@ pub(crate) fn resolve(
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             single_user_message: false,
+            reasoning_effort: None,
         }
     };
     // Explicit neutral overrides support private deployments and unknown revisions.
@@ -162,11 +165,31 @@ pub(crate) fn resolve(
                 "{path}.capabilities.vocabulary_bias is not supported by this connector"
             ));
         }
-        if capabilities.streaming != RemoteStreaming::None {
+        if capabilities.streaming != RemoteStreaming::None
+            && (!connector.supports_audio_streaming()
+                || capabilities.streaming != RemoteStreaming::Cumulative)
+        {
             issues.push(format!(
-                "{path}.capabilities.streaming: current ASR connectors return completed utterances"
+                "{path}.capabilities.streaming: live ASR requires a streaming audio connector with cumulative transcripts"
             ));
         }
+    }
+    if capabilities.asr_response_format.is_some()
+        && connector != Some(RemoteConnector::OpenaiTranscription)
+    {
+        issues.push(format!(
+            "{path}.capabilities.asr_response_format requires the openai-transcription connector"
+        ));
+    }
+    if capabilities.reasoning_effort.is_some()
+        && !matches!(
+            connector,
+            Some(RemoteConnector::OpenaiChat | RemoteConnector::OpenaiAudioChat)
+        )
+    {
+        issues.push(format!(
+            "{path}.capabilities.reasoning_effort requires a chat-completions connector"
+        ));
     }
     if get("asr_context_max_chars")
         .is_some_and(|value| value.as_u64().is_none_or(|limit| limit == 0))

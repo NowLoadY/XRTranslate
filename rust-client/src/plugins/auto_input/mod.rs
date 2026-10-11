@@ -193,7 +193,9 @@ impl HostOutputSubscriber for AutoInputPublisher {
             }
             // Captions may be source-only, previewed, or revised. Stream end
             // leaves only the brief handoff to the worker, never a focus backlog.
-            HostOutputEvent::Caption { .. } | HostOutputEvent::StreamEnded(_) => {}
+            HostOutputEvent::Previews { .. }
+            | HostOutputEvent::Caption { .. }
+            | HostOutputEvent::StreamEnded(_) => {}
         }
     }
 }

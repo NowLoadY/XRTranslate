@@ -147,7 +147,6 @@ pub enum SessionEvent {
     },
     BackendError {
         message: String,
-        configuration_required: bool,
     },
     Error(String),
 }
@@ -767,7 +766,6 @@ async fn run_session(
                             if let Err(error) = tts.play_pcm(&audio) {
                                 let _ = event_tx.send(SessionEvent::BackendError {
                                     message: format!("TTS playback failed: {error}"),
-                                    configuration_required: false,
                                 });
                             }
                         }
@@ -1249,10 +1247,6 @@ fn forward_server_event(
                     .and_then(Value::as_str)
                     .unwrap_or("Unknown backend error")
                     .into(),
-                configuration_required: data
-                    .and_then(|d| d.get("configuration_required"))
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
             });
         }
         _ => {}

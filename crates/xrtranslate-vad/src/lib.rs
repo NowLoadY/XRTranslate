@@ -555,6 +555,14 @@ impl EndpointDetector {
             .map_or(0, |active| active.active_frames)
     }
 
+    /// Buffered onset, including pre-roll/overlap, for starting live ASR once
+    /// speech is confirmed. Subsequent frames are sent incrementally.
+    pub fn active_samples(&self) -> &[i16] {
+        self.active
+            .as_ref()
+            .map_or(&[], |active| active.samples.as_slice())
+    }
+
     /// Accepts one PCM frame and its speech probability.
     ///
     /// Completed output contains pre-roll and all accepted active frames.  It

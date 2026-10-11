@@ -622,8 +622,6 @@ pub enum VoiceClonePhase {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorEvent {
     pub message: String,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub configuration_required: bool,
 }
 
 /// Notifies the client that the active language route was dynamically adapted or updated.

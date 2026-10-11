@@ -20,6 +20,7 @@ pub struct TranslationAdapter<C> {
     provider: TranslationProvider,
     streaming: RemoteStreaming,
     single_user_message: bool,
+    reasoning_effort: Option<String>,
 }
 
 impl<C> TranslationAdapter<C> {
@@ -36,6 +37,7 @@ impl<C> TranslationAdapter<C> {
             provider,
             streaming: RemoteStreaming::Delta,
             single_user_message: false,
+            reasoning_effort: None,
         })
     }
 
@@ -55,13 +57,22 @@ impl<C> TranslationAdapter<C> {
             provider,
             streaming: RemoteStreaming::Delta,
             single_user_message: false,
+            reasoning_effort: None,
         })
     }
 
     pub fn with_remote_capabilities(mut self, capabilities: &RemoteCapabilities) -> Self {
         self.streaming = capabilities.streaming;
         self.single_user_message = capabilities.single_user_message;
+        self.reasoning_effort
+            .clone_from(&capabilities.reasoning_effort);
         self
+    }
+
+    fn apply_request_options(&self, payload: &mut serde_json::Value) {
+        if let Some(effort) = &self.reasoning_effort {
+            payload["reasoning_effort"] = serde_json::Value::from(effort.as_str());
+        }
     }
 
     pub fn provider(&self) -> TranslationProvider {
@@ -95,6 +106,7 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
         options.context_window_tokens = context_window_tokens;
         options.max_tokens = max_tokens;
         profile.apply_sampling(&mut payload, &options);
+        self.apply_request_options(&mut payload);
         let completion = self.chat.chat_completion(payload).await?;
         let text = crate::openai::remove_completion_markers(&completion.text);
         if text.is_empty() {
@@ -148,6 +160,7 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
             options.max_tokens,
         );
         profile.apply_sampling(&mut payload, &options);
+        self.apply_request_options(&mut payload);
         if self.single_user_message {
             let ordered = [
                 xrtranslate_prompt::PromptMessageRole::System,

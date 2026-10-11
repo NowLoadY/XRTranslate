@@ -1,6 +1,117 @@
 {
   "providers": [
     {
+      "id": "siliconflow",
+      "guide_url": "https://docs.siliconflow.cn/docs/userguide/quickstart",
+      "services": [
+        {
+          "capability": "asr",
+          "defaults": {
+            "api_key": "",
+            "model": "FunAudioLLM/SenseVoiceSmall",
+            "parallel_slots": 1,
+            "connector": "openai-transcription",
+            "url": "https://api.siliconflow.cn/v1/audio/transcriptions"
+          },
+          "models": ["FunAudioLLM/SenseVoiceSmall"]
+        },
+        {
+          "capability": "translation",
+          "defaults": {
+            "api_key": "",
+            "context_window_tokens": 8192,
+            "max_tokens": 1024,
+            "model": "tencent/Hunyuan-MT-7B",
+            "parallel_slots": 1,
+            "connector": "openai-chat",
+            "url": "https://api.siliconflow.cn/v1/chat/completions"
+          },
+          "models": ["tencent/Hunyuan-MT-7B"]
+        }
+      ]
+    },
+    {
+      "id": "google",
+      "guide_url": "https://ai.google.dev/gemini-api/docs/api-key",
+      "services": [
+        {
+          "capability": "asr",
+          "defaults": {
+            "api_key": "",
+            "context_window_tokens": 8192,
+            "max_tokens": 1024,
+            "model": "gemini-3.5-flash-lite",
+            "parallel_slots": 1,
+            "connector": "openai-audio-chat",
+            "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+          },
+          "models": ["gemini-3.5-flash-lite"]
+        },
+        {
+          "capability": "translation",
+          "defaults": {
+            "api_key": "",
+            "context_window_tokens": 8192,
+            "max_tokens": 1024,
+            "model": "gemini-3.5-flash-lite",
+            "parallel_slots": 1,
+            "connector": "openai-chat",
+            "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+          },
+          "models": ["gemini-3.5-flash-lite"]
+        }
+      ]
+    },
+    {
+      "id": "groq",
+      "guide_url": "https://console.groq.com/keys",
+      "services": [
+        {
+          "capability": "asr",
+          "defaults": {
+            "api_key": "",
+            "model": "whisper-large-v3-turbo",
+            "parallel_slots": 1,
+            "connector": "openai-transcription",
+            "url": "https://api.groq.com/openai/v1/audio/transcriptions"
+          },
+          "models": ["whisper-large-v3-turbo", "whisper-large-v3"]
+        },
+        {
+          "capability": "translation",
+          "defaults": {
+            "api_key": "",
+            "context_window_tokens": 4096,
+            "max_tokens": 1024,
+            "model": "qwen/qwen3.8-27b",
+            "parallel_slots": 1,
+            "connector": "openai-chat",
+            "url": "https://api.groq.com/openai/v1/chat/completions"
+          },
+          "models": ["qwen/qwen3.8-27b"]
+        }
+      ]
+    },
+    {
+      "id": "openrouter",
+      "guide_url": "https://openrouter.ai/settings/keys",
+      "services": [
+        {
+          "capability": "translation",
+          "defaults": {
+            "api_key": "",
+            "context_window_tokens": 8192,
+            "max_tokens": 4096,
+            "model": "openrouter/free",
+            "parallel_slots": 1,
+            "connector": "openai-chat",
+            "url": "https://openrouter.ai/api/v1/chat/completions"
+          },
+          "models": ["openrouter/free"]
+        }
+      ]
+    },
+    {
       "id": "openai",
       "guide_url": "https://platform.openai.com/api-keys",
       "services": [
@@ -115,6 +226,74 @@
   ],
   "models": [
     {
+      "model": "FunAudioLLM/SenseVoiceSmall",
+      "connector": "openai-transcription",
+      "languages": ["zh", "en", "yue", "ja", "ko"],
+      "capabilities": {
+        "asr_language_hint": false
+      }
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "connector": "openai-audio-chat",
+      "capabilities": {
+        "asr_prompt_mode": "instruction",
+        "reasoning_effort": "minimal"
+      }
+    },
+    {
+      "model": "whisper-large-v3-turbo",
+      "connector": "openai-transcription",
+      "capabilities": {
+        "asr_response_format": "verbose_json",
+        "asr_prompt_mode": "context_bias",
+        "context_max_chars": 200
+      }
+    },
+    {
+      "model": "whisper-large-v3",
+      "connector": "openai-transcription",
+      "capabilities": {
+        "asr_response_format": "verbose_json",
+        "asr_prompt_mode": "context_bias",
+        "context_max_chars": 200
+      }
+    },
+    {
+      "model": "tencent/Hunyuan-MT-7B",
+      "connector": "openai-chat",
+      "capabilities": {
+        "streaming": "delta",
+        "single_user_message": true
+      }
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "connector": "openai-chat",
+      "capabilities": {
+        "streaming": "delta",
+        "supports_context": true,
+        "reasoning_effort": "minimal"
+      }
+    },
+    {
+      "model": "qwen/qwen3.8-27b",
+      "connector": "openai-chat",
+      "capabilities": {
+        "streaming": "delta",
+        "supports_context": true,
+        "reasoning_effort": "none"
+      }
+    },
+    {
+      "model": "openrouter/free",
+      "connector": "openai-chat",
+      "capabilities": {
+        "streaming": "delta",
+        "supports_context": true
+      }
+    },
+    {
       "model": "gpt-4o-transcribe",
       "connector": "openai-transcription",
       "capabilities": {
@@ -178,6 +357,7 @@
       "languages": ["zh", "en", "ja", "ko", "vi", "th", "id", "ms", "fil", "hi", "ar", "fr", "de", "es", "pt", "ru", "it", "nl", "sv", "da", "fi", "no", "el", "pl", "cs", "hu", "ro", "bg", "hr", "sk"],
       "language_aliases": [["tl", "fil"]],
       "capabilities": {
+        "streaming": "cumulative",
         "asr_prompt_mode": "context_bias",
         "context_max_chars": 400,
         "vocabulary_bias": true
@@ -189,6 +369,7 @@
       "languages": ["zh", "en", "ja", "ko", "vi", "th", "id", "ms", "fil", "hi", "ar", "fr", "de", "es", "pt", "ru", "it", "nl", "sv", "da", "fi", "no", "el", "pl", "cs", "hu", "ro", "bg", "hr", "sk"],
       "language_aliases": [["tl", "fil"]],
       "capabilities": {
+        "streaming": "cumulative",
         "asr_prompt_mode": "context_bias",
         "context_max_chars": 400,
         "vocabulary_bias": true

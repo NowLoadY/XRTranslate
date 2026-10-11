@@ -164,6 +164,13 @@ impl MeetingPlugin {
         snapshot: &MeetingUiSnapshot,
         ui: &mut eframe::egui::Ui,
     ) -> MeetingAction {
+        self.controller.previews = if self.controller.bundle.as_ref().is_some_and(|bundle| {
+            self.controller.active_meeting_id().as_deref() == Some(bundle.meeting.id.as_str())
+        }) {
+            self.event_sink.previews()
+        } else {
+            Default::default()
+        };
         ui::render(self, snapshot, ui)
     }
 }

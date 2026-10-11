@@ -1,33 +1,57 @@
 # Qwen Audio streaming ASR
 
-XRTranslate includes an optional adapter for Alibaba Model Studio's
-`qwen-audio-3.0-asr-flash-streaming` as the `qwen-audio-streaming` ASR
-provider. The integration uses DashScope's native duplex WebSocket protocol,
-not an OpenAI-compatible HTTP emulation.
+XRTranslate ships `qwen-audio-streaming` on Welcome with
+`qwen-audio-3.0-asr-flash-streaming` and `qwen-audio-3.1-asr-flash-streaming`.
+Both declare `streaming: cumulative` on the `dashscope-asr-websocket` connector.
+Keys are entered on Welcome and remain in runtime. The endpoint and key must
+belong to the same region; remote connections use `wss://`.
 
-The default cloud Qwen preset uses the [native HTTP adapter](qwen-asr.md).
-The WebSocket adapter described here consumes completed audio windows; it
-does not provide continuous live-audio recognition in the current pipeline.
+## Live audio and completed windows
 
-## Integration status
+The normal VAD mode opens a live turn as soon as speech is confirmed. Its
+bounded pre-roll goes first, then newly captured PCM16 mono audio at 16 kHz is
+sent while the person speaks. The connector waits for `task-started` and packs
+incoming audio into 100 ms binary messages without replay pacing. Sending and
+receiving run concurrently. Local silence, speaker changes, duration limits,
+and explicit pause/finish controls close the input and send `finish-task`.
 
-This connector and its models are catalogued for maintainers, but the provider
-is not enabled in the shipped Welcome choices. Users configure only built-in
-choices on Welcome; there is no custom-provider option. To ship this provider,
-maintainers enable its catalogue preset in `config.json` with an empty
-`asr.providers.qwen-audio-streaming` object. Credentials are entered on Welcome
-and saved to runtime, never shipped in the preset.
+Intermediate sentence revisions produce cumulative snapshots through the
+existing `asr_result/partial` event. Heartbeats and duplicate final sentence IDs
+are ignored. Previews do not enter history, Corpus or TTS and never block audio
+on a full result queue. After `task-finished`, the final transcript joins the
+same language routing, quality checks, speaker metadata, sentence assembly,
+translation and history path as ordinary recognition. Normal live completion
+does not submit the same audio to ASR again; existing quality/language recovery
+remains available for an abnormal result.
 
-The API key must belong to the endpoint's region. A workspace endpoint can
-also be used:
-`wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference`.
-Remote endpoints must use `wss://`. Vocabulary weights may be 1 through 5 or
-50; weight 50 is the provider's super-hot-word setting.
+Each session caches one successfully finished WebSocket for the next turn.
+Failed and cancelled tasks close their socket. If an idle connection has closed,
+only task setup is repeated on a fresh connection, before any audio is sent.
+There is no background probe or keepalive audio. The idle cache expires after
+60 seconds; connection/start and recognition deadlines remain bounded.
 
-The adapter waits for `task-started`, sends mono PCM16 at 16 kHz in 3,200-byte
-frames paced at 100 ms, sends `finish-task`, then aggregates final sentences
-until `task-finished`. Connection/start and complete-task deadlines bound a
-stalled request, and a pipeline generation change cancels the in-flight socket.
+The existing continuous-recognition option still selects overlapping,
+revisable windows. Completed windows and diagnostic/recovery requests reuse
+the very same WebSocket transport, pacing prerecorded input at 100 ms. Local
+models and HTTP-only providers keep their existing paths. A model name alone
+never selects live streaming; the catalogue capability and connector must agree.
+
+## Local models and lifecycle
+
+- Silero still gates speech, retains the onset, limits audio memory and avoids
+  uploading long idle periods. Live streaming changes when audio is delivered,
+  not who owns segmentation.
+- GTCRN still supplies denoised frames to VAD and speaker analysis. Recognition
+  keeps the original audio, matching the ordinary path.
+- When speaker recognition is enabled, the local streaming speaker segmenter
+  can close a turn on speaker change and attach its identity. The shared worker
+  reuses that identity instead of running a second embedding for the same turn.
+- Audio queues are bounded by the configured maximum turn plus pre-roll and
+  overlap. The existing bounded job queue applies backpressure between turns.
+  Language changes discard the old generation; pause/finish drains audio before
+  the ordered completion fence. Scheduler permits transfer ownership even when
+  cancellation races with a queued grant, so a cancelled request cannot leak
+  an inference slot.
 
 ## Prompt and vocabulary semantics
 
@@ -54,29 +78,20 @@ This distinction is part of the provider capability contract. Adding another
 ASR provider must select `none`, `instruction`, or `context_bias` explicitly,
 and must declare structured vocabulary support separately.
 
-## Service limits and current behavior
+## Sentence ownership and service limits
 
-The Beijing price checked on 2026-10-02 was CNY 0.00033 per submitted audio
-second, or CNY 1.188 per hour of submitted audio. Overlap and retries can
-increase submitted duration. Region-specific pricing and free quotas must be
-checked against the current pricing page.
+The shared sentence assembler preserves an unfinished linguistic sentence
+across duration-limited turns. Provider partials are display previews; local
+resource limits are not treated as proof that a sentence is complete. Stable
+translation and TTS remain owned by the shared sentence gate. See
+[Qwen ASR](qwen-asr.md) for the common sentence behavior.
 
-XRTranslate currently sends each completed audio window through the
-streaming protocol at real-time pace. It consumes final sentences only; Qwen's
-intermediate partial results are not yet published through the session
-protocol. Therefore this provider is usable without changing the existing
-utterance pipeline, but its request latency includes paced audio replay. A
-five-second audio window takes approximately another five seconds to send
-after recording, before considering connection and server processing time.
-It should not be selected merely because its model name contains `streaming`.
-Sentence stability, incremental translation, and final TTS delivery remain
-the responsibility of the shared pipeline. An audio duration limit does not
-finish an incomplete sentence; source text carries across windows until the
-shared sentence gate can release it. See [Qwen ASR](qwen-asr.md) for the common
-sentence and resource-boundary behavior.
+Provider pricing and account quotas apply to submitted audio. Bounded pre-roll,
+overlap and quality recovery can add submitted duration. This is a separately
+configured online service, not one of the free HTTP ASR presets.
 
-Official references:
+Official protocol references, checked 2026-10-12:
 
-- <https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events>
-- <https://help.aliyun.com/zh/model-studio/improve-asr-accuracy>
-- <https://docs.bailian.console.aliyun.com/zh/model-studio/model-pricing>
+- [Client events](https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events)
+- [Server events, including connection reuse after task-finished](https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-server-events)
+- [Recognition context and vocabulary](https://help.aliyun.com/zh/model-studio/improve-asr-accuracy)

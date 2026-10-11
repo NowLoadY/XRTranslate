@@ -12,6 +12,66 @@ configuration UI: users select a built-in provider and one of its listed models,
 then enter the API key. There is no custom-provider action or endpoint editor.
 The settings page does not contain a second service editor.
 
+## Free-tier translation presets
+
+The following API options were checked against official documentation on
+2026-10-11. Each requires the user's own API key, entered on Welcome. Free-tier
+eligibility and quotas belong to the provider account; paid Google/Groq accounts
+can bill the same model. One parallel slot keeps these presets conservative
+without adding a separate provider scheduler.
+
+| Provider ID | Listed model | Free API offering |
+| --- | --- | --- |
+| `siliconflow` | `tencent/Hunyuan-MT-7B` | Input and output are [priced at zero](https://siliconflow.cn/pricing). [Identity verification is required](https://docs.siliconflow.cn/docs/userguide/faqs/rate-limit-and-upgradation); model rate limits are fixed. |
+| `google` | `gemini-3.5-flash-lite` | [Free-tier input and output](https://ai.google.dev/gemini-api/docs/pricing), subject to account/region eligibility and quotas. Google uses free-tier content to improve its products. |
+| `groq` | `qwen/qwen3.8-27b` | [Free plan](https://console.groq.com/docs/rate-limits): 30 requests/minute, 1,000/day, 8,000 tokens/minute and 200,000/day. |
+| `openrouter` | `openrouter/free` | [Zero-price free-model router](https://openrouter.ai/openrouter/free); a [free account](https://openrouter.ai/pricing) allows 50 requests/day. The actual model can change between requests. |
+
+All four use `openai-chat`, including its existing SSE handling and bearer-key
+authentication. They add no provider-specific execution branches. The
+[Gemini compatibility endpoint](https://ai.google.dev/gemini-api/docs/openai)
+uses `reasoning_effort: minimal`; the
+[Groq Qwen model](https://console.groq.com/docs/model/qwen/qwen3.8-27b)
+uses `reasoning_effort: none` for direct responses. These catalogue options apply
+to both translation and context-free `ask`. OpenRouter keeps the serving model's
+default and reserves a larger output budget for models that include reasoning.
+
+Hunyuan-MT uses the existing single-user-message encoding. It is a
+[specialized translation model](https://huggingface.co/tencent/Hunyuan-MT-7B),
+so general instruction following (including vocabulary sentence generation)
+is not assumed; the shared vocabulary result validation and failure notice
+still apply. This preset does not declare reference-context support.
+
+## Free-tier ASR presets
+
+Checked against official API and pricing pages on 2026-10-11. These presets
+also require the user's own key on Welcome and use one parallel slot. Free
+quotas are account limits, not a promise of unlimited continuous recognition.
+
+| Provider ID | Listed models | Free API offering |
+| --- | --- | --- |
+| `groq` | `whisper-large-v3-turbo` (default), `whisper-large-v3` | The [free plan](https://console.groq.com/docs/rate-limits) lists 20 requests/minute, 2,000/day, 7,200 audio seconds/hour and 28,800/day for each model. |
+| `siliconflow` | `FunAudioLLM/SenseVoiceSmall` | The [current price page](https://www.siliconflow.cn/pricing) lists it at zero; the [transcription API](https://docs.siliconflow.cn/docs/api/audio-transcriptions-post) lists this exact model. Identity verification and account rate limits apply. |
+| `google` | `gemini-3.5-flash-lite` | [Audio input and text output have a free tier](https://ai.google.dev/gemini-api/docs/pricing), sharing this model's quota with translation. Free-tier content is used to improve Google's products. |
+
+Groq uses the existing multipart connector and requests `verbose_json` to retain
+detected language metadata. Its [Whisper prompt](https://console.groq.com/docs/speech-to-text)
+provides lexical context rather than instructions; the preset keeps the shared
+context budget at 200 characters. It does not claim structured hotword support.
+
+SenseVoiceSmall uses the same connector with just model and audio fields, as
+documented by SiliconFlow. It declares [Chinese, Cantonese, English, Japanese
+and Korean](https://huggingface.co/FunAudioLLM/SenseVoiceSmall) and no language
+parameter, prompt or weighted-hotword support. SiliconFlow's older retirement
+announcement conflicts with its current model/price listing; the preset follows
+the current listing, without an authenticated availability probe. Other ASR
+names appearing only on the price page are not added without a matching API
+contract.
+
+Gemini uses the existing [audio chat-completions format](https://ai.google.dev/gemini-api/docs/openai)
+and the shared ASR instruction graph. Its model card selects minimal reasoning,
+the same way as text chat. There are no provider-name dispatch branches.
+
 ## Runtime credentials and releases
 
 Development and installed builds use the same `runtime/user-config.json`.
@@ -50,7 +110,7 @@ it to one of the implemented wire formats:
 | `openai-transcription` | ASR | WAV multipart upload; JSON transcript |
 | `openai-audio-chat` | ASR | Base64 WAV in chat messages; final text |
 | `dashscope-asr` | ASR | Native multimodal audio HTTP; final transcript |
-| `dashscope-asr-websocket` | ASR | Native task events and PCM frames; final transcript |
+| `dashscope-asr-websocket` | ASR | Live PCM input, cumulative previews and final transcript; completed windows use the same transport |
 
 Any host implementing a format can reuse its connector. Only a new wire
 format requires adapter code. `url` is the complete endpoint; it is not
@@ -77,14 +137,21 @@ The shared `capabilities` object has these fields:
 | `streaming` | `none`, `delta`, or `cumulative` output |
 | `supports_context` | Translation reference context |
 | `asr_prompt_mode` | `none`, semantic `instruction`, or lexical `context_bias` |
+| `asr_language_hint` | Optional override for sending the multipart `language` field; absent preserves the connector default |
+| `asr_response_format` | Optional multipart response format: `json` or `verbose_json`; absent uses the server default |
 | `context_max_chars` | Optional ASR lexical-context limit |
 | `vocabulary_bias` | Structured weighted hotword support |
 | `single_user_message` | Encode rendered translation messages as one user message |
+| `reasoning_effort` | Optional chat-completions reasoning level, applied to translation, `ask` and audio chat; absent means use the server default |
 
-All current ASR connectors consume completed audio windows and return a final
-transcript. The WebSocket transport does not imply live audio ingestion or
-interim results. Unsupported ASR streaming, instruction, or weighted-vocabulary
-claims fail configuration validation instead of silently disappearing.
+ASR models declaring `streaming: cumulative` on a live-audio connector send
+frames during speech and emit partial snapshots. The normal VAD path selects
+live input; the continuous-recognition option retains its overlapping window
+path. Both share final result processing. HTTP-only ASR keeps `streaming: none`.
+Unsupported streaming, instruction or weighted-vocabulary declarations fail
+configuration validation instead of silently disappearing. See
+[live ASR](providers/qwen-audio-streaming-asr.md) for audio ownership, bounded
+queues, connection reuse and cancellation.
 Translation with `streaming: none` uses a normal request even when the pipeline
 asks for updates; final-result handling remains shared.
 
@@ -101,8 +168,26 @@ shared pipeline owns context composition, scheduling, cancellation, retries,
 and result delivery. Translation uses the same Prompt Studio graph regardless
 of host; connector options control only wire encoding and streaming assembly.
 
+Multipart transcription preserves returned language metadata and normalizes it
+through the shared language catalogue. In bidirectional mode, a transcript
+without language metadata is accepted directly when existing script evidence
+unambiguously selects one language of the pair. Conflicting or ambiguous output
+still uses the shared recovery policy. Online HTTP connections remain pooled
+for 90 seconds across speech pauses; local runtime pooling is unchanged.
+
+Reversing a text conversation's language pair reuses its session and recent
+bilingual history. Each request keeps its own source and target languages;
+`ask` remains context-free. API failures carry the returned diagnostic into
+the shared bottom notification pill (including SSE error payloads), with longer
+text available on hover and in the log. A shared presenter adds localized hints
+for common HTTP statuses and explicit diagnostics such as exhausted quota,
+invalid keys, context limits, memory exhaustion and timeouts. Unknown errors
+show the original diagnostic alone. These hints do not drop context, retry
+requests or reopen Welcome; quick translation uses the same presenter.
+
 To add a service using an existing format, add its provider/model records to
 the catalogue and, if it should be a shipped preset, an empty provider entry in
-`config.json`. Review configuration expansion and compile affected consumers.
+`config.json`. Review configuration expansion; compile affected consumers when
+the connector contract changes.
 Do not add hash identities, local test servers, or provider-by-provider test
 loops. See [Provider integration](providers/README.md) for ownership boundaries.

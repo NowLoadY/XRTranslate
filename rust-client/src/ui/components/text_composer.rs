@@ -70,12 +70,14 @@ impl TextComposer {
                 for event in &input.events {
                     match event {
                         egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => {
+                            // Some platforms send empty preedit events while the
+                            // editor is merely focused, without any composition.
+                            changed |= self.composing || !text.is_empty();
                             self.composing = !text.is_empty();
-                            changed = true;
                         }
-                        egui::Event::Ime(egui::ImeEvent::Commit(_)) => {
+                        egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
+                            changed |= self.composing || !text.is_empty();
                             self.composing = false;
-                            changed = true;
                         }
                         _ => {}
                     }
@@ -85,10 +87,8 @@ impl TextComposer {
             }
             changed
         });
+        let ime_busy = was_composing || self.composing || ime_event;
         let enter = focused
-            && !was_composing
-            && !self.composing
-            && !ime_event
             && ui.input_mut(|input| {
                 let mut enter = false;
                 input.events.retain(|event| {
@@ -101,7 +101,9 @@ impl TextComposer {
                     } = event
                         && *modifiers == egui::Modifiers::NONE
                     {
-                        enter |= !repeat;
+                        // Confirming an IME candidate must neither submit the
+                        // draft nor insert a newline into the committed text.
+                        enter |= !repeat && !ime_busy;
                         false
                     } else {
                         true
@@ -158,9 +160,8 @@ impl TextComposer {
                     );
                 }
                 let waiting = self.mode == TextMode::Translate && context.preparing;
+                // IME state guards the Enter shortcut, not an explicit click.
                 let available = !waiting
-                    && !self.composing
-                    && !ime_event
                     && (self.mode == TextMode::Translate || context.direct_enabled);
                 let mut clicked = false;
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -217,6 +218,7 @@ impl TextComposer {
             },
         );
         if submit {
+            self.composing = false;
             ui.memory_mut(|memory| memory.request_focus(editor_id));
             self.submission(languages.0, languages.1)
         } else {

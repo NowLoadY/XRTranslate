@@ -69,6 +69,10 @@ impl RemoteConnector {
     pub fn supports_vocabulary(self) -> bool {
         matches!(self, Self::DashscopeAsr | Self::DashscopeAsrWebsocket)
     }
+
+    pub fn supports_audio_streaming(self) -> bool {
+        self == Self::DashscopeAsrWebsocket
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -90,15 +94,37 @@ pub enum RemoteStreaming {
     Cumulative,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AsrResponseFormat {
+    Json,
+    VerboseJson,
+}
+
+impl AsrResponseFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::VerboseJson => "verbose_json",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RemoteCapabilities {
     pub streaming: RemoteStreaming,
     pub supports_context: bool,
     pub asr_prompt_mode: AsrPromptMode,
+    /// Override the transcription connector's optional language parameter.
+    pub asr_language_hint: Option<bool>,
+    /// Select richer transcription metadata when the model supports it.
+    pub asr_response_format: Option<AsrResponseFormat>,
     pub context_max_chars: Option<usize>,
     pub vocabulary_bias: bool,
     pub single_user_message: bool,
+    /// Optional text or audio chat-completions reasoning level.
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -60,8 +60,12 @@ Concrete plugin imports are likewise forbidden in shared infrastructure.
 
 ### Result and lifecycle contract
 
-`TranslationEvent` has four forms:
+`TranslationEvent` has five forms:
 
+- `Preview(TranslationPreview)` replaces transient ASR or translation text for
+  a stream/turn/sentence identity. It is presentation state, not an archived
+  result, command, or TTS input. `LivePreviews` handles replacement, source
+  corrections, finalization and lifecycle cleanup for consumers.
 - `Segment(TranslationSegment)` delivers source text and an optional translation
   with stable segment identity and available recognition metadata.
 - `ReplaceSegments` delivers a complete, ordered replacement batch for a
@@ -73,13 +77,19 @@ Concrete plugin imports are likewise forbidden in shared infrastructure.
 - `Finished` carries `TranslationOutcome::Completed`, `Cancelled`, or
   `Failed(String)`. Plugins do not interpret connection-status strings.
 
-Live ASR, including overlapping-window recognition, submits a sentence for
-translation only after its ending and contents stay unchanged for 300 ms.
-An unfinished tail remains recognition preview until the input ends. Source
+Live ASR and overlapping-window recognition submit complete sentences only.
+A duration cut or micro-pause needs text lookahead; a normal pause confirms
+sentence punctuation but does not turn a comma into an ending. Continuous
+silence or input end releases the last unpunctuated tail. Unfinished source
+remains visible as recognition preview. New recognition windows do not cancel
+an unchanged sentence's in-flight translation or block behind it. Source
 snapshots invalidate superseded segment identities; unchanged completed
 translations are retained without being requested or spoken again.
-The host can display incremental translation previews, but only validated
-completed translations enter plugin results, conversation context, and TTS.
+The host, meeting, media, SteamVR and OSC displays consume replaceable source
+and translation previews. Meeting and media pages share `LivePreviews`; overlay
+and OSC output receive the host's complete preview snapshot per stream, kept
+separate from completed captions. Only validated completed translations enter
+history, conversation context, TTS, or automatic text insertion.
 Speech synthesis runs independently and sends each generated audio chunk to
 playback immediately. Providers without streaming audio keep their normal
 bounded text-chunk synthesis.

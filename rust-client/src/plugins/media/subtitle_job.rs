@@ -150,7 +150,7 @@ impl MediaPlugin {
                 }
                 self.controller.dirty = true;
             }
-            TranslationEvent::StreamEnded { .. } => {}
+            TranslationEvent::Preview(_) | TranslationEvent::StreamEnded { .. } => {}
         }
         true
     }

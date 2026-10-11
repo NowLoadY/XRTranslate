@@ -13,6 +13,24 @@ pub mod selection_card;
 pub use segmented_switch::segmented_switch;
 pub mod text_composer;
 
+pub(crate) fn live_preview(ui: &mut Ui, preview: &crate::session_coordinator::TranslationPreview) {
+    ui.push_id(
+        (preview.stream_id, &preview.turn_id, preview.segment_index),
+        |ui| {
+            ui.add(
+                egui::Label::new(egui::RichText::new(&preview.source).color(theme::text_weak()))
+                    .wrap(),
+            );
+            if let Some(text) = &preview.translated {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(text).color(theme::text_strong())).wrap(),
+                );
+            }
+            ui.add_space(6.0);
+        },
+    );
+}
+
 pub fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     let border_id = ui.next_auto_id().with("organic_card_border");
     crate::ui::organic_border::show(

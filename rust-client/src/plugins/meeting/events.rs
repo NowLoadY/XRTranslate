@@ -59,6 +59,7 @@ pub struct MeetingEventSink {
 }
 
 struct MeetingEventSinkInner {
+    previews: std::sync::Mutex<crate::session_coordinator::LivePreviews>,
     tx: std::sync::Mutex<Option<Sender<Command>>>,
     active: SharedMeetingCapture,
     active_sessions: Arc<AtomicUsize>,
@@ -140,6 +141,7 @@ impl MeetingEventSink {
             .expect("failed to start meeting event store");
         Self {
             inner: Arc::new(MeetingEventSinkInner {
+                previews: Default::default(),
                 tx: std::sync::Mutex::new(Some(tx)),
                 active,
                 active_sessions: Arc::new(AtomicUsize::new(0)),
@@ -151,6 +153,14 @@ impl MeetingEventSink {
 
     fn capture_snapshot(&self) -> Option<ActiveMeetingCapture> {
         self.inner.active.lock().ok()?.clone()
+    }
+
+    pub fn previews(&self) -> crate::session_coordinator::LivePreviews {
+        self.inner
+            .previews
+            .lock()
+            .map(|previews| previews.clone())
+            .unwrap_or_default()
     }
 
     pub fn finish_active(&self) {
@@ -176,11 +186,17 @@ impl MeetingEventSink {
 
     /// Registers all recognition streams belonging to one meeting operation.
     pub fn begin_sessions(&self, count: usize) {
+        if let Ok(mut previews) = self.inner.previews.lock() {
+            *previews = Default::default();
+        }
         self.inner.active_sessions.store(count, Ordering::Release);
         self.inner.finish_requested.store(false, Ordering::Release);
     }
 
     pub fn cancel_sessions(&self) {
+        if let Ok(mut previews) = self.inner.previews.lock() {
+            *previews = Default::default();
+        }
         self.inner.active_sessions.store(0, Ordering::Release);
         self.inner.finish_requested.store(false, Ordering::Release);
     }
@@ -205,10 +221,14 @@ impl SessionEventSubscriber for MeetingEventSink {
     }
 
     fn on_translation_event(&self, _owner: &TranslationSessionOwner, event: &TranslationEvent) {
+        if let Ok(mut previews) = self.inner.previews.lock() {
+            previews.observe(event);
+        }
         if let TranslationEvent::Finished { stream_id, .. } = event {
             self.send(Command::SealStream(*stream_id));
         }
         match event {
+            TranslationEvent::Preview(_) => {}
             TranslationEvent::Segment(segment) => {
                 if let Some(capture) = self.capture_snapshot() {
                     self.send(Command::Results(capture, vec![segment.clone()], false));

@@ -1,6 +1,6 @@
 //! ASR provider profiles and provider-erased adapter dispatch.
 
-use xrtranslate_assets::remote::RemoteConnector;
+use xrtranslate_assets::remote::{RemoteCapabilities, RemoteConnector};
 use xrtranslate_assets::{
     AsrDelivery, AsrPromptStyle, ModelCapability, ModelFileRole, ModelRuntime, ResolvedModelAsset,
     manifests_for_capability,
@@ -48,6 +48,7 @@ impl AsrProfile {
         endpoint: &str,
         model: &str,
         api_key: Option<&str>,
+        capabilities: &RemoteCapabilities,
     ) -> Result<NativeAsrAdapter, InferenceError> {
         match self {
             Self::Remote(
@@ -59,6 +60,7 @@ impl AsrProfile {
                 model,
                 api_key.unwrap_or_default(),
                 connector,
+                capabilities,
             )
             .map(NativeAsrAdapter::OpenAi),
             Self::Remote(RemoteConnector::DashscopeAsr) => {
@@ -110,6 +112,30 @@ pub(super) fn local_adapter(
 }
 
 impl NativeAsrAdapter {
+    pub(crate) async fn transcribe_stream<F, Fut>(
+        &self,
+        audio: tokio::sync::mpsc::Receiver<Vec<u8>>,
+        options: AsrOptions,
+        on_update: F,
+    ) -> Result<AsrTranscript, InferenceError>
+    where
+        F: FnMut(String) -> Fut + Send,
+        Fut: Future<Output = ()> + Send,
+    {
+        let audio = futures_util::stream::unfold(audio, |mut audio| async move {
+            audio.recv().await.map(|frame| (frame, audio))
+        });
+        match self {
+            Self::QwenAudioStreaming(adapter) => {
+                adapter.transcribe_stream(audio, options, on_update).await
+            }
+            _ => Err(InferenceError::InvalidConfiguration {
+                field: "asr.connector",
+                message: "this connector does not accept live audio".into(),
+            }),
+        }
+    }
+
     pub(crate) async fn transcribe_pcm16(
         &self,
         pcm: &[u8],
@@ -134,8 +160,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// Exercises the same language codes sent by the pipeline, including its
-    /// constrained recovery after an automatic recognition attempt.
+    /// Exercises the same automatic and explicit language paths as the pipeline.
     #[tokio::test]
     #[ignore = "requires downloaded SenseVoiceSmall model and audio fixture"]
     async fn sensevoice_pipeline_language_fixture_smoke() {
@@ -156,18 +181,14 @@ mod tests {
 
         let mut route = AdaptiveLanguageRoute::default();
         route.configure("auto", "zh,en");
-        let AutoDecision::Retry { language, .. } =
+        let AutoDecision::Accept(route) =
             route.classify(automatic.language.as_deref(), &automatic.text)
         else {
-            panic!("expected constrained recovery for unlabelled automatic output");
+            panic!("expected direct routing for a clear English transcript");
         };
-        let recovered = adapter
-            .transcribe_pcm16(&pcm, Some(language.code()))
-            .await
-            .unwrap();
-        assert_eq!(recovered.text, automatic.text);
+        assert_eq!(route.source.code(), "en");
         let explicit = adapter.transcribe_pcm16(&pcm, Some("en")).await.unwrap();
-        assert_eq!(explicit.text, recovered.text);
+        assert_eq!(explicit.text, automatic.text);
         assert_eq!(explicit.language.as_deref(), Some("en"));
     }
 }
