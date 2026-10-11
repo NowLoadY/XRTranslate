@@ -17,6 +17,7 @@ mod android_text_actions;
 #[cfg(target_os = "android")]
 mod android_translation_history;
 mod app_update;
+mod ask;
 mod audio;
 #[cfg(target_os = "linux")]
 mod audio_linux;
@@ -661,6 +662,7 @@ struct XRTranslateApp {
     last_error: Option<String>,
     companion_inbox: ui::companion::Inbox,
     text_translation: text_translation::TextTranslation,
+    ask: ask::Ask,
     text_composer: ui::components::text_composer::TextComposer,
     server_url: String,
     download_proxy_url: String,
@@ -707,6 +709,7 @@ struct XRTranslateApp {
     pub modal_dialog: ui::modal::ModalDialog,
     notifications: ui::notifications::Notifications,
     history_archive: history::archive::Archive,
+    vocabulary_plugin: plugins::vocabulary::Page,
     #[cfg(any(windows, target_os = "linux"))]
     quick_translate: quick_translate::QuickTranslate,
     #[cfg(not(any(windows, target_os = "linux")))]
@@ -1383,6 +1386,8 @@ impl Default for XRTranslateApp {
                             publish_to_host_outputs,
                             source,
                             translated,
+                            source_lang: _,
+                            target_lang: _,
                             additional_translations,
                             asr_only,
                             turn_id,
@@ -1715,6 +1720,7 @@ impl Default for XRTranslateApp {
             last_error: None,
             companion_inbox: ui::companion::Inbox::default(),
             text_translation: text_translation::TextTranslation::default(),
+            ask: ask::Ask::default(),
             text_composer: ui::components::text_composer::TextComposer::default(),
             server_url: settings.server_url,
             download_proxy_url: settings.download_proxy_url,
@@ -1766,6 +1772,7 @@ impl Default for XRTranslateApp {
             modal_dialog: ui::modal::ModalDialog::default(),
             notifications: ui::notifications::Notifications::default(),
             history_archive,
+            vocabulary_plugin: Default::default(),
             #[cfg(any(windows, target_os = "linux"))]
             quick_translate,
             #[cfg(not(any(windows, target_os = "linux")))]
@@ -3027,6 +3034,16 @@ impl XRTranslateApp {
 
     fn render_plugin_page(&mut self, id: PluginId, ui: &mut egui::Ui) {
         match id {
+            PluginId::VOCABULARY => {
+                let capabilities = self.language_capabilities().for_text();
+                self.vocabulary_plugin.show(
+                    ui,
+                    &self.history_archive,
+                    self.ui_language,
+                    capabilities,
+                    &mut self.ask,
+                )
+            }
             PluginId::MEETING => self.render_meeting_plugin_page(ui),
             PluginId::MEDIA => self.render_media_plugin_page(ui),
             PluginId::VR_OVERLAY => self.render_vr_overlay_plugin_page(ui),
@@ -5355,6 +5372,7 @@ impl XRTranslateApp {
                 Page::PromptStudio => "PromptStudio".to_string(),
                 Page::CorpusStudio => "CorpusStudio".to_string(),
                 Page::TtsCenter => "TtsCenter".to_string(),
+                Page::Plugin(PluginId::VOCABULARY) => "Plugin:Vocabulary".to_string(),
                 Page::Plugin(PluginId::OSC) => "Plugin:OSC".to_string(),
                 Page::Plugin(PluginId::MEETING) => "Plugin:Meeting".to_string(),
                 Page::Plugin(PluginId::VR_OVERLAY) => "Plugin:VROverlay".to_string(),
@@ -5384,6 +5402,14 @@ impl eframe::App for XRTranslateApp {
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.media_plugin.controller.tick();
+        self.ask
+            .poll(&mut self.backend_manager, &self.server_url, ctx);
+        self.vocabulary_plugin.poll_examples(
+            &self.history_archive,
+            &self.notifications,
+            self.ui_language,
+            ctx,
+        );
         #[cfg(any(windows, target_os = "linux"))]
         if !self.first_run {
             self.poll_quick_translation(ctx);

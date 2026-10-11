@@ -102,6 +102,8 @@ pub enum SessionEvent {
         publish_to_host_outputs: bool,
         source: String,
         translated: String,
+        source_lang: String,
+        target_lang: String,
         additional_translations: Vec<xrtranslate_protocol::AdditionalTranslation>,
         asr_only: bool,
         turn_id: String,
@@ -1156,6 +1158,8 @@ fn forward_server_event(
                 publish_to_host_outputs,
                 source,
                 translated,
+                source_lang: event_metadata(data, "source_lang"),
+                target_lang: event_metadata(data, "target_lang"),
                 additional_translations: event_metadata(data, "additional_translations"),
                 asr_only: event_metadata(data, "asr_only"),
                 turn_id: data

@@ -139,7 +139,7 @@ pub(super) fn render_subtitles_card(
                     } else {
                         ui.weak(time);
                     }
-                    let copy = components::secondary_button(ui, crate::i18n::tr(language, "Copy"));
+                    let copy = components::copy_button(ui, crate::i18n::tr(language, "Copy"));
                     copy_rect = copy.rect;
                     if copy.clicked() {
                         copied = true;

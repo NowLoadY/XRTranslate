@@ -2767,7 +2767,8 @@ fn render_header(
                 state.canvas.fit_pending = true;
             }
         }
-        ui.menu_button(tr(language, "Edit"), |ui| {
+        let edit = crate::ui::components::edit_button(ui, tr(language, "Edit"));
+        egui::Popup::menu(&edit).show(|ui| {
             if graph_style::toolbar_button(ui, tr(language, "Undo"), state.history.can_undo())
                 .clicked()
                 && let Some(previous) = state.history.undo(snapshot.selected_graph.clone())

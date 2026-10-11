@@ -8,6 +8,17 @@
 
 pub mod tts;
 
+/// A single instruction to the configured translation model, without conversation context.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AskRequest {
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AskResponse {
+    pub text: String,
+}
+
 use std::{error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
@@ -519,6 +530,10 @@ pub struct TranslationPreview {
 /// A completed translation and its latency information.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TranslationReady {
+    #[serde(default)]
+    pub source_lang: String,
+    #[serde(default)]
+    pub target_lang: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_translations: Vec<AdditionalTranslation>,
     #[serde(default, skip_serializing_if = "is_false")]

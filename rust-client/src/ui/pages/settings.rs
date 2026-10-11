@@ -268,29 +268,6 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
     );
     ui.add_space(14.0);
 
-    section(
-        ui,
-        crate::i18n::tr(app.ui_language, "Translation history"),
-        |ui| {
-            let mut save = app.history_archive.enabled();
-            if components::toggle_with_label(
-                ui,
-                &mut save,
-                crate::i18n::tr(app.ui_language, "Save translation history locally"),
-            )
-            .changed()
-            {
-                app.history_archive.set_enabled(save);
-                app.save_settings();
-            }
-            ui.weak(crate::i18n::tr(
-                app.ui_language,
-                "Saving starts when enabled. Turning it off keeps existing records.",
-            ));
-        },
-    );
-    ui.add_space(14.0);
-
     #[cfg(any(windows, target_os = "linux"))]
     section(
         ui,
@@ -342,30 +319,6 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
             }
         },
     );
-    ui.add_space(14.0);
-
-    section(ui, crate::i18n::tr(app.ui_language, "Downloads"), |ui| {
-        crate::ui::layout::flow_row(ui, |ui| {
-            ui.label(
-                egui::RichText::new(crate::i18n::tr(app.ui_language, "Download proxy"))
-                    .color(crate::ui::theme::text_strong())
-                    .strong(),
-            );
-            let response = crate::ui::components::text_edit_ui(
-                ui,
-                "settings_download_proxy_url",
-                egui::TextEdit::singleline(&mut app.download_proxy_url)
-                    .hint_text(crate::i18n::tr(
-                        app.ui_language,
-                        "Optional, e.g. http://127.0.0.1:7890",
-                    ))
-                    .desired_width((ui.available_width() - 120.0).max(220.0)),
-            );
-            if response.lost_focus() || response.changed() {
-                app.set_download_proxy_url(app.download_proxy_url.clone());
-            }
-        });
-    });
     ui.add_space(14.0);
 
     section(ui, crate::i18n::tr(app.ui_language, "About"), |ui| {

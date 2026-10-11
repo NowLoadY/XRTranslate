@@ -509,6 +509,7 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
     };
     let app = Router::new()
         .route("/healthz", get(health))
+        .route("/ask", axum::routing::post(ask))
         .route(
             "/tts/voice",
             get(tts_session::voice_status).post(tts_session::select_voice),
@@ -538,6 +539,39 @@ async fn health() -> Json<HealthResponse> {
         runtime: "native-gguf",
         protocol_version: xrtranslate_protocol::PROTOCOL_VERSION,
     })
+}
+
+async fn ask(
+    State(state): State<BackendState>,
+    Json(request): Json<xrtranslate_protocol::AskRequest>,
+) -> impl IntoResponse {
+    if request.prompt.trim().is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Ask prompt cannot be empty"})),
+        )
+            .into_response();
+    }
+    let result = async {
+        let inference = NativeInference::for_text(&state.model_plan)?;
+        let _permit = state
+            .inference_scheduler
+            .acquire_translation(InferenceWorkload::Offline)
+            .await;
+        inference
+            .ask(&request.prompt)
+            .await
+            .map_err(|error| error.message)
+    }
+    .await;
+    match result {
+        Ok(text) => Json(xrtranslate_protocol::AskResponse { text }).into_response(),
+        Err(error) => (
+            axum::http::StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({"error": error})),
+        )
+            .into_response(),
+    }
 }
 
 async fn vrcx_status(State(state): State<BackendState>) -> impl IntoResponse {
@@ -3234,6 +3268,7 @@ async fn handle_inference_event(
                     generation.route_epoch,
                     output.source_text,
                     output.translated_text,
+                    (output.source_language, output.target_language),
                     output.term_matches,
                     output.additional_translations,
                     output.asr_only,

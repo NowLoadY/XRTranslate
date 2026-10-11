@@ -1,7 +1,9 @@
 use crate::ui::theme;
 use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Stroke, Ui, Vec2};
 
+mod action_button;
 pub mod annotated_text;
+pub use action_button::{back_button, copy_button, delete_button, edit_button};
 mod audio_source_filter;
 pub use audio_source_filter::audio_source_filter;
 pub mod avatar;
@@ -1397,7 +1399,7 @@ pub(crate) fn error_dialog(
 }
 
 pub fn error_actions(ui: &mut Ui, language: crate::i18n::UiLanguage, details: &str) {
-    if secondary_button(ui, crate::i18n::tr(language, "Copy details")).clicked() {
+    if copy_button(ui, crate::i18n::tr(language, "Copy details")).clicked() {
         ui.ctx().copy_text(details.to_owned());
     }
     ui.hyperlink_to(
@@ -1416,7 +1418,7 @@ pub fn validation_notice(ui: &mut Ui, language: crate::i18n::UiLanguage, details
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new(details).color(crate::ui::theme::danger()));
-                if secondary_button(ui, crate::i18n::tr(language, "Copy details")).clicked() {
+                if copy_button(ui, crate::i18n::tr(language, "Copy details")).clicked() {
                     ui.ctx().copy_text(details.to_owned());
                 }
             });
@@ -2252,62 +2254,7 @@ pub fn delete_icon_button(
     id_source: impl std::hash::Hash + std::fmt::Debug,
     tooltip: &str,
 ) -> egui::Response {
-    let id = ui.make_persistent_id(("resource_delete_btn", id_source));
-    let is_hovered = ui.memory(|m| {
-        m.data
-            .get_temp::<bool>(id.with("hover_state"))
-            .unwrap_or(false)
-    });
-    let is_active = ui.memory(|m| {
-        m.data
-            .get_temp::<bool>(id.with("active_state"))
-            .unwrap_or(false)
-    });
-    let hover_factor =
-        crate::ui::animation::AnimationSystem::hover(ui.ctx(), id.with("anim_hover"), is_hovered);
-    let active_factor =
-        crate::ui::animation::AnimationSystem::active(ui.ctx(), id.with("anim_active"), is_active);
-
-    let alpha = (0.06 + 0.12 * hover_factor + 0.08 * active_factor).clamp(0.0, 1.0);
-    let border_alpha = (0.25 + 0.45 * hover_factor + 0.15 * active_factor).clamp(0.0, 1.0);
-    let fill = Color32::from_rgba_unmultiplied(239, 68, 68, (alpha * 255.0) as u8);
-    let stroke = Stroke::new(
-        1.0,
-        Color32::from_rgba_unmultiplied(239, 68, 68, (border_alpha * 255.0) as u8),
-    );
-    let tint = crate::ui::animation::AnimationSystem::lerp_color(
-        Color32::from_rgb(185, 28, 28),
-        Color32::from_rgb(239, 68, 68),
-        hover_factor,
-    );
-
-    let icon = egui::Image::new(egui::include_image!("../../resources/icons/trash.svg"))
-        .fit_to_exact_size(egui::Vec2::splat(13.0))
-        .tint(tint);
-
-    let resp = Frame::new()
-        .fill(fill)
-        .stroke(stroke)
-        .corner_radius(CornerRadius::same(6))
-        .inner_margin(Margin::symmetric(7, 5))
-        .show(ui, |ui| ui.add(icon))
-        .response
-        .interact(egui::Sense::click())
-        .on_hover_text(tooltip);
-
-    resp.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), tooltip)
-    });
-
-    ui.memory_mut(|m| {
-        m.data.insert_temp(id.with("hover_state"), resp.hovered());
-        m.data
-            .insert_temp(id.with("active_state"), resp.is_pointer_button_down_on());
-    });
-    if resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    resp
+    ui.push_id(id_source, |ui| delete_button(ui, tooltip)).inner
 }
 
 pub fn feature_checkbox(

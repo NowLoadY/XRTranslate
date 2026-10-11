@@ -51,7 +51,21 @@ pub(super) fn open_database(path: &Path) -> rusqlite::Result<Connection> {
         session TEXT NOT NULL, stream INTEGER NOT NULL, turn TEXT NOT NULL, segment INTEGER NOT NULL,
         source TEXT NOT NULL, translated TEXT NOT NULL, search TEXT NOT NULL, saved_at INTEGER NOT NULL,
         PRIMARY KEY(session, stream, turn, segment));
-        CREATE INDEX IF NOT EXISTS translations_recent ON translations(saved_at DESC);")?;
+        CREATE INDEX IF NOT EXISTS translations_recent ON translations(saved_at DESC);
+        CREATE TABLE IF NOT EXISTS vocabulary_folders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL COLLATE NOCASE UNIQUE);
+        INSERT OR IGNORE INTO vocabulary_folders(id,name) VALUES (1,'');
+        CREATE TABLE IF NOT EXISTS vocabulary (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, folder_id INTEGER NOT NULL REFERENCES vocabulary_folders(id),
+            source TEXT NOT NULL, translated TEXT NOT NULL, source_lang TEXT NOT NULL,
+            target_lang TEXT NOT NULL, search TEXT NOT NULL, saved_at INTEGER NOT NULL,
+            UNIQUE(folder_id,source,translated,source_lang,target_lang));
+        CREATE INDEX IF NOT EXISTS vocabulary_recent ON vocabulary(folder_id,saved_at DESC);
+        CREATE TABLE IF NOT EXISTS vocabulary_examples (
+            source TEXT NOT NULL, source_lang TEXT NOT NULL, target_lang TEXT NOT NULL,
+            translated TEXT NOT NULL, sentence TEXT NOT NULL DEFAULT '', back_translation TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(source,source_lang,target_lang,translated));
+        PRAGMA foreign_keys=ON;")?;
     Ok(connection)
 }
 pub(super) fn save(

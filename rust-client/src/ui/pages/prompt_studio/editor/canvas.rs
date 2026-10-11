@@ -292,7 +292,7 @@ pub(super) fn render_graph_editor(
             }
         });
         if draft.read_only {
-            if graph_style::command_button(ui, tr(language, "Edit copy"), false).clicked() {
+            if crate::ui::components::edit_button(ui, tr(language, "Edit copy")).clicked() {
                 draft = PromptTemplateLibrary::editable_copy_of(
                     &draft,
                     format!("custom-{}", uuid::Uuid::new_v4()),

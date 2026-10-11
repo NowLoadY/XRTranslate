@@ -103,7 +103,7 @@ pub(crate) fn render(
             ui.heading(tr(language, "Translation style"));
             if state.editor_allowed {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if crate::ui::components::secondary_button(ui, tr(language, "Edit prompts"))
+                    if crate::ui::components::edit_button(ui, tr(language, "Edit prompts"))
                         .clicked()
                         && editor_enabled(beta, project_root)
                     {

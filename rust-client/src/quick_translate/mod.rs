@@ -1,26 +1,19 @@
-//! A small private text task. The host supplies languages and owns execution;
-//! this feature owns only its shortcut, result and floating viewport.
+//! Private shortcut task, presented by the shared native floating renderer.
+mod clipboard;
 mod host;
-mod window;
-use crate::session_coordinator::{
-    SessionEventSubscriber, TranslationEvent, TranslationOutcome, TranslationSessionOwner,
+use crate::{
+    history::archive::vocabulary,
+    overlay_ipc::QuickTranslationState,
+    overlay_manager::OverlayManager,
+    session_coordinator::{
+        SessionEventSubscriber, TranslationEvent, TranslationOutcome, TranslationSessionOwner,
+    },
 };
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use eframe::egui;
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-};
+use std::collections::BTreeMap;
 pub(crate) const OWNER: &str = "quick_translate";
 
-#[derive(Default, Clone)]
-struct View {
-    open: bool,
-    source: Arc<str>,
-    translated: Arc<str>,
-    error: Option<String>,
-    busy: bool,
-}
 #[derive(Clone)]
 pub(crate) struct Sink(Sender<(String, TranslationEvent)>);
 impl SessionEventSubscriber for Sink {
@@ -33,11 +26,7 @@ impl SessionEventSubscriber for Sink {
         }
     }
 }
-#[derive(Clone, Copy)]
-pub(crate) enum Action {
-    Retry,
-    Close,
-}
+
 pub(crate) struct QuickTranslate {
     pub settings: crate::desktop_shortcut::Settings,
     #[cfg(windows)]
@@ -49,17 +38,18 @@ pub(crate) struct QuickTranslate {
     listener: Option<crate::desktop_shortcut::Listener>,
     #[cfg(windows)]
     applied: Option<crate::desktop_shortcut::Settings>,
-    view: Arc<Mutex<View>>,
+    view: Option<QuickTranslationState>,
+    overlay: OverlayManager,
+    clipboard: clipboard::Clipboard,
     events: Receiver<(String, TranslationEvent)>,
-    actions: Receiver<Action>,
-    action_tx: Sender<Action>,
     operation: Option<String>,
     segments: BTreeMap<(String, u32), String>,
+    route: Option<(String, String)>,
+    bookmark: Option<(String, vocabulary::Reply)>,
 }
 impl QuickTranslate {
     pub fn new(settings: crate::desktop_shortcut::Settings) -> Self {
         let (tx, events) = unbounded();
-        let (action_tx, actions) = unbounded();
         Self {
             #[cfg(windows)]
             shortcut_draft: settings.shortcut.clone(),
@@ -71,12 +61,14 @@ impl QuickTranslate {
             listener: None,
             #[cfg(windows)]
             applied: None,
-            view: Arc::default(),
+            view: None,
+            overlay: OverlayManager::new(),
+            clipboard: Default::default(),
             events,
-            actions,
-            action_tx,
             operation: None,
             segments: BTreeMap::new(),
+            route: None,
+            bookmark: None,
         }
     }
     #[cfg(windows)]
@@ -112,40 +104,78 @@ impl QuickTranslate {
         }
         capture
     }
-    pub fn take_action(&self) -> Option<Action> {
-        self.actions.try_recv().ok()
-    }
     pub fn source(&self) -> String {
-        self.view.lock().unwrap().source.to_string()
+        self.view
+            .as_ref()
+            .map(|view| view.source.clone())
+            .unwrap_or_default()
     }
-    pub fn begin(&mut self, source: String, ctx: &egui::Context) -> String {
+    pub fn begin(&mut self, source: String) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         self.operation = Some(id.clone());
         self.segments.clear();
-        *self.view.lock().unwrap() = View {
-            open: true,
-            source: source.into(),
+        self.bookmark = None;
+        self.view = Some(QuickTranslationState {
+            id: id.clone(),
+            source,
             busy: true,
             ..Default::default()
-        };
-        ctx.send_viewport_cmd_to(window::id(), egui::ViewportCommand::Focus);
+        });
         id
     }
     pub fn fail(&mut self, error: String) {
-        let mut view = self.view.lock().unwrap();
-        view.open = true;
+        let view = self.view.get_or_insert_with(|| QuickTranslationState {
+            id: uuid::Uuid::new_v4().to_string(),
+            ..Default::default()
+        });
         view.busy = false;
         view.error = Some(error);
+        self.operation = None;
     }
     pub fn close(&mut self) {
-        *self.view.lock().unwrap() = View::default();
+        self.view = None;
         self.operation = None;
         self.segments.clear();
+        self.bookmark = None;
+        self.route = None;
+        self.overlay.stop();
     }
-    pub fn poll(&mut self, ctx: &egui::Context) {
+    fn entry(&self) -> Option<vocabulary::Entry> {
+        let view = self
+            .view
+            .as_ref()
+            .filter(|view| view.can_save && !view.busy && view.error.is_none())?;
+        Some(vocabulary::Entry {
+            source: view.source.clone(),
+            translated: view.translated.clone(),
+            source_lang: view.source_lang.clone(),
+            target_lang: view.target_lang.clone(),
+        })
+    }
+    pub fn poll(&mut self, ctx: &egui::Context) -> bool {
+        let mut completed = false;
         for (id, event) in self.events.try_iter() {
             if self.operation.as_deref() != Some(id.as_str()) {
                 continue;
+            }
+            let segment = match &event {
+                TranslationEvent::Segment(segment) => Some(segment),
+                TranslationEvent::ReplaceSegments(segments) => segments.first(),
+                _ => None,
+            };
+            if let Some(segment) = segment
+                && let Some(view) = &mut self.view
+            {
+                for (tag, code) in [
+                    (&mut view.source_lang, &segment.source_lang),
+                    (&mut view.target_lang, &segment.target_lang),
+                ] {
+                    if let Some(language) =
+                        xrtranslate_engine::language::SupportedLanguage::parse(code)
+                    {
+                        *tag = language.code().into();
+                    }
+                }
             }
             match event {
                 TranslationEvent::Segment(segment) => {
@@ -169,7 +199,7 @@ impl QuickTranslate {
                     }
                 }
                 TranslationEvent::Finished { outcome, .. } => {
-                    let mut view = self.view.lock().unwrap();
+                    let Some(view) = &mut self.view else { continue };
                     view.busy = false;
                     match outcome {
                         TranslationOutcome::Completed => {
@@ -180,7 +210,17 @@ impl QuickTranslate {
                             if text.trim().is_empty() {
                                 view.error = Some("No translation was returned. Try again.".into());
                             } else {
-                                view.translated = text.into();
+                                view.translated = text;
+                                view.can_save = vocabulary::can_save(&view.source)
+                                    && xrtranslate_engine::language::SupportedLanguage::parse(
+                                        &view.source_lang,
+                                    )
+                                    .is_some()
+                                    && xrtranslate_engine::language::SupportedLanguage::parse(
+                                        &view.target_lang,
+                                    )
+                                    .is_some();
+                                completed = true;
                             }
                         }
                         TranslationOutcome::Failed(error) => view.error = Some(error),
@@ -195,5 +235,26 @@ impl QuickTranslate {
             }
             ctx.request_repaint();
         }
+        if let Some((id, result)) = self
+            .bookmark
+            .as_ref()
+            .and_then(|(id, reply)| reply.try_recv().ok().map(|result| (id.clone(), result)))
+        {
+            self.bookmark = None;
+            if let Some(view) = &mut self.view
+                && view.id == id
+            {
+                view.saving = false;
+                match result {
+                    Ok(vocabulary::Output::Folders(folders)) => {
+                        view.folders = folders;
+                        view.save_error = None;
+                    }
+                    Err(error) => view.save_error = Some(error),
+                    _ => {}
+                }
+            }
+        }
+        completed
     }
 }

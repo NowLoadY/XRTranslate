@@ -19,6 +19,7 @@ struct Snapshot {
     subtitles: Option<OverlayState>,
     ocr: Option<OcrOverlayState>,
     companion: Presentation,
+    quick: Option<crate::overlay_ipc::QuickTranslationState>,
 }
 
 struct Writer {
@@ -183,6 +184,16 @@ impl OverlayManager {
         }
     }
 
+    pub(crate) fn send_quick_translation(
+        &mut self,
+        state: &crate::overlay_ipc::QuickTranslationState,
+    ) {
+        if self.snapshot.quick.as_ref() != Some(state) {
+            self.snapshot.quick = Some(state.clone());
+            self.publish();
+        }
+    }
+
     pub(crate) fn companion_active(&mut self) -> bool {
         self.check_process();
         self.companion_detached && self.child.is_some()
@@ -250,6 +261,9 @@ impl Writer {
                     .unwrap_or_else(|error| error.into_inner())
                     .clone();
                 let commands = [
+                    (previous.as_ref().is_none_or(|p| p.quick != state.quick))
+                        .then(|| state.quick.clone().map(OverlayCommand::QuickTranslation))
+                        .flatten(),
                     (previous
                         .as_ref()
                         .is_none_or(|p| p.subtitles != state.subtitles))

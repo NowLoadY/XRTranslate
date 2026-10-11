@@ -12,6 +12,7 @@ pub mod meeting;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 pub mod ocr;
 pub mod osc;
+pub(crate) mod vocabulary;
 pub mod vr_overlay;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -22,6 +23,7 @@ use std::{collections::BTreeMap, fmt};
 pub struct PluginId(&'static str);
 
 impl PluginId {
+    pub const VOCABULARY: Self = Self("vocabulary");
     pub const OSC: Self = Self("osc");
     pub const MEETING: Self = Self("meeting");
     pub const MEDIA: Self = Self("video_player");
@@ -44,6 +46,7 @@ impl PluginId {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "vocabulary" => Some(Self::VOCABULARY),
             "osc" => Some(Self::OSC),
             "meeting" => Some(Self::MEETING),
             "video_player" | "media" => Some(Self::MEDIA),
@@ -125,7 +128,20 @@ pub struct PluginDescriptor {
     pub default_enabled: bool,
 }
 
-const PLUGIN_DESCRIPTORS: [PluginDescriptor; 4] = [
+const PLUGIN_DESCRIPTORS: [PluginDescriptor; 5] = [
+    PluginDescriptor {
+        id: PluginId::VOCABULARY,
+        title_key: "Vocabulary",
+        description_key: "Manage wordbooks and saved words.",
+        navigation_order: 80,
+        icon: PluginIcon {
+            uri: "bytes://plugins/vocabulary/icon.svg",
+            bytes: include_bytes!("../../resources/icons/star.svg"),
+        },
+        scroll_policy: PluginScrollPolicy::Plugin,
+        settings_contribution: PluginSettingsContribution::EnablementOnly,
+        default_enabled: true,
+    },
     PluginDescriptor {
         id: PluginId::MEETING,
         title_key: "Meeting notes",

@@ -303,7 +303,7 @@ fn render_qq_group_dialog(ctx: &egui::Context, language: i18n::UiLanguage) {
         },
         |ui| {
             ui.horizontal_wrapped(|ui| {
-                if components::primary_button(ui, i18n::tr(language, "Copy number")).clicked() {
+                if components::copy_button(ui, i18n::tr(language, "Copy number")).clicked() {
                     ctx.copy_text(QQ_GROUP_NUMBER.to_owned());
                 }
                 close = components::secondary_button(ui, i18n::tr(language, "Close")).clicked();

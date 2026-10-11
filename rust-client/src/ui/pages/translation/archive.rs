@@ -142,7 +142,7 @@ pub(super) fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 ui.set_width(ui.available_width());
                 crate::ui::layout::flow_row(ui, |ui| {
                     ui.weak(&record.timestamp);
-                    if components::secondary_button(ui, tr(language, "Copy")).clicked() {
+                    if components::copy_button(ui, tr(language, "Copy")).clicked() {
                         ui.ctx().copy_text(record.translated.clone());
                     }
                     if components::secondary_button_enabled(

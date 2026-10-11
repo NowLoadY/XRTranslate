@@ -1,5 +1,6 @@
 //! Shared desktop surfaces: subtitles and a transparent screen-translation frame.
 mod platform;
+mod quick;
 #[cfg(target_os = "linux")]
 pub(crate) use platform::configure_software_environment;
 
@@ -146,6 +147,8 @@ pub fn run_native_overlay() -> eframe::Result<()> {
                 shown: false,
                 stacking: WindowStacking::default(),
                 result: ResultWindow::default(),
+                quick: None,
+                ready: false,
             }))
         }),
     )
@@ -167,6 +170,8 @@ struct OverlayWindow {
     shown: bool,
     stacking: WindowStacking,
     result: ResultWindow,
+    quick: Option<quick::Capsule>,
+    ready: bool,
 }
 
 #[derive(Default)]
@@ -693,6 +698,7 @@ impl eframe::App for OverlayWindow {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         while let Ok(command) = self.receiver.try_recv() {
+            self.ready = true;
             match command {
                 OverlayCommand::Language(language) => self.language = language,
                 OverlayCommand::Controls(controls) => {
@@ -704,6 +710,11 @@ impl eframe::App for OverlayWindow {
                 OverlayCommand::Subtitles(state) => self.subtitles = state,
                 OverlayCommand::Ocr(state) => self.ocr = state,
                 OverlayCommand::Companion(presentation) => self.companion.update(presentation),
+                OverlayCommand::QuickTranslation(state) => {
+                    self.quick
+                        .get_or_insert_with(quick::Capsule::default)
+                        .update(state);
+                }
                 OverlayCommand::Hide => {
                     self.closing = true;
                     self.close(ui.ctx());
@@ -713,7 +724,15 @@ impl eframe::App for OverlayWindow {
         if ui.ctx().input(|input| input.viewport().close_requested()) {
             self.close(ui.ctx());
         }
-        if self.closing {
+        if self.closing || !self.ready {
+            return;
+        }
+        if let Some(quick) = &mut self.quick {
+            if let Err(error) = quick.show(ui, frame, &mut self.input, self.language) {
+                send_event(OverlayEvent::Failed(error));
+                self.closing = true;
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
             return;
         }
         let mut regions = Vec::new();

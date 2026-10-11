@@ -49,6 +49,7 @@ pub(crate) struct SessionAdapter {
 
 #[derive(Clone)]
 struct TranslationMetadata {
+    languages: (String, String),
     additional_translations: Vec<xrtranslate_protocol::AdditionalTranslation>,
     asr_only: bool,
     metrics: LatencyMetrics,
@@ -171,6 +172,7 @@ impl SessionAdapter {
         route_epoch: RouteEpoch,
         source_text: String,
         translated_text: String,
+        languages: (String, String),
         term_matches: Vec<CorpusTermMatch>,
         additional_translations: Vec<xrtranslate_protocol::AdditionalTranslation>,
         asr_only: bool,
@@ -190,6 +192,7 @@ impl SessionAdapter {
             })
             .map_err(|error| error.to_string())?;
         self.translation_metadata.push_back(TranslationMetadata {
+            languages,
             metrics,
             context,
             term_matches,
@@ -230,6 +233,7 @@ impl SessionAdapter {
     /// Drains strictly ordered event/audio output for the only WebSocket writer.
     pub(crate) fn drain_wire_output(&mut self) -> Vec<WireOutput> {
         let mut output = Vec::new();
+        let fallback_languages = (self.source_lang().to_owned(), self.target_lang().to_owned());
         for event in self.engine.drain_outbound() {
             match event.payload {
                 OutboundPayload::RecognizedText { text, is_final } => {
@@ -258,6 +262,7 @@ impl SessionAdapter {
                         self.translation_metadata
                             .pop_front()
                             .unwrap_or(TranslationMetadata {
+                                languages: fallback_languages.clone(),
                                 metrics: LatencyMetrics {
                                     queue_ms: 0,
                                     asr_ms: 0,
@@ -288,6 +293,8 @@ impl SessionAdapter {
                             });
                     output.push(WireOutput::Event(ServerEvent::TranslationReady(
                         TranslationReady {
+                            source_lang: metadata.languages.0,
+                            target_lang: metadata.languages.1,
                             source_text,
                             translated_text,
                             term_matches: metadata.term_matches,

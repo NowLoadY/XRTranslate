@@ -70,6 +70,39 @@ impl<C> TranslationAdapter<C> {
 }
 
 impl<C: AsyncHttpClient> TranslationAdapter<C> {
+    /// Ask is one user instruction. It does not render a translation graph,
+    /// retrieve reference material, or read/write conversation history.
+    pub async fn ask(
+        &self,
+        prompt: &str,
+        context_window_tokens: u32,
+        max_tokens: u32,
+    ) -> Result<String, InferenceError> {
+        if prompt.trim().is_empty() {
+            return Err(InferenceError::InvalidConfiguration {
+                field: "ask.prompt",
+                message: "must not be empty".into(),
+            });
+        }
+        let profile = registered(self.provider);
+        let mut payload = non_streaming_chat_payload(
+            &self.model,
+            serde_json::json!([{"role": "user", "content": prompt}]),
+            profile.temperature(),
+            max_tokens,
+        );
+        let mut options = TranslationOptions::new("", "");
+        options.context_window_tokens = context_window_tokens;
+        options.max_tokens = max_tokens;
+        profile.apply_sampling(&mut payload, &options);
+        let completion = self.chat.chat_completion(payload).await?;
+        let text = crate::openai::remove_completion_markers(&completion.text);
+        if text.is_empty() {
+            return Err(InferenceError::EmptyOutput { operation: "ask" });
+        }
+        Ok(text)
+    }
+
     pub async fn translate(
         &self,
         source_text: &str,

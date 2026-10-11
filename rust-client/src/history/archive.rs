@@ -16,6 +16,7 @@ use std::{
 
 pub(crate) const PAGE_SIZE: usize = 100;
 mod store;
+pub(crate) mod vocabulary;
 pub(crate) use store::{DeleteSelection, Record};
 use store::{RecordId, open_database, prepare_deletion, remove, save, search};
 
@@ -42,6 +43,11 @@ enum Command {
         ctx: eframe::egui::Context,
     },
     CancelDelete(u64),
+    Vocabulary {
+        action: vocabulary::Action,
+        reply: Sender<Result<vocabulary::Output, String>>,
+        ctx: eframe::egui::Context,
+    },
     Stop,
 }
 
@@ -130,6 +136,7 @@ pub(crate) struct Archive {
     revision: u64,
     refresh_at: Option<Instant>,
     worker: Option<std::thread::JoinHandle<()>>,
+    vocabulary_revision: Arc<AtomicU64>,
 }
 
 impl Archive {
@@ -144,9 +151,11 @@ impl Archive {
             included_plugins,
         };
         let path = root.join("runtime/translation-history.sqlite3");
+        let vocabulary_revision = Arc::new(AtomicU64::new(0));
+        let worker_revision = vocabulary_revision.clone();
         let worker = std::thread::Builder::new()
             .name("translation-history".into())
-            .spawn(move || run_worker(commands, response, epoch, &path));
+            .spawn(move || run_worker(commands, response, epoch, &path, worker_revision));
         let (worker, error) = match worker {
             Ok(worker) => (Some(worker), None),
             Err(error) => (None, Some(error.to_string())),
@@ -172,10 +181,50 @@ impl Archive {
             revision: 0,
             refresh_at: None,
             worker,
+            vocabulary_revision,
         }
     }
     pub fn subscriber(&self) -> Subscriber {
         self.subscriber.clone()
+    }
+    pub fn vocabulary_revision(&self) -> u64 {
+        self.vocabulary_revision.load(Ordering::Acquire)
+    }
+    pub fn vocabulary(
+        &self,
+        mut action: vocabulary::Action,
+        ctx: &eframe::egui::Context,
+    ) -> vocabulary::Reply {
+        let (reply, receiver) = bounded(1);
+        let entry = match &mut action {
+            vocabulary::Action::Folders(entry)
+            | vocabulary::Action::Add { entry, .. }
+            | vocabulary::Action::Update { entry, .. }
+            | vocabulary::Action::SaveExample { entry, .. } => Some(entry),
+            _ => None,
+        };
+        if let Some(entry) = entry {
+            match entry.clone().canonical() {
+                Ok(canonical) => *entry = canonical,
+                Err(error) => {
+                    let _ = reply.send(Err(error));
+                    return receiver;
+                }
+            }
+        }
+        if self
+            .subscriber
+            .tx
+            .try_send(Command::Vocabulary {
+                action,
+                reply: reply.clone(),
+                ctx: ctx.clone(),
+            })
+            .is_err()
+        {
+            let _ = reply.send(Err("History worker is busy. Please retry.".into()));
+        }
+        receiver
     }
     pub fn enabled(&self) -> bool {
         self.subscriber.epoch.load(Ordering::Acquire) & 1 == 1
@@ -347,6 +396,7 @@ fn run_worker(
     response: Sender<Response>,
     epoch: Arc<AtomicU64>,
     path: &Path,
+    vocabulary_revision: Arc<AtomicU64>,
 ) {
     let session = uuid::Uuid::new_v4().to_string();
     let mut connection = None;
@@ -464,11 +514,29 @@ fn run_worker(
                         pending_delete = None;
                     }
                 }
+                Command::Vocabulary { action, reply, .. } => {
+                    if connection.is_none() {
+                        std::fs::create_dir_all(path.parent().unwrap())
+                            .map_err(|e| e.to_string())?;
+                        connection = Some(open_database(path).map_err(|e| e.to_string())?);
+                    }
+                    let output = vocabulary::execute(connection.as_mut().unwrap(), action)
+                        .map_err(|e| e.to_string())?;
+                    if action.mutates() {
+                        vocabulary_revision.fetch_add(1, Ordering::Release);
+                    }
+                    let _ = reply.send(Ok(output));
+                }
                 Command::Stop => {}
             }
             Ok(())
         })();
         if let Err(error) = result {
+            if let Command::Vocabulary { reply, ctx, .. } = &command {
+                let _ = reply.send(Err(error));
+                ctx.request_repaint();
+                continue;
+            }
             let result = match &command {
                 Command::PrepareDelete { request, .. } | Command::Delete { request, .. } => {
                     Response::DeleteFailed(*request, error)
@@ -478,6 +546,7 @@ fn run_worker(
             let _ = response.send(result);
         }
         if let Command::Search { ctx, .. }
+        | Command::Vocabulary { ctx, .. }
         | Command::PrepareDelete { ctx, .. }
         | Command::Delete { ctx, .. } = command
         {

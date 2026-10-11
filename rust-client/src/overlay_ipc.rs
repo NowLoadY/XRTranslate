@@ -25,6 +25,33 @@ pub struct OcrOverlayState {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct QuickTranslationState {
+    pub id: String,
+    pub source: String,
+    pub translated: String,
+    pub source_lang: String,
+    pub target_lang: String,
+    pub targets: Vec<String>,
+    pub busy: bool,
+    pub error: Option<String>,
+    pub can_save: bool,
+    pub saving: bool,
+    pub folders: Vec<crate::history::archive::vocabulary::Folder>,
+    pub save_error: Option<String>,
+    pub copy_count: u64,
+    pub copy_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum QuickTranslationAction {
+    Target(String),
+    Folders,
+    Save(i64),
+    Copy,
+    Close,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct OverlayControls {
     pub translation_enabled: bool,
     pub microphone_enabled: Option<bool>,
@@ -52,6 +79,7 @@ pub enum OverlayCommand {
     Subtitles(OverlayState),
     Ocr(Option<OcrOverlayState>),
     Companion(crate::ui::components::avatar::Presentation),
+    QuickTranslation(QuickTranslationState),
     Hide,
 }
 
@@ -70,4 +98,8 @@ pub enum OverlayEvent {
     ResultRegionChanged(Option<OverlayRegion>),
     CompanionDetached(bool),
     CompanionRegionChanged(Option<OverlayRegion>),
+    QuickTranslation {
+        id: String,
+        action: QuickTranslationAction,
+    },
 }

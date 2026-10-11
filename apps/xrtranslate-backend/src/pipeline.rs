@@ -922,6 +922,17 @@ fn vad_is_active(probability: f32, threshold: f32) -> bool {
 }
 
 impl NativeInference {
+    pub(crate) async fn ask(&self, prompt: &str) -> Result<String, InferenceFailure> {
+        self.translation
+            .ask(
+                prompt,
+                self.translation_context_window_tokens,
+                self.translation_max_output_tokens,
+            )
+            .await
+            .map_err(|error| InferenceFailure::request("Ask failed", error))
+    }
+
     pub(crate) fn for_diagnostics(model_plan: &NativeProviderPlan) -> Result<Self, String> {
         Self::new(model_plan, None)
     }

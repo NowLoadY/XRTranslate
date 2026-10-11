@@ -601,11 +601,8 @@ fn render_system_audio_input_selector(
                     "Configured by the applied Audio Studio route",
                 )
             ));
-            if components::animated_button(
-                ui,
-                crate::i18n::tr(app.ui_language, "Edit in Audio Studio"),
-            )
-            .clicked()
+            if components::edit_button(ui, crate::i18n::tr(app.ui_language, "Edit in Audio Studio"))
+                .clicked()
             {
                 app.open_audio_studio();
             }
