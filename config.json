@@ -2,18 +2,7 @@
   "asr": {
     "provider": "qwen3-gguf",
     "providers": {
-      "openai": {
-        "api_key": "",
-        "asr_prompt_mode": "context_bias",
-        "context_window_tokens": 8192,
-        "guide_url": "https://platform.openai.com/api-keys",
-        "max_tokens": 256,
-        "model": "gpt-4o-transcribe",
-        "parallel_slots": 2,
-        "supports_prompt_context": true,
-        "transport": "openai",
-        "url": "https://api.openai.com/v1/audio/transcriptions"
-      },
+      "openai": {},
       "qwen3-gguf": {
         "asr_prompt_mode": "context_bias",
         "context_window_tokens": 4800,
@@ -27,32 +16,8 @@
         "transport": "local",
         "url": "http://127.0.0.1:8001/v1/chat/completions"
       },
-      "qwen": {
-        "api_key": "",
-        "asr_context_max_chars": 400,
-        "asr_prompt_mode": "context_bias",
-        "guide_url": "https://help.aliyun.com/zh/model-studio/developer-reference/get-api-key",
-        "model": "qwen-audio-3.0-asr-flash",
-        "parallel_slots": 2,
-        "supports_prompt_context": true,
-        "supports_vocabulary_bias": true,
-        "transport": "dashscope",
-        "url": "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
-        "vocabulary_weight": 4
-      },
-      "qwen-intl": {
-        "api_key": "",
-        "asr_context_max_chars": 400,
-        "asr_prompt_mode": "context_bias",
-        "guide_url": "https://www.alibabacloud.com/help/en/model-studio/get-api-key",
-        "model": "qwen-audio-3.0-asr-flash",
-        "parallel_slots": 2,
-        "supports_prompt_context": true,
-        "supports_vocabulary_bias": true,
-        "transport": "dashscope",
-        "url": "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
-        "vocabulary_weight": 4
-      }
+      "qwen": {},
+      "qwen-intl": {}
     },
     "vad_adaptive_after_ms": 4000,
     "vad_adaptive_silence_ms": 128,
@@ -525,39 +490,9 @@
         "transport": "local",
         "url": "http://127.0.0.1:8002/v1/chat/completions"
       },
-      "openai": {
-        "api_key": "",
-        "context_window_tokens": 8192,
-        "guide_url": "https://platform.openai.com/api-keys",
-        "max_tokens": 512,
-        "model": "gpt-4o-mini",
-        "parallel_slots": 2,
-        "supports_prompt_context": true,
-        "transport": "openai",
-        "url": "https://api.openai.com/v1/chat/completions"
-      },
-      "qwen": {
-        "api_key": "",
-        "context_window_tokens": 8192,
-        "guide_url": "https://help.aliyun.com/zh/model-studio/developer-reference/get-api-key",
-        "max_tokens": 512,
-        "model": "qwen-mt-flash",
-        "parallel_slots": 2,
-        "supports_prompt_context": true,
-        "transport": "openai",
-        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-      },
-      "qwen-intl": {
-        "api_key": "",
-        "context_window_tokens": 8192,
-        "guide_url": "https://www.alibabacloud.com/help/en/model-studio/get-api-key",
-        "max_tokens": 512,
-        "model": "qwen-mt-flash",
-        "parallel_slots": 2,
-        "supports_prompt_context": true,
-        "transport": "openai",
-        "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
-      }
+      "openai": {},
+      "qwen": {},
+      "qwen-intl": {}
     },
     "source_lang": "auto",
     "target_lang": "zh,en"

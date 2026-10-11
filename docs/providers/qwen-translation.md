@@ -3,7 +3,7 @@
 XRTranslate supports Alibaba Cloud Model Studio's `qwen-mt-flash` (and other Qwen-MT models like `qwen-mt-plus` and `qwen-mt-lite`) as the cloud `qwen` translation provider.
 
 The integration uses the OpenAI-compatible HTTP Chat Completions endpoint.
-Prompt Studio renders the translation text, and the Qwen provider profile
+Prompt Studio renders the translation text, and the common chat connector
 packs that text into the model's single-user-message request format.
 
 ## Configure
@@ -24,8 +24,9 @@ packs that text into the model's single-user-message request format.
 ## Prompt Studio Integration
 
 - Qwen-MT enforces a strict single-turn message structure (`role: user`).
-- XRTranslate's `QwenRemote` translation profile selects Prompt Studio's
-  `OPENAI` translation graph.
+- XRTranslate's common chat connector selects Prompt Studio's `OPENAI`
+  translation graph. Catalogue metadata sets `single_user_message` for these
+  models independently of the selected service host.
 - The current provider adapter collects non-empty string message content,
   places system content first, then joins the remaining content with blank
   lines into one `role: user` message. Context, glossaries, and history are

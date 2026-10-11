@@ -9,33 +9,14 @@ The default cloud Qwen preset uses the [native HTTP adapter](qwen-asr.md).
 The WebSocket adapter described here consumes completed audio windows; it
 does not provide continuous live-audio recognition in the current pipeline.
 
-## Optional manual configuration
+## Integration status
 
-This provider is registered in the runtime but is not a shipped welcome-flow
-preset. To evaluate it, add an `asr.providers.qwen-audio-streaming` object to
-`runtime/user-config.json` and select it through `asr.provider`. Merge these
-fields into the existing override document:
-
-```json
-{
-  "asr": {
-    "provider": "qwen-audio-streaming",
-    "providers": {
-      "qwen-audio-streaming": {
-        "transport": "websocket",
-        "url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
-        "model": "qwen-audio-3.0-asr-flash-streaming",
-        "api_key": "YOUR_BEIJING_API_KEY",
-        "asr_prompt_mode": "context_bias",
-        "asr_context_max_chars": 400,
-        "supports_vocabulary_bias": true,
-        "vocabulary_weight": 4,
-        "parallel_slots": 2
-      }
-    }
-  }
-}
-```
+This connector and its models are catalogued for maintainers, but the provider
+is not enabled in the shipped Welcome choices. Users configure only built-in
+choices on Welcome; there is no custom-provider option. To ship this provider,
+maintainers enable its catalogue preset in `config.json` with an empty
+`asr.providers.qwen-audio-streaming` object. Credentials are entered on Welcome
+and saved to runtime, never shipped in the preset.
 
 The API key must belong to the endpoint's region. A workspace endpoint can
 also be used:

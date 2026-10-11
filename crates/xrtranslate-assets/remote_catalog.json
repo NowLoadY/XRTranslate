@@ -1,0 +1,234 @@
+{
+  "providers": [
+    {
+      "id": "openai",
+      "guide_url": "https://platform.openai.com/api-keys",
+      "services": [
+        {
+          "capability": "asr",
+          "defaults": {
+            "api_key": "",
+            "context_window_tokens": 8192,
+            "max_tokens": 256,
+            "model": "gpt-4o-transcribe",
+            "parallel_slots": 2,
+            "connector": "openai-transcription",
+            "url": "https://api.openai.com/v1/audio/transcriptions"
+          },
+          "models": ["gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1", "gpt-4o-transcribe-diarize"]
+        },
+        {
+          "capability": "translation",
+          "defaults": {
+            "api_key": "",
+            "context_window_tokens": 8192,
+            "max_tokens": 512,
+            "model": "gpt-4o-mini",
+            "parallel_slots": 2,
+            "connector": "openai-chat",
+            "url": "https://api.openai.com/v1/chat/completions"
+          },
+          "models": ["gpt-4o-mini"]
+        }
+      ]
+    },
+    {
+      "id": "qwen",
+      "guide_url": "https://help.aliyun.com/zh/model-studio/developer-reference/get-api-key",
+      "services": [
+        {
+          "capability": "asr",
+          "defaults": {
+            "api_key": "",
+            "model": "qwen-audio-3.0-asr-flash",
+            "parallel_slots": 2,
+            "connector": "dashscope-asr",
+            "url": "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+            "vocabulary_weight": 4
+          },
+          "models": ["qwen-audio-3.0-asr-flash", "qwen-audio-3.1-asr-flash"]
+        },
+        {
+          "capability": "translation",
+          "defaults": {
+            "api_key": "",
+            "context_window_tokens": 8192,
+            "max_tokens": 512,
+            "model": "qwen-mt-flash",
+            "parallel_slots": 2,
+            "connector": "openai-chat",
+            "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+          },
+          "models": ["qwen-mt-flash", "qwen-mt-lite", "qwen-mt-plus", "qwen-mt-turbo"]
+        }
+      ]
+    },
+    {
+      "id": "qwen-intl",
+      "guide_url": "https://www.alibabacloud.com/help/en/model-studio/get-api-key",
+      "services": [
+        {
+          "capability": "asr",
+          "defaults": {
+            "api_key": "",
+            "model": "qwen-audio-3.0-asr-flash",
+            "parallel_slots": 2,
+            "connector": "dashscope-asr",
+            "url": "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+            "vocabulary_weight": 4
+          },
+          "models": ["qwen-audio-3.0-asr-flash", "qwen-audio-3.1-asr-flash"]
+        },
+        {
+          "capability": "translation",
+          "defaults": {
+            "api_key": "",
+            "context_window_tokens": 8192,
+            "max_tokens": 512,
+            "model": "qwen-mt-flash",
+            "parallel_slots": 2,
+            "connector": "openai-chat",
+            "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
+          },
+          "models": ["qwen-mt-flash", "qwen-mt-lite", "qwen-mt-plus", "qwen-mt-turbo"]
+        }
+      ]
+    },
+    {
+      "id": "qwen-audio-streaming",
+      "guide_url": "https://help.aliyun.com/zh/model-studio/developer-reference/get-api-key",
+      "services": [
+        {
+          "capability": "asr",
+          "defaults": {
+            "connector": "dashscope-asr-websocket",
+            "url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+            "model": "qwen-audio-3.0-asr-flash-streaming",
+            "api_key": "",
+            "parallel_slots": 2,
+            "vocabulary_weight": 4
+          },
+          "models": ["qwen-audio-3.0-asr-flash-streaming", "qwen-audio-3.1-asr-flash-streaming"]
+        }
+      ]
+    }
+  ],
+  "models": [
+    {
+      "model": "gpt-4o-transcribe",
+      "connector": "openai-transcription",
+      "capabilities": {
+        "asr_prompt_mode": "context_bias"
+      }
+    },
+    {
+      "model": "gpt-4o-mini-transcribe",
+      "connector": "openai-transcription",
+      "capabilities": {
+        "asr_prompt_mode": "context_bias"
+      }
+    },
+    {
+      "model": "whisper-1",
+      "connector": "openai-transcription",
+      "capabilities": {
+        "asr_prompt_mode": "context_bias"
+      }
+    },
+    {
+      "model": "gpt-4o-transcribe-diarize",
+      "connector": "openai-transcription",
+      "capabilities": {}
+    },
+    {
+      "model": "gpt-4o-mini",
+      "connector": "openai-chat",
+      "capabilities": {
+        "streaming": "delta",
+        "supports_context": true
+      }
+    },
+    {
+      "model": "qwen-audio-3.0-asr-flash",
+      "connector": "dashscope-asr",
+      "languages": ["zh", "en", "ja", "ko", "vi", "th", "id", "ms", "fil", "hi", "ar", "fr", "de", "es", "pt", "ru", "it", "nl", "sv", "da", "fi", "no", "el", "pl", "cs", "hu", "ro", "bg", "hr", "sk"],
+      "language_aliases": [["tl", "fil"]],
+      "capabilities": {
+        "asr_prompt_mode": "context_bias",
+        "context_max_chars": 400,
+        "vocabulary_bias": true
+      },
+      "native_text_polishing": false
+    },
+    {
+      "model": "qwen-audio-3.1-asr-flash",
+      "connector": "dashscope-asr",
+      "languages": ["zh", "en", "ja", "ko", "vi", "th", "id", "ms", "fil", "hi", "ar", "fr", "de", "es", "pt", "ru", "it", "nl", "sv", "da", "fi", "no", "el", "pl", "cs", "hu", "ro", "bg", "hr", "sk"],
+      "language_aliases": [["tl", "fil"]],
+      "capabilities": {
+        "asr_prompt_mode": "context_bias",
+        "context_max_chars": 400,
+        "vocabulary_bias": true
+      },
+      "native_text_polishing": true
+    },
+    {
+      "model": "qwen-audio-3.0-asr-flash-streaming",
+      "connector": "dashscope-asr-websocket",
+      "languages": ["zh", "en", "ja", "ko", "vi", "th", "id", "ms", "fil", "hi", "ar", "fr", "de", "es", "pt", "ru", "it", "nl", "sv", "da", "fi", "no", "el", "pl", "cs", "hu", "ro", "bg", "hr", "sk"],
+      "language_aliases": [["tl", "fil"]],
+      "capabilities": {
+        "asr_prompt_mode": "context_bias",
+        "context_max_chars": 400,
+        "vocabulary_bias": true
+      }
+    },
+    {
+      "model": "qwen-audio-3.1-asr-flash-streaming",
+      "connector": "dashscope-asr-websocket",
+      "languages": ["zh", "en", "ja", "ko", "vi", "th", "id", "ms", "fil", "hi", "ar", "fr", "de", "es", "pt", "ru", "it", "nl", "sv", "da", "fi", "no", "el", "pl", "cs", "hu", "ro", "bg", "hr", "sk"],
+      "language_aliases": [["tl", "fil"]],
+      "capabilities": {
+        "asr_prompt_mode": "context_bias",
+        "context_max_chars": 400,
+        "vocabulary_bias": true
+      }
+    },
+    {
+      "model": "qwen-mt-flash",
+      "connector": "openai-chat",
+      "capabilities": {
+        "streaming": "delta",
+        "supports_context": true,
+        "single_user_message": true
+      }
+    },
+    {
+      "model": "qwen-mt-lite",
+      "connector": "openai-chat",
+      "capabilities": {
+        "streaming": "delta",
+        "supports_context": true,
+        "single_user_message": true
+      }
+    },
+    {
+      "model": "qwen-mt-plus",
+      "connector": "openai-chat",
+      "capabilities": {
+        "streaming": "cumulative",
+        "supports_context": true,
+        "single_user_message": true
+      }
+    },
+    {
+      "model": "qwen-mt-turbo",
+      "connector": "openai-chat",
+      "capabilities": {
+        "streaming": "cumulative",
+        "supports_context": true,
+        "single_user_message": true
+      }
+    }
+  ]
+}

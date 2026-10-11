@@ -289,7 +289,38 @@ fn manifest(value: &Value, variant: &str) -> String {
     )
 }
 
+// Both documents are embedded in application binaries. Credentials belong only
+// in runtime/user-config.json, in development as well as packaged installations.
+fn assert_public_defaults(value: &Value, source: &str) {
+    match value {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                if key == "api_key" {
+                    assert!(
+                        value.as_str().is_some_and(|key| key.trim().is_empty()),
+                        "{source} contains an API key; enter it on Welcome or store it in runtime/user-config.json"
+                    );
+                } else {
+                    assert_public_defaults(value, source);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                assert_public_defaults(value, source);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn main() {
+    for source in ["../../config.json", "remote_catalog.json"] {
+        println!("cargo:rerun-if-changed={source}");
+        let document: Value = serde_json::from_slice(&fs::read(source).expect("public defaults"))
+            .expect("valid public default JSON");
+        assert_public_defaults(&document, source);
+    }
     println!("cargo:rerun-if-changed=model_catalog.json");
     let cards: Vec<Value> =
         serde_json::from_slice(&fs::read("model_catalog.json").expect("model catalog JSON"))

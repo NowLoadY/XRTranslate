@@ -491,7 +491,7 @@ fn rewrite_config(config_path: &Path) -> Result<String, PackageError> {
         context: format!("cannot read config {}", config_path.display()),
         source,
     })?;
-    let mut root: Value = serde_json::from_str(&text)?;
+    let mut root = xrtranslate_config::release_config_document(serde_json::from_str(&text)?);
     let root_object = root.as_object_mut().ok_or_else(|| {
         PackageError::InvalidInput(format!(
             "config {} must contain a JSON object",

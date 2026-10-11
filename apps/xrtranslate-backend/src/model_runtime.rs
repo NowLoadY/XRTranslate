@@ -30,11 +30,12 @@ use xrtranslate_supervisor::{
 };
 
 use asr::AsrProfile;
-pub(crate) use asr::{NativeAsrAdapter, NativeAsrOptions};
+pub(crate) use asr::NativeAsrAdapter;
 pub(crate) use onnx::{OnnxRuntimeDiagnostic, initialize_managed_onnx_runtime, runtime_diagnostic};
 use translation::TranslationProfile;
 pub(crate) use tts::NativeTtsAdapter;
 use tts::TtsProfile;
+pub(crate) use xrtranslate_inference::AsrOptions as NativeAsrOptions;
 
 #[derive(Clone, Debug)]
 pub(crate) struct NativeProviderPlan {
@@ -57,18 +58,15 @@ impl NativeProviderPlan {
         route.llama_server_path =
             runtime_layout.resolve_llama_server_path(&route.llama_server_path);
         let native_runtime = load_native_runtime_selection(&runtime_layout)?;
-        let asr_profile = AsrProfile::registered(&route.asr.provider, &route.asr.transport)
+        let asr_profile = AsrProfile::registered(&route.asr)
             .ok_or_else(|| format!("unsupported ASR provider {:?}", route.asr.provider))?;
-        let translation_profile = TranslationProfile::registered(
-            &route.translation.provider,
-            &route.translation.transport,
-        )
-        .ok_or_else(|| {
-            format!(
-                "unsupported translation provider {:?}",
-                route.translation.provider
-            )
-        })?;
+        let translation_profile =
+            TranslationProfile::registered(&route.translation).ok_or_else(|| {
+                format!(
+                    "unsupported translation provider {:?}",
+                    route.translation.provider
+                )
+            })?;
         let tts_profile = TtsProfile::selected(config)?;
         let asr_asset_id = route
             .asr
@@ -101,7 +99,7 @@ impl NativeProviderPlan {
                 } => Some(allow_reference_context),
                 _ => None,
             })
-            .unwrap_or(route.translation.supports_prompt_context);
+            .unwrap_or(route.translation.capabilities.supports_context);
 
         Ok(Self {
             language_capabilities: route.language_capabilities()?,
@@ -290,7 +288,7 @@ impl NativeProviderPlan {
                 _ => AsrPromptMode::None,
             };
         }
-        self.route.asr.asr_prompt_mode
+        self.route.asr.capabilities.asr_prompt_mode
     }
 
     pub(crate) fn asr_supports_vocabulary_bias(&self) -> bool {
@@ -306,11 +304,11 @@ impl NativeProviderPlan {
                 })
             );
         }
-        self.route.asr.supports_vocabulary_bias
+        self.route.asr.capabilities.vocabulary_bias
     }
 
     pub(crate) fn asr_context_max_chars(&self) -> Option<usize> {
-        self.route.asr.asr_context_max_chars
+        self.route.asr.capabilities.context_max_chars
     }
 
     pub(crate) fn asr_vocabulary_weight(&self) -> u8 {
@@ -392,12 +390,8 @@ impl NativeProviderPlan {
                 provider,
             );
         }
-        self.translation_profile.adapter(
-            http,
-            self.translation_url(),
-            self.translation_model_alias(),
-            self.route.translation.api_key.as_deref(),
-        )
+        self.translation_profile
+            .adapter(http, &self.route.translation)
     }
 
     pub(crate) fn tts_adapter(

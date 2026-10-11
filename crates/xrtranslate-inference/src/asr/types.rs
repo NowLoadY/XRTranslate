@@ -1,3 +1,26 @@
+/// One normalized request shared by every ASR connector. Capability resolution
+/// determines which optional hints the pipeline supplies.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AsrOptions {
+    pub language: Option<String>,
+    pub instruction_prompt: Option<String>,
+    pub context_bias: Option<String>,
+    pub vocabulary_bias: Vec<AsrVocabularyBias>,
+    pub max_tokens: u32,
+}
+
+impl Default for AsrOptions {
+    fn default() -> Self {
+        Self {
+            language: None,
+            instruction_prompt: None,
+            context_bias: None,
+            vocabulary_bias: Vec::new(),
+            max_tokens: 128,
+        }
+    }
+}
+
 /// A completed ASR transcription.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AsrTranscript {

@@ -17,7 +17,7 @@ use xrtranslate_assets::voices::builtin;
 
 pub enum Action {
     Preview(String),
-    Settings,
+    Configure,
 }
 
 pub fn render(
@@ -37,7 +37,7 @@ pub fn render(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.menu_button("⋯", |ui| {
                 if ui.button(tr(language, "TTS settings")).clicked() {
-                    action = Some(Action::Settings);
+                    action = Some(Action::Configure);
                     ui.close();
                 }
                 if ui
@@ -78,7 +78,10 @@ pub fn render(
     });
     ui.add_space(12.0);
     if !configured {
-        ui.weak(tr(language, "Configure a TTS provider in Settings first."));
+        ui.weak(tr(
+            language,
+            "Configure a TTS provider on the Welcome page first.",
+        ));
     } else if !controller.loaded {
         controller.refresh();
     }

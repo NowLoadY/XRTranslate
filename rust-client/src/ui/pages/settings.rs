@@ -6,7 +6,6 @@ mod avatar;
 pub enum SettingsSection {
     #[default]
     GeneralAppearance,
-    ServiceProviders,
     Plugins,
     BackendServer,
     Avatar,
@@ -32,11 +31,6 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             id: SettingsSection::GeneralAppearance,
             icon: "",
             label: crate::i18n::tr(app.ui_language, "General"),
-        },
-        SubNavItem {
-            id: SettingsSection::ServiceProviders,
-            icon: "",
-            label: crate::i18n::tr(app.ui_language, "Service Providers"),
         },
         SubNavItem {
             id: SettingsSection::Plugins,
@@ -73,12 +67,6 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                             SettingsSection::Avatar => {
                                 if avatar::render(ui, &mut app.avatar_appearance, app.ui_language) {
                                     app.save_settings();
-                                }
-                            }
-                            SettingsSection::ServiceProviders => {
-                                let apply = app.service_config.render(ui, app.ui_language);
-                                if apply {
-                                    app.apply_service_configuration(Some(ui.ctx().clone()));
                                 }
                             }
                             SettingsSection::Plugins => {

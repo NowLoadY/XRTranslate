@@ -182,9 +182,8 @@ def native(sdk, args):
     for path in assets.parent.rglob('*'):
         if path.is_symlink() or (path.is_file() and path.relative_to(assets.parent).as_posix() not in packaged_assets):
             path.unlink()
-    # Only the tracked defaults and public seed are packaged.
-    default_config = subprocess.check_output(['git', 'show', 'HEAD:config.json'], cwd=ROOT)
-    (assets / 'config.json').write_bytes(default_config)
+    # Export the same public service defaults used by desktop releases; never runtime.
+    run('cargo', 'run', '--locked', '-p', 'xrtranslate-installer', '--', '--config', ROOT / 'config.json', 'export-defaults', '--output', assets / 'config.json')
     run('cargo', 'run', '--locked', '-p', 'xrtranslate-installer', '--', '--config', assets / 'config.json', 'prepare-resources', '--output', assets, '--cache', ROOT / 'target/android/resources-cache')
     seed = assets / 'XR-Corpus/corpora/default.sqlite'
     seed.parent.mkdir(parents=True, exist_ok=True)

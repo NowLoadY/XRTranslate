@@ -1281,7 +1281,7 @@ mod tests {
             let transcript = asr
                 .transcribe_pcm16(
                     &pcm,
-                    crate::Qwen3AsrOptions {
+                    crate::AsrOptions {
                         language: Some("Chinese".into()),
                         context_bias: None,
                         vocabulary_bias: Vec::new(),

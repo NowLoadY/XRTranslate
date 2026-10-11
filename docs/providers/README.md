@@ -7,7 +7,7 @@ provider code so a new provider has one predictable composition path.
 ## Dependency path
 
 ```text
-config.json + xrtranslate-config
+remote_catalog.json + config.json + xrtranslate-config
         │ normalized capabilities and provider settings
         ▼
 backend/model_runtime/{asr.rs,translation.rs,tts/}
@@ -60,45 +60,40 @@ using a generic `supports_prompt` assumption.
 
 | Capability | Configuration | Prompt Studio path | Adapter input | Meaning |
 |---|---|---|---|---|
-| Semantic instruction | `asr_prompt_mode: instruction` | `ASR PROMPT` | `instruction_prompt` | Natural-language directions to the recognizer |
-| Lexical context bias | `asr_prompt_mode: context_bias` | `ASR CONTEXT` | `context_bias` | Likely words or phrases; not an instruction |
-| No text input | `asr_prompt_mode: none` | none | neither text field | Provider receives no composed ASR text |
-| Weighted vocabulary | `supports_vocabulary_bias: true` plus provider weight settings | bypasses the text graph | structured `AsrVocabularyBias` entries | Provider-native term-to-weight bias |
+| Semantic instruction | `capabilities.asr_prompt_mode: instruction` | `ASR PROMPT` | `instruction_prompt` | Natural-language directions to the recognizer |
+| Lexical context bias | `capabilities.asr_prompt_mode: context_bias` | `ASR CONTEXT` | `context_bias` | Likely words or phrases; not an instruction |
+| No text input | `capabilities.asr_prompt_mode: none` | none | neither text field | Provider receives no composed ASR text |
+| Weighted vocabulary | `capabilities.vocabulary_bias: true` plus provider weight settings | bypasses the text graph | structured `AsrVocabularyBias` entries | Provider-native term-to-weight bias |
 
-`asr_context_max_chars` applies only to lexical context.
+`capabilities.context_max_chars` applies only to lexical context. Legacy flat
+configuration fields remain accepted.
 
 The cloud `qwen` and `qwen-intl` providers default to
 `qwen-audio-3.0-asr-flash` over DashScope's native HTTP API. They declare lexical
 context bias and structured weighted vocabulary independently; see
 [Qwen ASR](qwen-asr.md). Remote model languages and capabilities belong in
-`xrtranslate-assets/src/remote.rs`, separately from downloadable model assets.
+`xrtranslate-assets/remote_catalog.json`, separately from downloadable model assets.
 
-## Adding an ASR provider
+## Adding an online service
 
-1. Add declarative defaults and capabilities under `asr.providers` in
-   `config.json`. Extend `xrtranslate-config` only for a genuinely shared,
-   typed capability; keep vendor-only fields in the provider object. Register
-   known remote model languages and capabilities in the remote model registry
-   rather than borrowing the manifest of a similarly named local model.
-2. Add the transport adapter under
-   `crates/xrtranslate-inference/src/asr/providers/` and re-export it through
-   that directory's `mod.rs`. Keep neutral results and vocabulary types in
-   `asr/types.rs`.
-3. Register the provider profile and construct its provider-erased adapter in
-   `apps/xrtranslate-backend/src/model_runtime/asr.rs`. The root runtime plan
-   continues to expose only neutral capabilities to the pipeline.
-4. If the provider uses existing instruction, context-bias, or vocabulary
-   semantics, select the existing capability. Change `xrtranslate-prompt` only
-   when introducing a new semantic prompt target shared by more than one
-   adapter.
-5. Let `pipeline/asr_prompt.rs` perform capability-based delivery. Provider
-   names and wire fields do not belong there.
-6. Use the declarative service-config schema for common settings. Add custom UI
-   control flow only when the setting cannot be represented by the shared
-   descriptors.
-7. Add adapter wire-contract tests, runtime-profile registration tests,
-   capability/delivery tests, configuration validation tests, and run the full
-   workspace suite required by the refactoring contract.
+1. Add the service defaults, available model IDs, and model capabilities to
+   `crates/xrtranslate-assets/remote_catalog.json`. Enable a shipped preset with
+   an empty provider object in `config.json`. No provider-name registration is
+   needed for a service using an existing connector.
+2. Select an implemented `connector` by wire format. Only a new protocol needs
+   an adapter under `xrtranslate-inference/src/asr/providers/` and a connector
+   dispatch entry in `backend/model_runtime/asr.rs`. Every ASR adapter consumes
+   the shared `AsrOptions` and returns `AsrTranscript`.
+3. Declare streaming, context, and vocabulary features through the shared
+   capability schema. Keep semantic instructions, lexical context, and
+   structured vocabulary separate; the pipeline routes by these capabilities.
+4. Keep service-specific encoding inside the connector. UI and shared pipelines
+   must not match service/model names. Welcome is the only service setup UI; it exposes built-in providers and models.
+5. Validate configuration expansion and compile the affected consumers. Reuse
+   existing evidence; do not add hash identities, test servers, or redundant
+   regression/roundtrip suites for catalogue additions.
+
+See [Online API providers](../online-api-providers.md) for the schema, runtime credential storage, release packaging, and connector formats.
 
 ## TTS shared and provider boundaries
 
@@ -118,7 +113,7 @@ The inference crate then separates reusable mechanics from model semantics:
 | `tts/providers/<provider>/` | frontend, tensor layout, model stages, provider limits, fixed output contract | downloads, host probing, UI state |
 | `backend/model_runtime/tts/` | registered profile, erased adapter, asset ownership, config parsing, adapter construction | session queue/order policy |
 | `backend/tts_session.rs` | clone capture and bounded synthesis worker | provider names or model paths |
-| desktop onboarding/settings | generic provider and manifest presentation | provider-specific install branches |
+| desktop onboarding | generic provider and manifest presentation | provider-specific install branches |
 
 Reference transcripts are also a provider capability, not a universal voice
 clone requirement. Audio8 consumes a transcript during registration;
@@ -161,16 +156,15 @@ a future, separately specified TTS semantic capability requires them.
    `apps/xrtranslate-backend/src/model_runtime/tts/`. The TTS session worker,
    `main.rs`, and pipeline continue to consume the neutral adapter. The shared
    TTS adapter group routes by the languages of active `model_assets`.
-6. Let onboarding and settings enumerate config and manifests. Add a generic
+6. Let onboarding enumerate config and manifests. Add a generic
    capability to a shared schema only when multiple providers need the same
    semantics; do not add a provider-name branch for a label or download button.
-7. Add catalogue integrity tests, provider/profile coverage tests, config asset
-   ownership tests, frontend/tensor tests, forced-CUDA coverage, and an
-   ignored real-model smoke test. Validate actual output sample rate and real
-   voice-cloning quality, not only non-empty bytes.
+7. Reuse existing real-model verification to check output sample rate and
+   voice-cloning quality when model files and hardware are available. Do not
+   add redundant tests for implementation details.
 8. Update the runtime resource matrix, TTS runtime design, and a provider note
    documenting sources, licenses, limits, and verification evidence. Run the
-   complete formatting, compile, and test gates in the refactoring contract.
+   formatting and compile checks appropriate to the change.
 
 Downloadable model packages are managed-GPU resources: NVIDIA CUDA and the
 manifest's VRAM threshold are mandatory (3 GiB for small ASR/translation;

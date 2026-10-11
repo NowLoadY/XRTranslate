@@ -570,6 +570,7 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
             ui,
             language,
             category,
+            *capability,
             title,
             &project_root,
             provider,
@@ -630,10 +631,8 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
     if let Some((category, fields)) = remote_fields {
         app.service_config
             .set_onboarding_remote_fields(category, fields.model, fields.api_key);
-        if fields.commit {
-            let result = app.service_config.save_onboarding_configuration();
-            handle_onboarding_save(app, result);
-        }
+        let result = app.service_config.save_onboarding_configuration();
+        handle_onboarding_save(app, result);
     }
     if let Some(message) = app.service_config.onboarding_message() {
         ui.add_space(10.0);
@@ -674,7 +673,6 @@ struct ModelConfigCardResult {
 struct RemoteProviderFields {
     model: String,
     api_key: String,
-    commit: bool,
 }
 
 fn local_model_warning_icon(
@@ -744,6 +742,7 @@ fn onboarding_model_config_card(
     ui: &mut egui::Ui,
     language: i18n::UiLanguage,
     category: &'static str,
+    capability: ModelCapability,
     title: &'static str,
     project_root: &std::path::Path,
     mut provider: Option<crate::service_config::OnboardingProviderState>,
@@ -808,13 +807,21 @@ fn onboarding_model_config_card(
                 if index == 0 {
                     ui.label(i18n::tr(language, "Mode"));
                     let mut remote = provider.remote;
+                    // Online providers have no active local package. Resolve
+                    // the return option from configured choices and the catalogue.
+                    let local_choice = provider.choices.iter().find(|choice| {
+                        !choice.remote
+                            && xrtranslate_assets::manifests_for_capability(capability).any(
+                                |manifest| {
+                                    manifest.provider == choice.name
+                                        && local_availability.supports(manifest.hardware)
+                                },
+                            )
+                    });
                     let mode_text =
                         i18n::tr(language, if remote { "Online API" } else { "Local model" });
                     components::combobox_ui(ui, (category, "provider_mode"), mode_text, |ui| {
-                        let local_available = levels
-                            .iter()
-                            .any(|package| local_availability.supports(package.hardware));
-                        ui.add_enabled_ui(local_available, |ui| {
+                        ui.add_enabled_ui(local_choice.is_some(), |ui| {
                             ui.selectable_value(
                                 &mut remote,
                                 false,
@@ -823,19 +830,16 @@ fn onboarding_model_config_card(
                         });
                         ui.selectable_value(&mut remote, true, i18n::tr(language, "Online API"));
                     });
-                    if !levels
-                        .iter()
-                        .any(|package| local_availability.supports(package.hardware))
-                    {
+                    if local_choice.is_none() {
                         local_model_warning_icon(ui, language, local_availability);
                     }
-                    if remote != provider.remote
-                        && let Some(choice) = provider
-                            .choices
-                            .iter()
-                            .find(|choice| choice.remote == remote)
-                    {
-                        result.selected_provider = Some(choice.name.clone());
+                    if remote != provider.remote {
+                        let choice = if remote {
+                            provider.choices.iter().find(|choice| choice.remote)
+                        } else {
+                            local_choice
+                        };
+                        result.selected_provider = choice.map(|choice| choice.name.clone());
                     }
                 } else if !provider.remote {
                     let Some(mut asset_id) = selected_asset else {
@@ -988,18 +992,21 @@ fn onboarding_model_config_card(
                 ui.add_space(12.0);
                 ui.vertical(|ui| {
                     ui.label(i18n::tr(language, "Model"));
-                    let model_response = components::singleline_input(
+                    let previous_model = provider.model.clone();
+                    components::combobox_ui(
                         ui,
-                        &mut provider.model,
-                        i18n::tr(language, "Model"),
-                        (ui.available_width() - 16.0).max(0.0),
-                        false,
+                        (category, "online_model"),
+                        &previous_model,
+                        |ui| {
+                            for model in &provider.models {
+                                ui.selectable_value(&mut provider.model, model.clone(), model);
+                            }
+                        },
                     );
-                    if model_response.changed() || model_response.lost_focus() {
+                    if provider.model != previous_model {
                         result.remote_fields = Some(RemoteProviderFields {
                             model: provider.model.clone(),
                             api_key: provider.api_key.clone(),
-                            commit: model_response.lost_focus(),
                         });
                     }
                 });
@@ -1013,13 +1020,10 @@ fn onboarding_model_config_card(
                         (ui.available_width() - 16.0).max(0.0),
                         true,
                     );
-                    let commit = key_response.lost_focus()
-                        || ui.input(|input| input.key_pressed(egui::Key::Enter));
-                    if key_response.changed() || commit {
+                    if key_response.changed() {
                         result.remote_fields = Some(RemoteProviderFields {
                             model: provider.model.clone(),
                             api_key: provider.api_key.clone(),
-                            commit,
                         });
                     }
                 });

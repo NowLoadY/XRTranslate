@@ -5,41 +5,11 @@ use xrtranslate_engine::language::SupportedLanguage;
 use crate::asr::types::parse_language;
 
 use crate::{
-    AsrTranscript, AsrVocabularyBias, AsyncHttpClient, InferenceError, OpenAiCompatibleClient,
+    AsrOptions, AsrTranscript, AsrVocabularyBias, AsyncHttpClient, InferenceError,
+    OpenAiCompatibleClient,
     openai::{non_streaming_chat_payload, remove_completion_markers},
     pcm16_mono_16khz_to_wav,
 };
-
-/// Options for one Qwen3-ASR completion request.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Qwen3AsrOptions {
-    /// Canonical language code; shared names/locales are also accepted.
-    /// None, empty or auto asks the model to infer the language.
-    pub language: Option<String>,
-    /// Official Qwen3-ASR recognition context. This is sent as the system
-    /// message content, exactly as the Python/vLLM implementation does.
-    pub context_bias: Option<String>,
-    /// Lexical terms to include in the official context field. Qwen3-ASR does
-    /// not expose weighted hotwords, so weights are intentionally ignored.
-    pub vocabulary_bias: Vec<AsrVocabularyBias>,
-    /// Retained for provider-neutral API compatibility. Qwen3-ASR does not
-    /// accept semantic instruction prompts; callers should use context_bias.
-    pub instruction_prompt: Option<String>,
-    /// Maximum generated transcript tokens.
-    pub max_tokens: u32,
-}
-
-impl Default for Qwen3AsrOptions {
-    fn default() -> Self {
-        Self {
-            language: None,
-            context_bias: None,
-            vocabulary_bias: Vec::new(),
-            instruction_prompt: None,
-            max_tokens: 128,
-        }
-    }
-}
 
 /// Qwen3-ASR adapter backed by a local llama-server endpoint.
 #[derive(Debug, Clone)]
@@ -81,7 +51,7 @@ impl<C: AsyncHttpClient> Qwen3AsrAdapter<C> {
     pub async fn transcribe_pcm16(
         &self,
         pcm: &[u8],
-        options: Qwen3AsrOptions,
+        options: AsrOptions,
     ) -> Result<AsrTranscript, InferenceError> {
         let language = parse_language(options.language.as_deref())?;
         let wav = pcm16_mono_16khz_to_wav(pcm)?;

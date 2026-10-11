@@ -1,31 +1,20 @@
 //! ASR provider profiles and provider-erased adapter dispatch.
 
+use xrtranslate_assets::remote::RemoteConnector;
 use xrtranslate_assets::{
     AsrDelivery, AsrPromptStyle, ModelCapability, ModelFileRole, ModelRuntime, ResolvedModelAsset,
     manifests_for_capability,
 };
+use xrtranslate_config::NativeProviderConfig;
 use xrtranslate_inference::{
-    AsrTranscript, AsrVocabularyBias, InferenceError, OpenAiAsrAdapter, OpenAiAsrOptions,
-    Qwen3AsrAdapter, Qwen3AsrOptions, QwenAudioFlashAdapter, QwenAudioFlashOptions,
-    QwenAudioStreamingAdapter, QwenAudioStreamingOptions, ReqwestClient, SenseVoiceAdapter,
+    AsrOptions, AsrTranscript, InferenceError, OpenAiAsrAdapter, Qwen3AsrAdapter,
+    QwenAudioFlashAdapter, QwenAudioStreamingAdapter, ReqwestClient, SenseVoiceAdapter,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum AsrProfile {
     LocalCatalog,
-    QwenAudioFlash,
-    OpenAiAudio,
-    QwenAudioStreaming,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct NativeAsrOptions {
-    /// Canonical code from the shared catalogue; None selects automatic ASR.
-    pub(crate) language: Option<String>,
-    pub(crate) instruction_prompt: Option<String>,
-    pub(crate) context_bias: Option<String>,
-    pub(crate) vocabulary_bias: Vec<AsrVocabularyBias>,
-    pub(crate) max_tokens: u32,
+    Remote(RemoteConnector),
 }
 
 /// Provider-erased ASR adapter consumed by the generic pipeline. New native
@@ -41,22 +30,16 @@ pub(crate) enum NativeAsrAdapter {
 }
 
 impl AsrProfile {
-    pub(super) fn registered(provider: &str, transport: &str) -> Option<Self> {
-        if matches!(transport, "local" | "onnx-cpu") {
+    pub(super) fn registered(config: &NativeProviderConfig) -> Option<Self> {
+        if config.uses_local_runtime() {
             return manifests_for_capability(ModelCapability::Asr)
-                .any(|manifest| manifest.provider == provider)
+                .any(|manifest| manifest.provider == config.provider)
                 .then_some(Self::LocalCatalog);
         }
-        if provider == "qwen-audio-streaming" && transport == "websocket" {
-            return Some(Self::QwenAudioStreaming);
-        }
-        if provider == "qwen" || provider == "qwen-intl" {
-            return (transport == "dashscope").then_some(Self::QwenAudioFlash);
-        }
-        if transport == "openai" {
-            return Some(Self::OpenAiAudio);
-        }
-        None
+        config
+            .connector
+            .filter(|connector| connector.capability() == ModelCapability::Asr)
+            .map(Self::Remote)
     }
 
     pub(super) fn adapter(
@@ -67,25 +50,29 @@ impl AsrProfile {
         api_key: Option<&str>,
     ) -> Result<NativeAsrAdapter, InferenceError> {
         match self {
-            Self::LocalCatalog => Err(InferenceError::InvalidConfiguration {
-                field: "asr.model_asset.runtime",
-                message: "local ASR adapters must be constructed from the model card".into(),
-            }),
-            Self::QwenAudioFlash => {
-                QwenAudioFlashAdapter::new(http, endpoint, model, api_key.unwrap_or_default())
-                    .map(NativeAsrAdapter::QwenAudioFlash)
-            }
-            Self::OpenAiAudio => OpenAiAsrAdapter::with_bearer_token(
+            Self::Remote(
+                connector @ (RemoteConnector::OpenaiTranscription
+                | RemoteConnector::OpenaiAudioChat),
+            ) => OpenAiAsrAdapter::new(
                 http,
                 endpoint,
                 model,
                 api_key.unwrap_or_default(),
+                connector,
             )
             .map(NativeAsrAdapter::OpenAi),
-            Self::QwenAudioStreaming => {
+            Self::Remote(RemoteConnector::DashscopeAsr) => {
+                QwenAudioFlashAdapter::new(http, endpoint, model, api_key.unwrap_or_default())
+                    .map(NativeAsrAdapter::QwenAudioFlash)
+            }
+            Self::Remote(RemoteConnector::DashscopeAsrWebsocket) => {
                 QwenAudioStreamingAdapter::new(endpoint, model, api_key.unwrap_or_default())
                     .map(NativeAsrAdapter::QwenAudioStreaming)
             }
+            _ => Err(InferenceError::InvalidConfiguration {
+                field: "asr.connector",
+                message: "expected a remote ASR connector".into(),
+            }),
         }
     }
 }
@@ -126,60 +113,13 @@ impl NativeAsrAdapter {
     pub(crate) async fn transcribe_pcm16(
         &self,
         pcm: &[u8],
-        options: NativeAsrOptions,
+        options: AsrOptions,
     ) -> Result<AsrTranscript, InferenceError> {
         match self {
-            Self::AudioChat(adapter) => {
-                adapter
-                    .transcribe_pcm16(
-                        pcm,
-                        Qwen3AsrOptions {
-                            language: options.language,
-                            context_bias: options.context_bias,
-                            vocabulary_bias: options.vocabulary_bias,
-                            instruction_prompt: options.instruction_prompt,
-                            max_tokens: options.max_tokens,
-                        },
-                    )
-                    .await
-            }
-            Self::OpenAi(adapter) => {
-                adapter
-                    .transcribe_pcm16(
-                        pcm,
-                        OpenAiAsrOptions {
-                            language: options.language,
-                            instruction_prompt: options.instruction_prompt,
-                            context_bias: options.context_bias,
-                            max_tokens: options.max_tokens,
-                        },
-                    )
-                    .await
-            }
-            Self::QwenAudioFlash(adapter) => {
-                adapter
-                    .transcribe_pcm16(
-                        pcm,
-                        QwenAudioFlashOptions {
-                            language: options.language,
-                            context_bias: options.context_bias,
-                            vocabulary_bias: options.vocabulary_bias,
-                        },
-                    )
-                    .await
-            }
-            Self::QwenAudioStreaming(adapter) => {
-                adapter
-                    .transcribe_pcm16(
-                        pcm,
-                        QwenAudioStreamingOptions {
-                            language: options.language,
-                            context_bias: options.context_bias,
-                            vocabulary_bias: options.vocabulary_bias,
-                        },
-                    )
-                    .await
-            }
+            Self::AudioChat(adapter) => adapter.transcribe_pcm16(pcm, options).await,
+            Self::OpenAi(adapter) => adapter.transcribe_pcm16(pcm, options).await,
+            Self::QwenAudioFlash(adapter) => adapter.transcribe_pcm16(pcm, options).await,
+            Self::QwenAudioStreaming(adapter) => adapter.transcribe_pcm16(pcm, options).await,
             Self::SenseVoice(adapter) => {
                 adapter
                     .transcribe_pcm16(pcm, options.language.as_deref())

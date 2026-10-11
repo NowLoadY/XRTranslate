@@ -12,9 +12,8 @@ pub struct ChatCompletion {
 
 /// Shared authenticated OpenAI HTTP adapter.
 ///
-/// `endpoint` must be the full chat-completions or audio-transcriptions URL. Requiring the
-/// exact endpoint avoids silently choosing a wrong API version when external
-/// providers are configured.
+/// `endpoint` is the complete configured URL. The caller selects the wire
+/// operation, so gateways may expose it under a custom path.
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatibleClient<C> {
     http: C,
@@ -36,16 +35,16 @@ impl<C> OpenAiCompatibleClient<C> {
         headers: Vec<(String, String)>,
     ) -> Result<Self, InferenceError> {
         let endpoint = endpoint.into().trim().to_owned();
-        if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
+        let url = reqwest::Url::parse(&endpoint).map_err(|error| {
+            InferenceError::InvalidConfiguration {
+                field: "endpoint",
+                message: error.to_string(),
+            }
+        })?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
             return Err(InferenceError::InvalidConfiguration {
                 field: "endpoint",
-                message: "must start with http:// or https://".into(),
-            });
-        }
-        if !endpoint.contains("/chat/completions") && !endpoint.contains("/audio/transcriptions") {
-            return Err(InferenceError::InvalidConfiguration {
-                field: "endpoint",
-                message: "must point to /chat/completions or /audio/transcriptions".into(),
+                message: "must be a complete http:// or https:// URL".into(),
             });
         }
         Ok(Self {

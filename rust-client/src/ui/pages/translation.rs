@@ -165,7 +165,7 @@ fn render_translation_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::U
                     .response
                     .on_disabled_hover_text(crate::i18n::tr(
                         app.ui_language,
-                        "Configure a TTS provider in Settings to enable TTS playback.",
+                        "Configure a TTS provider on the Welcome page to enable TTS playback.",
                     ));
             }
 
@@ -319,7 +319,7 @@ fn render_translation_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::U
                 } else if !tts_configured {
                     response.on_disabled_hover_text(crate::i18n::tr(
                         app.ui_language,
-                        "Configure a TTS provider in Settings to enable voice cloning.",
+                        "Configure a TTS provider on the Welcome page to enable voice cloning.",
                     ));
                 } else if !mic_capturing {
                     response.on_disabled_hover_text(crate::i18n::tr(

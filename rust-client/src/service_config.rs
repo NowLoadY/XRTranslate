@@ -2,10 +2,6 @@ use serde_json::{Map, Value};
 use std::path::PathBuf;
 use xrtranslate_prompt::PromptProviderTarget;
 
-use provider_schema::{ProviderFieldEditor, provider_field_descriptor};
-
-mod provider_schema;
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum JsonFieldKind {
     String,
@@ -27,7 +23,6 @@ struct ProviderCard {
 
 struct ServiceCategory {
     key: &'static str,
-    title: &'static str,
     selected_provider: String,
     providers: Vec<ProviderCard>,
 }
@@ -38,6 +33,7 @@ pub(crate) struct OnboardingProviderState {
     pub remote: bool,
     pub choices: Vec<OnboardingProviderChoice>,
     pub model: String,
+    pub models: Vec<String>,
     pub api_key: String,
 }
 
@@ -62,12 +58,10 @@ pub(crate) enum OnboardingSaveOutcome {
 /// The original JSON document is retained so unrelated project settings are preserved.
 pub struct ServiceConfigEditor {
     path: PathBuf,
-    base_document: Value,
     document: Value,
     categories: Vec<ServiceCategory>,
     dirty: bool,
     message: Option<String>,
-    message_is_error: bool,
     onboarding_save_error: Option<String>,
     language_capabilities:
         std::sync::OnceLock<Result<xrtranslate_engine::language::LanguageCapabilities, String>>,
@@ -78,45 +72,36 @@ impl ServiceConfigEditor {
         let path = project_config_path();
         let mut editor = Self {
             path,
-            base_document: Value::Object(Map::new()),
             document: Value::Object(Map::new()),
             categories: Vec::new(),
             dirty: false,
             message: None,
-            message_is_error: false,
             onboarding_save_error: None,
             language_capabilities: Default::default(),
         };
         if let Err(error) = editor.reload() {
             editor.message = Some(error);
-            editor.message_is_error = true;
         }
         editor
     }
 
     pub fn reload(&mut self) -> Result<(), String> {
         self.language_capabilities.take();
-        let base_contents = std::fs::read_to_string(&self.path)
-            .map_err(|error| format!("Cannot read {}: {error}", self.path.display()))?;
-        let base_document = serde_json::from_str(&base_contents)
-            .map_err(|error| format!("Invalid {}: {error}", self.path.display()))?;
         self.document = xrtranslate_config::load_user_config_document(&self.path, &project_root())
             .map_err(|error| format!("Cannot read {}: {error}", self.path.display()))?;
-        self.base_document = base_document;
         self.categories = [
-            ("asr", "ASR / Speech Recognition"),
-            ("translation", "Translation"),
-            ("tts", "Text to Speech"),
+            "asr",
+            "translation",
+            "tts",
             #[cfg(not(target_os = "android"))]
-            ("ocr", "Screen text recognition"),
+            "ocr",
         ]
         .into_iter()
-        .map(|(key, title)| Self::make_category(&self.document, key, title))
+        .map(|key| Self::make_category(&self.document, key))
         .collect();
-        self.dirty = false;
         self.message = None;
-        self.message_is_error = false;
         self.onboarding_save_error = None;
+        self.dirty = false;
         Ok(())
     }
 
@@ -281,6 +266,12 @@ impl ServiceConfigEditor {
                     voices: provider_voice_presets(provider),
                 })
                 .collect(),
+            models: category_capability(category_key)
+                .and_then(|capability| {
+                    xrtranslate_assets::remote::service(&selected.name, capability)
+                })
+                .map(|service| service.models.clone())
+                .unwrap_or_default(),
             model: field("model"),
             api_key: field("api_key"),
         })
@@ -415,21 +406,25 @@ impl ServiceConfigEditor {
     pub(crate) fn save_onboarding_configuration(
         &mut self,
     ) -> Result<OnboardingSaveOutcome, String> {
-        if self.has_incomplete_remote_provider() {
-            self.message = None;
-            return Ok(OnboardingSaveOutcome::IncompleteRemoteProvider);
-        }
-
-        match self.save() {
+        let incomplete = self.has_incomplete_remote_provider();
+        let result = if incomplete {
+            self.save_draft()
+        } else {
+            self.save()
+        };
+        match result {
             Ok(()) => {
                 self.message = None;
-                Ok(OnboardingSaveOutcome::Saved {
-                    resolved_error: self.onboarding_save_error.take(),
-                })
+                if incomplete {
+                    Ok(OnboardingSaveOutcome::IncompleteRemoteProvider)
+                } else {
+                    Ok(OnboardingSaveOutcome::Saved {
+                        resolved_error: self.onboarding_save_error.take(),
+                    })
+                }
             }
             Err(error) => {
                 self.message = Some(error.clone());
-                self.message_is_error = true;
                 self.onboarding_save_error = Some(error.clone());
                 Err(error)
             }
@@ -462,7 +457,7 @@ impl ServiceConfigEditor {
             })
     }
 
-    fn make_category(document: &Value, key: &'static str, title: &'static str) -> ServiceCategory {
+    fn make_category(document: &Value, key: &'static str) -> ServiceCategory {
         let section = document.get(key).and_then(Value::as_object);
         let mut providers: Vec<ProviderCard> = section
             .and_then(|section| section.get("providers"))
@@ -470,6 +465,17 @@ impl ServiceConfigEditor {
             .map(|providers| {
                 providers
                     .iter()
+                    .filter(|(name, config)| {
+                        config.get("connector").is_none()
+                            && !config.get("transport").and_then(Value::as_str).is_some_and(
+                                |transport| {
+                                    matches!(transport, "openai" | "dashscope" | "websocket")
+                                },
+                            )
+                            || category_capability(key).is_some_and(|capability| {
+                                xrtranslate_assets::remote::service(name, capability).is_some()
+                            })
+                    })
                     .map(|(name, config)| ProviderCard {
                         name: name.clone(),
                         fields: config
@@ -500,306 +506,9 @@ impl ServiceConfigEditor {
 
         ServiceCategory {
             key,
-            title,
             selected_provider,
             providers,
         }
-    }
-
-    pub fn render(&mut self, ui: &mut eframe::egui::Ui, language: crate::i18n::UiLanguage) -> bool {
-        use crate::ui::components::{self, section};
-        use eframe::egui;
-
-        let mut apply_configuration = false;
-
-        ui.label(
-            egui::RichText::new(crate::i18n::tr(language, "Service Providers"))
-                .size(22.0)
-                .color(crate::ui::theme::text_strong())
-                .strong(),
-        );
-        ui.add_space(14.0);
-
-        for cat_idx in 0..self.categories.len() {
-            let category_title = crate::i18n::tr(language, self.categories[cat_idx].title);
-            let category_key = self.categories[cat_idx].key;
-            let default_providers = self
-                .base_document
-                .get(category_key)
-                .and_then(|section| section.get("providers"))
-                .cloned();
-
-            section(ui, category_title, |ui| {
-                let active_name = self.categories[cat_idx].selected_provider.clone();
-                let active_idx = self.categories[cat_idx]
-                    .providers
-                    .iter()
-                    .position(|p| p.name == active_name);
-
-                if let Some(idx) = active_idx {
-                    let provider_name = self.categories[cat_idx].providers[idx].name.clone();
-                    let default_provider = default_providers
-                        .as_ref()
-                        .and_then(|providers| providers.get(&provider_name));
-                    let provider_title = provider_display_label(&provider_name, language);
-                    let model_assets =
-                        provider_model_assets(&self.categories[cat_idx].providers[idx]);
-                    let model_names = provider_model_names(
-                        &self.categories[cat_idx].providers[idx],
-                        category_key,
-                    );
-                    let native_model = !model_assets.is_empty()
-                        || (!provider_is_remote(&self.categories[cat_idx].providers[idx])
-                            && !model_names.is_empty());
-                    let supported_languages =
-                        provider_model_languages(&self.categories[cat_idx].providers[idx]);
-
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            egui::RichText::new(crate::i18n::tr(language, "Provider:")).strong(),
-                        );
-                        ui.label(
-                            egui::RichText::new(provider_title)
-                                .size(13.5)
-                                .color(crate::ui::theme::text_strong()),
-                        );
-                        if let Some(guide_url) = self.categories[cat_idx].providers[idx]
-                            .fields
-                            .iter()
-                            .find(|field| field.name == "guide_url")
-                            .map(|field| field.value.trim())
-                            .filter(|url| !url.is_empty())
-                        {
-                            ui.add_space(8.0);
-                            let guide_btn = ui.hyperlink_to(
-                                egui::RichText::new(format!(
-                                    "{} ↗",
-                                    crate::i18n::tr(language, "API Key Guide")
-                                ))
-                                .size(12.0)
-                                .color(crate::ui::theme::primary()),
-                                guide_url,
-                            );
-                            guide_btn.on_hover_text(format!(
-                                "{}\n{}",
-                                crate::i18n::tr(
-                                    language,
-                                    "Open official documentation to get an API key"
-                                ),
-                                guide_url
-                            ));
-                        }
-                    });
-                    for model_name in model_names {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(format!(
-                                    "{} {}",
-                                    crate::i18n::tr(language, "Model:"),
-                                    model_name
-                                ))
-                                .color(crate::ui::theme::text_strong()),
-                            )
-                            .wrap(),
-                        );
-                    }
-                    ui.add_space(10.0);
-                    render_provider_capabilities(ui, language, category_key, &supported_languages);
-                    if category_key == "asr"
-                        && let Some(card) =
-                            provider_remote_asr_model(&self.categories[cat_idx].providers[idx])
-                    {
-                        ui.label(
-                            egui::RichText::new(crate::i18n::tr(
-                                language,
-                                if card.supports_incremental_results {
-                                    "Incremental recognition results"
-                                } else {
-                                    "Complete audio windows; final recognition results"
-                                },
-                            ))
-                            .color(crate::ui::theme::text_weak())
-                            .size(12.0),
-                        );
-                        ui.label(
-                            egui::RichText::new(crate::i18n::tr(
-                                language,
-                                match card.native_text_polishing {
-                                    Some(true) => "Native text polishing",
-                                    Some(false) => "No native text polishing",
-                                    None => "Native text polishing: not documented",
-                                },
-                            ))
-                            .color(crate::ui::theme::text_weak())
-                            .size(12.0),
-                        );
-                        if let Some(limit) = card.context_max_chars {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{} {limit}",
-                                    crate::i18n::tr(
-                                        language,
-                                        "Recognition context character limit:"
-                                    )
-                                ))
-                                .color(crate::ui::theme::text_weak())
-                                .size(12.0),
-                            );
-                        }
-                        if card.vocabulary_bias {
-                            ui.label(
-                                egui::RichText::new(crate::i18n::tr(
-                                    language,
-                                    "Weighted vocabulary supported",
-                                ))
-                                .color(crate::ui::theme::text_weak())
-                                .size(12.0),
-                            );
-                        }
-                        ui.add_space(8.0);
-                    }
-                    if category_key == "tts"
-                        && render_tts_voice_selection(
-                            ui,
-                            &mut self.categories[cat_idx].providers[idx],
-                            language,
-                        )
-                    {
-                        self.dirty = true;
-                    }
-
-                    let fields_len = self.categories[cat_idx].providers[idx]
-                        .fields
-                        .iter()
-                        .filter(|field| {
-                            provider_field_is_visible(
-                                field,
-                                category_key,
-                                &provider_name,
-                                native_model,
-                            )
-                        })
-                        .count();
-                    if fields_len == 0 {
-                        ui.label(
-                            egui::RichText::new(crate::i18n::tr(language, "No parameters"))
-                                .color(crate::ui::theme::text_weak()),
-                        );
-                    } else {
-                        egui::Grid::new((category_key, &provider_name, "active_grid"))
-                            .num_columns(2)
-                            .spacing([20.0, 10.0])
-                            .min_col_width(140.0)
-                            .show(ui, |ui| {
-                                for field in &mut self.categories[cat_idx].providers[idx].fields {
-                                    if !provider_field_is_visible(
-                                        field,
-                                        category_key,
-                                        &provider_name,
-                                        native_model,
-                                    ) {
-                                        continue;
-                                    }
-                                    let label = provider_field_label(language, &field.name);
-                                    let label_response = ui.label(
-                                        egui::RichText::new(label)
-                                            .strong()
-                                            .color(crate::ui::theme::text_strong()),
-                                    );
-                                    if let Some(help) = provider_field_help(language, &field.name) {
-                                        label_response.on_hover_text(help);
-                                    }
-                                    let edit_w = (ui.available_width() - 20.0).clamp(240.0, 360.0);
-                                    let default_value = (field.kind == JsonFieldKind::Number)
-                                        .then(|| {
-                                            runtime_parameter_default(default_provider, &field.name)
-                                        })
-                                        .flatten();
-                                    ui.horizontal(|ui| {
-                                        if render_field_input(ui, field, edit_w, language) {
-                                            self.dirty = true;
-                                        }
-                                        if let Some(default_value) = default_value {
-                                            let reset = components::reset_button(
-                                                ui,
-                                                &format!(
-                                                    "{category_key}/{provider_name}/{}",
-                                                    field.name
-                                                ),
-                                            )
-                                            .on_hover_text(format!(
-                                                "{} {}",
-                                                crate::i18n::tr(language, "Restore default:"),
-                                                default_value
-                                            ));
-                                            if reset.clicked() && field.value != default_value {
-                                                field.value = default_value;
-                                                self.dirty = true;
-                                            }
-                                        }
-                                    });
-                                    ui.end_row();
-                                }
-                            });
-                    }
-                } else {
-                    ui.label(
-                        egui::RichText::new(crate::i18n::tr(language, "No providers configured"))
-                            .color(crate::ui::theme::text_weak()),
-                    );
-                }
-            });
-            ui.add_space(12.0);
-        }
-
-        // Action Toolbar
-        ui.horizontal(|ui| {
-            let save_label = if self.dirty {
-                crate::i18n::tr(language, "Save *")
-            } else {
-                crate::i18n::tr(language, "Save")
-            };
-            let save = components::primary_button(ui, save_label);
-            if save.clicked() {
-                match self.save() {
-                    Ok(()) => {
-                        apply_configuration = true;
-                        self.message = Some(crate::i18n::tr(language, "Saved.").to_owned());
-                        self.message_is_error = false;
-                    }
-                    Err(error) => {
-                        self.message = Some(error);
-                        self.message_is_error = true;
-                    }
-                }
-            }
-            if components::animated_button(ui, crate::i18n::tr(language, "Reload")).clicked()
-                && let Err(error) = self.reload()
-            {
-                self.message = Some(error);
-                self.message_is_error = true;
-            }
-            if self.dirty {
-                ui.label(
-                    egui::RichText::new(crate::i18n::tr(language, "Unsaved"))
-                        .color(egui::Color32::from_rgb(217, 119, 6))
-                        .strong(),
-                );
-            }
-        });
-        if let Some(message) = &self.message {
-            ui.add_space(6.0);
-            if self.message_is_error {
-                components::error_notice(ui, language, message);
-            } else {
-                ui.label(
-                    egui::RichText::new(message)
-                        .color(crate::ui::theme::text_weak())
-                        .size(12.0),
-                );
-            }
-        }
-        apply_configuration
     }
 
     fn save(&mut self) -> Result<(), String> {
@@ -818,6 +527,12 @@ impl ServiceConfigEditor {
         validate_tts_provider_asset(&parsed.tts)?;
         #[cfg(not(target_os = "android"))]
         validate_ocr_provider_asset(&parsed.ocr)?;
+        self.save_draft()
+    }
+
+    fn save_draft(&mut self) -> Result<(), String> {
+        self.language_capabilities.take();
+        Self::sync_categories(&mut self.document, &self.categories)?;
         xrtranslate_config::save_user_config_document(&self.path, &project_root(), &self.document)?;
         self.dirty = false;
         Ok(())
@@ -1047,45 +762,6 @@ fn provider_model_assets(provider: &ProviderCard) -> Vec<String> {
         .unwrap_or_else(|| provider_model_asset(provider).into_iter().collect())
 }
 
-fn provider_model_names(provider: &ProviderCard, category_key: &str) -> Vec<String> {
-    let assets = provider_model_assets(provider);
-    if !assets.is_empty() {
-        return assets
-            .into_iter()
-            .map(|asset| {
-                xrtranslate_assets::ModelAssetId::from_config_key(&asset)
-                    .map(|id| xrtranslate_assets::manifest_for(id).label.to_owned())
-                    .unwrap_or(asset)
-            })
-            .collect();
-    }
-    if !provider_is_remote(provider) {
-        let capability = match category_key {
-            "asr" => Some(xrtranslate_assets::ModelCapability::Asr),
-            "translation" => Some(xrtranslate_assets::ModelCapability::Translation),
-            _ => None,
-        };
-        if let Some(manifest) = capability.and_then(|capability| {
-            xrtranslate_assets::tier_default_manifest(
-                &provider.name,
-                capability,
-                xrtranslate_assets::ModelLevel::Normal,
-            )
-        }) {
-            return vec![manifest.label.to_owned()];
-        }
-    }
-    provider
-        .fields
-        .iter()
-        .find(|field| field.name == "model")
-        .map(|field| field.value.trim())
-        .filter(|model| !model.is_empty())
-        .map(str::to_owned)
-        .into_iter()
-        .collect()
-}
-
 fn update_provider_model_selection(provider: &mut ProviderCard, model_asset: &str, enabled: bool) {
     let mut assets = provider_model_assets(provider);
     if enabled {
@@ -1233,7 +909,7 @@ fn provider_supported_languages(provider: &ProviderCard) -> Vec<String> {
 
 fn provider_remote_asr_model(
     provider: &ProviderCard,
-) -> Option<&'static xrtranslate_assets::remote::RemoteAsrModelManifest> {
+) -> Option<&'static xrtranslate_assets::remote::RemoteModelManifest> {
     let field = |name| {
         provider
             .fields
@@ -1241,20 +917,22 @@ fn provider_remote_asr_model(
             .find(|field| field.name == name)
             .map(|field| field.value.trim())
     };
-    xrtranslate_assets::remote::remote_asr_model(
-        &provider.name,
-        field("transport")?,
-        field("model")?,
-    )
+    use xrtranslate_assets::remote::{RemoteConnector, remote_model};
+    let connector = field("connector")
+        .and_then(|value| serde_json::from_value(Value::from(value)).ok())
+        .or_else(|| {
+            RemoteConnector::from_transport(
+                "asr",
+                field("transport")?,
+                field("url").unwrap_or_default(),
+            )
+        })?;
+    remote_model(connector, field("model")?)
 }
 
 fn provider_model_languages(provider: &ProviderCard) -> Vec<String> {
     if let Some(card) = provider_remote_asr_model(provider) {
-        return card
-            .languages
-            .iter()
-            .map(|code| (*code).to_owned())
-            .collect();
+        return card.languages.clone();
     }
     let mut languages = provider_model_assets(provider)
         .into_iter()
@@ -1273,269 +951,6 @@ fn provider_model_languages(provider: &ProviderCard) -> Vec<String> {
     languages.sort();
     languages.dedup();
     languages
-}
-
-fn render_provider_capabilities(
-    ui: &mut eframe::egui::Ui,
-    language: crate::i18n::UiLanguage,
-    category_key: &str,
-    supported_languages: &[String],
-) {
-    if supported_languages.is_empty() {
-        return;
-    }
-    let label = match category_key {
-        "asr" => "Supported recognition languages:",
-        "tts" => "Supported synthesis languages:",
-        _ => return,
-    };
-    ui.label(
-        eframe::egui::RichText::new(format!(
-            "{} {}",
-            crate::i18n::tr(language, label),
-            supported_languages.join(", ")
-        ))
-        .color(crate::ui::theme::text_weak())
-        .size(12.0),
-    );
-    ui.add_space(8.0);
-}
-
-fn render_tts_voice_selection(
-    ui: &mut eframe::egui::Ui,
-    provider: &mut ProviderCard,
-    language: crate::i18n::UiLanguage,
-) -> bool {
-    let mut changed = false;
-    let voices = provider_voice_presets(provider);
-    for asset in provider_model_assets(provider) {
-        let Some(id) = xrtranslate_assets::ModelAssetId::from_config_key(&asset) else {
-            continue;
-        };
-        let manifest = xrtranslate_assets::manifest_for(id);
-        let mut languages = manifest
-            .voice_presets
-            .iter()
-            .map(|preset| preset.language)
-            .collect::<Vec<_>>();
-        languages.sort_unstable();
-        languages.dedup();
-        for voice_language in languages {
-            let choices = manifest
-                .voice_presets
-                .iter()
-                .filter(|preset| preset.language == voice_language)
-                .collect::<Vec<_>>();
-            let Some(default) = choices
-                .iter()
-                .copied()
-                .find(|preset| preset.is_default)
-                .or_else(|| choices.first().copied())
-            else {
-                continue;
-            };
-            let configured_key = voices.get(voice_language);
-            let configured = configured_key
-                .and_then(|key| choices.iter().copied().find(|preset| preset.key == key))
-                .unwrap_or(default);
-            let mut selected_key = configured.key.to_owned();
-            ui.horizontal(|ui| {
-                ui.label(
-                    eframe::egui::RichText::new(format!(
-                        "{} ({voice_language}):",
-                        crate::i18n::tr(language, "Base voice / accent")
-                    ))
-                    .size(12.0)
-                    .color(crate::ui::theme::text_weak()),
-                );
-                crate::ui::components::combobox_ui(
-                    ui,
-                    ("tts_voice", &provider.name, id),
-                    configured.label,
-                    |ui| {
-                        for preset in &choices {
-                            ui.selectable_value(
-                                &mut selected_key,
-                                preset.key.to_owned(),
-                                preset.label,
-                            );
-                        }
-                    },
-                );
-            });
-            if selected_key != configured.key
-                || configured_key.is_some_and(|key| key != configured.key)
-            {
-                update_provider_voice_preset(provider, voice_language, &selected_key);
-                changed = true;
-            }
-        }
-    }
-    changed
-}
-
-fn render_field_input(
-    ui: &mut eframe::egui::Ui,
-    field: &mut ConfigField,
-    width: f32,
-    language: crate::i18n::UiLanguage,
-) -> bool {
-    use eframe::egui;
-
-    let descriptor = provider_field_descriptor(&field.name);
-    match field.kind {
-        JsonFieldKind::Bool => {
-            let mut val = field.value.trim().parse::<bool>().unwrap_or(false);
-            let label = if val { "true" } else { "false" };
-            if ui.checkbox(&mut val, label).changed() {
-                field.value = val.to_string();
-                true
-            } else {
-                false
-            }
-        }
-        JsonFieldKind::Number
-            if matches!(
-                descriptor.map(|descriptor| descriptor.editor),
-                Some(ProviderFieldEditor::UnsignedRange { .. })
-            ) =>
-        {
-            let Some(ProviderFieldEditor::UnsignedRange {
-                minimum,
-                maximum,
-                speed,
-            }) = descriptor.map(|descriptor| descriptor.editor)
-            else {
-                unreachable!("numeric editor checked above")
-            };
-            let Ok(mut value) = field.value.trim().parse::<u32>() else {
-                return crate::ui::components::text_edit_ui(
-                    ui,
-                    ("field_value_num", &field.name),
-                    egui::TextEdit::singleline(&mut field.value)
-                        .desired_width(width.min(180.0))
-                        .hint_text(crate::i18n::tr(language, "Positive integer")),
-                )
-                .changed();
-            };
-            let response = ui.add(
-                egui::DragValue::new(&mut value)
-                    .range(minimum..=maximum)
-                    .speed(speed),
-            );
-            if response.changed() {
-                field.value = value.to_string();
-                true
-            } else {
-                false
-            }
-        }
-        _ => {
-            if let Some(ProviderFieldEditor::Options(options)) =
-                descriptor.map(|descriptor| descriptor.editor)
-            {
-                let mut changed = false;
-                let current = field.value.clone();
-                crate::ui::components::combobox_ui(ui, &field.name, &current, |ui| {
-                    for &opt in options {
-                        if ui
-                            .selectable_value(&mut field.value, opt.to_string(), opt)
-                            .changed()
-                        {
-                            changed = true;
-                        }
-                    }
-                });
-                changed
-            } else {
-                crate::ui::components::singleline_input(
-                    ui,
-                    &mut field.value,
-                    value_hint(field.kind),
-                    width.min(360.0),
-                    field.name == "api_key",
-                )
-                .changed()
-            }
-        }
-    }
-}
-
-fn provider_field_label(language: crate::i18n::UiLanguage, name: &str) -> String {
-    provider_field_descriptor(name).map_or_else(
-        || name.to_owned(),
-        |descriptor| crate::i18n::tr(language, descriptor.label).to_owned(),
-    )
-}
-
-fn is_resettable_runtime_parameter(name: &str) -> bool {
-    matches!(
-        name,
-        "context_window_tokens"
-            | "max_tokens"
-            | "parallel_slots"
-            | "sample_rate"
-            | "max_input_chars"
-            | "clone_min_seconds"
-            | "clone_max_seconds"
-            | "speed"
-            | "max_new_tokens"
-            | "temperature"
-            | "top_p"
-            | "top_k"
-            | "vocabulary_weight"
-    )
-}
-
-fn runtime_parameter_default(default_provider: Option<&Value>, name: &str) -> Option<String> {
-    if !is_resettable_runtime_parameter(name) {
-        return None;
-    }
-    default_provider?.get(name).map(display_value)
-}
-
-fn provider_field_is_visible(
-    field: &ConfigField,
-    category_key: &str,
-    provider_name: &str,
-    native_model: bool,
-) -> bool {
-    if matches!(
-        field.name.as_str(),
-        "model_asset" | "model_assets" | "model" | "transport"
-    ) {
-        return false;
-    }
-    if provider_name == "openai" && field.name == "url" {
-        return false;
-    }
-    if category_key == "tts"
-        && native_model
-        && matches!(
-            field.name.as_str(),
-            "device" | "max_input_chars" | "clone_min_seconds" | "clone_max_seconds"
-        )
-    {
-        return true;
-    }
-    if category_key == "tts"
-        && native_model
-        && matches!(
-            field.name.as_str(),
-            "url" | "supported_languages" | "voices"
-        )
-    {
-        return false;
-    }
-    provider_field_descriptor(&field.name).map_or(!native_model, |descriptor| {
-        descriptor.is_visible(native_model)
-    })
-}
-
-fn provider_field_help(language: crate::i18n::UiLanguage, name: &str) -> Option<&'static str> {
-    provider_field_descriptor(name)
-        .and_then(|descriptor| descriptor.help)
-        .map(|help| crate::i18n::tr(language, help))
 }
 
 fn project_config_path() -> PathBuf {
@@ -1579,15 +994,6 @@ fn display_value(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
         _ => value.to_string(),
-    }
-}
-
-fn value_hint(kind: JsonFieldKind) -> &'static str {
-    match kind {
-        JsonFieldKind::String => "Text",
-        JsonFieldKind::Bool => "true / false",
-        JsonFieldKind::Number => "Number",
-        JsonFieldKind::Json => "JSON value",
     }
 }
 

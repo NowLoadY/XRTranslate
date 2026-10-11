@@ -17,22 +17,29 @@ impl NativeModelRouteConfig {
                         )?
                         .languages,
                     )
-                } else if capability == ModelCapability::Asr {
-                    if let Some(card) = xrtranslate_assets::remote::remote_asr_model(
-                        &provider.provider,
-                        &provider.transport,
-                        &provider.model,
-                    ) {
+                } else {
+                    if let Some(card) = provider
+                        .connector
+                        .and_then(|connector| {
+                            xrtranslate_assets::remote::remote_model(connector, &provider.model)
+                        })
+                        .filter(|card| !card.languages.is_empty())
+                    {
                         let codes = card
                             .languages
                             .iter()
-                            .copied()
-                            .chain(card.language_aliases.iter().map(|(alias, _)| *alias))
+                            .map(String::as_str)
+                            .chain(
+                                card.language_aliases
+                                    .iter()
+                                    .map(|(alias, _)| alias.as_str()),
+                            )
                             .collect::<Vec<_>>();
-                        return Ok(Some(LanguageSet::from_codes(&codes, true)));
+                        return Ok(Some(LanguageSet::from_codes(
+                            &codes,
+                            capability == ModelCapability::Asr,
+                        )));
                     }
-                    None
-                } else {
                     None
                 };
                 Ok::<_, String>(codes.map(|codes| {

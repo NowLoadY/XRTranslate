@@ -1,24 +1,12 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 
-use super::qwen_audio::validated_vocabulary;
+use super::qwen_audio::{MAX_CONTEXT_CHARS, map_language, validated_vocabulary};
 use crate::{
-    AsrTranscript, AsrVocabularyBias, AsyncHttpClient, HttpRequest, InferenceError, error::preview,
+    AsrOptions, AsrTranscript, AsyncHttpClient, HttpRequest, InferenceError, error::preview,
     pcm16_mono_16khz_to_wav,
 };
-
-const MAX_CONTEXT_CHARS: usize = 400;
-
-/// Lexical recognition hints supported by Qwen Audio's native HTTP API.
-///
-/// Context and weighted vocabulary are separate inputs. This API does not
-/// accept an instruction prompt or chat-generation sampling parameters.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct QwenAudioFlashOptions {
-    pub language: Option<String>,
-    pub context_bias: Option<String>,
-    pub vocabulary_bias: Vec<AsrVocabularyBias>,
-}
+use xrtranslate_assets::remote::RemoteConnector;
 
 /// Recognizes a complete utterance through DashScope's native multimodal API.
 ///
@@ -90,9 +78,13 @@ impl<C: AsyncHttpClient> QwenAudioFlashAdapter<C> {
     pub async fn transcribe_pcm16(
         &self,
         pcm: &[u8],
-        options: QwenAudioFlashOptions,
+        options: AsrOptions,
     ) -> Result<AsrTranscript, InferenceError> {
-        let (language_hint, language) = map_language(options.language.as_deref())?;
+        let (language_hint, language) = map_language(
+            RemoteConnector::DashscopeAsr,
+            &self.model,
+            options.language.as_deref(),
+        )?;
         let vocabulary = validated_vocabulary(&options.vocabulary_bias)?;
         let context = options
             .context_bias
@@ -186,26 +178,4 @@ fn required_value(field: &'static str, value: String) -> Result<String, Inferenc
         });
     }
     Ok(value.to_owned())
-}
-
-fn map_language(
-    language: Option<&str>,
-) -> Result<(Option<&'static str>, Option<String>), InferenceError> {
-    let Some(language) = crate::asr::types::parse_language(language)? else {
-        return Ok((None, None));
-    };
-    let code = match language.base_code() {
-        "tl" => "fil",
-        code => code,
-    };
-    if !xrtranslate_assets::remote::QWEN_AUDIO_LANGUAGES.contains(&code) {
-        return Err(InferenceError::InvalidConfiguration {
-            field: "asr.language",
-            message: format!(
-                "{} is not supported by Qwen Audio Flash ASR",
-                language.code()
-            ),
-        });
-    }
-    Ok((Some(code), Some(language.code().to_owned())))
 }

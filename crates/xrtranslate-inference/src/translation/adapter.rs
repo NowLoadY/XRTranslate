@@ -1,6 +1,7 @@
 use crate::{
     AsyncHttpClient, InferenceError, OpenAiCompatibleClient, openai::non_streaming_chat_payload,
 };
+use xrtranslate_assets::remote::{RemoteCapabilities, RemoteStreaming};
 
 use super::{
     TranslationOptions, TranslationProvider, TranslationResult,
@@ -17,6 +18,8 @@ pub struct TranslationAdapter<C> {
     chat: OpenAiCompatibleClient<C>,
     model: String,
     provider: TranslationProvider,
+    streaming: RemoteStreaming,
+    single_user_message: bool,
 }
 
 impl<C> TranslationAdapter<C> {
@@ -31,6 +34,8 @@ impl<C> TranslationAdapter<C> {
             chat: OpenAiCompatibleClient::new(http, endpoint)?,
             model,
             provider,
+            streaming: RemoteStreaming::Delta,
+            single_user_message: false,
         })
     }
 
@@ -48,7 +53,15 @@ impl<C> TranslationAdapter<C> {
             chat: OpenAiCompatibleClient::with_bearer_token(http, endpoint, token)?,
             model,
             provider,
+            streaming: RemoteStreaming::Delta,
+            single_user_message: false,
         })
+    }
+
+    pub fn with_remote_capabilities(mut self, capabilities: &RemoteCapabilities) -> Self {
+        self.streaming = capabilities.streaming;
+        self.single_user_message = capabilities.single_user_message;
+        self
     }
 
     pub fn provider(&self) -> TranslationProvider {
@@ -102,14 +115,28 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
             options.max_tokens,
         );
         profile.apply_sampling(&mut payload, &options);
+        if self.single_user_message {
+            let ordered = [
+                xrtranslate_prompt::PromptMessageRole::System,
+                xrtranslate_prompt::PromptMessageRole::User,
+            ];
+            let content = ordered
+                .iter()
+                .flat_map(|role| {
+                    prompt
+                        .messages
+                        .iter()
+                        .filter(move |message| message.role == *role)
+                })
+                .filter(|message| !message.content.trim().is_empty())
+                .map(|message| message.content.trim())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            payload["messages"] = serde_json::json!([{"role": "user", "content": content}]);
+        }
 
-        let completion = if streaming {
-            // These older Qwen-MT families stream complete snapshots, whereas
-            // Flash/Lite, llama.cpp and OpenAI stream appended deltas.
-            let cumulative = self.provider == TranslationProvider::Qwen
-                && ["qwen-mt-plus", "qwen-mt-turbo"]
-                    .iter()
-                    .any(|family| self.model.starts_with(family));
+        let completion = if streaming && self.streaming != RemoteStreaming::None {
+            let cumulative = self.streaming == RemoteStreaming::Cumulative;
             let mut previous = String::new();
             self.chat
                 .chat_completion_streaming(payload, cumulative, |text| {

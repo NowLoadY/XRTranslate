@@ -31,6 +31,11 @@ struct Arguments {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Export public defaults and built-in service options, excluding API keys.
+    ExportDefaults {
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Prepare verified shared application resources for packaging.
     PrepareResources {
         #[arg(long)]
@@ -67,6 +72,17 @@ fn package_id(package: &str) -> ModelAssetId {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Arguments::parse();
     let config = AppConfig::from_path(&args.config)?;
+    if let Command::ExportDefaults { output } = &args.command {
+        let document = xrtranslate_config::release_config_document(config.raw);
+        if let Some(parent) = output.parent().filter(|path| !path.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(
+            output,
+            format!("{}\n", serde_json::to_string_pretty(&document)?),
+        )?;
+        return Ok(());
+    }
     let project_root = args
         .config
         .parent()
@@ -86,6 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let assets = asset_config.resolve(project_root);
 
     match args.command {
+        Command::ExportDefaults { .. } => unreachable!("handled before asset resolution"),
         Command::PrepareResources { output, cache } => {
             prepare_resources(&config, &output, &cache).await?
         }

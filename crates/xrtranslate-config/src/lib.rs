@@ -6,9 +6,12 @@
 
 #![forbid(unsafe_code)]
 
-mod asr_migration;
 mod language;
 mod models;
+mod remote;
+
+pub use remote::{apply_remote_defaults, release_config_document};
+pub use xrtranslate_assets::remote::AsrPromptMode;
 
 pub use models::InstalledModel;
 
@@ -398,7 +401,6 @@ fn load_user_config_document_with_legacy(
         source,
     })?;
     let mut document: Value = serde_json::from_str(&contents).map_err(ConfigError::InvalidJson)?;
-    asr_migration::migrate_qwen_asr_defaults(&mut document);
     let override_path = RuntimeLayout::user_config_path(&project_root);
     let migrate_from = legacy_path
         .as_ref()
@@ -412,14 +414,12 @@ fn load_user_config_document_with_legacy(
                 path: path.clone(),
                 source,
             })?;
-            let mut overlay: Value =
+            let overlay: Value =
                 serde_json::from_str(&contents).map_err(ConfigError::InvalidJson)?;
-            migrate_legacy_openai_asr_model(&mut overlay);
-            asr_migration::migrate_qwen_asr_defaults(&mut overlay);
             merge_config_values(&mut document, overlay);
         }
     }
-    migrate_legacy_openai_asr_model(&mut document);
+    apply_remote_defaults(&mut document);
     if let Some(legacy_path) = legacy_path
         .as_ref()
         .filter(|path| path.is_file() && *path != &override_path)
@@ -434,39 +434,6 @@ fn load_user_config_document_with_legacy(
         })?;
     }
     Ok(document)
-}
-
-fn migrate_legacy_openai_asr_model(document: &mut Value) -> bool {
-    let Some(provider) = document
-        .pointer_mut("/asr/providers/openai")
-        .and_then(Value::as_object_mut)
-    else {
-        return false;
-    };
-    let deprecated = provider.get("model").and_then(Value::as_str) == Some("gpt-4o-audio-preview");
-    if deprecated {
-        provider.insert("model".into(), Value::from("gpt-4o-transcribe"));
-    }
-    let transcription = provider
-        .get("model")
-        .and_then(Value::as_str)
-        .is_some_and(|model| {
-            model.starts_with("gpt-4o-transcribe")
-                || model.starts_with("gpt-4o-mini-transcribe")
-                || model == "gpt-transcribe"
-                || model == "whisper-1"
-        });
-    let legacy_endpoint = provider.get("url").and_then(Value::as_str)
-        == Some("https://api.openai.com/v1/chat/completions");
-    if deprecated || (transcription && legacy_endpoint) {
-        provider.insert(
-            "url".into(),
-            Value::from("https://api.openai.com/v1/audio/transcriptions"),
-        );
-        provider.insert("asr_prompt_mode".into(), Value::from("context_bias"));
-        return true;
-    }
-    false
 }
 
 /// Computes the minimal recursive override needed to represent `effective`
@@ -503,8 +470,9 @@ pub fn save_user_config_document(
     let base_path = base_path.as_ref();
     let base_contents = fs::read_to_string(base_path)
         .map_err(|error| format!("Cannot read {}: {error}", base_path.display()))?;
-    let base: Value = serde_json::from_str(&base_contents)
+    let mut base: Value = serde_json::from_str(&base_contents)
         .map_err(|error| format!("Invalid config.json: {error}"))?;
+    base = release_config_document(base);
     let path = RuntimeLayout::user_config_path(project_root);
     match user_config_override(&base, effective) {
         Some(override_document) if !override_document.as_object().is_some_and(Map::is_empty) => {
@@ -514,11 +482,23 @@ pub fn save_user_config_document(
             }
             let formatted = serde_json::to_string_pretty(&override_document)
                 .map_err(|error| format!("Cannot serialize user configuration: {error}"))?;
-            fs::write(&path, format!("{formatted}\n"))
+            use std::io::Write;
+            let parent = path.parent().expect("runtime config directory");
+            let mut temporary = tempfile::NamedTempFile::new_in(parent)
+                .map_err(|error| format!("Cannot prepare {}: {error}", path.display()))?;
+            writeln!(temporary, "{formatted}")
+                .and_then(|()| temporary.as_file().sync_all())
                 .map_err(|error| format!("Cannot save {}: {error}", path.display()))?;
+            temporary
+                .persist(&path)
+                .map_err(|error| format!("Cannot replace {}: {error}", path.display()))?;
         }
         _ => {
-            let _ = fs::remove_file(&path);
+            if let Err(error) = fs::remove_file(&path)
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                return Err(format!("Cannot remove {}: {error}", path.display()));
+            }
         }
     }
     Ok(())
@@ -659,8 +639,9 @@ impl AppConfig {
         Self::from_value(raw)
     }
 
-    /// Builds a typed configuration while retaining `raw` exactly as parsed.
-    pub fn from_value(raw: Value) -> Result<Self, ConfigError> {
+    /// Builds a typed configuration with declarative online defaults applied.
+    pub fn from_value(mut raw: Value) -> Result<Self, ConfigError> {
+        apply_remote_defaults(&mut raw);
         let typed: TypedConfig =
             serde_json::from_value(raw.clone()).map_err(ConfigError::InvalidStructure)?;
         Ok(Self {
@@ -683,9 +664,8 @@ impl AppConfig {
 
     /// Resolves the common configuration contract for the selected local ASR
     /// and translation providers without knowing their concrete model family.
-    /// Provider factories in the backend decide which implementations they
-    /// support; this configuration crate only validates shared local-runtime
-    /// fields.
+    /// Configuration resolves online wire connectors and model capabilities;
+    /// the backend constructs the corresponding local or remote adapter.
     pub fn native_model_route(&self) -> Result<NativeModelRouteConfig, DefaultGgufValidationError> {
         let mut issues = Vec::new();
         let asr = active_native_provider(
@@ -1541,17 +1521,6 @@ impl NativeModelRouteConfig {
     }
 }
 
-/// How an ASR provider interprets text delivered before recognition.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum AsrPromptMode {
-    #[default]
-    None,
-    /// A semantic instruction prompt (for example, output and language rules).
-    Instruction,
-    /// Lexical/context bias text. It must not be treated as an instruction.
-    ContextBias,
-}
-
 /// Common settings shared by every native model provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeProviderConfig {
@@ -1559,6 +1528,8 @@ pub struct NativeProviderConfig {
     /// Wire protocol: local runtime, OpenAI-compatible HTTP, native DashScope
     /// HTTP, or a provider-native WebSocket.
     pub transport: String,
+    pub connector: Option<xrtranslate_assets::remote::RemoteConnector>,
+    pub capabilities: xrtranslate_assets::remote::RemoteCapabilities,
     pub url: String,
     /// Remote model identifier. Local routes may leave this empty and use the
     /// provider's stable server alias instead.
@@ -1570,12 +1541,6 @@ pub struct NativeProviderConfig {
     /// the backend provider profile choose its compatibility default.
     pub model_asset: Option<String>,
     pub runtime: LocalModelRuntimeConfig,
-    pub supports_prompt_context: bool,
-    pub asr_prompt_mode: AsrPromptMode,
-    /// Provider limit for the complete lexical ASR text field. `None` means
-    /// that the provider profile declares no character bound.
-    pub asr_context_max_chars: Option<usize>,
-    pub supports_vocabulary_bias: bool,
     pub vocabulary_weight: u8,
 }
 
@@ -1750,12 +1715,21 @@ fn active_native_provider(
     let url = required_provider_url(providers, provider, &format!("{path}.url"), issues);
     let object = providers.get(provider).and_then(Value::as_object);
     let transport = object
-        .and_then(|provider| provider.get("transport"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("local")
-        .to_owned();
+        .and_then(|provider| provider.get("connector"))
+        .and_then(|value| {
+            serde_json::from_value::<xrtranslate_assets::remote::RemoteConnector>(value.clone())
+                .ok()
+        })
+        .map(|connector| connector.transport().to_owned())
+        .unwrap_or_else(|| {
+            object
+                .and_then(|provider| provider.get("transport"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("local")
+                .to_owned()
+        });
     if !matches!(
         transport.as_str(),
         "local" | "onnx-cpu" | "openai" | "dashscope" | "websocket"
@@ -1773,11 +1747,6 @@ fn active_native_provider(
         } else if transport != "websocket" && uses_websocket_url {
             issues.push(format!(
                 "{path}.url must use http:// or https:// for {transport} transport"
-            ));
-        }
-        if provider == "qwen-audio-streaming" && !url.starts_with("wss://") {
-            issues.push(format!(
-                "{path}.url must use wss:// for the Qwen Audio streaming service"
             ));
         }
     }
@@ -1803,32 +1772,6 @@ fn active_native_provider(
             "{path}.api_key is required for remote API providers"
         ));
     }
-    if transport == "openai" && provider == "openai" {
-        let official_endpoint = if section == "asr" {
-            matches!(
-                url.as_deref(),
-                Some(
-                    "https://api.openai.com/v1/audio/transcriptions"
-                        | "https://api.openai.com/v1/chat/completions"
-                )
-            )
-        } else {
-            url.as_deref() == Some("https://api.openai.com/v1/chat/completions")
-        };
-        if !official_endpoint {
-            issues.push(format!(
-                "{path}.url must use an official OpenAI endpoint for {section}"
-            ));
-        }
-        if section == "asr"
-            && (model.contains("transcribe") || model == "whisper-1")
-            && url.as_deref() == Some("https://api.openai.com/v1/chat/completions")
-        {
-            issues.push(format!(
-                "{path}.url must use /v1/audio/transcriptions for {model}"
-            ));
-        }
-    }
     let model_asset = object
         .and_then(|provider| provider.get("model_asset"))
         .and_then(Value::as_str)
@@ -1836,100 +1779,13 @@ fn active_native_provider(
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
     let runtime = provider_runtime_config(providers, provider, &path, defaults, issues);
-    let remote_asr = (section == "asr")
-        .then(|| xrtranslate_assets::remote::remote_asr_model(provider, &transport, &model))
-        .flatten();
-    if section == "asr" && matches!(provider, "qwen" | "qwen-intl") {
-        if transport != "dashscope" {
-            issues.push(format!("{path}.transport must use dashscope for Qwen Audio ASR; reselect the online preset or configure a native audio endpoint"));
-        }
-        if model.starts_with("qwen3-asr-") {
-            issues.push(format!("{path}.model uses the retired Qwen3 cloud contract; select qwen-audio-3.0-asr-flash with its native DashScope endpoint"));
-        }
-        if url
-            .as_deref()
-            .is_some_and(|url| url.trim_end_matches('/').ends_with("/chat/completions"))
-        {
-            issues.push(format!(
-                "{path}.url must use the native multimodal-generation endpoint for Qwen Audio ASR"
-            ));
-        }
-    }
-    let supports_prompt_context = object
-        .and_then(|provider| provider.get("supports_prompt_context"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let legacy_supports_prompt = object
-        .and_then(|provider| provider.get("supports_prompt"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let asr_prompt_mode = match object
-        .and_then(|provider| provider.get("asr_prompt_mode"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-    {
-        Some("instruction") => AsrPromptMode::Instruction,
-        Some("context_bias") => AsrPromptMode::ContextBias,
-        Some("none") => AsrPromptMode::None,
-        None if !(supports_prompt_context || legacy_supports_prompt) => AsrPromptMode::None,
-        None => AsrPromptMode::Instruction,
-        Some(value) => {
-            issues.push(format!(
-                "{path}.asr_prompt_mode must be \"none\", \"instruction\", or \"context_bias\" (found {value:?})"
-            ));
-            AsrPromptMode::None
-        }
-    };
-    // Known model contracts override stale capability flags in user settings.
-    let supports_prompt_context = remote_asr.map_or(supports_prompt_context, |card| {
-        card.context_bias || card.instruction
-    });
-    let asr_prompt_mode = remote_asr.map_or(asr_prompt_mode, |card| {
-        if card.context_bias {
-            AsrPromptMode::ContextBias
-        } else if card.instruction {
-            AsrPromptMode::Instruction
-        } else {
-            AsrPromptMode::None
-        }
-    });
-    let supports_vocabulary_bias = remote_asr.map_or_else(
-        || {
-            object
-                .and_then(|provider| provider.get("supports_vocabulary_bias"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-        },
-        |card| card.vocabulary_bias,
-    );
-    let asr_context_max_chars = remote_asr.map_or_else(
-        || {
-            object
-                .and_then(|provider| provider.get("asr_context_max_chars"))
-                .and_then(Value::as_u64)
-                .and_then(|value| usize::try_from(value).ok())
-        },
-        |card| card.context_max_chars,
-    );
-    if object
-        .and_then(|provider| provider.get("asr_context_max_chars"))
-        .is_some_and(|value| {
-            value
-                .as_u64()
-                .and_then(|limit| usize::try_from(limit).ok())
-                .is_none_or(|limit| limit == 0)
-        })
-    {
-        issues.push(format!(
-            "{path}.asr_context_max_chars must be a positive integer"
-        ));
-    }
+    let (connector, capabilities) = remote::resolve(section, object, &transport, &path, issues);
     let vocabulary_weight = object
         .and_then(|provider| provider.get("vocabulary_weight"))
         .and_then(Value::as_u64)
         .and_then(|value| u8::try_from(value).ok())
         .unwrap_or(4);
-    if supports_vocabulary_bias && !matches!(vocabulary_weight, 1..=5 | 50) {
+    if capabilities.vocabulary_bias && !matches!(vocabulary_weight, 1..=5 | 50) {
         issues.push(format!(
             "{path}.vocabulary_weight must be in 1..=5 or equal to 50"
         ));
@@ -1942,15 +1798,13 @@ fn active_native_provider(
             Some(url) => Some(NativeProviderConfig {
                 provider: provider.to_owned(),
                 transport,
+                connector,
+                capabilities,
                 url,
                 model,
                 api_key,
                 model_asset,
                 runtime,
-                supports_prompt_context,
-                asr_prompt_mode,
-                asr_context_max_chars,
-                supports_vocabulary_bias,
                 vocabulary_weight,
             }),
             None => None,

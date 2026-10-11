@@ -11,25 +11,13 @@ use tokio_tungstenite::{
 };
 use uuid::Uuid;
 
-use super::qwen_audio::validated_vocabulary;
-use crate::{AsrTranscript, AsrVocabularyBias, InferenceError, TransportError};
+use super::qwen_audio::{MAX_CONTEXT_CHARS, map_language, validated_vocabulary};
+use crate::{AsrOptions, AsrTranscript, InferenceError, TransportError};
+use xrtranslate_assets::remote::RemoteConnector;
 
 const PCM_FRAME_BYTES: usize = 3_200;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const TASK_TIMEOUT: Duration = Duration::from_secs(90);
-const MAX_CONTEXT_CHARS: usize = 400;
-
-/// Options supported by Qwen Audio's streaming recognition transport.
-///
-/// `context_bias` is recognition context, not an instruction prompt. Callers
-/// must route instruction prompts only to providers that advertise instruction
-/// support.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct QwenAudioStreamingOptions {
-    pub language: Option<String>,
-    pub context_bias: Option<String>,
-    pub vocabulary_bias: Vec<AsrVocabularyBias>,
-}
 
 /// Qwen Audio streaming ASR over DashScope's native WebSocket protocol.
 #[derive(Clone, Debug)]
@@ -88,7 +76,7 @@ impl QwenAudioStreamingAdapter {
     pub async fn transcribe_pcm16(
         &self,
         pcm: &[u8],
-        options: QwenAudioStreamingOptions,
+        options: AsrOptions,
     ) -> Result<AsrTranscript, InferenceError> {
         if pcm.len() % 2 != 0 {
             return Err(InferenceError::InvalidAudio {
@@ -184,9 +172,13 @@ fn required_value(field: &'static str, value: String) -> Result<String, Inferenc
 fn build_run_task(
     task_id: &str,
     model: &str,
-    options: &QwenAudioStreamingOptions,
+    options: &AsrOptions,
 ) -> Result<(Value, Option<String>), InferenceError> {
-    let (language_code, requested_language) = map_language(options.language.as_deref())?;
+    let (language_code, requested_language) = map_language(
+        RemoteConnector::DashscopeAsrWebsocket,
+        model,
+        options.language.as_deref(),
+    )?;
     let mut parameters = serde_json::Map::from_iter([
         ("format".into(), json!("pcm")),
         ("sample_rate".into(), json!(16_000)),
@@ -241,29 +233,6 @@ fn build_run_task(
         }),
         requested_language,
     ))
-}
-
-fn map_language(
-    language: Option<&str>,
-) -> Result<(Option<&'static str>, Option<String>), InferenceError> {
-    let Some(language) = crate::asr::types::parse_language(language)? else {
-        return Ok((None, None));
-    };
-    // The native API uses fil for Filipino and base codes for script variants.
-    let code = match language.base_code() {
-        "tl" => "fil",
-        code => code,
-    };
-    if !xrtranslate_assets::remote::QWEN_AUDIO_LANGUAGES.contains(&code) {
-        return Err(InferenceError::InvalidConfiguration {
-            field: "asr.language",
-            message: format!(
-                "{} is not supported by Qwen Audio streaming ASR",
-                language.code()
-            ),
-        });
-    }
-    Ok((Some(code), Some(language.code().to_owned())))
 }
 
 fn finish_task(task_id: &str) -> Value {

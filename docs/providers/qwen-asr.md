@@ -42,7 +42,7 @@ continuous incremental ASR.
    - `qwen-intl` (Singapore): `https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation`
    - An appropriate workspace-scoped native endpoint may also be used, such as
      `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation`.
-4. Enter your Model Studio API key in the welcome flow or **Settings -> Service Providers**.
+4. Enter your Model Studio API key on the **Welcome** page.
 5. Keep the default model `qwen-audio-3.0-asr-flash`. The API key, endpoint,
    and model must belong to the same deployment region.
 
@@ -69,7 +69,7 @@ continuous incremental ASR.
   the submitted window. Provider partial results and timestamps are not
   published by this adapter. Sentence completion remains pipeline policy.
 
-Remote model metadata lives in `crates/xrtranslate-assets/src/remote.rs`.
+Remote model metadata lives in `crates/xrtranslate-assets/remote_catalog.json`.
 It describes supported languages, recognition capabilities, and native text
 polishing without creating downloadable model assets. Polishing is recorded
 as absent for HTTP 3.0 and present for HTTP 3.1; the separate WebSocket models
@@ -101,9 +101,9 @@ are not suitable defaults for live game subtitles.
 
 The old `qwen3-asr-flash` cloud preset used Chat Completions. The new model uses
 a different request and response contract; changing only the model string is
-insufficient. Known old preset settings are migrated to the native endpoint
-and new default while retaining credentials. There is no retained legacy
-Qwen cloud Chat Completions adapter. Local Qwen3 recognition remains separate.
+insufficient. The built-in catalogue supplies the native endpoint and model.
+There is no old online-preset migration or retained Qwen cloud Chat Completions
+adapter. Local Qwen3 recognition remains separate.
 
 Alibaba's retirement notice lists `qwen3-asr-flash-2025-09-08` and
 `qwen3-asr-flash-2026-02-10` for retirement on 2026-10-10. The notice does not

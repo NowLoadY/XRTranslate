@@ -4048,67 +4048,6 @@ impl XRTranslateApp {
         );
     }
 
-    pub(crate) fn apply_service_configuration(&mut self, ctx: Option<eframe::egui::Context>) {
-        if self.plugin_task_active(PluginId::MEETING.as_str())
-            || self.meeting_plugin.controller.active_meeting_id().is_some()
-        {
-            self.meeting_plugin
-                .set_error("Finish the active meeting before changing service configuration");
-            self.navigation.page = Page::Plugin(PluginId::MEETING);
-            return;
-        }
-        if self.plugin_task_active(PluginId::MEDIA.as_str()) || self.media_plugin.has_active_task()
-        {
-            self.media_plugin
-                .set_error("Stop the active video task before changing service configuration");
-            self.navigation.page = Page::Plugin(PluginId::MEDIA);
-            return;
-        }
-        self.prompt_studio
-            .sync_provider(self.service_config.translation_prompt_target());
-        if !self.service_config.tts_is_configured() {
-            self.tts_enabled = false;
-            self.audio_system.set_tts_enabled(false);
-            self.audio_system.clear_tts_playback();
-        }
-        let resume_translation = self.translation_enabled;
-        let resume_inputs = (self.microphone_enabled, self.system_audio_enabled);
-        if resume_translation {
-            self.stop();
-        }
-        self.backend_start_deadline = None;
-        self.cancel_text_tasks(None);
-        self.backend_manager.shutdown();
-        self.model_task_manager.invalidate_discovery();
-        let requirements = self.service_config.runtime_requirements();
-        let model_assets = self.service_config.selected_model_asset_ids();
-        if !self.runtime_installer.is_busy()
-            && !self
-                .runtime_installer
-                .plan_matches(requirements, &model_assets)
-            && let Err(error) = self
-                .runtime_installer
-                .prepare_for(self.project_root(), requirements)
-        {
-            self.last_error = Some(error);
-        }
-        if requirements.llama_cpp && !self.backend_manager.llama_server_path_is_valid() {
-            if !self.first_run {
-                self.first_run = true;
-                self.onboarding_page = 3;
-            }
-            self.set_connection_status("Ready");
-            return;
-        }
-        if resume_translation {
-            self.enable_translation_service();
-            self.set_microphone_enabled(resume_inputs.0, ctx.clone());
-            self.set_system_audio_enabled(resume_inputs.1, ctx);
-        } else {
-            self.set_connection_status("Ready");
-        }
-    }
-
     fn start_session(&mut self, task: TranslationTask, ctx: Option<egui::Context>) {
         use translation_service::{AudioTask, ChannelScope, TaskChannel, scoped_events};
         let TranslationInput::Live(source) = task.input else {
@@ -4756,7 +4695,7 @@ impl XRTranslateApp {
             self.tts_enabled = false;
             self.audio_system.set_tts_enabled(false);
             self.last_error =
-                Some("Configure a TTS provider in Settings before enabling TTS.".into());
+                Some("Configure a TTS provider on the Welcome page before enabling TTS.".into());
             return;
         }
         self.tts_enabled = enabled
@@ -5853,10 +5792,10 @@ impl eframe::App for XRTranslateApp {
                                 self.service_config.tts_is_configured(),
                                 asr_languages,
                             ) {
-                                Some(Action::Settings) => {
-                                    self.navigation.page = Page::Settings;
-                                    self.settings_section =
-                                        ui::pages::settings::SettingsSection::ServiceProviders;
+                                Some(Action::Configure) => {
+                                    self.stop();
+                                    self.first_run = true;
+                                    self.onboarding_page = 2;
                                 }
                                 Some(Action::Preview(id)) => {
                                     if self.tts_center.previewing.as_deref() == Some(&id) {

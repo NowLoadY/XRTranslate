@@ -20,7 +20,7 @@ public final class ApplicationResources {
         if (children != null && children.length > 0) {
             if (!destination.isDirectory() && !destination.mkdirs()) throw new IOException("Cannot create application storage");
             for (String child : children) copy(context, source + "/" + child, new File(destination, child));
-        } else if (!destination.exists()) {
+        } else if (!destination.exists() || source.equals("application/config.json")) {
             File temporary = File.createTempFile("resource-", ".part", destination.getParentFile());
             try {
                 try (InputStream input = context.getAssets().open(source); FileOutputStream output = new FileOutputStream(temporary)) {

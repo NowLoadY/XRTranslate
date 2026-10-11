@@ -41,7 +41,8 @@ cargo build --locked --manifest-path XR-Corpus/Cargo.toml \
 RESOURCE_DIR="${ROOT_DIR}/target/release-resources/linux-x86_64"
 mkdir -p "${RESOURCE_DIR}"
 # Use distributable defaults; private configuration and installed large models stay local.
-git show HEAD:config.json > "${RESOURCE_DIR}/config.json"
+target/release/xrtranslate-installer --config config.json \
+  export-defaults --output "${RESOURCE_DIR}/config.json"
 target/release/xrtranslate-installer --config "${RESOURCE_DIR}/config.json" \
   prepare-resources --output "${RESOURCE_DIR}" --cache "${RESOURCE_DIR}/downloads"
 

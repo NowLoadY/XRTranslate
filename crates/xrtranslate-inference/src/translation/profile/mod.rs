@@ -2,7 +2,6 @@ mod bilingual;
 mod contextual;
 mod openai_compatible;
 mod output;
-mod qwen;
 
 use serde_json::{Value, json};
 use xrtranslate_prompt::{
@@ -51,7 +50,6 @@ pub(super) fn registered(provider: TranslationProvider) -> &'static TranslationP
         TranslationProvider::Contextual => &contextual::PROFILE,
         TranslationProvider::Bilingual => &bilingual::PROFILE,
         TranslationProvider::OpenAiCompatible => &openai_compatible::PROFILE,
-        TranslationProvider::Qwen => &qwen::PROFILE,
     }
 }
 

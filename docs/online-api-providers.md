@@ -1,69 +1,108 @@
 # Online API providers
 
-For the repository-wide provider boundary and the implementation checklist,
-see [Provider integration](providers/README.md).
+The online catalogue is
+[`crates/xrtranslate-assets/remote_catalog.json`](../crates/xrtranslate-assets/remote_catalog.json).
+It owns service identities, regional endpoints, default request limits, model
+lists, and exact model capabilities. Downloadable weights stay in the separate
+`model_catalog.json`; online models have no installation or hardware records.
 
-The repository `config.json` is the default document. Every platform stores
-model selection, providers, and runtime parameters in
-`<project>/runtime/user-config.json`. The updater preserves this runtime
-directory. Older packaged builds stored the override in the platform user
-configuration directory; it is merged into the runtime file on first launch
-and the old copy is removed after a successful migration.
+`config.json` selects capabilities and enables preset provider entries. An empty
+preset object inherits its catalogue defaults. Welcome is the only service
+configuration UI: users select a built-in provider and one of its listed models,
+then enter the API key. There is no custom-provider action or endpoint editor.
+The settings page does not contain a second service editor.
 
-The versioned downloadable model cards live together in
-`crates/xrtranslate-assets/model_catalog.json`. They declare package IDs,
-supported language codes, hardware and memory estimates, benchmarks, and
-pinned download files. Runtime settings reference these stable IDs; downloaded
-model weights remain under the managed models directory. Known remote model
-languages and capabilities are recorded separately in
-`crates/xrtranslate-assets/src/remote.rs`; they do not create installable assets.
+## Runtime credentials and releases
 
-The runtime recursively merges this override over the defaults. Saving a
-setting therefore never edits the tracked default file, and newly shipped
-defaults remain available for fields the user has not customized.
+Development and installed builds use the same `runtime/user-config.json`.
+Welcome saves model/provider selections and keys there, including partially
+completed online setup. Writes replace the file atomically; a failure leaves
+the previous file intact. Runtime is ignored by Git. Treat this JSON as private
+local data; it stores keys as text, not in an encrypted credential vault.
 
-The native route exposes ASR and translation provider settings through this
-effective configuration.
-Each selected provider object supports the following common fields:
+The catalogue and source defaults contain no credentials. Compilation rejects
+non-empty `api_key` fields in either embedded default document. Do not put
+development keys in `config.json`, the catalogue, or source code.
 
-- `transport`: `local` for managed llama.cpp, `onnx-cpu` for a native CPU
-  recognizer, `openai` for a remote OpenAI-compatible HTTP endpoint,
-  `dashscope` for native Qwen Audio HTTP recognition, or `websocket` for the
-  registered Qwen Audio WebSocket adapter.
-- `url`: the complete capability endpoint: `/v1/chat/completions` for
-  translation and audio-chat services, `/v1/audio/transcriptions` for OpenAI ASR.
-- `model`: the remote model identifier. It is required for remote transports.
-- `api_key`: optional Bearer credential. The desktop settings editor masks this
-  value while editing.
-- `context_window_tokens`, `max_tokens`, and `parallel_slots`: request and
-  scheduler limits shared by local and remote routes.
+`xrtranslate-installer export-defaults --output <path>` expands built-in service
+options and clears API keys without reading runtime. Linux and Android release
+scripts use this export; the desktop packager applies the same sanitization to
+its config input. The binary also embeds the online catalogue, so releases
+always carry the built-in model choices. Packaging never copies user runtime.
+No Git-content hash comparison or API test request is involved.
 
-OpenAI ASR uploads a WAV file to `/audio/transcriptions` as multipart form data,
-with the selected model, optional language and lexical context (`prompt`), and
-JSON output. The regional Qwen ASR presets default to
-`qwen-audio-3.0-asr-flash`, sending a WAV Data URL in native DashScope
-`input.messages` and reading `output.text` from the
-`/api/v1/services/aigc/multimodal-generation/generation` endpoint. Generic
-audio-chat services use raw base64 WAV with `format: "wav"`.
-These provider contracts share the same recognition and context pipeline.
-Existing OpenAI transcription configurations that used the chat endpoint are
-migrated automatically; custom model selections are preserved.
-Known old Qwen preset settings are also migrated to the native HTTP
-preset. See [Qwen ASR](providers/qwen-asr.md) for model selection, context and
-weighted vocabulary capabilities, and the distinction from streaming ASR.
+The desktop updater preserves runtime user data while updating bundled runtime libraries. Android refreshes
+its shipped `config.json` while leaving application-private runtime files
+untouched. The next start merges runtime preferences over the new defaults,
+retaining entered keys and selections while receiving new provider metadata.
+Obsolete online-model migrations have been removed; no existing online users
+need them. The independent runtime-location migration for older local-model
+installations remains.
 
-Translation message content is rendered by the active Prompt Studio graph in
-`xrtranslate-prompt`. An online provider profile selects the
-`openai_compatible` Request messages and adds transport credentials, model and
-sampling fields; it must not prepend, append, or rewrite prompt text. The
-built-in graph produces the original system/user message pair exactly.
+## Connector contract
 
-ASR and translation are independent capabilities. It is valid to select a
-remote ASR provider while keeping Hy-MT2 local, or the reverse. When no
-selected capability uses `local`, the desktop client does not require or launch
-the llama.cpp executable.
+A service name is an identity, not an execution branch. Configuration resolves
+it to one of the implemented wire formats:
 
-The Settings page includes OpenAI and regional Qwen presets and an **Add online
-API** action. The action creates a normal provider object in the override
-document, so custom OpenAI-compatible services use the existing save,
-validation, and reload flow rather than a second settings store.
+| Connector | Capability | Request and result |
+| --- | --- | --- |
+| `openai-chat` | Translation | Chat-completions messages; JSON or SSE text |
+| `openai-transcription` | ASR | WAV multipart upload; JSON transcript |
+| `openai-audio-chat` | ASR | Base64 WAV in chat messages; final text |
+| `dashscope-asr` | ASR | Native multimodal audio HTTP; final transcript |
+| `dashscope-asr-websocket` | ASR | Native task events and PCM frames; final transcript |
+
+Any host implementing a format can reuse its connector. Only a new wire
+format requires adapter code. `url` is the complete endpoint; it is not
+restricted to an official vendor host. `model` is the service's exact model ID.
+Credentials remain provider settings and never enter the catalogue.
+
+New catalogue integrations may declare `connector` explicitly. Legacy `openai` transport
+uses the capability and endpoint path to distinguish chat from multipart ASR;
+`dashscope` and `websocket` resolve to the existing native audio connectors.
+This compatibility resolution happens once in configuration. Adapters do not
+guess a protocol from provider or model names.
+
+## Model capabilities
+
+The catalogue's `models` records use `connector` plus exact `model` identity.
+The same model contract applies through regional endpoints or custom gateways.
+Provider `services[].models` lists the model choices shown on Welcome. Unknown
+revisions do not inherit capabilities through name-prefix matching.
+
+The shared `capabilities` object has these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `streaming` | `none`, `delta`, or `cumulative` output |
+| `supports_context` | Translation reference context |
+| `asr_prompt_mode` | `none`, semantic `instruction`, or lexical `context_bias` |
+| `context_max_chars` | Optional ASR lexical-context limit |
+| `vocabulary_bias` | Structured weighted hotword support |
+| `single_user_message` | Encode rendered translation messages as one user message |
+
+All current ASR connectors consume completed audio windows and return a final
+transcript. The WebSocket transport does not imply live audio ingestion or
+interim results. Unsupported ASR streaming, instruction, or weighted-vocabulary
+claims fail configuration validation instead of silently disappearing.
+Translation with `streaming: none` uses a normal request even when the pipeline
+asks for updates; final-result handling remains shared.
+
+Known models supply their defaults. An explicit provider `capabilities` object
+overrides only its supplied fields. For unknown models, legacy
+`supports_prompt_context`, `asr_prompt_mode`, `asr_context_max_chars`, and
+`supports_vocabulary_bias` remain accepted. Unknown chat translation models
+retain the existing delta-stream default; other capabilities default to off.
+Set `streaming: none` for services without SSE support.
+
+ASR connectors share one `AsrOptions` input and one `AsrTranscript` output.
+Instruction, lexical context, and weighted vocabulary stay separate. The
+shared pipeline owns context composition, scheduling, cancellation, retries,
+and result delivery. Translation uses the same Prompt Studio graph regardless
+of host; connector options control only wire encoding and streaming assembly.
+
+To add a service using an existing format, add its provider/model records to
+the catalogue and, if it should be a shipped preset, an empty provider entry in
+`config.json`. Review configuration expansion and compile affected consumers.
+Do not add hash identities, local test servers, or provider-by-provider test
+loops. See [Provider integration](providers/README.md) for ownership boundaries.

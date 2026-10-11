@@ -18,9 +18,8 @@ mod wav;
 #[cfg(feature = "sensevoice")]
 pub use asr::SenseVoiceAdapter;
 pub use asr::{
-    AsrTranscript, AsrVocabularyBias, OpenAiAsrAdapter, OpenAiAsrOptions, Qwen3AsrAdapter,
-    Qwen3AsrOptions, QwenAudioFlashAdapter, QwenAudioFlashOptions, QwenAudioStreamingAdapter,
-    QwenAudioStreamingOptions, is_probable_asr_hallucination,
+    AsrOptions, AsrTranscript, AsrVocabularyBias, OpenAiAsrAdapter, Qwen3AsrAdapter,
+    QwenAudioFlashAdapter, QwenAudioStreamingAdapter, is_probable_asr_hallucination,
 };
 pub use error::{InferenceError, TransportError};
 pub use http::{AsyncHttpClient, HttpRequest, HttpResponse, MultipartBody, ReqwestClient};

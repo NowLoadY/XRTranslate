@@ -9,7 +9,7 @@ mod sensevoice;
 #[cfg(feature = "sensevoice")]
 pub use sensevoice::SenseVoiceAdapter;
 
-pub use openai_chat::{OpenAiAsrAdapter, OpenAiAsrOptions};
-pub use qwen_audio_flash::{QwenAudioFlashAdapter, QwenAudioFlashOptions};
-pub use qwen_audio_streaming::{QwenAudioStreamingAdapter, QwenAudioStreamingOptions};
-pub use qwen3::{Qwen3AsrAdapter, Qwen3AsrOptions, is_probable_asr_hallucination};
+pub use openai_chat::OpenAiAsrAdapter;
+pub use qwen_audio_flash::QwenAudioFlashAdapter;
+pub use qwen_audio_streaming::QwenAudioStreamingAdapter;
+pub use qwen3::{Qwen3AsrAdapter, is_probable_asr_hallucination};

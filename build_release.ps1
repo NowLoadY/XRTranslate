@@ -29,39 +29,6 @@ $expectedNoticesBytes = 331175
 # Matches RuntimeLayout::ONNX_CPU_CORE_WIN_SOURCE_ARCHIVE.
 $onnxCpuSourceArchive = 'onnxruntime-win-x64-gpu_cuda13-1.28.0.zip'
 
-function Assert-ReleaseDefaultConfiguration {
-    param([string]$Root)
-
-    $defaultsPath = Join-Path $Root 'config.json'
-    if (-not (Test-Path -LiteralPath $defaultsPath -PathType Leaf)) {
-        throw "Release configuration was not found: $defaultsPath"
-    }
-    $gitCommand = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -eq $gitCommand) {
-        throw 'Git is required to verify the committed release defaults.'
-    }
-
-    # The runtime catalogue is also compiled from config.json. Reject local or
-    # staged overrides instead of silently packaging an older HEAD catalogue.
-    $committedHash = & $gitCommand.Source -C $Root rev-parse --verify 'HEAD:config.json'
-    if ($LASTEXITCODE -ne 0) {
-        throw 'The release requires config.json to exist in Git HEAD.'
-    }
-    $indexHash = & $gitCommand.Source -C $Root rev-parse --verify ':config.json'
-    if ($LASTEXITCODE -ne 0) {
-        throw 'The release requires config.json to exist in the Git index.'
-    }
-    # hash-object reads the file even when assume-unchanged/skip-worktree is set,
-    # and applies the same line-ending normalization as the committed Git blob.
-    $workingHash = & $gitCommand.Source -C $Root hash-object --path=config.json -- $defaultsPath
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Could not verify the working-tree release configuration.'
-    }
-    if ($workingHash -ne $committedHash -or $indexHash -ne $committedHash) {
-        throw 'Release config.json must match Git HEAD in both the working tree and index. Keep personal settings, API keys, and private endpoints in runtime/user-config.json; review and commit legitimate default/catalogue changes before packaging.'
-    }
-}
-
 function Resolve-VcRuntimeDirectory {
     param([string]$Directory)
 
@@ -121,7 +88,6 @@ function Resolve-VcRuntimeDirectory {
     return $selected.Path
 }
 
-Assert-ReleaseDefaultConfiguration -Root $projectRoot
 if ($ValidateOnly -and -not (Test-Path -LiteralPath $packagerPath -PathType Leaf)) {
     throw "Validation requires an existing native release packager: $packagerPath. -ValidateOnly never builds binaries."
 }
@@ -356,7 +322,6 @@ if ($ValidateOnly) {
     $packageArguments += '--check'
 }
 
-Assert-ReleaseDefaultConfiguration -Root $projectRoot
 if ($ValidateOnly) {
     Write-Host 'Validating existing native release inputs (no build or download)...'
 } else {
