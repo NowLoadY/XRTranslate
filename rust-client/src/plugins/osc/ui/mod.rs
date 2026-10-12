@@ -9,6 +9,7 @@ pub struct OscPageContext<'a> {
     pub language: crate::i18n::UiLanguage,
     pub preparing_text: bool,
     pub mute_gate_enabled: bool,
+    pub lyrics_available: bool,
     pub languages: xrtranslate_engine::language::LanguageCapabilities,
     pub source_lang: &'a str,
     pub target_lang: &'a str,
@@ -79,6 +80,7 @@ pub fn render(
                                 ui,
                                 context.language,
                                 context.mute_gate_enabled,
+                                context.lyrics_available,
                                 &mut actions,
                             );
                         },
@@ -97,6 +99,7 @@ pub fn render(
                     ui,
                     context.language,
                     context.mute_gate_enabled,
+                    context.lyrics_available,
                     &mut actions,
                 );
 

@@ -1,313 +1,66 @@
 # Prompt architecture
 
-The translation style panel edits one shared Compose node through an optional
-`PromptNodeGraph.translation_style` binding. Full named style prompts are saved
-with the graph; model/mode processing rules and message assembly remain separate.
-The collapsible panel lives in the graph canvas, reusing execution, persistence,
-activation and history. Loading or importing an older graph can restore a missing
-binding only when one literal, connected translation-style node is unambiguous;
-authored text and existing bindings remain intact.
-Loading compares the stored JSON with the current serialized format and writes
-upgrades back to `runtime/prompt-studio.json`, including migrations performed
-during deserialization. Files that cannot be decoded are left untouched.
-
-The normal read-only card picker reads named presets and saved style-node text
-from the same library, including inactive graphs. Named presets are deduplicated
-by both name and text; a differently named preset remains visible even with the
-same text. Unnamed node text adds a card only when no card already contains it.
-Leaving the debug editor saves through its usual profile actions. Selecting
-a card updates the active graph's style and refreshes the editor draft, so the
-two views do not maintain separate style stores.
-
-Prompt Studio owns the complete translation prompt and semantic ASR instruction
-sent to a model. It also owns rendering provider text fields that are explicitly
-declared as lexical ASR context. There is no hidden instruction,
-reference-context wrapper, current-input label, or message-role split in a
-provider profile.
-
-ASR instruction prompts, lexical context bias, and weighted vocabulary bias are
-three separate capabilities. An instruction tells a capable recognition model
-how to transcribe. Lexical context supplies likely terms but has no instruction
-semantics. Weighted vocabulary is structured provider data (`term -> weight`)
-and never passes through a Prompt Studio text graph. A provider profile declares
-which delivery modes its transport supports; it must not reinterpret one mode
-as another.
+Prompt composition is a shared domain. Model delivery, runtime context, and UI
+editing use its contracts without maintaining separate prompt implementations.
 
 ## Ownership
 
-`xrtranslate-prompt` is the shared prompt domain used by the desktop editor,
-wire protocol, backend, and inference adapters. Its responsibilities are:
+| Owner | Responsibility |
+|---|---|
+| XR Corpus and backend | Structured context, terminology, and recognition facts |
+| `xrtranslate-prompt` | Graph schema, validation, built-in graphs, and deterministic rendering into ordered messages |
+| Prompt Studio | Editing, selection, persistence, and display of execution traces |
+| Inference profiles and adapters | Delivery target, sampling, transport conversion, and output normalization |
+| Backend pipeline | Capability selection, scheduling, result acceptance, and bounded recovery |
 
-- the serialized graph schema and validation rules;
-- neutral translation context facts;
-- deterministic graph execution into ordered, role-bearing messages;
-- canonical built-in graphs and saved-profile normalization;
-- Compose text parsing and graph activation validation.
+Semantic instructions, composition, and message roles belong to the prompt
+domain. Adapters preserve rendered content and role order; they do not append
+hidden instructions or reconstruct context wrappers. Models requiring a fixed
+prompt select it through the same domain boundary.
 
-Translation profiles in `xrtranslate-inference` select a graph provider target
-and own sampling parameters and output cleanup. For ASR, the normalized backend
-runtime profile declares instruction, context-bias, and vocabulary
-capabilities; `pipeline/asr_prompt.rs` renders the matching graph target before
-the adapter converts those neutral fields to its wire format. Adapters do not
-rewrite already-rendered prompt text.
+Style selection and graph editing use one prompt library and activation path.
+Canvas layout and editor interaction remain separate from execution semantics.
+Shared editor behavior belongs to the common UI infrastructure.
 
-Sentence-only bilingual checkpoints select a fixed graph from the same prompt
-domain instead of the user's editable graph. Haidass uses its training instructions
-without style or reference inputs, disables reference context through its model
-card, and supplies the empty thinking prefix and neutral repetition penalty in
-its inference profile. Other models continue to use the selected Prompt Studio
-graph. Execution traces always describe the graph actually used.
+## Context and capabilities
 
-## Output validation and regeneration
+Runtime context is structured data supplied to the graph. Instruction policy,
+current input, and optional reference facts remain distinct so that reference
+handling is explicit and optional context can be removed without changing the
+task's meaning.
 
-Translation output is validated in `xrtranslate-inference` after provider
-cleanup and before it can become a successful `TranslationResult`. The quality
-gate consumes the exact ordered `PromptMessage` values rendered for that
-request; it does not inspect a built-in template, provider name, graph node ID,
-or hard-coded instruction. Custom Prompt Studio graphs therefore receive the
-same protection as the canonical graph.
+ASR instruction, lexical context bias, and weighted vocabulary are independent
+capabilities. The prompt graph renders supported text inputs. Structured
+vocabulary passes through its own typed contract. Providers declare support;
+neither adapters nor consumers reinterpret one capability as another.
 
-The prompt-echo detector normalizes Unicode letters and numbers, removes the
-current input and rendered runtime reference facts from the comparison corpus,
-then combines three independent forms of evidence: a substantial exact prompt
-fragment, high character-shingle coverage, or multiple copied prompt lines.
-Removing runtime values prevents an unchanged proper name or a legitimate
-translation reused from dialogue history from being classified as an
-instruction leak. Reference-context structural checks remain responsible for
-detecting dumped terminology and history blocks.
+Translation context follows task and language ownership. Stateless ask requests
+use the configured translation adapter without joining conversation history;
+the calling feature supplies the request's purpose and necessary input facts.
 
-Rejected text never enters session state, translation history, terminology
-rewriting, or the wire protocol. The backend owns retry coordination: it clears
-optional reference facts and regenerates the same source segment exactly once
-through the same graph and provider target. The regenerated request retains all
-main translation instructions, message roles, current input, and sampling
-policy. If that output is also rejected, the segment fails and no translation
-is published. As with a context-window retry, a successful regenerated result
-carries the execution trace of the final request.
+## Execution and validation
 
-The shared chat adapter preserves `finish_reason` in both JSON and SSE responses;
-an incomplete response cannot become a final result. A `length` stop shares the
-same one-regeneration allowance as rejected output and clears any live preview.
-The backend drops optional context and doubles the output budget up to half the
-context window, without lowering a larger configured budget. Other stop reasons
-are reported unchanged rather than retried as length limits.
+Graphs are validated before activation. Typed connections, required inputs,
+delivery targets, and message ordering have one definition shared by editor and
+backend. Execution produces the messages sent to the selected provider.
 
-ASR shares that bounded output-budget expansion with its existing context-free
-quality retry. It resubmits the same audio and selected language at most once per
-recognition attempt; incomplete transcripts never reach language routing or
-translation. Its initial duration-based token estimate is capped by the selected
-provider configuration, with no additional fixed 128-token ceiling.
-If the retry also reaches the output limit, only that utterance is skipped via
-the normal empty-recognition path; subsequent audio continues without an error popup.
+Execution traces come from that same evaluation and accompany the corresponding
+result. UI displays the matching graph and request trace rather than running a
+second evaluator. Recovery traces describe the request that produced the result.
 
-XR Corpus and the backend provide structured facts. XR Corpus retains its legacy
-pre-rendered ASR field for older consumers, but the native backend consumes its
-structured recognition vocabulary. The desktop client owns template selection
-and persistence but does not execute provider policy.
+Inference validates normalized output before the pipeline accepts it as a final
+result. The backend coordinates bounded recovery using the same graph and
+provider contract. Rejected or incomplete output must not become a successful
+translation or an irreversible downstream action.
 
-## Graph pages and requests
+## Persistence and evolution
 
-A profile is one complete graph. Prompt Studio presents that graph through four
-fixed delivery pages, `OPENAI`, `HUNYUAN`, `ASR PROMPT`, and `ASR CONTEXT`;
-these pages are views, not separate profiles or independently creatable graphs.
-Shared nodes appear on compatible pages, while delivery-specific composition
-and Request nodes appear only on their matching page. `NEW GRAPH` creates the
-complete graph with all four pages and the shared data flow.
+The shared prompt domain owns schema evolution and built-in defaults. User
+profiles and styles retain authored content through supported normalization.
+Editor layout data does not define prompt behavior, and delivery views do not
+create independent copies of the same graph.
 
-Prompt Studio initially opens the page matching the active translation
-provider. A local Hunyuan provider selects `HUNYUAN`; providers delivered over
-the OpenAI transport select `OPENAI`. Applying a provider configuration updates
-that initial page selection, while users may still switch pages manually to
-inspect or edit the other provider path.
-
-A graph renders `PromptMessage` values. Each translation provider page
-terminates in exactly one Request node. ASR pages have at most one Request each
-so old translation-only graphs remain wire-compatible; saved profiles are
-normalized by adding any missing canonical ASR paths. A Request declares:
-
-- a delivery target (`hunyuan`, `openai_compatible`, `asr_instruction`, or
-  `asr_context_bias`);
-- an ordered list of message roles (`system` or `user`);
-- one connected content input for each role.
-
-The built-in OpenAI Request has ordered `SYSTEM` and `USER` inputs. It is one
-HTTP/API request containing two role-bearing messages, not one flattened string.
-The built-in Hunyuan Request has one `USER` input. Provider adapters preserve
-this role order exactly and only convert the rendered messages to transport JSON.
-
-Compose nodes own verbatim static text, spaces, newlines, headings, and
-boundaries. They interpolate connected inputs through `{0}` to `{9}`; literal
-braces use `{{` and `}}`. A Compose text made only of input slots separated by
-one consistent whitespace separator joins its non-empty inputs with that
-separator. This makes `{0}\n\n{1}\n\n{2}` the general form of an optional block
-join without a separate Concat node. System Value nodes are explicit
-host/runtime inputs. Their typed text outputs expose source language, target
-language, current input, recognition context, recognition mode, terminology,
-history, previous revision, surrounding source, and the other neutral context
-facts. Static custom text remains a separate editor-owned input and is never
-presented as runtime data. Condition Value nodes are explicit host/runtime
-boolean inputs. A Switch has one typed condition input followed by FALSE and
-TRUE text inputs; it cannot inspect the execution context or name a hidden
-predicate itself. The validator rejects condition-to-text and
-text-to-condition links. Provider adapters must not add separators around
-these values.
-
-Text outputs have two complementary views. The execution trace exposes the
-current text produced for a real request. The graph schema may also expose a
-finite set of possible texts without executing the graph: custom text exposes
-its one static value, Recognition Mode exposes `ordinary` and
-`pseudo_streaming`, and a Text Switch recursively unions the finite outputs of
-its connected branches. Unknown runtime text has no invented finite set.
-A Text Switch connects its selector at input 0 and derives one named branch
-socket per possible selector value. Those case names are not serialized on the
-switch, so the upstream text metadata remains the single source of truth. When
-metadata changes, the editor preserves branch wires by matching case text, not
-its former socket index; removed cases lose their wires. Empty cases are
-invalid and duplicate values are collapsed in declaration order.
-
-The canonical Recognition Mode path connects its System Value directly to a
-Text Switch. The canonical source-language choice connects Source Language to
-a case-sensitive Text Comparison against `auto`, then feeds ordinary boolean
-Switch nodes. Host-owned conditions remain for facts such as reference-context
-and recognition-context presence.
-
-The built-in graph uses no fragmented Text nodes. Static prompt structure is
-kept inside semantic Compose nodes so graph wires represent data flow rather
-than punctuation. Links carry only endpoints and socket indexes; separators and
-line breaks always remain visible in Compose text.
-
-The fixed `REFERENCE HANDLING RULES` Compose node tells the model how terminology,
-history, revisions, and surrounding speech must be interpreted. It is separate
-from `TRANSLATION CONTEXT`, which contains the rendered runtime data. Both feed
-the provider-specific with-context composition nodes, making policy and data
-visible as distinct graph inputs. Expression preferences live in one Shared
-Compose node, `Translation style`. Each provider combines that node with its
-selected processing instruction before either context branch; no-context and
-pseudo-streaming requests therefore use the same complete style prompt too.
-The rules require the model to use only relevant context to resolve ambiguity,
-references, tone, and discourse continuity. Predicates, arguments, referents, or
-other meaning omitted from `Current input` must be recovered when the relevant
-dialogue entails exactly one interpretation. Making that implicit meaning
-explicit in the target language is semantic recovery, not expansion. When
-multiple interpretations remain possible, the model must preserve the
-ambiguity or fragment instead of guessing. Irrelevant context is ignored;
-surrounding text is never translated, repeated, or summarized, and no event,
-detail, intent, or meaning may be invented beyond what the current input and
-relevant context entail.
-
-## Runtime traces
-
-`xrtranslate-prompt` owns `PromptExecutionTrace` and captures it during the
-same cached graph execution that renders the provider messages. There is no
-second preview evaluator for live data. Each visited node records its exact
-output, Switch nodes also record the selected input, and the Request node
-records the final ordered role-bearing messages. Nodes outside the executed
-condition path have no trace entry.
-
-Inference attaches the trace to the matching provider result. The backend and
-wire protocol transport ASR traces with `SourceSegmentReady` and translation
-traces with `TranslationReady`; the desktop stores the latest host-session
-trace for each delivery family so a later translation does not erase the ASR
-page's runtime data. If ASR retries without lexical context, or translation retries without
-optional reference facts, the returned trace belongs to that final request
-rather than the failed first attempt. Prompt Studio displays live data only for
-the active graph and matching provider page. A deterministic graph fingerprint
-also rejects late traces from requests that began before the active graph
-changed, preventing a trace from being presented as another design's execution.
-
-Every node reserves a right-side runtime pane. The pane displays the node output
-or its not-executed state and owns vertical scrolling when its content exceeds
-the node height. While the pointer is over that pane, the mouse wheel scrolls
-the node output and does not zoom the graph canvas. UI code only renders the
-typed trace; it does not reconstruct prompt values or provider behavior.
-
-## Built-in compatibility
-
-The read-only `builtin-default` profile is canonical code-owned data. Loading
-or saving settings replaces any persisted profile with that ID, preventing an
-old or modified local copy from changing the default.
-
-Golden tests cover the complete canonical messages for:
-
-- OpenAI-compatible explicit source with reference context;
-- OpenAI-compatible automatic source with reference context;
-- OpenAI-compatible without reference context;
-- Hunyuan explicit source with reference context;
-- Hunyuan automatic source with reference context;
-- Hunyuan without reference context;
-- semantic ASR instruction with and without recognition vocabulary;
-- lexical ASR context containing only the recognition vocabulary.
-
-These tests compare message roles and complete string contents, including every
-space, newline, heading, boundary, and current-input label.
-
-## Schema and validation
-
-Graph schema version and canvas layout version are independent. Schema v7
-introduced explicit typed System Value and Condition Value nodes. Saved v6
-graphs migrate in place: legacy runtime Variable/context Input nodes become
-System Value nodes, every implicit Switch predicate becomes a Condition Value,
-and its former FALSE/TRUE links move behind the new condition socket. Unknown
-unsupported schema versions are still replaced with the canonical graph.
-Schema v8 added editor-owned Bool Value, Text Comparison, and finite-text
-branching. Schema v9 makes Text Switch cases derived metadata rather than a
-second serialized copy and gives the canonical Recognition Mode and source
-language paths the typed flows described above.
-
-The WebSocket protocol carries `PromptNodeGraph` as a typed JSON object. A
-backend validates a graph before activating it and reports malformed graphs as
-client errors. Activation requires exactly one Request for each translation
-provider target, at most one Request for each ASR delivery target, every Request
-input to be connected, and the target's required System Value to be reachable:
-Current Input for translation and Recognition Context for lexical ASR context.
-An ASR instruction may use source/expected languages without depending on
-recognition vocabulary; the canonical instruction optionally incorporates it.
-Requests must be on their matching provider page. Shared nodes may feed either
-provider page; provider-specific nodes cannot cross into another provider page
-or feed back into Shared. Malformed Compose placeholders, links to unused
-Compose sockets, and referenced but unconnected sockets are rejected.
-
-The editor exposes every referenced Compose socket plus one available input.
-Connecting that input appends its `{n}` label to the Compose text and reveals
-the next available input, up to ten total inputs. The label can then be moved
-inside the text to control the exact composition order. An unconnected declared
-input is itself the available input, so removing a wire does not create extra
-sockets. The editor performs deterministic, height-aware, page-aware
-auto-layout. Shared nodes keep one position across pages, while mutually
-exclusive provider nodes reuse canvas space instead of reserving gaps for
-hidden nodes. The canvas supports cursor-centered zoom, middle-button pan,
-grid-snapped multi-node dragging, box selection, keyboard deletion, and wire
-removal. These interactions change graph layout only; they do not alter prompt
-execution semantics.
-
-Each node has an execution-neutral purpose label. The canonical graph uses
-semantic labels such as `EXPLICIT SOURCE INSTRUCTION` and `SELECT SYSTEM
-PROMPT`, while newly created Compose labels follow the first line of their
-text until named directly in the editable node header. At overview zoom the
-editor keeps purpose titles visible and suppresses unreadable body previews.
-Content nodes derive their height from wrapped text, and socket tooltips name
-their connected source. Request nodes expose numbered role inputs such as `1
-SYSTEM` and `2 USER`; their exact assembled messages appear in the runtime pane.
-
-Node tones are derived from node kind and are not template configuration.
-Static inputs, System Values, Condition Values, composition, switches, and
-provider requests keep stable, restrained grayscale roles; outgoing sockets
-and wires inherit the source kind tone.
-The toolbar and canvas context menu share the same categorized node catalogue.
-Toolbar additions use the viewport center, while context-menu additions use the
-pointer location. Neither operation rearranges existing nodes.
-
-`supports_prompt_context` remains a serialized provider configuration field for
-compatibility. Translation providers use it for optional reference facts.
-ASR providers use the explicit `asr_prompt_mode` capability (`none`,
-`instruction`, or `context_bias`); legacy ASR entries that only declared prompt
-support migrate to `instruction`. `supports_vocabulary_bias` and
-`vocabulary_weight` independently control structured vocabulary delivery. A
-lexical provider may also declare `asr_context_max_chars`; runtime facts are
-bounded before graph execution so the Request trace remains identical to the
-text sent on the wire. A custom graph whose static composition still exceeds
-that limit fails visibly instead of being silently truncated by an adapter.
-
-On a context-window overflow or probable context leak, the backend re-executes
-the same graph with empty optional reference facts. It must retain the provider
-instruction, message roles, and current input.
+Concrete prompt wording, node definitions, schema versions, and recovery
+algorithms are maintained with their implementation. See
+[provider integration](providers/README.md) for delivery contracts and
+[UI architecture](ui-architecture.md) for shared presentation ownership.

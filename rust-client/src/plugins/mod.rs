@@ -7,6 +7,8 @@
 //! remains explicit in the host adapter.
 
 pub(crate) mod auto_input;
+#[cfg(any(windows, target_os = "linux"))]
+pub(crate) mod lyrics;
 pub mod media;
 pub mod meeting;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -23,6 +25,7 @@ use std::{collections::BTreeMap, fmt};
 pub struct PluginId(&'static str);
 
 impl PluginId {
+    pub const LYRICS: Self = Self("lyrics");
     pub const VOCABULARY: Self = Self("vocabulary");
     pub const OSC: Self = Self("osc");
     pub const MEETING: Self = Self("meeting");
@@ -34,7 +37,7 @@ impl PluginId {
     pub fn is_supported(self) -> bool {
         match self {
             Self::AUTO_INPUT => cfg!(windows),
-            Self::OCR => cfg!(any(target_os = "windows", target_os = "linux")),
+            Self::LYRICS | Self::OCR => cfg!(any(target_os = "windows", target_os = "linux")),
             Self::VR_OVERLAY => !cfg!(target_os = "android"),
             _ => true,
         }
@@ -46,6 +49,7 @@ impl PluginId {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "lyrics" => Some(Self::LYRICS),
             "vocabulary" => Some(Self::VOCABULARY),
             "osc" => Some(Self::OSC),
             "meeting" => Some(Self::MEETING),
@@ -121,19 +125,20 @@ pub struct PluginDescriptor {
     /// i18n dictionary key, not persisted identity.
     pub title_key: &'static str,
     pub description_key: &'static str,
-    pub navigation_order: u16,
+    /// None for embedded plugins without a standalone page.
+    pub navigation_order: Option<u16>,
     pub icon: PluginIcon,
     pub scroll_policy: PluginScrollPolicy,
     pub settings_contribution: PluginSettingsContribution,
     pub default_enabled: bool,
 }
 
-const PLUGIN_DESCRIPTORS: [PluginDescriptor; 5] = [
+const PLUGIN_DESCRIPTORS: [PluginDescriptor; 6] = [
     PluginDescriptor {
         id: PluginId::VOCABULARY,
         title_key: "Vocabulary",
         description_key: "Manage wordbooks and saved words.",
-        navigation_order: 80,
+        navigation_order: Some(80),
         icon: PluginIcon {
             uri: "bytes://plugins/vocabulary/icon.svg",
             bytes: include_bytes!("../../resources/icons/star.svg"),
@@ -146,7 +151,7 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 5] = [
         id: PluginId::MEETING,
         title_key: "Meeting notes",
         description_key: "Capture, import, organize, and export local meeting records.",
-        navigation_order: 100,
+        navigation_order: Some(100),
         icon: PluginIcon {
             uri: "bytes://plugins/meeting/icon.svg",
             bytes: include_bytes!("../../resources/plugins/meeting/icon.svg"),
@@ -159,7 +164,7 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 5] = [
         id: PluginId::MEDIA,
         title_key: "Media",
         description_key: "Translate audio, video and subtitle files.",
-        navigation_order: 150,
+        navigation_order: Some(150),
         icon: PluginIcon {
             uri: "bytes://plugins/media/icon.svg",
             bytes: include_bytes!("../../resources/plugins/media/icon.svg"),
@@ -172,7 +177,7 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 5] = [
         id: PluginId::VR_OVERLAY,
         title_key: "SteamVR Overlay",
         description_key: "Display private real-time bilingual subtitles in SteamVR (HMD-locked HUD).",
-        navigation_order: 180,
+        navigation_order: Some(180),
         icon: PluginIcon {
             uri: "bytes://plugins/vr_overlay/icon.svg",
             bytes: include_bytes!("../../resources/plugins/vr_overlay/icon.svg"),
@@ -185,7 +190,7 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 5] = [
         id: PluginId::OSC,
         title_key: "VRChat OSC",
         description_key: "Send translation captions to VRChat and follow avatar mute state.",
-        navigation_order: 200,
+        navigation_order: Some(200),
         icon: PluginIcon {
             uri: "bytes://plugins/osc/icon.svg",
             bytes: include_bytes!("../../resources/plugins/osc/icon.svg"),
@@ -194,9 +199,22 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 5] = [
         settings_contribution: PluginSettingsContribution::Plugin,
         default_enabled: true,
     },
+    PluginDescriptor {
+        id: PluginId::LYRICS,
+        title_key: "Lyrics",
+        description_key: "Show the current song’s lyrics in an OSC header or footer. Runs only while that slot is in use.",
+        navigation_order: None,
+        icon: PluginIcon {
+            uri: "bytes://plugins/lyrics/icon.svg",
+            bytes: include_bytes!("../../resources/icons/music.svg"),
+        },
+        scroll_policy: PluginScrollPolicy::Plugin,
+        settings_contribution: PluginSettingsContribution::EnablementOnly,
+        default_enabled: true,
+    },
 ];
 
-/// Catalogue for standalone plugin pages compiled into this build.
+/// Catalogue for built-in plugins compiled into this build.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PluginRegistry;
 
@@ -240,7 +258,10 @@ impl PluginRegistry {
         page: &mut crate::ui::Page,
     ) {
         if let crate::ui::Page::Plugin(id) = *page
-            && (self.descriptor(id).is_none() || !preferences.is_enabled(id))
+            && (self
+                .descriptor(id)
+                .is_none_or(|descriptor| descriptor.navigation_order.is_none())
+                || !preferences.is_enabled(id))
         {
             *page = crate::ui::Page::Translation;
         }

@@ -12,6 +12,7 @@ pub fn render_toolbar(
     ui: &mut egui::Ui,
     language: crate::i18n::UiLanguage,
     mute_gate_enabled: bool,
+    lyrics_available: bool,
     actions: &mut Vec<super::OscUiAction>,
 ) {
     let mut changed = false;
@@ -229,14 +230,34 @@ pub fn render_toolbar(
                                 };
                                 let label = crate::i18n::tr(language, label);
                                 let width = banner_field_width(ui, label, banner, language);
+                                let mut banner_changed = false;
                                 ui.allocate_ui_with_layout(
                                     egui::vec2(width, ui.spacing().interact_size.y),
                                     egui::Layout::top_down(egui::Align::LEFT),
                                     |ui| {
-                                        changed |=
-                                            render_banner_selector(ui, label, id, banner, language);
+                                        banner_changed = render_banner_selector(
+                                            ui,
+                                            label,
+                                            id,
+                                            banner,
+                                            language,
+                                            lyrics_available,
+                                        );
                                     },
                                 );
+                                changed |= banner_changed;
+                                if banner_changed
+                                    && banner.content_type == BannerContentType::Lyrics
+                                {
+                                    let other = if header {
+                                        &mut plugin.draft_mut().footer_config
+                                    } else {
+                                        &mut plugin.draft_mut().header_config
+                                    };
+                                    if other.content_type == BannerContentType::Lyrics {
+                                        other.content_type = BannerContentType::None;
+                                    }
+                                }
                             }
                         });
 
@@ -345,8 +366,13 @@ fn render_banner_selector(
     combo_id: &str,
     banner: &mut BannerConfig,
     language: crate::i18n::UiLanguage,
+    lyrics_available: bool,
 ) -> bool {
     let mut changed = false;
+    if !lyrics_available && banner.content_type == BannerContentType::Lyrics {
+        banner.content_type = BannerContentType::None;
+        changed = true;
+    }
 
     layout::flow_row(ui, |ui| {
         ui.label(
@@ -357,32 +383,23 @@ fn render_banner_selector(
 
         let combo_resp =
             components::combobox_ui(ui, combo_id, banner.content_type.label(language), |ui| {
-                let r1 = ui.selectable_value(
-                    &mut banner.content_type,
+                let mut changed = false;
+                for kind in [
                     BannerContentType::None,
-                    BannerContentType::None.label(language),
-                );
-                let r2 = ui.selectable_value(
-                    &mut banner.content_type,
                     BannerContentType::CustomText,
-                    BannerContentType::CustomText.label(language),
-                );
-                let r3 = ui.selectable_value(
-                    &mut banner.content_type,
                     BannerContentType::SystemTime,
-                    BannerContentType::SystemTime.label(language),
-                );
-                let r4 = ui.selectable_value(
-                    &mut banner.content_type,
                     BannerContentType::CpuStatus,
-                    BannerContentType::CpuStatus.label(language),
-                );
-                let r5 = ui.selectable_value(
-                    &mut banner.content_type,
                     BannerContentType::GpuStatus,
-                    BannerContentType::GpuStatus.label(language),
-                );
-                r1.changed() || r2.changed() || r3.changed() || r4.changed() || r5.changed()
+                    BannerContentType::Lyrics,
+                ] {
+                    if kind == BannerContentType::Lyrics && !lyrics_available {
+                        continue;
+                    }
+                    changed |= ui
+                        .selectable_value(&mut banner.content_type, kind, kind.label(language))
+                        .changed();
+                }
+                changed
             });
 
         if combo_resp.inner.unwrap_or(false) {
@@ -406,7 +423,7 @@ fn render_banner_selector(
                     changed = true;
                 }
             }
-            BannerContentType::SystemTime => {}
+            BannerContentType::SystemTime | BannerContentType::Lyrics => {}
             BannerContentType::CpuStatus | BannerContentType::GpuStatus => {
                 if components::checkbox(
                     ui,

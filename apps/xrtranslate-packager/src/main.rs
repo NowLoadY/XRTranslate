@@ -416,6 +416,22 @@ fn package(plan: &ReleasePlan) -> Result<PathBuf, PackageError> {
         copy_native_directory(&plan.resources_dir, &staging.join("resources"))?;
         copy_file_to(&plan.seed_database, &staging.join(CORPUS_SEED_PATH))?;
         copy_file_to(&plan.license, &staging.join("LICENSE"))?;
+        let lyric_license = staging.join("licenses/desktop-lyric");
+        fs::create_dir_all(&lyric_license)
+            .and_then(|()| {
+                fs::write(
+                    lyric_license.join("LICENSE.md"),
+                    include_str!("../../../third_party/desktop-lyric/LICENSE.md"),
+                )?;
+                fs::write(
+                    lyric_license.join("SOURCE.md"),
+                    include_str!("../../../third_party/desktop-lyric/XRTranslate-source.md"),
+                )
+            })
+            .map_err(|source| PackageError::Io {
+                context: "cannot write desktop-lyric attribution".into(),
+                source,
+            })?;
         // Export the exact curated references used by the app, never runtime recordings.
         for voice in xrtranslate_assets::voices::BUILTIN_VOICES {
             let directory = staging.join("resources/voices").join(voice.id);

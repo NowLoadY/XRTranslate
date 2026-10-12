@@ -59,9 +59,14 @@ serde_yaml_ng = "0.10"
 xrtranslate-supervisor = { path = "../crates/xrtranslate-supervisor" }
 
 [target.'cfg(windows)'.dependencies]
+# Enable Rust futures for the WinRT media-session operations.
+windows-future = "0.1.1"
 wasapi = "0.23.0"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Performance", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 windows = { version = "0.60.0", features = [
+    "Foundation",
+    "Media_Control",
+    "Win32_System_WinRT",
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Direct2D",
@@ -84,6 +89,7 @@ windows = { version = "0.60.0", features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.18.0", default-features = false, features = ["async-io"] }
 eframe = { version = "0.36.1", features = ["glow"] }
 ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "screencast"] }
 pipewire = "0.10.1"

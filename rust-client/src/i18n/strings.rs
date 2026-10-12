@@ -1,5 +1,20 @@
 /// Consolidated single-source-of-truth dictionary: `(English Key, Chinese (zh), Japanese (ja), Korean (ko), Russian (ru))`
 pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
+    ("Lyrics", "歌词", "歌詞", "가사", "Текст песни"),
+    (
+        "Clear lyrics cache",
+        "清空歌词缓存",
+        "歌詞キャッシュを削除",
+        "가사 캐시 지우기",
+        "Очистить кэш текстов песен",
+    ),
+    (
+        "Show the current song’s lyrics in an OSC header or footer. Runs only while that slot is in use.",
+        "在 OSC 页眉或页脚显示当前歌曲的歌词，仅在使用该槽位时运行。",
+        "OSC のヘッダーまたはフッターに再生中の歌詞を表示。使用中のみ動作します。",
+        "OSC 머리글이나 바닥글에 현재 곡의 가사를 표시합니다. 해당 슬롯 사용 중에만 실행됩니다.",
+        "Текст текущей песни в заголовке или подвале OSC. Работает только при использовании этого слота.",
+    ),
     ("Search", "搜索", "検索", "검색", "Поиск"),
     ("Original", "原文", "原文", "원문", "Оригинал"),
     (
@@ -2897,11 +2912,11 @@ pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     ("Server", "服务器", "サーバー", "서버", "Сервер"),
     ("Plugins", "插件", "プラグイン", "플러그인", "Плагины"),
     (
-        "Choose which optional tools appear in the sidebar.",
-        "选择侧边栏中显示的扩展插件与工具。",
-        "サイドバーに表示するオプションツールを選択します。",
-        "사이드바에 표시할 옵션 도구를 선택하세요。",
-        "Выберите дополнительные инструменты для боковой панели.",
+        "Choose which optional tools are enabled.",
+        "选择要启用的可选插件与工具。",
+        "有効にするオプションツールを選択します。",
+        "사용할 선택 도구를 활성화하세요.",
+        "Выберите дополнительные инструменты для включения.",
     ),
     (
         "Service Providers",

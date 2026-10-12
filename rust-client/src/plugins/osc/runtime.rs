@@ -111,6 +111,7 @@ pub enum BannerContentType {
     SystemTime,
     CpuStatus,
     GpuStatus,
+    Lyrics,
 }
 
 impl BannerContentType {
@@ -121,6 +122,7 @@ impl BannerContentType {
             Self::SystemTime => crate::i18n::tr(language, "System Time"),
             Self::CpuStatus => crate::i18n::tr(language, "CPU Usage"),
             Self::GpuStatus => crate::i18n::tr(language, "GPU Usage"),
+            Self::Lyrics => crate::i18n::tr(language, "Lyrics"),
         }
     }
 }
@@ -143,8 +145,9 @@ impl Default for BannerConfig {
 }
 
 impl BannerConfig {
-    pub fn render_text(&self, metrics: &super::sys_info::SystemMetrics) -> String {
+    pub fn render_text(&self, metrics: &super::sys_info::SystemMetrics, lyric: &str) -> String {
         match self.content_type {
+            BannerContentType::Lyrics => lyric.to_owned(),
             BannerContentType::None => String::new(),
             BannerContentType::CustomText => self.custom_text.trim().to_string(),
             BannerContentType::SystemTime => {
@@ -271,6 +274,16 @@ struct OscConfig {
 }
 
 impl OscSettings {
+    /// Reserve at most one third of the chatbox for lyrics, capped at 48
+    /// characters. The remaining space belongs to speech and other banners.
+    pub(crate) fn lyric_budget(&self) -> Option<usize> {
+        let slots = [&self.header_config, &self.footer_config]
+            .into_iter()
+            .filter(|banner| banner.content_type == BannerContentType::Lyrics)
+            .count();
+        (self.enabled && slots > 0).then(|| (self.max_text_length / 3).min(48) / slots)
+    }
+
     /// Retains the established config.json OSC section, but only the native client reads it.
     pub fn from_project_config() -> Self {
         let mut settings = Self::default();
@@ -378,6 +391,7 @@ struct QueuedMessage {
     expires_at: Option<Instant>,
 }
 enum Command {
+    Lyric(String),
     Previews(
         u64,
         bool,
@@ -419,6 +433,10 @@ pub struct OscHandle {
 }
 
 impl OscHandle {
+    pub(crate) fn set_lyric(&self, text: String) {
+        let _ = self.tx.send(Command::Lyric(text));
+    }
+
     pub fn set_previews(
         &self,
         stream: u64,
@@ -726,12 +744,13 @@ fn dispatch_loop(
     let mut live = Vec::new();
     let mut previews: Vec<HistoryMessage> = Vec::new();
     let mut manual_message = None;
+    let mut lyric = String::new();
     // Keep only the latest snapshot, while preserving a final notification.
     let mut pending: Option<bool> = None;
     let mut clear_pending = false;
     let mut force_send = false;
     let mut last_send = Instant::now() - COOLDOWN;
-    let mut next_banner_refresh = banner_refresh_deadline(&settings, Instant::now());
+    let mut next_banner_refresh = banner_refresh_deadline(&settings, Instant::now(), false);
     loop {
         let wait = dispatch_wait(
             pending.is_some(),
@@ -748,6 +767,15 @@ fn dispatch_loop(
         let mut notify = false;
         let mut shutdown = false;
         match command {
+            Ok(Command::Lyric(text)) => {
+                let text = text
+                    .chars()
+                    .take(settings.lyric_budget().unwrap_or(0))
+                    .collect::<String>();
+                changed = text != lyric;
+                lyric = text;
+                next_banner_refresh = banner_refresh_deadline(&settings, now, !lyric.is_empty());
+            }
             Ok(Command::ManualMessage { text, ttl }) if settings.enabled => {
                 clear_pending = false;
                 manual_message = Some(ManualMessage {
@@ -892,10 +920,13 @@ fn dispatch_loop(
                     last_send = now;
                 }
                 settings = updated;
+                if settings.lyric_budget().is_none() {
+                    lyric.clear();
+                }
                 history.retain(|entry| settings.accepts_source(entry.source_kind));
                 live.retain(|entry| settings.accepts_source(entry.source_kind));
                 previews.retain(|entry| settings.accepts_source(entry.source_kind));
-                next_banner_refresh = banner_refresh_deadline(&settings, now);
+                next_banner_refresh = banner_refresh_deadline(&settings, now, !lyric.is_empty());
                 changed = true;
             }
             Ok(Command::Shutdown) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
@@ -915,7 +946,7 @@ fn dispatch_loop(
             now,
         );
         if next_banner_refresh.is_some_and(|deadline| now >= deadline) {
-            next_banner_refresh = banner_refresh_deadline(&settings, now);
+            next_banner_refresh = banner_refresh_deadline(&settings, now, !lyric.is_empty());
             force_send = true;
             changed = true;
         }
@@ -937,6 +968,7 @@ fn dispatch_loop(
                     manual_message.as_ref(),
                     &settings,
                     &monitor.snapshot(),
+                    &lyric,
                     !live.is_empty() || !previews.is_empty(),
                     notify,
                 )
@@ -1015,11 +1047,12 @@ fn build_queued_message(
     manual_message: Option<&ManualMessage>,
     settings: &OscSettings,
     metrics: &super::sys_info::SystemMetrics,
+    lyric: &str,
     typing: bool,
     notify: bool,
 ) -> QueuedMessage {
     QueuedMessage {
-        text: build_chatbox_text(history, live, manual_message, settings, metrics),
+        text: build_chatbox_text(history, live, manual_message, settings, metrics, lyric),
         typing,
         notify,
         expires_at: next_content_expiry(history, live, manual_message),
@@ -1043,12 +1076,28 @@ fn dispatch_wait(
         .unwrap_or(Duration::from_secs(3600))
 }
 
-fn banner_refresh_deadline(settings: &OscSettings, now: Instant) -> Option<Instant> {
-    (settings.enabled
-        && settings.persistent_banners
-        && (settings.header_config.content_type != BannerContentType::None
-            || settings.footer_config.content_type != BannerContentType::None))
-        .then_some(now + BANNER_REFRESH_INTERVAL)
+fn banner_refresh_deadline(
+    settings: &OscSettings,
+    now: Instant,
+    has_lyric: bool,
+) -> Option<Instant> {
+    if !settings.enabled {
+        return None;
+    }
+    let persistent = settings.persistent_banners
+        && [&settings.header_config, &settings.footer_config]
+            .into_iter()
+            .any(|banner| {
+                !matches!(
+                    banner.content_type,
+                    BannerContentType::None | BannerContentType::Lyrics
+                )
+            });
+    if persistent {
+        Some(now + BANNER_REFRESH_INTERVAL)
+    } else {
+        has_lyric.then_some(now + Duration::from_secs(5))
+    }
 }
 
 fn next_content_expiry(

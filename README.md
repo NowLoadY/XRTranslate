@@ -163,6 +163,7 @@ This repository contains code released under different open-source licenses:
 
 - Code originating from the original X-Translator project remains under the [MIT License](LICENSE-MIT).
 - The native Rust client and newly added code are released under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).
+- The [desktop-lyric reference source and adapted lyric mechanisms](third_party/desktop-lyric/XRTranslate-source.md) retain their [GPL-3.0-or-later license](third_party/desktop-lyric/LICENSE.md) and original attribution.
 
 Please refer to the corresponding license files and source files for the applicable licensing terms.
 

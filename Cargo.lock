@@ -5661,6 +5661,7 @@ dependencies = [
  "uuid",
  "wasapi",
  "windows 0.60.0",
+ "windows-future 0.1.1",
  "windows-sys 0.61.2",
  "winit",
  "winres",
@@ -5673,6 +5674,7 @@ dependencies = [
  "xrtranslate-prompt",
  "xrtranslate-protocol",
  "xrtranslate-supervisor",
+ "zbus",
  "zip",
 ]
 

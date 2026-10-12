@@ -1,0 +1,11 @@
+{
+  "name": "@name@",
+  "description": "@description@",
+  "uuid": "@uuid@",
+  "gettext-domain": "@gettext@",
+  "settings-schema": "@rdnn@",
+  "shell-version": [
+    "@shell@"
+  ],@version@
+  "url": "@url@"
+}

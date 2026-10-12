@@ -1,0 +1,9 @@
+.env
+po/*.pot
+
+node_modules
+package.json
+package-lock.json
+pnpm-lock.json
+yarn.lock
+bun.lock

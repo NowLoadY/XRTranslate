@@ -34,6 +34,7 @@ pub(super) fn build_chatbox_text(
     manual_message: Option<&ManualMessage>,
     settings: &OscSettings,
     metrics: &SystemMetrics,
+    lyric: &str,
 ) -> String {
     let mut entries = history.iter().chain(live.iter()).collect::<VecDeque<_>>();
     // A stale live caption must not take precedence over a newer final result.
@@ -44,59 +45,34 @@ pub(super) fn build_chatbox_text(
         entries.pop_front();
     }
 
-    if let Some(manual) = manual_message {
-        let manual_raw = manual.text.trim();
-        if !manual_raw.is_empty() {
-            let (manual_limit, manual_lines) =
-                entries
-                    .back()
-                    .map_or((settings.max_text_length, MAX_LINES), |latest| {
-                        if latest.updated_at > manual.updated_at {
-                            let latest = render_entry(latest, settings);
-                            (
-                                settings
-                                    .max_text_length
-                                    .saturating_sub(latest.chars().count() + 1),
-                                MAX_LINES.saturating_sub(latest.lines().count()),
-                            )
-                        } else {
-                            (settings.max_text_length, MAX_LINES)
-                        }
-                    });
-            let manual_text = fit_lines(
-                fit_prefixed_text(
-                    settings.prefix_for(OscInputSource::Typing),
-                    manual_raw,
-                    manual_limit,
-                ),
-                manual_lines,
-            );
-            if !manual_text.is_empty() {
-                let manual_len = manual_text.chars().count();
-                if entries.is_empty() || manual_len >= settings.max_text_length {
-                    return manual_text;
-                }
-                let available_for_asr = settings.max_text_length.saturating_sub(manual_len + 1);
-                if available_for_asr == 0 {
-                    return manual_text;
-                }
-                let asr_text = fit_asr_entries(
-                    &mut entries,
-                    available_for_asr,
-                    MAX_LINES.saturating_sub(manual_text.lines().count()),
-                    settings,
-                );
-                return if asr_text.is_empty() {
-                    manual_text
-                } else {
-                    format!("{asr_text}\n{manual_text}")
-                };
+    let lyric = lyric
+        .chars()
+        .take(settings.lyric_budget().unwrap_or(0))
+        .collect::<String>();
+    let prefix = settings.header_config.render_text(metrics, &lyric);
+    let suffix = settings.footer_config.render_text(metrics, &lyric);
+
+    if let Some(manual) = manual_message.filter(|manual| !manual.text.trim().is_empty()) {
+        // Manual text and translations share the same space below/above lyrics.
+        // Keep their established priority; decorations may not consume the body.
+        let mut prefix = prefix.as_str();
+        let mut suffix = suffix.as_str();
+        while decoration_length(prefix, suffix) >= settings.max_text_length {
+            if !suffix.is_empty() {
+                suffix = "";
+            } else if !prefix.is_empty() {
+                prefix = "";
+            } else {
+                break;
             }
         }
+        let limit = settings
+            .max_text_length
+            .saturating_sub(decoration_length(prefix, suffix));
+        let lines = MAX_LINES.saturating_sub(prefix.lines().count() + suffix.lines().count());
+        let body = fit_manual_entries(&mut entries, manual, settings, limit, lines);
+        return fit_lines(compose_chatbox(prefix, &body, suffix), MAX_LINES);
     }
-
-    let prefix = settings.header_config.render_text(metrics);
-    let suffix = settings.footer_config.render_text(metrics);
 
     // In persistent mode the decorations remain visible after message TTLs
     // expire; ordinary messages still disappear from `history`/`live`.
@@ -104,7 +80,22 @@ pub(super) fn build_chatbox_text(
         return if settings.persistent_banners {
             fit_decorations(&prefix, &suffix, settings.max_text_length)
         } else {
-            String::new()
+            // A selected lyric is a live output, independent of caption TTLs.
+            let header = if settings.header_config.content_type
+                == super::runtime::BannerContentType::Lyrics
+            {
+                &lyric
+            } else {
+                ""
+            };
+            let footer = if settings.footer_config.content_type
+                == super::runtime::BannerContentType::Lyrics
+            {
+                &lyric
+            } else {
+                ""
+            };
+            fit_decorations(header, footer, settings.max_text_length)
         };
     }
 
@@ -128,6 +119,52 @@ pub(super) fn build_chatbox_text(
     }
 
     String::new()
+}
+
+fn fit_manual_entries(
+    entries: &mut VecDeque<&HistoryMessage>,
+    manual: &ManualMessage,
+    settings: &OscSettings,
+    limit: usize,
+    lines: usize,
+) -> String {
+    let (manual_limit, manual_lines) = entries.back().map_or((limit, lines), |latest| {
+        if latest.updated_at > manual.updated_at {
+            let latest = render_entry(latest, settings);
+            (
+                limit.saturating_sub(latest.chars().count() + 1),
+                lines.saturating_sub(latest.lines().count()),
+            )
+        } else {
+            (limit, lines)
+        }
+    });
+    let manual_text = fit_lines(
+        fit_prefixed_text(
+            settings.prefix_for(OscInputSource::Typing),
+            &manual.text,
+            manual_limit,
+        ),
+        manual_lines,
+    );
+    if manual_text.is_empty() {
+        return fit_asr_entries(entries, limit, lines, settings);
+    }
+    let available = limit.saturating_sub(manual_text.chars().count() + 1);
+    if entries.is_empty() || available == 0 {
+        return manual_text;
+    }
+    let captions = fit_asr_entries(
+        entries,
+        available,
+        lines.saturating_sub(manual_text.lines().count()),
+        settings,
+    );
+    if captions.is_empty() {
+        manual_text
+    } else {
+        format!("{captions}\n{manual_text}")
+    }
 }
 
 fn fit_asr_entries(

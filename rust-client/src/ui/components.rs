@@ -2976,17 +2976,20 @@ pub fn reset_button(ui: &mut Ui, id_salt: &str) -> egui::Response {
         image = image.rotate(rotation_angle, Vec2::splat(0.5));
     }
 
-    let resp = Frame::new()
-        .fill(fill)
-        .corner_radius(CornerRadius::same(12))
-        .inner_margin(Margin::same(6))
-        .stroke(Stroke::new(1.0, stroke_color))
-        .shadow(egui::Shadow::NONE)
-        .show(ui, |ui| {
-            ui.add(image);
-        })
-        .response
-        .interact(egui::Sense::click());
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(27.0), egui::Sense::hover());
+    let resp = ui.interact(rect, id, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        ui.painter().circle(
+            rect.center(),
+            (rect.width() - 1.0) * 0.5,
+            fill,
+            Stroke::new(1.0, stroke_color),
+        );
+        image.paint_at(
+            ui,
+            egui::Rect::from_center_size(rect.center(), Vec2::splat(13.0)),
+        );
+    }
 
     if resp.clicked() {
         ui.memory_mut(|m| {

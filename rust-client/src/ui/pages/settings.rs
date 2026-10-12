@@ -759,7 +759,7 @@ fn render_plugins_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     ui.label(
         egui::RichText::new(crate::i18n::tr(
             language,
-            "Choose which optional tools appear in the sidebar.",
+            "Choose which optional tools are enabled.",
         ))
         .size(12.5)
         .color(crate::ui::theme::text_weak()),
@@ -792,7 +792,9 @@ fn render_plugins_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 
                     ui.add_space(10.0);
 
-                    let available_for_text = (ui.available_width() - 56.0).max(80.0);
+                    let has_cache_action = descriptor.id == crate::plugins::PluginId::LYRICS;
+                    let controls_width = if has_cache_action { 90.0 } else { 56.0 };
+                    let available_for_text = (ui.available_width() - controls_width).max(80.0);
                     ui.allocate_ui_with_layout(
                         egui::vec2(available_for_text, 0.0),
                         egui::Layout::top_down(egui::Align::Min),
@@ -834,6 +836,26 @@ fn render_plugins_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                             .inner;
                         if response.changed() {
                             app.set_plugin_enabled(descriptor.id, enabled);
+                        }
+                        #[cfg(any(windows, target_os = "linux"))]
+                        if has_cache_action {
+                            let clearing = app.lyrics_plugin.cache_is_clearing();
+                            let hint = crate::i18n::tr(language, "Clear lyrics cache");
+                            let response = ui
+                                .add_enabled_ui(!clearing, |ui| {
+                                    components::reset_button(ui, "lyrics_cache_clear")
+                                })
+                                .inner;
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(egui::WidgetType::Button, !clearing, hint)
+                            });
+                            if response.on_hover_text(hint).clicked() {
+                                app.lyrics_plugin.clear_cache();
+                            }
+                            if clearing {
+                                ui.ctx()
+                                    .request_repaint_after(std::time::Duration::from_millis(100));
+                            }
                         }
                     });
                 });

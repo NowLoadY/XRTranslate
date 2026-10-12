@@ -679,6 +679,8 @@ struct XRTranslateApp {
     tts_runtime_backend: Option<String>,
     tts_runtime_cuda_version: Option<String>,
     osc_plugin: OscPlugin,
+    #[cfg(any(windows, target_os = "linux"))]
+    lyrics_plugin: plugins::lyrics::LyricsPlugin,
     auto_input_plugin: plugins::auto_input::AutoInputPlugin,
     vr_overlay_plugin: VrOverlayPlugin,
     audio_studio: AudioStudioController,
@@ -938,6 +940,23 @@ impl Default for XRTranslateApp {
             settings.osc_settings.clone(),
             settings.plugin_preferences.is_enabled(PluginId::OSC),
         );
+        #[cfg(any(windows, target_os = "linux"))]
+        let lyrics_plugin = {
+            let output = osc_plugin.publisher();
+            let mut plugin = plugins::lyrics::LyricsPlugin::new(
+                backend_manager
+                    .runtime_layout()
+                    .runtime_root()
+                    .join("cache/lyrics"),
+                move |text| output.set_lyric(text),
+            );
+            if settings.plugin_preferences.is_enabled(PluginId::LYRICS)
+                && settings.plugin_preferences.is_enabled(PluginId::OSC)
+            {
+                plugin.set_budget(settings.osc_settings.lyric_budget());
+            }
+            plugin
+        };
         let vr_overlay_plugin = VrOverlayPlugin::new(
             settings.vr_overlay_settings.clone(),
             settings.plugin_preferences.is_enabled(PluginId::VR_OVERLAY),
@@ -1772,6 +1791,8 @@ impl Default for XRTranslateApp {
             tts_runtime_backend: None,
             tts_runtime_cuda_version: None,
             osc_plugin,
+            #[cfg(any(windows, target_os = "linux"))]
+            lyrics_plugin,
             auto_input_plugin,
             vr_overlay_plugin,
             audio_studio,
@@ -2710,6 +2731,7 @@ impl XRTranslateApp {
 
         let registry = PluginRegistry::builtin();
         registry.set_enabled(&mut self.plugin_preferences, id, enabled);
+        self.sync_lyrics();
         registry.normalize_active_page(&self.plugin_preferences, &mut self.navigation.page);
         self.save_settings();
     }
@@ -2745,7 +2767,10 @@ impl XRTranslateApp {
                 }
                 OscUiAction::SaveSettings => self.save_settings(),
                 OscUiAction::SettingsApplied(result) => match result {
-                    Ok(()) => self.last_error = None,
+                    Ok(()) => {
+                        self.last_error = None;
+                        self.sync_lyrics();
+                    }
                     Err(error) => self.notify_error("Could not apply OSC settings.", error),
                 },
                 OscUiAction::SetLanguageRoute {
@@ -2784,15 +2809,30 @@ impl XRTranslateApp {
         }
     }
 
+    fn sync_lyrics(&mut self) {
+        #[cfg(any(windows, target_os = "linux"))]
+        {
+            let active =
+                self.plugin_enabled(PluginId::LYRICS) && self.plugin_enabled(PluginId::OSC);
+            self.lyrics_plugin.set_budget(if active {
+                self.osc_plugin.draft().lyric_budget()
+            } else {
+                None
+            });
+        }
+    }
+
     fn render_osc_plugin_page(&mut self, ui: &mut egui::Ui) {
         let mute_gate_enabled = self.mute_self_pauses_translation.load(Ordering::Acquire);
         let languages = self.language_capabilities();
+        let lyrics_available = self.plugin_enabled(PluginId::LYRICS);
         let actions = self.osc_plugin.render_page(
             ui,
             OscPageContext {
                 language: self.ui_language,
                 preparing_text: self.text_translation.preparing_host(),
                 mute_gate_enabled,
+                lyrics_available,
                 languages,
                 source_lang: &self.source_lang,
                 target_lang: &self.target_lang,

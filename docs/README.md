@@ -1,21 +1,26 @@
 # Documentation map
 
-Documents are grouped by responsibility. Stable governance and cross-cutting
-architecture documents remain at this level; implementation-specific provider
-notes live under `providers/`.
+Documents are grouped by responsibility. Architecture documents define module
+ownership, dependency direction, shared contracts, and resource lifecycle.
+Keep them short and current: update the relevant rule when a boundary changes.
+Algorithms, default parameters, schema fields, UI walkthroughs, migration
+history, and verification logs do not belong in these documents. Code and
+configuration own implementation details; operational guides retain procedures
+needed to build, integrate, or use the system. Avoid repeating the same rule
+across documents; link to its owner.
 
 ## Contracts and architecture
 
 - [Refactoring contract](refactoring-contract.md): compatibility invariants,
-  dependency direction, and verification requirements.
+  ownership, extraction, and proportionate verification.
 - [Platform architecture](platform-architecture.md): host/platform boundaries,
-  downloads, runtime selection, and resource ownership.
+  capability composition, and resource ownership.
 - [Plugin architecture](plugin-architecture.md): extension contracts and
-  dependency rules.
-- [Prompt architecture](prompt-architecture.md): Prompt Studio semantics,
-  execution traces, and provider delivery boundaries.
-- [UI architecture](ui-architecture.md): shared theme tokens, animation timing,
-  and opt-in GPU border rendering.
+  plugin lifecycle.
+- [Prompt architecture](prompt-architecture.md): prompt, context, execution,
+  and delivery ownership.
+- [UI architecture](ui-architecture.md): shared presentation, adaptive layout,
+  and interaction ownership.
 
 ## Providers and runtime
 

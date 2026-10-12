@@ -575,7 +575,7 @@ fn navigation_entries(
     entries.extend(
         descriptors
             .into_iter()
-            .filter(|descriptor| plugins.is_enabled(descriptor.id))
+            .filter(|descriptor| descriptor.navigation_order.is_some() && plugins.is_enabled(descriptor.id))
             .map(|descriptor| NavigationEntry {
                 page: Page::Plugin(descriptor.id),
                 title: descriptor.title_key,
