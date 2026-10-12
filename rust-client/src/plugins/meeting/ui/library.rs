@@ -16,48 +16,41 @@ pub(super) fn render_library(
     ui: &mut egui::Ui,
 ) -> UiAction {
     let mut action = UiAction::None;
-    page_header(ui, "Meeting notes", language, |ui| {
-        if components::primary_button(ui, tr(language, "New meeting")).clicked() {
-            action = UiAction::NewLive;
-        }
-        if components::animated_button(ui, tr(language, "Import audio")).clicked() {
-            action = UiAction::NewImport;
-        }
-    });
+    page_header(ui, "Meeting notes", language, |_| {});
+    components::library_start(
+        ui,
+        egui::include_image!("../../../../resources/plugins/meeting/icon.svg"),
+        tr(language, "Capture a meeting"),
+        tr(
+            language,
+            "Create a live record or import an audio file. Records are stored locally.",
+        ),
+        |ui| {
+            if components::primary_button(ui, tr(language, "New meeting")).clicked() {
+                action = UiAction::NewLive;
+            }
+            if components::secondary_button(ui, tr(language, "Import audio")).clicked() {
+                action = UiAction::NewImport;
+            }
+        },
+    );
 
     if let Some(error) = &controller.error {
         components::error_notice(ui, language, error);
         ui.add_space(10.0);
     }
 
-    components::search_bar(ui, &mut controller.search, tr(language, "Search meetings"));
-
-    ui.add_space(12.0);
-
     if controller.meetings.is_empty() {
-        components::card(ui, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.add_space(16.0);
-                ui.label(
-                    egui::RichText::new(tr(language, "No meetings yet"))
-                        .size(16.0)
-                        .strong()
-                        .color(crate::ui::theme::text_strong()),
-                );
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(tr(
-                        language,
-                        "Create a live record or import an audio file. Records are stored locally.",
-                    ))
-                    .size(12.0)
-                    .color(crate::ui::theme::text_weak()),
-                );
-                ui.add_space(16.0);
-            });
-        });
         return action;
     }
+    let limit = components::library_navigation(
+        ui,
+        language,
+        &mut controller.browse_all,
+        &mut controller.search,
+        controller.meetings.len(),
+        tr(language, "Search meetings"),
+    );
 
     let query = controller.search.to_lowercase();
     egui::ScrollArea::vertical()
@@ -67,6 +60,7 @@ pub(super) fn render_library(
                 .meetings
                 .iter()
                 .filter(|meeting| query.is_empty() || meeting.name.to_lowercase().contains(&query))
+                .take(limit)
             {
                 ui.push_id(("meeting-card", &meeting.id), |ui| {
                     components::card(ui, |ui| {

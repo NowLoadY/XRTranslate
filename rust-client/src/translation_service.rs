@@ -185,3 +185,11 @@ impl AudioTask {
         }
     }
 }
+
+/// Host audio and text lanes belong to one live conversation in this client.
+/// A fresh process gets a fresh identity; plugins keep their own task scopes.
+pub(crate) fn host_conversation_id() -> String {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| format!("host-{}", uuid::Uuid::new_v4()))
+        .clone()
+}

@@ -68,23 +68,20 @@ pub(super) fn render_setup(
                             .color(crate::ui::theme::text_strong()),
                     );
                     ui.add_space(4.0);
-                    components::input_field(
+                    if components::source_input(
                         ui,
+                        "meeting_source_file",
                         &mut controller.draft.import_path,
                         tr(language, "Choose audio file path"),
-                    );
-                    let choose_file =
-                        components::animated_button(ui, tr(language, "Choose file")).clicked();
-                    if let Some(path) = crate::file_dialog::FileDialog::new()
-                        .add_filter("Audio", &["wav", "mp3", "flac", "m4a", "aac", "ogg"])
-                        .pick_file(ui.ctx(), "meeting_source_file", choose_file)
+                        tr(language, "Choose file"),
+                        &[("Audio", crate::plugins::media::task::AUDIO_EXTENSIONS)],
+                    ) && controller.draft.name == "New meeting"
+                        && std::path::Path::new(&controller.draft.import_path).is_file()
+                        && let Some(stem) = std::path::Path::new(&controller.draft.import_path)
+                            .file_stem()
+                            .and_then(|value| value.to_str())
                     {
-                        controller.draft.import_path = path.display().to_string();
-                        if controller.draft.name == "New meeting"
-                            && let Some(stem) = path.file_stem().and_then(|value| value.to_str())
-                        {
-                            controller.draft.name = stem.to_owned();
-                        }
+                        controller.draft.name = stem.to_owned();
                     }
                     ui.add_space(4.0);
                     ui.label(

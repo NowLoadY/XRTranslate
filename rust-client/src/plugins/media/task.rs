@@ -20,7 +20,13 @@ pub enum MediaType {
 }
 
 pub const AUDIO_EXTENSIONS: &[&str] = &[
-    "mp3", "wav", "flac", "aac", "ogg", "m4a", "opus", "wma", "ape", "alac",
+    "mp3", "wav", "flac", "aac", "ogg", "m4a", "opus", "wma", "ape", "alac", "aiff", "aif", "oga",
+];
+
+/// Common formats in the picker; the all-files option also allows backend-supported formats.
+pub const MEDIA_EXTENSIONS: &[&str] = &[
+    "mp4", "mkv", "webm", "avi", "mov", "flv", "ts", "m4v", "mpeg", "mpg", "wmv", "mp3", "wav",
+    "flac", "aac", "ogg", "m4a", "opus", "wma", "ape", "alac", "aiff", "aif", "oga", "srt", "vtt",
 ];
 
 pub fn detect_media_type(path: &Path) -> MediaType {

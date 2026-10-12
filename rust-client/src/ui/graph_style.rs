@@ -20,26 +20,28 @@ pub const ERROR_BORDER: Color32 = Color32::from_rgb(232, 110, 95);
 pub const ERROR_FILL: Color32 = Color32::from_rgba_unmultiplied_const(253, 242, 240, 200);
 
 pub fn command_button(ui: &mut egui::Ui, label: &str, filled: bool) -> egui::Response {
-    ui.add(
-        egui::Button::new(RichText::new(label).size(12.0).color(if filled {
-            Color32::WHITE
-        } else {
-            INK
-        }))
-        .fill(if filled { LINK_SELECTED } else { BAR_FILL })
-        .stroke(if filled {
-            Stroke::NONE
-        } else {
-            Stroke::new(1.0, BAR_BORDER)
-        })
-        .corner_radius(CornerRadius::same(6))
-        .min_size(Vec2::new(0.0, 28.0)),
-    )
+    ui.add(command_control(label, filled))
+}
+
+fn command_control(label: &str, filled: bool) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(label).size(12.0).color(if filled {
+        Color32::WHITE
+    } else {
+        INK
+    }))
+    .fill(if filled { LINK_SELECTED } else { BAR_FILL })
+    .stroke(if filled {
+        Stroke::NONE
+    } else {
+        Stroke::new(1.0, BAR_BORDER)
+    })
+    .corner_radius(CornerRadius::same(6))
+    .min_size(Vec2::new(0.0, 28.0))
+    .wrap_mode(egui::TextWrapMode::Extend)
 }
 
 pub fn toolbar_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
-    ui.add_enabled_ui(enabled, |ui| command_button(ui, label, false))
-        .inner
+    ui.add_enabled(enabled, command_control(label, false))
 }
 
 pub fn tab(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {

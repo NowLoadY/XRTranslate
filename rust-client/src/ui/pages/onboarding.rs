@@ -989,44 +989,7 @@ fn onboarding_model_config_card(
             }
 
             if provider.remote {
-                ui.add_space(12.0);
-                ui.vertical(|ui| {
-                    ui.label(i18n::tr(language, "Model"));
-                    let previous_model = provider.model.clone();
-                    components::combobox_ui(
-                        ui,
-                        (category, "online_model"),
-                        &previous_model,
-                        |ui| {
-                            for model in &provider.models {
-                                ui.selectable_value(&mut provider.model, model.clone(), model);
-                            }
-                        },
-                    );
-                    if provider.model != previous_model {
-                        result.remote_fields = Some(RemoteProviderFields {
-                            model: provider.model.clone(),
-                            api_key: provider.api_key.clone(),
-                        });
-                    }
-                });
-                ui.add_space(8.0);
-                ui.vertical(|ui| {
-                    ui.label(i18n::tr(language, "API key"));
-                    let key_response = components::singleline_input(
-                        ui,
-                        &mut provider.api_key,
-                        i18n::tr(language, "API key"),
-                        (ui.available_width() - 16.0).max(0.0),
-                        true,
-                    );
-                    if key_response.changed() {
-                        result.remote_fields = Some(RemoteProviderFields {
-                            model: provider.model.clone(),
-                            api_key: provider.api_key.clone(),
-                        });
-                    }
-                });
+                result.remote_fields = remote_provider_fields(ui, category, provider, language);
             } else {
                 match local_availability {
                     crate::runtime_install::LocalModelAvailability::InsufficientVram { .. } => {}
@@ -1062,6 +1025,35 @@ fn render_onboarding_optional(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
     }
 }
 
+fn remote_provider_fields(
+    ui: &mut egui::Ui,
+    category: &str,
+    provider: &mut crate::service_config::OnboardingProviderState,
+    language: i18n::UiLanguage,
+) -> Option<RemoteProviderFields> {
+    let previous_model = provider.model.clone();
+    ui.add_space(12.0);
+    ui.label(i18n::tr(language, "Model"));
+    components::combobox_ui(ui, (category, "online_model"), &previous_model, |ui| {
+        for model in &provider.models {
+            ui.selectable_value(&mut provider.model, model.clone(), model);
+        }
+    });
+    ui.add_space(8.0);
+    ui.label(i18n::tr(language, "API key"));
+    let key = components::singleline_input(
+        ui,
+        &mut provider.api_key,
+        i18n::tr(language, "API key"),
+        (ui.available_width() - 16.0).max(0.0),
+        true,
+    );
+    (key.changed() || provider.model != previous_model).then(|| RemoteProviderFields {
+        model: provider.model.clone(),
+        api_key: provider.api_key.clone(),
+    })
+}
+
 fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     let language = app.ui_language;
     let provider = app.service_config.onboarding_provider_state("tts");
@@ -1070,6 +1062,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     let mut delete_tts = None;
     let mut model_change = None;
     let mut voice_change = None;
+    let mut remote_fields = None;
 
     let tts_border_color = Color32::from_rgb(244, 63, 94);
     let border_id = ui.make_persistent_id("onboarding_tts_border");
@@ -1091,7 +1084,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     .strong(),
             );
             ui.add_space(10.0);
-            let Some(provider) = provider else {
+            let Some(mut provider) = provider else {
                 ui.label(i18n::tr(language, "No providers configured"));
                 return;
             };
@@ -1104,7 +1097,17 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 &app.runtime_installer.local_model_availability(),
             );
             ui.add_space(10.0);
-            if provider.selected != "none" {
+            if provider.remote {
+                if let Some(url) = provider
+                    .choices
+                    .iter()
+                    .find(|choice| choice.name == provider.selected)
+                    .and_then(|choice| choice.guide_url.as_deref())
+                {
+                    ui.hyperlink_to(format!("{} ↗", i18n::tr(language, "API Key Guide")), url);
+                }
+                remote_fields = remote_provider_fields(ui, "tts", &mut provider, language);
+            } else if provider.selected != "none" {
                 let selected_choice = provider
                     .choices
                     .iter()
@@ -1290,6 +1293,12 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
         handle_onboarding_save(app, result);
     }
 
+    if let Some(fields) = remote_fields {
+        app.service_config
+            .set_onboarding_remote_fields("tts", fields.model, fields.api_key);
+        let result = app.service_config.save_onboarding_configuration();
+        handle_onboarding_save(app, result);
+    }
     if let Some(selected) = selected_provider {
         app.service_config
             .select_onboarding_provider("tts", &selected);

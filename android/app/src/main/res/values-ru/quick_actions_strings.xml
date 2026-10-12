@@ -1,0 +1,16 @@
+<resources>
+    <string name="quick_title">Быстрый перевод</string>
+    <string name="quick_ready">Перевод буфера обмена</string>
+    <string name="quick_unlock">Разблокируйте для перевода или сохранения</string>
+    <string name="quick_translate">Перевести буфер обмена</string>
+    <string name="quick_save">Сохранить в основной словарь</string>
+    <string name="quick_saved">Сохранено в основной словарь</string>
+    <string name="quick_save_failed">Не удалось сохранить. Повторите попытку.</string>
+    <string name="quick_hint">Скопируйте текст и нажмите буфер обмена. Перевод автоматически заменит его содержимое.</string>
+    <string name="quick_clipboard_reading">Чтение буфера обмена…</string>
+    <string name="quick_clipboard_empty">В буфере обмена нет текста.</string>
+    <string name="export_open">Открыть с помощью…</string>
+    <string name="export_save">Сохранить копию</string>
+    <string name="export_saved">Файл сохранён</string>
+    <string name="export_failed">Не удалось открыть или сохранить файл.</string>
+</resources>

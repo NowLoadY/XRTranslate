@@ -99,23 +99,19 @@ fn export_controls(
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("subtitles");
-    for (label, extension) in [
-        ("Export SRT", "srt"),
-        ("Export VTT", "vtt"),
-        ("Export LRC", "lrc"),
+    for (label, format) in [
+        ("Export SRT", crate::export::Format::Srt),
+        ("Export VTT", crate::export::Format::Vtt),
+        ("Export LRC", crate::export::Format::Lrc),
     ] {
         if ui.button(tr(language, label)).clicked() {
             crate::ui::notifications::observe_error(ui.ctx(), ui.id().with("export"), "", None);
-            let content = match extension {
-                "vtt" => subtitles.export_vtt(),
-                "lrc" => subtitles.export_lrc(Some(stem)),
+            let content = match format {
+                crate::export::Format::Vtt => subtitles.export_vtt(),
+                crate::export::Format::Lrc => subtitles.export_lrc(Some(stem)),
                 _ => subtitles.export_srt(),
             };
-            if let Err(error) = crate::file_dialog::FileDialog::new()
-                .set_file_name(format!("{stem}.{extension}"))
-                .add_filter("Subtitles", &[extension])
-                .save(content)
-            {
+            if let Err(error) = crate::export::save(stem, format, content) {
                 crate::ui::notifications::observe_error(
                     ui.ctx(),
                     ui.id().with("export"),

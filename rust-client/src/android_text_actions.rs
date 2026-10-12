@@ -250,12 +250,16 @@ fn translate_request(
                 .collect::<Vec<_>>()
                 .join("\n");
             if matches!(outcome, TranslationOutcome::Completed) && !text.trim().is_empty() {
+                let first = result.segments.values().next().unwrap();
+                let payload = crate::android_translation_history::result_json(
+                    &diagnostic_input, &text, &first.source_lang, &first.target_lang,
+                );
                 let mut completed = COMPLETED.lock().unwrap();
                 completed.extend(std::mem::take(&mut result.segments).into_values());
                 while completed.len() > 32 {
                     completed.pop_front();
                 }
-                return (3, text);
+                return (3, payload);
             }
             match outcome {
                 TranslationOutcome::Failed(error) => log::warn!(

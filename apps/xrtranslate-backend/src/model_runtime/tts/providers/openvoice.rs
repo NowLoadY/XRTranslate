@@ -9,14 +9,14 @@ use xrtranslate_inference::{
 };
 
 use super::{provider_object, threads};
-use crate::model_runtime::tts::NativeTtsAdapter;
+use crate::model_runtime::tts::TtsAdapter;
 
 pub(in crate::model_runtime::tts) fn build(
     config: &AppConfig,
     model_asset: ModelAssetId,
     model_directory: &Path,
     supported_languages: Vec<String>,
-) -> Result<NativeTtsAdapter, String> {
+) -> Result<TtsAdapter, String> {
     let provider = provider_object(config, "openvoice")?;
     let configured_device = provider
         .get("device")
@@ -52,7 +52,7 @@ pub(in crate::model_runtime::tts) fn build(
         OpenVoiceSynthesisOptions { speed, base_voice },
     )
     .map_err(|error| error.to_string())?;
-    Ok(NativeTtsAdapter::openvoice(adapter, supported_languages))
+    Ok(TtsAdapter::openvoice(adapter, supported_languages))
 }
 
 fn base_voice_for(

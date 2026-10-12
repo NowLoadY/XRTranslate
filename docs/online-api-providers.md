@@ -72,6 +72,22 @@ Gemini uses the existing [audio chat-completions format](https://ai.google.dev/g
 and the shared ASR instruction graph. Its model card selects minimal reasoning,
 the same way as text chat. There are no provider-name dispatch branches.
 
+## TTS
+
+TTS uses the same catalogue, Welcome configuration and runtime credentials.
+Model cards declare language coverage, delivery, preset voices and cloning
+support. Connectors normalize output to PCM16; one bounded worker owns playback
+ordering and cancellation. Online synthesis does not load a local GPU runtime.
+Preset selection does not create a clone or upload a local reference recording.
+
+The built-in options are [Groq Orpheus](https://console.groq.com/docs/rate-limits)
+(English and Arabic) and [Gemini TTS](https://ai.google.dev/gemini-api/docs/pricing)
+(multilingual Flash-Lite and Flash). Both offer account-dependent free tiers,
+checked on 2026-10-12. The OpenAI speech connector returns complete WAV audio;
+the Gemini speech connector streams PCM. Their current connectors expose
+preset voices; local models retain reference-based cloning. Provider errors
+use the existing error notice without automatic service fallback.
+
 ## Runtime credentials and releases
 
 Development and installed builds use the same `runtime/user-config.json`.
@@ -107,6 +123,8 @@ it to one of the implemented wire formats:
 | Connector | Capability | Request and result |
 | --- | --- | --- |
 | `openai-chat` | Translation | Chat-completions messages; JSON or SSE text |
+| `openai-speech` | TTS | Speech JSON request; WAV audio |
+| `gemini-speech` | TTS | Interactions speech request; SSE PCM audio |
 | `openai-transcription` | ASR | WAV multipart upload; JSON transcript |
 | `openai-audio-chat` | ASR | Base64 WAV in chat messages; final text |
 | `dashscope-asr` | ASR | Native multimodal audio HTTP; final transcript |

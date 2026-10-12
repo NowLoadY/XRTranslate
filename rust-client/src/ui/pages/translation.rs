@@ -4,6 +4,7 @@ use eframe::egui;
 
 mod archive;
 pub(crate) mod history;
+pub(crate) mod presentation;
 use history::{render_fullscreen_history, render_history_feed};
 
 pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
@@ -274,67 +275,72 @@ fn render_translation_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::U
                 });
             ui.add_space(12.0);
 
-            crate::ui::layout::flow_row(ui, |ui| {
-                ui.add_space(8.0);
-                let mic_capturing = matches!(
-                    app.capture_source,
-                    CaptureSource::Microphone | CaptureSource::Both
-                );
-                let status = app.voice_clone_state().cloned();
-                let busy = status.as_ref().is_some_and(|status| {
-                    matches!(
-                        status.state,
-                        xrtranslate_protocol::VoiceClonePhase::Collecting
-                            | xrtranslate_protocol::VoiceClonePhase::Registering
-                    )
-                });
-                let label = match status.as_ref().map(|status| status.state) {
-                    Some(xrtranslate_protocol::VoiceClonePhase::Collecting) => status
-                        .as_ref()
-                        .map(|status| {
-                            format!(
-                                "{} {:.1}/{:.1}s",
-                                crate::i18n::tr(app.ui_language, "Collecting voice…"),
-                                status.collected_seconds,
-                                status.required_seconds
-                            )
-                        })
-                        .unwrap(),
-                    Some(xrtranslate_protocol::VoiceClonePhase::Registering) => {
-                        crate::i18n::tr(app.ui_language, "Creating voice…").into()
+            if app.service_config.tts_supports_cloning() {
+                crate::ui::layout::flow_row(ui, |ui| {
+                    ui.add_space(8.0);
+                    let mic_capturing = matches!(
+                        app.capture_source,
+                        CaptureSource::Microphone | CaptureSource::Both
+                    );
+                    let status = app.voice_clone_state().cloned();
+                    let busy = status.as_ref().is_some_and(|status| {
+                        matches!(
+                            status.state,
+                            xrtranslate_protocol::VoiceClonePhase::Collecting
+                                | xrtranslate_protocol::VoiceClonePhase::Registering
+                        )
+                    });
+                    let label = match status.as_ref().map(|status| status.state) {
+                        Some(xrtranslate_protocol::VoiceClonePhase::Collecting) => status
+                            .as_ref()
+                            .map(|status| {
+                                format!(
+                                    "{} {:.1}/{:.1}s",
+                                    crate::i18n::tr(app.ui_language, "Collecting voice…"),
+                                    status.collected_seconds,
+                                    status.required_seconds
+                                )
+                            })
+                            .unwrap(),
+                        Some(xrtranslate_protocol::VoiceClonePhase::Registering) => {
+                            crate::i18n::tr(app.ui_language, "Creating voice…").into()
+                        }
+                        _ => crate::i18n::tr(app.ui_language, "Clone microphone voice").into(),
+                    };
+                    let enabled = app.host_channels().any(|channel| {
+                        channel.source == CaptureSource::Microphone && channel.capturing
+                    }) && mic_capturing
+                        && !busy
+                        && tts_configured;
+                    let response = components::animated_button_enabled(ui, &label, enabled);
+                    let clicked = response.clicked();
+                    if let Some(message) =
+                        status.as_ref().and_then(|status| status.message.as_deref())
+                    {
+                        response.on_hover_text(message);
+                    } else if !tts_configured {
+                        response.on_disabled_hover_text(crate::i18n::tr(
+                            app.ui_language,
+                            "Configure a TTS provider on the Welcome page to enable voice cloning.",
+                        ));
+                    } else if !mic_capturing {
+                        response.on_disabled_hover_text(crate::i18n::tr(
+                            app.ui_language,
+                            "Start microphone translation to clone your voice.",
+                        ));
                     }
-                    _ => crate::i18n::tr(app.ui_language, "Clone microphone voice").into(),
-                };
-                let enabled = app.host_channels().any(|channel| {
-                    channel.source == CaptureSource::Microphone && channel.capturing
-                }) && mic_capturing
-                    && !busy
-                    && tts_configured;
-                let response = components::animated_button_enabled(ui, &label, enabled);
-                let clicked = response.clicked();
-                if let Some(message) = status.as_ref().and_then(|status| status.message.as_deref())
-                {
-                    response.on_hover_text(message);
-                } else if !tts_configured {
-                    response.on_disabled_hover_text(crate::i18n::tr(
-                        app.ui_language,
-                        "Configure a TTS provider on the Welcome page to enable voice cloning.",
-                    ));
-                } else if !mic_capturing {
-                    response.on_disabled_hover_text(crate::i18n::tr(
-                        app.ui_language,
-                        "Start microphone translation to clone your voice.",
-                    ));
-                }
-                if clicked {
-                    app.begin_voice_clone();
-                }
-                if status.as_ref().is_some_and(|status| {
-                    status.state == xrtranslate_protocol::VoiceClonePhase::Ready
-                }) {
-                    ui.label(egui::RichText::new("OK").color(egui::Color32::from_rgb(5, 150, 105)));
-                }
-            });
+                    if clicked {
+                        app.begin_voice_clone();
+                    }
+                    if status.as_ref().is_some_and(|status| {
+                        status.state == xrtranslate_protocol::VoiceClonePhase::Ready
+                    }) {
+                        ui.label(
+                            egui::RichText::new("OK").color(egui::Color32::from_rgb(5, 150, 105)),
+                        );
+                    }
+                });
+            }
         });
         if let Some(message) = app.voice_clone_state().and_then(|status| {
             (status.state == xrtranslate_protocol::VoiceClonePhase::Failed)
@@ -369,35 +375,34 @@ fn render_input_adaptation(
         ui.add_space(4.0);
     }
     let language = app.ui_language;
-    let recognize_when = crate::i18n::tr(language, "Recognize when:");
-    let speak = crate::i18n::tr(language, "Speak");
-    let always = crate::i18n::tr(language, "Always");
+    let recognition_mode = crate::i18n::tr(language, "Recognition mode:");
+    let automatic = crate::i18n::tr(language, "Automatic");
+    let pseudo_streaming = crate::i18n::tr(language, "Pseudo-streaming");
     let vad_sensitivity = crate::i18n::tr(language, "VAD Sensitivity");
     let pause_tolerance = crate::i18n::tr(language, "Pause tolerance");
     let changed = {
         let recognition = app.recognition_settings_mut(source);
-        let timing_changed = ui
+        let mode_changed = ui
             .horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new(recognize_when)
+                    egui::RichText::new(recognition_mode)
                         .color(crate::ui::theme::text_strong())
                         .strong(),
                 );
                 let previous = recognition.continuous_recognition;
-                let selected_timing_text = if recognition.continuous_recognition {
-                    always
+                let selected_mode = if recognition.continuous_recognition {
+                    pseudo_streaming
                 } else {
-                    speak
+                    automatic
                 };
-                components::combobox_ui(
-                    ui,
-                    ("recognition_timing", source),
-                    selected_timing_text,
-                    |ui| {
-                        ui.selectable_value(&mut recognition.continuous_recognition, false, speak);
-                        ui.selectable_value(&mut recognition.continuous_recognition, true, always);
-                    },
-                );
+                components::combobox_ui(ui, ("recognition_mode", source), selected_mode, |ui| {
+                    ui.selectable_value(&mut recognition.continuous_recognition, false, automatic);
+                    ui.selectable_value(
+                        &mut recognition.continuous_recognition,
+                        true,
+                        pseudo_streaming,
+                    );
+                });
                 recognition.continuous_recognition != previous
             })
             .inner;
@@ -424,7 +429,7 @@ fn render_input_adaptation(
             );
             response.drag_stopped() || (response.changed() && !response.dragged())
         };
-        timing_changed || background_changed || pause_changed
+        mode_changed || background_changed || pause_changed
     };
     if changed {
         app.set_audio_adaptation(source);

@@ -6,6 +6,62 @@ use xrtranslate_assets::{
     remote::{self, RemoteCapabilities, RemoteConnector, RemoteStreaming},
 };
 
+/// Validated online synthesis selection. Credentials stay in runtime settings.
+pub struct RemoteTtsConfig {
+    pub endpoint: String,
+    pub api_key: String,
+    pub model: &'static remote::RemoteModelManifest,
+}
+
+impl crate::AppConfig {
+    pub fn remote_tts(&self) -> Result<Option<RemoteTtsConfig>, String> {
+        let provider = self.tts.provider.trim();
+        if provider.is_empty() || provider == "none" {
+            return Ok(None);
+        }
+        let settings = self
+            .tts
+            .provider_config(provider)
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("tts.providers.{provider} must be an object"))?;
+        let field = |key| {
+            settings
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+        };
+        if matches!(field("transport"), "onnx" | "local") {
+            return Ok(None);
+        }
+        let mut issues = Vec::new();
+        let (connector, _) = resolve(
+            "tts",
+            Some(settings),
+            field("transport"),
+            "tts",
+            &mut issues,
+        );
+        if !issues.is_empty() {
+            return Err(issues.join("; "));
+        }
+        let model = connector
+            .and_then(|connector| remote::remote_model(connector, field("model")))
+            .filter(|model| model.tts.is_some())
+            .ok_or_else(|| "Select a supported TTS model on the Welcome Page.".to_owned())?;
+        for key in ["url", "api_key"] {
+            if field(key).is_empty() {
+                return Err(format!("tts.providers.{provider}.{key} is required"));
+            }
+        }
+        Ok(Some(RemoteTtsConfig {
+            endpoint: field("url").to_owned(),
+            api_key: field("api_key").to_owned(),
+            model,
+        }))
+    }
+}
+
 /// Expand only configured preset entries. Custom provider IDs remain ordinary
 /// objects and use exactly the same connector/capability resolution.
 pub fn apply_remote_defaults(document: &mut Value) {
@@ -14,6 +70,7 @@ pub fn apply_remote_defaults(document: &mut Value) {
             let section = match service.capability {
                 ModelCapability::Asr => "asr",
                 ModelCapability::Translation => "translation",
+                ModelCapability::Tts => "tts",
                 _ => continue,
             };
             let Some(settings) = document
@@ -34,7 +91,7 @@ pub fn apply_remote_defaults(document: &mut Value) {
     }
     // Legacy UI/runtime consumers still read transport. Keep it derived from
     // the explicit connector when present, including for custom providers.
-    for section in ["asr", "translation"] {
+    for section in ["asr", "translation", "tts"] {
         if let Some(providers) = document
             .get_mut(section)
             .and_then(|value| value.get_mut("providers"))
@@ -84,10 +141,10 @@ pub(crate) fn resolve(
             "{path}.connector does not support {section} with transport {transport:?}"
         ));
     }
-    let capability = if section == "asr" {
-        ModelCapability::Asr
-    } else {
-        ModelCapability::Translation
+    let capability = match section {
+        "asr" => ModelCapability::Asr,
+        "tts" => ModelCapability::Tts,
+        _ => ModelCapability::Translation,
     };
     if connector.is_some_and(|connector| connector.capability() != capability) {
         issues.push(format!("{path}.connector does not support {section}"));

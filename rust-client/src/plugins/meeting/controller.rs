@@ -76,7 +76,9 @@ pub struct MeetingController {
     pub minutes_dirty: bool,
     pub new_topic_title: String,
     pub search: String,
-    pub quick_note: String,
+    pub browse_all: bool,
+    pub highlights_only: bool,
+    pub marker_drafts: HashMap<String, String>,
     pub evidence_target: Option<String>,
     pub error: Option<String>,
     pub active_capture: SharedMeetingCapture,
@@ -130,7 +132,9 @@ impl MeetingController {
             minutes_dirty: false,
             new_topic_title: String::new(),
             search: String::new(),
-            quick_note: String::new(),
+            browse_all: false,
+            highlights_only: false,
+            marker_drafts: HashMap::new(),
             evidence_target: None,
             error,
             active_capture: Arc::new(Mutex::new(None)),
@@ -157,6 +161,10 @@ impl MeetingController {
                     .bundle
                     .as_ref()
                     .is_some_and(|current| current.meeting.id == bundle.meeting.id);
+                if !is_same_meeting {
+                    self.highlights_only = false;
+                    self.evidence_target = None;
+                }
                 for speaker in &bundle.speakers {
                     self.speaker_name_drafts
                         .entry(speaker.id.clone())
@@ -392,25 +400,18 @@ impl MeetingController {
         }
     }
 
-    pub fn add_marker(&mut self, segment_id: &str, kind: MarkerKind) {
-        let default_text = self
-            .bundle
-            .as_ref()
-            .and_then(|bundle| {
-                bundle
-                    .segments
-                    .iter()
-                    .find(|segment| segment.id == segment_id)
-            })
-            .map(|segment| {
-                segment
-                    .translated_text
-                    .as_deref()
-                    .unwrap_or(&segment.original_text)
-                    .to_owned()
-            })
-            .unwrap_or_default();
-        match self.store.add_marker(segment_id, kind, &default_text) {
+    pub fn highlight(&mut self, segment_id: &str) {
+        // A segment has one highlight; legacy annotations remain intact.
+        if self.bundle.as_ref().is_some_and(|bundle| {
+            bundle
+                .markers
+                .iter()
+                .any(|marker| marker.segment_id == segment_id)
+        }) {
+            return;
+        }
+        // Keep the existing storage representation so old meeting databases work unchanged.
+        match self.store.add_marker(segment_id, MarkerKind::Note, "") {
             Ok(_) => self.reload_open_meeting(),
             Err(error) => self.set_error(error),
         }
@@ -421,28 +422,18 @@ impl MeetingController {
             .store
             .update_marker(&marker.id, marker.kind, &marker.text)
         {
-            Ok(()) => self.reload_open_meeting(),
+            Ok(()) => {
+                self.marker_drafts.remove(&marker.id);
+                self.reload_open_meeting();
+            }
             Err(error) => self.set_error(error),
         }
     }
 
-    pub fn add_quick_note(&mut self) {
-        let note = self.quick_note.trim().to_owned();
-        if note.is_empty() {
-            return;
-        }
-        let segment_id = self
-            .bundle
-            .as_ref()
-            .and_then(|bundle| bundle.segments.last())
-            .map(|segment| segment.id.clone());
-        let Some(segment_id) = segment_id else {
-            self.error = Some("A quick note needs at least one transcript message".into());
-            return;
-        };
-        match self.store.add_marker(&segment_id, MarkerKind::Note, &note) {
-            Ok(_) => {
-                self.quick_note.clear();
+    pub fn remove_marker(&mut self, marker_id: &str) {
+        match self.store.delete_marker(marker_id) {
+            Ok(()) => {
+                self.marker_drafts.remove(marker_id);
                 self.reload_open_meeting();
             }
             Err(error) => self.set_error(error),

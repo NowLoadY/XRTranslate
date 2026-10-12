@@ -917,6 +917,8 @@ impl NativePipeline {
         }
         self.endpoint = EndpointDetector::new(config).map_err(|error| error.to_string())?;
         self.endpoint_config = config;
+        // Pseudo-streaming is explicit; otherwise endpointing selects the model's
+        // native stream or a complete utterance from its declared capabilities.
         self.fixed_window = continuous_recognition.then(|| FixedWindow::new(audio_source));
         self.reset();
         Ok(())

@@ -2,7 +2,7 @@ use crate::plugins::meeting::{
     MeetingAction, MeetingInputRequest, MeetingReprocessRequest, MeetingStartRequest,
     MeetingUiSnapshot,
     controller::{MeetingController, MeetingPane, MeetingRoute},
-    store::{MarkerKind, SegmentMarker},
+    store::SegmentMarker,
 };
 
 #[derive(Clone)]
@@ -17,9 +17,9 @@ pub(super) enum UiAction {
     Pause,
     End,
     NewTopic,
-    AddMarker(String, MarkerKind),
+    Highlight(String),
+    RemoveMarker(String),
     SaveMarker(SegmentMarker),
-    QuickNote,
     SaveMinutes,
     JumpToEvidence(String),
     Export,
@@ -79,13 +79,14 @@ pub(super) fn apply_action(
         UiAction::Pause => return MeetingAction::Pause,
         UiAction::End => return MeetingAction::End,
         UiAction::NewTopic => controller.create_topic(),
-        UiAction::AddMarker(id, kind) => controller.add_marker(&id, kind),
+        UiAction::Highlight(id) => controller.highlight(&id),
+        UiAction::RemoveMarker(id) => controller.remove_marker(&id),
         UiAction::SaveMarker(marker) => controller.save_marker(&marker),
-        UiAction::QuickNote => controller.add_quick_note(),
         UiAction::SaveMinutes => controller.save_minutes(),
         UiAction::JumpToEvidence(segment_id) => {
             controller.search.clear();
             controller.pane = MeetingPane::Timeline;
+            controller.highlights_only = false;
             controller.evidence_target = Some(segment_id);
         }
         UiAction::AskDelete(id) => controller.pending_delete = Some(id),

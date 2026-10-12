@@ -3,6 +3,7 @@ package org.xrtranslate.app.documents;
 import android.content.ClipData;
 import android.content.Intent;
 import android.net.Uri;
+import android.content.pm.LabeledIntent;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.core.content.FileProvider;
@@ -85,18 +86,43 @@ public final class DocumentActions {
             try {
                 Uri uri = FileProvider.getUriForFile(activity, activity.getPackageName() + ".exports", file);
                 String extension = file.getName().substring(file.getName().lastIndexOf('.') + 1).toLowerCase(java.util.Locale.ROOT);
-                String mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+                String mime = mimeType(extension);
                 Intent intent = new Intent(Intent.ACTION_SEND)
-                    .setType(mime == null ? "application/octet-stream" : mime)
+                    .setType(mime)
                     .putExtra(Intent.EXTRA_STREAM, uri)
                     .putExtra(Intent.EXTRA_TITLE, file.getName())
                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 intent.setClipData(ClipData.newRawUri(file.getName(), uri));
-                activity.startActivity(Intent.createChooser(intent, null));
+                Intent chooser = Intent.createChooser(intent, null);
+                chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new android.os.Parcelable[]{
+                    exportAction(uri, mime, file.getName(), Intent.ACTION_VIEW, org.xrtranslate.app.R.string.export_open),
+                    exportAction(uri, mime, file.getName(), Intent.ACTION_CREATE_DOCUMENT, org.xrtranslate.app.R.string.export_save)
+                });
+                activity.startActivity(chooser);
             } catch (RuntimeException error) {
                 completion.complete(id, null, "Cannot share the exported file.");
             }
         });
+    }
+
+    private Intent exportAction(Uri uri, String mime, String name, String action, int label) {
+        Intent intent = new Intent(activity, ExportAction.class).setAction(action).setDataAndType(uri, mime)
+            .putExtra(Intent.EXTRA_TITLE, name).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        intent.setClipData(ClipData.newRawUri(name, uri));
+        return new LabeledIntent(intent, activity.getPackageName(), label, 0);
+    }
+
+    private static String mimeType(String extension) {
+        switch (extension) {
+            case "md": return "text/markdown";
+            case "srt": return "application/x-subrip";
+            case "vtt": return "text/vtt";
+            case "lrc": return "text/plain";
+            case "json": return "application/json";
+            default:
+                String mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+                return mime == null ? "application/octet-stream" : mime;
+        }
     }
 
     private void onPicked(int result, Intent data) {

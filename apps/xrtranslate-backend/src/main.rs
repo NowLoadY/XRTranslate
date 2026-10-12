@@ -78,7 +78,7 @@ mod terminology;
 mod translation_outputs;
 mod tts_session;
 use model_runtime::{
-    NativeProviderPlan, NativeTtsAdapter, OnnxRuntimeDiagnostic, initialize_managed_onnx_runtime,
+    NativeProviderPlan, OnnxRuntimeDiagnostic, TtsAdapter, initialize_managed_onnx_runtime,
     runtime_diagnostic,
 };
 use scheduler::InferenceScheduler;
@@ -625,6 +625,10 @@ async fn vrcx_status(State(state): State<BackendState>) -> impl IntoResponse {
 struct SessionOptions {
     #[serde(default)]
     text_only: bool,
+    #[serde(default)]
+    conversation_id: Option<String>,
+    #[serde(default)]
+    input_source: String,
 }
 
 async fn websocket(
@@ -632,10 +636,15 @@ async fn websocket(
     upgrade: WebSocketUpgrade,
     Query(options): Query<SessionOptions>,
 ) -> impl IntoResponse {
-    upgrade.on_upgrade(move |socket| serve_session(socket, state, options.text_only))
+    upgrade.on_upgrade(move |socket| serve_session(socket, state, options))
 }
 
-async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) {
+async fn serve_session(socket: WebSocket, state: BackendState, options: SessionOptions) {
+    let text_only = options.text_only;
+    let corpus_options = xr_corpus_protocol::CreateSessionRequest {
+        conversation_id: options.conversation_id,
+        input_source: options.input_source,
+    };
     let session_id = state.next_session_id.fetch_add(1, Ordering::Relaxed);
     let mut session = match SessionAdapter::new(
         &state.config.translation.source_lang,
@@ -716,8 +725,9 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
         inference,
         job_receiver,
         result_sender,
-        generation_receiver,
+        generation_receiver.clone(),
         state.corpus_client.clone(),
+        corpus_options,
         state.inference_scheduler.clone(),
         Arc::clone(&speaker_recognition_enabled),
         Arc::clone(&speaker_state_revision),
@@ -734,9 +744,16 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
     let tts = speech.and_then(|resources| resources.tts.clone());
     let (tts_job_sender, tts_job_receiver) = mpsc::channel(TTS_QUEUE_CAPACITY);
     let (tts_result_sender, mut tts_result_receiver) = mpsc::channel(TTS_QUEUE_CAPACITY);
-    let mut tts_worker = tts
-        .clone()
-        .map(|adapter| tokio::spawn(run_tts_worker(adapter, tts_job_receiver, tts_result_sender)));
+    let (tts_epoch_sender, tts_epoch_receiver) = watch::channel(session.tts_epoch());
+    let mut tts_worker = tts.clone().map(|adapter| {
+        tokio::spawn(run_tts_worker(
+            adapter,
+            tts_job_receiver,
+            tts_result_sender,
+            generation_receiver,
+            tts_epoch_receiver,
+        ))
+    });
     let tts_job_sender = tts.as_ref().map(|_| tts_job_sender);
     let mut tts_result_open = tts_worker.is_some();
     let mut pending_tts_jobs = 0_usize;
@@ -902,7 +919,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                     && tts_result.tts_epoch == session.tts_epoch()
                 {
                     match tts_result.output {
-                        Ok(audio) => {
+                        Ok(Some(audio)) => {
                             if session
                                 .submit_tts_audio(
                                     tts_result.generation.route_epoch,
@@ -919,6 +936,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                                 }
                             }
                         }
+                        Ok(None) => {}
                         Err(error) => {
                             if send_scoped_error(
                                 &outbound_sender,
@@ -1197,7 +1215,12 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                         }
                         Ok(ClientControl::Action(ActionControl::ToggleFeature { feature, enabled })) => {
                             match feature {
-                                Feature::Tts => session.set_tts_enabled(enabled),
+                                Feature::Tts => {
+                                    session.set_tts_enabled(enabled);
+                                    if *tts_epoch_sender.borrow() != session.tts_epoch() {
+                                        tts_epoch_sender.send_replace(session.tts_epoch());
+                                    }
+                                },
                                 Feature::SpeakerRecognition if enabled && !speaker_available => {
                                     if send_error(
                                         &outbound_sender,
@@ -1222,6 +1245,10 @@ async fn serve_session(socket: WebSocket, state: BackendState, text_only: bool) 
                             info!(%session_id, ?feature, enabled, "session feature configured");
                         }
                         Ok(ClientControl::Action(ActionControl::BeginVoiceClone)) => {
+                            if !tts.as_ref().is_some_and(TtsAdapter::supports_cloning) {
+                                if send_error(&outbound_sender, "The selected TTS connector supports preset voices only.".into()).await.is_err() { break; }
+                                continue;
+                            }
                             if audio_source == AudioSource::Microphone {
                                 clone_capture.arm();
                                 info!(
@@ -1862,6 +1889,7 @@ async fn run_inference_worker(
     events: mpsc::Sender<InferenceEvent>,
     mut generation: watch::Receiver<PipelineGeneration>,
     corpus_client: CorpusClient,
+    corpus_options: xr_corpus_protocol::CreateSessionRequest,
     scheduler: InferenceScheduler,
     speaker_recognition_enabled: Arc<AtomicBool>,
     speaker_state_revision: Arc<AtomicU64>,
@@ -1877,7 +1905,10 @@ async fn run_inference_worker(
     let mut diarizer_generation: Option<PipelineGeneration> = Some(*generation.borrow());
     let mut speaker_revision_seen = 0;
     let mut speaker_load_failed = false;
-    let mut corpus_session = match corpus_client.create_session().await {
+    let mut corpus_session = match corpus_client
+        .create_session_with_options(corpus_options.clone())
+        .await
+    {
         Ok(session) => session,
         Err(message) => {
             let current_generation = *generation.borrow();
@@ -2423,7 +2454,10 @@ async fn run_inference_worker(
             if let Some(diarizer) = &mut diarizer {
                 diarizer.reset();
             }
-            match corpus_client.create_session().await {
+            match corpus_client
+                .create_session_with_options(corpus_options.clone())
+                .await
+            {
                 Ok(session) => {
                     let old_session = std::mem::replace(&mut corpus_session, session);
                     tokio::spawn(async move {
@@ -3354,7 +3388,7 @@ async fn handle_inference_event(
     session: &mut SessionAdapter,
     current_generation: PipelineGeneration,
     event: InferenceEvent,
-    tts: Option<&NativeTtsAdapter>,
+    tts: Option<&TtsAdapter>,
     tts_jobs: Option<&mut VecDeque<TtsSynthesisJob>>,
     voice_name: &str,
     voice_ready: bool,
@@ -3506,9 +3540,14 @@ async fn handle_inference_event(
                 if session.tts_enabled()
                     && voice_ready
                     && !tts_revisable
-                    && tts.is_some_and(|adapter| adapter.supports_language(&target_language))
+                    && !tts_text.trim().is_empty()
+                    && let Some(adapter) = tts
                     && let Some(tts_jobs) = tts_jobs
                 {
+                    if !adapter.supports_language(&target_language) {
+                        send_scoped_error(writer, generation, format!("The selected TTS model does not support {target_language}. Choose another model on the Welcome Page.")).await?;
+                        return Ok(false);
+                    }
                     let text_chunks = split_tts_text(&tts_text, max_input_chars);
                     if !text_chunks.is_empty() {
                         info!(

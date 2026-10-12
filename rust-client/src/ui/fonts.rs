@@ -1,7 +1,7 @@
 //! Host UI font fallback configuration.
 //!
 //! Keep font discovery in the desktop host. Domain and plugin renderers use
-//! egui's normal proportional/monospace families and do not need to know which
+//! egui's proportional/monospace and shared bold families without knowing which
 //! operating-system font supplies a particular script.
 
 #[cfg(windows)]
@@ -71,48 +71,89 @@ const FONTCONFIG_FONTS: &[(&str, &str)] = &[
 
 pub fn configure_multilingual_fonts(ctx: &egui::Context) {
     let mut definitions = egui::FontDefinitions::default();
-    let mut loaded = Vec::new();
-    for (name, path, index, purpose) in system_fonts() {
-        match std::fs::read(&path) {
-            Ok(bytes) => {
-                let mut data = egui::FontData::from_owned(bytes);
-                data.index = index;
-                definitions.font_data.insert(name.into(), Arc::new(data));
-                loaded.push(name);
+    for bold in [false, true] {
+        let mut loaded = Vec::new();
+        for (name, path, index, purpose) in system_fonts(bold) {
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let mut data = egui::FontData::from_owned(bytes);
+                    data.index = index;
+                    let name = if bold {
+                        format!("{name}_bold")
+                    } else {
+                        name.to_owned()
+                    };
+                    if bold {
+                        data.tweak.coords =
+                            egui::epaint::text::VariationCoords::new([(b"wght", 750.0)]);
+                    }
+                    definitions.font_data.insert(name.clone(), Arc::new(data));
+                    loaded.push(name);
+                }
+                Err(error) => {
+                    log::warn!("{purpose} UI font not found at {}: {error}", path.display())
+                }
             }
-            Err(error) => log::warn!(
-                "{} UI font not found at {}: {error}",
-                purpose,
-                path.display()
-            ),
         }
-    }
-
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        let fallbacks = definitions.families.entry(family).or_default();
-        for (position, name) in loaded.iter().enumerate() {
-            fallbacks.insert(position, (*name).into());
+        if bold {
+            // Missing bold glyphs retain the application's normal multilingual fallbacks.
+            loaded.extend(
+                definitions.families[&egui::FontFamily::Proportional]
+                    .iter()
+                    .cloned(),
+            );
+            definitions.families.insert(bold_family(), loaded);
+        } else {
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                let fallbacks = definitions.families.entry(family).or_default();
+                fallbacks.splice(0..0, loaded.iter().cloned());
+            }
         }
     }
     ctx.set_fonts(definitions);
 }
 
+pub fn bold_family() -> egui::FontFamily {
+    egui::FontFamily::Name("bold".into())
+}
+
 #[cfg(windows)]
-fn system_fonts() -> Vec<(&'static str, PathBuf, u32, &'static str)> {
+fn system_fonts(bold: bool) -> Vec<(&'static str, PathBuf, u32, &'static str)> {
     let directory = windows_font_directory();
     WINDOWS_FONTS
         .iter()
-        .map(|font| (font.name, directory.join(font.file_name), 0, font.purpose))
+        .map(|font| {
+            let file = if bold {
+                match font.file_name {
+                    "msyh.ttc" => "msyhbd.ttc",
+                    "malgun.ttf" => "malgunbd.ttf",
+                    "segoeui.ttf" => "segoeuib.ttf",
+                    "Nirmala.ttc" => "NirmalaB.ttc",
+                    file => file,
+                }
+            } else {
+                font.file_name
+            };
+            (font.name, directory.join(file), 0, font.purpose)
+        })
         .collect()
 }
 
 #[cfg(not(any(windows, target_os = "android")))]
-fn system_fonts() -> Vec<(&'static str, std::path::PathBuf, u32, &'static str)> {
+fn system_fonts(bold: bool) -> Vec<(&'static str, std::path::PathBuf, u32, &'static str)> {
     FONTCONFIG_FONTS
         .iter()
         .filter_map(|&(name, family)| {
             let output = std::process::Command::new("fc-match")
-                .args(["-f", "%{file}\t%{index}", family])
+                .args([
+                    "-f",
+                    "%{file}\t%{index}",
+                    &if bold {
+                        format!("{family}:style=Bold")
+                    } else {
+                        family.to_owned()
+                    },
+                ])
                 .output()
                 .ok()?;
             let match_text = String::from_utf8(output.stdout).ok()?;
@@ -131,23 +172,54 @@ fn windows_font_directory() -> PathBuf {
 }
 
 #[cfg(target_os = "android")]
-fn system_fonts() -> Vec<(&'static str, std::path::PathBuf, u32, &'static str)> {
+fn system_fonts(bold: bool) -> Vec<(&'static str, std::path::PathBuf, u32, &'static str)> {
     [
-        ("roboto", &["Roboto-Regular.ttf", "Roboto.ttf"][..]),
+        (
+            "roboto",
+            if bold {
+                &["Roboto-Bold.ttf", "Roboto.ttf"][..]
+            } else {
+                &["Roboto-Regular.ttf", "Roboto.ttf"][..]
+            },
+        ),
         (
             "noto_cjk",
-            &["NotoSansCJK-Regular.ttc", "NotoSansCJK-VF.ttc"][..],
+            if bold {
+                &[
+                    "NotoSansCJK-Bold.ttc",
+                    "NotoSansCJK-VF.ttc",
+                    "NotoSansCJK-Regular.ttc",
+                ][..]
+            } else {
+                &["NotoSansCJK-Regular.ttc", "NotoSansCJK-VF.ttc"][..]
+            },
         ),
         (
             "noto_devanagari",
-            &[
-                "NotoSansDevanagari-Regular.ttf",
-                "NotoSansDevanagari-VF.ttf",
-            ][..],
+            if bold {
+                &[
+                    "NotoSansDevanagari-Bold.ttf",
+                    "NotoSansDevanagari-VF.ttf",
+                    "NotoSansDevanagari-Regular.ttf",
+                ][..]
+            } else {
+                &[
+                    "NotoSansDevanagari-Regular.ttf",
+                    "NotoSansDevanagari-VF.ttf",
+                ][..]
+            },
         ),
         (
             "noto_arabic",
-            &["NotoSansArabic-Regular.ttf", "NotoSansArabic-VF.ttf"][..],
+            if bold {
+                &[
+                    "NotoSansArabic-Bold.ttf",
+                    "NotoSansArabic-VF.ttf",
+                    "NotoSansArabic-Regular.ttf",
+                ][..]
+            } else {
+                &["NotoSansArabic-Regular.ttf", "NotoSansArabic-VF.ttf"][..]
+            },
         ),
         ("noto_symbols", &["NotoSansSymbols2-Regular.ttf"][..]),
     ]

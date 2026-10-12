@@ -41,6 +41,7 @@ pub struct RecognitionSettings {
     #[serde(default = "default_pause_tolerance")]
     pub pause_tolerance: f32,
     #[serde(default)]
+    /// Explicit pseudo-streaming opt-in; false selects the model’s native delivery.
     pub continuous_recognition: bool,
 }
 

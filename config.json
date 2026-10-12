@@ -508,6 +508,8 @@
   "tts": {
     "provider": "none",
     "providers": {
+      "groq": {},
+      "google": {},
       "none": {},
       "openvoice": {
         "transport": "onnx",

@@ -86,6 +86,7 @@ impl AsrPromptContext {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TranslationPromptContext {
+    pub current_speaker_id: String,
     pub language_order: Vec<String>,
     pub terminology_rows: Vec<String>,
     pub recent_turns: Vec<PromptTurn>,
@@ -209,8 +210,20 @@ pub(crate) fn render_block(
                 .skip(start)
                 .map(render_turn)
                 .collect::<Vec<_>>();
-            (!turns.is_empty())
-                .then(|| format!("## Recent Bilingual History\n\n{}", turns.join("\n\n")))
+            let mut sections = Vec::new();
+            if !context.current_speaker_id.trim().is_empty() {
+                sections.push(format!(
+                    "Current input speaker: {}",
+                    context.current_speaker_id.trim()
+                ));
+            }
+            if !turns.is_empty() {
+                sections.push(format!(
+                    "## Recent Bilingual History\n\n{}",
+                    turns.join("\n\n")
+                ));
+            }
+            (!sections.is_empty()).then(|| sections.join("\n\n"))
         }
         TranslationPromptBlock::PreviousRevision => {
             context.previous_revision.as_ref().map(|turn| {

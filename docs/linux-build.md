@@ -64,7 +64,7 @@ On first launch, the editable terminology database is created at
 
 Managed GGUF ASR and translation models require a compatible NVIDIA or AMD GPU. The
 required VRAM varies by model card; compact choices can be offered on smaller
-GPUs. AMD models use the managed Vulkan runtime; TTS still requires NVIDIA CUDA.
+GPUs. AMD models use the managed Vulkan runtime; local TTS requires NVIDIA CUDA; online TTS does not.
 SenseVoiceSmall recognition runs on the CPU without CUDA. The Linux runtime
 catalogue includes llama.cpp CUDA 12.8, llama.cpp Vulkan, and ONNX Runtime 1.28 CUDA 12 with
 matching CUDA and cuDNN libraries. The bundled CPU ONNX core runs the basic

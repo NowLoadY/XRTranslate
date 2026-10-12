@@ -1,0 +1,6 @@
+<resources>
+    <color name="notification_control">#FFFFFFFF</color>
+    <color name="notification_capsule_fill">#14FFFFFF</color>
+    <color name="notification_capsule_border">#40FFFFFF</color>
+    <color name="notification_capsule_ripple">#26FFFFFF</color>
+</resources>

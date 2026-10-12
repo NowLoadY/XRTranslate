@@ -21,32 +21,71 @@ public final class TranslationResults {
 
     static final class Result {
         final long id;
-        final String source, translated;
-        Result(long id, String source, String translated) {
-            this.id = id; this.source = source; this.translated = translated;
+        final String source, translated, sourceLang, targetLang;
+        final boolean canSave;
+        volatile boolean saved;
+        Result(long id, JSONObject value) {
+            this.id = id;
+            source = bounded(value.optString("source"));
+            translated = bounded(value.optString("translated"));
+            sourceLang = value.optString("source_lang");
+            targetLang = value.optString("target_lang");
+            canSave = value.optBoolean("can_save") && !source.isEmpty()
+                && !sourceLang.isEmpty() && !targetLang.isEmpty();
+            saved = value.optBoolean("saved");
         }
-        boolean matches(String input, String output) {
-            return source.equals(input) && translated.equals(output);
+        boolean matches(Result other) {
+            return source.equals(other.source) && translated.equals(other.translated)
+                && sourceLang.equals(other.sourceLang) && targetLang.equals(other.targetLang);
+        }
+        JSONObject json() {
+            JSONObject value = new JSONObject();
+            try {
+                value.put("id", id).put("source", source).put("translated", translated)
+                    .put("source_lang", sourceLang).put("target_lang", targetLang)
+                    .put("can_save", canSave).put("saved", saved);
+            } catch (JSONException impossible) { throw new IllegalStateException(impossible); }
+            return value;
         }
     }
 
     private TranslationResults() {}
 
-    public static synchronized void publish(Context context, String source, String translated) {
-        source = bounded(source); translated = bounded(translated);
-        if (translated.isEmpty()) return;
+    public static void publish(Context context, String payload) {
+        try { publish(context, new JSONObject(payload)); }
+        catch (JSONException invalid) { android.util.Log.w("XRTranslate", "Invalid result snapshot"); }
+    }
+
+    public static synchronized void publish(Context context, JSONObject payload) {
         Context application = context.getApplicationContext();
         load(application);
-        if (!results.isEmpty() && results.get(0).matches(source, translated)) return;
+        Result next = new Result(++nextId, payload);
+        if (next.translated.isEmpty()) return;
+        if (!results.isEmpty() && results.get(0).matches(next)) return;
         for (int i = results.size() - 1; i >= 0; i--) {
-            if (results.get(i).matches(source, translated)) results.remove(i);
+            if (results.get(i).matches(next)) {
+                next.saved = results.get(i).saved;
+                results.remove(i);
+            }
         }
-        results.add(0, new Result(++nextId, source, translated));
+        results.add(0, next);
         if (results.size() > MAX_RESULTS) results.remove(results.size() - 1);
+        changed(application);
+    }
+
+    static synchronized void markSaved(Context context, long id) {
+        for (Result result : snapshot(context)) if (result.id == id) {
+            result.saved = true;
+            changed(context.getApplicationContext());
+            break;
+        }
+    }
+
+    private static void changed(Context context) {
         generation++;
         if (!updating) {
             updating = true;
-            WRITER.execute(() -> persistAndRefresh(application));
+            WRITER.execute(() -> persistAndRefresh(context));
         }
     }
 
@@ -67,7 +106,7 @@ public final class TranslationResults {
                 if (translated.isEmpty()) continue;
                 long id = item.getLong("id");
                 nextId = Math.max(nextId, id);
-                results.add(new Result(id, bounded(item.optString("source")), translated));
+                results.add(new Result(id, item));
             }
         } catch (JSONException ignored) {
             results.clear();
@@ -85,18 +124,11 @@ public final class TranslationResults {
                 revision = generation;
             }
             JSONArray saved = new JSONArray();
-            for (Result result : snapshot) {
-                JSONObject item = new JSONObject();
-                try {
-                    item.put("id", result.id).put("source", result.source).put("translated", result.translated);
-                } catch (JSONException impossible) {
-                    throw new IllegalStateException(impossible);
-                }
-                saved.put(item);
-            }
+            for (Result result : snapshot) saved.put(result.json());
             try {
                 context.getSharedPreferences(STORAGE, Context.MODE_PRIVATE).edit().putString(KEY, saved.toString()).commit();
                 TextActionsWidget.refresh(context);
+                QuickActions.refresh(context);
             } catch (RuntimeException unavailable) {
                 // A temporarily unavailable launcher must not block future results.
             }

@@ -1,5 +1,5 @@
 //! Reference persistence and active voice selection across TTS providers.
-use crate::model_runtime::NativeTtsAdapter;
+use crate::model_runtime::TtsAdapter;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -11,7 +11,8 @@ use xrtranslate_protocol::tts::{VoiceSelection, VoiceStatus};
 
 pub(crate) struct VoiceLibrary {
     directory: PathBuf,
-    adapter: Option<NativeTtsAdapter>,
+    selection_key: String,
+    adapter: Option<TtsAdapter>,
     status: RwLock<VoiceStatus>,
     operation: tokio::sync::Mutex<()>,
 }
@@ -20,24 +21,58 @@ impl VoiceLibrary {
     pub(crate) async fn open(
         directory: PathBuf,
         provider: String,
-        adapter: Option<NativeTtsAdapter>,
+        selection_key: String,
+        adapter: Option<TtsAdapter>,
     ) -> Self {
-        let selection: VoiceSelection = fs::read(directory.join("selection.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        let supports_cloning = adapter.as_ref().is_some_and(TtsAdapter::supports_cloning);
+        let preset_voices = adapter
+            .as_ref()
+            .map(TtsAdapter::preset_voices)
             .unwrap_or_default();
+        let selections: std::collections::BTreeMap<String, VoiceSelection> =
+            fs::read(directory.join("selections.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default();
+        let mut selection = selections.get(&selection_key).cloned().unwrap_or_else(|| {
+            if supports_cloning {
+                fs::read(directory.join("selection.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                    .unwrap_or_default()
+            } else {
+                VoiceSelection::default()
+            }
+        });
+        if !supports_cloning {
+            selection.voice_id = None;
+            if !selection
+                .preset
+                .as_ref()
+                .is_some_and(|voice| preset_voices.contains(voice))
+            {
+                selection.preset = preset_voices.first().cloned();
+            }
+        } else {
+            selection.preset = None;
+        }
         let library = Self {
             directory,
+            selection_key,
             adapter,
             status: RwLock::new(VoiceStatus {
                 provider,
                 selection: selection.clone(),
+                supports_cloning,
+                preset_voices,
                 ..Default::default()
             }),
             operation: tokio::sync::Mutex::new(()),
         };
         if let Some(adapter) = &library.adapter {
-            restore_persisted_voice_clones(&library.directory, adapter).await;
+            if supports_cloning {
+                restore_persisted_voice_clones(&library.directory, adapter).await;
+            }
             if selection.voice_id.is_some() {
                 if let Err(error) = library.register_selection(&selection).await {
                     warn!(%error, "could not restore selected voice");
@@ -74,7 +109,17 @@ impl VoiceLibrary {
         let adapter = self
             .adapter
             .as_ref()
-            .ok_or("Configure a TTS provider in Settings first.")?;
+            .ok_or("Configure a TTS provider on the Welcome Page first.")?;
+        if let Some(preset) = &selection.preset {
+            return if selection.voice_id.is_none() && adapter.preset_voices().contains(preset) {
+                Ok(())
+            } else {
+                Err("Select a preset supported by the active TTS model.".into())
+            };
+        }
+        if !adapter.supports_cloning() {
+            return Err("Select a preset voice for this TTS model.".into());
+        }
         let name = voice_name(selection);
         if let Some(id) = &selection.voice_id {
             if !adapter.has_voice(&name).await {
@@ -100,7 +145,7 @@ impl VoiceLibrary {
         let adapter = self
             .adapter
             .as_ref()
-            .ok_or("Configure a TTS provider in Settings first.")?;
+            .ok_or("Configure a TTS provider on the Welcome Page first.")?;
         adapter
             .register_voice(MICROPHONE_VOICE_NAME, wav.clone(), transcript)
             .await
@@ -116,11 +161,16 @@ impl VoiceLibrary {
 
     fn save_selection(&self, selection: VoiceSelection) -> Result<(), String> {
         fs::create_dir_all(&self.directory).map_err(|e| e.to_string())?;
-        let path = self.directory.join("selection.json");
+        let path = self.directory.join("selections.json");
+        let mut selections: std::collections::BTreeMap<String, VoiceSelection> = fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        selections.insert(self.selection_key.clone(), selection.clone());
         let temporary = path.with_extension("tmp");
         fs::write(
             &temporary,
-            serde_json::to_vec(&selection).map_err(|e| e.to_string())?,
+            serde_json::to_vec(&selections).map_err(|e| e.to_string())?,
         )
         .and_then(|()| fs::rename(&temporary, &path))
         .map_err(|e| e.to_string())?;
@@ -132,6 +182,9 @@ impl VoiceLibrary {
 }
 
 fn voice_name(selection: &VoiceSelection) -> String {
+    if let Some(preset) = &selection.preset {
+        return preset.clone();
+    }
     selection.voice_id.as_ref().map_or_else(
         || MICROPHONE_VOICE_NAME.into(),
         |id| format!("reference:{id}"),
@@ -271,7 +324,7 @@ pub(crate) fn load_persisted_voice_clones(voice_clones_dir: &Path) -> Vec<Persis
 
 pub(crate) async fn restore_persisted_voice_clones(
     voice_clones_dir: &Path,
-    adapter: &NativeTtsAdapter,
+    adapter: &TtsAdapter,
 ) -> usize {
     let clones = load_persisted_voice_clones(voice_clones_dir);
     let mut restored = 0;

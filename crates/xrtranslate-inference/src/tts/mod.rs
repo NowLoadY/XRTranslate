@@ -3,6 +3,8 @@
 mod audio;
 mod onnx_runtime;
 mod providers;
+mod remote;
+pub use remote::RemoteTtsAdapter;
 
 use crate::InferenceError;
 

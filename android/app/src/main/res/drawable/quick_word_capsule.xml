@@ -1,0 +1,9 @@
+<ripple xmlns:android="http://schemas.android.com/apk/res/android" android:color="@color/notification_capsule_ripple">
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="24dp" />
+            <solid android:color="@color/notification_capsule_fill" />
+            <stroke android:width="1dp" android:color="@color/notification_capsule_border" />
+        </shape>
+    </item>
+</ripple>

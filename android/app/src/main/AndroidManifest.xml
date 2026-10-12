@@ -19,6 +19,7 @@
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity>
         <activity android:name=".textactions.TextActions" android:exported="false" android:theme="@android:style/Theme.NoDisplay" android:taskAffinity="" android:excludeFromRecents="true" />
+        <activity android:name=".documents.ExportAction" android:exported="false" android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|uiMode|density" android:theme="@style/QuickActionTheme" android:taskAffinity="" android:excludeFromRecents="true" />
         <activity-alias android:name=".TextTranslation" android:targetActivity=".textactions.TextActions" android:exported="true" android:label="XRT">
             <intent-filter>
                 <action android:name="android.intent.action.PROCESS_TEXT" />
@@ -31,6 +32,8 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity-alias>
+        <activity android:name=".textactions.ClipboardAction" android:exported="false" android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|uiMode|density" android:theme="@style/ClipboardActionTheme" android:taskAffinity="" android:excludeFromRecents="true" />
+        <receiver android:name=".textactions.BookmarkAction" android:exported="false" />
         <service android:name=".textactions.TextTranslationService" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="On-device model inference for text explicitly selected or shared by the user; stops when translation completes or after 165 seconds." />
         </service>

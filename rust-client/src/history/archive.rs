@@ -20,6 +20,35 @@ pub(crate) mod vocabulary;
 pub(crate) use store::{DeleteSelection, Record};
 use store::{RecordId, open_database, prepare_deletion, remove, save, search};
 
+// Native notification bookmarks and the UI observe the same revision.
+fn vocabulary_revision() -> Arc<AtomicU64> {
+    static REVISION: std::sync::OnceLock<Arc<AtomicU64>> = std::sync::OnceLock::new();
+    REVISION.get_or_init(|| Arc::new(AtomicU64::new(0))).clone()
+}
+
+/// A notification may run before the UI and its archive worker have started.
+/// Reuse the same schema, validation and idempotent insert in that case too.
+#[cfg(target_os = "android")]
+pub(crate) fn save_default_word(root: &Path, entry: vocabulary::Entry) -> Result<(), String> {
+    let entry = entry.canonical()?;
+    if !vocabulary::can_save(&entry.source) || entry.translated.is_empty() {
+        return Err("Select a word or short phrase to save.".into());
+    }
+    let path = root.join("runtime/translation-history.sqlite3");
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    let mut database = open_database(&path).map_err(|e| e.to_string())?;
+    vocabulary::execute(
+        &mut database,
+        &vocabulary::Action::Add {
+            folder: vocabulary::DEFAULT_FOLDER,
+            entry,
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    vocabulary_revision().fetch_add(1, Ordering::Release);
+    Ok(())
+}
+
 enum Command {
     Save {
         epoch: u64,
@@ -151,7 +180,7 @@ impl Archive {
             included_plugins,
         };
         let path = root.join("runtime/translation-history.sqlite3");
-        let vocabulary_revision = Arc::new(AtomicU64::new(0));
+        let vocabulary_revision = vocabulary_revision();
         let worker_revision = vocabulary_revision.clone();
         let worker = std::thread::Builder::new()
             .name("translation-history".into())

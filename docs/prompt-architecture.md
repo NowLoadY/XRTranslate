@@ -38,6 +38,17 @@ Translation context follows task and language ownership. Stateless ask requests
 use the configured translation adapter without joining conversation history;
 the calling feature supplies the request's purpose and necessary input facts.
 
+The translation center's microphone, system audio, and text connections opt into
+one client conversation, including both capture mode. XR Corpus shares only
+their bounded bilingual history; recognition evidence, topic activation, and
+request snapshots remain per connection. Input sources label both the current
+speaker and historical turns. Connection-scoped turn IDs prevent collisions,
+and observation order survives asynchronous completion and streaming revisions.
+The shared history uses the existing translation history, character, and model
+token limits. Plugin tasks and additional target outputs retain their own
+contexts; unrelated clients do not join the host conversation. Shared history
+expires when its last Corpus session is closed or expires.
+
 ## Execution and validation
 
 Graphs are validated before activation. Typed connections, required inputs,

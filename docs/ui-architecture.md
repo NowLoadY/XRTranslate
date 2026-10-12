@@ -31,6 +31,11 @@ history; each studio supplies its domain rendering and validation.
 Transient windows use shared rendering and size themselves to their content.
 Page-specific behavior stays local only when it expresses a distinct user task.
 
+Plugin landing pages foreground the next useful action and recent work through
+shared entry components. Full lists remain available for search and organization.
+The terminology library starts with domain cards; vocabulary inherits domain
+rules without requiring a growing canvas of word-to-word connections.
+
 ## State and resources
 
 Theme preferences are persisted. Animation state, layout measurements, and GPU

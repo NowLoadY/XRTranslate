@@ -26,13 +26,14 @@ pub struct MediaController {
     pub previews: crate::session_coordinator::LivePreviews,
     pub show_subtitles: bool,
     pub fullscreen_mode: bool,
+    pub fullscreen_last_interaction: Instant,
     pub error: Option<String>,
     pub muted: bool,
     pub volume: f32,
 
     pub search_query: String,
+    pub browse_all: bool,
     pub draft_title: String,
-    pub draft_subtitles: bool,
     pub draft_source: String,
     pub draft_source_lang: String,
     pub draft_target_lang: String,
@@ -95,12 +96,13 @@ impl Default for MediaController {
             previews: Default::default(),
             show_subtitles: true,
             fullscreen_mode: false,
+            fullscreen_last_interaction: Instant::now(),
             error: None,
             muted: false,
             volume: 1.0,
             search_query: String::new(),
+            browse_all: false,
             draft_title: String::new(),
-            draft_subtitles: false,
             draft_source: String::new(),
             draft_source_lang: "auto".into(),
             draft_target_lang: "zh".into(),
@@ -214,10 +216,6 @@ impl MediaController {
             let media_type = super::task::detect_media_type(&path);
             (MediaSource::LocalFile(path), title, media_type)
         };
-
-        if self.draft_subtitles && media_type != super::task::MediaType::Subtitles {
-            return Err("Choose an SRT or VTT file".into());
-        }
 
         let title = if self.draft_title.trim().is_empty() {
             default_title
@@ -467,6 +465,7 @@ impl MediaController {
 
     pub fn toggle_fullscreen(&mut self) {
         self.fullscreen_mode = !self.fullscreen_mode;
+        self.fullscreen_last_interaction = Instant::now();
     }
 
     pub fn try_init_backend(&mut self) -> bool {

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use super::model::{MarkerKind, MeetingBundle, Segment, SegmentMarker};
+use super::model::{MeetingBundle, Segment, SegmentMarker};
 
 /// Deterministically exports stored meeting facts as Markdown. It never
 /// summarizes or invents content; timestamp links point back to segment anchors.
@@ -40,6 +40,19 @@ pub fn render_markdown(bundle: &MeetingBundle) -> String {
             .entry(marker.segment_id.as_str())
             .or_default()
             .push(marker);
+    }
+    if !bundle.markers.is_empty() {
+        output.push_str("\n## Highlights\n");
+        for segment in &bundle.segments {
+            if markers.contains_key(segment.id.as_str()) {
+                output.push_str(&format!(
+                    "\n- [{}](#segment-{})",
+                    format_timestamp(segment.start_ms),
+                    segment.id
+                ));
+            }
+        }
+        output.push('\n');
     }
     let mut emitted_segment_ids = HashSet::new();
     output.push_str("\n## Transcript\n");
@@ -108,26 +121,20 @@ fn render_segment_markdown(
         output.push_str(&markdown_quote(translation));
     }
     if let Some(segment_markers) = markers.get(segment.id.as_str()) {
-        output.push_str("\n\nMarkers:\n");
+        output.push_str("\n\nHighlights:\n");
         for marker in segment_markers {
             output.push_str(&format!(
-                "\n- **{}** ([{}](#segment-{})): {}",
-                marker_label(marker.kind),
-                timestamp,
-                segment.id,
-                marker.text.trim()
+                "\n- **Highlight** ([{timestamp}](#segment-{}))",
+                segment.id
             ));
+            let note = marker.text.trim();
+            if !note.is_empty() {
+                output.push_str(": ");
+                output.push_str(note);
+            }
         }
     }
     output.push('\n');
-}
-
-fn marker_label(kind: MarkerKind) -> &'static str {
-    match kind {
-        MarkerKind::KeyDecision => "Key decision",
-        MarkerKind::ActionItem => "Action item",
-        MarkerKind::Note => "Note",
-    }
 }
 
 fn format_timestamp(milliseconds: i64) -> String {

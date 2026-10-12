@@ -10,6 +10,8 @@ use std::sync::OnceLock;
 #[serde(rename_all = "kebab-case")]
 pub enum RemoteConnector {
     OpenaiChat,
+    OpenaiSpeech,
+    GeminiSpeech,
     OpenaiTranscription,
     OpenaiAudioChat,
     DashscopeAsr,
@@ -20,13 +22,18 @@ impl RemoteConnector {
     pub fn capability(self) -> ModelCapability {
         match self {
             Self::OpenaiChat => ModelCapability::Translation,
+            Self::OpenaiSpeech | Self::GeminiSpeech => ModelCapability::Tts,
             _ => ModelCapability::Asr,
         }
     }
 
     pub fn transport(self) -> &'static str {
         match self {
-            Self::OpenaiChat | Self::OpenaiTranscription | Self::OpenaiAudioChat => "openai",
+            Self::OpenaiChat
+            | Self::OpenaiTranscription
+            | Self::OpenaiAudioChat
+            | Self::OpenaiSpeech => "openai",
+            Self::GeminiSpeech => "gemini",
             Self::DashscopeAsr => "dashscope",
             Self::DashscopeAsrWebsocket => "websocket",
         }
@@ -36,6 +43,8 @@ impl RemoteConnector {
     pub fn from_transport(section: &str, transport: &str, url: &str) -> Option<Self> {
         match (section, transport) {
             ("translation", "openai") => Some(Self::OpenaiChat),
+            ("tts", "openai") => Some(Self::OpenaiSpeech),
+            ("tts", "gemini") => Some(Self::GeminiSpeech),
             ("asr", "openai") => Some(
                 if url
                     .split('?')
@@ -127,6 +136,17 @@ pub struct RemoteCapabilities {
     pub reasoning_effort: Option<String>,
 }
 
+/// Synthesis capabilities shared by catalogue, configuration and connectors.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TtsCapabilities {
+    pub sample_rate: u32,
+    pub max_input_chars: usize,
+    #[serde(default)]
+    pub voice_cloning: bool,
+    pub voices: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteModelManifest {
@@ -139,6 +159,8 @@ pub struct RemoteModelManifest {
     pub capabilities: RemoteCapabilities,
     #[serde(default)]
     pub native_text_polishing: Option<bool>,
+    #[serde(default)]
+    pub tts: Option<TtsCapabilities>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -162,7 +162,37 @@ impl ServiceConfigEditor {
             .unwrap_or_default()
     }
 
+    fn selected_tts_provider(&self) -> Option<&ProviderCard> {
+        let category = self
+            .categories
+            .iter()
+            .find(|category| category.key == "tts")?;
+        category
+            .providers
+            .iter()
+            .find(|provider| provider.name == category.selected_provider)
+    }
+
+    pub(crate) fn tts_supports_cloning(&self) -> bool {
+        self.selected_tts_provider().is_some_and(|provider| {
+            if provider_is_remote(provider) {
+                provider_remote_model(provider)
+                    .and_then(|model| model.tts.as_ref())
+                    .is_some_and(|tts| tts.voice_cloning)
+            } else {
+                self.tts_is_configured()
+            }
+        })
+    }
+
     pub(crate) fn tts_sample_rate(&self) -> u32 {
+        if let Some(tts) = self
+            .selected_tts_provider()
+            .and_then(provider_remote_model)
+            .and_then(|model| model.tts.as_ref())
+        {
+            return tts.sample_rate;
+        }
         let provider = self
             .document
             .get("tts")
@@ -438,7 +468,7 @@ impl ServiceConfigEditor {
     fn has_incomplete_remote_provider(&self) -> bool {
         self.categories
             .iter()
-            .filter(|category| matches!(category.key, "asr" | "translation"))
+            .filter(|category| matches!(category.key, "asr" | "translation" | "tts"))
             .filter_map(|category| {
                 category
                     .providers
@@ -469,7 +499,10 @@ impl ServiceConfigEditor {
                         config.get("connector").is_none()
                             && !config.get("transport").and_then(Value::as_str).is_some_and(
                                 |transport| {
-                                    matches!(transport, "openai" | "dashscope" | "websocket")
+                                    matches!(
+                                        transport,
+                                        "openai" | "dashscope" | "websocket" | "gemini"
+                                    )
                                 },
                             )
                             || category_capability(key).is_some_and(|capability| {
@@ -524,6 +557,7 @@ impl ServiceConfigEditor {
             &route.translation,
             xrtranslate_assets::ModelCapability::Translation,
         )?;
+        parsed.remote_tts()?;
         validate_tts_provider_asset(&parsed.tts)?;
         #[cfg(not(target_os = "android"))]
         validate_ocr_provider_asset(&parsed.ocr)?;
@@ -893,7 +927,7 @@ fn provider_is_remote(provider: &ProviderCard) -> bool {
         .is_some_and(|field| {
             matches!(
                 field.value.trim().to_ascii_lowercase().as_str(),
-                "openai" | "dashscope" | "websocket"
+                "openai" | "dashscope" | "websocket" | "gemini"
             )
         })
 }
@@ -907,7 +941,7 @@ fn provider_supported_languages(provider: &ProviderCard) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn provider_remote_asr_model(
+fn provider_remote_model(
     provider: &ProviderCard,
 ) -> Option<&'static xrtranslate_assets::remote::RemoteModelManifest> {
     let field = |name| {
@@ -931,7 +965,7 @@ fn provider_remote_asr_model(
 }
 
 fn provider_model_languages(provider: &ProviderCard) -> Vec<String> {
-    if let Some(card) = provider_remote_asr_model(provider) {
+    if let Some(card) = provider_remote_model(provider) {
         return card.languages.clone();
     }
     let mut languages = provider_model_assets(provider)

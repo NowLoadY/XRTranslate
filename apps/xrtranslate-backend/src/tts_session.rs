@@ -2,7 +2,7 @@
 //!
 //! Provider selection belongs to `model_runtime::tts`; WebSocket ordering and
 //! epochs remain in `main`. This module owns only clone capture and the bounded
-//! synthesis worker shared by every native TTS provider.
+//! synthesis worker shared by local and online TTS connectors.
 
 mod reference;
 mod voices;
@@ -12,14 +12,17 @@ pub(crate) use voices::{
     MICROPHONE_VOICE_NAME, VoiceLibrary, restore_persisted_voice_clones, select_voice, voice_status,
 };
 
-use tokio::{sync::mpsc, time::Instant};
-use tracing::{info, warn};
+use tokio::{
+    sync::{mpsc, watch},
+    time::Instant,
+};
+use tracing::warn;
 use xrtranslate_config::AppConfig;
 use xrtranslate_engine::TtsEpoch;
 use xrtranslate_inference::{InferenceError, SynthesizedPcm};
 use xrtranslate_vad::SAMPLE_RATE_HZ;
 
-use crate::{PipelineGeneration, millis, model_runtime::NativeTtsAdapter};
+use crate::{PipelineGeneration, millis, model_runtime::TtsAdapter};
 
 pub(crate) struct VoiceCloneCapture {
     pub(crate) armed: bool,
@@ -82,82 +85,71 @@ pub(crate) struct TtsSynthesisJob {
 pub(crate) struct TtsSynthesisResult {
     pub(crate) generation: PipelineGeneration,
     pub(crate) tts_epoch: TtsEpoch,
-    pub(crate) output: Result<SynthesizedPcm, InferenceError>,
+    pub(crate) output: Result<Option<SynthesizedPcm>, InferenceError>,
     pub(crate) finished: bool,
 }
 
 pub(crate) async fn run_tts_worker(
-    adapter: NativeTtsAdapter,
+    adapter: TtsAdapter,
     mut jobs: mpsc::Receiver<TtsSynthesisJob>,
     results: mpsc::Sender<TtsSynthesisResult>,
+    mut generation: watch::Receiver<PipelineGeneration>,
+    mut epoch: watch::Receiver<TtsEpoch>,
 ) {
     while let Some(job) = jobs.recv().await {
-        let started_at = Instant::now();
-        let chunk_count = job.text_chunks.len();
-        let input_chars = job
-            .text_chunks
-            .iter()
-            .map(|chunk| chunk.chars().count())
-            .sum::<usize>();
-        info!(
-            generation = ?job.generation,
-            voice = %job.voice_name,
-            target_language = %job.target_language,
-            chunk_count,
-            input_chars,
-            "TTS synthesis started"
-        );
-        let mut output_bytes = 0;
-        for (index, chunk) in job.text_chunks.iter().enumerate() {
-            let output = adapter
-                .synthesize(chunk, &job.voice_name, &job.target_language)
-                .await
-                .map(|audio| {
-                    output_bytes += audio.bytes.len();
-                    audio
-                });
-            let finished = output.is_err() || index + 1 == chunk_count;
-            if finished {
-                match &output {
-                    Ok(audio) => info!(
-                        generation = ?job.generation,
-                        voice = %job.voice_name,
-                        chunk_count,
-                        output_bytes,
-                        sample_rate = audio.sample_rate,
-                        elapsed_ms = millis(started_at.elapsed()),
-                        "TTS synthesis completed"
-                    ),
-                    Err(error) => warn!(
-                        generation = ?job.generation,
-                        voice = %job.voice_name,
-                        completed_chunks = index,
-                        elapsed_ms = millis(started_at.elapsed()),
-                        %error,
-                        "TTS synthesis failed"
-                    ),
-                }
+        let started = Instant::now();
+        let output = if *generation.borrow_and_update() != job.generation
+            || *epoch.borrow_and_update() != job.tts_epoch
+        {
+            Ok(())
+        } else {
+            tokio::select! {
+                biased;
+                _ = generation.changed() => Ok(()),
+                _ = epoch.changed() => Ok(()),
+                output = async {
+                    for chunk in &job.text_chunks {
+                        adapter.synthesize_stream(chunk, &job.voice_name, &job.target_language, |audio| {
+                            let results = results.clone();
+                            async move {
+                                results.send(TtsSynthesisResult {
+                                    generation: job.generation, tts_epoch: job.tts_epoch,
+                                    output: Ok(Some(audio)), finished: false,
+                                }).await.map_err(|_| xrtranslate_inference::TransportError::new("cancelled", "TTS output closed"))
+                            }
+                        }).await?;
+                    }
+                    Ok(())
+                } => output,
             }
-            if results
-                .send(TtsSynthesisResult {
-                    generation: job.generation,
-                    tts_epoch: job.tts_epoch,
-                    output,
-                    finished,
-                })
-                .await
-                .is_err()
-            {
-                return;
-            }
-            if finished {
-                break;
-            }
+        };
+        if let Err(error) = &output {
+            warn!(%error, elapsed_ms = millis(started.elapsed()), "TTS synthesis failed");
+        }
+        if results
+            .send(TtsSynthesisResult {
+                generation: job.generation,
+                tts_epoch: job.tts_epoch,
+                output: output.map(|()| None),
+                finished: true,
+            })
+            .await
+            .is_err()
+        {
+            break;
         }
     }
 }
 
 pub(crate) fn max_input_chars(config: &AppConfig) -> usize {
+    if let Ok(Some(remote)) = config.remote_tts() {
+        return remote
+            .model
+            .tts
+            .as_ref()
+            .expect("validated TTS model")
+            .max_input_chars;
+    }
     config
         .tts
         .provider_config(&config.tts.provider)
@@ -170,26 +162,30 @@ pub(crate) fn max_input_chars(config: &AppConfig) -> usize {
 
 pub(crate) fn split_text(text: &str, max_chars: usize) -> Vec<String> {
     let mut chunks = Vec::new();
-    let mut current = String::new();
-    for character in text.trim().chars() {
-        current.push(character);
-        let boundary = character.is_whitespace()
-            || matches!(
-                character,
-                '.' | ',' | '!' | '?' | ';' | ':' | '。' | '，' | '！' | '？' | '；' | '：'
-            );
-        if current.chars().count() >= max_chars
-            || (boundary && current.chars().count() >= max_chars / 2)
-        {
-            let chunk = current.trim();
-            if !chunk.is_empty() {
-                chunks.push(chunk.to_owned());
-            }
-            current.clear();
+    let mut remaining = text.trim();
+    let max_chars = max_chars.max(1);
+    while !remaining.is_empty() {
+        let Some((limit, _)) = remaining.char_indices().nth(max_chars) else {
+            chunks.push(remaining.to_owned());
+            break;
+        };
+        let end = remaining[..limit]
+            .char_indices()
+            .rev()
+            .find_map(|(index, ch)| {
+                (ch.is_whitespace()
+                    || matches!(
+                        ch,
+                        '.' | ',' | '!' | '?' | ';' | ':' | '。' | '，' | '！' | '？' | '；' | '：'
+                    ))
+                .then_some(index + ch.len_utf8())
+            })
+            .unwrap_or(limit);
+        let chunk = remaining[..end].trim();
+        if !chunk.is_empty() {
+            chunks.push(chunk.to_owned());
         }
-    }
-    if !current.trim().is_empty() {
-        chunks.push(current.trim().to_owned());
+        remaining = remaining[end..].trim_start();
     }
     chunks
 }

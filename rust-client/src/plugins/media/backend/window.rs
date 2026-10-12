@@ -5,7 +5,7 @@ use windows::Win32::Foundation::HWND;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, HWND_TOP, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
-    SetWindowPos, ShowWindow, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
+    SetWindowPos, ShowWindow, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_DISABLED,
 };
 #[cfg(windows)]
 use windows::core::PCWSTR;
@@ -49,7 +49,10 @@ impl NativeVideoHost {
                 windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
                 PCWSTR(class_name.as_ptr()),
                 PCWSTR::null(),
-                WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                // A disabled child passes mouse input to its parent. Egui owns
+                // video gestures and control wake-up; MPV only renders here.
+                // https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features
+                WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_DISABLED,
                 0,
                 0,
                 0,

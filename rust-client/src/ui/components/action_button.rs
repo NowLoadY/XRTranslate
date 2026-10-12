@@ -66,6 +66,40 @@ pub fn refresh_button(ui: &mut Ui, label: &str) -> egui::Response {
 }
 
 fn action_button(ui: &mut Ui, label: &str, icon: egui::ImageSource<'_>) -> egui::Response {
+    icon_button_with_colors(
+        ui,
+        label,
+        icon,
+        [
+            theme::surface_subtle(),
+            theme::primary(),
+            theme::border().gamma_multiply(0.6),
+            theme::text_normal(),
+        ],
+    )
+}
+
+/// SVG action using the containing UI's palette, including isolated monochrome surfaces.
+pub fn icon_button(ui: &mut Ui, label: &str, icon: egui::ImageSource<'_>) -> egui::Response {
+    icon_button_with_colors(
+        ui,
+        label,
+        icon,
+        [
+            ui.visuals().panel_fill,
+            ui.visuals().text_color(),
+            ui.visuals().widgets.inactive.bg_stroke.color,
+            ui.visuals().text_color(),
+        ],
+    )
+}
+
+fn icon_button_with_colors(
+    ui: &mut Ui,
+    label: &str,
+    icon: egui::ImageSource<'_>,
+    [background, accent, border, foreground]: [egui::Color32; 4],
+) -> egui::Response {
     let response = ui.add_sized(Vec2::splat(32.0), egui::Button::new("").frame(false));
     let response =
         crate::ui::automation::button_response(ui, response.id, label, ui.is_enabled(), response);
@@ -83,17 +117,17 @@ fn action_button(ui: &mut Ui, label: &str, icon: egui::ImageSource<'_>) -> egui:
         response.is_pointer_button_down_on(),
     );
     let fill = AnimationSystem::lerp_color(
-        theme::surface_subtle(),
-        theme::primary().gamma_multiply(0.12 + pressed * 0.08),
+        background,
+        accent.gamma_multiply(0.12 + pressed * 0.08),
         hover.max(pressed),
     );
     ui.painter().circle(
         response.rect.center(),
         16.0,
         fill,
-        egui::Stroke::new(1.0, theme::border().gamma_multiply(0.6)),
+        egui::Stroke::new(1.0, border),
     );
-    egui::Image::new(icon).tint(theme::text_normal()).paint_at(
+    egui::Image::new(icon).tint(foreground).paint_at(
         ui,
         egui::Rect::from_center_size(response.rect.center(), Vec2::splat(17.0)),
     );

@@ -10,7 +10,7 @@ mod language;
 mod models;
 mod remote;
 
-pub use remote::{apply_remote_defaults, release_config_document};
+pub use remote::{RemoteTtsConfig, apply_remote_defaults, release_config_document};
 pub use xrtranslate_assets::remote::AsrPromptMode;
 
 pub use models::InstalledModel;

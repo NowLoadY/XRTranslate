@@ -1,6 +1,6 @@
 //! Shared resources are prepared by the first consumer that needs them.
 use crate::{
-    BackendState, NativeTtsAdapter, OnnxRuntimeDiagnostic, RuntimeLayout, VoiceLibrary,
+    BackendState, OnnxRuntimeDiagnostic, RuntimeLayout, TtsAdapter, VoiceLibrary,
     initialize_managed_onnx_runtime, runtime_diagnostic, start_llama_servers,
     wait_for_model_servers,
 };
@@ -8,7 +8,7 @@ use std::sync::Arc;
 use xrtranslate_assets::ModelCapability;
 
 pub(crate) struct SpeechResources {
-    pub tts: Option<NativeTtsAdapter>,
+    pub tts: Option<TtsAdapter>,
     pub voices: Arc<VoiceLibrary>,
     pub diagnostic: OnnxRuntimeDiagnostic,
 }
@@ -53,12 +53,16 @@ impl BackendState {
         self.speech_runtime
             .get_or_try_init(|| async {
                 let tts = self.model_plan.tts_adapter(&self.config)?;
-                let diagnostic = if let Some(adapter) = &tts {
+                let diagnostic = if let Some(adapter) =
+                    tts.as_ref().filter(|adapter| adapter.is_local())
+                {
                     self.model_plan
                         .check_capability_assets(ModelCapability::Tts)?;
                     self.prepare_onnx().await?;
                     let device = adapter.prepare().await.map_err(|error| error.to_string())?;
-                    runtime_diagnostic(&self.project_root, &self.config, device)
+                    device
+                        .map(|device| runtime_diagnostic(&self.project_root, &self.config, device))
+                        .unwrap_or_default()
                 } else {
                     OnnxRuntimeDiagnostic::default()
                 };
@@ -66,8 +70,22 @@ impl BackendState {
                     RuntimeLayout::for_config(&self.project_root, &self.config.model_manager)
                         .voice_clones_directory();
                 let voices = Arc::new(
-                    VoiceLibrary::open(directory, self.config.tts.provider.clone(), tts.clone())
-                        .await,
+                    VoiceLibrary::open(
+                        directory,
+                        self.config.tts.provider.clone(),
+                        format!(
+                            "{}:{}",
+                            self.config.tts.provider,
+                            self.config
+                                .tts
+                                .provider_config(&self.config.tts.provider)
+                                .and_then(|provider| provider.get("model"))
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("local")
+                        ),
+                        tts.clone(),
+                    )
+                    .await,
                 );
                 Ok::<_, String>(SpeechResources {
                     tts,

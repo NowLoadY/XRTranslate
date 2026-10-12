@@ -1,0 +1,16 @@
+<resources>
+    <string name="quick_title">快捷翻译</string>
+    <string name="quick_ready">翻译剪贴板</string>
+    <string name="quick_unlock">解锁后翻译或收藏词条</string>
+    <string name="quick_translate">翻译剪贴板</string>
+    <string name="quick_save">收藏到默认单词本</string>
+    <string name="quick_saved">已收藏到默认单词本</string>
+    <string name="quick_save_failed">收藏失败，请重试。</string>
+    <string name="quick_hint">复制文本后点击剪贴板按钮，译文会自动写回剪贴板。</string>
+    <string name="quick_clipboard_reading">正在读取剪贴板…</string>
+    <string name="quick_clipboard_empty">剪贴板中没有文本。</string>
+    <string name="export_open">用其他应用打开</string>
+    <string name="export_save">保存副本</string>
+    <string name="export_saved">文件已保存</string>
+    <string name="export_failed">无法打开或保存文件。</string>
+</resources>

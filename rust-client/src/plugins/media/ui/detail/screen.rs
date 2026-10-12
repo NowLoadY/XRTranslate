@@ -23,25 +23,23 @@ pub(in crate::plugins::media::ui) fn render_detail(
             .send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
     }
     if !controller.fullscreen_mode {
-        crate::ui::layout::flow_row(ui, |ui| {
+        let title = controller
+            .active_task_id
+            .as_deref()
+            .and_then(|id| controller.store.get(id))
+            .map(|task| task.title.clone())
+            .unwrap_or_else(|| tr(language, "Media").to_owned());
+        components::page_header(ui, &title, |ui| {
             if components::back_button(ui, tr(language, "Back to Library")).clicked() {
                 controller.open_library();
                 action = MediaAction::StopTranslation;
             }
-            let title = controller
-                .active_task_id
-                .as_deref()
-                .and_then(|id| controller.store.get(id))
-                .map(|task| task.title.as_str())
-                .unwrap_or("Media");
-            ui.label(egui::RichText::new(title).size(18.0).strong());
             if controller.subtitles.count() > 0 {
                 ui.menu_button(tr(language, "Export Subtitles"), |ui| {
-                    super::super::export_controls(ui, language, title, &controller.subtitles)
+                    super::super::export_controls(ui, language, &title, &controller.subtitles)
                 });
             }
         });
-        ui.add_space(12.0);
     }
     if action == MediaAction::StopTranslation {
         return action;

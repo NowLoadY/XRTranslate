@@ -28,6 +28,7 @@ mod child_process;
 mod client_settings;
 pub(crate) mod contributors;
 mod desktop_shortcut;
+mod export;
 mod feature_access;
 mod file_dialog;
 mod focused_input;
@@ -658,6 +659,7 @@ struct XRTranslateApp {
     recognition_history: Vec<RecognitionHistoryEntry>,
     translations: Vec<TranslationHistoryEntry>,
     fullscreen_history: bool,
+    history_presentation: ui::pages::translation::presentation::Presentation,
     history_timeline: history::FeedTimeline,
     history_display: ui::pages::translation::history::HistoryDisplay,
     last_error: Option<String>,
@@ -1034,6 +1036,8 @@ impl Default for XRTranslateApp {
         let rx = event_rx.clone();
         let session_event_subscribers: Arc<Vec<Box<dyn SessionEventSubscriber>>> = Arc::new(vec![
             Box::new(history_archive.subscriber()),
+            #[cfg(target_os = "android")]
+            Box::new(android_translation_history::ResultSubscriber::default()),
             #[cfg(any(windows, target_os = "linux"))]
             Box::new(quick_translate.sink.clone()),
             Box::new(meeting_plugin.event_sink.clone()),
@@ -1045,8 +1049,6 @@ impl Default for XRTranslateApp {
             Box::new(auto_input_plugin.publisher()),
             Box::new(osc_plugin.publisher()),
             Box::new(vr_overlay_plugin.handle()),
-            #[cfg(target_os = "android")]
-            Box::new(android_translation_history::ResultSubscriber::default()),
         ]);
         let result_subscribers = Arc::clone(&session_event_subscribers);
         let output_subscribers = Arc::clone(&host_output_subscribers);
@@ -1770,6 +1772,7 @@ impl Default for XRTranslateApp {
             recognition_history: Vec::new(),
             translations: Vec::new(),
             fullscreen_history: false,
+            history_presentation: Default::default(),
             history_timeline: Default::default(),
             history_display: settings.history_display,
             last_error: None,
@@ -1989,6 +1992,7 @@ impl XRTranslateApp {
         };
 
         SessionConfig {
+            conversation_id: plugin.is_none().then(translation_service::host_conversation_id),
             server_url: self.server_url.clone(),
             languages,
             external_audio_gate: if external_audio_gate {
@@ -2119,14 +2123,8 @@ impl XRTranslateApp {
                     self.commit_prompt_profile(profile);
                 }
                 PromptStudioAction::ExportProfile(profile) => {
-                    let clean_name = sanitize_graph_file_name(&profile.name);
-                    let default_name = format!("{clean_name}.json");
                     if let Ok(json) = profile.export_project_json() {
-                        if let Err(error) = file_dialog::FileDialog::new()
-                            .add_filter("Prompt Graph (*.json)", &["json"])
-                            .set_file_name(&default_name)
-                            .save(json)
-                        {
+                        if let Err(error) = export::save(&profile.name, export::Format::Json, json) {
                             self.notify_error(
                                 "Could not export the prompt. Please try again.",
                                 error,
@@ -4806,6 +4804,9 @@ impl XRTranslateApp {
     }
 
     fn begin_voice_clone(&mut self) {
+        if !self.service_config.tts_supports_cloning() {
+            return;
+        }
         if let Some(channel) = self
             .host_channels()
             .find(|channel| channel.source == CaptureSource::Microphone && channel.capturing)
@@ -5057,13 +5058,8 @@ impl XRTranslateApp {
         let Some(bundle) = self.meeting_plugin.controller.bundle.as_ref() else {
             return;
         };
-        let default_name = format!("{}.md", sanitize_export_name(&bundle.meeting.name));
         let markdown = plugins::meeting::store::render_markdown(bundle);
-        if let Err(error) = file_dialog::FileDialog::new()
-            .add_filter("Markdown", &["md"])
-            .set_file_name(&default_name)
-            .save(markdown)
-        {
+        if let Err(error) = export::save(&bundle.meeting.name, export::Format::Markdown, markdown) {
             self.meeting_plugin
                 .set_error(format!("Could not export meeting: {error}"));
         }
@@ -5370,38 +5366,6 @@ impl XRTranslateApp {
     }
 }
 
-fn sanitize_export_name(name: &str) -> String {
-    let sanitized = name
-        .chars()
-        .map(|character| match character {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            character => character,
-        })
-        .collect::<String>();
-    let trimmed = sanitized.trim().trim_end_matches('.');
-    if trimmed.is_empty() {
-        "meeting".into()
-    } else {
-        trimmed.into()
-    }
-}
-
-fn sanitize_graph_file_name(name: &str) -> String {
-    let sanitized = name
-        .chars()
-        .map(|character| match character {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            character => character,
-        })
-        .collect::<String>();
-    let trimmed = sanitized.trim().trim_end_matches('.');
-    if trimmed.is_empty() {
-        "prompt-graph".into()
-    } else {
-        trimmed.into()
-    }
-}
-
 fn pause_tolerance_to_ms(value: f32) -> u32 {
     (240.0 + value.clamp(0.0, 1.0) * 960.0).round() as u32
 }
@@ -5659,7 +5623,13 @@ impl eframe::App for XRTranslateApp {
         let is_player_fullscreen = !self.first_run
             && self.navigation.page == Page::Plugin(PluginId::MEDIA)
             && self.media_plugin.controller.fullscreen_mode;
-        let custom_background = !is_player_fullscreen
+        let is_history_presentation = !self.first_run
+            && self.navigation.page == Page::Translation
+            && self.fullscreen_history
+            && !self.history_archive.open
+            && self.history_display.mode == ui::pages::translation::history::DisplayMode::Bubbles;
+        let immersive_content = is_player_fullscreen || is_history_presentation;
+        let custom_background = !immersive_content
             && self.background_image.paint(
                 ui.painter(),
                 ui.max_rect(),
@@ -5699,7 +5669,7 @@ impl eframe::App for XRTranslateApp {
 
         let viewport_focused = ui.input(|input| input.viewport().focused.unwrap_or(true));
 
-        if !is_player_fullscreen {
+        if !immersive_content {
             let expand_target = if self.navigation.collapsed { 0.0 } else { 1.0 };
             let expand_factor = ui::animation::AnimationSystem::animate_value(
                 ui.ctx(),
@@ -5793,7 +5763,11 @@ impl eframe::App for XRTranslateApp {
         );
 
         // 2. Native Central Content Panel (Takes 100% of remaining width and height)
-        let central_frame = if is_player_fullscreen {
+        let central_frame = if is_history_presentation {
+            egui::Frame::new().fill(ui::pages::translation::presentation::background(
+                self.history_display.presentation_dark,
+            ))
+        } else if is_player_fullscreen {
             egui::Frame::new()
                 .fill(egui::Color32::from_rgb(10, 15, 26))
                 .inner_margin(egui::Margin::ZERO)
@@ -5820,6 +5794,10 @@ impl eframe::App for XRTranslateApp {
         let content = egui::CentralPanel::default()
             .frame(central_frame)
             .show(ui, |ui| {
+                if is_history_presentation {
+                    ui::pages::translation::presentation::render(self, ui);
+                    return;
+                }
                 if self.navigation.page == Page::Translation {
                     ui::animation::AnimationSystem::render_animated_page(
                         ui,
@@ -5956,14 +5934,16 @@ impl eframe::App for XRTranslateApp {
 
         self.render_modal_layer(ui.ctx());
         self.observe_companion_errors();
-        ui::companion::show(
-            ui.ctx(),
-            self,
-            ui::companion::Layout::Page {
-                bounds: content.response.rect,
-                layer: content.response.layer_id,
-            },
-        );
+        if !is_history_presentation {
+            ui::companion::show(
+                ui.ctx(),
+                self,
+                ui::companion::Layout::Page {
+                    bounds: content.response.rect,
+                    layer: content.response.layer_id,
+                },
+            );
+        }
         ui::layout::finish_frame(ui.ctx());
         self.notifications.show(ui.ctx(), self.ui_language);
         ui::automation::finish_frame(&self.current_page_name());

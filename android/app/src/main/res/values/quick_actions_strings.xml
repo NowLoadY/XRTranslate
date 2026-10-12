@@ -1,0 +1,16 @@
+<resources>
+    <string name="quick_title">Quick translation</string>
+    <string name="quick_ready">Clipboard translation</string>
+    <string name="quick_unlock">Unlock to translate or save words</string>
+    <string name="quick_translate">Translate clipboard</string>
+    <string name="quick_save">Save to default wordbook</string>
+    <string name="quick_saved">Saved to default wordbook</string>
+    <string name="quick_save_failed">Could not save. Please try again.</string>
+    <string name="quick_hint">Copy text, then tap the clipboard. The result replaces the clipboard automatically.</string>
+    <string name="quick_clipboard_reading">Reading clipboard…</string>
+    <string name="quick_clipboard_empty">The clipboard has no text.</string>
+    <string name="export_open">Open with…</string>
+    <string name="export_save">Save a copy</string>
+    <string name="export_saved">File saved</string>
+    <string name="export_failed">Could not open or save this file.</string>
+</resources>

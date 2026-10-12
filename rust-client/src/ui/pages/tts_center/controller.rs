@@ -35,11 +35,24 @@ impl TtsCenterController {
     }
 
     pub fn refresh(&mut self) {
+        if !self.busy() {
+            self.status = VoiceStatus::default();
+        }
         self.enqueue(Request::Read);
     }
 
     pub fn select(&mut self, voice_id: Option<String>) {
-        self.enqueue(Request::Select(VoiceSelection { voice_id }));
+        self.enqueue(Request::Select(VoiceSelection {
+            voice_id,
+            preset: None,
+        }));
+    }
+
+    pub fn select_preset(&mut self, preset: String) {
+        self.enqueue(Request::Select(VoiceSelection {
+            voice_id: None,
+            preset: Some(preset),
+        }));
     }
 
     pub fn import(&mut self, draft: VoiceDraft, ctx: &egui::Context) {
@@ -57,7 +70,10 @@ impl TtsCenterController {
             return;
         }
         self.requested_voice = match &request {
-            Request::Select(selection) => selection.voice_id.clone(),
+            Request::Select(selection) => selection
+                .voice_id
+                .clone()
+                .or_else(|| selection.preset.clone()),
             _ => None,
         };
         self.pending = Some(request);

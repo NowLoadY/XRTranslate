@@ -1,4 +1,14 @@
-//! Interactive view of the persistent XR Corpus vocabulary graph.
+//! Domain-oriented terminology editing with a network-first workspace.
+
+mod aliases;
+mod domain_rules;
+mod domains;
+mod editor;
+mod import;
+mod network;
+mod rules;
+mod term_index;
+use editor::{TermForm, render_inspector};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -12,8 +22,9 @@ use eframe::egui::{self, Color32, CornerRadius, Frame, Pos2, Rect, RichText, Sen
 use xr_corpus_client::{
     CorpusClient,
     protocol::{
-        CORPUS_LANGUAGE_ORDER as LANGUAGE_CODES, CorpusActivation, GraphDomain, GraphEdge,
-        GraphEdgeKind, GraphNode, GraphNodeStatePatch as NodeState, GraphSnapshot, VRCX_DOMAIN_ID,
+        CORPUS_LANGUAGE_ORDER as LANGUAGE_CODES, CorpusActivation, GraphDomain, GraphDomainEdit,
+        GraphEdge, GraphEdgeKind, GraphNode, GraphNodeStatePatch as NodeState, GraphSnapshot,
+        GraphTermEdit, VRCX_DOMAIN_ID,
     },
 };
 
@@ -36,6 +47,7 @@ const CORPUS_URL: &str = "http://127.0.0.1:7766";
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 enum CorpusView {
     #[default]
+    Network,
     Graph,
     Layered,
     List,
@@ -69,9 +81,10 @@ struct GraphScene {
 enum Command {
     Refresh,
     PutDomain(GraphDomain),
+    SaveDomainRules(GraphDomainEdit),
+    ImportTerms(Vec<GraphNode>),
     DeleteDomain(String),
-    PutNode(GraphNode),
-    SaveNode(GraphNode),
+    SaveTerm(GraphTermEdit, bool),
     DeleteNode(String),
     PutEdge(GraphEdge),
     DeleteEdge(GraphEdge),
@@ -80,14 +93,13 @@ enum Command {
 
 enum PendingEnabled {
     Domain(String, bool),
-    Node(String, bool),
     Edge(EdgeKey, bool),
     Nodes(HashSet<String>, bool),
 }
 
 impl Command {
     fn saves_node(&self) -> bool {
-        matches!(self, Self::SaveNode(_))
+        matches!(self, Self::SaveTerm(..))
     }
 }
 
@@ -96,7 +108,9 @@ async fn execute(client: &CorpusClient, command: &Command) -> Result<GraphSnapsh
         Command::Refresh => client.graph().await,
         Command::PutDomain(domain) => client.save_domain(domain).await,
         Command::DeleteDomain(id) => client.remove_domain(id).await,
-        Command::PutNode(node) | Command::SaveNode(node) => client.save_node(node).await,
+        Command::SaveTerm(edit, _) => client.save_term(edit).await,
+        Command::SaveDomainRules(edit) => client.save_domain_rules(edit).await,
+        Command::ImportTerms(nodes) => client.import_terms(nodes).await,
         Command::DeleteNode(id) => client.remove_node(id).await,
         Command::PutEdge(edge) => client.save_edge(edge).await,
         Command::DeleteEdge(edge) => client.remove_edge(edge).await,
@@ -159,6 +173,16 @@ pub(crate) struct CorpusStudioController {
     selected_node: Option<String>,
     selected_edge: Option<EdgeKey>,
     node_draft: Option<GraphNode>,
+    term_form: TermForm,
+    pending_add_another: bool,
+    pending_domain_save: bool,
+    pending_import: bool,
+    saved_term: Option<String>,
+    move_domain_search: String,
+    domain_rules: Option<domain_rules::Draft>,
+    domain_network: network::Network,
+    term_index: term_index::TermIndex,
+    import: Option<import::Draft>,
     new_node: bool,
     draft_dirty: bool,
     domain_search: String,
@@ -168,9 +192,6 @@ pub(crate) struct CorpusStudioController {
     adding_domain: bool,
     editing_domain: bool,
     confirm_delete_domain: bool,
-    edge_target: String,
-    edge_outgoing: bool,
-    edge_kind: GraphEdgeKind,
     confirm_delete: bool,
     pending: bool,
     pending_node_save: bool,
@@ -202,6 +223,16 @@ impl Default for CorpusStudioController {
             selected_node: None,
             selected_edge: None,
             node_draft: None,
+            term_form: TermForm::default(),
+            pending_add_another: false,
+            pending_domain_save: false,
+            pending_import: false,
+            saved_term: None,
+            move_domain_search: String::new(),
+            domain_rules: None,
+            domain_network: network::Network::default(),
+            term_index: term_index::TermIndex::default(),
+            import: None,
             new_node: false,
             draft_dirty: false,
             domain_search: String::new(),
@@ -211,9 +242,6 @@ impl Default for CorpusStudioController {
             adding_domain: false,
             editing_domain: false,
             confirm_delete_domain: false,
-            edge_target: String::new(),
-            edge_outgoing: true,
-            edge_kind: GraphEdgeKind::Trigger,
             confirm_delete: false,
             pending: false,
             pending_node_save: false,
@@ -271,7 +299,6 @@ impl CorpusStudioController {
             Command::PutDomain(domain) => {
                 Some(PendingEnabled::Domain(domain.id.clone(), domain.enabled))
             }
-            Command::PutNode(node) => Some(PendingEnabled::Node(node.id.clone(), node.enabled)),
             Command::PutEdge(edge) => Some(PendingEnabled::Edge(edge_key(edge), edge.enabled)),
             Command::SetNodeState(state) => state
                 .enabled
@@ -279,8 +306,12 @@ impl CorpusStudioController {
             _ => None,
         };
         self.pending_node_save = command.saves_node();
+        self.pending_domain_save = matches!(&command, Command::SaveDomainRules(_));
+        self.pending_import = matches!(&command, Command::ImportTerms(_));
+        self.pending_add_another = matches!(&command, Command::SaveTerm(_, true));
         self.pending = true;
         self.error = None;
+        self.saved_term = None;
         if self
             .worker_tx
             .as_ref()
@@ -302,6 +333,16 @@ impl CorpusStudioController {
         self.pending_enabled = None;
         match result {
             Ok(snapshot) => {
+                if self.pending_domain_save {
+                    self.domain_rules = None;
+                }
+                if self.pending_import {
+                    if let Some(import) = self.import.take() {
+                        self.selected_domain = Some(import.domain().to_owned());
+                        self.node_search.clear();
+                        self.saved_term = Some(format!("{}", import.count()));
+                    }
+                }
                 let ids = snapshot
                     .nodes
                     .iter()
@@ -309,6 +350,11 @@ impl CorpusStudioController {
                     .collect::<HashSet<_>>();
                 self.row_selection.retain(|id| ids.contains(id.as_str()));
                 if self.pending_node_save {
+                    self.selected_domain =
+                        self.node_draft.as_ref().map(|node| node.domain_id.clone());
+                    self.node_search.clear();
+                    self.row_selection.clear();
+                    self.saved_term = self.node_draft.as_ref().map(|node| node.title.clone());
                     self.draft_dirty = false;
                     self.new_node = false;
                 }
@@ -326,10 +372,11 @@ impl CorpusStudioController {
                     self.selected_domain = None;
                     self.domain_title_edit.clear();
                 }
-                if self
-                    .selected_node
-                    .as_ref()
-                    .is_some_and(|id| !snapshot.nodes.iter().any(|n| &n.id == id))
+                if !self.new_node
+                    && self
+                        .selected_node
+                        .as_ref()
+                        .is_some_and(|id| !snapshot.nodes.iter().any(|n| &n.id == id))
                 {
                     self.selected_node = None;
                     self.node_draft = None;
@@ -346,8 +393,39 @@ impl CorpusStudioController {
                     self.editor.clear_selection();
                 }
                 self.scene_key = None;
+                self.term_index.rebuild(&snapshot);
+                self.domain_network.invalidate();
                 self.snapshot = Some(Arc::new(snapshot));
                 self.error = None;
+                if !self.draft_dirty
+                    && let Some(node) = &self.node_draft
+                {
+                    self.term_form
+                        .load_rules(self.snapshot.as_ref().unwrap(), &node.id);
+                    self.term_form.new_domain = None;
+                }
+                if self.pending_node_save && self.pending_add_another {
+                    let domain = self.node_draft.as_ref().map(|node| node.domain_id.clone());
+                    let languages = self.term_form.languages;
+                    let activation = self
+                        .node_draft
+                        .as_ref()
+                        .map(|node| (node.activation, node.inherit_domain));
+                    let edges = self.term_form.incoming_edges.clone();
+                    self.create_node(domain.as_deref());
+                    self.term_form.languages = languages;
+                    if let Some(draft) = &mut self.node_draft {
+                        (draft.activation, draft.inherit_domain) =
+                            activation.unwrap_or((CorpusActivation::Always, true));
+                        self.term_form.incoming_edges = edges
+                            .into_iter()
+                            .map(|edge| GraphEdge {
+                                target_id: draft.id.clone(),
+                                ..edge
+                            })
+                            .collect();
+                    }
+                }
             }
             Err(error) => {
                 self.revert_immediate_node_fields();
@@ -369,8 +447,6 @@ impl CorpusStudioController {
             && let Some(saved) = snapshot.nodes.iter().find(|node| node.id == draft.id)
         {
             draft.enabled = saved.enabled;
-            draft.activation = saved.activation.clone();
-            draft.promptable = saved.promptable;
         }
     }
 
@@ -383,7 +459,6 @@ impl CorpusStudioController {
 
     fn displayed_node_enabled(&self, node: &GraphNode) -> bool {
         match &self.pending_enabled {
-            Some(PendingEnabled::Node(id, enabled)) if id == &node.id => *enabled,
             Some(PendingEnabled::Nodes(ids, enabled)) if ids.contains(&node.id) => *enabled,
             _ => node.enabled,
         }
@@ -406,9 +481,15 @@ impl CorpusStudioController {
         self.new_node = false;
         self.draft_dirty = false;
         self.confirm_delete = false;
-        self.edge_target.clear();
+        self.term_form = TermForm::default();
+        if let Some(snapshot) = &self.snapshot {
+            self.term_form.load_rules(snapshot, &node.id);
+        }
+        self.saved_term = None;
         self.editor.select_node(node.id.clone(), false);
-        if self.view != CorpusView::List && !self.layout.positions.contains_key(&node.id) {
+        if matches!(self.view, CorpusView::Graph | CorpusView::Layered)
+            && !self.layout.positions.contains_key(&node.id)
+        {
             self.focus_connections = true;
             self.editor.canvas.fit_pending = true;
         }
@@ -443,7 +524,7 @@ impl CorpusStudioController {
         self.editing_domain = false;
         self.confirm_delete_domain = false;
         self.confirm_delete = false;
-        self.edge_target.clear();
+        self.term_form = TermForm::default();
         self.editor.clear_selection();
         self.editor.canvas.fit_pending = true;
     }
@@ -452,12 +533,12 @@ impl CorpusStudioController {
         if self.draft_dirty {
             return;
         }
-        let domain_id = self
-            .selected_domain
-            .as_deref()
-            .or(domain_id)
+        let domain_id = domain_id
+            .or(self.selected_domain.as_deref())
             .unwrap_or_default()
             .to_owned();
+        self.term_form = TermForm::default();
+        self.term_form.focus_input = true;
         self.new_node = true;
         self.selected_node = None;
         self.selected_edge = None;
@@ -469,6 +550,8 @@ impl CorpusStudioController {
             enabled: true,
             promptable: true,
             activation: CorpusActivation::Always,
+            inherit_domain: true,
+                recognition_aliases: Default::default(),
             priority: 20,
             values: vec![String::new(); LANGUAGE_CODES.len()],
         });
@@ -494,6 +577,7 @@ impl CorpusStudioController {
             ids: vec![node.id.clone()],
             enabled: Some(enabled),
             domain_id: None,
+            inherit_domain: None,
         }));
     }
 }
@@ -508,10 +592,10 @@ pub(crate) fn render(
     controller.ensure_service(backend, ui.ctx());
     ui.scope(|ui| {
         ui.horizontal(|ui| {
-            ui.heading(tr(language, "Vocabulary Graph"));
+            ui.heading(tr(language, "Terminology library"));
             ui.label(format!(
                 "{} · {}",
-                controller.snapshot.as_ref().map_or(0, |s| s.nodes.len()),
+                controller.snapshot.as_ref().map_or(0, |s| s.nodes.iter().filter(|node| node.promptable).count()),
                 tr(language, "terms")
             ));
             if controller.pending {
@@ -543,6 +627,9 @@ pub(crate) fn render(
                 "Save or discard term changes before switching.",
             ));
         }
+        if let Some(saved) = &controller.saved_term {
+            ui.small(format!("{} · {saved}", tr(language, "Saved")));
+        }
         ui.add_space(6.0);
         let Some(snapshot) = controller.snapshot.clone() else {
             ui.label(tr(
@@ -552,21 +639,14 @@ pub(crate) fn render(
             return;
         };
         let height = ui.available_height().max(360.0);
-        let is_wide = (ui.available_width() > ui.available_height()
-            && ui.available_width() >= 540.0)
-            || ui.available_width() >= 700.0;
+        let is_wide = ui.available_width() >= 840.0;
         if controller.node_draft.is_some() && !is_wide {
-            egui::ScrollArea::vertical()
-                .id_salt("corpus_narrow_page")
-                .show(ui, |ui| {
-                    render_workspace(controller, &snapshot, ui, language, height * 0.6);
-                    render_inspector(controller, &snapshot, ui, language, 440.0);
-                });
+            render_inspector(controller, &snapshot, ui, language, height);
         } else {
             ui.horizontal_top(|ui| {
                 let show_inspector = controller.node_draft.is_some();
                 let width =
-                    (ui.available_width() - if show_inspector { 294.0 } else { 0.0 }).max(280.0);
+                    (ui.available_width() - if show_inspector { 354.0 } else { 0.0 }).max(280.0);
                 ui.allocate_ui_with_layout(
                     Vec2::new(width, height),
                     egui::Layout::top_down(egui::Align::Min),
@@ -576,7 +656,7 @@ pub(crate) fn render(
                 );
                 if show_inspector {
                     ui.allocate_ui_with_layout(
-                        Vec2::new(284.0, height),
+                        Vec2::new(344.0, height),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
                             render_inspector(controller, &snapshot, ui, language, height);
@@ -586,6 +666,8 @@ pub(crate) fn render(
             });
         }
     });
+    domain_rules::render(controller, ui.ctx(), language);
+    import::render(controller, ui.ctx(), language);
     if controller.confirm_delete_domain {
         let domain = controller.snapshot.as_ref().and_then(|snapshot| {
             snapshot
@@ -772,6 +854,7 @@ fn render_browser(
     language: UiLanguage,
     height: f32,
 ) {
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
     let index = domain_children(snapshot);
     components::section_heading(ui, tr(language, "Domains"));
     ui.add(
@@ -890,6 +973,7 @@ fn render_browser(
             let domain = GraphDomain {
                 id,
                 parent_id: controller.selected_domain.clone(),
+                cue_words: None,
                 title: controller.new_domain_title.trim().to_owned(),
                 enabled: true,
             };
@@ -1054,19 +1138,6 @@ fn node_size(node: &GraphNode, language: UiLanguage) -> Vec2 {
     )
 }
 
-fn language_value(ui: &mut egui::Ui, code: &str, value: &mut String) -> bool {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(code).monospace());
-        ui.add(
-            egui::TextEdit::singleline(value)
-                .desired_width(220.0)
-                .char_limit(512),
-        )
-        .changed()
-    })
-    .inner
-}
-
 fn preferred_language_index(language: UiLanguage) -> usize {
     match language {
         UiLanguage::Chinese => 0,
@@ -1165,28 +1236,6 @@ fn valid_node_id(id: &str) -> bool {
             .any(|character| character.is_whitespace() || character.is_control())
 }
 
-fn resolve_edge_target(snapshot: &GraphSnapshot, query: &str) -> Option<String> {
-    let query = query.trim();
-    if query.is_empty() {
-        return None;
-    }
-    if let Some(node) = snapshot.nodes.iter().find(|node| node.id == query) {
-        return Some(node.id.clone());
-    }
-    let query_lower = query.to_lowercase();
-    let mut exact = snapshot.nodes.iter().filter(|node| {
-        node.title.trim().to_lowercase() == query_lower
-            || node
-                .values
-                .iter()
-                .any(|value| value.trim().to_lowercase() == query_lower)
-    });
-    if let Some(node) = exact.next() {
-        return exact.next().is_none().then(|| node.id.clone());
-    }
-    valid_node_id(query).then(|| query.to_owned())
-}
-
 fn matching_nodes<'a>(
     controller: &CorpusStudioController,
     snapshot: &'a GraphSnapshot,
@@ -1201,6 +1250,7 @@ fn matching_nodes<'a>(
                 .is_none_or(|id| domain_contains(snapshot, id, &node.domain_id))
                 && matches_node(node, &controller.node_search)
         })
+        .take(400)
         .collect::<Vec<_>>();
     nodes.sort_by(|a, b| (&a.domain_id, &a.title, &a.id).cmp(&(&b.domain_id, &b.title, &b.id)));
     nodes
@@ -1420,6 +1470,7 @@ fn render_workspace(
     let top = ui.cursor().top();
     let mut zoom_step = 0.0;
     ui.horizontal_wrapped(|ui| {
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
         let path = controller
             .selected_domain
             .as_ref()
@@ -1443,7 +1494,7 @@ fn render_workspace(
             || tr(language, "All domains").to_owned(),
             |domain| tr_dynamic(language, &domain.title).into_owned(),
         );
-        egui::menu::MenuButton::new(format!("{current} ▾"))
+        egui::menu::MenuButton::new(current)
             .config(
                 egui::menu::MenuConfig::new()
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
@@ -1465,21 +1516,58 @@ fn render_workspace(
         }
         if ui
             .add_enabled(
-                controller.selected_domain.is_some()
-                    && !controller.draft_dirty
-                    && !controller.pending,
-                egui::Button::new(tr(language, "New term")),
+                !controller.draft_dirty && !controller.pending,
+                egui::Button::new(tr(language, "Add term")),
             )
             .on_hover_text(tr(language, "New term"))
             .clicked()
         {
             controller.create_node(None);
         }
-        ui.separator();
-        if controller.view != CorpusView::Graph && ui.button(tr(language, "Graph")).clicked() {
-            controller.view = CorpusView::Graph;
+        if graph_style::toolbar_button(
+            ui,
+            tr(language, "Paste terms"),
+            !controller.pending && !controller.draft_dirty,
+        )
+        .clicked()
+        {
+            controller.import = Some(import::Draft::new(
+                controller.selected_domain.clone(),
+                language,
+            ));
         }
-        if controller.view != CorpusView::List {
+        if let Some(domain) = controller
+            .selected_domain
+            .as_ref()
+            .and_then(|id| snapshot.domains.iter().find(|d| &d.id == id))
+        {
+            if graph_style::toolbar_button(
+                ui,
+                tr(language, "Domain rules"),
+                !controller.pending && !controller.draft_dirty,
+            )
+            .clicked()
+            {
+                controller.domain_rules = Some(domain_rules::Draft::new(domain));
+            }
+        }
+        ui.add_space(8.0);
+        let mut graph = controller.view != CorpusView::List;
+        if components::segmented_switch(
+            ui,
+            &mut graph,
+            [tr(language, "Terms"), tr(language, "Term network")],
+        )
+        .changed()
+        {
+            controller.view = if graph {
+                CorpusView::Network
+            } else {
+                CorpusView::List
+            };
+            controller.editor.cancel_wire();
+        }
+        if matches!(controller.view, CorpusView::Graph | CorpusView::Layered) {
             if ui
                 .button("−")
                 .on_hover_text(tr(language, "Zoom out"))
@@ -1509,25 +1597,31 @@ fn render_workspace(
                 controller.focus_connections = !controller.focus_connections;
             }
         }
-        ui.menu_button("⋯", |ui| {
-            for (view, label) in [
-                (CorpusView::Graph, "Graph"),
-                (CorpusView::Layered, "Hierarchy"),
-                (CorpusView::List, "List"),
-            ] {
-                if ui
-                    .selectable_label(controller.view == view, tr(language, label))
-                    .clicked()
-                {
-                    controller.view = view;
-                    controller.editor.cancel_wire();
-                    ui.close();
+        if controller.view != CorpusView::List {
+            ui.menu_button("⋯", |ui| {
+                for (view, label) in [
+                    (CorpusView::Network, "Domain network"),
+                    (CorpusView::Graph, "Individual connections"),
+                    (CorpusView::Layered, "Hierarchy"),
+                ] {
+                    if ui
+                        .selectable_label(controller.view == view, tr(language, label))
+                        .clicked()
+                    {
+                        controller.view = view;
+                        controller.layout_signature = None;
+                        controller.editor.cancel_wire();
+                        ui.close();
+                    }
                 }
-            }
-        });
+            });
+        }
     });
     ui.add_space(6.0);
     if controller.view == CorpusView::List {
+        if let Some(domain) = &controller.selected_domain {
+            ui.weak(domain_rules::summary(snapshot, domain, language));
+        }
         render_list(
             controller,
             snapshot,
@@ -1537,6 +1631,20 @@ fn render_workspace(
         );
         return;
     }
+    if controller.view == CorpusView::Network {
+        network::render(
+            controller,
+            snapshot,
+            ui,
+            language,
+            height - (ui.cursor().top() - top),
+        );
+        return;
+    }
+    ui.weak(tr(
+        language,
+        "Advanced view: up to 400 matching terms. Use domains or search to narrow the view.",
+    ));
     sync_layout(controller, snapshot, language);
     let scene = controller.scene.clone();
     let nodes = scene
@@ -1746,7 +1854,10 @@ fn render_workspace(
                         && key.kind == edge.kind
                 });
                 let incident = focus.is_some_and(|i| i == a || i == b);
-                let enabled = controller.displayed_edge_enabled(edge) && active[a] && active[b];
+                let enabled = controller.displayed_edge_enabled(edge)
+                    && active[a]
+                    && active[b]
+                    && !nodes[b].inherit_domain;
                 let alpha = if highlighted {
                     0.9
                 } else if incident {
@@ -1967,12 +2078,7 @@ fn render_workspace(
                             && let Some(target_id) = commit.to
                             && commit.from != target_id
                         {
-                            controller.send(Command::PutEdge(GraphEdge {
-                                source_id: commit.from,
-                                target_id,
-                                kind: GraphEdgeKind::Trigger,
-                                enabled: true,
-                            }));
+                            controller.edit_trigger(snapshot, &commit.from, &target_id);
                         }
                     }
                 }
@@ -2060,12 +2166,7 @@ fn render_workspace(
                         .is_some_and(|id| id != &target)
                     && let Some(commit) = controller.editor.finish_wire(Some(target.clone()))
                 {
-                    controller.send(Command::PutEdge(GraphEdge {
-                        source_id: commit.from,
-                        target_id: target,
-                        kind: GraphEdgeKind::Trigger,
-                        enabled: true,
-                    }));
+                    controller.edit_trigger(snapshot, &commit.from, &target);
                 }
                 let source = nearest_port(
                     pointer,
@@ -2084,12 +2185,7 @@ fn render_workspace(
                     && let Some(commit) = controller.editor.finish_reverse_wire(source)
                     && let Some(target_id) = commit.to
                 {
-                    controller.send(Command::PutEdge(GraphEdge {
-                        source_id: commit.from,
-                        target_id,
-                        kind: GraphEdgeKind::Trigger,
-                        enabled: true,
-                    }));
+                    controller.edit_trigger(snapshot, &commit.from, &target_id);
                 }
             }
             if let Some(pointer) = pointer {
@@ -2156,40 +2252,10 @@ fn move_selected_to(controller: &mut CorpusStudioController, ui: &mut egui::Ui, 
         ids: controller.row_selection.iter().cloned().collect(),
         enabled: None,
         domain_id: Some(domain.to_owned()),
+        inherit_domain: Some(true),
     }));
     controller.row_selection.clear();
     ui.close();
-}
-
-fn render_domain_choice(
-    ui: &mut egui::Ui,
-    language: UiLanguage,
-    domain: &GraphDomain,
-    index: &DomainChildren<'_>,
-    choice: &mut Option<String>,
-) {
-    let children = index
-        .get(&Some(domain.id.as_str()))
-        .map_or(&[][..], Vec::as_slice);
-    let title = tr_dynamic(language, &domain.title).into_owned();
-    ui.push_id(&domain.id, |ui| {
-        if children.is_empty() {
-            if ui.button(title).clicked() {
-                *choice = Some(domain.id.clone());
-                ui.close();
-            }
-        } else {
-            ui.menu_button(title, |ui| {
-                if ui.button(tr(language, "Choose this group")).clicked() {
-                    *choice = Some(domain.id.clone());
-                    ui.close();
-                }
-                for &child in children {
-                    render_domain_choice(ui, language, child, index, choice);
-                }
-            });
-        }
-    });
 }
 
 fn render_list(
@@ -2199,14 +2265,20 @@ fn render_list(
     language: UiLanguage,
     height: f32,
 ) {
-    let nodes = matching_nodes(controller, snapshot);
+    let indices = controller.term_index.rows(
+        snapshot,
+        controller.selected_domain.as_deref(),
+        &controller.node_search,
+    );
     ui.horizontal_wrapped(|ui| {
-        let mut all = !nodes.is_empty()
-            && nodes
+        let mut all = !indices.is_empty()
+            && !controller.row_selection.is_empty()
+            && indices
                 .iter()
-                .all(|node| controller.row_selection.contains(&node.id));
+                .all(|&i| controller.row_selection.contains(&snapshot.nodes[i].id));
         if ui.checkbox(&mut all, tr(language, "Select all")).changed() {
-            for node in &nodes {
+            for &index in indices.iter() {
+                let node = &snapshot.nodes[index];
                 if all {
                     controller.row_selection.insert(node.id.clone());
                 } else {
@@ -2217,43 +2289,123 @@ fn render_list(
         ui.small(format!(
             "{} / {}",
             controller.row_selection.len(),
-            nodes.len()
+            indices.len()
         ));
-        let can_edit =
-            !controller.row_selection.is_empty() && !controller.pending && !controller.draft_dirty;
-        for (enabled, label) in [(true, "Enable selected"), (false, "Disable selected")] {
-            if components::secondary_button_enabled(ui, tr(language, label), can_edit).clicked() {
+        if !controller.row_selection.is_empty() {
+            let can_edit = !controller.row_selection.is_empty()
+                && !controller.pending
+                && !controller.draft_dirty;
+            for (enabled, label) in [(true, "Enable selected"), (false, "Disable selected")] {
+                if components::secondary_button_enabled(ui, tr(language, label), can_edit).clicked()
+                {
+                    controller.send(Command::SetNodeState(NodeState {
+                        ids: controller.row_selection.iter().cloned().collect(),
+                        enabled: Some(enabled),
+                        domain_id: None,
+                        inherit_domain: None,
+                    }));
+                }
+            }
+            if components::secondary_button_enabled(ui, tr(language, "Follow domain"), can_edit)
+                .clicked()
+            {
                 controller.send(Command::SetNodeState(NodeState {
                     ids: controller.row_selection.iter().cloned().collect(),
-                    enabled: Some(enabled),
+                    enabled: None,
                     domain_id: None,
+                    inherit_domain: Some(true),
                 }));
             }
-        }
-        ui.add_enabled_ui(can_edit, |ui| {
-            ui.menu_button(tr(language, "Move to group"), |ui| {
-                let index = domain_children(snapshot);
-                let mut choice = None;
-                for &domain in index.get(&None).map_or(&[][..], Vec::as_slice) {
-                    render_domain_choice(ui, language, domain, &index, &mut choice);
-                }
-                if let Some(domain) = choice {
-                    move_selected_to(controller, ui, &domain);
-                }
+            ui.add_enabled_ui(can_edit, |ui| {
+                ui.menu_button(tr(language, "Move to group"), |ui| {
+                    if let Some(domain) =
+                        domains::choices(ui, snapshot, language, &mut controller.move_domain_search)
+                    {
+                        move_selected_to(controller, ui, &domain);
+                    }
+                });
             });
-        });
+        }
     });
     let primary = preferred_language_index(language);
     let secondary = if primary == 1 { 0 } else { 1 };
-    let connections =
-        snapshot
-            .edges
-            .iter()
-            .fold(HashMap::<&str, usize>::new(), |mut counts, edge| {
-                *counts.entry(&edge.source_id).or_default() += 1;
-                *counts.entry(&edge.target_id).or_default() += 1;
-                counts
+    if indices.is_empty() {
+        ui.weak(tr(language, "No matching terms"));
+        return;
+    }
+    if ui.available_width() < 620.0 {
+        egui::ScrollArea::vertical()
+            .id_salt("corpus_compact_list")
+            .max_height((height - 60.0).max(80.0))
+            .show_rows(ui, 64.0, indices.len(), |ui, range| {
+                for row in range {
+                    let node = &snapshot.nodes[indices[row]];
+                    ui.push_id(&node.id, |ui| {
+                        ui.horizontal(|ui| {
+                            let mut checked = controller.row_selection.contains(&node.id);
+                            if ui.checkbox(&mut checked, "").changed() {
+                                if checked {
+                                    controller.row_selection.insert(node.id.clone());
+                                } else {
+                                    controller.row_selection.remove(&node.id);
+                                }
+                            }
+                            let title = format!(
+                                "{} · {}",
+                                node_label(node, language),
+                                node.values.get(secondary).map_or("", String::as_str)
+                            );
+                            if ui
+                                .add_enabled(
+                                    !controller.draft_dirty && !controller.pending,
+                                    egui::Button::selectable(
+                                        controller.selected_node.as_deref() == Some(&node.id),
+                                        title,
+                                    )
+                                    .truncate(),
+                                )
+                                .clicked()
+                            {
+                                controller.select_node(node);
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            let mut enabled = controller.displayed_node_enabled(node);
+                            if ui
+                                .add_enabled_ui(
+                                    !controller.pending && !controller.draft_dirty,
+                                    |ui| components::pill_toggle(ui, &mut enabled),
+                                )
+                                .inner
+                                .changed()
+                            {
+                                controller.set_node_enabled(node, enabled);
+                            }
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(format!(
+                                        "{} · {}",
+                                        domain_path_label(snapshot, &node.domain_id, language),
+                                        tr(
+                                            language,
+                                            if node.inherit_domain {
+                                                "Follow domain"
+                                            } else {
+                                                "Custom rules"
+                                            }
+                                        )
+                                    ))
+                                    .small(),
+                                )
+                                .truncate(),
+                            );
+                        });
+                        ui.separator();
+                    });
+                }
             });
+        return;
+    }
     egui::ScrollArea::horizontal()
         .id_salt("corpus_list_horizontal")
         .show(ui, |ui| {
@@ -2270,22 +2422,15 @@ fn render_list(
                 .column(Column::auto().at_least(60.0))
                 .max_scroll_height(height - 72.0)
                 .header(28.0, |mut header| {
-                    for label in [
-                        "",
-                        "Terms",
-                        "Translations",
-                        "Group",
-                        "Connections",
-                        "Enabled",
-                    ] {
+                    for label in ["", "Terms", "Translations", "Group", "Rules", "Enabled"] {
                         header.col(|ui| {
                             ui.strong(tr(language, label));
                         });
                     }
                 })
                 .body(|body| {
-                    body.rows(34.0, nodes.len(), |mut row| {
-                        let node = nodes[row.index()];
+                    body.rows(34.0, indices.len(), |mut row| {
+                        let node = &snapshot.nodes[indices[row.index()]];
                         row.col(|ui| {
                             let mut checked = controller.row_selection.contains(&node.id);
                             if ui.checkbox(&mut checked, "").changed() {
@@ -2320,20 +2465,22 @@ fn render_list(
                             );
                         });
                         row.col(|ui| {
-                            ui.label(
-                                connections
-                                    .get(node.id.as_str())
-                                    .copied()
-                                    .unwrap_or(0)
-                                    .to_string(),
-                            );
+                            ui.label(tr(
+                                language,
+                                if node.inherit_domain {
+                                    "Follow domain"
+                                } else {
+                                    "Custom rules"
+                                },
+                            ));
                         });
                         row.col(|ui| {
                             let mut enabled = controller.displayed_node_enabled(node);
                             if ui
-                                .add_enabled_ui(!controller.pending, |ui| {
-                                    components::pill_toggle(ui, &mut enabled)
-                                })
+                                .add_enabled_ui(
+                                    !controller.pending && !controller.draft_dirty,
+                                    |ui| components::pill_toggle(ui, &mut enabled),
+                                )
                                 .inner
                                 .changed()
                             {
@@ -2342,316 +2489,6 @@ fn render_list(
                         });
                     });
                 });
-        });
-}
-
-fn render_inspector(
-    controller: &mut CorpusStudioController,
-    snapshot: &GraphSnapshot,
-    ui: &mut egui::Ui,
-    language: UiLanguage,
-    height: f32,
-) {
-    let close = ui
-        .horizontal(|ui| {
-            components::section_heading(
-                ui,
-                tr(
-                    language,
-                    if controller.new_node {
-                        "New term"
-                    } else {
-                        "Term details"
-                    },
-                ),
-            );
-            ui.add_enabled(!controller.draft_dirty, egui::Button::new("×"))
-                .on_hover_text(tr(language, "Close"))
-                .clicked()
-        })
-        .inner;
-    if close {
-        controller.selected_node = None;
-        controller.selected_edge = None;
-        controller.node_draft = None;
-        controller.focus_connections = false;
-        controller.editor.clear_selection();
-        return;
-    }
-    egui::ScrollArea::vertical()
-        .id_salt("corpus_inspector")
-        .max_height(height - 28.0)
-        .show(ui, |ui| {
-            if controller.pending {
-                ui.disable();
-            }
-            let Some(mut draft) = controller.node_draft.clone() else {
-                ui.label(tr(language, "Select a term or create a new one."));
-                return;
-            };
-            let mut changed = false;
-            ui.label(tr(language, "Group"));
-            let old_domain = draft.domain_id.clone();
-            let selected = if draft.domain_id.is_empty() {
-                tr(language, "Choose group").to_owned()
-            } else {
-                domain_path_label(snapshot, &draft.domain_id, language)
-            };
-            ui.menu_button(format!("{selected} ▾"), |ui| {
-                let index = domain_children(snapshot);
-                let mut choice = None;
-                for &domain in index.get(&None).map_or(&[][..], Vec::as_slice) {
-                    render_domain_choice(ui, language, domain, &index, &mut choice);
-                }
-                if let Some(domain) = choice {
-                    draft.domain_id = domain;
-                    ui.close();
-                }
-            });
-            changed |= draft.domain_id != old_domain;
-            ui.label(RichText::new(tr(language, "Translations")).strong());
-            draft.values.resize(LANGUAGE_CODES.len(), String::new());
-            let primary = preferred_language_index(language);
-            let secondary = if primary == 1 { 0 } else { 1 };
-            for index in [primary, secondary] {
-                changed |= language_value(ui, LANGUAGE_CODES[index], &mut draft.values[index]);
-            }
-            egui::CollapsingHeader::new(tr(language, "Other languages"))
-                .id_salt(("corpus_other_languages", &draft.id))
-                .show(ui, |ui| {
-                    for (index, code) in LANGUAGE_CODES.iter().enumerate() {
-                        if index == primary || index == secondary { continue; }
-                        changed |= language_value(ui, code, &mut draft.values[index]);
-                    }
-                });
-            ui.horizontal(|ui| {
-                ui.label(tr(language, "Enabled"));
-                let mut enabled = controller.displayed_node_enabled(&draft);
-                if ui.add_enabled_ui(!controller.pending, |ui| {
-                    components::pill_toggle(ui, &mut enabled)
-                }).inner.changed() {
-                    draft.enabled = enabled;
-                    if let Some(original) = snapshot.nodes.iter().find(|node| node.id == draft.id) {
-                        controller.send(Command::PutNode(GraphNode { enabled, ..original.clone() }));
-                    } else {
-                        changed = true;
-                    }
-                }
-            });
-            ui.label(tr(language, "Activation"));
-            let old_activation = draft.activation.clone();
-            egui::ComboBox::from_id_salt("corpus_activation")
-                .selected_text(if draft.activation == CorpusActivation::Always {
-                    tr(language, "Always active")
-                } else {
-                    tr(language, "Activated by trigger")
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut draft.activation,
-                        CorpusActivation::Always,
-                        tr(language, "Always active"),
-                    );
-                    ui.selectable_value(
-                        &mut draft.activation,
-                        CorpusActivation::OnEvidence,
-                        tr(language, "Activated by trigger"),
-                    );
-                });
-            if draft.activation != old_activation {
-                if let Some(original) = snapshot.nodes.iter().find(|node| node.id == draft.id) {
-                    controller.send(Command::PutNode(GraphNode {
-                        activation: draft.activation.clone(), ..original.clone()
-                    }));
-                } else {
-                    changed = true;
-                }
-            }
-            let node_enabled = |node: &GraphNode| {
-                controller.displayed_node_enabled(node)
-                    && domain_effective_enabled(controller, snapshot, &node.domain_id)
-            };
-            let target_enabled = node_enabled(&draft);
-            let has_incoming_trigger = target_enabled && snapshot.edges.iter().any(|edge| {
-                edge.target_id == draft.id && edge.kind == GraphEdgeKind::Trigger
-                    && controller.displayed_edge_enabled(edge)
-                    && snapshot.nodes.iter().find(|node| node.id == edge.source_id)
-                        .is_some_and(node_enabled)
-            });
-            if draft.activation == CorpusActivation::Always && has_incoming_trigger {
-                ui.small(tr(language, "Incoming triggers do not gate this term"));
-            } else if draft.activation != CorpusActivation::Always && target_enabled && !has_incoming_trigger {
-                ui.small(tr(language, "This term is waiting for an enabled trigger connection."));
-            }
-            egui::CollapsingHeader::new(tr(language, "Advanced settings"))
-                .id_salt(("corpus_advanced", &draft.id))
-                .show(ui, |ui| {
-                    ui.label(tr(language, "Source title / note"));
-                    changed |= ui.add(egui::TextEdit::singleline(&mut draft.title).char_limit(256)).changed();
-                    ui.horizontal(|ui| {
-                        ui.label(tr(language, "Include in prompts"));
-                        let mut promptable = draft.promptable;
-                        if components::pill_toggle(ui, &mut promptable).changed() {
-                            draft.promptable = promptable;
-                            if let Some(original) = snapshot.nodes.iter().find(|node| node.id == draft.id) {
-                                controller.send(Command::PutNode(GraphNode { promptable, ..original.clone() }));
-                            } else {
-                                changed = true;
-                            }
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(tr(language, "Priority"));
-                        changed |= ui.add(egui::DragValue::new(&mut draft.priority)
-                            .range(-100..=100)).changed();
-                    });
-                    ui.label(tr(language, "Term ID"));
-                    if controller.new_node {
-                        changed |= ui.add(egui::TextEdit::singleline(&mut draft.id).char_limit(256)).changed();
-                        ui.small(tr(language, "Use a missing term ID to activate its waiting connections."));
-                        if snapshot.nodes.iter().any(|node| node.id == draft.id) {
-                            ui.colored_label(graph_style::ERROR_BORDER, tr(language, "Term ID already exists"));
-                        }
-                    } else {
-                        ui.monospace(&draft.id);
-                    }
-                });
-            if changed {
-                controller.draft_dirty = true;
-            }
-            controller.node_draft = Some(draft.clone());
-            let valid_id = valid_node_id(&draft.id)
-                && (!controller.new_node || !snapshot.nodes.iter().any(|node| node.id == draft.id));
-            let valid_values = draft.values.iter().all(|value| {
-                !value.contains([',', '\r', '\n']) && value.chars().count() <= 512
-            });
-            let valid_details = draft.title.chars().count() <= 256
-                && !draft.title.contains(['\r', '\n']);
-            if !valid_values {
-                ui.colored_label(
-                    graph_style::ERROR_BORDER,
-                    tr(language, "Language values cannot contain commas or newlines, or exceed 512 characters."),
-                );
-            }
-            if !valid_details {
-                ui.colored_label(
-                    graph_style::ERROR_BORDER,
-                    tr(language, "Check title length and characters."),
-                );
-            }
-            let valid = valid_id
-                && (controller.new_node || !draft.title.trim().is_empty())
-                && valid_details
-                && snapshot.domains.iter().any(|domain| domain.id == draft.domain_id)
-                && valid_values
-                && draft.values.iter().any(|value| !value.trim().is_empty());
-            ui.horizontal(|ui| {
-                if components::primary_button_enabled(ui, tr(language, "Save term"),
-                    !controller.pending && valid && controller.draft_dirty).clicked()
-                {
-                    if draft.title.trim().is_empty() {
-                        draft.title = node_label(&draft, language).trim().chars().take(256).collect();
-                    }
-                    controller.selected_node = Some(draft.id.clone());
-                    controller.send(Command::SaveNode(draft.clone()));
-                }
-                if controller.draft_dirty
-                    && components::secondary_button(ui, tr(language, "Discard")).clicked() {
-                    controller.node_draft = snapshot
-                        .nodes
-                        .iter()
-                        .find(|node| node.id == draft.id)
-                        .cloned();
-                    controller.new_node = false;
-                    controller.draft_dirty = false;
-                }
-            });
-            if !controller.new_node {
-                if components::danger_button_enabled(ui, tr(language, "Delete term"),
-                    !controller.pending && !controller.draft_dirty).clicked()
-                {
-                    controller.confirm_delete = true;
-                }
-                ui.separator();
-                ui.label(RichText::new(tr(language, "Connections")).strong());
-                ui.add(egui::TextEdit::singleline(&mut controller.edge_target)
-                    .hint_text(tr(language, "Search term or enter ID")));
-                if !controller.edge_target.is_empty() {
-                    let suggestions = snapshot.nodes.iter()
-                        .filter(|node| matches_node(node, &controller.edge_target))
-                        .take(4).collect::<Vec<_>>();
-                    for node in suggestions {
-                        if ui.small_button(format!("{} · {}", node_label(node, language), domain_path_label(snapshot, &node.domain_id, language))).clicked() {
-                            controller.edge_target = node.id.clone();
-                        }
-                    }
-                }
-                egui::ComboBox::from_id_salt("corpus_edge_direction")
-                    .selected_text(if controller.edge_outgoing {
-                        tr(language, "This term → other term")
-                    } else {
-                        tr(language, "Other term → this term")
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut controller.edge_outgoing, true,
-                            tr(language, "This term → other term"));
-                        ui.selectable_value(&mut controller.edge_outgoing, false,
-                            tr(language, "Other term → this term"));
-                    });
-                egui::ComboBox::from_id_salt("corpus_edge_kind")
-                    .selected_text(if controller.edge_kind == GraphEdgeKind::Context {
-                        tr(language, "Context condition")
-                    } else {
-                        tr(language, "Trigger")
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut controller.edge_kind,
-                            GraphEdgeKind::Trigger,
-                            tr(language, "Trigger"),
-                        );
-                        ui.selectable_value(
-                            &mut controller.edge_kind,
-                            GraphEdgeKind::Context,
-                            tr(language, "Context condition"),
-                        );
-                    });
-                let resolved_target = resolve_edge_target(snapshot, &controller.edge_target)
-                    .filter(|id| id != &draft.id);
-                let missing_target = resolved_target.as_ref().is_some_and(|id| {
-                    !snapshot.nodes.iter().any(|node| &node.id == id)
-                });
-                let add_label = if missing_target {
-                    tr(language, "Add idle connection")
-                } else {
-                    tr(language, "Add connection")
-                };
-                if components::primary_button_enabled(ui, add_label,
-                    !controller.pending && resolved_target.is_some()).clicked()
-                {
-                    let other = resolved_target.expect("enabled Add connection has a target");
-                    controller.send(Command::PutEdge(GraphEdge {
-                        source_id: if controller.edge_outgoing { draft.id.clone() } else { other.clone() },
-                        target_id: if controller.edge_outgoing { other } else { draft.id.clone() },
-                        kind: controller.edge_kind,
-                        enabled: true,
-                    }));
-                    controller.edge_target.clear();
-                }
-                for edge in snapshot.edges.iter()
-                    .filter(|edge| edge.source_id == draft.id || edge.target_id == draft.id) {
-                    let source_exists = snapshot.nodes.iter().any(|node| node.id == edge.source_id);
-                    let target_exists = snapshot.nodes.iter().any(|node| node.id == edge.target_id);
-                    ui.label(format!("{} → {} · {}",
-                        endpoint_label(snapshot, &edge.source_id, language),
-                        endpoint_label(snapshot, &edge.target_id, language),
-                        if source_exists && target_exists {
-                            if edge.kind == GraphEdgeKind::Context { tr(language, "Context condition") }
-                            else { tr(language, "Trigger") }
-                        } else { tr(language, "Waiting for missing term") }));
-                    edge_controls(controller, edge, snapshot, ui, language);
-                }
-            }
         });
 }
 

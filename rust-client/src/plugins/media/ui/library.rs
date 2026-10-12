@@ -10,21 +10,45 @@ pub(super) fn render_library(
     ui: &mut egui::Ui,
 ) -> MediaAction {
     let mut action = MediaAction::None;
-    crate::ui::layout::flow_row(ui, |ui| {
-        ui.heading(tr(language, "Media"));
-        if components::primary_button(ui, tr(language, "New media task")).clicked() {
-            controller.open_create();
-            action = MediaAction::StopTranslation;
-        }
-    });
-    ui.add_space(12.0);
-    super::render_runtime_install_banner(controller, language, ui);
-    components::search_bar(
+    components::page_header(ui, tr(language, "Media"), |_| {});
+    components::library_start(
         ui,
+        egui::include_image!("../../../../resources/plugins/media/icon.svg"),
+        tr(language, "Translate your media"),
+        tr(
+            language,
+            "Choose or drop audio, video or subtitles, or paste a stream URL.",
+        ),
+        |ui| {
+            if components::primary_button(ui, tr(language, "Import media")).clicked() {
+                controller.open_create();
+                action = MediaAction::StopTranslation;
+            }
+        },
+    );
+    if let Some(path) = ui.input(|input| {
+        input
+            .raw
+            .dropped_files
+            .first()
+            .map(|file| file.path().to_path_buf())
+    }) {
+        controller.open_create();
+        controller.draft_source = path.to_string_lossy().into_owned();
+        return MediaAction::StopTranslation;
+    }
+    super::render_runtime_install_banner(controller, language, ui);
+    if controller.store.tasks.is_empty() {
+        return action;
+    }
+    let limit = components::library_navigation(
+        ui,
+        language,
+        &mut controller.browse_all,
         &mut controller.search_query,
+        controller.store.tasks.len(),
         tr(language, "Search media tasks"),
     );
-    ui.add_space(10.0);
     let query = controller.search_query.trim().to_lowercase();
     let mut open = None;
     let mut delete = None;
@@ -37,6 +61,7 @@ pub(super) fn render_library(
                 .tasks
                 .iter()
                 .filter(|task| query.is_empty() || task.title.to_lowercase().contains(&query))
+                .take(limit)
             {
                 visible += 1;
                 ui.push_id(&task.id, |ui| {

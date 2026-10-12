@@ -177,7 +177,7 @@ pub(super) fn render_task_control_card(
                     changed |= ui
                         .checkbox(
                             &mut task.recognition.continuous_recognition,
-                            crate::i18n::tr(language, "Continuous recognition"),
+                            crate::i18n::tr(language, "Pseudo-streaming"),
                         )
                         .changed();
                 });

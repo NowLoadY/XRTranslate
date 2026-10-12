@@ -601,7 +601,7 @@ fn navigation_entries(
     }
     entries.push(NavigationEntry {
         page: Page::CorpusStudio,
-        title: "Vocabulary Graph",
+        title: "Terminology library",
         icon: include_image!("../../resources/icons/corpus-studio.svg"),
     });
     entries.push(NavigationEntry {

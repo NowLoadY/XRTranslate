@@ -33,7 +33,7 @@ use asr::AsrProfile;
 pub(crate) use asr::NativeAsrAdapter;
 pub(crate) use onnx::{OnnxRuntimeDiagnostic, initialize_managed_onnx_runtime, runtime_diagnostic};
 use translation::TranslationProfile;
-pub(crate) use tts::NativeTtsAdapter;
+pub(crate) use tts::TtsAdapter;
 use tts::TtsProfile;
 pub(crate) use xrtranslate_inference::AsrOptions as NativeAsrOptions;
 
@@ -177,7 +177,7 @@ impl NativeProviderPlan {
     }
 
     pub(crate) fn uses_local_runtime(&self) -> bool {
-        self.route.uses_local_runtime() || self.tts_profile.is_some()
+        self.route.uses_local_runtime() || self.tts_profile.is_some_and(TtsProfile::is_local)
     }
 
     pub(crate) fn asr_uses_llama_server(&self) -> bool {
@@ -404,11 +404,8 @@ impl NativeProviderPlan {
             .adapter(http, &self.route.translation)
     }
 
-    pub(crate) fn tts_adapter(
-        &self,
-        config: &AppConfig,
-    ) -> Result<Option<NativeTtsAdapter>, String> {
-        if self.tts_profile.is_some()
+    pub(crate) fn tts_adapter(&self, config: &AppConfig) -> Result<Option<TtsAdapter>, String> {
+        if self.tts_profile.is_some_and(TtsProfile::is_local)
             && !self
                 .native_runtime
                 .as_ref()

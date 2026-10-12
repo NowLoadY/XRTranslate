@@ -9,6 +9,7 @@ pub(crate) fn prompt_context_for_segment(
     context: &CorpusSegmentContext,
 ) -> TranslationPromptContext {
     TranslationPromptContext {
+        current_speaker_id: context.context_data.current_speaker_id.clone(),
         language_order: vec![source_language.to_owned(), target_language.to_owned()],
         terminology_rows: context.prompt_terms.iter().map(render_term_row).collect(),
         recent_turns: context

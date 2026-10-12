@@ -1,0 +1,16 @@
+<resources>
+    <string name="quick_title">クイック翻訳</string>
+    <string name="quick_ready">クリップボード翻訳</string>
+    <string name="quick_unlock">翻訳や保存にはロックを解除</string>
+    <string name="quick_translate">クリップボードを翻訳</string>
+    <string name="quick_save">既定の単語帳に保存</string>
+    <string name="quick_saved">既定の単語帳に保存しました</string>
+    <string name="quick_save_failed">保存できません。再試行してください。</string>
+    <string name="quick_hint">テキストをコピーしてクリップボードボタンをタップ。訳文がクリップボードに書き戻されます。</string>
+    <string name="quick_clipboard_reading">クリップボードを読み取り中…</string>
+    <string name="quick_clipboard_empty">クリップボードにテキストがありません。</string>
+    <string name="export_open">他のアプリで開く</string>
+    <string name="export_save">コピーを保存</string>
+    <string name="export_saved">ファイルを保存しました</string>
+    <string name="export_failed">ファイルを開くか保存できません。</string>
+</resources>

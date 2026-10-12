@@ -184,7 +184,7 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 6] = [
         },
         scroll_policy: PluginScrollPolicy::Plugin,
         settings_contribution: PluginSettingsContribution::Plugin,
-        default_enabled: true,
+        default_enabled: !cfg!(target_os = "android"),
     },
     PluginDescriptor {
         id: PluginId::OSC,
@@ -197,7 +197,7 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 6] = [
         },
         scroll_policy: PluginScrollPolicy::Plugin,
         settings_contribution: PluginSettingsContribution::Plugin,
-        default_enabled: true,
+        default_enabled: !cfg!(target_os = "android"),
     },
     PluginDescriptor {
         id: PluginId::LYRICS,

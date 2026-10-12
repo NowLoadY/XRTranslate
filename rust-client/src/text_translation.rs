@@ -392,6 +392,11 @@ impl TextTranslation {
                         let session = network::start_text_session(
                             task.connection.tx.clone(),
                             SessionConfig {
+                                conversation_id: task
+                                    .scope
+                                    .owner
+                                    .is_host()
+                                    .then(crate::translation_service::host_conversation_id),
                                 server_url: server_url.to_owned(),
                                 languages: task.languages,
                                 external_audio_gate: ExternalAudioGate::default(),

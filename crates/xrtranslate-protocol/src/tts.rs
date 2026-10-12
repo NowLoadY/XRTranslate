@@ -15,9 +15,11 @@ pub struct ReferenceTranscript {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct VoiceSelection {
-    /// None selects the user's microphone reference.
+    /// Local reference identity. With no preset or reference, use the microphone voice.
     #[serde(default, alias = "builtin_id")]
     pub voice_id: Option<String>,
+    #[serde(default)]
+    pub preset: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -26,4 +28,8 @@ pub struct VoiceStatus {
     pub selection: VoiceSelection,
     pub ready: bool,
     pub personal_available: bool,
+    #[serde(default)]
+    pub supports_cloning: bool,
+    #[serde(default)]
+    pub preset_voices: Vec<String>,
 }

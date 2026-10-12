@@ -1,11 +1,8 @@
-use super::super::{
-    actions::UiAction,
-    presentation::{format_duration, marker_label},
-};
+use super::super::{actions::UiAction, presentation::format_duration};
 use crate::plugins::meeting::{
     controller::MeetingController,
     i18n::tr,
-    store::{MarkerKind, Segment, SegmentMarker, Speaker},
+    store::{Segment, SegmentMarker, Speaker},
 };
 use crate::ui::components;
 use eframe::egui;
@@ -26,6 +23,18 @@ pub(super) fn render_timeline(
             &mut controller.search,
             tr(language, "Search this meeting"),
         );
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(
+                &mut controller.highlights_only,
+                false,
+                tr(language, "All messages"),
+            );
+            ui.selectable_value(
+                &mut controller.highlights_only,
+                true,
+                tr(language, "Highlights"),
+            );
+        });
         ui.add_space(8.0);
     }
 
@@ -34,30 +43,44 @@ pub(super) fn render_timeline(
     };
     let evidence_target = controller.evidence_target.clone();
     let mut evidence_reached = false;
-    let query = controller.search.to_lowercase();
+    let query = controller.search.trim().to_lowercase();
+    let highlights_only = controller.highlights_only;
+    let mut visible_count = 0;
     egui::ScrollArea::vertical()
         .id_salt("meeting_timeline_scroll")
-        .stick_to_bottom(query.is_empty())
+        .stick_to_bottom(query.is_empty() && !highlights_only && evidence_target.is_none())
         .show(ui, |ui| {
             for topic in &bundle.topics {
+                let topic_matches = topic
+                    .title
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains(&query);
                 let topic_segments = bundle
                     .segments
                     .iter()
-                    .filter(|segment| segment.topic_id == topic.id)
+                    .filter(|segment| {
+                        let marked = bundle
+                            .markers
+                            .iter()
+                            .any(|marker| marker.segment_id == segment.id);
+                        let note_matches = bundle.markers.iter().any(|marker| {
+                            marker.segment_id == segment.id
+                                && marker.text.to_lowercase().contains(&query)
+                        });
+                        segment.topic_id == topic.id
+                            && (!highlights_only || marked)
+                            && (query.is_empty()
+                                || topic_matches
+                                || segment_matches(segment, &query)
+                                || note_matches)
+                    })
                     .collect::<Vec<_>>();
-                let visible = query.is_empty()
-                    || topic
-                        .title
-                        .as_deref()
-                        .unwrap_or_default()
-                        .to_lowercase()
-                        .contains(&query)
-                    || topic_segments
-                        .iter()
-                        .any(|segment| segment_matches(segment, &query));
-                if !visible {
+                if topic_segments.is_empty() && (!query.is_empty() || highlights_only) {
                     continue;
                 }
+                visible_count += topic_segments.len();
                 ui.push_id(("topic", &topic.id), |ui| {
                     if let Some(title) = topic.title.as_deref() {
                         components::section_heading(ui, title);
@@ -72,15 +95,13 @@ pub(super) fn render_timeline(
                         );
                     }
                     for segment in topic_segments {
-                        if !query.is_empty() && !segment_matches(segment, &query) {
-                            continue;
-                        }
                         render_segment(
                             segment,
                             super::segment_preview(&controller.previews, segment)
                                 .and_then(|preview| preview.translated.as_deref()),
                             &bundle.speakers,
                             &bundle.markers,
+                            &mut controller.marker_drafts,
                             evidence_target.as_deref(),
                             &mut evidence_reached,
                             language,
@@ -92,7 +113,19 @@ pub(super) fn render_timeline(
                     ui.add_space(6.0);
                 });
             }
-            super::render_unstored_previews(ui, &controller.previews, &bundle.segments);
+            if visible_count == 0 && (highlights_only || !query.is_empty()) {
+                ui.weak(tr(
+                    language,
+                    if highlights_only && query.is_empty() {
+                        "No highlights yet. Mark a message to find it here."
+                    } else {
+                        "No matching messages"
+                    },
+                ));
+            }
+            if query.is_empty() && !highlights_only {
+                super::render_unstored_previews(ui, &controller.previews, &bundle.segments);
+            }
         });
     if evidence_reached {
         controller.evidence_target = None;
@@ -104,13 +137,19 @@ fn render_segment(
     preview_translation: Option<&str>,
     speakers: &[Speaker],
     markers: &[SegmentMarker],
+    drafts: &mut std::collections::HashMap<String, String>,
     evidence_target: Option<&str>,
     evidence_reached: &mut bool,
     language: crate::i18n::UiLanguage,
     action: &mut UiAction,
     ui: &mut egui::Ui,
 ) {
-    let frame = ui.scope(|ui| {
+    let marked = markers.iter().any(|marker| marker.segment_id == segment.id);
+    let notes_id = egui::Id::new(("meeting_highlight_notes", &segment.id));
+    let mut show_notes = ui
+        .data(|data| data.get_temp::<bool>(notes_id))
+        .unwrap_or(false);
+    let frame = ui.push_id(&segment.id, |ui| {
         components::card(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 4.0;
@@ -130,26 +169,46 @@ fn render_segment(
                     .or(anonymous.as_deref())
                     .unwrap_or_else(|| tr(language, "Unknown speaker"));
                 ui.label(egui::RichText::new(speaker_name).strong().size(12.0));
-                ui.label(
-                    egui::RichText::new(format_duration(segment.start_ms))
-                        .size(11.0)
-                        .color(crate::ui::theme::text_weak())
-                        .monospace(),
-                );
-                ui.menu_button("⋯", |ui| {
-                    for kind in [
-                        MarkerKind::KeyDecision,
-                        MarkerKind::ActionItem,
-                        MarkerKind::Note,
-                    ] {
-                        if ui.button(marker_label(kind, language)).clicked() {
-                            *action = UiAction::AddMarker(segment.id.clone(), kind);
-                            ui.close();
-                        }
+                let timestamp = egui::RichText::new(format_duration(segment.start_ms))
+                    .size(11.0)
+                    .color(crate::ui::theme::text_weak())
+                    .monospace();
+                if marked {
+                    if ui
+                        .link(timestamp)
+                        .on_hover_text(tr(language, "View original"))
+                        .clicked()
+                    {
+                        *action = UiAction::JumpToEvidence(segment.id.clone());
                     }
-                })
-                .response
-                .on_hover_text(tr(language, "Add annotation"));
+                } else {
+                    ui.label(timestamp);
+                }
+                if ui
+                    .selectable_label(
+                        marked,
+                        tr(
+                            language,
+                            if marked {
+                                "★ Highlight"
+                            } else {
+                                "☆ Highlight"
+                            },
+                        ),
+                    )
+                    .on_hover_text(tr(
+                        language,
+                        "Mark this message; click again to edit its note.",
+                    ))
+                    .clicked()
+                {
+                    if marked {
+                        show_notes = !show_notes;
+                        ui.data_mut(|data| data.insert_temp(notes_id, show_notes));
+                    } else {
+                        *action = UiAction::Highlight(segment.id.clone());
+                    }
+                }
             });
             ui.add(
                 egui::Label::new(
@@ -181,15 +240,18 @@ fn render_segment(
                 .iter()
                 .filter(|marker| marker.segment_id == segment.id)
             {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} · {}",
-                        marker_label(marker.kind, language),
-                        marker.text
-                    ))
-                    .size(12.0)
-                    .color(crate::ui::theme::text_normal()),
-                );
+                if show_notes {
+                    super::highlights::note_editor(marker, drafts, language, action, ui);
+                } else if !marker.text.trim().is_empty() {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&marker.text)
+                                .size(12.0)
+                                .color(crate::ui::theme::text_normal()),
+                        )
+                        .wrap(),
+                    );
+                }
             }
         });
     });

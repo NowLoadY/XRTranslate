@@ -23,6 +23,8 @@ import org.xrtranslate.app.R;
 
 /** One bounded, user-requested translation; it never opens an application window. */
 public final class TextTranslationService extends Service {
+    static final String COMPLETION = "clipboard_completion";
+    private android.os.ResultReceiver completion;
     private static final String PROGRESS = "text_translation_progress", RESULTS = "text_translation_results";
     private static final int NOTIFICATION = 7103;
     private static final long TIMEOUT_MS = 165000;
@@ -31,7 +33,6 @@ public final class TextTranslationService extends Service {
     private static final java.util.concurrent.atomic.AtomicInteger NEXT_REQUEST = new java.util.concurrent.atomic.AtomicInteger();
     private volatile int request;
     private int serviceStartId;
-    private String source = "";
     private volatile boolean running, loaded;
     private PowerManager.WakeLock wakeLock;
     private final Runnable timeout = () -> complete(request, 4, "");
@@ -56,9 +57,12 @@ public final class TextTranslationService extends Service {
             if (!running) stopSelfResult(startId);
             return START_NOT_STICKY;
         }
+        if (running) notifyCompletion(4);
         if (loaded && running) cancel(request);
+        completion = Build.VERSION.SDK_INT >= 33
+            ? intent.getParcelableExtra(COMPLETION, android.os.ResultReceiver.class)
+            : intent.getParcelableExtra(COMPLETION);
         serviceStartId = startId;
-        source = text;
         int id = NEXT_REQUEST.incrementAndGet();
         request = id;
         String caller = intent.getStringExtra("conversation");
@@ -67,6 +71,7 @@ public final class TextTranslationService extends Service {
         Notification notification = notification(PROGRESS, R.string.text_action_translating).setOngoing(true).build();
         if (Build.VERSION.SDK_INT >= 34) startForeground(NOTIFICATION, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         else startForeground(NOTIFICATION, notification);
+        QuickActions.translating(this, true);
         releaseWakeLock();
         wakeLock.acquire(TIMEOUT_MS);
         main.removeCallbacks(timeout);
@@ -91,11 +96,13 @@ public final class TextTranslationService extends Service {
             int message = state == 2 ? R.string.text_action_setup : R.string.text_action_failed;
             if (state == 3 && result != null && !result.trim().isEmpty()) {
                 try {
+                    org.json.JSONObject payload = new org.json.JSONObject(result);
+                    String translated = payload.getString("translated");
                     getSystemService(ClipboardManager.class).setPrimaryClip(
-                        ClipData.newPlainText(getString(R.string.text_action_title), result));
-                    TranslationResults.publish(this, source, result);
+                        ClipData.newPlainText(getString(R.string.text_action_title), translated));
+                    TranslationResults.publish(this, payload);
                     message = 0;
-                } catch (RuntimeException error) {
+                } catch (RuntimeException | org.json.JSONException error) {
                     message = R.string.text_action_failed;
                 }
             }
@@ -104,11 +111,13 @@ public final class TextTranslationService extends Service {
             if (loaded) cancel(id);
             releaseWakeLock();
             stopForeground(STOP_FOREGROUND_REMOVE);
+            QuickActions.translating(this, false);
             NotificationManager manager = getSystemService(NotificationManager.class);
             if (message != 0) {
                 if (manager.areNotificationsEnabled()) manager.notify(NOTIFICATION, notification(RESULTS, message).build());
                 else Toast.makeText(this, message, Toast.LENGTH_LONG).show();
             }
+            notifyCompletion(message == 0 ? 3 : state);
             stopSelfResult(serviceStartId);
         });
     }
@@ -123,6 +132,10 @@ public final class TextTranslationService extends Service {
             .setCategory(Notification.CATEGORY_STATUS);
     }
 
+    private void notifyCompletion(int state) {
+        if (completion != null) { completion.send(state, null); completion = null; }
+    }
+
     @Override public void onTimeout(int startId) {
         if (startId == serviceStartId) complete(request, 4, "");
     }
@@ -132,11 +145,13 @@ public final class TextTranslationService extends Service {
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
     }
     @Override public void onDestroy() {
+        notifyCompletion(4);
         running = false;
         main.removeCallbacks(timeout);
         if (loaded) cancel(request);
         releaseWakeLock();
         worker.shutdownNow();
+        QuickActions.translating(this, false);
         super.onDestroy();
     }
 }

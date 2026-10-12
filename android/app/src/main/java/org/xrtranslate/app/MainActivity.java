@@ -76,8 +76,8 @@ public final class MainActivity extends GameActivity {
         }
     }
 
-    public void publishTranslationResult(String source, String translated) {
-        TranslationResults.publish(this, source, translated);
+    public void publishTranslationResult(String payload) {
+        TranslationResults.publish(this, payload);
     }
 
     public void copyText(String text) {
@@ -131,13 +131,17 @@ public final class MainActivity extends GameActivity {
 
     @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(request, permissions, results);
+        if (request == 7104) org.xrtranslate.app.textactions.QuickActions.refresh(this);
         if (request == MICROPHONE_REQUEST) {
             microphoneRequested = false;
             microphonePermissionResult(results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED);
         }
     }
 
-    @Override protected void onResume() { super.onResume(); foregroundChanged(true); }
+    @Override protected void onResume() {
+        super.onResume(); foregroundChanged(true);
+        org.xrtranslate.app.textactions.QuickActions.refresh(this);
+    }
     @Override protected void onPause() { foregroundChanged(false); super.onPause(); }
 
     public void prepareConfiguration() throws java.io.IOException { ApplicationResources.prepare(this, false); }

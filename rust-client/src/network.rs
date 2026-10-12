@@ -384,6 +384,8 @@ impl SessionHandle {
 }
 
 pub struct SessionConfig {
+    /// Opt-in conversation shared by translation-center input lanes.
+    pub conversation_id: Option<String>,
     pub server_url: String,
     pub languages: xrtranslate_engine::language::LanguageSelection,
     pub external_audio_gate: ExternalAudioGate,
@@ -480,6 +482,7 @@ async fn run_session(
     stream_id: u64,
 ) {
     let SessionConfig {
+        conversation_id,
         server_url,
         languages,
         external_audio_gate,
@@ -502,27 +505,42 @@ async fn run_session(
     };
     let _ = event_tx.send(SessionEvent::Status("Connecting to backend…".into()));
     let text_only = audio_rx.is_none();
-    let server_url = if text_only {
-        let mut url = match reqwest::Url::parse(&server_url) {
-            Ok(url) => url,
-            Err(error) => {
-                let _ = event_tx.send(SessionEvent::Error(format!("Invalid backend URL: {error}")));
-                return;
+    let mut url = match reqwest::Url::parse(&server_url) {
+        Ok(url) => url,
+        Err(error) => {
+            let _ = event_tx.send(SessionEvent::Error(format!("Invalid backend URL: {error}")));
+            return;
+        }
+    };
+    let query: Vec<_> = url
+        .query_pairs()
+        .filter(|(key, _)| {
+            !matches!(
+                key.as_ref(),
+                "text_only" | "conversation_id" | "input_source"
+            )
+        })
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    url.query_pairs_mut().clear().extend_pairs(query);
+    if text_only {
+        url.query_pairs_mut().append_pair("text_only", "true");
+    }
+    if let Some(conversation_id) = conversation_id {
+        let input_source = if text_only {
+            "text"
+        } else {
+            match audio_source {
+                CaptureSource::Microphone => "microphone",
+                CaptureSource::SystemAudio => "system-audio",
+                CaptureSource::Both => "audio",
             }
         };
-        let query: Vec<_> = url
-            .query_pairs()
-            .filter(|(key, _)| key != "text_only")
-            .map(|(key, value)| (key.into_owned(), value.into_owned()))
-            .collect();
         url.query_pairs_mut()
-            .clear()
-            .extend_pairs(query)
-            .append_pair("text_only", "true");
-        url.to_string()
-    } else {
-        server_url
-    };
+            .append_pair("conversation_id", &conversation_id)
+            .append_pair("input_source", input_source);
+    }
+    let server_url = url.to_string();
     let (stream, _) = match connect_async(&server_url).await {
         Ok(connection) => connection,
         Err(error) => {

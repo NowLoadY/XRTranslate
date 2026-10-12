@@ -1,7 +1,7 @@
 use crate::plugins::meeting::{
     MeetingAudioSource,
     i18n::tr,
-    store::{MarkerKind, Meeting, MeetingSourceKind},
+    store::{Meeting, MeetingSourceKind},
 };
 use eframe::egui;
 
@@ -11,29 +11,7 @@ pub(super) fn page_header(
     language: crate::i18n::UiLanguage,
     right: impl FnOnce(&mut egui::Ui),
 ) {
-    let title_text = tr(language, title);
-    let title = egui::RichText::new(title_text)
-        .size(22.0)
-        .color(crate::ui::theme::text_strong())
-        .strong();
-    if ui.available_width() < 600.0 {
-        ui.add(egui::Label::new(title).wrap());
-        ui.horizontal_wrapped(right);
-    } else {
-        ui.horizontal(|ui| {
-            ui.label(title);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), right);
-        });
-    }
-    ui.add_space(14.0);
-}
-
-pub(super) fn marker_label(kind: MarkerKind, language: crate::i18n::UiLanguage) -> &'static str {
-    match kind {
-        MarkerKind::KeyDecision => tr(language, "Key decision"),
-        MarkerKind::ActionItem => tr(language, "Action item"),
-        MarkerKind::Note => tr(language, "Note"),
-    }
+    crate::ui::components::page_header(ui, tr(language, title), right);
 }
 
 pub(super) fn source_label(meeting: &Meeting, language: crate::i18n::UiLanguage) -> &'static str {

@@ -12,6 +12,7 @@ processes, storage paths, or device APIs.
 | `xrtranslate-config` | Normalized provider settings and declarative runtime catalogue |
 | `xrtranslate-assets` | Model catalogue, package installation, activation, and removal |
 | `xrtranslate-download` | Download sources and shared transfer mechanics |
+| Client `export` adapter | Result filenames, formats, and native save/share handoff |
 | Backend runtime plan | Resolve compatible resources and construct inference adapters |
 | `xrtranslate-supervisor` | Managed process lifecycle from a resolved launch specification |
 | Host platform adapters | Native capture, devices, windows, input, media sessions, and system integration |
@@ -52,6 +53,18 @@ executes neutral routes and owns device capture and output lifecycles. UI,
 validation, and execution read the same routing state. Audio routing and
 recognition sessions have separate lifecycles while sharing the selected input.
 Optional system integrations retain their own resource ownership and cleanup.
+
+Plugins generate result content and submit it to the shared export adapter.
+Desktop save dialogs and mobile share, open, and document destinations belong
+to that adapter; individual plugins do not implement their own file delivery.
+
+Android notification actions reuse the shared text translator and vocabulary
+store. The native layer owns clipboard access, notification presentation, and
+bounded background execution. Completed result snapshots retain their language
+identity so bookmarking never depends on settings changed after translation.
+The clipboard entry uses a focused white preview with centered input and a
+spinner. The service dismisses it on completion; leaving the preview does not
+cancel translation or prevent the translated text from replacing the clipboard.
 
 Language intent is captured with each task and validated through shared language
 capabilities. UI, backend, and adapters use canonical labels; a provider's wire

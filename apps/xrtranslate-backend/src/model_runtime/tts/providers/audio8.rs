@@ -6,13 +6,13 @@ use xrtranslate_config::AppConfig;
 use xrtranslate_inference::{Audio8OnnxAdapter, Audio8SynthesisOptions, OnnxExecutionDevice};
 
 use super::{provider_object, threads};
-use crate::model_runtime::tts::NativeTtsAdapter;
+use crate::model_runtime::tts::TtsAdapter;
 
 pub(in crate::model_runtime::tts) fn build(
     config: &AppConfig,
     model_directory: &Path,
     supported_languages: Vec<String>,
-) -> Result<NativeTtsAdapter, String> {
+) -> Result<TtsAdapter, String> {
     let provider = provider_object(config, "audio8")?;
     let configured_device = provider
         .get("device")
@@ -47,5 +47,5 @@ pub(in crate::model_runtime::tts) fn build(
         },
     )
     .map_err(|error| error.to_string())?;
-    Ok(NativeTtsAdapter::audio8(adapter, supported_languages))
+    Ok(TtsAdapter::audio8(adapter, supported_languages))
 }

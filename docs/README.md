@@ -41,6 +41,7 @@ across documents; link to its owner.
 
 ## Features and operations
 
+- [Terminology library](terminology-library.md)
 - [Speaker diarization](speaker-diarization.md)
 - [Linux build](linux-build.md)
 - [Recorded speech check](speech-check.md)

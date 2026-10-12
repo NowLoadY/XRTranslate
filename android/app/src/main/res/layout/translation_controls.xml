@@ -1,0 +1,33 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:orientation="horizontal" android:gravity="center_vertical">
+        <FrameLayout android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:layout_marginEnd="8dp">
+            <TextView android:id="@+id/quick_status" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_gravity="center_vertical" android:maxLines="1" android:ellipsize="end" android:textAppearance="@android:style/TextAppearance.Material.Notification" />
+            <Button
+                android:id="@+id/quick_bookmark"
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:layout_gravity="start|center_vertical"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:paddingStart="16dp"
+                android:paddingEnd="12dp"
+                android:paddingTop="0dp"
+                android:paddingBottom="0dp"
+                android:gravity="start|center_vertical"
+                android:textAlignment="viewStart"
+                android:textDirection="firstStrong"
+                android:singleLine="true"
+                android:ellipsize="end"
+                android:textAllCaps="false"
+                android:textAppearance="@android:style/TextAppearance.Material.Notification"
+                android:textColor="@color/notification_control"
+                android:drawablePadding="12dp"
+                android:background="@drawable/quick_word_capsule"
+                android:backgroundTint="@null"
+                android:stateListAnimator="@null"
+                android:visibility="gone" />
+        </FrameLayout>
+        <ImageButton android:id="@+id/quick_translate" android:layout_width="48dp" android:layout_height="48dp" android:padding="12dp" android:background="?android:attr/selectableItemBackgroundBorderless" android:src="@drawable/quick_clipboard" android:contentDescription="@string/quick_translate" />
+    </LinearLayout>
+    <TextView android:id="@+id/quick_result" android:layout_width="match_parent" android:layout_height="wrap_content" android:paddingBottom="8dp" android:maxLines="3" android:ellipsize="end" android:textAppearance="@android:style/TextAppearance.Material.Notification" />
+</LinearLayout>

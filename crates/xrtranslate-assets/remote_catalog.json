@@ -59,6 +59,16 @@
             "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
           },
           "models": ["gemini-3.5-flash-lite"]
+        },
+        {
+          "capability": "tts",
+          "defaults": {
+            "api_key": "",
+            "connector": "gemini-speech",
+            "url": "https://generativelanguage.googleapis.com/v1beta/interactions",
+            "model": "gemini-3.8-flash-lite-tts"
+          },
+          "models": ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-tts"]
         }
       ]
     },
@@ -89,6 +99,16 @@
             "url": "https://api.groq.com/openai/v1/chat/completions"
           },
           "models": ["qwen/qwen3.8-27b"]
+        },
+        {
+          "capability": "tts",
+          "defaults": {
+            "api_key": "",
+            "connector": "openai-speech",
+            "url": "https://api.groq.com/openai/v1/audio/speech",
+            "model": "canopylabs/orpheus-v1-english"
+          },
+          "models": ["canopylabs/orpheus-v1-english", "canopylabs/orpheus-arabic-saudi"]
         }
       ]
     },
@@ -409,6 +429,62 @@
         "streaming": "cumulative",
         "supports_context": true,
         "single_user_message": true
+      }
+    },
+    {
+      "model": "canopylabs/orpheus-v1-english",
+      "connector": "openai-speech",
+      "languages": ["en"],
+      "capabilities": {
+        "streaming": "none"
+      },
+      "tts": {
+        "sample_rate": 24000,
+        "max_input_chars": 200,
+        "voice_cloning": false,
+        "voices": ["troy", "autumn", "diana", "hannah", "austin", "daniel"]
+      }
+    },
+    {
+      "model": "canopylabs/orpheus-arabic-saudi",
+      "connector": "openai-speech",
+      "languages": ["ar"],
+      "capabilities": {
+        "streaming": "none"
+      },
+      "tts": {
+        "sample_rate": 24000,
+        "max_input_chars": 200,
+        "voice_cloning": false,
+        "voices": ["fahad", "abdullah", "sultan", "lulwa", "noura", "aisha"]
+      }
+    },
+    {
+      "model": "gemini-3.8-flash-lite-tts",
+      "connector": "gemini-speech",
+      "languages": ["zh", "zh-TW", "en", "fr", "pt", "es", "ja", "ru", "ko", "hi", "it", "de", "vi", "id", "pl", "cs", "nl", "bg", "yue", "ar", "tr", "ms", "da", "fil", "tl", "fa", "el", "hu", "mk", "ro", "km", "gu", "te", "mr", "he", "bn", "ta", "kk", "mn", "af", "no", "hr", "sk"],
+      "capabilities": {
+        "streaming": "delta"
+      },
+      "tts": {
+        "sample_rate": 24000,
+        "max_input_chars": 2000,
+        "voice_cloning": false,
+        "voices": ["Kore", "Puck", "Charon", "Aoede", "Fenrir", "Leda", "Orus", "Zephyr"]
+      }
+    },
+    {
+      "model": "gemini-3.8-flash-tts",
+      "connector": "gemini-speech",
+      "languages": ["zh", "zh-TW", "en", "fr", "pt", "es", "ja", "ru", "ko", "th", "hi", "it", "de", "vi", "id", "pl", "cs", "nl", "bg", "yue", "ar", "tr", "ms", "sv", "da", "fi", "fil", "tl", "fa", "el", "hu", "mk", "ro", "km", "my", "gu", "te", "mr", "he", "bn", "ta", "kk", "mn", "ug", "af", "no", "hr", "sk"],
+      "capabilities": {
+        "streaming": "delta"
+      },
+      "tts": {
+        "sample_rate": 24000,
+        "max_input_chars": 2000,
+        "voice_cloning": false,
+        "voices": ["Kore", "Puck", "Charon", "Aoede", "Fenrir", "Leda", "Orus", "Zephyr"]
       }
     }
   ]

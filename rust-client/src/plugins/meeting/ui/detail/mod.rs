@@ -1,3 +1,4 @@
+mod highlights;
 mod minutes;
 mod organization;
 mod timeline;
@@ -30,6 +31,37 @@ pub(super) fn render_detail(
     let meeting = bundle.meeting.clone();
     let mut action = UiAction::None;
     page_header(ui, &meeting.name, language, |ui| {
+        if meeting.status == MeetingStatus::Live && controller.is_recording(&meeting.id) {
+            let latest = controller
+                .bundle
+                .as_ref()
+                .and_then(|bundle| bundle.segments.last());
+            let marked = latest.is_some_and(|segment| {
+                controller.bundle.as_ref().is_some_and(|bundle| {
+                    bundle
+                        .markers
+                        .iter()
+                        .any(|marker| marker.segment_id == segment.id)
+                })
+            });
+            if components::primary_button_enabled(
+                ui,
+                tr(
+                    language,
+                    if marked {
+                        "★ Highlight"
+                    } else {
+                        "Mark latest highlight"
+                    },
+                ),
+                latest.is_some() && !marked,
+            )
+            .clicked()
+                && let Some(segment) = latest
+            {
+                action = UiAction::Highlight(segment.id.clone());
+            }
+        }
         if meeting.status == MeetingStatus::Live && controller.is_recording(&meeting.id) {
             if components::danger_button(ui, tr(language, "Finish recording")).clicked() {
                 action = UiAction::End;

@@ -2,10 +2,12 @@ use crate::ui::theme;
 use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Stroke, Ui, Vec2};
 
 mod action_button;
+mod library_start;
+pub(crate) use library_start::{library_navigation, library_start};
 pub mod annotated_text;
 pub use action_button::{
-    add_button, back_button, copy_button, delete_button, edit_button, next_button, refresh_button,
-    search_button,
+    add_button, back_button, copy_button, delete_button, edit_button, icon_button, next_button,
+    refresh_button, search_button,
 };
 mod audio_source_filter;
 pub use audio_source_filter::audio_source_filter;
@@ -14,7 +16,30 @@ pub mod faded_scroll_text;
 mod segmented_switch;
 pub mod selection_card;
 pub use segmented_switch::segmented_switch;
+mod source_input;
 pub mod text_composer;
+pub use source_input::source_input;
+
+pub fn page_header(ui: &mut Ui, title: &str, actions: impl FnOnce(&mut Ui)) {
+    let title = egui::RichText::new(title)
+        .size(22.0)
+        .color(theme::text_strong())
+        .strong();
+    if ui.available_width() < 600.0 {
+        ui.add(egui::Label::new(title).wrap());
+        ui.horizontal_wrapped(actions);
+    } else {
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                actions(ui);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(egui::Label::new(title).truncate());
+                });
+            });
+        });
+    }
+    ui.add_space(14.0);
+}
 
 pub(crate) fn live_preview(ui: &mut Ui, preview: &crate::session_coordinator::TranslationPreview) {
     ui.push_id(
@@ -997,8 +1022,7 @@ pub fn combobox_ui_with_width<R>(
                         .color(crate::ui::theme::text_strong()),
                 )
                 .width(control_width)
-                .truncate()
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+                .truncate();
 
             combo.show_ui(ui, add_contents)
         },
@@ -1168,6 +1192,7 @@ pub fn searchable_combobox_with_options<T: PartialEq + Clone>(
                     match_count += 1;
                     if ui.selectable_value(selected, val.clone(), label).clicked() {
                         changed = true;
+                        ui.close();
                         if is_more_than_3 {
                             ui.memory_mut(|m| m.data.insert_temp(search_id, String::new()));
                         }

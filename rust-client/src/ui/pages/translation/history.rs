@@ -17,6 +17,7 @@ pub enum DisplayMode {
 pub struct HistoryDisplay {
     #[serde(rename = "translation")]
     pub mode: DisplayMode,
+    pub presentation_dark: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -125,11 +126,11 @@ fn history_text<'a>(ui: &egui::Ui, speaker_id: &str, speaker_size: f32) -> Annot
 }
 
 /// A turn keeps its place while recognition and translation update independently.
-struct HistoryTurn<'a> {
+pub(super) struct HistoryTurn<'a> {
     stream_id: Option<u64>,
     turn_id: &'a str,
     recognition: Vec<&'a crate::history::RecognitionHistoryEntry>,
-    translations: Vec<&'a crate::history::TranslationHistoryEntry>,
+    pub(super) translations: Vec<&'a crate::history::TranslationHistoryEntry>,
 }
 
 impl HistoryTurn<'_> {
@@ -152,7 +153,7 @@ impl HistoryTurn<'_> {
     }
 }
 
-fn history_turns(app: &crate::XRTranslateApp) -> Vec<HistoryTurn<'_>> {
+pub(super) fn history_turns(app: &crate::XRTranslateApp) -> Vec<HistoryTurn<'_>> {
     let mut turns: Vec<HistoryTurn<'_>> = Vec::new();
     for entry in &app.recognition_history {
         if entry.text.trim().is_empty() {
@@ -509,7 +510,14 @@ fn render_header(
         ui,
         &mut plain,
         [
-            crate::i18n::tr(app.ui_language, "Bubbles"),
+            crate::i18n::tr(
+                app.ui_language,
+                if openable {
+                    "Bubbles"
+                } else {
+                    "Presentation mode"
+                },
+            ),
             crate::i18n::tr(app.ui_language, "Plain text"),
         ],
     )
@@ -520,6 +528,9 @@ fn render_header(
         } else {
             DisplayMode::Bubbles
         };
+        if !openable && !plain {
+            app.history_presentation.enter();
+        }
         app.save_settings();
     }
     (clicked, app.history_display.mode)
@@ -562,6 +573,7 @@ pub(super) fn render_history_feed(
         });
     if fullscreen {
         app.fullscreen_history = true;
+        app.history_presentation.enter();
         ui.ctx().request_repaint();
     }
 }
@@ -572,6 +584,10 @@ pub(super) fn render_fullscreen_history(app: &mut crate::XRTranslateApp, ui: &mu
     }
     ui.push_id("fullscreen_history", |ui| {
         let (_, display) = render_header(app, ui, 18.0, false);
+        if display == DisplayMode::Bubbles {
+            ui.ctx().request_repaint();
+            return;
+        }
         ui.add_space(10.0);
         let scale = HistoryFeedScale {
             text_size: 16.0,
