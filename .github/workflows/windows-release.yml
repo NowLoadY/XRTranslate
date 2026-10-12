@@ -1,0 +1,154 @@
+name: Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag, for example v0.3.3
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      RUSTUP_TOOLCHAIN: 1.95.0-x86_64-pc-windows-msvc
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Require an existing versioned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ($env:RELEASE_TAG -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
+            throw 'Tag must be a Cargo version prefixed with v, for example v0.3.3.'
+          }
+          $releaseTag = & gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json tagName --jq .tagName
+          if ($LASTEXITCODE -ne 0 -or $releaseTag -cne $env:RELEASE_TAG) {
+            throw "Create the tag and its GitHub Release before dispatching: $env:RELEASE_TAG"
+          }
+
+      - name: Check out the release and pinned submodules
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Rust 1.95 for Visual Studio 2022
+        run: |
+          & rustup toolchain install 1.95.0 --profile minimal --target x86_64-pc-windows-msvc --no-self-update
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
+          & rustc --version
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain activation failed.' }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $visualStudio = & $vswhere -latest -products '*' -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $visualStudio) { throw 'Visual Studio 2022 C++ tools are required.' }
+          Write-Host "Using Visual Studio 2022: $visualStudio"
+
+      - name: Verify tag, Cargo version and submodule revisions
+        run: |
+          $tagCommit = & git rev-parse "$env:RELEASE_TAG^{commit}"
+          if ($LASTEXITCODE -ne 0) { throw 'The requested tag is missing.' }
+          $headCommit = & git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $headCommit) { throw 'Checkout does not match the requested tag.' }
+          $submodules = & git submodule status --recursive
+          if ($LASTEXITCODE -ne 0 -or @($submodules | Where-Object { $_ -match '^[+U-]' }).Count -gt 0) {
+            throw 'Submodules must be initialized at the exact revisions recorded by the tag.'
+          }
+          $metadata = & cargo metadata --locked --no-deps --format-version 1
+          if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata validation failed.' }
+          $client = @(($metadata | ConvertFrom-Json).packages | Where-Object name -eq 'rust-client')
+          if ($client.Count -ne 1 -or "v$($client[0].version)" -cne $env:RELEASE_TAG) {
+            throw 'The release tag must match the Cargo workspace version.'
+          }
+          "PACKAGE_NAME=XRTranslate-$env:RELEASE_TAG-win-x64" >> $env:GITHUB_ENV
+
+      - name: Build the standard Windows package
+        run: |
+          & .\build_release.ps1 -Output "dist\$env:PACKAGE_NAME"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows release build failed.' }
+
+      - name: Smoke test the packaged executables and corpus service
+        run: |
+          $directory = Join-Path $env:GITHUB_WORKSPACE "dist\$env:PACKAGE_NAME"
+          foreach ($name in 'xrtranslate-backend', 'xrtranslate-installer', 'xrtranslate-updater') {
+            $version = & (Join-Path $directory "bin\$name.exe") --version
+            if ($LASTEXITCODE -ne 0 -or $version.Trim() -cne "$name $($env:RELEASE_TAG.Substring(1))") {
+              throw "Packaged $name failed to start with the expected version."
+            }
+            Write-Host $version
+          }
+          $corpus = Join-Path $directory 'bin\xr-corpus-server.exe'
+          $corpusVersion = & $corpus --version
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged XR-Corpus failed to start.' }
+          $smoke = Join-Path $env:RUNNER_TEMP "xrtranslate-smoke-$([guid]::NewGuid())"
+          New-Item -ItemType Directory $smoke | Out-Null
+          $config = Get-Content (Join-Path $directory 'config.json') -Raw | ConvertFrom-Json
+          $config.prompt_context.database_path = Join-Path $smoke 'xr-corpus.sqlite'
+          $config.prompt_context.seed_database_path = Join-Path $directory 'corpora\default.sqlite'
+          $config.integrations.vrcx.enabled = $false
+          $configPath = Join-Path $smoke 'config.json'
+          $config | ConvertTo-Json -Depth 100 | Set-Content $configPath -Encoding utf8
+          $process = $null
+          try {
+            $process = Start-Process $corpus -ArgumentList @('--config', "`"$configPath`"", '--listen', '127.0.0.1:17766') -WorkingDirectory $smoke -PassThru -RedirectStandardOutput (Join-Path $smoke 'stdout.log') -RedirectStandardError (Join-Path $smoke 'stderr.log')
+            $health = $null
+            $deadline = (Get-Date).AddSeconds(30)
+            while ((Get-Date) -lt $deadline) {
+              if ($process.HasExited) { throw "XR-Corpus exited with code $($process.ExitCode)." }
+              try { $health = Invoke-RestMethod http://127.0.0.1:17766/healthz -TimeoutSec 2 } catch { }
+              if ($health.status -eq 'ok') { break }
+              Start-Sleep -Milliseconds 500
+            }
+            if ($health.status -ne 'ok' -or $health.api_version -ne 2 -or
+                $health.server_version -cne ($corpusVersion.Trim() -split ' ')[-1]) {
+              throw 'Packaged XR-Corpus did not report a healthy, compatible version.'
+            }
+            $graph = Invoke-RestMethod http://127.0.0.1:17766/v2/graph -TimeoutSec 10
+            if ($process.HasExited -or $graph.domains.Count -eq 0 -or $graph.nodes.Count -eq 0) {
+              throw 'Packaged XR-Corpus did not load the default vocabulary graph.'
+            }
+            Write-Host "XR-Corpus $($health.server_version): $($graph.domains.Count) domains, $($graph.nodes.Count) nodes."
+          } finally {
+            if ($process -and -not $process.HasExited) { Stop-Process -Id $process.Id -Force; $process.WaitForExit() }
+            Get-ChildItem $smoke -Filter '*.log' | Get-Content | Write-Host
+            Remove-Item $smoke -Recurse -Force
+          }
+
+      - name: Zip the contents in the standard release layout
+        run: |
+          $directory = Join-Path $env:GITHUB_WORKSPACE "dist\$env:PACKAGE_NAME"
+          $archivePath = "$directory.zip"
+          [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            $directory, $archivePath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($archivePath)
+          try {
+            if (-not $archive.GetEntry("XRTranslate-$env:RELEASE_TAG.exe") -or
+                -not $archive.GetEntry('release-manifest.json') -or
+                -not $archive.GetEntry('config.json') -or
+                -not $archive.GetEntry('bin/xrtranslate-backend.exe')) {
+              throw 'ZIP must contain the standard executable, manifest, config and bin directory at its root.'
+            }
+          } finally {
+            $archive.Dispose()
+          }
+
+      - name: Upload only the Windows ZIP to the existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & gh release upload $env:RELEASE_TAG "dist\$env:PACKAGE_NAME.zip" --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed.' }

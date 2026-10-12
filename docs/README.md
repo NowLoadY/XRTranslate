@@ -44,6 +44,7 @@ across documents; link to its owner.
 - [Terminology library](terminology-library.md)
 - [Speaker diarization](speaker-diarization.md)
 - [Linux build](linux-build.md)
+- [Windows release](windows-release.md)
 - [Recorded speech check](speech-check.md)
 - [Text/speech roundtrip check](roundtrip-check.md)
 - [Contributors](contributors.md)

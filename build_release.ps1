@@ -22,6 +22,8 @@ $denoiseModel = Join-Path $projectRoot 'models\gtcrn\gtcrn_simple.onnx'
 $seedDatabase = Join-Path $projectRoot 'XR-Corpus\corpora\default.sqlite'
 $cargoPath = Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe'
 $packagerPath = Join-Path $projectRoot 'target\release\xrtranslate-packager.exe'
+$installerPath = Join-Path $projectRoot 'target\release\xrtranslate-installer.exe'
+$runtimeAssetCache = Join-Path $projectRoot '.temp\runtime-assets'
 
 $expectedOnnxBytes = 16277856
 $expectedLicenseBytes = 1094
@@ -88,6 +90,31 @@ function Resolve-VcRuntimeDirectory {
     return $selected.Path
 }
 
+if (-not (Test-Path -LiteralPath $workspaceManifest -PathType Leaf)) {
+    throw "Rust workspace manifest was not found: $workspaceManifest"
+}
+if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+    throw "Release configuration was not found: $configPath"
+}
+if (-not (Test-Path -LiteralPath $seedDatabase -PathType Leaf)) {
+    throw "Default terminology database was not found: $seedDatabase. Run git submodule update --init XR-Corpus."
+}
+
+if ([string]::IsNullOrWhiteSpace($Output)) {
+    $version = "0.1.0"
+    $manifestContent = Get-Content -LiteralPath $workspaceManifest -Raw
+    if ($manifestContent -match 'version\s*=\s*"([^"]+)"') {
+        $version = $matches[1]
+    }
+    $Output = Join-Path $projectRoot "dist\XRTranslate-v$version-win-x64"
+} elseif (-not [System.IO.Path]::IsPathRooted($Output)) {
+    $Output = Join-Path $projectRoot $Output
+}
+$Output = [System.IO.Path]::GetFullPath($Output)
+if (Test-Path -LiteralPath $Output) {
+    throw "Release output already exists. Choose a new -Output path: $Output"
+}
+
 if ($ValidateOnly -and -not (Test-Path -LiteralPath $packagerPath -PathType Leaf)) {
     throw "Validation requires an existing native release packager: $packagerPath. -ValidateOnly never builds binaries."
 }
@@ -103,6 +130,35 @@ if (-not $ValidateOnly) {
 $VcRuntimeDirectory = Resolve-VcRuntimeDirectory -Directory $VcRuntimeDirectory
 Write-Host "Using app-local Visual C++ runtime from redistributable files: $VcRuntimeDirectory"
 
+if (-not $ValidateOnly) {
+    $buildArguments = @(
+        'build', '--locked', '--manifest-path', $workspaceManifest, '--target-dir', (Join-Path $projectRoot 'target'), '--release',
+        '--package', 'rust-client',
+        '--package', 'xrtranslate-backend',
+        '--package', 'xrtranslate-installer',
+        '--package', 'xrtranslate-updater',
+        '--package', 'xrtranslate-packager',
+        '--features', 'rust-client/mpv,xrtranslate-backend/managed-ort'
+    )
+
+    Write-Host 'Building native release binaries...'
+    & $cargo @buildArguments
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+
+    & $cargo build --locked --manifest-path (Join-Path $projectRoot 'XR-Corpus\Cargo.toml') --target-dir (Join-Path $projectRoot 'target') --release --package xr-corpus-server
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+
+    Write-Host 'Preparing verified base ONNX models from the shared resource catalogue...'
+    & $installerPath --config $configPath prepare-resources --output $projectRoot --cache (Join-Path $runtimeAssetCache 'downloads')
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+}
+
 function Export-ZipEntry {
     param(
         [string]$ArchivePath,
@@ -117,6 +173,9 @@ function Export-ZipEntry {
         if ($null -eq $entry) {
             throw "Entry $EntryPath was not found in $ArchivePath"
         }
+        if ($entry.Length -ne $ExpectedBytes) {
+            throw "Size mismatch for archive entry $EntryPath : expected $ExpectedBytes, got $($entry.Length)"
+        }
         $outDir = [System.IO.Path]::GetDirectoryName($OutFile)
         New-Item -ItemType Directory -Path $outDir -Force | Out-Null
         [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $OutFile, $true)
@@ -129,15 +188,32 @@ function Export-ZipEntry {
     }
 }
 
-if ([string]::IsNullOrWhiteSpace($OnnxRuntimeCpu)) {
-    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
-        throw "Release configuration was not found: $configPath"
+function Get-OnnxCpuSourceArchive {
+    $releaseConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    $matchingDownloads = @($releaseConfig.model_manager.onnxruntime.downloads | Where-Object {
+        $_.name -eq $onnxCpuSourceArchive -and $_.target -eq 'windows-x86_64'
+    })
+    if ($matchingDownloads.Count -ne 1) {
+        throw "Expected exactly one Windows ONNX core source archive in config.json: $onnxCpuSourceArchive"
     }
+    $download = $matchingDownloads[0]
+    $archivePath = Join-Path $runtimeAssetCache $download.name
+    Write-Host 'Fetching the verified ONNX Runtime source archive for its CPU core and license files...'
+    & $cargo run --locked --manifest-path $workspaceManifest --target-dir (Join-Path $projectRoot 'target') --release --package xrtranslate-download --example fetch -- $download.url $download.bytes $archivePath | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "ONNX Runtime archive download failed with exit code $LASTEXITCODE"
+    }
+    return [pscustomobject]@{
+        Path = $archivePath
+        Root = [System.IO.Path]::GetFileNameWithoutExtension($download.name)
+    }
+}
 
+$onnxArchive = $null
+if ([string]::IsNullOrWhiteSpace($OnnxRuntimeCpu)) {
     $candidatePaths = @()
 
     # 1. Search in runtime asset cache (.temp/runtime-assets)
-    $runtimeAssetCache = Join-Path $projectRoot '.temp\runtime-assets'
     if (Test-Path -LiteralPath $runtimeAssetCache -PathType Container) {
         $cachedCores = Get-ChildItem -LiteralPath $runtimeAssetCache -Filter 'onnxruntime.dll' -File -Recurse -ErrorAction SilentlyContinue |
             Where-Object { $_.Length -eq $expectedOnnxBytes }
@@ -169,7 +245,12 @@ if ([string]::IsNullOrWhiteSpace($OnnxRuntimeCpu)) {
     }
 
     if ([string]::IsNullOrWhiteSpace($OnnxRuntimeCpu)) {
-        throw "No verified ONNX Runtime 1.28 CPU core found in .temp\runtime-assets or runtime\onnxruntime. Pass -OnnxRuntimeCpu <onnxruntime.dll>."
+        if ($ValidateOnly) {
+            throw 'Validation requires an existing verified ONNX Runtime CPU core. Pass -OnnxRuntimeCpu <onnxruntime.dll>. -ValidateOnly never downloads files.'
+        }
+        $onnxArchive = Get-OnnxCpuSourceArchive
+        $OnnxRuntimeCpu = Join-Path $runtimeAssetCache 'onnxruntime\cpu\onnxruntime.dll'
+        Export-ZipEntry -ArchivePath $onnxArchive.Path -EntryPath "$($onnxArchive.Root)/lib/onnxruntime.dll" -OutFile $OnnxRuntimeCpu -ExpectedBytes $expectedOnnxBytes
     }
     Write-Host "Using verified ONNX Runtime core (universal CPU engine): $OnnxRuntimeCpu"
 }
@@ -206,43 +287,22 @@ if ($null -eq $onnxRuntimeLicense -or $null -eq $onnxRuntimeNotices) {
     if ($ValidateOnly) {
         throw 'Validation requires verified ONNX Runtime LICENSE and ThirdPartyNotices.txt beside the core or in .temp/runtime-assets/licenses/onnxruntime. -ValidateOnly never downloads files.'
     }
-    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
-        throw "Release configuration was not found: $configPath"
-    }
-    $releaseConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
-    $matchingDownloads = @($releaseConfig.model_manager.onnxruntime.downloads | Where-Object {
-        $_.name -eq $onnxCpuSourceArchive -and $_.target -eq 'windows-x86_64'
-    })
-    if ($matchingDownloads.Count -ne 1) {
-        throw "Expected exactly one Windows ONNX core source archive in config.json: $onnxCpuSourceArchive"
-    }
-    $download = $matchingDownloads[0]
-    $archivePath = Join-Path $projectRoot ".temp\runtime-assets\$onnxCpuSourceArchive"
-    $archiveRoot = [System.IO.Path]::GetFileNameWithoutExtension($onnxCpuSourceArchive)
-    Write-Host 'Fetching the verified ONNX Runtime source archive for its license files...'
-    & $cargo run --locked --manifest-path $workspaceManifest --target-dir (Join-Path $projectRoot 'target') --release --package xrtranslate-download --example fetch -- $download.url $download.bytes $archivePath
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
+    if ($null -eq $onnxArchive) {
+        $onnxArchive = Get-OnnxCpuSourceArchive
     }
     if ($null -eq $onnxRuntimeLicense) {
         $targetLic = Join-Path $onnxLicensesDir 'LICENSE'
-        Export-ZipEntry -ArchivePath $archivePath -EntryPath "$archiveRoot/LICENSE" -OutFile $targetLic -ExpectedBytes $expectedLicenseBytes
+        Export-ZipEntry -ArchivePath $onnxArchive.Path -EntryPath "$($onnxArchive.Root)/LICENSE" -OutFile $targetLic -ExpectedBytes $expectedLicenseBytes
         $onnxRuntimeLicense = $targetLic
     }
     if ($null -eq $onnxRuntimeNotices) {
         $targetNot = Join-Path $onnxLicensesDir 'ThirdPartyNotices.txt'
-        Export-ZipEntry -ArchivePath $archivePath -EntryPath "$archiveRoot/ThirdPartyNotices.txt" -OutFile $targetNot -ExpectedBytes $expectedNoticesBytes
+        Export-ZipEntry -ArchivePath $onnxArchive.Path -EntryPath "$($onnxArchive.Root)/ThirdPartyNotices.txt" -OutFile $targetNot -ExpectedBytes $expectedNoticesBytes
         $onnxRuntimeNotices = $targetNot
     }
 }
 
 
-if (-not (Test-Path -LiteralPath $workspaceManifest)) {
-    throw "Rust workspace manifest was not found: $workspaceManifest"
-}
-if (-not (Test-Path -LiteralPath $configPath)) {
-    throw "Release configuration was not found: $configPath"
-}
 if (-not (Test-Path -LiteralPath $vadModel)) {
     throw "Silero VAD model was not found: $vadModel"
 }
@@ -251,50 +311,6 @@ if (-not (Test-Path -LiteralPath $speakerModel)) {
 }
 if (-not (Test-Path -LiteralPath $denoiseModel)) {
     throw "GTCRN denoise ONNX model was not found: $denoiseModel"
-}
-if (-not (Test-Path -LiteralPath $seedDatabase -PathType Leaf)) {
-    throw "Default terminology database was not found: $seedDatabase"
-}
-
-if ([string]::IsNullOrWhiteSpace($Output)) {
-    $version = "0.1.0"
-    if (Test-Path -LiteralPath $workspaceManifest) {
-        $manifestContent = Get-Content -LiteralPath $workspaceManifest -Raw
-        if ($manifestContent -match 'version\s*=\s*"([^"]+)"') {
-            $version = $matches[1]
-        }
-    }
-    $Output = Join-Path $projectRoot "dist\XRTranslate-v$version-win-x64"
-} elseif (-not [System.IO.Path]::IsPathRooted($Output)) {
-    $Output = Join-Path $projectRoot $Output
-}
-$Output = [System.IO.Path]::GetFullPath($Output)
-
-if (Test-Path -LiteralPath $Output) {
-    throw "Release output already exists. Choose a new -Output path: $Output"
-}
-
-if (-not $ValidateOnly) {
-    $buildArguments = @(
-        'build', '--locked', '--manifest-path', $workspaceManifest, '--target-dir', (Join-Path $projectRoot 'target'), '--release',
-        '--package', 'rust-client',
-        '--package', 'xrtranslate-backend',
-        '--package', 'xrtranslate-installer',
-        '--package', 'xrtranslate-updater',
-        '--package', 'xrtranslate-packager',
-        '--features', 'rust-client/mpv,xrtranslate-backend/managed-ort'
-    )
-
-    Write-Host 'Building native release binaries...'
-    & $cargo @buildArguments
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
-
-    & $cargo build --locked --manifest-path (Join-Path $projectRoot 'XR-Corpus\Cargo.toml') --target-dir (Join-Path $projectRoot 'target') --release --package xr-corpus-server
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
-    }
 }
 
 $packageArguments = @(
