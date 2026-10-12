@@ -517,12 +517,12 @@ pub(crate) fn render(
             if controller.pending {
                 ui.spinner();
             }
-            if components::secondary_button_enabled(
-                ui,
-                tr(language, "Refresh"),
-                !controller.pending,
-            )
-            .clicked()
+            if ui
+                .add_enabled_ui(!controller.pending, |ui| {
+                    components::refresh_button(ui, tr(language, "Refresh"))
+                })
+                .inner
+                .clicked()
             {
                 controller.service_ready = false;
                 controller.service_error = None;

@@ -11,11 +11,11 @@ pub(super) fn render_create(
 ) -> MediaAction {
     let mut action = MediaAction::None;
     crate::ui::layout::flow_row(ui, |ui| {
-        ui.heading(tr(language, "New media task"));
-        if components::secondary_button(ui, tr(language, "Back to Library")).clicked() {
+        if components::back_button(ui, tr(language, "Back to Library")).clicked() {
             controller.open_library();
             action = MediaAction::StopTranslation;
         }
+        ui.heading(tr(language, "New media task"));
     });
     ui.add_space(14.0);
     components::card(ui, |ui| {

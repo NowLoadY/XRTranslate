@@ -1,8 +1,11 @@
 //! Recognition and translation history models plus deterministic stream merging.
 
 pub(crate) mod archive;
+mod feed;
 mod merge;
 mod model;
+
+pub(crate) use feed::FeedTimeline;
 
 pub(crate) use merge::{
     collect_authoritative_recognition_snapshot, collect_authoritative_translation_snapshot,

@@ -33,6 +33,38 @@ pub fn back_button(ui: &mut Ui, label: &str) -> egui::Response {
     )
 }
 
+pub fn next_button(ui: &mut Ui, label: &str) -> egui::Response {
+    action_button(
+        ui,
+        label,
+        egui::include_image!("../../../resources/icons/chevron-right.svg"),
+    )
+}
+
+pub fn search_button(ui: &mut Ui, label: &str) -> egui::Response {
+    action_button(
+        ui,
+        label,
+        egui::include_image!("../../../resources/icons/search.svg"),
+    )
+}
+
+pub fn add_button(ui: &mut Ui, label: &str) -> egui::Response {
+    action_button(
+        ui,
+        label,
+        egui::include_image!("../../../resources/icons/plus.svg"),
+    )
+}
+
+pub fn refresh_button(ui: &mut Ui, label: &str) -> egui::Response {
+    action_button(
+        ui,
+        label,
+        egui::include_image!("../../../resources/icons/reset.svg"),
+    )
+}
+
 fn action_button(ui: &mut Ui, label: &str, icon: egui::ImageSource<'_>) -> egui::Response {
     let response = ui.add_sized(Vec2::splat(32.0), egui::Button::new("").frame(false));
     let response =

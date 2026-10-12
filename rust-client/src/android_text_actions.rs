@@ -327,7 +327,7 @@ impl crate::XRTranslateApp {
     pub(crate) fn poll_android_text_actions(&mut self, ctx: &eframe::egui::Context) {
         if take_open_translation() {
             self.navigation.page = crate::ui::Page::Translation;
-            self.fullscreen_history = None;
+            self.fullscreen_history = false;
             ctx.request_repaint();
         }
         let completed = take_completed();

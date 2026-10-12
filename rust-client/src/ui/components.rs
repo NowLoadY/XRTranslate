@@ -3,7 +3,10 @@ use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Stroke, Ui, Vec2}
 
 mod action_button;
 pub mod annotated_text;
-pub use action_button::{back_button, copy_button, delete_button, edit_button};
+pub use action_button::{
+    add_button, back_button, copy_button, delete_button, edit_button, next_button, refresh_button,
+    search_button,
+};
 mod audio_source_filter;
 pub use audio_source_filter::audio_source_filter;
 pub mod avatar;

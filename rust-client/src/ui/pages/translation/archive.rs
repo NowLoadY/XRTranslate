@@ -8,11 +8,11 @@ use eframe::egui;
 pub(super) fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     let language = app.ui_language;
     crate::ui::layout::flow_row(ui, |ui| {
-        ui.heading(tr(language, "Translation history"));
-        if components::secondary_button(ui, tr(language, "Back to translation")).clicked() {
+        if components::back_button(ui, tr(language, "Back to translation")).clicked() {
             app.history_archive.cancel_delete();
             app.history_archive.open = false;
         }
+        ui.heading(tr(language, "Translation history"));
     });
     ui.add_space(12.0);
     let mut save = app.history_archive.enabled();
@@ -49,7 +49,7 @@ pub(super) fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             archive.offset = 0;
             archive.refresh(false);
         }
-        if components::secondary_button(ui, tr(language, "Refresh")).clicked() {
+        if components::refresh_button(ui, tr(language, "Refresh")).clicked() {
             archive.refresh(false);
         }
         if components::secondary_button_enabled(
@@ -78,23 +78,23 @@ pub(super) fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     }
     {
         crate::ui::layout::flow_row(ui, |ui| {
-            if components::secondary_button_enabled(
-                ui,
-                tr(language, "Previous"),
-                archive.offset > 0 && !archive.loading,
-            )
-            .clicked()
+            if ui
+                .add_enabled_ui(archive.offset > 0 && !archive.loading, |ui| {
+                    components::back_button(ui, tr(language, "Previous"))
+                })
+                .inner
+                .clicked()
             {
                 archive.offset = archive.offset.saturating_sub(PAGE_SIZE);
                 archive.refresh(false);
             }
             ui.weak(format!("{}", archive.offset / PAGE_SIZE + 1));
-            if components::secondary_button_enabled(
-                ui,
-                tr(language, "Next"),
-                archive.has_more && !archive.loading,
-            )
-            .clicked()
+            if ui
+                .add_enabled_ui(archive.has_more && !archive.loading, |ui| {
+                    components::next_button(ui, tr(language, "Next"))
+                })
+                .inner
+                .clicked()
             {
                 archive.offset += PAGE_SIZE;
                 archive.refresh(false);
@@ -145,12 +145,12 @@ pub(super) fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     if components::copy_button(ui, tr(language, "Copy")).clicked() {
                         ui.ctx().copy_text(record.translated.clone());
                     }
-                    if components::secondary_button_enabled(
-                        ui,
-                        tr(language, "Delete"),
-                        !archive.deleting(),
-                    )
-                    .clicked()
+                    if ui
+                        .add_enabled_ui(!archive.deleting(), |ui| {
+                            components::delete_button(ui, tr(language, "Delete"))
+                        })
+                        .inner
+                        .clicked()
                     {
                         let source: String = record.source.chars().take(100).collect();
                         delete = Some((

@@ -24,7 +24,7 @@ pub(in crate::plugins::media::ui) fn render_detail(
     }
     if !controller.fullscreen_mode {
         crate::ui::layout::flow_row(ui, |ui| {
-            if components::secondary_button(ui, tr(language, "Back to Library")).clicked() {
+            if components::back_button(ui, tr(language, "Back to Library")).clicked() {
                 controller.open_library();
                 action = MediaAction::StopTranslation;
             }

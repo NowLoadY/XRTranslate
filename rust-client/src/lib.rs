@@ -657,7 +657,8 @@ struct XRTranslateApp {
     partial_text: String,
     recognition_history: Vec<RecognitionHistoryEntry>,
     translations: Vec<TranslationHistoryEntry>,
-    fullscreen_history: Option<ui::pages::translation::FullscreenHistory>,
+    fullscreen_history: bool,
+    history_timeline: history::FeedTimeline,
     history_display: ui::pages::translation::history::HistoryDisplay,
     last_error: Option<String>,
     companion_inbox: ui::companion::Inbox,
@@ -746,6 +747,7 @@ struct AudioDeviceSnapshot {
 #[derive(Default)]
 struct SharedSessionState {
     connection_status: String,
+    history_timeline: history::FeedTimeline,
     partial_text: String,
     pending_final_asr: Vec<PendingFinalAsr>,
     pending_recognition_windows: Vec<PendingRecognitionWindow>,
@@ -1067,6 +1069,7 @@ impl Default for XRTranslateApp {
                     if scope.publish_to_host_outputs && !results.is_empty() {
                         for result in &results {
                             host_previews.observe(result);
+                            state.history_timeline.observe(result);
                         }
                         let previews = host_previews
                             .entries()
@@ -1672,6 +1675,21 @@ impl Default for XRTranslateApp {
                         }
                     }
 
+                    if !results.is_empty() {
+                        let SharedSessionState {
+                            history_timeline,
+                            recognition_history,
+                            translations,
+                            translation_previews,
+                            ..
+                        } = &mut *state;
+                        history_timeline.retain(
+                            recognition_history,
+                            translations,
+                            translation_previews,
+                        );
+                    }
+
                     if host_translation
                         && publish_committed_translations(&output_subscribers, &results)
                     {
@@ -1732,7 +1750,8 @@ impl Default for XRTranslateApp {
             partial_text: String::new(),
             recognition_history: Vec::new(),
             translations: Vec::new(),
-            fullscreen_history: None,
+            fullscreen_history: false,
+            history_timeline: Default::default(),
             history_display: settings.history_display,
             last_error: None,
             companion_inbox: ui::companion::Inbox::default(),
@@ -4844,11 +4863,13 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn clear_history(&mut self) {
+        self.history_timeline = Default::default();
         self.translations.clear();
         self.recognition_history.clear();
         self.partial_text.clear();
         if let Ok(mut state) = self.shared_session_state.lock() {
             state.translations.clear();
+            state.history_timeline = Default::default();
             state.translation_previews.clear();
             state.recognition_history.clear();
             state.partial_text.clear();
@@ -5206,6 +5227,7 @@ impl XRTranslateApp {
         // Copy latest shared state into self for local rendering when main UI is visible
         if let Ok(mut state) = self.shared_session_state.lock() {
             self.connection_status = state.connection_status.clone();
+            self.history_timeline = state.history_timeline.clone();
             self.partial_text = state.partial_text.clone();
             self.recognition_history = state.recognition_history.clone();
             self.translations = state.translations.clone();

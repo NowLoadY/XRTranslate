@@ -64,8 +64,10 @@ impl Requests {
         let target = SupportedLanguage::parse(&row.entry.target_lang).unwrap();
         let prompt = match step {
             Step::Sentence => format!(
-                "Write one natural sentence in {} using this exact word or phrase. Output only the sentence.\n\n<word>{}</word>",
+                "Write one natural sentence in {} using <word> exactly, with the meaning of <source> ({}). Output only the sentence.\n\n<source>{}</source>\n<word>{}</word>",
                 target.name(),
+                source.name(),
+                row.entry.source,
                 row.entry.translated
             ),
             Step::BackTranslation if !row.example.sentence.is_empty() => {
@@ -174,6 +176,8 @@ fn valid_sentence(text: &str, entry: &Entry) -> bool {
         || [
             "<word",
             "</word",
+            "<source",
+            "</source",
             "<think",
             "```",
             "output only the sentence",

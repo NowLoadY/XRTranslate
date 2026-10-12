@@ -93,7 +93,7 @@ pub(crate) fn render(
 
     let mut actions = Vec::new();
     if state.editor_open {
-        if crate::ui::components::secondary_button(ui, tr(language, "Back to styles")).clicked() {
+        if crate::ui::components::back_button(ui, tr(language, "Back to styles")).clicked() {
             let snapshot = controller.snapshot(library);
             editor::save_before_switch(&snapshot, controller, &mut actions);
             state.editor_open = false;

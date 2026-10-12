@@ -28,7 +28,7 @@ pub(super) fn render_setup(
         },
         language,
         |ui| {
-            if components::animated_button(ui, tr(language, "Back")).clicked() {
+            if components::back_button(ui, tr(language, "Back")).clicked() {
                 action = UiAction::Back;
             }
         },

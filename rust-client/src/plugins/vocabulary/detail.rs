@@ -141,9 +141,7 @@ impl Page {
             ui.add(egui::Label::new(egui::RichText::new(&example.sentence).size(18.0)).wrap());
         }
         if !example.back_translation.is_empty() {
-            ui.add_space(16.0);
-            ui.weak(tr(language, "Back-translation"));
-            ui.add_space(4.0);
+            ui.add_space(6.0);
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(&example.back_translation)

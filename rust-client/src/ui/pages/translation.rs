@@ -4,16 +4,15 @@ use eframe::egui;
 
 mod archive;
 pub(crate) mod history;
-pub use history::FullscreenHistory;
-use history::{render_fullscreen_history, render_history_feeds};
+use history::{render_fullscreen_history, render_history_feed};
 
 pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     if app.history_archive.open {
         archive::render(app, ui);
         return;
     }
-    if let Some(mode) = app.fullscreen_history {
-        render_fullscreen_history(app, ui, mode);
+    if app.fullscreen_history {
+        render_fullscreen_history(app, ui);
         return;
     }
 
@@ -39,7 +38,7 @@ fn render_content(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 .color(crate::ui::theme::text_strong())
                 .strong(),
         );
-        if components::secondary_button(
+        if components::search_button(
             ui,
             crate::i18n::tr(app.ui_language, "Search translation history"),
         )
@@ -90,7 +89,7 @@ fn render_content(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 egui::vec2(remaining_w, avail_h),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
-                    render_history_feeds(app, ui, remaining_w, avail_h);
+                    render_history_feed(app, ui, remaining_w, avail_h);
                 },
             );
         });
@@ -99,7 +98,7 @@ fn render_content(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
         ui.add_space(10.0);
         let avail_h = ui.available_height();
         let avail_w = ui.available_width();
-        render_history_feeds(app, ui, avail_w, avail_h);
+        render_history_feed(app, ui, avail_w, avail_h);
     }
 }
 

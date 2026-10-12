@@ -259,7 +259,7 @@ impl Page {
                 self.reload = true;
             }
             ui.add_enabled_ui(!busy, |ui| {
-                if components::secondary_button(ui, tr(language, "New wordbook")).clicked() {
+                if components::add_button(ui, tr(language, "New wordbook")).clicked() {
                     self.folder_edit = Some((None, String::new()));
                 }
                 if components::edit_button(ui, tr(language, "Rename wordbook")).clicked() {
@@ -439,10 +439,10 @@ impl Page {
         if self.offset > 0 || self.more {
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(
-                        !busy && self.offset > 0,
-                        egui::Button::new(tr(language, "Previous")),
-                    )
+                    .add_enabled_ui(!busy && self.offset > 0, |ui| {
+                        components::back_button(ui, tr(language, "Previous"))
+                    })
+                    .inner
                     .clicked()
                 {
                     self.offset = self.offset.saturating_sub(PAGE_SIZE);
@@ -450,7 +450,10 @@ impl Page {
                 }
                 ui.label((self.offset / PAGE_SIZE + 1).to_string());
                 if ui
-                    .add_enabled(!busy && self.more, egui::Button::new(tr(language, "Next")))
+                    .add_enabled_ui(!busy && self.more, |ui| {
+                        components::next_button(ui, tr(language, "Next"))
+                    })
+                    .inner
                     .clicked()
                 {
                     self.offset += PAGE_SIZE;
