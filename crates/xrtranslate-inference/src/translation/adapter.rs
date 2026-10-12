@@ -4,7 +4,7 @@ use crate::{
 use xrtranslate_assets::remote::{RemoteCapabilities, RemoteStreaming};
 
 use super::{
-    TranslationOptions, TranslationProvider, TranslationResult,
+    TranslationOptions, TranslationPromptProfile, TranslationResult,
     profile::{registered, translation_output_rejection},
 };
 
@@ -17,7 +17,7 @@ use super::{
 pub struct TranslationAdapter<C> {
     chat: OpenAiCompatibleClient<C>,
     model: String,
-    provider: TranslationProvider,
+    profile: TranslationPromptProfile,
     streaming: RemoteStreaming,
     single_user_message: bool,
     reasoning_effort: Option<String>,
@@ -28,13 +28,13 @@ impl<C> TranslationAdapter<C> {
         http: C,
         endpoint: impl Into<String>,
         model: impl Into<String>,
-        provider: TranslationProvider,
+        profile: TranslationPromptProfile,
     ) -> Result<Self, InferenceError> {
         let model = validated_model(model)?;
         Ok(Self {
             chat: OpenAiCompatibleClient::new(http, endpoint)?,
             model,
-            provider,
+            profile,
             streaming: RemoteStreaming::Delta,
             single_user_message: false,
             reasoning_effort: None,
@@ -47,14 +47,14 @@ impl<C> TranslationAdapter<C> {
         http: C,
         endpoint: impl Into<String>,
         model: impl Into<String>,
-        provider: TranslationProvider,
+        profile: TranslationPromptProfile,
         token: impl Into<String>,
     ) -> Result<Self, InferenceError> {
         let model = validated_model(model)?;
         Ok(Self {
             chat: OpenAiCompatibleClient::with_bearer_token(http, endpoint, token)?,
             model,
-            provider,
+            profile,
             streaming: RemoteStreaming::Delta,
             single_user_message: false,
             reasoning_effort: None,
@@ -75,8 +75,8 @@ impl<C> TranslationAdapter<C> {
         }
     }
 
-    pub fn provider(&self) -> TranslationProvider {
-        self.provider
+    pub fn prompt_profile(&self) -> TranslationPromptProfile {
+        self.profile
     }
 }
 
@@ -95,7 +95,7 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
                 message: "must not be empty".into(),
             });
         }
-        let profile = registered(self.provider);
+        let profile = registered(self.profile);
         let mut payload = non_streaming_chat_payload(
             &self.model,
             serde_json::json!([{"role": "user", "content": prompt}]),
@@ -151,7 +151,7 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
         F: FnMut(String) -> Fut + Send,
         Fut: Future<Output = ()> + Send,
     {
-        let profile = registered(self.provider);
+        let profile = registered(self.profile);
         let prompt = profile.build_prompt(source_text, &options)?;
         let mut payload = non_streaming_chat_payload(
             &self.model,

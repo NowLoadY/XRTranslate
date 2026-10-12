@@ -1815,6 +1815,27 @@ fn active_native_provider(
 }
 
 impl NativeProviderConfig {
+    /// One model contract for Prompt Studio and inference, resolved from the same
+    /// local model card or normalized remote capabilities as the connector.
+    pub fn translation_prompt_profile(
+        &self,
+    ) -> Result<xrtranslate_assets::TranslationPromptProfile, String> {
+        if !self.uses_local_runtime() {
+            return Ok(self.capabilities.translation_prompt_profile);
+        }
+        let model = xrtranslate_assets::language::provider_model(
+            &self.provider,
+            self.model_asset.as_deref(),
+            xrtranslate_assets::ModelCapability::Translation,
+        )?;
+        match model.runtime {
+            Some(xrtranslate_assets::ModelRuntime::LlamaTextChat { prompt_style, .. }) => {
+                Ok(prompt_style)
+            }
+            _ => Err("selected translation model has no prompt contract".into()),
+        }
+    }
+
     #[must_use]
     pub fn uses_local_runtime(&self) -> bool {
         matches!(self.transport.as_str(), "local" | "onnx-cpu")

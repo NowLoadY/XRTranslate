@@ -1,7 +1,7 @@
 //! One shared Compose node owns style. This metadata only supplies the editor's saved texts.
 use serde::{Deserialize, Serialize};
 
-use crate::{PromptNodeGraph, PromptNodeKind, PromptNodePage, PromptProviderTarget};
+use crate::{PromptNodeGraph, PromptNodeKind, PromptNodePage, PromptTarget};
 
 pub(crate) const DEFAULT_TRANSLATION_STYLE: &str = concat!(
     "Translate into 100% natural, idiomatic target-language expression. Do not translate word-for-word, preserve original sentence structure, or produce translationese.\n\n",
@@ -125,7 +125,7 @@ impl PromptNodeGraph {
         true
     }
 
-    pub fn style_reaches_target(&self, target: PromptProviderTarget) -> bool {
+    pub fn style_reaches_target(&self, target: PromptTarget) -> bool {
         let Some(style) = &self.translation_style else {
             return false;
         };
@@ -148,8 +148,8 @@ impl PromptNodeGraph {
                 && self.static_text(&node.id).is_some()
                 && !self.links.iter().any(|link| link.to == node.id)
                 && [
-                    PromptProviderTarget::Hunyuan,
-                    PromptProviderTarget::OpenAiCompatible,
+                    PromptTarget::TranslationInstruction,
+                    PromptTarget::ChatMessages,
                 ]
                 .into_iter()
                 .any(|target| self.node_reaches_target(&node.id, target))
@@ -164,7 +164,7 @@ impl PromptNodeGraph {
         self.bind_translation_style(&id);
     }
 
-    fn node_reaches_target(&self, node_id: &str, target: PromptProviderTarget) -> bool {
+    fn node_reaches_target(&self, node_id: &str, target: PromptTarget) -> bool {
         let mut pending = vec![node_id];
         let mut visited = std::collections::HashSet::new();
         while let Some(id) = pending.pop() {
@@ -209,13 +209,13 @@ impl PromptNodeGraph {
                 text: CHINESE_TRANSLATION_STYLE.into(),
             });
         for (prefix, page) in [
-            ("openai", PromptNodePage::OpenAiCompatible),
-            ("hunyuan", PromptNodePage::Hunyuan),
+            ("openai", PromptNodePage::ChatMessages),
+            ("hunyuan", PromptNodePage::TranslationInstruction),
         ] {
             let instruction = format!("{prefix}-instruction");
             // A single-message translation model treats text following the
             // translation directive as input. Keep style before that boundary.
-            let template = if page == PromptNodePage::Hunyuan {
+            let template = if page == PromptNodePage::TranslationInstruction {
                 "{1}\n\n{0}"
             } else {
                 "{0}\n\n{1}"

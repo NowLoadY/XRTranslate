@@ -4,9 +4,47 @@ use crate::i18n::{UiLanguage, tr};
 #[derive(Clone, Debug, Default)]
 pub(super) struct StylePanel {
     pub collapsed: bool,
+    expanded: bool,
+    focus_pending: bool,
     preset_name: String,
     profile_id: String,
     removed_style: Option<(usize, xrtranslate_prompt::TranslationStylePreset)>,
+}
+
+pub(super) fn render_expanded(
+    controller: &mut PromptStudioController,
+    ui: &egui::Ui,
+    language: UiLanguage,
+    actions: &mut Vec<PromptStudioAction>,
+) -> bool {
+    if !controller.style_panel.expanded {
+        return false;
+    }
+    let Some(mut draft) = controller.draft.clone() else {
+        return false;
+    };
+    let Some(mut text) = draft.graph.style_text() else {
+        controller.style_panel.expanded = false;
+        return false;
+    };
+    let before = draft.clone();
+    let closed = crate::ui::components::expanded_text_edit(
+        ui.ctx(),
+        egui::Id::new("translation_style_text"),
+        tr(language, "Translation style"),
+        &mut text,
+        &mut controller.style_panel.focus_pending,
+        language,
+    );
+    draft.graph.set_style_text(&text);
+    if draft != before {
+        record_edit(controller, &mut draft, before, actions);
+    }
+    controller.draft = Some(draft);
+    if closed {
+        controller.style_panel.expanded = false;
+    }
+    true
 }
 
 /// A canvas overlay: all edits go into the same draft and history as the node editor.
@@ -28,6 +66,7 @@ pub(super) fn render(
         controller.style_panel.removed_style = None;
     }
     let before = draft.clone();
+    let compact = ui.ctx().content_rect().width() < 600.0;
     let mut apply = false;
     let mut save = false;
     let area_id = egui::Id::new("translation_style_panel");
@@ -44,12 +83,19 @@ pub(super) fn render(
                 // Set the budget before placing widgets: Area's cached collapsed size
                 // must not constrain expansion, and set_max_height resets the layout cursor.
                 ui.set_max_height((canvas.height() - 36.0).clamp(1.0, 620.0));
-                ui.horizontal(|ui| {
-                    let arrow = if controller.style_panel.collapsed { "▸" } else { "▾" };
-                    if ui.button(format!("{arrow} {}", tr(language, "Translation style"))).clicked() {
+                ui.horizontal_wrapped(|ui| {
+                    let arrow = if controller.style_panel.collapsed {
+                        egui::include_image!("../../../../../resources/icons/chevron-right.svg")
+                    } else {
+                        egui::include_image!("../../../../../resources/icons/chevron-down.svg")
+                    };
+                    let icon = egui::Image::new(arrow)
+                        .fit_to_exact_size(Vec2::splat(14.0))
+                        .tint(style::NODE_TEXT);
+                    if ui.add(egui::Button::image_and_text(icon, tr(language, "Translation style"))).clicked() {
                         controller.style_panel.collapsed = !controller.style_panel.collapsed;
                     }
-                    if ui.small_button(tr(language, "Locate node")).on_hover_text(tr(language, "Locate style node")).clicked() {
+                    if ui.button(tr(language, "Locate node")).on_hover_text(tr(language, "Locate style node")).clicked() {
                         locate_node(&draft.graph, controller, canvas);
                     }
                 });
@@ -65,16 +111,31 @@ pub(super) fn render(
                             ui.weak(tr(language, "Use a text node’s context menu to designate a shared translation style."));
                             return;
                         };
-                        let connected = draft.graph.style_reaches_target(controller.active_provider);
+                        let connected = draft.graph.style_reaches_target(controller.active_target);
                         if !connected {
                             ui.colored_label(style::ERROR_BORDER, tr(language, "Style node is not connected to this model."));
                         }
                         ui.weak(tr(language, "Style text"));
                         egui::ScrollArea::vertical().id_salt("style_prompt_scroll").max_height(text_height).min_scrolled_height(0.0).show(ui, |ui| {
-                            let response = ui.add(egui::TextEdit::multiline(&mut text)
+                            let mut output = egui::TextEdit::multiline(&mut text)
                                 .id(egui::Id::new("translation_style_text"))
-                                .desired_width(f32::INFINITY).desired_rows(8));
-                            if response.changed() { draft.graph.set_style_text(&text); }
+                                .interactive(!compact)
+                                .desired_width(f32::INFINITY).desired_rows(8).show(ui);
+                            if compact {
+                                let open = ui.interact(output.response.rect, output.response.id.with("expand"), Sense::click());
+                                if open.clicked() {
+                                    if let Some(pos) = open.interact_pointer_pos() {
+                                        let cursor = output.galley.cursor_from_pos(pos - output.galley_pos);
+                                        output.state.cursor.set_char_range(Some(egui::text::CCursorRange::one(cursor)));
+                                        output.state.store(ui.ctx(), output.response.id);
+                                    }
+                                    controller.style_panel.expanded = true;
+                                    controller.style_panel.focus_pending = true;
+                                    controller.cancel_editing_title();
+                                    ui.ctx().request_repaint();
+                                }
+                            }
+                            if output.response.changed() { draft.graph.set_style_text(&text); }
                         });
                         ui.separator();
                         ui.weak(tr(language, "Saved styles"));

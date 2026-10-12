@@ -74,7 +74,7 @@ pub enum PromptNodeKind {
     TextSwitch,
     Request {
         #[serde(default)]
-        target: PromptProviderTarget,
+        target: PromptTarget,
         roles: Vec<PromptMessageRole>,
     },
 }
@@ -84,23 +84,25 @@ pub enum PromptNodeKind {
 pub enum PromptNodePage {
     #[default]
     Shared,
-    OpenAiCompatible,
-    Hunyuan,
+    #[serde(alias = "open_ai_compatible")]
+    ChatMessages,
+    #[serde(alias = "hunyuan")]
+    TranslationInstruction,
     AsrInstruction,
     AsrContextBias,
 }
 
 impl PromptNodePage {
-    pub fn for_target(target: PromptProviderTarget) -> Self {
+    pub fn for_target(target: PromptTarget) -> Self {
         match target {
-            PromptProviderTarget::OpenAiCompatible => Self::OpenAiCompatible,
-            PromptProviderTarget::Hunyuan => Self::Hunyuan,
-            PromptProviderTarget::AsrInstruction => Self::AsrInstruction,
-            PromptProviderTarget::AsrContextBias => Self::AsrContextBias,
+            PromptTarget::ChatMessages => Self::ChatMessages,
+            PromptTarget::TranslationInstruction => Self::TranslationInstruction,
+            PromptTarget::AsrInstruction => Self::AsrInstruction,
+            PromptTarget::AsrContextBias => Self::AsrContextBias,
         }
     }
 
-    pub fn is_visible_on(self, target: PromptProviderTarget) -> bool {
+    pub fn is_visible_on(self, target: PromptTarget) -> bool {
         self == Self::Shared || self == Self::for_target(target)
     }
 }
@@ -170,10 +172,12 @@ pub enum PromptCondition {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum PromptProviderTarget {
-    Hunyuan,
+pub enum PromptTarget {
+    #[serde(alias = "hunyuan")]
+    TranslationInstruction,
     #[default]
-    OpenAiCompatible,
+    #[serde(alias = "open_ai_compatible")]
+    ChatMessages,
     AsrInstruction,
     AsrContextBias,
 }
@@ -270,7 +274,7 @@ impl Display for PromptGraphError {
 impl std::error::Error for PromptGraphError {}
 
 impl PromptNodeGraph {
-    pub const CURRENT_SCHEMA_VERSION: u16 = 9;
+    pub const CURRENT_SCHEMA_VERSION: u16 = 10;
     pub const CURRENT_LAYOUT_VERSION: u16 = 9;
     pub const MAX_COMPOSE_INPUT_INDEX: u8 = 9;
 
@@ -399,7 +403,7 @@ impl PromptNodeGraph {
 
     pub fn add_request(
         &mut self,
-        target: PromptProviderTarget,
+        target: PromptTarget,
         roles: Vec<PromptMessageRole>,
         position: [f32; 2],
     ) -> String {
@@ -696,6 +700,12 @@ impl PromptNodeGraph {
     pub(crate) fn migrate_legacy_dataflow(&mut self) {
         let mut changed = false;
         for node in &mut self.nodes {
+            // Rename only old built-in sink labels; retain custom labels and node IDs.
+            if matches!(node.kind, PromptNodeKind::Request { .. })
+                && matches!(node.label.as_str(), "OPENAI REQUEST" | "HUNYUAN REQUEST")
+            {
+                node.label = default_node_label(&node.kind);
+            }
             let migrated = match node.kind.clone() {
                 PromptNodeKind::Variable { variable } => PromptNodeKind::SystemValue {
                     value: variable.into(),
@@ -926,13 +936,13 @@ impl PromptNodeGraph {
             if let PromptNodeKind::Request { target, roles } = &node.kind {
                 if roles.is_empty() || roles.len() > u8::MAX as usize {
                     return Err(PromptGraphError::new(format!(
-                        "provider request {} must contain at least one message",
+                        "delivery request {} must contain at least one message",
                         node.id
                     )));
                 }
                 if node.page != PromptNodePage::for_target(*target) {
                     return Err(PromptGraphError::new(format!(
-                        "provider request {} is assigned to the wrong page",
+                        "delivery request {} is assigned to the wrong page",
                         node.id
                     )));
                 }
@@ -955,7 +965,7 @@ impl PromptNodeGraph {
             }
             if !pages_can_connect(nodes[link.from.as_str()].page, nodes[link.to.as_str()].page) {
                 return Err(PromptGraphError::new(
-                    "prompt link crosses incompatible provider pages",
+                    "prompt link crosses incompatible delivery paths",
                 ));
             }
             if self.output_type(&link.from) != self.input_type(&link.to, link.input) {
@@ -1000,8 +1010,8 @@ impl PromptNodeGraph {
             }
         }
         for target in [
-            PromptProviderTarget::Hunyuan,
-            PromptProviderTarget::OpenAiCompatible,
+            PromptTarget::TranslationInstruction,
+            PromptTarget::ChatMessages,
         ] {
             let outputs = self
                 .nodes
@@ -1012,12 +1022,12 @@ impl PromptNodeGraph {
                 .collect::<Vec<_>>();
             if outputs.is_empty() {
                 return Err(PromptGraphError::new(format!(
-                    "prompt graph has no {target:?} provider request"
+                    "prompt graph has no {target:?} delivery request"
                 )));
             }
             if outputs.len() != 1 {
                 return Err(PromptGraphError::new(format!(
-                    "prompt graph must have exactly one {target:?} provider request"
+                    "prompt graph must have exactly one {target:?} delivery request"
                 )));
             }
             if !outputs
@@ -1030,8 +1040,8 @@ impl PromptNodeGraph {
             }
         }
         for target in [
-            PromptProviderTarget::AsrInstruction,
-            PromptProviderTarget::AsrContextBias,
+            PromptTarget::AsrInstruction,
+            PromptTarget::AsrContextBias,
         ] {
             let outputs = self
                 .nodes
@@ -1042,10 +1052,10 @@ impl PromptNodeGraph {
                 .collect::<Vec<_>>();
             if outputs.len() > 1 {
                 return Err(PromptGraphError::new(format!(
-                    "prompt graph must have at most one {target:?} provider request"
+                    "prompt graph must have at most one {target:?} delivery request"
                 )));
             }
-            if target == PromptProviderTarget::AsrContextBias
+            if target == PromptTarget::AsrContextBias
                 && outputs.iter().any(|output| {
                     !self.has_variable_ancestor(&output.id, PromptVariable::RecognitionContext)
                 })
@@ -1061,8 +1071,8 @@ impl PromptNodeGraph {
     pub fn auto_layout(&mut self) {
         self.auto_layout_shared();
         for page in [
-            PromptNodePage::OpenAiCompatible,
-            PromptNodePage::Hunyuan,
+            PromptNodePage::ChatMessages,
+            PromptNodePage::TranslationInstruction,
             PromptNodePage::AsrInstruction,
             PromptNodePage::AsrContextBias,
         ] {
@@ -1452,13 +1462,13 @@ pub(crate) fn default_node_label(kind: &PromptNodeKind) -> String {
         PromptNodeKind::Switch { condition: None } => "CONDITIONAL SWITCH".into(),
         PromptNodeKind::TextSwitch => "TEXT BRANCH SELECTOR".into(),
         PromptNodeKind::Request { target, .. } => {
-            let provider = match target {
-                PromptProviderTarget::Hunyuan => "HUNYUAN",
-                PromptProviderTarget::OpenAiCompatible => "OPENAI",
-                PromptProviderTarget::AsrInstruction => "ASR PROMPT",
-                PromptProviderTarget::AsrContextBias => "ASR CONTEXT",
+            let delivery = match target {
+                PromptTarget::TranslationInstruction => "TRANSLATION INSTRUCTION",
+                PromptTarget::ChatMessages => "CHAT MESSAGES",
+                PromptTarget::AsrInstruction => "ASR PROMPT",
+                PromptTarget::AsrContextBias => "ASR CONTEXT",
             };
-            format!("{provider} REQUEST")
+            format!("{delivery} REQUEST")
         }
     }
 }

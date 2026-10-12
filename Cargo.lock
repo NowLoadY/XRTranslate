@@ -8715,6 +8715,7 @@ dependencies = [
  "uuid",
  "xrtranslate-download",
  "xrtranslate-engine",
+ "xrtranslate-prompt",
  "zip",
 ]
 

@@ -26,9 +26,9 @@ pub use http::{AsyncHttpClient, HttpRequest, HttpResponse, MultipartBody, Reqwes
 pub use openai::{ChatCompletion, OpenAiCompatibleClient};
 pub use translation::{
     PromptCondition, PromptGraphError, PromptLink, PromptMessage, PromptMessageRole, PromptNode,
-    PromptNodeGraph, PromptNodeKind, PromptProviderTarget, PromptTemplateLibrary,
+    PromptNodeGraph, PromptNodeKind, PromptTarget, PromptTemplateLibrary,
     PromptTemplateProfile, PromptTurn, PromptVariable, SurroundingSource, TranslationAdapter,
-    TranslationOptions, TranslationPromptBlock, TranslationPromptContext, TranslationProvider,
+    TranslationOptions, TranslationPromptBlock, TranslationPromptContext, TranslationPromptProfile,
     TranslationResult, build_translation_messages, is_probable_translation_context_leak,
 };
 pub use tts::{

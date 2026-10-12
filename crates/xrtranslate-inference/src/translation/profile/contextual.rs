@@ -1,5 +1,5 @@
 use serde_json::Value;
-use xrtranslate_prompt::PromptProviderTarget;
+use xrtranslate_prompt::TranslationPromptProfile;
 
 use super::{TranslationProfile, output::clean_contextual};
 use crate::translation::TranslationOptions;
@@ -10,7 +10,7 @@ const TOP_K: u64 = 20;
 const REPEAT_PENALTY: f64 = 1.05;
 
 pub(super) static PROFILE: TranslationProfile = TranslationProfile {
-    target: PromptProviderTarget::Hunyuan,
+    target: TranslationPromptProfile::Contextual.target(),
     graph: super::configured_graph,
     temperature: TEMPERATURE,
     apply_sampling,

@@ -3,6 +3,17 @@
 Prompt composition is a shared domain. Model delivery, runtime context, and UI
 editing use its contracts without maintaining separate prompt implementations.
 
+Translation models declare a shared prompt profile in their local model card or
+remote capabilities (`translation_prompt_profile`). Prompt Studio and inference
+resolve that same declaration. Connector identity only selects the wire format;
+service and model names do not select graph pages.
+
+The graph exposes chat messages and translation-instruction delivery paths, plus
+the existing recognition-mode branches. Both translation paths share the style
+node. Fixed bilingual models retain their training template and do not advertise
+style support. Message wording, context blocks, roles, and ordering remain owned
+by the graph, with transport-only conversions owned by the connector.
+
 ## Ownership
 
 | Owner | Responsibility |
@@ -70,6 +81,10 @@ The shared prompt domain owns schema evolution and built-in defaults. User
 profiles and styles retain authored content through supported normalization.
 Editor layout data does not define prompt behavior, and delivery views do not
 create independent copies of the same graph.
+
+Delivery paths use capability names. Import accepts legacy provider-based names
+and preserves node IDs, authored instructions, styles, and connections. Graph
+creation, import/export, and deletion use the same library.
 
 Concrete prompt wording, node definitions, schema versions, and recovery
 algorithms are maintained with their implementation. See

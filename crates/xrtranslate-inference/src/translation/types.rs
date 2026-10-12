@@ -1,15 +1,6 @@
 use xrtranslate_prompt::{PromptExecutionTrace, PromptNodeGraph, TranslationPromptContext};
 
-/// Prompt style selected for a translation endpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TranslationProvider {
-    /// Direct, context-aware single-message translation prompt.
-    Contextual,
-    /// Concise bilingual prompt with deterministic decoding.
-    Bilingual,
-    /// Generic OpenAI-compatible instruction/messages format (including Groq).
-    OpenAiCompatible,
-}
+pub use xrtranslate_prompt::TranslationPromptProfile;
 
 /// Options that accompany a single source segment.
 #[derive(Debug, Clone, PartialEq)]

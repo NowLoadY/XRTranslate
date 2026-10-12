@@ -4,7 +4,7 @@ mod card;
 use crate::i18n::{UiLanguage, tr};
 use eframe::egui;
 use std::collections::HashSet;
-use xrtranslate_prompt::{PromptProviderTarget, PromptTemplateLibrary, PromptTemplateProfile};
+use xrtranslate_prompt::{TranslationPromptProfile, PromptTemplateLibrary, PromptTemplateProfile};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct StyleSelection {
@@ -68,7 +68,7 @@ fn cards(library: &PromptTemplateLibrary) -> Vec<StyleCard> {
 pub(crate) fn apply(
     library: &PromptTemplateLibrary,
     selection: &StyleSelection,
-    target: PromptProviderTarget,
+    model: TranslationPromptProfile,
 ) -> Result<PromptTemplateProfile, String> {
     let source = library
         .profiles
@@ -86,7 +86,7 @@ pub(crate) fn apply(
     }
     .ok_or("Style no longer exists")?;
     let active = library.active_profile().ok_or("No active prompt graph")?;
-    if !active.graph.style_reaches_target(target) {
+    if !model.supports_style() || !active.graph.style_reaches_target(model.target()) {
         return Err("The current prompt does not support style selection.".into());
     }
     let mut profile = if active.read_only {
@@ -108,12 +108,12 @@ pub(super) fn render(
     library: &PromptTemplateLibrary,
     ui: &mut egui::Ui,
     language: UiLanguage,
-    target: PromptProviderTarget,
+    model: TranslationPromptProfile,
 ) -> Option<StyleSelection> {
     let cards = cards(library);
     let active = library.active_profile();
     let active_text = active.and_then(|profile| profile.graph.style_text());
-    let enabled = active.is_some_and(|profile| profile.graph.style_reaches_target(target));
+    let enabled = model.supports_style() && active.is_some_and(|profile| profile.graph.style_reaches_target(model.target()));
     if !enabled {
         ui.weak(tr(
             language,

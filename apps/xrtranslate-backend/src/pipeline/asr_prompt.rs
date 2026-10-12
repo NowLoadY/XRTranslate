@@ -6,7 +6,7 @@
 use xrtranslate_config::AsrPromptMode;
 use xrtranslate_inference::AsrVocabularyBias;
 use xrtranslate_prompt::{
-    AsrPromptContext, PromptExecutionTrace, PromptNodeGraph, PromptNodeKind, PromptProviderTarget,
+    AsrPromptContext, PromptExecutionTrace, PromptNodeGraph, PromptNodeKind, PromptTarget,
 };
 
 use super::{InferenceFailure, language_name, normalized_code};
@@ -95,17 +95,17 @@ impl AsrPromptPolicy {
 
         let target = match self.mode {
             AsrPromptMode::None => return Ok(delivery),
-            AsrPromptMode::Instruction => PromptProviderTarget::AsrInstruction,
+            AsrPromptMode::Instruction => PromptTarget::AsrInstruction,
             AsrPromptMode::ContextBias if !context.has_recognition_context() => {
                 return Ok(delivery);
             }
-            AsrPromptMode::ContextBias => PromptProviderTarget::AsrContextBias,
+            AsrPromptMode::ContextBias => PromptTarget::AsrContextBias,
         };
         let bounded_context = self
             .context_max_chars
             .map(|limit| context.bounded_recognition_context(limit));
         let render_context = bounded_context.as_ref().unwrap_or(context);
-        if target == PromptProviderTarget::AsrContextBias
+        if target == PromptTarget::AsrContextBias
             && !render_context.has_recognition_context()
         {
             return Ok(delivery);
@@ -150,7 +150,7 @@ impl AsrPromptPolicy {
                 "{target:?} ASR prompt rendered no text"
             )));
         }
-        if target == PromptProviderTarget::AsrContextBias
+        if target == PromptTarget::AsrContextBias
             && self
                 .context_max_chars
                 .is_some_and(|limit| text.chars().count() > limit)
@@ -160,8 +160,8 @@ impl AsrPromptPolicy {
             )));
         }
         match target {
-            PromptProviderTarget::AsrInstruction => delivery.instruction_prompt = Some(text),
-            PromptProviderTarget::AsrContextBias => delivery.context_bias = Some(text),
+            PromptTarget::AsrInstruction => delivery.instruction_prompt = Some(text),
+            PromptTarget::AsrContextBias => delivery.context_bias = Some(text),
             _ => unreachable!("target was selected from ASR-only prompt modes"),
         }
         Ok(delivery)

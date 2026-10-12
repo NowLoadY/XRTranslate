@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 
 use super::GraphBuilder;
 use crate::{
-    PromptGraphError, PromptMessageRole, PromptNodeGraph, PromptNodePage, PromptProviderTarget,
+    PromptGraphError, PromptMessageRole, PromptNodeGraph, PromptNodePage, PromptTarget,
     PromptVariable,
 };
 
@@ -37,10 +37,10 @@ impl PromptNodeGraph {
                 &["bilingual-input"],
             );
             for (id, target) in [
-                ("bilingual-hunyuan-request", PromptProviderTarget::Hunyuan),
+                ("bilingual-hunyuan-request", PromptTarget::TranslationInstruction),
                 (
                     "bilingual-openai-request",
-                    PromptProviderTarget::OpenAiCompatible,
+                    PromptTarget::ChatMessages,
                 ),
             ] {
                 builder.output(id, target, &[(PromptMessageRole::User, "bilingual-prompt")]);

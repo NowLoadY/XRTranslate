@@ -7,6 +7,7 @@ mod builtin;
 mod context;
 mod execution;
 mod library;
+mod profile;
 mod schema;
 mod template;
 mod translation_style;
@@ -19,9 +20,10 @@ pub use execution::{
     PromptExecution, PromptExecutionTrace, PromptMessage, PromptNodeTrace, PromptRender,
 };
 pub use library::{PromptMode, PromptTemplateLibrary, PromptTemplateProfile};
+pub use profile::TranslationPromptProfile;
 pub use schema::{
     PromptCondition, PromptGraphDomain, PromptGraphError, PromptLink, PromptMessageRole,
-    PromptNode, PromptNodeGraph, PromptNodeKind, PromptNodePage, PromptProviderTarget,
+    PromptNode, PromptNodeGraph, PromptNodeKind, PromptNodePage, PromptTarget,
     PromptSystemValue, PromptTextComparison, PromptValueType, PromptVariable, condition_label,
     system_value_label,
 };

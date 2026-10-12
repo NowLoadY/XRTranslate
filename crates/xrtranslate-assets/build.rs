@@ -196,8 +196,9 @@ fn runtime(card: &Value) -> String {
             assert_eq!(capability, "translation");
             assert!(has_role("Weights") && !has_role("MultimodalProjection"));
             let style = match field(value, "prompt_style").as_str().expect("prompt style") {
-                "contextual" => "TranslationPromptStyle::Contextual",
-                "bilingual" => "TranslationPromptStyle::Bilingual",
+                "chat_messages" => "TranslationPromptProfile::ChatMessages",
+                "contextual" => "TranslationPromptProfile::Contextual",
+                "bilingual" => "TranslationPromptProfile::Bilingual",
                 other => panic!("unknown translation prompt style {other}"),
             };
             format!(

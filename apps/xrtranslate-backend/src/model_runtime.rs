@@ -16,14 +16,14 @@ use std::{
 
 use xrtranslate_assets::{
     ModelAssetId, ModelCapability, ModelFileRole, ModelRuntime, ResolvedModelAsset,
-    ResolvedModelAssets, TranslationPromptStyle,
+    ResolvedModelAssets,
 };
 use xrtranslate_config::{
     AppConfig, AsrPromptMode, LocalModelRuntimeConfig, NativeModelRouteConfig,
     NativeRuntimeBackend, NativeRuntimeSelection, ResolvedNativeRuntimeSelection, RuntimeLayout,
 };
 use xrtranslate_inference::{
-    InferenceError, ReqwestClient, TranslationAdapter, TranslationProvider,
+    InferenceError, ReqwestClient, TranslationAdapter,
 };
 use xrtranslate_supervisor::{
     FlashAttention, LlamaServerEndpoint, LlamaServerRole, LlamaServerSpec,
@@ -372,32 +372,17 @@ impl NativeProviderPlan {
         http: ReqwestClient,
     ) -> Result<TranslationAdapter<ReqwestClient>, InferenceError> {
         if self.route.translation.uses_local_runtime() {
-            let runtime = self
-                .assets
-                .active_asset(ModelCapability::Translation)
-                .manifest()
-                .runtime;
-            let provider = match runtime {
-                Some(ModelRuntime::LlamaTextChat {
-                    prompt_style: TranslationPromptStyle::Contextual,
-                    ..
-                }) => TranslationProvider::Contextual,
-                Some(ModelRuntime::LlamaTextChat {
-                    prompt_style: TranslationPromptStyle::Bilingual,
-                    ..
-                }) => TranslationProvider::Bilingual,
-                _ => {
-                    return Err(InferenceError::InvalidConfiguration {
-                        field: "translation.model_asset.runtime",
-                        message: "selected translation model card has no supported runtime".into(),
-                    });
+            let profile = self.route.translation.translation_prompt_profile().map_err(|message| {
+                InferenceError::InvalidConfiguration {
+                    field: "translation.model_asset.runtime",
+                    message,
                 }
-            };
+            })?;
             return TranslationAdapter::new(
                 http,
                 self.translation_url(),
                 self.translation_model_alias(),
-                provider,
+                profile,
             );
         }
         self.translation_profile

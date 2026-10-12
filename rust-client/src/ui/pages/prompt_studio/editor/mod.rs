@@ -16,7 +16,7 @@ use eframe::egui::{
 use std::collections::{HashMap, HashSet};
 use xrtranslate_prompt::{
     PromptCondition, PromptExecutionTrace, PromptGraphDomain, PromptLink, PromptMessageRole,
-    PromptNode, PromptNodeGraph, PromptNodeKind, PromptNodePage, PromptProviderTarget,
+    PromptNode, PromptNodeGraph, PromptNodeKind, PromptNodePage, PromptTarget,
     PromptSystemValue, PromptTemplateLibrary, PromptTemplateProfile, PromptTextComparison,
     PromptVariable, TranslationPromptBlock, compose_input_indexes, condition_label,
     system_value_label,
@@ -41,6 +41,7 @@ type PromptGraphEditorState =
 pub struct NodeTitleEdit {
     pub node_id: String,
     pub text: String,
+    focus_pending: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -55,7 +56,7 @@ pub(crate) struct PromptStudioController {
     title_edit_start_profile: Option<PromptTemplateProfile>,
     text_edit_start_profile: Option<PromptTemplateProfile>,
     editor: PromptGraphEditorState,
-    active_provider: PromptProviderTarget,
+    active_target: PromptTarget,
     branch_filters: HashMap<PromptCondition, Option<bool>>,
     text_branch_filters: HashMap<String, Option<String>>,
     branch_hidden_nodes: HashSet<String>,
@@ -66,14 +67,14 @@ pub(crate) struct PromptStudioController {
 
 impl Default for PromptStudioController {
     fn default() -> Self {
-        Self::for_provider(PromptProviderTarget::OpenAiCompatible)
+        Self::for_target(PromptTarget::ChatMessages)
     }
 }
 
 impl PromptStudioController {
-    pub fn for_provider(active_provider: PromptProviderTarget) -> Self {
+    pub fn for_target(active_target: PromptTarget) -> Self {
         Self {
-            domain: domain_for_target(active_provider),
+            domain: domain_for_target(active_target),
             selected_id: String::new(),
             draft: None,
             dirty: false,
@@ -83,7 +84,7 @@ impl PromptStudioController {
             title_edit_start_profile: None,
             text_edit_start_profile: None,
             editor: PromptGraphEditorState::default(),
-            active_provider,
+            active_target,
             branch_filters: HashMap::new(),
             text_branch_filters: HashMap::new(),
             branch_hidden_nodes: HashSet::new(),
@@ -93,21 +94,22 @@ impl PromptStudioController {
         }
     }
 
-    pub fn sync_provider(&mut self, target: PromptProviderTarget) {
+    pub fn sync_target(&mut self, target: PromptTarget) {
         let domain = domain_for_target(target);
         if self.domain != domain {
             self.switch_domain(domain);
         }
-        self.select_provider(target);
+        self.select_target(target);
     }
 
-    pub fn open_style_panel(
+    pub fn open_editor(
         &mut self,
-        target: PromptProviderTarget,
+        target: PromptTarget,
         library: &PromptTemplateLibrary,
+        compact: bool,
     ) {
-        self.sync_provider(target);
-        self.style_panel.collapsed = false;
+        self.sync_target(target);
+        self.style_panel.collapsed = compact;
         self.select_profile(library.active_id.clone(), library);
     }
 
@@ -184,7 +186,7 @@ impl PromptStudioController {
             return;
         }
         self.domain = domain;
-        self.active_provider = default_target_for_domain(domain);
+        self.active_target = default_target_for_domain(domain);
         self.cleanup_transient_state();
         self.sync_current_branch_filters();
         self.canvas.fit_pending = true;
@@ -209,8 +211,8 @@ impl PromptStudioController {
         self.runtime_trace = trace;
     }
 
-    pub fn active_provider(&self) -> PromptProviderTarget {
-        self.active_provider
+    pub fn active_target(&self) -> PromptTarget {
+        self.active_target
     }
 
     pub fn push_history(&mut self, before: PromptTemplateProfile) {
@@ -261,6 +263,7 @@ impl PromptStudioController {
         self.editing_title = Some(NodeTitleEdit {
             node_id,
             text: initial_text,
+            focus_pending: true,
         });
         self.title_edit_start_profile = Some(before);
     }
@@ -340,11 +343,11 @@ impl PromptStudioController {
         )
     }
 
-    fn select_provider(&mut self, target: PromptProviderTarget) {
-        if self.active_provider == target {
+    fn select_target(&mut self, target: PromptTarget) {
+        if self.active_target == target {
             return;
         }
-        self.active_provider = target;
+        self.active_target = target;
         self.branch_filters.clear();
         self.text_branch_filters.clear();
         self.branch_hidden_nodes.clear();
@@ -355,19 +358,19 @@ impl PromptStudioController {
     }
 
     fn node_is_visible(&self, node: &PromptNode) -> bool {
-        node.page.is_visible_on(self.active_provider)
+        node.page.is_visible_on(self.active_target)
             && !self.branch_hidden_nodes.contains(&node.id)
     }
 
     fn sync_branch_filters(&mut self, graph: &PromptNodeGraph) {
-        let conditions = branch_conditions_on_page(graph, self.active_provider);
+        let conditions = branch_conditions_on_page(graph, self.active_target);
         let available = conditions.iter().copied().collect::<HashSet<_>>();
         self.branch_filters
             .retain(|condition, _| available.contains(condition));
         for condition in conditions {
             self.branch_filters.entry(condition).or_insert(None);
         }
-        let text_sources = text_branch_sources_on_page(graph, self.active_provider);
+        let text_sources = text_branch_sources_on_page(graph, self.active_target);
         self.text_branch_filters
             .retain(|source, _| text_sources.iter().any(|(id, _)| id == source));
         for (source, _) in &text_sources {
@@ -376,10 +379,10 @@ impl PromptStudioController {
                 .or_insert(None);
         }
         self.branch_hidden_nodes =
-            branch_hidden_nodes(graph, self.active_provider, &self.branch_filters);
+            branch_hidden_nodes(graph, self.active_target, &self.branch_filters);
         self.branch_hidden_nodes.extend(text_branch_hidden_nodes(
             graph,
-            self.active_provider,
+            self.active_target,
             &self.text_branch_filters,
         ));
         let hidden = self.branch_hidden_nodes.clone();
@@ -434,7 +437,7 @@ impl PromptStudioController {
     }
 
     fn text_branch_filters(&self, graph: &PromptNodeGraph) -> Vec<(String, String, Vec<String>)> {
-        text_branch_sources_on_page(graph, self.active_provider)
+        text_branch_sources_on_page(graph, self.active_target)
             .into_iter()
             .filter_map(|(source_id, cases)| {
                 let label = graph
@@ -487,7 +490,7 @@ impl std::ops::DerefMut for PromptStudioController {
 
 fn branch_conditions_on_page(
     graph: &PromptNodeGraph,
-    target: PromptProviderTarget,
+    target: PromptTarget,
 ) -> Vec<PromptCondition> {
     let mut seen = HashSet::new();
     graph
@@ -505,7 +508,7 @@ fn branch_conditions_on_page(
 
 fn text_branch_sources_on_page(
     graph: &PromptNodeGraph,
-    target: PromptProviderTarget,
+    target: PromptTarget,
 ) -> Vec<(String, Vec<String>)> {
     let mut sources = Vec::<(String, Vec<String>)>::new();
     for node in graph.nodes.iter().filter(|node| {
@@ -537,7 +540,7 @@ fn text_branch_sources_on_page(
 
 fn text_branch_hidden_nodes(
     graph: &PromptNodeGraph,
-    target: PromptProviderTarget,
+    target: PromptTarget,
     filters: &HashMap<String, Option<String>>,
 ) -> HashSet<String> {
     let mut hidden = HashSet::new();
@@ -589,7 +592,7 @@ fn text_branch_hidden_nodes(
 
 fn branch_hidden_nodes(
     graph: &PromptNodeGraph,
-    target: PromptProviderTarget,
+    target: PromptTarget,
     filters: &HashMap<PromptCondition, Option<bool>>,
 ) -> HashSet<String> {
     let mut hidden = HashSet::new();
@@ -642,7 +645,7 @@ fn branch_hidden_nodes(
 
 fn collect_upstream_ancestors(
     graph: &PromptNodeGraph,
-    target: PromptProviderTarget,
+    target: PromptTarget,
     start: &str,
     ancestors: &mut HashSet<String>,
 ) {
@@ -682,6 +685,9 @@ pub fn render(
     ui.scope(|ui| {
         style::apply(ui);
         let mut actions = Vec::new();
+        if style_panel::render_expanded(controller, ui, language, &mut actions) {
+            return actions;
+        }
         render_heading(snapshot, controller, ui, language, &mut actions);
         ui.add_space(6.0);
         canvas::render_graph_editor(snapshot, controller, ui, language, &mut actions);
@@ -862,10 +868,10 @@ fn compact_positions(
 fn compact_graph(graph: &mut PromptNodeGraph) {
     let mut positions = HashMap::new();
     for target in [
-        PromptProviderTarget::OpenAiCompatible,
-        PromptProviderTarget::Hunyuan,
-        PromptProviderTarget::AsrInstruction,
-        PromptProviderTarget::AsrContextBias,
+        PromptTarget::ChatMessages,
+        PromptTarget::TranslationInstruction,
+        PromptTarget::AsrInstruction,
+        PromptTarget::AsrContextBias,
     ] {
         for (id, position) in compact_positions(graph, |node| node.page.is_visible_on(target)) {
             positions.entry(id).or_insert(position);
@@ -886,8 +892,7 @@ fn presentation_label(label: &str) -> String {
     if let Some(first) = text.get_mut(..1) {
         first.make_ascii_uppercase();
     }
-    text.replace("openai", "OpenAI")
-        .replace("asr", "ASR")
+    text.replace("asr", "ASR")
         .replace("tts", "TTS")
 }
 
@@ -982,21 +987,21 @@ fn new_profile() -> PromptTemplateProfile {
     profile
 }
 
-fn domain_for_target(target: PromptProviderTarget) -> PromptGraphDomain {
+fn domain_for_target(target: PromptTarget) -> PromptGraphDomain {
     match target {
-        PromptProviderTarget::OpenAiCompatible | PromptProviderTarget::Hunyuan => {
+        PromptTarget::ChatMessages | PromptTarget::TranslationInstruction => {
             PromptGraphDomain::Translation
         }
-        PromptProviderTarget::AsrInstruction | PromptProviderTarget::AsrContextBias => {
+        PromptTarget::AsrInstruction | PromptTarget::AsrContextBias => {
             PromptGraphDomain::Asr
         }
     }
 }
 
-fn default_target_for_domain(domain: PromptGraphDomain) -> PromptProviderTarget {
+fn default_target_for_domain(domain: PromptGraphDomain) -> PromptTarget {
     match domain {
-        PromptGraphDomain::Translation => PromptProviderTarget::OpenAiCompatible,
-        PromptGraphDomain::Asr => PromptProviderTarget::AsrInstruction,
+        PromptGraphDomain::Translation => PromptTarget::ChatMessages,
+        PromptGraphDomain::Asr => PromptTarget::AsrInstruction,
     }
 }
 

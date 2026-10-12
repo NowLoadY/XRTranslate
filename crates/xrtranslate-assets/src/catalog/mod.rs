@@ -8,7 +8,7 @@ pub use types::{
     ModelArchiveSource, ModelAssetManifest, ModelAudioOutput, ModelAudioSampleFormat,
     ModelBenchmark, ModelCapability, ModelFileRole, ModelFileSource, ModelHardwareRequirements,
     ModelLevel, ModelRuntime, ModelSource, ModelVoicePreset, RequiredModelFile,
-    TranslationPromptStyle,
+    TranslationPromptProfile,
 };
 
 // All model cards, including download artifacts and language capabilities,

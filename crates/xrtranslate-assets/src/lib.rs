@@ -23,7 +23,7 @@ pub use catalog::{
     ModelFileSource, ModelHardwareRequirements, ModelLevel, ModelRuntime, ModelSource,
     ModelVoicePreset, OPENVOICE_V2_ONNX_FP16, OPENVOICE_V2_ZH_ONNX_FP16, OPENVOICE_V3_ONNX_FP16,
     PADDLE_OCR_VL_16_GGUF, PP_OCRV6_SMALL_ONNX, QWEN3_ASR_06B_Q8_GGUF, QWEN3_ASR_GGUF,
-    RequiredModelFile, SENSEVOICE_SMALL_INT8_ONNX, TranslationPromptStyle, manifest_for,
+    RequiredModelFile, SENSEVOICE_SMALL_INT8_ONNX, TranslationPromptProfile, manifest_for,
     manifests_for_capability, tier_default_manifest,
 };
 pub use install::{

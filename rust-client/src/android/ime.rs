@@ -1,5 +1,5 @@
 //! Keep keyboard occlusion separate from the native drawing surface.
-use eframe::egui::{Context, Id, RawInput, output::IMEOutput};
+use eframe::egui::{Context, Event, Id, PointerButton, RawInput, TouchPhase, output::IMEOutput};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicI32, Ordering},
@@ -42,6 +42,35 @@ pub fn install(ctx: &Context) {
 }
 
 pub fn apply_input(ctx: &Context, input: &mut RawInput) {
+    // winit ends a cancelled touch with PointerGone, but egui deliberately keeps
+    // mouse buttons down on PointerGone. End the emulated press as well, so a
+    // keyboard opening mid-gesture cannot leave the editor selecting forever.
+    if let Some(index) = input.events.windows(2).position(|events| {
+        matches!(
+            events,
+            [
+                Event::Touch {
+                    phase: TouchPhase::Cancel,
+                    ..
+                },
+                Event::PointerGone
+            ]
+        )
+    }) {
+        let Event::Touch { pos, .. } = input.events[index] else {
+            unreachable!()
+        };
+        ctx.stop_dragging();
+        input.events.insert(
+            index + 1,
+            Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: ctx.input(|input| input.modifiers),
+            },
+        );
+    }
     let scale = input.viewport().native_pixels_per_point.unwrap_or(1.0) * ctx.zoom_factor();
     if let Some(rect) = &mut input.screen_rect {
         let bottom = KEYBOARD_BOTTOM.load(Ordering::Acquire).max(0) as f32 / scale;

@@ -177,6 +177,7 @@ pub(crate) fn resolve(
             }
         };
         RemoteCapabilities {
+            translation_prompt_profile: Default::default(),
             streaming: if capability == ModelCapability::Translation {
                 RemoteStreaming::Delta
             } else {

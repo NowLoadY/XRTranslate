@@ -64,13 +64,13 @@ fn default_schema_guide() -> String {
          * Placeholders {0}, {1}, {2}... interpolate outputs from incoming links with input: 0, input: 1, etc.\n\
        - Switch Node: {'type': 'switch'}. Input 0 is BOOL, input 1 is FALSE TEXT, and input 2 is TRUE TEXT.\n\
        - Text Switch Node: {'type': 'text_switch'}. Input 0 is a finite TEXT selector. Its named TEXT sockets are derived from the selector source's possible outputs; never write or cache a 'cases' field.\n\
-       - Request Node: {'type': 'request', 'target': 'open_ai_compatible' | 'hunyuan' | 'asr_instruction' | 'asr_context_bias', 'roles': ['system', 'user']}\n\
+       - Request Node: {'type': 'request', 'target': 'chat_messages' | 'translation_instruction' | 'asr_instruction' | 'asr_context_bias', 'roles': ['system', 'user']}\n\
          * Final output sink. Translation targets carry LLM messages. 'asr_instruction' carries semantic recognition instructions; 'asr_context_bias' carries lexical context only. Weighted vocabulary is structured provider data and is never rendered by this graph.\n\
     2. LINKS (links: Array):\n\
        - {'from': '<source_node_id>', 'to': '<target_node_id>', 'input': <target_slot_index_integer>}\n\
-    3. PROVIDER PAGES:\n\
+    3. DELIVERY PATHS:\n\
        - One graph owns every recognition mode. Connect the recognition_mode System Value directly to a Text Switch; 'ordinary' and 'pseudo_streaming' become its named branches.\n\
-       - Each node belongs to 'page': 'shared', 'open_ai_compatible', 'hunyuan', 'asr_instruction', or 'asr_context_bias'. Shared nodes may feed compatible provider pages; each provider page is a DAG pipeline inside the unified graph."
+       - Each node belongs to 'page': 'shared', 'chat_messages', 'translation_instruction', 'asr_instruction', or 'asr_context_bias'. Shared nodes may feed compatible delivery paths; each path is a DAG pipeline inside the unified graph."
         .into()
 }
 
@@ -451,8 +451,8 @@ fn migrate_shared_nodes(graph: &mut PromptNodeGraph) {
     }
 
     let pages = [
-        PromptNodePage::OpenAiCompatible,
-        PromptNodePage::Hunyuan,
+        PromptNodePage::ChatMessages,
+        PromptNodePage::TranslationInstruction,
         PromptNodePage::AsrInstruction,
         PromptNodePage::AsrContextBias,
     ];
@@ -478,8 +478,8 @@ fn migrate_shared_nodes(graph: &mut PromptNodeGraph) {
             .filter(|node| node.page == PromptNodePage::Shared)
         {
             let prefix = match page {
-                PromptNodePage::OpenAiCompatible => "openai",
-                PromptNodePage::Hunyuan => "hunyuan",
+                PromptNodePage::ChatMessages => "openai",
+                PromptNodePage::TranslationInstruction => "hunyuan",
                 PromptNodePage::AsrInstruction => "asr-instruction",
                 PromptNodePage::AsrContextBias => "asr-context-bias",
                 PromptNodePage::Shared => unreachable!(),
@@ -544,18 +544,18 @@ fn migrate_shared_nodes(graph: &mut PromptNodeGraph) {
 /// Adds the canonical ASR prompt/context pages to translation graphs saved by
 /// older releases without changing their OpenAI or Hunyuan paths.
 fn ensure_asr_pages(graph: &mut PromptNodeGraph) {
-    use crate::{PromptNodeKind, PromptNodePage, PromptProviderTarget};
+    use crate::{PromptNodeKind, PromptNodePage, PromptTarget};
     use std::collections::{HashMap, HashSet};
 
     let canonical = PromptNodeGraph::builtin_default();
     for (page, target) in [
         (
             PromptNodePage::AsrInstruction,
-            PromptProviderTarget::AsrInstruction,
+            PromptTarget::AsrInstruction,
         ),
         (
             PromptNodePage::AsrContextBias,
-            PromptProviderTarget::AsrContextBias,
+            PromptTarget::AsrContextBias,
         ),
     ] {
         let exists = graph.nodes.iter().any(|node| {

@@ -142,7 +142,7 @@ fn parse_validation_error_target(
             };
         }
     }
-    if let Some(rest) = msg.strip_prefix("provider request ") {
+    if let Some(rest) = msg.strip_prefix("delivery request ") {
         let node_id = rest.split_whitespace().next().unwrap_or_default();
         if !node_id.is_empty() {
             return GraphErrorTarget {
@@ -214,7 +214,7 @@ pub(super) fn render_graph_editor(
                 draft = current.clone();
             }
         }
-        render_provider_tabs(controller, ui, language);
+        render_delivery_tabs(controller, ui, language);
         ui.separator();
         if !draft.read_only {
             render_node_toolbar(&mut draft, controller, ui, language);
@@ -333,7 +333,7 @@ pub(super) fn render_graph_editor(
         .then(|| controller.runtime_trace.clone())
         .flatten()
         .filter(|trace| {
-            trace.target == controller.active_provider
+            trace.target == controller.active_target
                 && trace.graph_fingerprint == draft.graph.fingerprint()
         });
     controller.overview_positions = if draft.read_only {
@@ -576,30 +576,57 @@ pub(super) fn render_graph_editor(
     controller.draft = Some(draft);
 }
 
-fn render_provider_tabs(
+fn render_delivery_tabs(
     controller: &mut PromptStudioController,
     ui: &mut egui::Ui,
     language: crate::i18n::UiLanguage,
 ) {
-    let tabs: &[(PromptProviderTarget, &str)] = match controller.domain() {
+    let tabs: &[(PromptTarget, &str)] = match controller.domain() {
         PromptGraphDomain::Translation => &[
-            (PromptProviderTarget::OpenAiCompatible, "OpenAI"),
-            (PromptProviderTarget::Hunyuan, "Hunyuan"),
+            (PromptTarget::ChatMessages, "Chat messages"),
+            (PromptTarget::TranslationInstruction, "Translation instruction"),
         ],
         PromptGraphDomain::Asr => &[
-            (PromptProviderTarget::AsrInstruction, "ASR INSTRUCTION"),
-            (PromptProviderTarget::AsrContextBias, "ASR CONTEXT BIAS"),
+            (PromptTarget::AsrInstruction, "ASR INSTRUCTION"),
+            (PromptTarget::AsrContextBias, "ASR CONTEXT BIAS"),
         ],
     };
+    if ui.ctx().content_rect().width() < 600.0 {
+        let selected = tabs
+            .iter()
+            .find(|(target, _)| *target == controller.active_target)
+            .map_or(tabs[0].1, |(_, label)| *label);
+        crate::ui::components::combobox_ui_with_width(
+            ui,
+            "prompt_delivery_target",
+            crate::i18n::tr(language, selected),
+            Some(160.0),
+            |ui| {
+                for &(target, label) in tabs {
+                    if ui
+                        .selectable_label(
+                            controller.active_target == target,
+                            crate::i18n::tr(language, label),
+                        )
+                        .clicked()
+                    {
+                        controller.select_target(target);
+                        ui.close();
+                    }
+                }
+            },
+        );
+        return;
+    }
     for &(target, label) in tabs {
         if crate::ui::graph_style::tab(
             ui,
             crate::i18n::tr(language, label),
-            controller.active_provider == target,
+            controller.active_target == target,
         )
         .clicked()
         {
-            controller.select_provider(target);
+            controller.select_target(target);
         }
     }
 }
@@ -634,7 +661,7 @@ fn render_branch_filters(
             ui,
             (
                 "prompt_branch_filter",
-                controller.active_provider,
+                controller.active_target,
                 condition,
             ),
             selected_branch_text,
@@ -669,7 +696,7 @@ fn render_branch_filters(
             ui,
             (
                 "prompt_text_branch_filter",
-                controller.active_provider,
+                controller.active_target,
                 &source_id,
             ),
             selected_text_filter,
@@ -768,7 +795,7 @@ fn render_node_menu(
     language: crate::i18n::UiLanguage,
     preferred_center: Option<[f32; 2]>,
 ) {
-    let page = PromptNodePage::for_target(controller.active_provider);
+    let page = PromptNodePage::for_target(controller.active_target);
     ui.menu_button(crate::i18n::tr(language, "Input"), |ui| {
         ui.label(
             RichText::new(crate::i18n::tr(language, "RUNTIME VALUES"))
@@ -932,28 +959,28 @@ fn render_node_menu(
         }
     });
     ui.menu_button(crate::i18n::tr(language, "Request"), |ui| {
-        let target = controller.active_provider;
+        let target = controller.active_target;
         let exists = draft.graph.nodes.iter().any(
             |node| matches!(node.kind, PromptNodeKind::Request { target: value, .. } if value == target),
         );
         let (label, roles) = match target {
-            PromptProviderTarget::OpenAiCompatible => (
-                "OpenAI request",
+            PromptTarget::ChatMessages => (
+                "Chat messages request",
                 vec![PromptMessageRole::System, PromptMessageRole::User],
             ),
-            PromptProviderTarget::Hunyuan => {
-                ("Hunyuan request", vec![PromptMessageRole::User])
+            PromptTarget::TranslationInstruction => {
+                ("Translation instruction request", vec![PromptMessageRole::User])
             }
-            PromptProviderTarget::AsrInstruction => {
+            PromptTarget::AsrInstruction => {
                 ("ASR prompt request", vec![PromptMessageRole::System])
             }
-            PromptProviderTarget::AsrContextBias => {
+            PromptTarget::AsrContextBias => {
                 ("ASR context request", vec![PromptMessageRole::User])
             }
         };
         if ui
             .add_enabled(!exists, egui::Button::new(crate::i18n::tr(language, label)))
-            .on_disabled_hover_text(crate::i18n::tr(language, "This provider page already has its API request"))
+            .on_disabled_hover_text(crate::i18n::tr(language, "This delivery path already has its request"))
             .clicked()
         {
             let position = node_add_position(controller, &draft.graph, preferred_center);
@@ -1405,12 +1432,15 @@ fn draw_node(
             let edit_response = ui.put(
                 title_rect,
                 egui::TextEdit::singleline(&mut edit.text)
+                    .id(ui.make_persistent_id(("prompt_node_title", &node.id)))
                     .font(egui::FontId::proportional(title_font_size))
                     .text_color(style::NODE_TEXT)
                     .desired_width(title_width)
                     .frame(egui::Frame::NONE),
             );
-            edit_response.request_focus();
+            if std::mem::take(&mut edit.focus_pending) {
+                edit_response.request_focus();
+            }
 
             let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
             let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));

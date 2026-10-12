@@ -102,7 +102,7 @@ use session_coordinator::{
     TranslationSessionPlugin,
 };
 use ui::{NavigationState, Page};
-use xrtranslate_prompt::{PromptExecutionTrace, PromptProviderTarget, PromptTemplateLibrary};
+use xrtranslate_prompt::{PromptExecutionTrace, PromptTarget, PromptTemplateLibrary};
 use xrtranslate_protocol::PromptGraphSet;
 
 use session_coordinator::{TranslationInput, TranslationTask};
@@ -1736,7 +1736,7 @@ impl Default for XRTranslateApp {
             })
             .expect("failed to spawn session-event-pump thread");
 
-        let prompt_provider = service_config.translation_prompt_target();
+        let prompt_provider = service_config.translation_prompt_profile().target();
         let mut app = Self {
             pending_file_dialogs: Vec::new(),
             audio_system,
@@ -1824,7 +1824,7 @@ impl Default for XRTranslateApp {
             backend_start_deadline: None,
             settings_section: ui::pages::settings::SettingsSection::default(),
             prompt_library: settings.prompt_library,
-            prompt_studio: ui::pages::prompt_studio::PromptStudioController::for_provider(
+            prompt_studio: ui::pages::prompt_studio::PromptStudioController::for_target(
                 prompt_provider,
             ),
             corpus_studio: ui::pages::corpus_studio::CorpusStudioController::default(),
@@ -2068,7 +2068,7 @@ impl XRTranslateApp {
                     match ui::pages::prompt_studio::selected_style_profile(
                         &self.prompt_library,
                         &selection,
-                        self.service_config.translation_prompt_target(),
+                        self.service_config.translation_prompt_profile(),
                     ) {
                         Ok(profile) => {
                             let id = profile.id.clone();
@@ -5280,11 +5280,11 @@ impl XRTranslateApp {
             }
             self.tts_runtime_backend = state.tts_runtime_backend.clone();
             self.tts_runtime_cuda_version = state.tts_runtime_cuda_version.clone();
-            let prompt_trace = match self.prompt_studio.active_provider() {
-                PromptProviderTarget::AsrInstruction | PromptProviderTarget::AsrContextBias => {
+            let prompt_trace = match self.prompt_studio.active_target() {
+                PromptTarget::AsrInstruction | PromptTarget::AsrContextBias => {
                     state.latest_asr_prompt_trace.clone()
                 }
-                PromptProviderTarget::Hunyuan | PromptProviderTarget::OpenAiCompatible => {
+                PromptTarget::TranslationInstruction | PromptTarget::ChatMessages => {
                     state.latest_translation_prompt_trace.clone()
                 }
             };
@@ -5846,7 +5846,7 @@ impl eframe::App for XRTranslateApp {
                                 &mut self.prompt_studio,
                                 ui,
                                 self.ui_language,
-                                self.service_config.translation_prompt_target(),
+                                self.service_config.translation_prompt_profile(),
                                 self.update_channel == client_settings::UpdateChannel::Beta,
                                 &project_root,
                             );

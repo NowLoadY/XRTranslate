@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::context::render_block;
 use crate::{
     AsrPromptContext, PromptCondition, PromptGraphError, PromptMessageRole, PromptMode,
-    PromptNodeGraph, PromptNodeKind, PromptProviderTarget, PromptSystemValue, PromptTextComparison,
+    PromptNodeGraph, PromptNodeKind, PromptTarget, PromptSystemValue, PromptTextComparison,
     PromptVariable, TranslationPromptContext,
 };
 
@@ -28,7 +28,7 @@ pub struct PromptExecution {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptExecutionTrace {
-    pub target: PromptProviderTarget,
+    pub target: PromptTarget,
     #[serde(default)]
     pub graph_fingerprint: String,
     pub nodes: Vec<PromptNodeTrace>,
@@ -148,7 +148,7 @@ fn compare_text(
 impl PromptNodeGraph {
     pub fn render(
         &self,
-        target: PromptProviderTarget,
+        target: PromptTarget,
         source_text: &str,
         source_language: &str,
         target_language: &str,
@@ -166,7 +166,7 @@ impl PromptNodeGraph {
 
     pub fn render_with_trace(
         &self,
-        target: PromptProviderTarget,
+        target: PromptTarget,
         source_text: &str,
         source_language: &str,
         target_language: &str,
@@ -189,14 +189,14 @@ impl PromptNodeGraph {
     /// graph's fixed recognition instruction remains useful.
     pub fn render_asr_with_trace(
         &self,
-        target: PromptProviderTarget,
+        target: PromptTarget,
         source_language: &str,
         expected_languages: &str,
         context: &AsrPromptContext,
     ) -> Result<PromptExecution, PromptGraphError> {
         if !matches!(
             target,
-            PromptProviderTarget::AsrInstruction | PromptProviderTarget::AsrContextBias
+            PromptTarget::AsrInstruction | PromptTarget::AsrContextBias
         ) {
             return Err(PromptGraphError::new(
                 "ASR rendering requires an ASR provider target",
@@ -222,7 +222,7 @@ impl PromptNodeGraph {
     #[allow(clippy::too_many_arguments)]
     fn render_with_trace_internal(
         &self,
-        target: PromptProviderTarget,
+        target: PromptTarget,
         source_text: &str,
         source_language: &str,
         target_language: &str,
@@ -257,7 +257,7 @@ impl PromptNodeGraph {
             .find(|node| {
                 matches!(node.kind, PromptNodeKind::Request { target: value, .. } if value == target)
             })
-            .ok_or_else(|| PromptGraphError::new("provider request is missing"))?;
+            .ok_or_else(|| PromptGraphError::new("delivery request is missing"))?;
         let PromptNodeKind::Request { roles, .. } = &request.kind else {
             unreachable!();
         };
@@ -270,19 +270,19 @@ impl PromptNodeGraph {
                 .links
                 .iter()
                 .find(|link| link.to == request.id && usize::from(link.input) == input)
-                .ok_or_else(|| PromptGraphError::new("provider request input is not connected"))?;
+                .ok_or_else(|| PromptGraphError::new("delivery request input is not connected"))?;
             let mut visiting = HashSet::new();
             let Some(ExecutionValue::Text(content)) =
                 self.evaluate(&link.from, &context, &mut cache, &mut traced, &mut visiting)
             else {
                 return Err(PromptGraphError::new(format!(
-                    "provider request {} message {input} has no content",
+                    "delivery request {} message {input} has no content",
                     request.id
                 )));
             };
             if content.trim().is_empty() {
                 return Err(PromptGraphError::new(format!(
-                    "provider request {} message {input} is empty",
+                    "delivery request {} message {input} is empty",
                     request.id
                 )));
             }
@@ -315,7 +315,7 @@ impl PromptNodeGraph {
         })
     }
 
-    pub fn compose_preview(&self, target: PromptProviderTarget) -> Option<PromptRender> {
+    pub fn compose_preview(&self, target: PromptTarget) -> Option<PromptRender> {
         let request = self
             .nodes
             .iter()

@@ -123,6 +123,7 @@ impl AsrResponseFormat {
 #[serde(default, deny_unknown_fields)]
 pub struct RemoteCapabilities {
     pub streaming: RemoteStreaming,
+    pub translation_prompt_profile: crate::TranslationPromptProfile,
     pub supports_context: bool,
     pub asr_prompt_mode: AsrPromptMode,
     /// Override the transcription connector's optional language parameter.

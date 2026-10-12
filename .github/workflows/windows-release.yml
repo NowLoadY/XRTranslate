@@ -7,6 +7,10 @@ on:
         description: Existing release tag, for example v0.3.3
         required: true
         type: string
+      source_commit:
+        description: Optional full commit SHA to rebuild this release; otherwise use the tag
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -24,6 +28,7 @@ jobs:
         shell: pwsh
     env:
       RELEASE_TAG: ${{ inputs.tag }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
       RUSTUP_TOOLCHAIN: 1.95.0-x86_64-pc-windows-msvc
       CARGO_TERM_COLOR: always
 
@@ -35,15 +40,18 @@ jobs:
           if ($env:RELEASE_TAG -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
             throw 'Tag must be a Cargo version prefixed with v, for example v0.3.3.'
           }
+          if ($env:SOURCE_COMMIT -and $env:SOURCE_COMMIT -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'Source commit must be a full lowercase Git commit SHA.'
+          }
           $releaseTag = & gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json tagName --jq .tagName
           if ($LASTEXITCODE -ne 0 -or $releaseTag -cne $env:RELEASE_TAG) {
             throw "Create the tag and its GitHub Release before dispatching: $env:RELEASE_TAG"
           }
 
-      - name: Check out the release and pinned submodules
+      - name: Check out the source and pinned submodules
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: ${{ inputs.source_commit || format('refs/tags/{0}', inputs.tag) }}
           submodules: recursive
           persist-credentials: false
 
@@ -58,15 +66,19 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not $visualStudio) { throw 'Visual Studio 2022 C++ tools are required.' }
           Write-Host "Using Visual Studio 2022: $visualStudio"
 
-      - name: Verify tag, Cargo version and submodule revisions
+      - name: Verify source, Cargo version and submodule revisions
         run: |
-          $tagCommit = & git rev-parse "$env:RELEASE_TAG^{commit}"
-          if ($LASTEXITCODE -ne 0) { throw 'The requested tag is missing.' }
+          $expectedCommit = $env:SOURCE_COMMIT
+          if (-not $expectedCommit) {
+            $expectedCommit = & git rev-parse "$env:RELEASE_TAG^{commit}"
+            if ($LASTEXITCODE -ne 0) { throw 'The requested tag is missing.' }
+          }
           $headCommit = & git rev-parse HEAD
-          if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $headCommit) { throw 'Checkout does not match the requested tag.' }
+          if ($LASTEXITCODE -ne 0 -or $expectedCommit -cne $headCommit) { throw 'Checkout does not match the requested source.' }
+          Write-Host "Building $env:RELEASE_TAG from $headCommit"
           $submodules = & git submodule status --recursive
           if ($LASTEXITCODE -ne 0 -or @($submodules | Where-Object { $_ -match '^[+U-]' }).Count -gt 0) {
-            throw 'Submodules must be initialized at the exact revisions recorded by the tag.'
+            throw 'Submodules must be initialized at the exact revisions recorded by the source.'
           }
           $metadata = & cargo metadata --locked --no-deps --format-version 1
           if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata validation failed.' }

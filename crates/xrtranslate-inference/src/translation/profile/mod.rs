@@ -1,22 +1,22 @@
 mod bilingual;
 mod contextual;
-mod openai_compatible;
+mod chat_messages;
 mod output;
 
 use serde_json::{Value, json};
 use xrtranslate_prompt::{
-    PromptExecutionTrace, PromptMessage, PromptMessageRole, PromptNodeGraph, PromptProviderTarget,
+    PromptExecutionTrace, PromptMessage, PromptMessageRole, PromptNodeGraph, PromptTarget,
 };
 
 use crate::InferenceError;
 
-use super::{TranslationOptions, TranslationProvider};
+use super::{TranslationOptions, TranslationPromptProfile};
 
 pub use output::is_probable_translation_context_leak;
 pub(super) use output::translation_output_rejection;
 
 pub(super) struct TranslationProfile {
-    target: PromptProviderTarget,
+    target: PromptTarget,
     graph: fn(&TranslationOptions) -> Result<&PromptNodeGraph, InferenceError>,
     temperature: f64,
     apply_sampling: fn(&mut Value, &TranslationOptions),
@@ -45,16 +45,16 @@ impl TranslationProfile {
     }
 }
 
-pub(super) fn registered(provider: TranslationProvider) -> &'static TranslationProfile {
+pub(super) fn registered(provider: TranslationPromptProfile) -> &'static TranslationProfile {
     match provider {
-        TranslationProvider::Contextual => &contextual::PROFILE,
-        TranslationProvider::Bilingual => &bilingual::PROFILE,
-        TranslationProvider::OpenAiCompatible => &openai_compatible::PROFILE,
+        TranslationPromptProfile::Contextual => &contextual::PROFILE,
+        TranslationPromptProfile::Bilingual => &bilingual::PROFILE,
+        TranslationPromptProfile::ChatMessages => &chat_messages::PROFILE,
     }
 }
 
 pub fn build_translation_messages(
-    provider: TranslationProvider,
+    provider: TranslationPromptProfile,
     source_text: &str,
     options: &TranslationOptions,
 ) -> Result<Value, InferenceError> {
@@ -93,7 +93,7 @@ fn configured_graph(options: &TranslationOptions) -> Result<&PromptNodeGraph, In
 
 fn render_prompt(
     graph: &PromptNodeGraph,
-    target: PromptProviderTarget,
+    target: PromptTarget,
     source_text: &str,
     options: &TranslationOptions,
 ) -> Result<RenderedTranslationPrompt, InferenceError> {

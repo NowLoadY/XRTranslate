@@ -4,6 +4,8 @@ mod style_picker;
 
 pub(crate) use editor::PromptStudioController;
 pub(crate) use editor::access::editor_enabled;
+#[cfg(target_os = "android")]
+pub(crate) use editor::access::unlock_editor;
 pub(crate) use style_picker::apply as selected_style_profile;
 
 use crate::i18n::{UiLanguage, tr};
@@ -13,7 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 use xrtranslate_prompt::{
-    PromptGraphDomain, PromptProviderTarget, PromptTemplateLibrary, PromptTemplateProfile,
+    PromptGraphDomain, TranslationPromptProfile, PromptTemplateLibrary, PromptTemplateProfile,
 };
 
 #[derive(Clone, Debug)]
@@ -67,7 +69,7 @@ pub(crate) fn render(
     controller: &mut PromptStudioController,
     ui: &mut egui::Ui,
     language: UiLanguage,
-    target: PromptProviderTarget,
+    profile: TranslationPromptProfile,
     beta: bool,
     project_root: &Path,
 ) -> Vec<PromptStudioAction> {
@@ -92,6 +94,7 @@ pub(crate) fn render(
     }
 
     let mut actions = Vec::new();
+    let compact = ui.available_width() < 600.0;
     if state.editor_open {
         if crate::ui::components::back_button(ui, tr(language, "Back to styles")).clicked() {
             let snapshot = controller.snapshot(library);
@@ -107,7 +110,7 @@ pub(crate) fn render(
                         .clicked()
                         && editor_enabled(beta, project_root)
                     {
-                        controller.open_style_panel(target, library);
+                        controller.open_editor(profile.target(), library, compact);
                         state.editor_open = true;
                     }
                 });
@@ -118,7 +121,7 @@ pub(crate) fn render(
     if state.editor_open {
         let snapshot = controller.snapshot(library);
         actions.extend(editor::render(&snapshot, controller, ui, language));
-    } else if let Some(selection) = style_picker::render(library, ui, language, target) {
+    } else if let Some(selection) = style_picker::render(library, ui, language, profile) {
         actions.push(PromptStudioAction::SelectStyle(selection));
     }
     ui.ctx()

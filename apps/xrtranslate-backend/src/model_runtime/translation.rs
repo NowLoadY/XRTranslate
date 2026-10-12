@@ -1,9 +1,7 @@
 //! Translation registration depends on wire format, never service identity.
 use xrtranslate_assets::{ModelCapability, manifests_for_capability, remote::RemoteConnector};
 use xrtranslate_config::NativeProviderConfig;
-use xrtranslate_inference::{
-    InferenceError, ReqwestClient, TranslationAdapter, TranslationProvider,
-};
+use xrtranslate_inference::{InferenceError, ReqwestClient, TranslationAdapter};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TranslationProfile {
@@ -37,7 +35,12 @@ impl TranslationProfile {
             http,
             &config.url,
             &config.model,
-            TranslationProvider::OpenAiCompatible,
+            config.translation_prompt_profile().map_err(|message| {
+                InferenceError::InvalidConfiguration {
+                    field: "translation.capabilities",
+                    message,
+                }
+            })?,
             config.api_key.as_deref().unwrap_or_default(),
         )?;
         Ok(adapter.with_remote_capabilities(&config.capabilities))

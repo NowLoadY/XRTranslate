@@ -2,7 +2,7 @@ mod bilingual;
 
 use crate::{
     PromptCondition, PromptLink, PromptMessageRole, PromptNode, PromptNodeGraph, PromptNodeKind,
-    PromptNodePage, PromptProviderTarget, PromptSystemValue, PromptVariable,
+    PromptNodePage, PromptTarget, PromptSystemValue, PromptVariable,
     TranslationPromptBlock,
 };
 
@@ -43,8 +43,8 @@ impl PromptNodeGraph {
 
     pub(crate) fn builtin_ordinary() -> Self {
         let mut builder = GraphBuilder::default();
-        builder.build_openai_flow();
-        builder.build_hunyuan_flow();
+        builder.build_chat_messages_flow();
+        builder.build_translation_instruction_flow();
         builder.build_asr_instruction_flow();
         builder.build_asr_context_bias_flow();
         let mut graph = builder.finish();
@@ -198,7 +198,7 @@ impl PromptNodeGraph {
 
     /// Promotes two complete legacy mode graphs into one graph without
     /// assuming built-in node IDs. Each pseudo-streaming DAG is namespaced and
-    /// selected immediately before the matching provider request.
+    /// selected immediately before the matching delivery request.
     pub fn merge_complete_mode_graphs(mut ordinary: Self, pseudo_streaming: &Self) -> Self {
         use std::collections::{HashMap, HashSet};
 
@@ -465,8 +465,8 @@ fn ensure_recognition_mode_value(graph: &mut PromptNodeGraph) -> String {
 fn page_id(page: PromptNodePage) -> &'static str {
     match page {
         PromptNodePage::Shared => "shared",
-        PromptNodePage::OpenAiCompatible => "openai",
-        PromptNodePage::Hunyuan => "hunyuan",
+        PromptNodePage::ChatMessages => "openai",
+        PromptNodePage::TranslationInstruction => "hunyuan",
         PromptNodePage::AsrInstruction => "asr-instruction",
         PromptNodePage::AsrContextBias => "asr-context-bias",
     }
@@ -577,8 +577,8 @@ struct GraphBuilder {
 }
 
 impl GraphBuilder {
-    fn build_openai_flow(&mut self) {
-        let page = PromptNodePage::OpenAiCompatible;
+    fn build_chat_messages_flow(&mut self) {
+        let page = PromptNodePage::ChatMessages;
         self.variable(
             "openai-source-language",
             page,
@@ -738,7 +738,7 @@ impl GraphBuilder {
         );
         self.output(
             "openai-request",
-            PromptProviderTarget::OpenAiCompatible,
+            PromptTarget::ChatMessages,
             &[
                 (PromptMessageRole::System, "openai-system"),
                 (PromptMessageRole::User, "openai-user"),
@@ -746,8 +746,8 @@ impl GraphBuilder {
         );
     }
 
-    fn build_hunyuan_flow(&mut self) {
-        let page = PromptNodePage::Hunyuan;
+    fn build_translation_instruction_flow(&mut self) {
+        let page = PromptNodePage::TranslationInstruction;
         self.variable(
             "hunyuan-source-language",
             page,
@@ -893,7 +893,7 @@ impl GraphBuilder {
         );
         self.output(
             "hunyuan-request",
-            PromptProviderTarget::Hunyuan,
+            PromptTarget::TranslationInstruction,
             &[(PromptMessageRole::User, "hunyuan-user")],
         );
     }
@@ -964,7 +964,7 @@ impl GraphBuilder {
         );
         self.output(
             "asr-instruction-request",
-            PromptProviderTarget::AsrInstruction,
+            PromptTarget::AsrInstruction,
             &[(PromptMessageRole::System, "asr-instruction-prompt")],
         );
     }
@@ -978,7 +978,7 @@ impl GraphBuilder {
         );
         self.output(
             "asr-context-bias-request",
-            PromptProviderTarget::AsrContextBias,
+            PromptTarget::AsrContextBias,
             &[(PromptMessageRole::User, "asr-context-bias-terms")],
         );
     }
@@ -1084,7 +1084,7 @@ impl GraphBuilder {
     fn output(
         &mut self,
         id: &str,
-        target: PromptProviderTarget,
+        target: PromptTarget,
         messages: &[(PromptMessageRole, &str)],
     ) {
         self.nodes.push(PromptNode {

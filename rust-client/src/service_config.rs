@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 use std::path::PathBuf;
-use xrtranslate_prompt::PromptProviderTarget;
+use xrtranslate_prompt::TranslationPromptProfile;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum JsonFieldKind {
@@ -63,6 +63,7 @@ pub struct ServiceConfigEditor {
     dirty: bool,
     message: Option<String>,
     onboarding_save_error: Option<String>,
+    prompt_profile: std::sync::OnceLock<TranslationPromptProfile>,
     language_capabilities:
         std::sync::OnceLock<Result<xrtranslate_engine::language::LanguageCapabilities, String>>,
 }
@@ -78,6 +79,7 @@ impl ServiceConfigEditor {
             message: None,
             onboarding_save_error: None,
             language_capabilities: Default::default(),
+            prompt_profile: Default::default(),
         };
         if let Err(error) = editor.reload() {
             editor.message = Some(error);
@@ -87,6 +89,7 @@ impl ServiceConfigEditor {
 
     pub fn reload(&mut self) -> Result<(), String> {
         self.language_capabilities.take();
+        self.prompt_profile.take();
         self.document = xrtranslate_config::load_user_config_document(&self.path, &project_root())
             .map_err(|error| format!("Cannot read {}: {error}", self.path.display()))?;
         self.categories = [
@@ -105,27 +108,14 @@ impl ServiceConfigEditor {
         Ok(())
     }
 
-    pub fn translation_prompt_target(&self) -> PromptProviderTarget {
-        let Some(category) = self
-            .categories
-            .iter()
-            .find(|category| category.key == "translation")
-        else {
-            return PromptProviderTarget::Hunyuan;
-        };
-        let transport = category
-            .providers
-            .iter()
-            .find(|provider| provider.name == category.selected_provider)
-            .and_then(|provider| {
-                provider
-                    .fields
-                    .iter()
-                    .find(|field| field.name == "transport")
-            })
-            .map(|field| field.value.as_str())
-            .unwrap_or("local");
-        prompt_target_for_translation_provider(&category.selected_provider, transport)
+    pub fn translation_prompt_profile(&self) -> TranslationPromptProfile {
+        *self.prompt_profile.get_or_init(|| {
+            xrtranslate_config::AppConfig::from_value(self.document.clone())
+                .ok()
+                .and_then(|config| config.native_model_route().ok())
+                .and_then(|route| route.translation.translation_prompt_profile().ok())
+                .unwrap_or_default()
+        })
     }
 
     pub(crate) fn language_capabilities(
@@ -546,6 +536,7 @@ impl ServiceConfigEditor {
 
     fn save(&mut self) -> Result<(), String> {
         self.language_capabilities.take();
+        self.prompt_profile.take();
         Self::sync_categories(&mut self.document, &self.categories)?;
         let parsed = xrtranslate_config::AppConfig::from_value(self.document.clone())
             .map_err(|error| format!("Invalid configuration: {error}"))?;
@@ -566,6 +557,7 @@ impl ServiceConfigEditor {
 
     fn save_draft(&mut self) -> Result<(), String> {
         self.language_capabilities.take();
+        self.prompt_profile.take();
         Self::sync_categories(&mut self.document, &self.categories)?;
         xrtranslate_config::save_user_config_document(&self.path, &project_root(), &self.document)?;
         self.dirty = false;
@@ -641,14 +633,6 @@ pub fn provider_display_label(name: &str, language: crate::i18n::UiLanguage) -> 
         "qwen" => crate::i18n::tr(language, "qwen (China Mainland)").to_owned(),
         "qwen-intl" => crate::i18n::tr(language, "qwen (International)").to_owned(),
         other => other.to_owned(),
-    }
-}
-
-fn prompt_target_for_translation_provider(provider: &str, transport: &str) -> PromptProviderTarget {
-    if provider.trim() == "hunyuan" && transport.trim() != "openai" {
-        PromptProviderTarget::Hunyuan
-    } else {
-        PromptProviderTarget::OpenAiCompatible
     }
 }
 

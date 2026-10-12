@@ -109,12 +109,7 @@ pub enum AsrPromptStyle {
     QwenAsr,
 }
 
-/// Prompt and decoding contract for a text chat translation model.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-pub enum TranslationPromptStyle {
-    Contextual,
-    Bilingual,
-}
+pub use xrtranslate_prompt::TranslationPromptProfile;
 
 /// Executable interface selected by the model card, independent of its name.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -137,7 +132,7 @@ pub enum ModelRuntime {
     },
     LlamaTextChat {
         model_alias: &'static str,
-        prompt_style: TranslationPromptStyle,
+        prompt_style: TranslationPromptProfile,
         flash_attention: bool,
         allow_reference_context: bool,
         extra_args: &'static [&'static str],

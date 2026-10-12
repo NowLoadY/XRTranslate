@@ -6,10 +6,12 @@ tags does not start a release build.
 
 Create and push a tag such as `v0.3.3`, matching `workspace.package.version` in
 `Cargo.toml`, and create its GitHub Release with the intended release notes.
-The tag must include the current `build_release.ps1`; its recorded XR-Corpus
-submodule commit must also be available on GitHub. Then run the workflow from
-`main` and enter that existing tag. The workflow checks out the tag and the
-exact submodule revisions it records.
+Run the workflow from `main` and enter that existing tag. Leave `source_commit`
+empty to build the tag, or enter a full commit SHA to replace an existing
+Release's Windows package with that source revision. The source must match the
+Release's version and include `build_release.ps1`; its recorded XR-Corpus
+submodule commit must also be available on GitHub. The workflow checks out
+the selected source and its exact submodule revisions.
 
 The Windows 2022 runner uses Visual Studio 2022 and Rust 1.95.0. It invokes the
 same default build as a local Windows release:
@@ -32,7 +34,6 @@ health/version and seeded vocabulary graph through local HTTP requests. The
 smoke test uses a temporary configuration and database outside the package,
 then stops its service. It does not test GPU models or full speech inference.
 
-Rerun the workflow with the same tag to replace only the identically named
-Windows ZIP. Runs for the same tag are serialized without cancelling an active
-build. Changes to source or build inputs require a new tag; do not move an
-already published tag to rebuild different code.
+Rerunning replaces only the identically named Windows ZIP. Runs for the same
+Release are serialized without cancelling an active build. The workflow logs
+the exact source commit and leaves the published tag unchanged.

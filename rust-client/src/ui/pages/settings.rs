@@ -1,6 +1,8 @@
 use crate::ui::components::{self, SubNavItem, section, sub_sidebar};
 use eframe::egui;
 mod avatar;
+#[cfg(target_os = "android")]
+mod prompt_unlock;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Default)]
 pub enum SettingsSection {
@@ -597,7 +599,7 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 
     let language = app.ui_language;
     let mut beta_enabled = app.update_channel == UpdateChannel::Beta;
-    if components::checkbox(
+    let beta_response = components::checkbox(
         ui,
         &mut beta_enabled,
         crate::i18n::tr(language, "Receive beta updates"),
@@ -605,15 +607,16 @@ fn render_update_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     .on_hover_text(crate::i18n::tr(
         language,
         "Include prerelease builds. Beta builds can still update to stable releases.",
-    ))
-    .changed()
-    {
+    ));
+    if beta_response.changed() {
         app.set_update_channel(if beta_enabled {
             UpdateChannel::Beta
         } else {
             UpdateChannel::Stable
         });
     }
+    #[cfg(target_os = "android")]
+    prompt_unlock::observe(&beta_response, beta_enabled, &app.project_root());
     ui.add_space(8.0);
     ui.horizontal_wrapped(|ui| {
         ui.label(

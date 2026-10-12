@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 use xrtranslate_engine::language::SupportedLanguage;
-use xrtranslate_prompt::{PromptNodeGraph, PromptProviderTarget};
+use xrtranslate_prompt::{PromptNodeGraph, TranslationPromptProfile};
 
 use super::{TranslationProfile, output::clean_openai_compatible};
 use crate::InferenceError;
@@ -8,7 +8,7 @@ use crate::translation::TranslationOptions;
 
 // Match the checkpoint's sentence-only training template and greedy decoding.
 pub(super) static PROFILE: TranslationProfile = TranslationProfile {
-    target: PromptProviderTarget::Hunyuan,
+    target: TranslationPromptProfile::Bilingual.target(),
     graph,
     temperature: 0.0,
     apply_sampling,

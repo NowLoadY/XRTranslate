@@ -6,6 +6,7 @@ use crate::event::{self, ElementState, Ime, WindowEvent};
 #[derive(Default)]
 pub(super) struct State {
     allowed: bool,
+    visibility_request: Option<bool>,
     committed: String,
     preedit: String,
     pub events: Vec<WindowEvent>,
@@ -19,12 +20,17 @@ impl State {
         self.clear_preedit();
         self.committed.clear();
         self.allowed = allowed;
+        self.visibility_request = Some(allowed);
         self.events.push(WindowEvent::Ime(if allowed {
             Ime::Enabled
         } else {
             Ime::Disabled
         }));
         true
+    }
+
+    pub fn take_visibility_request(&mut self) -> Option<bool> {
+        self.visibility_request.take()
     }
 
     pub fn text(&mut self, state: &TextInputState) {

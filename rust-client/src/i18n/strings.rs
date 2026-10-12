@@ -3679,6 +3679,10 @@ pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "고정 텍스트와 연결된 {0}-{4} 입력 슬롯 배치",
         "Расположить фиксированный текст и подключённые входы {0}–{4}",
     ),
+    ("Chat messages", "对话消息", "チャットメッセージ", "대화 메시지", "Сообщения чата"),
+    ("Translation instruction", "翻译指令", "翻訳指示", "번역 지시", "Инструкция перевода"),
+    ("Chat messages request", "对话消息请求", "チャットメッセージ要求", "대화 메시지 요청", "Запрос сообщений чата"),
+    ("Translation instruction request", "翻译指令请求", "翻訳指示要求", "번역 지시 요청", "Запрос инструкции перевода"),
     ("Request", "请求", "リクエスト", "요청", "Запрос"),
     (
         "OpenAI request",
@@ -3695,8 +3699,8 @@ pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Запрос Hunyuan",
     ),
     (
-        "This provider page already has its API request",
-        "此 Provider 页面已有 API 请求节点",
+        "This delivery path already has its request",
+        "此消息路径已有请求节点",
         "このプロバイダーページには既にAPIリクエストがあります",
         "이 공급자 페이지에는 이미 API 요청이 있습니다",
         "На странице этого провайдера уже есть API-запрос",

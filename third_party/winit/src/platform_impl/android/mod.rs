@@ -385,6 +385,19 @@ impl<T: 'static> EventLoop<T> {
             }
         }
 
+        // Frameworks reset composition by disabling and enabling IME in one
+        // redraw. Apply only the final visibility so moving the caret doesn't
+        // close and reopen the Android keyboard on every selection update.
+        let ime_visibility = self.window_target.p.ime.lock().unwrap().take_visibility_request();
+        if let Some(allowed) = ime_visibility {
+            self.android_app.set_text_input_state(Default::default());
+            if allowed {
+                self.android_app.show_soft_input(true);
+            } else {
+                self.android_app.hide_soft_input(true);
+            }
+        }
+
         // This is always the last event we dispatch before poll again
         callback(event::Event::AboutToWait, self.window_target());
 
@@ -960,13 +973,7 @@ impl Window {
         if !self.ime.lock().unwrap().set_allowed(allowed) {
             return;
         }
-        self.app.set_text_input_state(Default::default());
         self.redraw_requester.request_redraw();
-        if allowed {
-            self.app.show_soft_input(true);
-        } else {
-            self.app.hide_soft_input(true);
-        }
     }
 
     pub fn set_ime_purpose(&self, _purpose: ImePurpose) {}

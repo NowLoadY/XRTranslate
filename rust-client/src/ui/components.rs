@@ -18,6 +18,8 @@ pub mod selection_card;
 pub use segmented_switch::segmented_switch;
 mod source_input;
 pub mod text_composer;
+mod expanded_text_edit;
+pub(crate) use expanded_text_edit::expanded_text_edit;
 pub use source_input::source_input;
 
 pub fn page_header(ui: &mut Ui, title: &str, actions: impl FnOnce(&mut Ui)) {

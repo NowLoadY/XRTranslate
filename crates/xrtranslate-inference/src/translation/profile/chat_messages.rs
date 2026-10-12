@@ -1,9 +1,9 @@
-use xrtranslate_prompt::PromptProviderTarget;
+use xrtranslate_prompt::TranslationPromptProfile;
 
 use super::{TranslationProfile, output::clean_openai_compatible};
 
 pub(super) static PROFILE: TranslationProfile = TranslationProfile {
-    target: PromptProviderTarget::OpenAiCompatible,
+    target: TranslationPromptProfile::ChatMessages.target(),
     graph: super::configured_graph,
     temperature: 0.7,
     apply_sampling: |_, _| {},
