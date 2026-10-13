@@ -202,7 +202,7 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 6] = [
     PluginDescriptor {
         id: PluginId::LYRICS,
         title_key: "Lyrics",
-        description_key: "Show the current song’s lyrics in an OSC header or footer. Runs only while that slot is in use.",
+        description_key: "Show synced song lyrics in OSC, or the title when lyrics or playback progress are unavailable. Videos show their title. Runs only while the slot is in use.",
         navigation_order: None,
         icon: PluginIcon {
             uri: "bytes://plugins/lyrics/icon.svg",

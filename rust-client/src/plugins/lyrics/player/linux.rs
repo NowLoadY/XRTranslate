@@ -49,7 +49,7 @@ impl Player {
             let Ok(playback) = self.snapshot(&name).await else {
                 continue;
             };
-            if !playback.track.is_music() {
+            if playback.track.title.trim().is_empty() {
                 continue;
             }
             if playback.playing {
@@ -101,12 +101,12 @@ impl Player {
             .and_then(|value| i64::try_from(value).ok());
         // Some MPRIS implementations omit Position from GetAll.
         let position = match position {
-            Some(value) => value,
+            Some(value) => Some(value),
             None => {
-                let value: OwnedValue = proxy
+                let value: Result<OwnedValue, _> = proxy
                     .call("Get", &("org.mpris.MediaPlayer2.Player", "Position"))
-                    .await?;
-                i64::try_from(value).unwrap_or(0)
+                    .await;
+                value.ok().and_then(|value| i64::try_from(value).ok())
             }
         };
         let rate = properties
@@ -116,6 +116,7 @@ impl Player {
             .unwrap_or(1.0);
         let lyrics = string(&metadata, "xesam:asText");
         Ok(Playback {
+            is_music: track.has_music_metadata(),
             track,
             embedded_lyrics: (!lyrics.is_empty() && lyrics.len() <= 256 * 1024).then_some(lyrics),
             duration_ms: metadata
@@ -124,7 +125,9 @@ impl Player {
                 .unwrap_or(0)
                 .max(0) as u64
                 / 1000,
-            position_ms: position.max(0) as u64 / 1000,
+            position_ms: position
+                .filter(|value| *value >= 0)
+                .map(|value| value as u64 / 1000),
             observed: Instant::now(),
             rate,
             playing: string(&properties, "PlaybackStatus") == "Playing",

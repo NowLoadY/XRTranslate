@@ -1,10 +1,14 @@
-//! On-demand current-song lyrics. The host supplies activation, character
+//! On-demand media titles and current-song lyrics. The host supplies activation, character
 //! budget and a text sink; this plugin never imports OSC or starts translation.
 mod cache;
 mod netease;
+mod output;
 mod player;
 mod timeline;
 
+use output::Lookup;
+pub(crate) use output::Status;
+use parking_lot::Mutex;
 use player::Playback;
 use std::{
     future::Future,
@@ -23,6 +27,7 @@ pub(crate) struct LyricsPlugin {
     worker: Option<(watch::Sender<Option<usize>>, JoinHandle<()>)>,
     cache: Arc<cache::Cache>,
     cleanup: Option<JoinHandle<()>>,
+    status: Arc<Mutex<Status>>,
 }
 
 impl LyricsPlugin {
@@ -32,6 +37,7 @@ impl LyricsPlugin {
             worker: None,
             cache: Arc::new(cache::Cache::new(cache_directory)),
             cleanup: None,
+            status: Arc::new(Mutex::new(Status::Idle)),
         }
     }
 
@@ -44,6 +50,7 @@ impl LyricsPlugin {
                 let _ = worker.join();
             }
             (self.publish)(String::new());
+            *self.status.lock() = Status::Idle;
             return;
         }
         if let Some((tx, _)) = &self.worker {
@@ -59,6 +66,8 @@ impl LyricsPlugin {
         let (tx, rx) = watch::channel(budget);
         let publish = self.publish.clone();
         let cache = self.cache.clone();
+        let status = self.status.clone();
+        *status.lock() = Status::Waiting;
         match thread::Builder::new()
             .name("current-song-lyrics".into())
             .spawn(move || {
@@ -66,7 +75,7 @@ impl LyricsPlugin {
                     .enable_all()
                     .build()
                 {
-                    Ok(runtime) => runtime.block_on(run(rx, &publish, cache)),
+                    Ok(runtime) => runtime.block_on(run(rx, &publish, cache, &status)),
                     Err(error) => log::warn!("Lyrics: {error}"),
                 }
                 publish(String::new());
@@ -74,6 +83,10 @@ impl LyricsPlugin {
             Ok(worker) => self.worker = Some((tx, worker)),
             Err(error) => log::warn!("Lyrics: {error}"),
         }
+    }
+
+    pub(crate) fn status(&self) -> Status {
+        *self.status.lock()
     }
 
     pub fn cache_is_clearing(&self) -> bool {
@@ -115,12 +128,17 @@ impl Drop for LyricsPlugin {
     }
 }
 
-async fn run(config: watch::Receiver<Option<usize>>, publish: &Publish, cache: Arc<cache::Cache>) {
+async fn run(
+    config: watch::Receiver<Option<usize>>,
+    publish: &Publish,
+    cache: Arc<cache::Cache>,
+    status: &Mutex<Status>,
+) {
     let (tx, rx) = watch::channel(None);
     // Dropping either future cancels its in-flight platform/HTTP operations.
     tokio::select! {
         _ = observe(tx) => {},
-        _ = display(config, rx, publish, cache) => {},
+        _ = display(config, rx, publish, cache, status) => {},
     }
 }
 
@@ -167,19 +185,14 @@ async fn display(
     mut player: watch::Receiver<Option<Playback>>,
     publish: &Publish,
     cache: Arc<cache::Cache>,
+    status: &Mutex<Status>,
 ) {
-    let client = match netease::client() {
-        Ok(client) => client,
-        Err(error) => {
-            log::warn!("Lyrics: {error}");
-            return;
-        }
-    };
     let mut current: Option<Playback> = None;
     let mut cues = Vec::new();
     let mut fetching: Option<Fetch> = None;
-    let mut attempted = false;
+    let mut lookup = Lookup::NotStarted;
     let mut last_text = String::new();
+    let mut renderer = output::Renderer::default();
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -191,25 +204,28 @@ async fn display(
             changed = player.changed() => {
                 if changed.is_err() { return; }
                 let next = player.borrow_and_update().clone();
-                let same = current.as_ref().zip(next.as_ref()).is_some_and(|(a, b)| a.track == b.track && a.embedded_lyrics == b.embedded_lyrics);
+                let same = current.as_ref().zip(next.as_ref()).is_some_and(|(a, b)| a.track == b.track && a.is_music == b.is_music && a.embedded_lyrics == b.embedded_lyrics);
                 if !same {
                     fetching = None;
                     cues.clear();
-                    attempted = false;
+                    lookup = Lookup::NotStarted;
                 }
                 current = next;
+                if !current.as_ref().is_some_and(Playback::can_sync_lyrics) && fetching.take().is_some() {
+                    lookup = Lookup::NotStarted;
+                }
                 if let Some(playback) = &current
-                    && playback.playing && !attempted
+                    && playback.can_sync_lyrics() && lookup == Lookup::NotStarted
                 {
-                    attempted = true;
-                    fetching = Some(Box::pin(load_lyrics(client.clone(), cache.clone(), playback.clone(), cache.generation())));
+                    lookup = Lookup::Loading;
+                    fetching = Some(Box::pin(load_lyrics(cache.clone(), playback.clone(), cache.generation())));
                 }
             },
             result = async { fetching.as_mut().unwrap().await }, if fetching.is_some() => {
                 fetching = None;
                 match result {
-                    Ok(result) => cues = result,
-                    Err(error) => log::warn!("Lyrics: {error}"),
+                    Ok(result) => { cues = result; lookup = Lookup::Ready; },
+                    Err(error) => { log::warn!("Lyrics: {error}"); lookup = Lookup::Failed; },
                 }
             },
             _ = tick.tick() => {},
@@ -218,13 +234,14 @@ async fn display(
         let Some(budget) = budget else {
             return;
         };
-        let text = current
-            .as_ref()
-            .filter(|playback| playback.playing)
-            .map(|playback| {
-                timeline::viewport(&cues, playback.position(), playback.duration_ms, budget)
-            })
-            .unwrap_or_default();
+        let (text, next_status) = renderer.render(
+            current.as_ref(),
+            &cues,
+            lookup,
+            budget,
+            std::time::Instant::now(),
+        );
+        *status.lock() = next_status;
         if text != last_text {
             publish(text.clone());
             last_text = text;
@@ -233,7 +250,6 @@ async fn display(
 }
 
 async fn load_lyrics(
-    client: reqwest::Client,
     cache: Arc<cache::Cache>,
     playback: Playback,
     generation: u64,
@@ -246,6 +262,7 @@ async fn load_lyrics(
     let mut lrc = playback.embedded_lyrics.unwrap_or_default();
     let mut cues = timeline::parse(&lrc);
     if cues.iter().all(|cue| cue.text.is_empty()) {
+        let client = netease::client()?;
         lrc = netease::fetch(&client, &playback.track, playback.duration_ms).await?;
         cues = timeline::parse(&lrc);
     }

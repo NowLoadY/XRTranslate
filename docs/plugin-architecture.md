@@ -86,8 +86,14 @@ affecting unrelated tasks.
 | `plugins::auto_input` | Automatic text output; consumes committed results through a platform input capability |
 
 Lyrics has no page. It runs only when available and requested by active OSC
-lyric output. Cache maintenance belongs to the lyric plugin, independently of
-display activity.
+lyric output. Its platform adapters use system media interfaces and distinguish
+missing playback progress from a valid song-start position. The plugin owns
+the presentation policy: synchronize music with an available timeline and
+timed lyrics, otherwise show its title; other media supplies titles only.
+The plugin owns the bounded text window, its music marker, and title/lyric
+scrolling; the host's output budget includes the marker.
+Read-only playback status is exposed in plugin settings. Cache maintenance
+belongs to the lyric plugin, independently of display activity.
 
 Quick translation and history archive also use the shared task and subscriber
 contracts. Audio Studio and Prompt Studio remain core infrastructure, outside

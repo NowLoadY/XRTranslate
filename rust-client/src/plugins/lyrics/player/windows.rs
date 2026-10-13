@@ -6,6 +6,7 @@ use windows::{
         GlobalSystemMediaTransportControlsSessionManager as Manager,
         GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status,
     },
+    Media::MediaPlaybackType,
     Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
 };
 
@@ -39,7 +40,7 @@ impl Player {
         let mut paused = None;
         if let Ok(session) = self.manager.GetCurrentSession()
             && let Ok(playback) = snapshot(&session).await
-            && playback.track.is_music()
+            && !playback.track.title.trim().is_empty()
         {
             if playback.playing {
                 return Ok(Some(playback));
@@ -52,10 +53,14 @@ impl Player {
             .map_err(|error| error.to_string())?;
         for session in sessions {
             if let Ok(playback) = snapshot(&session).await
-                && playback.playing
-                && playback.track.is_music()
+                && !playback.track.title.trim().is_empty()
             {
-                return Ok(Some(playback));
+                if playback.playing {
+                    return Ok(Some(playback));
+                }
+                if paused.is_none() {
+                    paused = Some(playback);
+                }
             }
         }
         Ok(paused)
@@ -65,7 +70,6 @@ impl Player {
 async fn snapshot(session: &Session) -> windows::core::Result<Playback> {
     let media = session.TryGetMediaPropertiesAsync()?.await?;
     let info = session.GetPlaybackInfo()?;
-    let timeline = session.GetTimelineProperties()?;
     let playing = info.PlaybackStatus()? == Status::Playing;
     let rate = info
         .PlaybackRate()
@@ -73,30 +77,51 @@ async fn snapshot(session: &Session) -> windows::core::Result<Playback> {
         .ok()
         .filter(|rate| rate.is_finite() && *rate > 0.0)
         .unwrap_or(1.0);
-    let start = timeline.StartTime()?.Duration;
-    let duration_ms = (timeline.EndTime()?.Duration - start).max(0) as u64 / 10_000;
-    let mut position_ms = (timeline.Position()?.Duration - start).max(0) as u64 / 10_000;
-    // WinRT positions are anchored to LastUpdatedTime, not to the read time.
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
-    let updated = timeline.LastUpdatedTime()?.UniversalTime / 10_000 - 11_644_473_600_000;
-    if playing && updated > 0 {
-        position_ms = position_ms.saturating_add(((now - updated).max(0) as f64 * rate) as u64);
-    }
+    // Metadata remains useful when the player omits or cannot return a timeline.
+    let timing = (|| -> windows::core::Result<_> {
+        let timeline = session.GetTimelineProperties()?;
+        let start = timeline.StartTime()?.Duration;
+        let end = timeline.EndTime()?.Duration;
+        let position = timeline.Position()?.Duration;
+        let updated = timeline.LastUpdatedTime()?.UniversalTime / 10_000 - 11_644_473_600_000;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        Ok((
+            end.saturating_sub(start).max(0) as u64 / 10_000,
+            timeline_position(
+                start,
+                end,
+                position,
+                updated,
+                now,
+                if playing { rate } else { 0.0 },
+            ),
+        ))
+    })();
+    let (duration_ms, position_ms) = timing.unwrap_or((0, None));
     let artist = media.Artist()?.to_string();
+    let track = Track {
+        title: media.Title()?.to_string(),
+        artists: artist
+            .split('/')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        album: media.AlbumTitle()?.to_string(),
+    };
+    // Browsers can label a plain video title as Music. Require structured song
+    // metadata as well, and always honor an explicit non-music media type.
+    let is_music = track.has_music_metadata()
+        && !matches!(
+            media.PlaybackType().and_then(|kind| kind.Value()).ok(),
+            Some(MediaPlaybackType::Video | MediaPlaybackType::Image)
+        );
     Ok(Playback {
-        track: Track {
-            title: media.Title()?.to_string(),
-            artists: artist
-                .split('/')
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-                .collect(),
-            album: media.AlbumTitle()?.to_string(),
-        },
+        track,
+        is_music,
         embedded_lyrics: None,
         duration_ms,
         position_ms,
@@ -104,4 +129,24 @@ async fn snapshot(session: &Session) -> windows::core::Result<Playback> {
         rate,
         playing,
     })
+}
+
+fn timeline_position(
+    start: i64,
+    end: i64,
+    position: i64,
+    updated: i64,
+    now: i64,
+    rate: f64,
+) -> Option<u64> {
+    // All-zero SMTC timelines (including LastUpdatedTime = 1601) are common.
+    // Never turn them into a zero-second anchor that restarts on every poll.
+    if end <= start || position < start || position > end || updated <= 0 || updated > now {
+        return None;
+    }
+    let duration = end.saturating_sub(start) as u64 / 10_000;
+    let position = position.saturating_sub(start) as u64 / 10_000;
+    // WinRT positions are anchored to LastUpdatedTime, not to the read time.
+    let elapsed = (now.saturating_sub(updated) as f64 * rate) as u64;
+    Some(position.saturating_add(elapsed).min(duration))
 }

@@ -820,6 +820,20 @@ fn render_plugins_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                                 .size(12.0)
                                 .color(crate::ui::theme::text_weak()),
                             );
+                            #[cfg(any(windows, target_os = "linux"))]
+                            if has_cache_action && enabled {
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new(crate::i18n::tr(
+                                        language,
+                                        app.lyrics_plugin.status().message_key(),
+                                    ))
+                                    .size(11.5)
+                                    .color(crate::ui::theme::text_weak()),
+                                );
+                                ui.ctx()
+                                    .request_repaint_after(std::time::Duration::from_secs(1));
+                            }
                             if let Some(reason) = &disable_reason {
                                 ui.add_space(2.0);
                                 ui.label(
