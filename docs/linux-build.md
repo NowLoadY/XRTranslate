@@ -78,6 +78,35 @@ is needed to generate Rust bindings. The Linux package requires the system
 the desktop. These system libraries are not copied into the release or added
 to Windows and Android builds.
 
+## Publish a Linux release with GitHub Actions
+
+Create the version tag and its GitHub Release, then run the **Linux release**
+workflow manually from the Actions page or with GitHub CLI:
+
+```sh
+gh workflow run linux-release.yml -f tag=v0.3.3
+```
+
+The workflow builds the tag by default. To rebuild an existing release from a
+specific revision, also pass `-f source_commit="$(git rev-parse HEAD)"`; the full
+commit SHA is required and its Cargo version must match the release tag.
+Submodules use the revisions recorded by that source commit.
+
+The workflow uses GitHub's `ubuntu-26.04` runner and the standard release
+script. It checks packaged resources, executable versions, corpus health and
+the ZIP before uploading `XRTranslate-<tag>-linux-x64.zip` to the existing
+release. An existing Linux ZIP with that name is replaced; release notes,
+tags and other assets are preserved. Binaries link against Ubuntu 26.04 system
+libraries; compatibility with older distributions is not guaranteed.
+
+Separate caches retain Cargo downloads, compatible release build outputs and
+the fixed models/ONNX archive. Build caches account for the runner image, Rust
+version, lockfiles, build declarations and source revision. Resource caches
+change when their declarations or preparation script change. Every run still
+executes the locked Cargo builds, creates a fresh package and runs validation.
+Caches exclude release packages, generated configuration and redundant model
+download archives.
+
 ## Audio capture
 
 Linux microphone capture and TTS playback use CPAL. System audio capture uses

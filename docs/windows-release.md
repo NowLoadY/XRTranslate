@@ -37,3 +37,18 @@ then stops its service. It does not test GPU models or full speech inference.
 Rerunning replaces only the identically named Windows ZIP. Runs for the same
 Release are serialized without cancelling an active build. The workflow logs
 the exact source commit and leaves the published tag unchanged.
+
+Successful runs cache Cargo registry/Git downloads, `target/release`, and the
+three bundled ONNX models plus the extracted ONNX CPU core and licenses.
+Redundant model archives and the large ONNX GPU source ZIP are excluded; the
+cached files let subsequent runs skip those downloads. Configuration, credentials,
+user databases and staged release packages are not cached.
+
+Build caches are isolated by Windows runner image, architecture, Rust toolchain,
+Cargo manifests/lockfiles and build script. Each source commit gets a new cache
+entry and can restore compatible artifacts from an earlier commit. The workflow
+always runs Cargo and package validation: Cargo rebuilds changed crates and any
+dependencies whose inputs are no longer fresh. Resource caches have no fallback
+when resource configuration or preparation code changes, so those changes fetch
+the corresponding assets again. A first run or an evicted cache downloads and
+builds normally; cache hits do not skip the package smoke tests.

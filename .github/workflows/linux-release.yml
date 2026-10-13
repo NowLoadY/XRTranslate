@@ -1,0 +1,270 @@
+name: Linux release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag, for example v0.3.3
+        required: true
+        type: string
+      source_commit:
+        description: Optional full commit SHA to rebuild this release; otherwise use the tag
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: linux-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      RUSTUP_TOOLCHAIN: 1.95.0-x86_64-unknown-linux-gnu
+      CARGO_BUILD_JOBS: '4'
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Require an existing versioned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            printf '%s\n' 'Tag must be a Cargo version prefixed with v, for example v0.3.3.' >&2
+            exit 1
+          fi
+          if [[ -n "$SOURCE_COMMIT" && ! "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            printf '%s\n' 'Source commit must be a full lowercase Git commit SHA.' >&2
+            exit 1
+          fi
+          [[ "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)" == "$RELEASE_TAG" ]]
+
+      - name: Check out exact source and pinned submodules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_commit || format('refs/tags/{0}', inputs.tag) }}
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Linux prerequisites and Rust 1.95
+        id: toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libx11-dev libxcursor-dev libxrandr-dev \
+            libxi-dev libwayland-dev libxkbcommon-dev libasound2-dev \
+            libpipewire-0.3-dev libclang-dev libegl-mesa0 libglx-mesa0 \
+            libgl1-mesa-dri fontconfig fonts-noto-core fonts-noto-cjk \
+            fonts-dejavu-core zip
+          rustup toolchain install 1.95.0 --profile minimal --no-self-update
+          rustc --version
+          printf 'image=%s-%s\n' "$ImageOS" "$ImageVersion" >> "$GITHUB_OUTPUT"
+
+      - name: Verify source version and corpus revision
+        id: source
+        run: |
+          set -euo pipefail
+          expected_commit="$SOURCE_COMMIT"
+          if [[ -z "$expected_commit" ]]; then
+            expected_commit="$(git rev-parse "$RELEASE_TAG^{commit}")"
+          fi
+          [[ "$(git rev-parse HEAD)" == "$expected_commit" ]]
+          git submodule status --recursive
+          if git submodule status --recursive | grep -Eq '^[+U-]'; then
+            exit 1
+          fi
+          cargo metadata --locked --no-deps --format-version 1 > "$RUNNER_TEMP/cargo-metadata.json"
+          python3 - <<'PY'
+          import json, os, pathlib
+          metadata = json.loads((pathlib.Path(os.environ['RUNNER_TEMP']) / 'cargo-metadata.json').read_text())
+          clients = [p for p in metadata['packages'] if p['name'] == 'rust-client']
+          assert len(clients) == 1
+          assert 'v' + clients[0]['version'] == os.environ['RELEASE_TAG']
+          PY
+          printf 'Building %s from %s\n' "$RELEASE_TAG" "$expected_commit"
+          printf 'commit=%s\n' "$expected_commit" >> "$GITHUB_OUTPUT"
+          git -C XR-Corpus rev-parse HEAD
+          printf 'PACKAGE_NAME=XRTranslate-%s-linux-x64\n' "$RELEASE_TAG" >> "$GITHUB_ENV"
+
+      - name: Cache Cargo downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            ~/.cargo/git/db
+            ~/.cargo/git/checkouts
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-rust1.95-${{ hashFiles('Cargo.lock', 'XR-Corpus/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-rust1.95-
+
+      - name: Cache compatible release build outputs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target/release
+            target/sherpa-onnx-prebuilt
+            !target/sherpa-onnx-prebuilt/*.tar.bz2
+          key: release-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-rust1.95-${{ steps.toolchain.outputs.image }}-${{ hashFiles('Cargo.lock', 'XR-Corpus/Cargo.lock', '**/Cargo.toml', '**/build.rs', 'scripts/linux-build-env.sh', 'scripts/build-linux-release.sh') }}-${{ steps.source.outputs.commit }}
+          restore-keys: release-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-rust1.95-${{ steps.toolchain.outputs.image }}-${{ hashFiles('Cargo.lock', 'XR-Corpus/Cargo.lock', '**/Cargo.toml', '**/build.rs', 'scripts/linux-build-env.sh', 'scripts/build-linux-release.sh') }}-
+
+      - name: Cache fixed release resources
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          # The installer reuses extracted models; the fetch helper reuses this
+          # small archive. Do not cache config.json or the old speaker release ZIP.
+          path: |
+            target/release-resources/linux-x86_64/models
+            target/release-resources/linux-x86_64/onnxruntime-linux-x64-*.tgz
+          key: resources-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-${{ hashFiles('config.json', 'crates/xrtranslate-config/src/**', 'crates/xrtranslate-assets/src/**', 'crates/xrtranslate-download/src/**', 'apps/xrtranslate-installer/src/**', 'scripts/build-linux-release.sh') }}
+
+      - name: Build the standard Linux release
+        run: |
+          set -euo pipefail
+          export XRTRANSLATE_RELEASE_DIR="$GITHUB_WORKSPACE/dist/$PACKAGE_NAME"
+          ./scripts/build-linux-release.sh
+          git diff --exit-code
+          git -C XR-Corpus diff --exit-code
+
+      - name: Check packaged resources and CLI versions, then smoke test corpus
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, sqlite3, subprocess, tempfile, time, tomllib, urllib.request
+          root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
+          package = root / 'dist' / os.environ['PACKAGE_NAME']
+          app_version = os.environ['RELEASE_TAG'][1:]
+          corpus_version = tomllib.loads((root / 'XR-Corpus/apps/server/Cargo.toml').read_text())['package']['version']
+          manifest = json.loads((package / 'release-manifest.json').read_text())
+          assert manifest['layout_version'] == 4 and manifest['python'] is False
+          assert manifest['entrypoints']['client'] == f'XRTranslate-v{app_version}'
+          assert manifest['models']['included'] is False
+          assert manifest['runtime']['onnx_cpu']['included'] is True
+          assert manifest['runtime']['onnx_cuda']['included'] is False
+          for item in [manifest[k] for k in ('vad_model', 'speaker_model', 'denoise_model')] + [manifest['runtime']['onnx_cpu']]:
+              path = package / item['path']
+              assert path.stat().st_size == item['bytes'], item['path']
+          assert (package / 'corpora/default.sqlite').read_bytes() == (root / 'XR-Corpus/corpora/default.sqlite').read_bytes()
+          with sqlite3.connect(f'file:{package / "corpora/default.sqlite"}?mode=ro&immutable=1', uri=True) as db:
+              assert db.execute('PRAGMA quick_check').fetchall() == [('ok',)]
+          assert (package / 'LICENSE').stat().st_size > 0
+          for key in ('license', 'third_party_notices'):
+              assert (package / manifest['runtime']['onnx_cpu'][key]).stat().st_size > 0
+          config = json.loads((package / 'config.json').read_text())
+          def public(value):
+              if isinstance(value, dict):
+                  for key, item in value.items():
+                      if key == 'api_key':
+                          assert item in ('', None), 'Nonempty provider credential'
+                      public(item)
+              elif isinstance(value, list):
+                  for item in value:
+                      public(item)
+          public(config)
+          assert config['prompt_context']['database_path'] == 'runtime/xr-corpus.sqlite'
+          assert config['prompt_context']['seed_database_path'] == 'corpora/default.sqlite'
+          for path in (package / 'runtime').rglob('*'):
+              if path.is_file():
+                  assert path.relative_to(package).as_posix() == manifest['runtime']['onnx_cpu']['path']
+          for key, relative in manifest['entrypoints'].items():
+              binary = package / relative
+              assert os.access(binary, os.X_OK)
+              with binary.open('rb') as handle:
+                  header = handle.read(20)
+              assert header[:6] == b'\x7fELF\x02\x01' and header[18:20] == b'\x3e\x00'
+              links = subprocess.run(['ldd', str(binary)], check=True, capture_output=True, text=True).stdout
+              assert 'not found' not in links, relative
+              if key != 'client':
+                  version = subprocess.check_output([str(binary), '--version'], text=True).strip()
+                  expected = f'xr-corpus-server {corpus_version}' if key == 'corpus' else f'{binary.name} {app_version}'
+                  assert version == expected, (key, version)
+                  print(version)
+          with tempfile.TemporaryDirectory(prefix='xrtranslate-corpus-') as temporary:
+              work = pathlib.Path(temporary)
+              config['prompt_context']['database_path'] = str(work / 'xr-corpus.sqlite')
+              config['prompt_context']['seed_database_path'] = str(package / 'corpora/default.sqlite')
+              config.setdefault('integrations', {}).setdefault('vrcx', {})['enabled'] = False
+              config_path = work / 'config.json'
+              config_path.write_text(json.dumps(config))
+              opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+              with (work / 'corpus.log').open('wb') as log:
+                  process = subprocess.Popen([str(package / 'bin/xr-corpus-server'), '--config', str(config_path), '--listen', '127.0.0.1:17766'], cwd=work, stdout=log, stderr=subprocess.STDOUT)
+                  try:
+                      health = None
+                      deadline = time.monotonic() + 30
+                      while time.monotonic() < deadline:
+                          assert process.poll() is None, 'Corpus exited during startup'
+                          try:
+                              with opener.open('http://127.0.0.1:17766/healthz', timeout=1) as response:
+                                  health = json.load(response)
+                              if health.get('status') == 'ok':
+                                  break
+                          except OSError:
+                              pass
+                          time.sleep(0.2)
+                      assert health and health['status'] == 'ok' and health['api_version'] == 2 and health['server_version'] == corpus_version
+                      with opener.open('http://127.0.0.1:17766/v2/graph', timeout=10) as response:
+                          graph = json.load(response)
+                      assert graph['domains'] and graph['nodes'] and process.poll() is None
+                      print(f"Corpus health passed: {len(graph['domains'])} domains, {len(graph['nodes'])} nodes")
+                  finally:
+                      if process.poll() is None:
+                          process.terminate()
+                          try:
+                              process.wait(timeout=5)
+                          except subprocess.TimeoutExpired:
+                              process.kill()
+                              process.wait(timeout=5)
+                      print((work / 'corpus.log').read_text())
+          PY
+
+      - name: Zip the release and verify contents and executable modes
+        run: |
+          set -euo pipefail
+          cd dist
+          zip -q -r "$PACKAGE_NAME.zip" "$PACKAGE_NAME"
+          python3 - <<'PY'
+          import hashlib, os, pathlib, stat, zipfile
+          package = pathlib.Path(os.environ['PACKAGE_NAME'])
+          archive = pathlib.Path(str(package) + '.zip')
+          with zipfile.ZipFile(archive) as bundle:
+              infos = bundle.infolist()
+              assert len({item.filename for item in infos}) == len(infos)
+              assert bundle.testzip() is None
+              files = set()
+              for item in infos:
+                  assert item.filename.startswith(package.name + '/')
+                  assert '..' not in pathlib.PurePosixPath(item.filename).parts
+                  if item.is_dir():
+                      continue
+                  mode = item.external_attr >> 16
+                  assert not stat.S_ISLNK(mode), 'Updater cannot extract symlink entries'
+                  path = pathlib.Path(item.filename)
+                  assert bundle.read(item) == path.read_bytes(), item.filename
+                  if os.access(path, os.X_OK):
+                      assert item.create_system == 3 and mode & 0o111, item.filename
+                  files.add(path.relative_to(package).as_posix())
+              assert files == {p.relative_to(package).as_posix() for p in package.rglob('*') if p.is_file()}
+          print(f'{archive}: {archive.stat().st_size} bytes')
+          print(f'SHA256 {hashlib.sha256(archive.read_bytes()).hexdigest()}')
+          PY
+          sha256sum "$PACKAGE_NAME.zip"
+          stat --format='%n %s bytes' "$PACKAGE_NAME.zip"
+
+      - name: Upload only the Linux ZIP to the existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" "dist/$PACKAGE_NAME.zip" --repo "$GITHUB_REPOSITORY" --clobber

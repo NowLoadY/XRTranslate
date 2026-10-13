@@ -56,6 +56,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Rust 1.95 for Visual Studio 2022
+        id: toolchain
         run: |
           & rustup toolchain install 1.95.0 --profile minimal --target x86_64-pc-windows-msvc --no-self-update
           if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
@@ -65,8 +66,10 @@ jobs:
           $visualStudio = & $vswhere -latest -products '*' -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if ($LASTEXITCODE -ne 0 -or -not $visualStudio) { throw 'Visual Studio 2022 C++ tools are required.' }
           Write-Host "Using Visual Studio 2022: $visualStudio"
+          "native-image=$env:ImageOS-$env:ImageVersion" >> $env:GITHUB_OUTPUT
 
       - name: Verify source, Cargo version and submodule revisions
+        id: source
         run: |
           $expectedCommit = $env:SOURCE_COMMIT
           if (-not $expectedCommit) {
@@ -87,6 +90,42 @@ jobs:
             throw 'The release tag must match the Cargo workspace version.'
           }
           "PACKAGE_NAME=XRTranslate-$env:RELEASE_TAG-win-x64" >> $env:GITHUB_ENV
+          "commit=$headCommit" >> $env:GITHUB_OUTPUT
+
+      - name: Restore Cargo registry and Git dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/registry/src
+            ~/.cargo/git/db
+            ~/.cargo/git/checkouts
+          key: windows-cargo-v1-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'XR-Corpus/Cargo.lock') }}
+          restore-keys: |
+            windows-cargo-v1-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-
+
+      - name: Restore native release build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/release
+          # Source suffix saves new outputs while the prefix reuses compatible dependencies.
+          key: windows-build-v1-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ steps.toolchain.outputs.native-image }}-${{ hashFiles('**/Cargo.toml', 'Cargo.lock', 'XR-Corpus/Cargo.lock', 'build_release.ps1') }}-${{ steps.source.outputs.commit }}
+          restore-keys: |
+            windows-build-v1-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ steps.toolchain.outputs.native-image }}-${{ hashFiles('**/Cargo.toml', 'Cargo.lock', 'XR-Corpus/Cargo.lock', 'build_release.ps1') }}-
+
+      - name: Restore bundled models and extracted ONNX runtime
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            models/silero-vad/src/silero_vad/data/silero_vad.onnx
+            models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx
+            models/gtcrn/gtcrn_simple.onnx
+            .temp/runtime-assets/onnxruntime/cpu/onnxruntime.dll
+            .temp/runtime-assets/licenses/onnxruntime/LICENSE
+            .temp/runtime-assets/licenses/onnxruntime/ThirdPartyNotices.txt
+          # No fallback: changed resource definitions must fetch their corresponding assets.
+          key: windows-resources-v1-${{ runner.arch }}-${{ hashFiles('build_release.ps1', 'config.json', 'crates/xrtranslate-config/src/**', 'crates/xrtranslate-assets/src/**', 'crates/xrtranslate-download/src/**', 'apps/xrtranslate-installer/src/**') }}
 
       - name: Build the standard Windows package
         run: |
