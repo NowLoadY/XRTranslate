@@ -1789,15 +1789,14 @@ fn queue_pipeline_drain(
         .as_mut()
         .map(NativePipeline::flush)
         .transpose()
-        .map(Option::flatten)
     {
-        Ok(Some(utterance)) => {
+        Ok(Some(utterances)) => {
             enqueue_utterances(
                 pending,
                 session,
                 generation,
                 workload,
-                vec![utterance],
+                utterances,
                 next_utterance_sequence,
             )?;
             None
@@ -2623,6 +2622,9 @@ async fn run_inference_worker(
                     let timed = input.finished.await.map_err(|_| InferenceFailure {
                         message: "Live ASR input ended without a completed audio turn".into(),
                     })?;
+                    let Some(timed) = timed else {
+                        return Ok(None);
+                    };
                     job.utterance = timed.utterance;
                     job.source_start_ms = timed.source_start_ms;
                     job.source_end_ms = timed.source_end_ms;

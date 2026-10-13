@@ -52,6 +52,21 @@ Do not move retry behavior into a prompt template. A retry may render the same
 semantic graph for a different language or with optional context removed, but
 the decision to retry belongs to the route/pipeline policy.
 
+## Shared ASR audio admission
+
+`backend/pipeline/audio.rs` owns aligned raw/enhanced buffering and bounded VAD
+evidence for every connector. Empty enhancer output means pending input; an
+enhancer failure switches all unprocessed audio to aligned raw bypass. Draining
+preserves the complete raw tail and excludes synthetic padding from ASR and its
+timestamps. Enhancement feeds VAD and speaker analysis; ASR still receives raw PCM.
+
+Complete turns and overlapping windows require sufficient new speech duration
+and density. Clear short words and continuations of accepted windows are retained;
+pre-roll and old overlap cannot qualify a fresh utterance. Live connectors use the
+same admission policy before sending their retained onset, and a rejected final
+turn completes without committing recognition or translation. These decisions
+must not branch on model names or live inside a provider adapter.
+
 ## ASR text capabilities
 
 ASR instruction text, lexical context, and weighted vocabulary are independent

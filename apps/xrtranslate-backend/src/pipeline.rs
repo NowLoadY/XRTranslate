@@ -14,7 +14,9 @@
 //! retains fixed overlapping windows and runs each source in its own session.
 
 mod asr_prompt;
+mod audio;
 mod streaming;
+use audio::{AudioBuffer, AudioFrames, SpeechGate};
 use streaming::LiveCapture;
 pub(crate) use streaming::LiveUtterance;
 
@@ -205,8 +207,8 @@ pub(crate) struct NativePipeline {
     speaker_recognition_enabled: bool,
     fixed_window: Option<FixedWindow>,
     live_capture: Option<LiveCapture>,
-    pending_pcm: Vec<u8>,
-    pending_denoised_pcm: Vec<u8>,
+    audio: AudioBuffer,
+    speech_gate: SpeechGate,
     processed_samples: u64,
     vad_active: bool,
     sentence_idle_frames: Option<usize>,
@@ -614,8 +616,14 @@ impl NativePipeline {
             speaker_recognition_enabled: false,
             fixed_window: None,
             live_capture: None,
-            pending_pcm: Vec::new(),
-            pending_denoised_pcm: Vec::new(),
+            audio: AudioBuffer::default(),
+            speech_gate: SpeechGate::new(
+                (endpoint_config.max_active_frames
+                    + endpoint_config.pre_roll_frames
+                    + endpoint_config.max_active_overlap_frames
+                    + endpoint_config.opening_window_frames)
+                    .max(FixedWindow::EXPANDED_WINDOW_SAMPLES / FRAME_SAMPLES),
+            ),
             processed_samples: 0,
             vad_active: false,
             sentence_idle_frames: None,
@@ -634,75 +642,40 @@ impl NativePipeline {
         if !pcm.len().is_multiple_of(2) {
             return Err("PCM16LE audio must contain whole 16-bit samples".into());
         }
-        self.pending_pcm.extend_from_slice(pcm);
-        if let Some(denoiser) = self.denoiser.as_mut() {
-            let denoised_pcm = match denoiser.process_pcm16le(pcm) {
-                Ok(bytes) if !bytes.is_empty() => bytes,
-                _ => pcm.to_vec(),
-            };
-            self.pending_denoised_pcm.extend_from_slice(&denoised_pcm);
-        } else {
-            self.pending_denoised_pcm.extend_from_slice(pcm);
-        }
+        let denoised = self.denoise(pcm);
+        self.audio.push(pcm, denoised.as_deref());
+        let frames = self.audio.take_ready();
+        self.process_frames(frames)
+    }
 
-        let complete_bytes =
-            self.pending_pcm.len().min(self.pending_denoised_pcm.len()) / FRAME_BYTES * FRAME_BYTES;
-        let raw_completed = self.pending_pcm.drain(..complete_bytes).collect::<Vec<_>>();
-        let denoised_completed = self
-            .pending_denoised_pcm
-            .drain(..complete_bytes)
-            .collect::<Vec<_>>();
-
-        if self.fixed_window.is_some() {
-            let mut utterances = Vec::new();
-            for (raw_frame, denoised_frame) in raw_completed
-                .chunks_exact(FRAME_BYTES)
-                .zip(denoised_completed.chunks_exact(FRAME_BYTES))
-            {
-                let probability = self
-                    .vad
-                    .infer_pcm16le(denoised_frame)
-                    .map_err(|error| error.to_string())?;
-                let raw_samples =
-                    decode_pcm16le_frame(raw_frame).map_err(|error| error.to_string())?;
-                self.processed_samples =
-                    self.processed_samples.saturating_add(FRAME_SAMPLES as u64);
-                let threshold = self.endpoint_config.speech_threshold;
-                let active = vad_is_active(probability, threshold);
-                self.observe_vad_activity(active);
-                let window_events = self
-                    .fixed_window
-                    .as_mut()
-                    .map(|window| window.push(&raw_samples, active))
-                    .unwrap_or_default();
-                for event in window_events {
-                    match event {
-                        FixedWindowEvent::Utterance(utterance) => {
-                            let topic_turn_sequence = self
-                                .fixed_window
-                                .as_ref()
-                                .map(|window| window.current_topic_turn_sequence);
-                            utterances.push(PipelineEvent::Utterance(self.with_timeline(
-                                utterance,
-                                0,
-                                topic_turn_sequence,
-                                None,
-                            )))
-                        }
-                        FixedWindowEvent::StreamEnded => {
-                            utterances.push(PipelineEvent::StreamEnded)
-                        }
-                    }
-                }
+    fn denoise(&mut self, pcm: &[u8]) -> Option<Vec<u8>> {
+        let denoiser = self.denoiser.as_mut()?;
+        match denoiser.process_pcm16le(pcm) {
+            Ok(bytes) => Some(bytes),
+            Err(error) => {
+                // A failed recurrent enhancer cannot safely resume mid-stream.
+                // Bypass for this session and realign all outstanding raw input.
+                warn!("denoiser failed ({error}); using raw audio for detection");
+                self.denoiser = None;
+                self.vad.reset();
+                None
             }
-            return Ok(utterances);
         }
+    }
 
+    fn process_frames(&mut self, frames: AudioFrames) -> Result<Vec<PipelineEvent>, String> {
         let mut utterances = Vec::new();
-        for (raw_frame, denoised_frame) in raw_completed
+        for (index, (raw_frame, denoised_frame)) in frames
+            .raw
             .chunks_exact(FRAME_BYTES)
-            .zip(denoised_completed.chunks_exact(FRAME_BYTES))
+            .zip(frames.denoised.chunks_exact(FRAME_BYTES))
+            .enumerate()
         {
+            let real_samples = frames
+                .real_samples
+                .saturating_sub(index * FRAME_SAMPLES)
+                .min(FRAME_SAMPLES);
+            let padding = FRAME_SAMPLES - real_samples;
             let probability = self
                 .vad
                 .infer_pcm16le(denoised_frame)
@@ -710,9 +683,32 @@ impl NativePipeline {
             let active = vad_is_active(probability, self.endpoint_config.speech_threshold);
             self.observe_vad_activity(active);
             let raw_samples = decode_pcm16le_frame(raw_frame).map_err(|error| error.to_string())?;
+
+            if self.fixed_window.is_some() {
+                self.speech_gate.observe(probability, real_samples);
+                self.processed_samples = self.processed_samples.saturating_add(real_samples as u64);
+                let window = self.fixed_window.as_mut().unwrap();
+                let events = window.push(&raw_samples, active);
+                let topic_turn_sequence = Some(window.current_topic_turn_sequence);
+                for event in events {
+                    match event {
+                        FixedWindowEvent::Utterance(utterance) => {
+                            let timed =
+                                self.with_timeline(utterance, padding, topic_turn_sequence, None);
+                            if let Some(event) = self.finish_utterance(timed) {
+                                utterances.push(event);
+                            }
+                        }
+                        FixedWindowEvent::StreamEnded => {
+                            utterances.push(PipelineEvent::StreamEnded)
+                        }
+                    }
+                }
+                continue;
+            }
+
             let denoised_samples =
                 decode_pcm16le_frame(denoised_frame).map_err(|error| error.to_string())?;
-
             if self.speaker_recognition_enabled
                 && let Some(streaming) = &mut self.streaming_speaker
             {
@@ -721,43 +717,47 @@ impl NativePipeline {
                         Ok(Some(StreamingSpeakerEvent::SpeakerCut {
                             previous_speaker, ..
                         })) => {
-                            if let Some(cut_utterance) = self.endpoint.split_on_speaker_change() {
-                                let timed = self.with_timeline(
-                                    cut_utterance,
-                                    0,
-                                    None,
-                                    Some(previous_speaker),
-                                );
+                            if let Some(utterance) = self.endpoint.split_on_speaker_change() {
+                                // The speaker cut ends before the current frame.
+                                let timed =
+                                    self.with_timeline(utterance, 0, None, Some(previous_speaker));
                                 if let Some(event) = self.finish_utterance(timed) {
                                     utterances.push(event);
                                 }
                             }
                         }
                         Ok(_) => {}
-                        Err(error) => {
-                            warn!("streaming speaker recognition error: {error}");
-                        }
+                        Err(error) => warn!("streaming speaker recognition error: {error}"),
                     }
                 } else {
                     streaming.observe_silence(denoised_samples.len());
                 }
             }
 
+            self.speech_gate.observe(probability, real_samples);
             let event = self
                 .endpoint
                 .push(&raw_samples, probability)
                 .map_err(|error| error.to_string())?;
-            self.processed_samples = self.processed_samples.saturating_add(FRAME_SAMPLES as u64);
-            if matches!(event, EndpointEvent::SpeechStarted) && self.inference.asr_streaming {
+            self.processed_samples = self.processed_samples.saturating_add(real_samples as u64);
+            if let Some(capture) = &self.live_capture {
+                capture.push(&raw_samples[..real_samples])?;
+            } else if self.inference.asr_streaming
+                && self.speech_gate.allows_onset(
+                    self.endpoint.active_frame_count() * FRAME_SAMPLES,
+                    self.endpoint_config.speech_threshold,
+                )
+            {
+                // Every live connector waits for the same speech evidence as
+                // buffered recognition. Include the retained onset once ready.
                 let (capture, input) = LiveCapture::begin(
                     self.endpoint_config,
-                    self.endpoint.active_samples(),
+                    &self.endpoint.active_samples()
+                        [..self.endpoint.active_samples().len() - padding],
                     self.processed_samples,
                 )?;
                 self.live_capture = Some(capture);
                 utterances.push(PipelineEvent::Streaming(input));
-            } else if let Some(capture) = &self.live_capture {
-                capture.push(&raw_samples)?;
             }
             if let EndpointEvent::Finalized(utterance) = event {
                 let speaker_id = if self.speaker_recognition_enabled {
@@ -769,11 +769,12 @@ impl NativePipeline {
                 } else {
                     None
                 };
-                let timed = self.with_timeline(utterance, 0, None, speaker_id);
+                let timed = self.with_timeline(utterance, padding, None, speaker_id);
                 if let Some(event) = self.finish_utterance(timed) {
                     utterances.push(event);
                 }
             }
+
             // Complete final ASR sentences translate independently of silence.
             // Idle still releases an unpunctuated final tail.
             if active {
@@ -794,69 +795,44 @@ impl NativePipeline {
         Ok(utterances)
     }
 
-    /// Completes the current utterance when a client ends a logical turn.
-    pub(crate) fn flush(&mut self) -> Result<Option<PipelineEvent>, String> {
-        if let Some(window) = &mut self.fixed_window {
-            let utterance = window.flush();
-            let event = utterance.map(|utterance| {
-                let topic_turn_sequence = self
-                    .fixed_window
-                    .as_ref()
-                    .map(|window| window.current_topic_turn_sequence);
-                PipelineEvent::Utterance(self.with_timeline(
-                    utterance,
-                    0,
-                    topic_turn_sequence,
-                    None,
-                ))
-            });
-            self.observe_vad_activity(false);
-            return Ok(event);
-        }
-        let mut trailing_padding_samples = 0;
-        let mut finalized = None;
-        if !self.pending_pcm.is_empty() {
-            let mut frame = mem::take(&mut self.pending_pcm);
-            let received_samples = frame.len() / 2;
-            trailing_padding_samples = FRAME_SAMPLES.saturating_sub(received_samples);
-            frame.resize(FRAME_BYTES, 0);
-            if let Some(capture) = &self.live_capture {
-                capture.push(&decode_pcm16le_frame(&frame).map_err(|error| error.to_string())?)?;
+    /// Drains delayed enhancement and every remaining raw sample before EOF.
+    pub(crate) fn flush(&mut self) -> Result<Vec<PipelineEvent>, String> {
+        // GTCRN retains less than one FFT frame. Padding only its input drains
+        // that tail; synthetic samples never enter the recognition timeline.
+        let tail = self.denoise(&[0; xrtranslate_denoise::FFT_SIZE * 2]);
+        let frames = self.audio.finish(tail.as_deref());
+        let padding = frames.padding_samples();
+        let mut events = self.process_frames(frames)?;
+        let (utterance, topic_turn_sequence, speaker_id) =
+            if let Some(window) = &mut self.fixed_window {
+                let sequence = window.current_topic_turn_sequence;
+                (window.flush(), Some(sequence), None)
+            } else {
+                let speaker = if self.speaker_recognition_enabled {
+                    self.streaming_speaker.as_mut().map(|streaming| {
+                        streaming
+                            .finalize_speech()
+                            .unwrap_or_else(|| "speaker-unknown".into())
+                    })
+                } else {
+                    None
+                };
+                (self.endpoint.flush(), None, speaker)
+            };
+        if let Some(utterance) = utterance {
+            let timed = self.with_timeline(utterance, padding, topic_turn_sequence, speaker_id);
+            if let Some(event) = self.finish_utterance(timed) {
+                events.push(event);
             }
-            let probability = self
-                .vad
-                .infer_pcm16le(&frame)
-                .map_err(|error| error.to_string())?;
-            let event = self
-                .endpoint
-                .push_pcm16le(&frame, probability)
-                .map_err(|error| error.to_string())?;
-            if let EndpointEvent::Finalized(utterance) = event {
-                finalized = Some(utterance);
-            }
-            self.processed_samples = self
-                .processed_samples
-                .saturating_add(received_samples as u64);
         }
-        self.pending_denoised_pcm.clear();
-        let speaker_id = if self.speaker_recognition_enabled {
-            self.streaming_speaker.as_mut().map(|streaming| {
-                streaming
-                    .finalize_speech()
-                    .unwrap_or_else(|| "speaker-unknown".into())
-            })
-        } else {
-            None
-        };
-        let event = finalized
-            .or_else(|| self.endpoint.flush())
-            .and_then(|utterance| {
-                let timed =
-                    self.with_timeline(utterance, trailing_padding_samples, None, speaker_id);
-                self.finish_utterance(timed)
-            });
+        if let Some(denoiser) = &mut self.denoiser {
+            denoiser.reset();
+        }
+        self.vad.reset();
+        self.speech_gate.reset();
+        self.sentence_idle_frames = None;
         self.observe_vad_activity(false);
-        Ok(event)
+        Ok(events)
     }
 
     /// Drops buffered audio and recurrent VAD state after a route change.
@@ -868,8 +844,8 @@ impl NativePipeline {
         if let Some(denoiser) = &mut self.denoiser {
             denoiser.reset();
         }
-        self.pending_pcm.clear();
-        self.pending_denoised_pcm.clear();
+        self.audio.reset();
+        self.speech_gate.reset();
         self.observe_vad_activity(false);
         if let Some(window) = &mut self.fixed_window {
             window.reset();
@@ -936,17 +912,20 @@ impl NativePipeline {
     }
 
     fn finish_utterance(&mut self, timed: TimedUtterance) -> Option<PipelineEvent> {
+        let valid = self
+            .speech_gate
+            .accept(&timed.utterance, self.endpoint_config.speech_threshold);
         if let Some(capture) = self.live_capture.take() {
-            capture.finish(timed);
+            capture.finish(valid.then_some(timed));
             None
         } else {
-            Some(PipelineEvent::Utterance(timed))
+            valid.then_some(PipelineEvent::Utterance(timed))
         }
     }
 
     fn with_timeline(
         &self,
-        utterance: Utterance,
+        mut utterance: Utterance,
         trailing_padding_samples: usize,
         topic_turn_sequence: Option<u64>,
         speaker_id: Option<String>,
@@ -957,6 +936,7 @@ impl NativePipeline {
             .saturating_sub(trailing_padding_samples) as u64;
         let end_samples = self.processed_samples;
         let start_samples = end_samples.saturating_sub(real_samples);
+        utterance.samples.truncate(real_samples as usize);
         TimedUtterance {
             utterance,
             source_start_ms: samples_to_ms(start_samples),

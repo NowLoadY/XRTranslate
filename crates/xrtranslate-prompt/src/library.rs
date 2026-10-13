@@ -129,6 +129,7 @@ impl PromptTemplateProfile {
         graph.sync_text_switch_cases(&imported_graph);
         graph.remove_invalid_socket_links();
         graph.restore_translation_style_binding();
+        graph.upgrade_known_translation_style_order();
         graph.auto_layout();
 
         if let Err(err) = graph.validate_for_activation() {
@@ -289,6 +290,7 @@ impl PromptTemplateLibrary {
                 profile.graph.sync_text_switch_cases(&stored_graph);
                 profile.graph.remove_invalid_socket_links();
                 profile.graph.restore_translation_style_binding();
+                profile.graph.upgrade_known_translation_style_order();
             }
             profile.read_only = false;
         }

@@ -164,6 +164,43 @@ impl PromptNodeGraph {
         self.bind_translation_style(&id);
     }
 
+    /// Upgrade the old built-in join retained by saved copies and imports.
+    /// Match its wiring as well as its text so custom compositions stay intact.
+    pub(crate) fn upgrade_known_translation_style_order(&mut self) {
+        let Some(style) = &self.translation_style else {
+            return;
+        };
+        for node in &mut self.nodes {
+            if node.page != PromptNodePage::TranslationInstruction
+                || node.label != "Instruction + style"
+            {
+                continue;
+            }
+            let PromptNodeKind::Compose { text } = &mut node.kind else {
+                continue;
+            };
+            if text != "{0}\n\n{1}" {
+                continue;
+            }
+            let inputs = self
+                .links
+                .iter()
+                .filter(|link| link.to == node.id)
+                .collect::<Vec<_>>();
+            if inputs.len() == 2
+                && inputs
+                    .iter()
+                    .any(|link| link.input == 0 && link.from == "hunyuan-instruction")
+                && inputs
+                    .iter()
+                    .any(|link| link.input == 1 && link.from == style.node_id)
+            {
+                // Everything after "translate the following text" is input.
+                *text = "{1}\n\n{0}".into();
+            }
+        }
+    }
+
     fn node_reaches_target(&self, node_id: &str, target: PromptTarget) -> bool {
         let mut pending = vec![node_id];
         let mut visited = std::collections::HashSet::new();

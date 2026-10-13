@@ -9,13 +9,15 @@ use super::TimedUtterance;
 #[derive(Debug)]
 pub(crate) struct LiveUtterance {
     pub(crate) audio: mpsc::Receiver<Vec<u8>>,
-    pub(crate) finished: oneshot::Receiver<TimedUtterance>,
+    /// None completes an input rejected by the shared speech check; cancellation
+    /// drops the sender instead. Neither may commit a recognition result.
+    pub(crate) finished: oneshot::Receiver<Option<TimedUtterance>>,
     pub(crate) source_start_ms: f64,
 }
 
 pub(super) struct LiveCapture {
     audio: mpsc::Sender<Vec<u8>>,
-    finished: oneshot::Sender<TimedUtterance>,
+    finished: oneshot::Sender<Option<TimedUtterance>>,
 }
 
 impl LiveCapture {
@@ -62,7 +64,7 @@ impl LiveCapture {
         Ok(())
     }
 
-    pub(super) fn finish(self, utterance: TimedUtterance) {
+    pub(super) fn finish(self, utterance: Option<TimedUtterance>) {
         let _ = self.finished.send(utterance);
         // Dropping audio signals EOF after every queued frame. Reset/cancel
         // also drops completion, which cannot be mistaken for a successful end.
