@@ -19,8 +19,9 @@ pub(crate) fn completed_recognition_prefix(text: &str, end_reason: UtteranceEndR
         .unwrap_or(0)
 }
 
-/// Revisable windows need lookahead or acoustic confirmation at their right
-/// edge. This stricter policy must not delay completed non-revisable ASR.
+/// Revisable windows need subsequent text or a real input end at their right
+/// edge. A short VAD pause still belongs to the same revisable turn; its ASR
+/// punctuation cannot finalize the latest sentence by itself.
 pub(crate) fn completed_sentences(
     segments: &[TranslationSegmentPair],
     end_reason: UtteranceEndReason,
@@ -35,8 +36,7 @@ pub(crate) fn completed_sentences(
         .iter()
         .enumerate()
         .take_while(|(index, segment)| {
-            ends_at_sentence_boundary(&segment.source_text)
-                && (index + 1 < segments.len() || end_reason == UtteranceEndReason::Silence)
+            ends_at_sentence_boundary(&segment.source_text) && index + 1 < segments.len()
         })
         .count()
 }

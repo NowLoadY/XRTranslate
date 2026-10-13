@@ -80,7 +80,7 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 
     // The same turn/segment ordering and revision selection as the normal feed
     // keeps a streamed preview in place when its final translation arrives.
-    let lines = super::history::history_turns(app)
+    let lines = super::history::history_segments(app)
         .iter()
         .flat_map(|turn| &turn.translations)
         .map(|entry| entry.output_text())

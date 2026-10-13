@@ -12,11 +12,13 @@ pauses and maximum-duration cuts. No additional silence, timer or next ASR
 window is required. The assembler preserves turn identity and context, and
 retains only the incomplete suffix across audio chunks.
 
-Pseudo-streaming windows can still revise their right edge, so that edge needs
-a normal VAD pause or subsequent text; an interior sentence already has
+Pseudo-streaming windows can still revise their right edge. A terminal period,
+even alongside a short VAD pause, does not complete the latest sentence. It
+waits for subsequent text or a real input end; an interior sentence already has
 lookahead. In both modes, commas, colons and audio-window limits alone do not
 complete unfinished text. Two seconds of continuous silence, a speaker boundary,
-or explicit input end release an unpunctuated final tail.
+or explicit input end release the final tail, with or without punctuation.
+These sentence-readiness rules apply to every ASR connector.
 
 Pseudo-streaming first reports after about two seconds of audio, then advances
 by about two seconds using three-second overlapping windows (four seconds for

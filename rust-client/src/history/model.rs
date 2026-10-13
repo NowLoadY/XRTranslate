@@ -7,6 +7,8 @@ pub(crate) struct RecognitionHistoryEntry {
     pub(crate) live: bool,
     pub(crate) text: String,
     pub(crate) turn_id: String,
+    /// Zero denotes an unsegmented or legacy whole-turn recognition result.
+    pub(crate) segment_index: u32,
     pub(crate) speaker_id: String,
     pub(crate) source_start_ms: f64,
     pub(crate) source_end_ms: f64,

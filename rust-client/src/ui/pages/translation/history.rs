@@ -125,15 +125,16 @@ fn history_text<'a>(ui: &egui::Ui, speaker_id: &str, speaker_size: f32) -> Annot
     text
 }
 
-/// A turn keeps its place while recognition and translation update independently.
-pub(super) struct HistoryTurn<'a> {
+/// Each sentence keeps its place while recognition and translation update independently.
+pub(super) struct HistorySegment<'a> {
     stream_id: Option<u64>,
     turn_id: &'a str,
+    segment_index: u32,
     recognition: Vec<&'a crate::history::RecognitionHistoryEntry>,
     pub(super) translations: Vec<&'a crate::history::TranslationHistoryEntry>,
 }
 
-impl HistoryTurn<'_> {
+impl HistorySegment<'_> {
     fn live(&self) -> bool {
         self.recognition.iter().any(|entry| entry.live)
             || self.translations.iter().any(|entry| entry.live)
@@ -153,9 +154,21 @@ impl HistoryTurn<'_> {
     }
 }
 
-pub(super) fn history_turns(app: &crate::XRTranslateApp) -> Vec<HistoryTurn<'_>> {
-    let mut turns: Vec<HistoryTurn<'_>> = Vec::new();
-    for entry in &app.recognition_history {
+pub(super) fn history_segments(app: &crate::XRTranslateApp) -> Vec<HistorySegment<'_>> {
+    collect_history_segments(
+        &app.recognition_history,
+        &app.translations,
+        &app.history_timeline,
+    )
+}
+
+fn collect_history_segments<'a>(
+    recognition: &'a [crate::history::RecognitionHistoryEntry],
+    translations: &'a [crate::history::TranslationHistoryEntry],
+    timeline: &crate::history::FeedTimeline,
+) -> Vec<HistorySegment<'a>> {
+    let mut turns: Vec<HistorySegment<'a>> = Vec::new();
+    for entry in recognition {
         if entry.text.trim().is_empty() {
             continue;
         }
@@ -163,18 +176,20 @@ pub(super) fn history_turns(app: &crate::XRTranslateApp) -> Vec<HistoryTurn<'_>>
             !entry.turn_id.is_empty()
                 && turn.stream_id == entry.stream_id
                 && turn.turn_id == entry.turn_id
+                && turn.segment_index == entry.segment_index
         }) {
             turn.recognition.push(entry);
         } else {
-            turns.push(HistoryTurn {
+            turns.push(HistorySegment {
                 stream_id: entry.stream_id,
                 turn_id: &entry.turn_id,
+                segment_index: entry.segment_index,
                 recognition: vec![entry],
                 translations: Vec::new(),
             });
         }
     }
-    for entry in &app.translations {
+    for entry in translations {
         if entry.source.trim().is_empty()
             && entry.translated.trim().is_empty()
             && entry
@@ -196,12 +211,15 @@ pub(super) fn history_turns(app: &crate::XRTranslateApp) -> Vec<HistoryTurn<'_>>
                                 .any(|source| source.text == entry.source)
                     } else {
                         turn.turn_id == entry.turn_id
+                            && (turn.segment_index == entry.segment_index
+                                || (turn.segment_index == 0 && !turn.recognition.is_empty()))
                     }
             })
             .unwrap_or_else(|| {
-                turns.push(HistoryTurn {
+                turns.push(HistorySegment {
                     stream_id: entry.stream_id,
                     turn_id: &entry.turn_id,
+                    segment_index: entry.segment_index,
                     recognition: Vec::new(),
                     translations: Vec::new(),
                 });
@@ -221,13 +239,18 @@ pub(super) fn history_turns(app: &crate::XRTranslateApp) -> Vec<HistoryTurn<'_>>
     for turn in &mut turns {
         turn.translations.sort_by_key(|entry| entry.segment_index);
     }
-    turns.sort_by_key(|turn| app.history_timeline.position(turn.stream_id, turn.turn_id));
+    turns.sort_by_key(|turn| {
+        (
+            timeline.position(turn.stream_id, turn.turn_id),
+            turn.segment_index,
+        )
+    });
     turns
 }
 
 fn prepare_turn<'a>(
     ui: &egui::Ui,
-    turn: &HistoryTurn<'a>,
+    turn: &HistorySegment<'a>,
     scale: &HistoryFeedScale,
     plain: bool,
 ) -> (f32, HistoryRow<'a>) {
@@ -401,7 +424,7 @@ fn render_feed(
     display: DisplayMode,
 ) -> bool {
     let plain = display == DisplayMode::Text;
-    let turns = history_turns(app);
+    let turns = history_segments(app);
     let stamp = (app.history_timeline.revision, plain);
     let id = ui.make_persistent_id("history_scroll_state");
     let changed = ui.data(|data| data.get_temp::<(u64, bool)>(id)) != Some(stamp);
@@ -445,7 +468,7 @@ fn render_feed(
                 row.show(ui);
             } else {
                 let turn = turns.get(index);
-                let activity = if turn.is_none_or(HistoryTurn::live) {
+                let activity = if turn.is_none_or(HistorySegment::live) {
                     1.0
                 } else {
                     history_activity(index, count)
@@ -457,6 +480,7 @@ fn render_feed(
                             "history_data",
                             turn.stream_id,
                             turn.turn_id,
+                            turn.segment_index,
                             if turn.turn_id.is_empty() { index } else { 0 },
                         ))
                     },
@@ -477,7 +501,7 @@ fn render_header(
     header_size: f32,
     openable: bool,
 ) -> (bool, DisplayMode) {
-    let count = history_turns(app).len() + usize::from(!app.partial_text.is_empty());
+    let count = history_segments(app).len() + usize::from(!app.partial_text.is_empty());
     let response = ui.add(
         egui::Label::new(
             egui::RichText::new(format!(

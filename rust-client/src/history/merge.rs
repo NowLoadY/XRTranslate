@@ -58,6 +58,7 @@ pub(crate) fn collect_recognition_window(
         stream_id: Some(window.stream_id),
         live: window.continuous,
         text: String::new(),
+        segment_index: 0,
         source_start_ms: first.source_start_ms,
         source_end_ms: first.source_end_ms,
         activation_matches: Vec::new(),
@@ -195,11 +196,12 @@ pub(crate) fn merge_authoritative_recognition_snapshot(
         .position(|entry| same_turn(entry) && (entry.authoritative_snapshot || entry.live))
         .unwrap_or(history.len());
     history.retain(|entry| !(same_turn(entry) && (entry.authoritative_snapshot || entry.live)));
-    for entry in &mut entries {
+    let entry_count = entries.len();
+    for (index, entry) in entries.iter_mut().enumerate() {
         entry.stream_id = Some(stream_id);
         // Draining a buffered sentence finalizes the same recognition revision;
         // it must retire the live row instead of requiring another ASR call.
-        entry.live = entry.revisable;
+        entry.live = entry.revisable && index + 1 == entry_count;
         entry.revision = None;
     }
     history.splice(insertion_index..insertion_index, entries);

@@ -102,7 +102,7 @@ impl Renderer {
             }
             let elapsed = now.saturating_duration_since(self.title.as_ref().unwrap().1);
             // Also identify the song during intros, instrumental gaps and outros.
-            title(&playback.track.title, content_budget, elapsed)
+            title(&playback.track, content_budget, elapsed)
         } else {
             self.title = None;
             lyric
@@ -118,7 +118,13 @@ impl Renderer {
     }
 }
 
-fn title(text: &str, budget: usize, elapsed: Duration) -> String {
+fn title(track: &Track, budget: usize, elapsed: Duration) -> String {
+    let text = std::iter::once(track.title.as_str())
+        .chain(track.artists.iter().map(String::as_str))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let text = text.chars().filter(|c| !c.is_control()).collect::<String>();
     if text.chars().count() <= budget {
