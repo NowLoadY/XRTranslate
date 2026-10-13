@@ -2,23 +2,25 @@ use tokio::sync::watch;
 use xrtranslate_engine::{TranslationSegmentPair, ends_at_sentence_boundary, sentence_end_offsets};
 use xrtranslate_vad::UtteranceEndReason;
 
-/// A window cut or micro-pause needs text lookahead. An ordinary pause can
-/// confirm sentence punctuation, but cannot turn a comma into a sentence end.
-pub(crate) fn completed_prefix(text: &str, end_reason: UtteranceEndReason) -> usize {
+/// Non-revisable ASR owns the punctuation in its final result. Release complete
+/// sentences even at an adaptive pause or a duration limit; waiting for another
+/// chunk here adds an entire ASR window of latency to ordinary recognition.
+/// The audio boundary alone still cannot complete an unpunctuated fragment.
+pub(crate) fn completed_recognition_prefix(text: &str, end_reason: UtteranceEndReason) -> usize {
     if matches!(
         end_reason,
         UtteranceEndReason::Flushed | UtteranceEndReason::SpeakerChange
     ) {
         return text.len();
     }
-    let right_edge = text.trim_end().len();
     sentence_end_offsets(text)
         .into_iter()
-        .filter(|end| *end < right_edge || end_reason == UtteranceEndReason::Silence)
         .next_back()
         .unwrap_or(0)
 }
 
+/// Revisable windows need lookahead or acoustic confirmation at their right
+/// edge. This stricter policy must not delay completed non-revisable ASR.
 pub(crate) fn completed_sentences(
     segments: &[TranslationSegmentPair],
     end_reason: UtteranceEndReason,

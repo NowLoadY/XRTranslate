@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use xrtranslate_prompt::PromptTemplateLibrary;
 
+pub(crate) const DEFAULT_PAUSE_TOLERANCE: f32 = 0.15;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UpdateChannel {
@@ -151,7 +153,7 @@ const fn default_background_noise() -> f32 {
     0.30
 }
 const fn default_pause_tolerance() -> f32 {
-    0.40
+    DEFAULT_PAUSE_TOLERANCE
 }
 
 const fn default_true() -> bool {

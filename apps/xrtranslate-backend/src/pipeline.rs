@@ -774,8 +774,8 @@ impl NativePipeline {
                     utterances.push(event);
                 }
             }
-            // Short VAD pauses delimit audio, not unfinished sentences. An
-            // actual idle turn boundary releases an unpunctuated final tail.
+            // Complete final ASR sentences translate independently of silence.
+            // Idle still releases an unpunctuated final tail.
             if active {
                 self.sentence_idle_frames = Some(0);
             } else if let Some(frames) = &mut self.sentence_idle_frames {

@@ -4,13 +4,19 @@ The default cloud Qwen recognizer is `qwen-audio-3.0-asr-flash`. The regional
 presets use DashScope's native HTTP API (`transport: dashscope`), with one
 recognition result per submitted audio window.
 
-Both live and overlapping-window ASR use the same sentence boundaries. Source
-previews update immediately; translation starts only for a complete sentence.
-Commas, colons, short pauses and audio-window limits do not release unfinished
-text. A sentence ending inside a window has lookahead; a right-edge ending
-needs a normal VAD pause or a subsequent window. Micro-pause and maximum-duration
-cuts retain the tail. Two seconds of continuous silence, a speaker boundary, or
-explicit input end release an unpunctuated final tail.
+Final ASR results and revisable pseudo-streaming windows share sentence parsing
+but have different readiness policies. In ordinary endpointed mode (including
+non-streaming HTTP ASR), reliable sentence-ending punctuation in the final
+recognition result is sufficient to start translation. This includes adaptive
+pauses and maximum-duration cuts. No additional silence, timer or next ASR
+window is required. The assembler preserves turn identity and context, and
+retains only the incomplete suffix across audio chunks.
+
+Pseudo-streaming windows can still revise their right edge, so that edge needs
+a normal VAD pause or subsequent text; an interior sentence already has
+lookahead. In both modes, commas, colons and audio-window limits alone do not
+complete unfinished text. Two seconds of continuous silence, a speaker boundary,
+or explicit input end release an unpunctuated final tail.
 
 Pseudo-streaming first reports after about two seconds of audio, then advances
 by about two seconds using three-second overlapping windows (four seconds for
@@ -33,6 +39,10 @@ resource limit and an explicit diagnostic rather than arbitrary translation
 cuts. Merged text receives timestamps estimated from text partitions. Voice
 cloning receives original audio windows with their original transcripts;
 reconstructed captions are not paired with repeated or misaligned PCM.
+Queue latency records actual waits for the inference worker; it excludes the
+time retained text spends awaiting sentence completion. Total latency still
+includes that time. Backend assembly diagnostics report ready sentences and
+retained character counts without logging the transcript.
 
 The HTTP adapter still returns one completed recognition result per audio
 window. Sentence accumulation and incremental translation do not turn it into

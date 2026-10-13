@@ -1983,6 +1983,7 @@ async fn run_inference_worker(
                     prepared.recognized,
                     prepared.asr_context,
                     prepared.prompt_graph,
+                    prepared.queue_elapsed,
                 )),
                 None,
             ),
@@ -2435,8 +2436,12 @@ async fn run_inference_worker(
         if *generation.borrow() != job.generation {
             continue;
         }
-        let job_queue_elapsed = job.enqueued_at.elapsed();
-        if job_queue_elapsed >= Duration::from_millis(100) {
+        // Prepared sentences may span several chunks. Their source age includes
+        // ASR and sentence assembly, not time spent waiting for this worker.
+        let job_queue_elapsed = prepared_recognition
+            .as_ref()
+            .map_or_else(|| job.enqueued_at.elapsed(), |(_, _, _, queued)| *queued);
+        if prepared_recognition.is_none() && job_queue_elapsed >= Duration::from_millis(100) {
             warn!(
                 queue_ms = job_queue_elapsed.as_millis(),
                 workload = ?job.workload,
@@ -2484,7 +2489,7 @@ async fn run_inference_worker(
         adaptive_route.configure(&job.source_language, &job.target_language);
         let active_target_language = adaptive_route.active_targets(&job.target_language);
         let (prepared_recognition, prepared_context, prepared_graph) = match prepared_recognition {
-            Some((recognized, context, graph)) => (Some(recognized), Some(context), Some(graph)),
+            Some((recognized, context, graph, _)) => (Some(recognized), Some(context), Some(graph)),
             None => (None, None, None),
         };
         let asr_context = if let Some(context) = prepared_context {
@@ -2834,9 +2839,22 @@ async fn run_inference_worker(
                 recognized,
                 asr_context,
                 prompt_graph: prompt_graph_for_revision,
+                queue_elapsed: job_queue_elapsed,
             };
             match sentence_assembler.push(prepared) {
                 Ok(ready) => {
+                    info!(
+                        ready_sentences = ready
+                            .iter()
+                            .map(|part| part.recognized.segments.len())
+                            .sum::<usize>(),
+                        retained_characters = sentence_assembler.pending().map_or(0, |tail| tail
+                            .recognized
+                            .source_text
+                            .chars()
+                            .count()),
+                        "final ASR sentence assembly completed"
+                    );
                     prepared_work.extend(ready.into_iter().map(InferenceWork::Prepared));
                     if let Some(tail) = sentence_assembler.pending() {
                         prepared_work.push_back(InferenceWork::Unfinished(tail.clone()));

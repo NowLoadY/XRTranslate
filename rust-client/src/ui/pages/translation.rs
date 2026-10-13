@@ -423,7 +423,7 @@ fn render_input_adaptation(
                 ui,
                 &mut recognition.pause_tolerance,
                 0.0..=1.0,
-                0.10,
+                crate::client_settings::DEFAULT_PAUSE_TOLERANCE,
                 pause_tolerance,
                 &[],
             );

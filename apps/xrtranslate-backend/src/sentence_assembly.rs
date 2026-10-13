@@ -4,6 +4,8 @@
 //! sentence. Only the uncommitted tail is retained here. Committed sentences
 //! leave the buffer once, while genuine input boundaries release the tail.
 
+use std::time::Duration;
+
 use xrtranslate_vad::UtteranceEndReason;
 
 use crate::{PipelineGeneration, UtteranceJob, pipeline::RecognizedOutput};
@@ -18,6 +20,8 @@ pub(super) struct PreparedRecognition {
     pub(super) recognized: RecognizedOutput,
     pub(super) asr_context: xr_corpus_protocol::PrepareAsrResponse,
     pub(super) prompt_graph: xrtranslate_prompt::PromptNodeGraph,
+    /// Actual worker queue time, excluding ASR and retention across chunks.
+    pub(super) queue_elapsed: Duration,
 }
 
 #[derive(Default)]
@@ -66,6 +70,7 @@ impl SentenceAssembler {
                 append_text(&mut text, &current.recognized.source_text);
                 current.recognized.apply_source_correction(text);
                 current.recognized.asr_elapsed += previous.recognized.asr_elapsed;
+                current.queue_elapsed += previous.queue_elapsed;
                 current.job.source_start_ms = previous.job.source_start_ms;
                 current.job.turn_id = previous.job.turn_id;
                 current.job.topic_turn_id = previous.job.topic_turn_id;
@@ -78,12 +83,13 @@ impl SentenceAssembler {
         }
 
         let text = &current.recognized.source_text;
-        // Offline ASR can insert a period merely because its audio ended.
-        // Hold the right-edge sentence for one chunk of lookahead; preserve
-        // its punctuation rather than guessing that a genuine period is wrong.
-        // This is conservative chunk lookahead, not independent ASR agreement.
-        let complete_end =
-            crate::sentence_gate::completed_prefix(text, current.job.utterance.end_reason);
+        // These are final, non-revisable results, not pseudo-streaming windows.
+        // Trust reliable sentence punctuation immediately, retaining only the
+        // incomplete suffix instead of waiting for the next audio/ASR window.
+        let complete_end = crate::sentence_gate::completed_recognition_prefix(
+            text,
+            current.job.utterance.end_reason,
+        );
         let tail = text[complete_end..].trim().to_owned();
         if tail.is_empty() {
             ready.push(current);
@@ -102,6 +108,7 @@ impl SentenceAssembler {
                 recognized: current.recognized.clone(),
                 asr_context: current.asr_context.clone(),
                 prompt_graph: current.prompt_graph.clone(),
+                queue_elapsed: current.queue_elapsed,
             };
             completed.job.source_end_ms = split_ms;
             completed.recognized.apply_source_correction(prefix);
