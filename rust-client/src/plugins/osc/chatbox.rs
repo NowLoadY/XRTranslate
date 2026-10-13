@@ -36,7 +36,12 @@ pub(super) fn build_chatbox_text(
     metrics: &SystemMetrics,
     lyric: &str,
 ) -> String {
-    let mut entries = history.iter().chain(live.iter()).collect::<VecDeque<_>>();
+    let mut entries = history
+        .iter()
+        .chain(live.iter())
+        // Hidden recognition previews must not consume caption space.
+        .filter(|entry| !render_entry(entry, settings).is_empty())
+        .collect::<VecDeque<_>>();
     // A stale live caption must not take precedence over a newer final result.
     entries
         .make_contiguous()
@@ -226,10 +231,9 @@ fn render_entries<'a>(
             .flatten();
 
         if settings.format_mode == OscFormatMode::TargetOnly {
-            let text = if target.is_empty() { source } else { target };
-            if !text.is_empty() {
+            if !target.is_empty() {
                 targets.push(with_speaker(
-                    &with_source_prefix(&text, entry.source_kind, settings),
+                    &with_source_prefix(&target, entry.source_kind, settings),
                     speaker.as_deref(),
                 ));
             }
@@ -353,7 +357,7 @@ fn entry_parts(
     if show_source && settings.format_mode != OscFormatMode::BilingualTargetFirst {
         parts.push((String::new(), source.clone()));
     }
-    let main = if translated.is_empty() {
+    let main = if translated.is_empty() && settings.format_mode != OscFormatMode::TargetOnly {
         &source
     } else {
         &translated
@@ -605,5 +609,72 @@ fn prefixed_label(text: &str) -> String {
         String::new()
     } else {
         format!("{prefix} ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn target_only_waits_for_translation_without_evicting_visible_history() {
+        let now = Instant::now();
+        let recognized = HistoryMessage {
+            stream_id: 1,
+            source_kind: OscInputSource::Microphone,
+            source: "Recognized source".into(),
+            translated: String::new(),
+            additional_translations: Vec::new(),
+            speaker_id: String::new(),
+            updated_at: now,
+            expires_at: now + Duration::from_secs(15),
+        };
+        let metrics = SystemMetrics::default();
+        for separator in [OscMessageSeparator::NewLine, OscMessageSeparator::Space] {
+            let settings = OscSettings {
+                format_mode: OscFormatMode::TargetOnly,
+                message_separator: separator,
+                ..Default::default()
+            };
+            for empty_target in ["", "  ", "。"] {
+                let preview = HistoryMessage {
+                    translated: empty_target.into(),
+                    ..recognized.clone()
+                };
+                assert!(render_entry(&preview, &settings).is_empty());
+                assert!(
+                    build_chatbox_text(&[], &[preview], None, &settings, &metrics, "").is_empty()
+                );
+            }
+            let translated = HistoryMessage {
+                translated: "译文".into(),
+                ..recognized.clone()
+            };
+            assert_eq!(
+                build_chatbox_text(&[], &[translated.clone()], None, &settings, &metrics, ""),
+                "🎤 译文"
+            );
+            let previews = vec![recognized.clone(); MAX_LINES];
+            assert_eq!(
+                build_chatbox_text(&[translated], &previews, None, &settings, &metrics, ""),
+                "🎤 译文"
+            );
+            let additional = HistoryMessage {
+                additional_translations: vec![("de".into(), "Übersetzung".into())],
+                ..recognized.clone()
+            };
+            let text = build_chatbox_text(&[], &[additional], None, &settings, &metrics, "");
+            assert!(text.contains("Übersetzung"));
+            assert!(!text.contains(&recognized.source));
+            let bilingual = OscSettings {
+                format_mode: OscFormatMode::BilingualSourceFirst,
+                ..settings
+            };
+            assert!(
+                build_chatbox_text(&[], &[recognized.clone()], None, &bilingual, &metrics, "")
+                    .contains(&recognized.source)
+            );
+        }
     }
 }
