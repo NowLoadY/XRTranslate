@@ -97,6 +97,8 @@ impl QwenAudioStreamingAdapter {
 
     /// Audio arrives while the user speaks. Sender and receiver run concurrently;
     /// only EOF sends finish-task. Dropping this future closes the active socket.
+    /// Updates replace the cumulative preview, including an empty retraction;
+    /// only the successful return value is a completed transcription.
     pub async fn transcribe_stream<S, F, Fut>(
         &self,
         audio: S,
@@ -375,9 +377,6 @@ where
                         let Some(text) = sentence["text"].as_str().map(str::trim) else {
                             continue;
                         };
-                        if text.is_empty() && sentence["sentence_end"].as_bool() != Some(true) {
-                            continue;
-                        }
                         let id = sentence["sentence_id"]
                             .as_u64()
                             .or_else(|| sentence["begin_time"].as_u64())
@@ -388,6 +387,13 @@ where
                             || active_id.is_some_and(|active| id < active)
                         {
                             continue;
+                        }
+                        if active_id.is_some_and(|active| id > active) && last_preview != committed
+                        {
+                            return Err(invalid_event(
+                                endpoint,
+                                "new sentence arrived before finalizing the previous sentence",
+                            ));
                         }
                         active_id = Some(id);
                         let mut snapshot = committed.clone();
@@ -403,7 +409,9 @@ where
                         }
                     }
                     Some("task-finished") => {
-                        if active_id.is_some() {
+                        // An empty sentence-begin or retracted draft has no
+                        // pending text. A nonempty draft still needs its final.
+                        if last_preview != committed {
                             return Err(invalid_event(
                                 endpoint,
                                 "task finished without finalizing its last sentence",
@@ -437,14 +445,19 @@ where
 }
 
 fn append_sentence(output: &mut String, next: &str) {
+    // Inspect content across terminal punctuation and opening quotes. Chinese
+    // and Japanese remain compact; other scripts need a sentence separator.
+    let compact = |character: char| {
+        matches!(character as u32,
+            0x3040..=0x30FF | 0x31F0..=0x31FF | 0x3400..=0x9FFF
+            | 0xF900..=0xFAFF | 0x20000..=0x323AF)
+    };
     if output
         .chars()
-        .next_back()
-        .is_some_and(|c| c.is_ascii_alphanumeric())
-        && next
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphanumeric())
+        .rev()
+        .find(|character| character.is_alphanumeric())
+        .zip(next.chars().find(|character| character.is_alphanumeric()))
+        .is_some_and(|(left, right)| !compact(left) && !compact(right))
     {
         output.push(' ');
     }

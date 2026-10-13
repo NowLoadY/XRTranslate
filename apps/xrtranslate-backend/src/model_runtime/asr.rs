@@ -112,6 +112,11 @@ pub(super) fn local_adapter(
 }
 
 impl NativeAsrAdapter {
+    /// Connectors normalize their wire events to cumulative preview snapshots.
+    /// Each callback replaces the preview; an empty snapshot retracts it. These
+    /// updates never commit history or translation, regardless of punctuation.
+    /// Only a successful return supplies the completed transcript. EOF must
+    /// drain input and await provider completion; cancellation is not completion.
     pub(crate) async fn transcribe_stream<F, Fut>(
         &self,
         audio: tokio::sync::mpsc::Receiver<Vec<u8>>,

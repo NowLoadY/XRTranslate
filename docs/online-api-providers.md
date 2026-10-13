@@ -166,6 +166,13 @@ ASR models declaring `streaming: cumulative` on a live-audio connector send
 frames during speech and emit partial snapshots. The normal VAD path selects
 live input; the continuous-recognition option retains its overlapping window
 path. Both share final result processing. HTTP-only ASR keeps `streaming: none`.
+The shared live-ASR callback always carries a complete preview snapshot, never
+a text delta. Empty snapshots retract the preview. Connectors own provider
+sentence IDs, duplicate events and finalization; the pipeline commits only the
+successfully completed transcript. Audio EOF drains queued frames and awaits
+provider completion. Disconnects and cancellation must not promote a draft to
+a final result. Adding a delta-based connector requires normalizing its deltas
+to this snapshot contract inside the connector.
 Unsupported streaming, instruction or weighted-vocabulary declarations fail
 configuration validation instead of silently disappearing. See
 [live ASR](providers/qwen-audio-streaming-asr.md) for audio ownership, bounded

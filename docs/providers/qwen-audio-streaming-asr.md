@@ -18,8 +18,12 @@ and explicit pause/finish controls close the input and send `finish-task`.
 Intermediate sentence revisions produce cumulative snapshots through the
 existing `asr_result/partial` event. Heartbeats and duplicate final sentence IDs
 are ignored. Previews do not enter history, Corpus or TTS and never block audio
-on a full result queue. After `task-finished`, the final transcript joins the
-same language routing, quality checks, speaker metadata, sentence assembly,
+on a full result queue. Empty revisions retract only the active draft. A new
+sentence cannot silently replace an unfinalized nonempty sentence: incomplete
+provider responses fail instead of committing a transcript with missing text.
+Sentence joins retain spacing for alphabetic scripts and compact Chinese and
+Japanese text. After `task-finished`, the final transcript joins the same
+language routing, quality checks, speaker metadata, sentence assembly,
 translation and history path as ordinary recognition. Normal live completion
 does not submit the same audio to ASR again; existing quality/language recovery
 remains available for an abnormal result.
