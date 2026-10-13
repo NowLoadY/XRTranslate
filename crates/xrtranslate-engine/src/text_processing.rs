@@ -71,17 +71,10 @@ impl RevisableTranscript {
 
         let previous_tokens = revision_tokens(&self.hypothesis);
         let next_tokens = revision_tokens(&hypothesis);
-        let commit_end = revision_alignment_start(&previous_tokens, &next_tokens).map_or_else(
-            || {
-                let retained = overlap_ratio.clamp(0.15, 0.8);
-                let commit_count =
-                    ((previous_tokens.len() as f32) * (1.0 - retained)).floor() as usize;
-                previous_tokens
-                    .get(commit_count.min(previous_tokens.len().saturating_sub(1)))
-                    .map_or(self.hypothesis.len(), |token| token.start)
-            },
-            |index| previous_tokens[index].start,
-        );
+        // Audio duration does not tell us which words were repeated. Without
+        // a confirmed text overlap, preserve the entire preceding hypothesis.
+        let commit_end = revision_alignment_start(&previous_tokens, &next_tokens)
+            .map_or(self.hypothesis.len(), |index| previous_tokens[index].start);
         append_revision_text(&mut self.stable, self.hypothesis[..commit_end].trim());
         self.hypothesis = hypothesis;
         self.text()
@@ -135,56 +128,28 @@ fn revision_tokens(text: &str) -> Vec<RevisionToken> {
 
 fn revision_alignment_start(previous: &[RevisionToken], next: &[RevisionToken]) -> Option<usize> {
     const LIMIT: usize = 32;
-    let previous_offset = previous.len().saturating_sub(LIMIT);
-    let previous = &previous[previous_offset..];
-    let next = &next[..next.len().min(LIMIT)];
-    let mut lengths = vec![vec![0_u8; next.len() + 1]; previous.len() + 1];
-    for left in (0..previous.len()).rev() {
-        for right in (0..next.len()).rev() {
-            lengths[left][right] = if revision_tokens_match(previous, left, next, right) {
-                lengths[left + 1][right + 1].saturating_add(1)
-            } else {
-                lengths[left + 1][right].max(lengths[left][right + 1])
-            };
-        }
-    }
-    if lengths[0][0] == 0 {
-        return None;
-    }
-    let mut left = 0;
-    let mut right = 0;
-    let mut pairs = Vec::new();
-    while left < previous.len() && right < next.len() {
-        if revision_tokens_match(previous, left, next, right) {
-            pairs.push((left, right));
-            left += 1;
-            right += 1;
-        } else if lengths[left + 1][right] >= lengths[left][right + 1] {
-            left += 1;
-        } else {
-            right += 1;
-        }
-    }
-    let &(first_previous, _) = pairs.first()?;
-    let distinctive = pairs
-        .iter()
-        .any(|&(index, _)| previous[index].normalized.chars().count() >= 4);
-    (pairs.len() >= 2 || distinctive).then_some(previous_offset + first_previous)
-}
-
-fn revision_tokens_match(
-    previous: &[RevisionToken],
-    left: usize,
-    next: &[RevisionToken],
-    right: usize,
-) -> bool {
-    let previous_is_last = left == previous.len().saturating_sub(1);
-    let previous_token = &previous[left].normalized;
-    let next_token = &next[right].normalized;
-    previous_token == next_token
-        || ((previous_is_last || right == 0)
-            && (next_token.starts_with(previous_token) || previous_token.starts_with(next_token))
-            && previous_token.len().min(next_token.len()) >= 2)
+    let maximum = previous.len().min(next.len()).min(LIMIT);
+    // Only a contiguous suffix-to-prefix match can replace existing words.
+    // A gapped subsequence can anchor on an earlier repeated word ("more")
+    // and silently discard everything between it and the actual overlap.
+    (1..=maximum).rev().find_map(|count| {
+        let start = previous.len() - count;
+        let suffix = &previous[start..];
+        let distinctive = count >= 2 || suffix[0].normalized.chars().count() >= 4;
+        let matched = suffix
+            .iter()
+            .zip(next)
+            .enumerate()
+            .all(|(index, (left, right))| {
+                left.normalized == right.normalized
+                // The old window may end halfway through a word. Allow the
+                // new window to complete it, never to shorten an existing word.
+                || (index + 1 == count
+                    && left.normalized.chars().count() >= 2
+                    && right.normalized.starts_with(&left.normalized))
+            });
+        (distinctive && matched).then_some(start)
+    })
 }
 
 fn append_revision_text(destination: &mut String, addition: &str) {
