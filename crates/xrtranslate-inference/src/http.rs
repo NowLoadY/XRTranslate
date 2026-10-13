@@ -138,6 +138,11 @@ impl ReqwestClient {
 
         for attempt in 0..MAX_ATTEMPTS {
             let mut builder = self.client.request(method.clone(), &request.url);
+            // json() supplies Content-Type only when absent; applying headers
+            // first avoids appending a second value that can hide the JSON body.
+            for (name, value) in &request.headers {
+                builder = builder.header(name, value);
+            }
             if let Some(body) = &request.multipart {
                 let file = reqwest::multipart::Part::bytes(body.file.clone())
                     .file_name(body.file_name.clone())
@@ -151,10 +156,6 @@ impl ReqwestClient {
             } else if !request.body.is_null() {
                 builder = builder.json(&request.body);
             }
-            for (name, value) in &request.headers {
-                builder = builder.header(name, value);
-            }
-
             match builder.send().await {
                 Ok(response) => return Ok(response),
                 Err(error) => {
@@ -244,4 +245,103 @@ fn client_builder() -> reqwest::ClientBuilder {
     }
     #[cfg(not(target_os = "android"))]
     builder
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::{BufRead, BufReader, Read, Write},
+        net::TcpListener,
+        thread,
+    };
+
+    use super::*;
+    use crate::{TranslationAdapter, TranslationOptions, TranslationPromptProfile};
+
+    #[tokio::test]
+    async fn translation_sends_one_json_content_type_and_selected_model() {
+        for streaming in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!(
+                "http://{}/v1/chat/completions",
+                listener.local_addr().unwrap()
+            );
+            let server = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(socket.try_clone().unwrap());
+                let mut headers = Vec::new();
+                loop {
+                    let mut line = String::new();
+                    assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        headers.push((name.to_ascii_lowercase(), value.trim().to_owned()));
+                    }
+                }
+                let length = headers
+                    .iter()
+                    .find(|(name, _)| name == "content-length")
+                    .unwrap()
+                    .1
+                    .parse::<usize>()
+                    .unwrap();
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let (content_type, response) = if streaming {
+                    (
+                        "text/event-stream",
+                        concat!(
+                            "data: {\"choices\":[{\"delta\":{\"content\":\"Hello.\"},\"finish_reason\":null}]}\n\n",
+                            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                            "data: [DONE]\n\n",
+                        ),
+                    )
+                } else {
+                    (
+                        "application/json",
+                        r#"{"choices":[{"message":{"content":"Hello."},"finish_reason":"stop"}]}"#,
+                    )
+                };
+                write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+                (headers, serde_json::from_slice::<Value>(&body).unwrap())
+            });
+            let adapter = TranslationAdapter::with_bearer_token(
+                ReqwestClient::new_direct(Duration::from_secs(5)).unwrap(),
+                endpoint,
+                "gpt-4o-mini",
+                TranslationPromptProfile::ChatMessages,
+                "test-token",
+            )
+            .unwrap();
+            let options = TranslationOptions::new("zh", "en");
+            let result = if streaming {
+                adapter
+                    .translate_streaming("你好。", options, |_| std::future::ready(()))
+                    .await
+            } else {
+                adapter.translate("你好。", options).await
+            }
+            .unwrap();
+            let (headers, body) = server.join().unwrap();
+            assert_eq!(result.text, "Hello.");
+            let content_types: Vec<_> = headers
+                .iter()
+                .filter(|(name, _)| name == "content-type")
+                .map(|(_, value)| value.as_str())
+                .collect();
+            assert_eq!(content_types, ["application/json"]);
+            assert!(
+                headers
+                    .iter()
+                    .any(|(name, value)| name == "authorization" && value == "Bearer test-token")
+            );
+            assert_eq!(body["model"], "gpt-4o-mini");
+            assert_eq!(body["stream"], streaming);
+        }
+    }
 }
