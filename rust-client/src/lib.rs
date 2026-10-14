@@ -23,6 +23,7 @@ mod audio;
 mod audio_linux;
 mod audio_processing;
 mod audio_studio;
+mod avatar_host;
 mod backend;
 mod child_process;
 mod client_settings;
@@ -94,6 +95,7 @@ use plugins::meeting::{
 };
 use plugins::osc::{OscPageContext, OscPlugin, OscUiAction};
 use plugins::vr_overlay::{VrOverlayPageContext, VrOverlayPlugin, VrOverlayUiAction};
+use plugins::vrc_avatar::VrcAvatarPlugin;
 use plugins::{PluginId, PluginPreferences, PluginRegistry, PluginScrollPolicy};
 pub(crate) use presentation::speaker::compact_speaker_label;
 use session_coordinator::{
@@ -647,6 +649,8 @@ struct XRTranslateApp {
     microphone_enabled: bool,
     system_audio_enabled: bool,
     audio_tasks: Vec<translation_service::AudioTask>,
+    exclusive_live_inputs: Vec<(TranslationSessionOwner, CaptureSource)>,
+    avatar_host_session: Option<avatar_host::AvatarHostSession>,
     input_level: Arc<AtomicU32>,
     loopback_level: Arc<AtomicU32>,
     microphone_vad_active: Arc<AtomicBool>,
@@ -681,6 +685,7 @@ struct XRTranslateApp {
     tts_runtime_backend: Option<String>,
     tts_runtime_cuda_version: Option<String>,
     osc_plugin: OscPlugin,
+    vrc_avatar_plugin: VrcAvatarPlugin,
     #[cfg(any(windows, target_os = "linux"))]
     lyrics_plugin: plugins::lyrics::LyricsPlugin,
     auto_input_plugin: plugins::auto_input::AutoInputPlugin,
@@ -1762,6 +1767,8 @@ impl Default for XRTranslateApp {
             microphone_enabled: false,
             system_audio_enabled: false,
             audio_tasks: Vec::new(),
+            exclusive_live_inputs: Vec::new(),
+            avatar_host_session: None,
             input_level,
             loopback_level,
             microphone_vad_active,
@@ -1796,6 +1803,7 @@ impl Default for XRTranslateApp {
             tts_runtime_backend: None,
             tts_runtime_cuda_version: None,
             osc_plugin,
+            vrc_avatar_plugin: VrcAvatarPlugin::default(),
             #[cfg(any(windows, target_os = "linux"))]
             lyrics_plugin,
             auto_input_plugin,
@@ -1994,7 +2002,9 @@ impl XRTranslateApp {
         };
 
         SessionConfig {
-            conversation_id: plugin.is_none().then(translation_service::host_conversation_id),
+            conversation_id: plugin
+                .is_none()
+                .then(translation_service::host_conversation_id),
             server_url: self.server_url.clone(),
             languages,
             external_audio_gate: if external_audio_gate {
@@ -2126,7 +2136,8 @@ impl XRTranslateApp {
                 }
                 PromptStudioAction::ExportProfile(profile) => {
                     if let Ok(json) = profile.export_project_json() {
-                        if let Err(error) = export::save(&profile.name, export::Format::Json, json) {
+                        if let Err(error) = export::save(&profile.name, export::Format::Json, json)
+                        {
                             self.notify_error(
                                 "Could not export the prompt. Please try again.",
                                 error,
@@ -2731,12 +2742,19 @@ impl XRTranslateApp {
 
         let registry = PluginRegistry::builtin();
         registry.set_enabled(&mut self.plugin_preferences, id, enabled);
+        if id == PluginId::VRC_AVATAR {
+            self.poll_vrc_avatar(None);
+        }
         self.sync_lyrics();
         registry.normalize_active_page(&self.plugin_preferences, &mut self.navigation.page);
         self.save_settings();
     }
 
     pub(crate) fn render_plugin_settings(&mut self, id: PluginId, ui: &mut egui::Ui) {
+        if id == PluginId::VRC_AVATAR {
+            self.vrc_avatar_plugin.render_settings(ui, self.ui_language);
+            return;
+        }
         if id == PluginId::VR_OVERLAY {
             if plugins::vr_overlay::ui::render_settings_contribution(
                 self.vr_overlay_plugin.draft_mut(),
@@ -3572,18 +3590,26 @@ impl XRTranslateApp {
     }
 
     fn enable_translation_service(&mut self) {
-        if self.translation_enabled {
+        if !self.enable_translation_processing() {
             return;
+        }
+        #[cfg(any(windows, target_os = "linux"))]
+        if self.ocr.enabled {
+            self.refresh_ocr();
+        }
+    }
+
+    /// Enable shared result delivery without activating unrelated inputs.
+    fn enable_translation_processing(&mut self) -> bool {
+        if self.translation_enabled {
+            return false;
         }
         self.translation_enabled = true;
         if let Ok(mut state) = self.shared_session_state.lock() {
             state.translation_enabled = true;
         }
         self.set_connection_status("Ready");
-        #[cfg(any(windows, target_os = "linux"))]
-        if self.ocr.enabled {
-            self.refresh_ocr();
-        }
+        true
     }
 
     fn plugin_task_active(&self, id: &str) -> bool {
@@ -3608,7 +3634,10 @@ impl XRTranslateApp {
             channel.source == source && channel.audio_tx.is_some() && channel.scope.accepts_events()
         }) || self.pending_translations.iter().any(|task| {
             task.plugin.is_none()
-                && matches!(task.input, TranslationInput::Live(input) if input.routes().contains(&source))
+                && task
+                    .input
+                    .live_source()
+                    .is_some_and(|input| input.routes().contains(&source))
         })
     }
 
@@ -3621,7 +3650,9 @@ impl XRTranslateApp {
                         && channel.scope.accepts_events()
                 })
         }) || self.pending_translations.iter().any(|task| {
-            matches!(task.input, TranslationInput::Live(input) if input.routes().contains(&source))
+            task.input
+                .live_source()
+                .is_some_and(|input| input.routes().contains(&source))
         })
     }
 
@@ -3760,9 +3791,13 @@ impl XRTranslateApp {
         if enabled && !demand && start_host_if_idle {
             self.start_host_input(source, ctx);
         }
-        if enabled && active_demand && !self.input_capturing(source)
+        if enabled
+            && active_demand
+            && !self.input_capturing(source)
             && !self.pending_translations.iter().any(|task| {
-                matches!(task.input, TranslationInput::Live(input) if input.routes().contains(&source))
+                task.input
+                    .live_source()
+                    .is_some_and(|input| input.routes().contains(&source))
             })
         {
             *self.input_enabled_mut(source) = false;
@@ -3823,6 +3858,7 @@ impl XRTranslateApp {
     }
 
     fn stop_task_owner(&mut self, owner: &TranslationSessionOwner) {
+        self.stop_vrc_avatar_owner(owner);
         self.cancel_text_tasks(Some(owner));
         self.cancel_pending_tasks(Some(owner));
         let mut kept = Vec::new();
@@ -3852,7 +3888,11 @@ impl XRTranslateApp {
                 self.finish_caption_stream(channel.session.stream_id());
                 self.audio_system.stop_capture_group(channel.scope.id());
             }
-            task.cancel();
+            self.retire_audio_task(task);
+        }
+        if !self.vrc_avatar_owns(owner) {
+            self.exclusive_live_inputs
+                .retain(|(lease_owner, _)| lease_owner != owner);
         }
         self.release_unused_inputs();
     }
@@ -3915,6 +3955,34 @@ impl XRTranslateApp {
     }
 
     fn poll_translation_tasks(&mut self) {
+        let capture_failures: Vec<_> = self
+            .audio_tasks
+            .iter()
+            .flat_map(|task| &task.channels)
+            .filter(|channel| channel.capturing && channel.scope.accepts_events())
+            .filter_map(|channel| {
+                self.audio_system
+                    .capture_group_error(channel.scope.id())
+                    .map(|error| (Arc::clone(&channel.scope), error))
+            })
+            .collect();
+        if !capture_failures.is_empty() {
+            // Serialize failure with the event pump so late backend results
+            // cannot revive a channel after its physical input has failed.
+            if let Ok(mut state) = self.shared_session_state.lock() {
+                for (scope, error) in capture_failures {
+                    if scope.accepts_events() {
+                        scope.publish(
+                            &SessionEvent::Error(error.clone()),
+                            &self.session_event_subscribers,
+                        );
+                        if scope.publish_to_host_outputs {
+                            state.record_error(error);
+                        }
+                    }
+                }
+            }
+        }
         let mut kept = Vec::new();
         let mut ended = Vec::new();
         for task in self.audio_tasks.drain(..) {
@@ -3931,6 +3999,11 @@ impl XRTranslateApp {
         }
         self.audio_tasks = kept;
         for task in ended {
+            let failed = task
+                .channels
+                .iter()
+                .any(|channel| channel.scope.failed.load(Ordering::Acquire));
+            let avatar = self.vrc_avatar_task_ended(&task.owner, failed);
             if task.owner.is_plugin(PluginId::MEDIA.as_str()) {
                 self.host_audio_import = None;
                 self.media_plugin.pause_task();
@@ -3942,15 +4015,28 @@ impl XRTranslateApp {
             if let Ok(mut state) = self.shared_session_state.lock() {
                 task.invalidate();
                 for channel in &task.channels {
+                    if failed || avatar {
+                        publish_host_output(
+                            &self.host_output_subscribers,
+                            HostOutputEvent::StreamCancelled(channel.scope.id()),
+                        );
+                    }
                     state.retire_stream(channel.session.stream_id());
                 }
             }
             for channel in &task.channels {
                 self.audio_system.stop_capture_group(channel.scope.id());
             }
-            task.cancel();
+            if failed || avatar {
+                self.retire_audio_task(task);
+            } else {
+                self.exclusive_live_inputs
+                    .retain(|(owner, _)| owner != &task.owner);
+                task.retire();
+            }
         }
         self.release_unused_inputs();
+        self.poll_vrc_avatar_session();
         if !self.translation_enabled {
             self.set_connection_status("Stopped");
         } else if self.backend_start_deadline.is_none()
@@ -4017,7 +4103,7 @@ impl XRTranslateApp {
         {
             return false;
         }
-        if let TranslationInput::Live(source) = task.input
+        if let Some(source) = task.input.live_source()
             && source.routes().contains(&CaptureSource::SystemAudio)
             && !AudioSystem::supports_system_audio()
         {
@@ -4026,16 +4112,66 @@ impl XRTranslateApp {
             self.last_error = Some(error.into());
             return false;
         }
-        self.enable_translation_service();
-        if let TranslationInput::Live(source) = task.input {
-            for source in source.routes() {
-                self.set_live_input(*source, true, ctx.clone(), false, Self::start_task_capture);
-            }
-            task.profiles = source
-                .routes()
+        let exclusive = matches!(task.input, TranslationInput::ExclusiveLive(_));
+        if let Some(source) = task.input.live_source() {
+            let overlaps_lease = self
+                .exclusive_live_inputs
                 .iter()
-                .map(|source| (*source, self.recognition_settings(*source).clone()))
-                .collect();
+                .any(|(lease_owner, input)| {
+                    lease_owner != &owner
+                        && input
+                            .routes()
+                            .iter()
+                            .any(|route| source.routes().contains(route))
+                });
+            let overlaps_task = exclusive
+                && (self.audio_tasks.iter().any(|active| {
+                    active.owner != owner
+                        && active.channels.iter().any(|channel| {
+                            channel.audio_tx.is_some() && source.routes().contains(&channel.source)
+                        })
+                }) || self.pending_translations.iter().any(|pending| {
+                    pending.owner() != owner
+                        && pending.input.live_source().is_some_and(|input| {
+                            input
+                                .routes()
+                                .iter()
+                                .any(|route| source.routes().contains(route))
+                        })
+                }));
+            if overlaps_lease || overlaps_task {
+                let error = "This audio input is already owned by another live translation task. Stop that task before starting this one.";
+                self.fail_task_startup(&owner, error);
+                self.last_error = Some(error.into());
+                return false;
+            }
+            if exclusive {
+                self.exclusive_live_inputs.push((owner.clone(), source));
+                self.enable_translation_processing();
+                for source in source.routes() {
+                    *self.input_enabled_mut(*source) = true;
+                }
+            } else {
+                self.enable_translation_service();
+                for source in source.routes() {
+                    self.set_live_input(
+                        *source,
+                        true,
+                        ctx.clone(),
+                        false,
+                        Self::start_task_capture,
+                    );
+                }
+            }
+            if task.profiles.is_empty() {
+                task.profiles = source
+                    .routes()
+                    .iter()
+                    .map(|source| (*source, self.recognition_settings(*source).clone()))
+                    .collect();
+            }
+        } else {
+            self.enable_translation_service();
         }
         if self.backend_start_deadline.is_some() {
             self.pending_translations.push(task);
@@ -4060,6 +4196,7 @@ impl XRTranslateApp {
     }
 
     fn fail_task_startup(&mut self, owner: &TranslationSessionOwner, error: &str) {
+        self.fail_vrc_avatar_startup(owner, error);
         self.notifications.error("", error);
         self.companion_inbox
             .observe_error("application", Some(error));
@@ -4103,7 +4240,9 @@ impl XRTranslateApp {
             TranslationInput::Text(_) => {
                 self.start_translation_task(task, ctx);
             }
-            TranslationInput::Live(_) => self.start_session(task, ctx),
+            TranslationInput::Live(_) | TranslationInput::ExclusiveLive(_) => {
+                self.start_session(task, ctx)
+            }
             TranslationInput::File { .. } => self.start_audio_file_session(task, ctx),
         }
     }
@@ -4145,7 +4284,7 @@ impl XRTranslateApp {
 
     fn start_session(&mut self, task: TranslationTask, ctx: Option<egui::Context>) {
         use translation_service::{AudioTask, ChannelScope, TaskChannel, scoped_events};
-        let TranslationInput::Live(source) = task.input else {
+        let Some(source) = task.input.live_source() else {
             return;
         };
         let owner = task.owner();
@@ -4227,7 +4366,17 @@ impl XRTranslateApp {
                 for channel in &active.channels {
                     self.audio_system.stop_capture_group(channel.scope.id());
                 }
-                active.cancel();
+                if let Ok(mut state) = self.shared_session_state.lock() {
+                    active.invalidate();
+                    for channel in &active.channels {
+                        publish_host_output(
+                            &self.host_output_subscribers,
+                            HostOutputEvent::StreamCancelled(channel.scope.id()),
+                        );
+                        state.retire_stream(channel.scope.id());
+                    }
+                }
+                self.retire_audio_task(active);
                 if meeting && let Some(recording) = self.meeting_plugin.meeting_recording.take() {
                     if let Err(error) = recording.stop_without_finalizing() {
                         self.meeting_plugin.set_error(error.to_string());
@@ -4800,7 +4949,13 @@ impl XRTranslateApp {
         if !self.tts_enabled {
             self.audio_system.clear_tts_playback();
         }
-        for session in self.host_channels().map(|channel| &channel.session) {
+        for session in self
+            .audio_tasks
+            .iter()
+            .flat_map(|task| &task.channels)
+            .map(|channel| &channel.session)
+            .filter(|session| session.uses_host_tts())
+        {
             session.set_tts_enabled(self.tts_enabled);
         }
     }
@@ -5068,6 +5223,7 @@ impl XRTranslateApp {
     }
 
     fn stop(&mut self) {
+        self.stop_vrc_avatar();
         self.auto_input_plugin.set_enabled(false);
         ui::automation::audio::detach();
         #[cfg(target_os = "android")]
@@ -5085,6 +5241,10 @@ impl XRTranslateApp {
             for task in &self.audio_tasks {
                 for channel in &task.channels {
                     channel.scope.cancel(&self.session_event_subscribers);
+                    publish_host_output(
+                        &self.host_output_subscribers,
+                        HostOutputEvent::StreamCancelled(channel.scope.id()),
+                    );
                     state.retire_stream(channel.session.stream_id());
                 }
             }
@@ -5108,7 +5268,7 @@ impl XRTranslateApp {
             for channel in &task.channels {
                 self.finish_caption_stream(channel.session.stream_id());
             }
-            task.cancel();
+            self.retire_audio_task(task);
         }
         self.finalize_meeting_recording();
         self.meeting_plugin.event_sink.cancel_sessions();
@@ -5120,6 +5280,7 @@ impl XRTranslateApp {
         self.partial_text.clear();
         self.reset_audio_levels();
         self.set_connection_status("Stopped");
+        self.poll_vrc_avatar_session();
     }
 
     fn poll_text_translation(&mut self, ctx: &egui::Context) {
@@ -5428,6 +5589,7 @@ impl XRTranslateApp {
 
 impl Drop for XRTranslateApp {
     fn drop(&mut self) {
+        self.shutdown_vrc_avatar();
         self.stop();
         if let Some(route) = self.voicemeeter_route.take() {
             let _ = route.clear();
@@ -5444,6 +5606,10 @@ impl eframe::App for XRTranslateApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_vrc_avatar(Some(ctx.clone()));
+        if self.plugin_enabled(PluginId::VRC_AVATAR) || self.avatar_host_session.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         self.media_plugin.controller.tick();
         self.ask
             .poll(&mut self.backend_manager, &self.server_url, ctx);

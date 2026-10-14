@@ -3,20 +3,18 @@ use super::chatbox::{
 };
 use crate::client_settings::CaptureSource;
 use crate::session_coordinator::AudioSourceFilter;
-use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
+use crossbeam_channel::{Receiver, Sender, unbounded};
 use parking_lot::Mutex;
-use rosc::{OscBundle, OscMessage, OscPacket, OscType, decoder, encoder};
+use rosc::{OscMessage, OscPacket, OscType, encoder};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::net::UdpSocket;
 use std::path::PathBuf;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, atomic::AtomicBool};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const MUTE_PATH: &str = "/avatar/parameters/MuteSelf";
+pub(super) const MUTE_PATH: &str = "/avatar/parameters/MuteSelf";
 const COOLDOWN: Duration = Duration::from_millis(500);
 const BANNER_REFRESH_INTERVAL: Duration = Duration::from_millis(1050);
 pub const MAX_PREFIX_LENGTH: usize = 24;
@@ -422,6 +420,7 @@ enum Command {
         speaker_id: String,
     },
     EndStream(u64),
+    CancelStream(u64),
     Clear,
     Update(OscSettings),
     Shutdown,
@@ -430,6 +429,7 @@ enum Command {
 #[derive(Clone, Debug)]
 pub struct OscHandle {
     tx: Sender<Command>,
+    pending_cancellations: Arc<Mutex<BTreeSet<u64>>>,
 }
 
 impl OscHandle {
@@ -492,6 +492,12 @@ impl OscHandle {
         });
     }
 
+    pub fn cancel_stream(&self, stream_id: u64) {
+        // Fence immediately, before the dispatcher reaches this queued command.
+        self.pending_cancellations.lock().insert(stream_id);
+        let _ = self.tx.send(Command::CancelStream(stream_id));
+    }
+
     pub fn end_stream_for(&self, stream_id: u64) {
         let _ = self.tx.send(Command::EndStream(stream_id));
     }
@@ -526,9 +532,9 @@ impl OscHandle {
 }
 
 #[derive(Default)]
-struct RuntimeStatus {
-    listener: String,
-    last_error: Option<String>,
+pub(super) struct RuntimeStatus {
+    pub(super) listener: String,
+    pub(super) last_error: Option<String>,
     chatbox_text: String,
     chatbox_typing: bool,
     next_message_expires_at: Option<Instant>,
@@ -544,13 +550,12 @@ pub struct ChatboxPreview {
 /// Owns the VRChat OSC UDP listener and a single coalescing chatbox writer.
 /// This keeps VRChat mute-state handling off the ASR path.
 pub struct OscManager {
-    settings: OscSettings,
     muted: Arc<AtomicBool>,
     status: Arc<Mutex<RuntimeStatus>>,
     tx: Sender<Command>,
     worker: Option<JoinHandle<()>>,
-    listener_stop: Option<Sender<()>>,
-    listener: Option<JoinHandle<()>>,
+    transport: super::transport::TransportOwner,
+    pending_cancellations: Arc<Mutex<BTreeSet<u64>>>,
 }
 
 impl OscManager {
@@ -559,23 +564,34 @@ impl OscManager {
         let status = Arc::new(Mutex::new(RuntimeStatus::default()));
         let dispatch_settings = settings.clone();
         let dispatch_status = Arc::clone(&status);
+        let pending_cancellations = Arc::new(Mutex::new(BTreeSet::new()));
+        let dispatch_cancellations = pending_cancellations.clone();
         let worker = thread::Builder::new()
             .name("osc-chatbox-dispatch".into())
-            .spawn(move || dispatch_loop(rx, dispatch_settings, dispatch_status))
+            .spawn(move || {
+                dispatch_loop(
+                    rx,
+                    dispatch_settings,
+                    dispatch_status,
+                    dispatch_cancellations,
+                )
+            })
             .expect("failed to start OSC dispatcher");
-        let mut manager = Self {
-            settings,
-            muted: Arc::new(AtomicBool::new(false)),
+        let muted = Arc::new(AtomicBool::new(false));
+        let transport =
+            super::transport::TransportOwner::new(&settings, muted.clone(), status.clone());
+        Self {
+            muted,
             status,
             tx,
             worker: Some(worker),
-            listener_stop: None,
-            listener: None,
-        };
-        if let Err(error) = manager.restart_listener() {
-            manager.status.lock().last_error = Some(error);
+            transport,
+            pending_cancellations,
         }
-        manager
+    }
+
+    pub fn transport(&self) -> super::transport::OscTransportHandle {
+        self.transport.handle()
     }
 
     pub fn muted_state(&self) -> Arc<AtomicBool> {
@@ -607,58 +623,21 @@ impl OscManager {
     pub fn handle(&self) -> OscHandle {
         OscHandle {
             tx: self.tx.clone(),
+            pending_cancellations: self.pending_cancellations.clone(),
         }
     }
     pub fn update_settings(&mut self, settings: OscSettings) -> Result<(), String> {
         settings.validate()?;
-        let listener_changed = listener_config_changed(&self.settings, &settings);
-        self.settings = settings.clone();
+        self.transport.update_settings(&settings);
         let _ = self.tx.send(Command::Update(settings));
-        if listener_changed {
-            self.restart_listener()
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
     pub fn shutdown(&mut self) {
         self.clear_chatbox();
-        self.stop_listener();
+        self.transport.shutdown();
         let _ = self.tx.send(Command::Shutdown);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
-        }
-    }
-    fn restart_listener(&mut self) -> Result<(), String> {
-        self.stop_listener();
-        self.muted.store(false, Ordering::Release);
-        if !self.settings.enabled {
-            self.status.lock().listener = "Disabled".into();
-            return Ok(());
-        }
-        let address = format!("{}:{}", self.settings.ip, self.settings.listen_port);
-        let socket = UdpSocket::bind(&address)
-            .map_err(|e| format!("Cannot listen for VRChat OSC on {address}: {e}"))?;
-        socket
-            .set_read_timeout(Some(Duration::from_millis(100)))
-            .map_err(|e| format!("Cannot configure VRChat OSC listener: {e}"))?;
-        let (stop_tx, stop_rx) = bounded(1);
-        let muted = Arc::clone(&self.muted);
-        let status = Arc::clone(&self.status);
-        let listener = thread::Builder::new()
-            .name("osc-vrchat-listener".into())
-            .spawn(move || listen_loop(socket, stop_rx, muted, status))
-            .map_err(|e| format!("Cannot start VRChat OSC listener: {e}"))?;
-        self.listener_stop = Some(stop_tx);
-        self.listener = Some(listener);
-        self.status.lock().listener = format!("Listening on {address}");
-        Ok(())
-    }
-    fn stop_listener(&mut self) {
-        if let Some(tx) = self.listener_stop.take() {
-            let _ = tx.send(());
-        }
-        if let Some(listener) = self.listener.take() {
-            let _ = listener.join();
         }
     }
 }
@@ -669,56 +648,7 @@ impl Drop for OscManager {
     }
 }
 
-fn listen_loop(
-    socket: UdpSocket,
-    stop: Receiver<()>,
-    muted: Arc<AtomicBool>,
-    status: Arc<Mutex<RuntimeStatus>>,
-) {
-    let mut buffer = [0; 65_535];
-    loop {
-        if stop.try_recv().is_ok() {
-            return;
-        }
-        match socket.recv_from(&mut buffer) {
-            Ok((size, _)) => match decoder::decode_udp(&buffer[..size]) {
-                Ok((_, packet)) => apply_mute_packet(packet, &muted),
-                Err(error) => {
-                    status.lock().last_error = Some(format!("Invalid OSC packet: {error}"))
-                }
-            },
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::TimedOut
-                        | std::io::ErrorKind::WouldBlock
-                        | std::io::ErrorKind::Interrupted
-                ) => {}
-            Err(error) => {
-                status.lock().last_error = Some(format!("VRChat OSC listener failed: {error}"));
-                return;
-            }
-        }
-    }
-}
-
-fn apply_mute_packet(packet: OscPacket, muted: &AtomicBool) {
-    match packet {
-        OscPacket::Message(message) if message.addr == MUTE_PATH => {
-            if let Some(value) = message.args.first().and_then(parse_mute_value) {
-                muted.store(value, Ordering::Release);
-            }
-        }
-        OscPacket::Bundle(OscBundle { content, .. }) => {
-            for packet in content {
-                apply_mute_packet(packet, muted);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn parse_mute_value(value: &OscType) -> Option<bool> {
+pub(super) fn parse_mute_value(value: &OscType) -> Option<bool> {
     match value {
         OscType::Bool(value) => Some(*value),
         OscType::Int(value) => Some(*value != 0),
@@ -738,6 +668,7 @@ fn dispatch_loop(
     rx: Receiver<Command>,
     mut settings: OscSettings,
     status: Arc<Mutex<RuntimeStatus>>,
+    pending_cancellations: Arc<Mutex<BTreeSet<u64>>>,
 ) {
     let monitor = super::sys_info::SystemMonitor::new();
     let mut history = Vec::new();
@@ -897,6 +828,14 @@ fn dispatch_loop(
                     notify = true;
                 }
             }
+            Ok(Command::CancelStream(stream_id)) => {
+                let before = history.len() + live.len() + previews.len();
+                history.retain(|entry| entry.stream_id != stream_id);
+                live.retain(|entry| entry.stream_id != stream_id);
+                previews.retain(|entry| entry.stream_id != stream_id);
+                changed = before != history.len() + live.len() + previews.len();
+                pending_cancellations.lock().remove(&stream_id);
+            }
             Ok(Command::Clear) => {
                 previews.clear();
                 manual_message = None;
@@ -934,6 +873,14 @@ fn dispatch_loop(
             }
             _ => {}
         }
+        // Cancel may be queued behind many completed captions. Remove fenced
+        // streams before constructing the next packet, including cooldown sends.
+        let cancelled = pending_cancellations.lock();
+        let before_cancel = history.len() + live.len() + previews.len();
+        history.retain(|entry| !cancelled.contains(&entry.stream_id));
+        live.retain(|entry| !cancelled.contains(&entry.stream_id));
+        previews.retain(|entry| !cancelled.contains(&entry.stream_id));
+        changed |= before_cancel != history.len() + live.len() + previews.len();
         let previous_preview_count = previews.len();
         previews.retain(|entry| entry.expires_at > now);
         changed |= previews.len() != previous_preview_count;
@@ -984,6 +931,7 @@ fn dispatch_loop(
             }
             force_send = false;
         }
+        drop(cancelled);
         if shutdown {
             return;
         }
@@ -1116,12 +1064,6 @@ fn next_content_expiry(
         (None, Some(m)) => Some(m),
         (None, None) => None,
     }
-}
-
-fn listener_config_changed(previous: &OscSettings, updated: &OscSettings) -> bool {
-    previous.enabled != updated.enabled
-        || previous.ip != updated.ip
-        || previous.listen_port != updated.listen_port
 }
 
 fn refresh_chatbox_entries(

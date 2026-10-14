@@ -14,6 +14,7 @@ pub mod meeting;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 pub mod ocr;
 pub mod osc;
+pub(crate) mod vrc_avatar;
 pub(crate) mod vocabulary;
 pub mod vr_overlay;
 
@@ -28,6 +29,7 @@ impl PluginId {
     pub const LYRICS: Self = Self("lyrics");
     pub const VOCABULARY: Self = Self("vocabulary");
     pub const OSC: Self = Self("osc");
+    pub const VRC_AVATAR: Self = Self("vrc_avatar");
     pub const MEETING: Self = Self("meeting");
     pub const MEDIA: Self = Self("video_player");
     pub const VR_OVERLAY: Self = Self("vr_overlay");
@@ -38,6 +40,7 @@ impl PluginId {
         match self {
             Self::AUTO_INPUT => cfg!(windows),
             Self::LYRICS | Self::OCR => cfg!(any(target_os = "windows", target_os = "linux")),
+            Self::VRC_AVATAR => cfg!(any(target_os = "windows", target_os = "linux")),
             Self::VR_OVERLAY => !cfg!(target_os = "android"),
             _ => true,
         }
@@ -52,6 +55,7 @@ impl PluginId {
             "lyrics" => Some(Self::LYRICS),
             "vocabulary" => Some(Self::VOCABULARY),
             "osc" => Some(Self::OSC),
+            "vrc_avatar" => Some(Self::VRC_AVATAR),
             "meeting" => Some(Self::MEETING),
             "video_player" | "media" => Some(Self::MEDIA),
             "vr_overlay" => Some(Self::VR_OVERLAY),
@@ -133,7 +137,7 @@ pub struct PluginDescriptor {
     pub default_enabled: bool,
 }
 
-const PLUGIN_DESCRIPTORS: [PluginDescriptor; 6] = [
+const PLUGIN_DESCRIPTORS: [PluginDescriptor; 7] = [
     PluginDescriptor {
         id: PluginId::VOCABULARY,
         title_key: "Vocabulary",
@@ -211,6 +215,19 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 6] = [
         scroll_policy: PluginScrollPolicy::Plugin,
         settings_contribution: PluginSettingsContribution::EnablementOnly,
         default_enabled: true,
+    },
+    PluginDescriptor {
+        id: PluginId::VRC_AVATAR,
+        title_key: "Avatar translation controls",
+        description_key: "Allow your VRChat Avatar menu to start and stop its own translation session.",
+        navigation_order: None,
+        icon: PluginIcon {
+            uri: "bytes://plugins/vrc_avatar/icon.svg",
+            bytes: include_bytes!("../../resources/plugins/osc/icon.svg"),
+        },
+        scroll_policy: PluginScrollPolicy::Plugin,
+        settings_contribution: PluginSettingsContribution::Plugin,
+        default_enabled: false,
     },
 ];
 

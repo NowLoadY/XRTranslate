@@ -29,7 +29,7 @@ impl HostOutputSubscriber for VrOverlayHandle {
                 entries,
             } => self.set_previews(stream_id, is_typing, entries),
             HostOutputEvent::CommittedTranslation { .. } => {}
-            HostOutputEvent::StreamCancelled(stream_id) => self.set_previews(stream_id, false, &[]),
+            HostOutputEvent::StreamCancelled(stream_id) => self.cancel_stream(stream_id),
             HostOutputEvent::Caption {
                 stream_id,
                 audio_source,

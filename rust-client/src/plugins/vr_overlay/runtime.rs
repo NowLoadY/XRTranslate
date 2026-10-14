@@ -3,6 +3,7 @@
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -190,6 +191,7 @@ pub enum VrCommand {
         speaker: String,
     },
     EndStream(u64),
+    CancelStream(u64),
     Clear,
     Connect,
     Disconnect,
@@ -218,6 +220,7 @@ pub struct VrOverlayManager {
     shutdown: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     companion: Arc<Mutex<Presentation>>,
+    pending_cancellations: Arc<Mutex<HashSet<u64>>>,
 }
 
 impl VrOverlayManager {
@@ -230,6 +233,8 @@ impl VrOverlayManager {
         let worker_shutdown = Arc::clone(&shutdown);
         let companion = Arc::new(Mutex::new(Presentation::default()));
         let worker_companion = Arc::clone(&companion);
+        let pending_cancellations = Arc::new(Mutex::new(HashSet::new()));
+        let worker_cancellations = Arc::clone(&pending_cancellations);
         let worker = std::thread::Builder::new()
             .name("vr-overlay-worker".into())
             .spawn(move || {
@@ -239,6 +244,7 @@ impl VrOverlayManager {
                     worker_status,
                     worker_shutdown,
                     worker_companion,
+                    worker_cancellations,
                 )
             })
             .expect("failed to spawn VR overlay worker");
@@ -249,12 +255,14 @@ impl VrOverlayManager {
             shutdown,
             worker: Some(worker),
             companion,
+            pending_cancellations,
         }
     }
 
     pub fn handle(&self) -> VrOverlayHandle {
         VrOverlayHandle {
             command_tx: self.command_tx.clone(),
+            pending_cancellations: self.pending_cancellations.clone(),
         }
     }
 
@@ -302,6 +310,7 @@ impl Drop for VrOverlayManager {
 #[derive(Clone)]
 pub struct VrOverlayHandle {
     command_tx: Sender<VrCommand>,
+    pending_cancellations: Arc<Mutex<HashSet<u64>>>,
 }
 
 impl VrOverlayHandle {
@@ -364,6 +373,20 @@ impl VrOverlayHandle {
         let _ = self.command_tx.send(VrCommand::EndStream(stream_id));
     }
 
+    pub fn cancel_stream(&self, stream_id: u64) {
+        // Publish cancellation ahead of the worker backlog, which is consumed
+        // in bounded batches. The same lock fences frame submission below.
+        let mut pending = self.pending_cancellations.lock();
+        pending.insert(stream_id);
+        if self
+            .command_tx
+            .send(VrCommand::CancelStream(stream_id))
+            .is_err()
+        {
+            pending.remove(&stream_id);
+        }
+    }
+
     pub fn clear(&self) {
         let _ = self.command_tx.send(VrCommand::Clear);
     }
@@ -385,6 +408,7 @@ fn run_vr_worker(
     status: Arc<Mutex<VrRuntimeStatus>>,
     shutdown: Arc<AtomicBool>,
     companion: Arc<Mutex<Presentation>>,
+    pending_cancellations: Arc<Mutex<HashSet<u64>>>,
 ) {
     settings.normalize();
     let mut renderer = VrOverlayRenderer::new(RENDER_WIDTH, RENDER_HEIGHT)
@@ -624,6 +648,14 @@ fn run_vr_worker(
                         needs_redraw = true;
                     }
                 }
+                Ok(VrCommand::CancelStream(stream_id)) => {
+                    entries.retain(|entry| entry.stream_id != stream_id);
+                    previews.retain(|entry| entry.stream_id != stream_id);
+                    // Host cancellation invalidates the scope before publishing
+                    // this command; only its already queued captions precede it.
+                    pending_cancellations.lock().remove(&stream_id);
+                    needs_redraw = true;
+                }
                 Ok(VrCommand::Clear) => {
                     entries.clear();
                     previews.clear();
@@ -699,6 +731,15 @@ fn run_vr_worker(
             }
         }
 
+        // Remove cancelled streams even when their command is beyond this batch.
+        // Keep the fence through native submission, so cancellation returning to
+        // the host cannot be followed by a newly submitted stale caption frame.
+        let pending = pending_cancellations.lock();
+        let previous_count = entries.len() + previews.len();
+        entries.retain(|entry| !pending.contains(&entry.stream_id));
+        previews.retain(|entry| !pending.contains(&entry.stream_id));
+        needs_redraw |= previous_count != entries.len() + previews.len();
+
         // 2. Redraw and submit overlay frame
         if needs_redraw {
             needs_redraw = false;
@@ -769,6 +810,7 @@ fn run_vr_worker(
                 }
             }
         }
+        drop(pending);
         // Create lazily once per session: OpenVR retains its GPU resources until
         // shutdown. Toggling only suspends the same companion, never the captions.
         if settings.avatar_enabled {

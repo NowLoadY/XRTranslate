@@ -41,6 +41,8 @@ across documents; link to its owner.
 
 ## Features and operations
 
+- [VRChat Avatar controls](vrchat-avatar.md): paired Avatar package, setup,
+  session ownership and connection behavior.
 - [Terminology library](terminology-library.md)
 - [Speaker diarization](speaker-diarization.md)
 - [Linux build](linux-build.md)

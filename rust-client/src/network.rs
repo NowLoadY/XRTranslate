@@ -156,7 +156,17 @@ pub struct SessionHandle {
     stop_requested: Arc<AtomicBool>,
     cancel_requested: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
+    finished: Arc<AtomicBool>,
+    tts: Option<crate::audio::TtsPlayerHandle>,
     command_tx: mpsc::Sender<SessionCommand>,
+}
+
+struct SessionWorkerExit(Arc<AtomicBool>);
+
+impl Drop for SessionWorkerExit {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
 }
 
 enum SessionCommand {
@@ -232,7 +242,7 @@ impl SessionCommand {
 
 impl Drop for SessionHandle {
     fn drop(&mut self) {
-        self.stop();
+        self.disconnect();
     }
 }
 
@@ -240,10 +250,14 @@ impl SessionHandle {
     pub(crate) fn stream_id(&self) -> u64 {
         self.stream_id
     }
-    /// Immediately cancels pending inference. Finite inputs use [`Self::finish`]
-    /// at EOF when their complete ordered output is required.
-    pub fn stop(&self) {
-        self.cancel();
+
+    /// True only after the network runtime has exited, including startup failure.
+    pub(crate) fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn uses_host_tts(&self) -> bool {
+        self.tts.is_some()
     }
 
     /// Flushes the current VAD turn while retaining the live WebSocket,
@@ -277,10 +291,19 @@ impl SessionHandle {
     }
 
     pub fn cancel(&self) {
-        if self.stop_requested.swap(true, Ordering::AcqRel) {
+        if let Some(tts) = &self.tts {
+            tts.cancel();
+        }
+        self.disconnect();
+    }
+
+    /// Close transport after normal completion without recalling completed audio.
+    pub(crate) fn disconnect(&self) {
+        if self.cancel_requested.swap(true, Ordering::AcqRel) {
             return;
         }
-        self.cancel_requested.store(true, Ordering::Release);
+        // Explicit cancellation also overrides an earlier graceful finish request.
+        self.stop_requested.store(true, Ordering::Release);
         self.paused.store(true, Ordering::Release);
         let _ = self.command_tx.try_send(SessionCommand::Cancel);
     }
@@ -432,11 +455,15 @@ fn spawn_session(
     let runtime_cancel = Arc::clone(&cancel_requested);
     let paused = Arc::new(AtomicBool::new(false));
     let runtime_paused = Arc::clone(&paused);
+    let finished = Arc::new(AtomicBool::new(false));
+    let worker_finished = Arc::clone(&finished);
+    let tts = config.tts.clone();
     // Bound pending configuration updates.
     let (command_tx, command_rx) = mpsc::channel(16);
     thread::Builder::new()
         .name("translation-session".into())
         .spawn(move || {
+            let _exit = SessionWorkerExit(worker_finished);
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -449,16 +476,25 @@ fn spawn_session(
                     return;
                 }
             };
-            runtime.block_on(run_session(
-                audio_rx,
-                event_tx,
-                config,
-                runtime_stop,
-                runtime_cancel,
-                runtime_paused,
-                command_rx,
-                stream_id,
-            ));
+            runtime.block_on(async {
+                tokio::select! {
+                    _ = run_session(
+                        audio_rx,
+                        event_tx,
+                        config,
+                        runtime_stop,
+                        runtime_cancel.clone(),
+                        runtime_paused,
+                        command_rx,
+                        stream_id,
+                    ) => {},
+                    _ = async {
+                        while !runtime_cancel.load(Ordering::Acquire) {
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                    } => {},
+                }
+            });
         })
         .expect("failed to start translation session thread");
 
@@ -467,6 +503,8 @@ fn spawn_session(
         stop_requested,
         cancel_requested,
         paused,
+        finished,
+        tts,
         command_tx,
     }
 }

@@ -17,11 +17,23 @@ pub(crate) struct TranslationTask {
 pub(crate) enum TranslationInput {
     Text(String),
     Live(CaptureSource),
+    /// Acquire only this task's live channels and reject overlapping owners.
+    /// Uses the same capture and translation pipeline as ordinary live input.
+    ExclusiveLive(CaptureSource),
     File {
         path: std::path::PathBuf,
         recognition: RecognitionSettings,
         options: AudioImportOptions,
     },
+}
+
+impl TranslationInput {
+    pub(crate) fn live_source(&self) -> Option<CaptureSource> {
+        match self {
+            Self::Live(source) | Self::ExclusiveLive(source) => Some(*source),
+            _ => None,
+        }
+    }
 }
 
 impl TranslationTask {
@@ -43,7 +55,9 @@ impl TranslationTask {
             || TranslationSessionOwner::Host {
                 capture_source: match &self.input {
                     TranslationInput::Text(_) => CaptureSource::Microphone,
-                    TranslationInput::Live(source) => *source,
+                    TranslationInput::Live(source) | TranslationInput::ExclusiveLive(source) => {
+                        *source
+                    }
                     TranslationInput::File { .. } => CaptureSource::SystemAudio,
                 },
             },
