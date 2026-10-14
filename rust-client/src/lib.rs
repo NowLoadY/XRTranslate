@@ -90,12 +90,12 @@ use history::{
 };
 use i18n::UiLanguage;
 use network::{ExternalAudioGate, SessionConfig, SessionEvent, start_session};
+use plugins::avatar::AvatarPlugin;
 use plugins::meeting::{
     MeetingAction, MeetingAudioSource, MeetingInputRequest, MeetingPlugin, MeetingUiSnapshot,
 };
 use plugins::osc::{OscPageContext, OscPlugin, OscUiAction};
 use plugins::vr_overlay::{VrOverlayPageContext, VrOverlayPlugin, VrOverlayUiAction};
-use plugins::vrc_avatar::VrcAvatarPlugin;
 use plugins::{PluginId, PluginPreferences, PluginRegistry, PluginScrollPolicy};
 pub(crate) use presentation::speaker::compact_speaker_label;
 use session_coordinator::{
@@ -685,7 +685,7 @@ struct XRTranslateApp {
     tts_runtime_backend: Option<String>,
     tts_runtime_cuda_version: Option<String>,
     osc_plugin: OscPlugin,
-    vrc_avatar_plugin: VrcAvatarPlugin,
+    avatar_plugin: AvatarPlugin,
     #[cfg(any(windows, target_os = "linux"))]
     lyrics_plugin: plugins::lyrics::LyricsPlugin,
     auto_input_plugin: plugins::auto_input::AutoInputPlugin,
@@ -1039,8 +1039,10 @@ impl Default for XRTranslateApp {
         let microphone_vad_active_clone = Arc::clone(&microphone_vad_active);
         let loopback_vad_active_clone = Arc::clone(&loopback_vad_active);
         let rx = event_rx.clone();
+        let avatar_plugin = AvatarPlugin::new(settings.avatar_connector.clone());
         let session_event_subscribers: Arc<Vec<Box<dyn SessionEventSubscriber>>> = Arc::new(vec![
             Box::new(history_archive.subscriber()),
+            Box::new(avatar_plugin.captions.clone()),
             #[cfg(target_os = "android")]
             Box::new(android_translation_history::ResultSubscriber::default()),
             #[cfg(any(windows, target_os = "linux"))]
@@ -1803,7 +1805,7 @@ impl Default for XRTranslateApp {
             tts_runtime_backend: None,
             tts_runtime_cuda_version: None,
             osc_plugin,
-            vrc_avatar_plugin: VrcAvatarPlugin::default(),
+            avatar_plugin,
             #[cfg(any(windows, target_os = "linux"))]
             lyrics_plugin,
             auto_input_plugin,
@@ -2742,8 +2744,8 @@ impl XRTranslateApp {
 
         let registry = PluginRegistry::builtin();
         registry.set_enabled(&mut self.plugin_preferences, id, enabled);
-        if id == PluginId::VRC_AVATAR {
-            self.poll_vrc_avatar(None);
+        if id == PluginId::AVATAR {
+            self.poll_avatar(None);
         }
         self.sync_lyrics();
         registry.normalize_active_page(&self.plugin_preferences, &mut self.navigation.page);
@@ -2751,8 +2753,11 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn render_plugin_settings(&mut self, id: PluginId, ui: &mut egui::Ui) {
-        if id == PluginId::VRC_AVATAR {
-            self.vrc_avatar_plugin.render_settings(ui, self.ui_language);
+        if id == PluginId::AVATAR {
+            if self.avatar_plugin.render_settings(ui, self.ui_language) {
+                self.poll_avatar(None);
+                self.save_settings();
+            }
             return;
         }
         if id == PluginId::VR_OVERLAY {
@@ -3296,6 +3301,7 @@ impl XRTranslateApp {
             download_proxy_url: self.download_proxy_url.clone(),
             update_channel: self.update_channel,
             osc_settings: self.osc_plugin.draft().clone(),
+            avatar_connector: self.avatar_plugin.settings.clone(),
             vr_overlay_settings: self.vr_overlay_plugin.draft().clone(),
             plugin_preferences: self.plugin_preferences.clone(),
             active_page: self.navigation.page,
@@ -3858,7 +3864,7 @@ impl XRTranslateApp {
     }
 
     fn stop_task_owner(&mut self, owner: &TranslationSessionOwner) {
-        self.stop_vrc_avatar_owner(owner);
+        self.stop_avatar_owner(owner);
         self.cancel_text_tasks(Some(owner));
         self.cancel_pending_tasks(Some(owner));
         let mut kept = Vec::new();
@@ -3890,7 +3896,7 @@ impl XRTranslateApp {
             }
             self.retire_audio_task(task);
         }
-        if !self.vrc_avatar_owns(owner) {
+        if !self.avatar_owns(owner) {
             self.exclusive_live_inputs
                 .retain(|(lease_owner, _)| lease_owner != owner);
         }
@@ -4003,7 +4009,7 @@ impl XRTranslateApp {
                 .channels
                 .iter()
                 .any(|channel| channel.scope.failed.load(Ordering::Acquire));
-            let avatar = self.vrc_avatar_task_ended(&task.owner, failed);
+            let avatar = self.avatar_task_ended(&task.owner, failed);
             if task.owner.is_plugin(PluginId::MEDIA.as_str()) {
                 self.host_audio_import = None;
                 self.media_plugin.pause_task();
@@ -4036,7 +4042,7 @@ impl XRTranslateApp {
             }
         }
         self.release_unused_inputs();
-        self.poll_vrc_avatar_session();
+        self.poll_avatar_session();
         if !self.translation_enabled {
             self.set_connection_status("Stopped");
         } else if self.backend_start_deadline.is_none()
@@ -4196,7 +4202,7 @@ impl XRTranslateApp {
     }
 
     fn fail_task_startup(&mut self, owner: &TranslationSessionOwner, error: &str) {
-        self.fail_vrc_avatar_startup(owner, error);
+        self.fail_avatar_startup(owner, error);
         self.notifications.error("", error);
         self.companion_inbox
             .observe_error("application", Some(error));
@@ -5223,7 +5229,7 @@ impl XRTranslateApp {
     }
 
     fn stop(&mut self) {
-        self.stop_vrc_avatar();
+        self.stop_avatar();
         self.auto_input_plugin.set_enabled(false);
         ui::automation::audio::detach();
         #[cfg(target_os = "android")]
@@ -5280,7 +5286,7 @@ impl XRTranslateApp {
         self.partial_text.clear();
         self.reset_audio_levels();
         self.set_connection_status("Stopped");
-        self.poll_vrc_avatar_session();
+        self.poll_avatar_session();
     }
 
     fn poll_text_translation(&mut self, ctx: &egui::Context) {
@@ -5589,7 +5595,7 @@ impl XRTranslateApp {
 
 impl Drop for XRTranslateApp {
     fn drop(&mut self) {
-        self.shutdown_vrc_avatar();
+        self.shutdown_avatar();
         self.stop();
         if let Some(route) = self.voicemeeter_route.take() {
             let _ = route.clear();
@@ -5606,8 +5612,8 @@ impl eframe::App for XRTranslateApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_vrc_avatar(Some(ctx.clone()));
-        if self.plugin_enabled(PluginId::VRC_AVATAR) || self.avatar_host_session.is_some() {
+        self.poll_avatar(Some(ctx.clone()));
+        if self.plugin_enabled(PluginId::AVATAR) || self.avatar_host_session.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.media_plugin.controller.tick();

@@ -41,6 +41,7 @@ across documents; link to its owner.
 
 ## Features and operations
 
+- [Avatar connectors](avatar-connectors.md): game components, connection setup and shared lifecycle.
 - [VRChat Avatar controls](vrchat-avatar.md): paired Avatar package, setup,
   session ownership and connection behavior.
 - [Terminology library](terminology-library.md)

@@ -85,7 +85,7 @@ affecting unrelated tasks.
 | Module | Owns and consumes |
 |---|---|
 | `plugins::osc` | Shared OSC receive/OSCQuery transport and Chatbox presentation; consumes shared host output |
-| `plugins::vrc_avatar` | Verified Avatar control intent, binding/reset state and typed actions; `avatar_host` composes owned translation sessions |
+| `plugins::avatar` | Verified Avatar control intent, binding/reset state and typed actions; `avatar_host` composes owned translation sessions |
 | `plugins::lyrics` | Music observation, lyric lookup, synchronization, and bounded persistent cache; publishes text through the host to OSC |
 | `plugins::vocabulary` | Wordbooks and saved vocabulary views; uses shared storage and stateless ask for example work |
 | `plugins::meeting` | Meeting state, recording, and persistence; consumes its normalized session results |
@@ -101,7 +101,7 @@ independent of Chatbox-output enablement. The adapter receives verified snapshot
 and capability handles, while `avatar_host` reports actual session outcomes.
 An Avatar toggle neither starts a parallel translation pipeline nor changes
 another session's ownership. Setup and compatibility belong to the
-[Avatar control guide](vrchat-avatar.md).
+[Avatar connector guide](avatar-connectors.md).
 
 Lyrics has no page. It runs only when available and requested by active OSC
 lyric output. Its platform adapters use system media interfaces and distinguish

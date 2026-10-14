@@ -5706,6 +5706,8 @@ dependencies = [
  "x11rb",
  "xr-corpus-client",
  "xrt-avatar-control",
+ "xrt-chilloutvr-control",
+ "xrt-connector-core",
  "xrtranslate-assets",
  "xrtranslate-config",
  "xrtranslate-download",
@@ -8767,7 +8769,20 @@ dependencies = [
 [[package]]
 name = "xrt-avatar-control"
 version = "0.1.0-dev.1"
-source = "git+https://github.com/NowLoadY/XRT-Avatar-Plugin.git?rev=944eeb711f81780c1429cb52ac8315e14061b75d#944eeb711f81780c1429cb52ac8315e14061b75d"
+source = "git+https://github.com/NowLoadY/XRT-Avatar-Plugin.git?rev=62dbf42c4688b5d307ca892c71a2938bf8c24227#62dbf42c4688b5d307ca892c71a2938bf8c24227"
+dependencies = [
+ "xrt-connector-core",
+]
+
+[[package]]
+name = "xrt-chilloutvr-control"
+version = "0.1.0-dev.1"
+source = "git+https://github.com/NowLoadY/XRT-Avatar-Plugin.git?rev=62dbf42c4688b5d307ca892c71a2938bf8c24227#62dbf42c4688b5d307ca892c71a2938bf8c24227"
+
+[[package]]
+name = "xrt-connector-core"
+version = "0.1.0-dev.1"
+source = "git+https://github.com/NowLoadY/XRT-Avatar-Plugin.git?rev=62dbf42c4688b5d307ca892c71a2938bf8c24227#62dbf42c4688b5d307ca892c71a2938bf8c24227"
 
 [[package]]
 name = "xrtranslate-assets"

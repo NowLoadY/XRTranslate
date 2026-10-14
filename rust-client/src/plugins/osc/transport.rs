@@ -22,12 +22,38 @@ use tokio::sync::mpsc;
 const QUERY_SERVICE: &str = "_oscjson._tcp.local.";
 const OSC_SERVICE: &str = "_osc._udp.local.";
 const AVATAR_CHANGE: &str = "/avatar/change";
+const AVATAR_PROFILE_CHANGE: &str = "/avatar/profile/change";
 const QUERY_INTERVAL: Duration = Duration::from_secs(1);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_TIMEOUT: Duration = Duration::from_millis(1000);
 const MAX_BODY: usize = 4 * 1024 * 1024;
 const MAX_EVENTS: usize = 128;
 const MAX_PATHS: usize = 32;
+
+/// Platform identity and lifecycle details; transport ownership stays shared.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OscPeerProfile {
+    #[default]
+    VrChat,
+    ChilloutVr,
+}
+
+impl OscPeerProfile {
+    fn accepts_name(self, name: &str) -> bool {
+        let prefix = match self {
+            Self::VrChat => "VRChat",
+            Self::ChilloutVr => "ChilloutVR",
+        };
+        name.eq_ignore_ascii_case(prefix)
+            || name
+                .to_ascii_lowercase()
+                .starts_with(&format!("{}-", prefix.to_ascii_lowercase()))
+    }
+
+    fn invalidates_on(self, path: &str) -> bool {
+        path == AVATAR_CHANGE || (self == Self::ChilloutVr && path == AVATAR_PROFILE_CHANGE)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum OscValue {
@@ -101,6 +127,7 @@ struct Config {
     manual_ip: String,
     manual_port: u16,
     control_paths: Option<BTreeSet<String>>,
+    peer_profile: OscPeerProfile,
 }
 
 impl Config {
@@ -110,6 +137,7 @@ impl Config {
             manual_ip: settings.ip.clone(),
             manual_port: settings.listen_port,
             control_paths: None,
+            peer_profile: OscPeerProfile::VrChat,
         }
     }
 }
@@ -134,14 +162,20 @@ pub struct OscTransportHandle {
 
 impl OscTransportHandle {
     /// This receiver demand is independent of Chatbox output and its plugin tab.
-    pub fn set_control_paths(&self, paths: Option<Vec<String>>) -> Result<(), String> {
+    pub fn set_control_profile(
+        &self,
+        profile: OscPeerProfile,
+        paths: Option<Vec<String>>,
+    ) -> Result<(), String> {
         let paths = paths.map(|paths| paths.into_iter().collect::<BTreeSet<_>>());
         if let Some(paths) = &paths {
             if paths.is_empty() || paths.len() > MAX_PATHS || paths.iter().any(|p| !valid_path(p)) {
                 return Err("OSC control requires 1–32 concrete Avatar parameter paths".into());
             }
         }
-        self.config.lock().control_paths = paths;
+        let mut config = self.config.lock();
+        config.control_paths = paths;
+        config.peer_profile = profile;
         Ok(())
     }
 
@@ -382,7 +416,7 @@ impl Worker {
                     .last_query_success
                     .is_some_and(|t| t.elapsed() >= HEALTH_TIMEOUT)
             {
-                self.invalidate("VRChat OSCQuery connection timed out");
+                self.invalidate("Avatar OSCQuery connection timed out");
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -390,6 +424,21 @@ impl Worker {
         self.discovery = None;
         self.socket = None;
         self.muted.store(false, Ordering::Release);
+    }
+
+    fn peer_profile(&self) -> OscPeerProfile {
+        self.config
+            .as_ref()
+            .map(|c| c.peer_profile)
+            .unwrap_or_default()
+    }
+
+    fn control_config_current(&self) -> bool {
+        let desired = self.handle.config.lock();
+        self.config.as_ref().is_some_and(|actual| {
+            desired.control_paths == actual.control_paths
+                && desired.peer_profile == actual.peer_profile
+        })
     }
 
     fn control_enabled(&self) -> bool {
@@ -401,7 +450,9 @@ impl Worker {
     async fn configure(&mut self, config: Config) {
         // Output-only changes cannot interrupt an active receive consumer.
         let same_control = self.config.as_ref().is_some_and(|old| {
-            old.control_paths.is_some() && old.control_paths == config.control_paths
+            old.control_paths.is_some()
+                && old.control_paths == config.control_paths
+                && old.peer_profile == config.peer_profile
         });
         self.retry_configuration = Instant::now() + HEALTH_TIMEOUT;
         self.config = Some(config.clone());
@@ -448,9 +499,7 @@ impl Worker {
                     }
                 }
             }
-            Err(error) => self.error(format!(
-                "Cannot listen for VRChat OSC on {address}: {error}"
-            )),
+            Err(error) => self.error(format!("Cannot listen for OSC on {address}: {error}")),
         }
     }
 
@@ -494,6 +543,7 @@ impl Worker {
     }
 
     fn discover(&mut self) {
+        let profile = self.peer_profile();
         let Some(discovery) = &mut self.discovery else {
             return;
         };
@@ -507,7 +557,9 @@ impl Worker {
                     let name = service.get_fullname().to_owned();
                     // Names select a protocol peer, not an authentication identity.
                     // A local-address check happens before any HTTP request.
-                    if !name.to_ascii_lowercase().starts_with("vrchat") || service.get_port() == 0 {
+                    if !profile.accepts_name(name.split("._oscjson.").next().unwrap_or(&name))
+                        || service.get_port() == 0
+                    {
                         continue;
                     }
                     let local = service
@@ -536,7 +588,7 @@ impl Worker {
             }
         }
         if retired {
-            self.invalidate("VRChat OSCQuery endpoint changed");
+            self.invalidate("Avatar OSCQuery endpoint changed");
         }
     }
 
@@ -559,7 +611,7 @@ impl Worker {
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => {
-                    self.error(format!("VRChat OSC receiver failed: {e}"));
+                    self.error(format!("OSC receiver failed: {e}"));
                     break;
                 }
             }
@@ -569,11 +621,15 @@ impl Worker {
             collect_messages(packet, 0, &mut messages);
         }
         // Retire first, regardless of the order of parameter messages in a bundle.
-        if self.control_enabled() && messages.iter().any(|m| m.addr == AVATAR_CHANGE) {
-            self.invalidate("VRChat Avatar changed or reloaded");
+        if self.control_enabled()
+            && messages
+                .iter()
+                .any(|m| self.peer_profile().invalidates_on(&m.addr))
+        {
+            self.invalidate("Avatar changed or reloaded");
         }
         for message in messages {
-            if message.addr == MUTE_PATH {
+            if self.peer_profile() == OscPeerProfile::VrChat && message.addr == MUTE_PATH {
                 if let Some(value) = message.args.first().and_then(parse_mute_value) {
                     self.muted.store(value, Ordering::Release);
                 }
@@ -608,15 +664,11 @@ impl Worker {
             query_id,
         } = command;
         if self.health_expired() {
-            self.invalidate("VRChat OSCQuery connection timed out");
+            self.invalidate("Avatar OSCQuery connection timed out");
             return;
         }
         // Read config again so revocation does not wait for a slow previous query.
-        if self.handle.config.lock().control_paths
-            != self.config.as_ref().and_then(|c| c.control_paths.clone())
-            || !self.control_enabled()
-            || epoch != self.epoch
-        {
+        if !self.control_config_current() || !self.control_enabled() || epoch != self.epoch {
             return;
         }
         let Some(endpoint) = self.endpoint.clone() else {
@@ -703,9 +755,9 @@ impl Worker {
         let unique_ports = candidates.values().copied().collect::<BTreeSet<_>>();
         if unique_ports.len() != 1 {
             if self.endpoint.is_some() {
-                self.invalidate("Multiple local VRChat clients found; close the unused client");
+                self.invalidate("Multiple local clients found; close the unused client");
             } else {
-                self.error("Multiple local VRChat clients found; close the unused client".into());
+                self.error("Multiple local clients found; close the unused client".into());
             }
             return;
         }
@@ -717,7 +769,7 @@ impl Worker {
                 return;
             }
         };
-        let osc = match parse_host_info(&host) {
+        let osc = match parse_host_info(&host, self.peer_profile()) {
             Ok(osc) => osc,
             Err(error) => {
                 self.invalidate(&error);
@@ -732,13 +784,10 @@ impl Worker {
         // The HTTP service may survive a change to the peer's UDP destination.
         // Retire rather than acknowledge a write delivered to the old endpoint.
         if self.endpoint.as_ref().is_some_and(|old| old != &endpoint) {
-            self.invalidate("VRChat OSCQuery destination changed");
+            self.invalidate("Avatar OSCQuery destination changed");
             return;
         }
-        if self.handle.stop.load(Ordering::Acquire)
-            || self.handle.config.lock().control_paths
-                != self.config.as_ref().and_then(|c| c.control_paths.clone())
-        {
+        if self.handle.stop.load(Ordering::Acquire) || !self.control_config_current() {
             return;
         }
         let epoch = self.epoch;
@@ -758,26 +807,25 @@ impl Worker {
         // A change that arrived during HTTP takes precedence over its snapshot.
         self.discover();
         self.receive();
-        if epoch != self.epoch
-            || self.handle.config.lock().control_paths
-                != self.config.as_ref().and_then(|c| c.control_paths.clone())
-        {
+        if epoch != self.epoch || !self.control_config_current() {
             return;
         }
         match result {
             Ok((avatar_id, nodes)) => {
                 if self.health_expired() {
-                    self.invalidate("VRChat OSCQuery connection timed out");
+                    self.invalidate("Avatar OSCQuery connection timed out");
                     return;
                 }
                 if self.avatar_id.as_ref().is_some_and(|id| id != &avatar_id) {
-                    self.invalidate("VRChat Avatar identity changed");
+                    self.invalidate("Avatar identity changed");
                     return;
                 }
-                if let Some(OscValue::Bool(value)) =
-                    nodes.get(MUTE_PATH).and_then(|n| n.value.as_ref())
-                {
-                    self.muted.store(*value, Ordering::Release);
+                if self.peer_profile() == OscPeerProfile::VrChat {
+                    if let Some(OscValue::Bool(value)) =
+                        nodes.get(MUTE_PATH).and_then(|n| n.value.as_ref())
+                    {
+                        self.muted.store(*value, Ordering::Release);
+                    }
                 }
                 self.endpoint = Some(endpoint);
                 self.avatar_id = Some(avatar_id.clone());
@@ -804,12 +852,13 @@ impl Worker {
 }
 
 fn valid_path(path: &str) -> bool {
+    // ChilloutVR's local Animator parameters use a literal '#' prefix.
     path.starts_with("/avatar/parameters/")
         && path.len() > "/avatar/parameters/".len()
         && path.len() <= 256
         && !path
             .chars()
-            .any(|c| c.is_control() || matches!(c, '*' | '?' | '[' | ']' | '{' | '}' | '#' | ' '))
+            .any(|c| c.is_control() || matches!(c, '*' | '?' | '[' | ']' | '{' | '}' | ' '))
 }
 
 fn local_address(ip: IpAddr) -> bool {
@@ -860,9 +909,9 @@ fn collect_messages(packet: OscPacket, depth: usize, out: &mut Vec<OscMessage>) 
     }
 }
 
-fn parse_host_info(host: &Value) -> Result<SocketAddr, String> {
+fn parse_host_info(host: &Value, profile: OscPeerProfile) -> Result<SocketAddr, String> {
     let name = host.get("NAME").and_then(Value::as_str).unwrap_or_default();
-    if !(name == "VRChat" || name.starts_with("VRChat-")) {
+    if !profile.accepts_name(name) {
         return Err("Invalid OSCQuery host name".into());
     }
     if host
@@ -1102,7 +1151,7 @@ fn spawn_query_server(
 }
 
 fn advertised_tree() -> Value {
-    // The VRChat receiver contract subscribes to the /avatar container. A
+    // The Avatar receiver contract subscribes to the /avatar container. A
     // container has no TYPE or VALUE; leaf types come from the peer's snapshot.
     // Consumer paths are only local filters, never fabricated wire metadata.
     json!({ "FULL_PATH": "/", "ACCESS": 0, "CONTENTS": {
@@ -1327,6 +1376,33 @@ mod tests {
     }
 
     #[test]
+    fn oscquery_peer_profiles_keep_identity_and_writes_separate() {
+        let cvr = OscPeerProfile::ChilloutVr;
+        let vrchat = OscPeerProfile::VrChat;
+        let host = json!({"NAME":"ChilloutVR-ABCDEF", "OSC_PORT":9000});
+        assert!(parse_host_info(&host, cvr).is_ok());
+        assert!(parse_host_info(&host, vrchat).is_err());
+        assert!(!cvr.accepts_name("ChilloutVRFake"));
+        assert!(cvr.invalidates_on(AVATAR_PROFILE_CHANGE));
+        assert!(!vrchat.invalidates_on(AVATAR_PROFILE_CHANGE));
+        assert!(valid_path("/avatar/parameters/#XRT/Enabled"));
+        let local_parameter = OscPacket::Message(OscMessage {
+            addr: "/avatar/parameters/#XRT/Enabled".into(),
+            args: vec![OscType::Bool(false)],
+        });
+        let bytes = encoder::encode(&local_parameter).unwrap();
+        assert_eq!(decoder::decode_udp(&bytes).unwrap().1, local_parameter);
+        let worker = worker(9002, 9000);
+        assert!(worker.control_config_current());
+        worker
+            .handle
+            .set_control_profile(cvr, Some(vec![CONTROL.to_owned()]))
+            .unwrap();
+        // Revocation takes effect before a slow HTTP query or worker config pass.
+        assert!(!worker.control_config_current());
+    }
+
+    #[test]
     fn oscquery_types_identity_and_bundle_bounds() {
         let paths = [CONTROL.to_owned()].into_iter().collect();
         let (_, nodes) = parse_avatar_tree(&tree("avtr_a", json!(true), "T"), &paths).unwrap();
@@ -1339,8 +1415,11 @@ mod tests {
             json!(8);
         assert!(parse_avatar_tree(&malformed, &paths).is_err());
         assert!(
-            parse_host_info(&json!({"NAME":"VRChat", "OSC_PORT":9000,"OSC_IP":"192.0.2.5"}))
-                .is_err()
+            parse_host_info(
+                &json!({"NAME":"VRChat", "OSC_PORT":9000,"OSC_IP":"192.0.2.5"}),
+                OscPeerProfile::VrChat
+            )
+            .is_err()
         );
         let message = encoder::encode(&OscPacket::Message(OscMessage {
             addr: CONTROL.into(),

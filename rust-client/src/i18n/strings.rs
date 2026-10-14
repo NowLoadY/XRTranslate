@@ -1,7 +1,13 @@
 /// Consolidated single-source-of-truth dictionary: `(English Key, Chinese (zh), Japanese (ja), Korean (ko), Russian (ru))`
 pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
+    ("Game connector", "游戏连接器", "ゲームコネクター", "게임 커넥터", "Игровой коннектор"),
+    ("Send captions to the game component", "向游戏组件发送字幕", "ゲーム内コンポーネントに字幕を送信", "게임 구성 요소에 자막 전송", "Передавать субтитры игровому компоненту"),
+    ("Copy address", "复制地址", "アドレスをコピー", "주소 복사", "Копировать адрес"),
+    ("Copy pairing token", "复制配对令牌", "ペアリングトークンをコピー", "페어링 토큰 복사", "Копировать токен сопряжения"),
+    ("Uses your selected languages, audio input and output settings.", "沿用已选语言、音频输入和输出设置。", "選択済みの言語・音声入出力設定を使用します。", "선택한 언어와 오디오 입출력 설정을 사용합니다.", "Используются выбранные языки и настройки аудио."),
+    ("Enable OSC in the game, then use the XRT control on your Avatar.", "在游戏中启用 OSC，然后使用角色上的 XRT 控件。", "ゲームでOSCを有効にし、アバターのXRTコントロールを操作します。", "게임에서 OSC를 켜고 아바타의 XRT 컨트롤을 사용하세요.", "Включите OSC в игре и используйте управление XRT на аватаре."),
     ("Avatar translation controls", "角色翻译控制", "アバター翻訳操作", "아바타 번역 제어", "Управление переводом с аватара"),
-    ("Allow your VRChat Avatar menu to start and stop its own translation session.", "允许 VRChat 角色菜单启停专属翻译会话。", "VRChatのアバターメニューから専用の翻訳セッションを開始・停止します。", "VRChat 아바타 메뉴에서 전용 번역 세션을 시작하고 중지합니다.", "Разрешить меню аватара VRChat запускать и останавливать свой сеанс перевода."),
+    ("Allow game components to control their own translation session.", "允许游戏组件控制专属翻译会话。", "ゲーム内コンポーネントから専用の翻訳セッションを操作します。", "게임 구성 요소가 전용 번역 세션을 제어하도록 합니다.", "Управление собственным сеансом перевода из игровых компонентов."),
     ("Avatar translation", "角色翻译", "アバター翻訳", "아바타 번역", "Перевод с аватара"),
     ("Open Avatar controls", "打开角色控制", "アバター操作を開く", "아바타 제어 열기", "Открыть управление аватаром"),
     ("Translation controlled by your Avatar", "翻译由角色菜单控制", "アバターメニューで翻訳を操作中", "아바타 메뉴에서 번역 제어 중", "Перевод управляется меню аватара"),

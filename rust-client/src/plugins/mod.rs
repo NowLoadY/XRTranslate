@@ -7,6 +7,7 @@
 //! remains explicit in the host adapter.
 
 pub(crate) mod auto_input;
+pub(crate) mod avatar;
 #[cfg(any(windows, target_os = "linux"))]
 pub(crate) mod lyrics;
 pub mod media;
@@ -14,7 +15,6 @@ pub mod meeting;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 pub mod ocr;
 pub mod osc;
-pub(crate) mod vrc_avatar;
 pub(crate) mod vocabulary;
 pub mod vr_overlay;
 
@@ -29,7 +29,7 @@ impl PluginId {
     pub const LYRICS: Self = Self("lyrics");
     pub const VOCABULARY: Self = Self("vocabulary");
     pub const OSC: Self = Self("osc");
-    pub const VRC_AVATAR: Self = Self("vrc_avatar");
+    pub const AVATAR: Self = Self("avatar");
     pub const MEETING: Self = Self("meeting");
     pub const MEDIA: Self = Self("video_player");
     pub const VR_OVERLAY: Self = Self("vr_overlay");
@@ -40,7 +40,7 @@ impl PluginId {
         match self {
             Self::AUTO_INPUT => cfg!(windows),
             Self::LYRICS | Self::OCR => cfg!(any(target_os = "windows", target_os = "linux")),
-            Self::VRC_AVATAR => cfg!(any(target_os = "windows", target_os = "linux")),
+            Self::AVATAR => cfg!(any(target_os = "windows", target_os = "linux")),
             Self::VR_OVERLAY => !cfg!(target_os = "android"),
             _ => true,
         }
@@ -55,7 +55,7 @@ impl PluginId {
             "lyrics" => Some(Self::LYRICS),
             "vocabulary" => Some(Self::VOCABULARY),
             "osc" => Some(Self::OSC),
-            "vrc_avatar" => Some(Self::VRC_AVATAR),
+            "avatar" | "vrc_avatar" => Some(Self::AVATAR),
             "meeting" => Some(Self::MEETING),
             "video_player" | "media" => Some(Self::MEDIA),
             "vr_overlay" => Some(Self::VR_OVERLAY),
@@ -217,12 +217,12 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 7] = [
         default_enabled: true,
     },
     PluginDescriptor {
-        id: PluginId::VRC_AVATAR,
+        id: PluginId::AVATAR,
         title_key: "Avatar translation controls",
-        description_key: "Allow your VRChat Avatar menu to start and stop its own translation session.",
+        description_key: "Allow game components to control their own translation session.",
         navigation_order: None,
         icon: PluginIcon {
-            uri: "bytes://plugins/vrc_avatar/icon.svg",
+            uri: "bytes://plugins/avatar/icon.svg",
             bytes: include_bytes!("../../resources/plugins/osc/icon.svg"),
         },
         scroll_policy: PluginScrollPolicy::Plugin,

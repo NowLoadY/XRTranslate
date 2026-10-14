@@ -2,7 +2,7 @@
 //! Transport policy stays in the plugin; shared tasks keep their existing pipeline.
 use crate::{
     XRTranslateApp,
-    plugins::vrc_avatar::{
+    plugins::avatar::{
         HostAction as AvatarHostAction, HostResult as AvatarHostResult,
         OperationId as AvatarOperationId,
     },
@@ -23,79 +23,75 @@ pub(crate) struct AvatarHostSession {
 }
 
 impl XRTranslateApp {
-    pub(crate) fn vrc_avatar_owns(&self, owner: &TranslationSessionOwner) -> bool {
+    pub(crate) fn avatar_owns(&self, owner: &TranslationSessionOwner) -> bool {
         self.avatar_host_session
             .as_ref()
             .is_some_and(|session| &session.owner == owner)
     }
 
-    pub(crate) fn stop_vrc_avatar_owner(&mut self, owner: &TranslationSessionOwner) {
+    pub(crate) fn stop_avatar_owner(&mut self, owner: &TranslationSessionOwner) {
         if let Some(session) = &self.avatar_host_session
             && &session.owner == owner
         {
-            self.vrc_avatar_plugin.request_host_stop(session.operation);
+            self.avatar_plugin.request_host_stop(session.operation);
         }
-        self.mark_vrc_avatar_terminal(owner, AvatarHostResult::Stopped);
+        self.mark_avatar_terminal(owner, AvatarHostResult::Stopped);
     }
 
-    pub(crate) fn stop_vrc_avatar(&mut self) {
+    pub(crate) fn stop_avatar(&mut self) {
         if let Some(owner) = self
             .avatar_host_session
             .as_ref()
             .map(|session| session.owner.clone())
         {
-            self.stop_vrc_avatar_owner(&owner);
+            self.stop_avatar_owner(&owner);
         }
     }
 
-    pub(crate) fn vrc_avatar_task_ended(
+    pub(crate) fn avatar_task_ended(
         &mut self,
         owner: &TranslationSessionOwner,
         failed: bool,
     ) -> bool {
-        if !self.vrc_avatar_owns(owner) {
+        if !self.avatar_owns(owner) {
             return false;
         }
-        self.mark_vrc_avatar_terminal(owner, if failed {
+        self.mark_avatar_terminal(owner, if failed {
             AvatarHostResult::Failed("The Avatar translation session failed. See XRTranslate's error notification for details.".into())
         } else { AvatarHostResult::Stopped });
         true
     }
 
-    pub(crate) fn fail_vrc_avatar_startup(&mut self, owner: &TranslationSessionOwner, error: &str) {
-        self.mark_vrc_avatar_terminal(owner, AvatarHostResult::Failed(error.to_owned()));
+    pub(crate) fn fail_avatar_startup(&mut self, owner: &TranslationSessionOwner, error: &str) {
+        self.mark_avatar_terminal(owner, AvatarHostResult::Failed(error.to_owned()));
     }
 
-    pub(crate) fn shutdown_vrc_avatar(&mut self) {
-        self.vrc_avatar_plugin.poll(false, &self.osc_plugin);
-        let actions = self.vrc_avatar_plugin.take_host_actions();
-        self.apply_vrc_avatar_actions(actions, None);
+    pub(crate) fn shutdown_avatar(&mut self) {
+        self.avatar_plugin.poll(false, &self.osc_plugin);
+        let actions = self.avatar_plugin.take_host_actions();
+        self.apply_avatar_actions(actions, None);
     }
 
-    pub(crate) fn poll_vrc_avatar(&mut self, ctx: Option<egui::Context>) {
-        let enabled = self.plugin_enabled(PluginId::VRC_AVATAR);
-        self.vrc_avatar_plugin.poll(enabled, &self.osc_plugin);
-        let actions = self.vrc_avatar_plugin.take_host_actions();
-        self.apply_vrc_avatar_actions(actions, ctx);
-        self.poll_vrc_avatar_session();
+    pub(crate) fn poll_avatar(&mut self, ctx: Option<egui::Context>) {
+        let enabled = self.plugin_enabled(PluginId::AVATAR);
+        self.avatar_plugin.poll(enabled, &self.osc_plugin);
+        let actions = self.avatar_plugin.take_host_actions();
+        self.apply_avatar_actions(actions, ctx);
+        self.poll_avatar_session();
     }
 
-    fn apply_vrc_avatar_actions(
-        &mut self,
-        actions: Vec<AvatarHostAction>,
-        ctx: Option<egui::Context>,
-    ) {
+    fn apply_avatar_actions(&mut self, actions: Vec<AvatarHostAction>, ctx: Option<egui::Context>) {
         for action in actions {
             match action {
                 AvatarHostAction::Start(operation) => {
-                    if self.first_run || !self.plugin_enabled(PluginId::VRC_AVATAR) {
-                        self.vrc_avatar_plugin.report_host_result(operation, AvatarHostResult::Failed(
+                    if self.first_run || !self.plugin_enabled(PluginId::AVATAR) {
+                        self.avatar_plugin.report_host_result(operation, AvatarHostResult::Failed(
                             "Complete XRTranslate setup and enable the Avatar plugin before starting translation.".into(),
                         ));
                         continue;
                     }
                     if self.avatar_host_session.is_some() {
-                        self.vrc_avatar_plugin.report_host_result(
+                        self.avatar_plugin.report_host_result(
                             operation,
                             AvatarHostResult::Failed(
                                 "The previous Avatar translation is still stopping.".into(),
@@ -117,13 +113,14 @@ impl XRTranslateApp {
                             }) {
                             Ok(languages) => languages,
                             Err(error) => {
-                                self.vrc_avatar_plugin
+                                self.avatar_plugin
                                     .report_host_result(operation, AvatarHostResult::Failed(error));
                                 continue;
                             }
                         };
-                    let binding = plugins::vrc_avatar::session_binding(operation);
+                    let binding = plugins::avatar::session_binding(operation);
                     let owner = TranslationSessionOwner::Plugin(binding.owner.clone());
+                    self.avatar_plugin.captions.set_owner(owner.clone());
                     self.avatar_host_session = Some(AvatarHostSession {
                         operation,
                         owner,
@@ -159,7 +156,7 @@ impl XRTranslateApp {
                         self.stop_task_owner(&owner);
                     } else {
                         // A rejected or already-retired operation owns no resources.
-                        self.vrc_avatar_plugin
+                        self.avatar_plugin
                             .report_host_result(operation, AvatarHostResult::Stopped);
                     }
                 }
@@ -167,11 +164,7 @@ impl XRTranslateApp {
         }
     }
 
-    fn mark_vrc_avatar_terminal(
-        &mut self,
-        owner: &TranslationSessionOwner,
-        outcome: AvatarHostResult,
-    ) {
+    fn mark_avatar_terminal(&mut self, owner: &TranslationSessionOwner, outcome: AvatarHostResult) {
         if let Some(session) = &mut self.avatar_host_session
             && &session.owner == owner
             && session.terminal.is_none()
@@ -198,7 +191,7 @@ impl XRTranslateApp {
         }
     }
 
-    pub(crate) fn poll_vrc_avatar_session(&mut self) {
+    pub(crate) fn poll_avatar_session(&mut self) {
         let Some(session) = &self.avatar_host_session else {
             return;
         };
@@ -233,7 +226,7 @@ impl XRTranslateApp {
                 None
             };
             if let Some(outcome) = outcome {
-                self.mark_vrc_avatar_terminal(&owner, outcome);
+                self.mark_avatar_terminal(&owner, outcome);
             } else if !session.started
                 && task.is_some_and(|task| {
                     !task.channels.is_empty()
@@ -245,7 +238,7 @@ impl XRTranslateApp {
                 })
             {
                 self.avatar_host_session.as_mut().unwrap().started = true;
-                self.vrc_avatar_plugin
+                self.avatar_plugin
                     .report_host_result(operation, AvatarHostResult::Started);
             }
         }
@@ -269,7 +262,7 @@ impl XRTranslateApp {
                 }
                 self.exclusive_live_inputs
                     .retain(|(lease_owner, _)| lease_owner != &owner);
-                self.vrc_avatar_plugin
+                self.avatar_plugin
                     .report_host_result(operation, session.terminal.unwrap());
             }
         }

@@ -1,10 +1,15 @@
-use super::super::osc::{
+use super::{
+    connectors::{Connector, OscContract, Settings},
+    output::CaptionSink,
+    websocket,
+};
+use crate::plugins::osc::{
     OscPlugin,
-    transport::{AvatarSnapshot, OscTransportHandle, OscValue, TransportEvent},
+    transport::{AvatarSnapshot, OscPeerProfile, OscTransportHandle, OscValue, TransportEvent},
 };
 use std::time::Duration;
 use xrt_avatar_control::{
-    Controller, Effect, Generation, HostResult, OperationId, Snapshot, protocol,
+    Controller, Effect, Generation, HostResult, OperationId, Snapshot, Status,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -13,44 +18,68 @@ pub(crate) enum HostAction {
     Cancel(OperationId),
 }
 
+enum Route {
+    Osc { epoch: u64, avatar_id: String },
+    WebSocket { session: String, captions: bool },
+}
 struct Binding {
-    epoch: u64,
-    avatar_id: String,
+    route: Route,
     generation: Generation,
 }
 
 #[derive(Default)]
-pub(crate) struct VrcAvatarPlugin {
+pub(crate) struct AvatarPlugin {
     controller: Controller,
     enabled: bool,
+    pub settings: Settings,
+    applied_connector: Connector,
     binding: Option<Binding>,
     latest_epoch: u64,
     effects: Vec<Effect>,
     host_actions: Vec<HostAction>,
     connection_diagnostic: Option<String>,
+    pub(super) websocket: Option<websocket::Runtime>,
+    pub captions: CaptionSink,
 }
-
-impl VrcAvatarPlugin {
-    /// Runs on the host event loop. The handle only queues socket operations.
+impl AvatarPlugin {
+    pub fn new(settings: Settings) -> Self {
+        Self {
+            settings,
+            ..Self::default()
+        }
+    }
     pub(crate) fn poll(&mut self, enabled: bool, osc: &OscPlugin) {
         let transport = osc.transport();
-        if self.enabled != enabled {
+        if self.enabled != enabled || self.applied_connector != self.settings.connector {
+            self.invalidate("Avatar control is disconnected".into());
             self.enabled = enabled;
-            self.invalidate("Avatar control is disabled".into());
-            let paths = enabled.then(|| {
-                vec![
-                    protocol::ENABLED_ADDRESS.into(),
-                    protocol::STATUS_ADDRESS.into(),
-                    protocol::VERSION_ADDRESS.into(),
-                ]
-            });
-            if let Err(error) = transport.set_control_paths(paths) {
+            self.applied_connector = self.settings.connector;
+            self.websocket = None;
+            let contract = self.settings.connector.osc();
+            if let Err(error) = transport.set_control_profile(
+                contract
+                    .as_ref()
+                    .filter(|_| enabled)
+                    .map_or(OscPeerProfile::VrChat, |c| c.profile),
+                contract
+                    .as_ref()
+                    .filter(|_| enabled)
+                    .map(OscContract::paths),
+            ) {
                 self.invalidate(error);
             }
+            if enabled && contract.is_none() {
+                match websocket::Runtime::start(self.settings.connector) {
+                    Ok(runtime) => {
+                        self.websocket = Some(runtime);
+                        self.connection_diagnostic = None;
+                    }
+                    Err(error) => self.invalidate(error),
+                }
+            }
         }
-
         for event in transport.events() {
-            if !self.enabled {
+            if !self.enabled || self.settings.connector.osc().is_none() {
                 continue;
             }
             match event {
@@ -59,79 +88,131 @@ impl VrcAvatarPlugin {
                     self.latest_epoch = epoch;
                     self.invalidate(reason);
                 }
-                TransportEvent::Invalidated { .. } => {}
+                _ => {}
             }
         }
+        let events: Vec<_> = self
+            .websocket
+            .as_ref()
+            .map(|runtime| runtime.events().collect())
+            .unwrap_or_default();
+        for event in events {
+            self.observe_websocket(event);
+        }
+        if let Some(error) = self.websocket.as_ref().and_then(|runtime| runtime.error()) {
+            self.invalidate(error);
+            self.websocket = None;
+        }
         self.flush_effects(&transport);
-        if self.enabled && self.binding.is_none() {
+        let send_captions = self.settings.captions
+            && self.controller.snapshot().status == Status::Active
+            && matches!(
+                self.binding.as_ref().map(|b| &b.route),
+                Some(Route::WebSocket { captions: true, .. })
+            );
+        self.captions.set_enabled(send_captions);
+        if self.enabled && self.binding.is_none() && self.settings.connector.osc().is_some() {
             if let Some(error) = transport.state().diagnostic {
                 self.connection_diagnostic = Some(error);
             }
         }
     }
-
     pub(crate) fn take_host_actions(&mut self) -> Vec<HostAction> {
         let actions = std::mem::take(&mut self.host_actions);
         let superseded: Vec<_> = actions
             .iter()
-            .filter_map(|action| match action {
-                HostAction::Start(operation)
-                    if actions.contains(&HostAction::Cancel(*operation)) =>
-                {
-                    Some(*operation)
-                }
+            .filter_map(|a| match a {
+                HostAction::Start(op) if actions.contains(&HostAction::Cancel(*op)) => Some(*op),
                 _ => None,
             })
             .collect();
-        // Input can turn off or disconnect in the same poll that requested
-        // startup. No host resource was acquired, so do not briefly open audio.
-        for operation in &superseded {
-            self.report_host_result(*operation, HostResult::Stopped);
+        for op in &superseded {
+            self.report_host_result(*op, HostResult::Stopped);
         }
         actions
             .into_iter()
-            .filter(|action| {
-                let operation = match action {
-                    HostAction::Start(operation) | HostAction::Cancel(operation) => operation,
-                };
-                !superseded.contains(operation)
+            .filter(|a| {
+                !superseded.contains(match a {
+                    HostAction::Start(op) | HostAction::Cancel(op) => op,
+                })
             })
             .collect()
     }
-
-    /// Callbacks enqueue effects for the next poll; they never reenter the host.
     pub(crate) fn report_host_result(&mut self, operation: OperationId, result: HostResult) {
+        if result != HostResult::Started && self.controller.snapshot().operation == Some(operation)
+        {
+            self.captions.clear_owner();
+        }
         self.effects
             .extend(self.controller.host_result(operation, result));
     }
-
     pub(crate) fn request_host_stop(&mut self, operation: OperationId) {
         let snapshot = self.controller.snapshot();
         if snapshot.operation == Some(operation) {
+            self.captions.clear_owner();
             self.effects
                 .extend(self.controller.request_enabled(snapshot.generation, false));
         }
     }
-
     pub(crate) fn snapshot(&self) -> Snapshot<'_> {
         self.controller.snapshot()
     }
-
     pub(crate) fn diagnostic(&self) -> Option<&str> {
         self.controller
             .snapshot()
             .diagnostic
             .or(self.connection_diagnostic.as_deref())
     }
-
     fn invalidate(&mut self, diagnostic: String) {
+        self.captions.disconnect();
         let generation = self.controller.snapshot().generation;
         self.effects
             .extend(self.controller.disconnect(generation, diagnostic.clone()));
         self.binding = None;
         self.connection_diagnostic = Some(diagnostic);
     }
-
+    fn observe_websocket(&mut self, event: websocket::Event) {
+        match event {
+            websocket::Event::Connected { session, captions } => {
+                let update = self.controller.bind();
+                if let Some(runtime) = &self.websocket {
+                    self.captions.bind(runtime.sender.clone(), session.clone());
+                }
+                self.binding = Some(Binding {
+                    route: Route::WebSocket { session, captions },
+                    generation: update.generation,
+                });
+                self.connection_diagnostic = None;
+                self.effects.extend(update.effects);
+            }
+            websocket::Event::Disconnected { session } if self.has_session(&session) => {
+                self.invalidate("Avatar connector disconnected".into())
+            }
+            websocket::Event::ResetAck { session, reset } if self.has_session(&session) => {
+                if let Some(token) = self
+                    .controller
+                    .snapshot()
+                    .pending_reset
+                    .filter(|t| t.sequence() == reset)
+                {
+                    self.effects.extend(self.controller.confirm_reset(token));
+                }
+            }
+            websocket::Event::SetEnabled { session, enabled } if self.has_session(&session) => {
+                if !enabled {
+                    self.captions.clear_owner();
+                }
+                self.effects.extend(
+                    self.controller
+                        .request_enabled(self.controller.snapshot().generation, enabled),
+                );
+            }
+            _ => {}
+        }
+    }
+    fn has_session(&self, session: &str) -> bool {
+        matches!(self.binding.as_ref().map(|b| &b.route), Some(Route::WebSocket { session: current, .. }) if current == session)
+    }
     fn observe_snapshot(&mut self, snapshot: AvatarSnapshot) {
         if snapshot.epoch < self.latest_epoch {
             return;
@@ -141,114 +222,142 @@ impl VrcAvatarPlugin {
             self.invalidate("Avatar state is stale; waiting for a fresh connection".into());
             return;
         }
-        let enabled = match enabled_value(&snapshot) {
-            Ok(enabled) => enabled,
+        let Some(contract) = self.settings.connector.osc() else {
+            return;
+        };
+        let enabled = match enabled_value(&snapshot, &contract) {
+            Ok(value) => value,
             Err(error) => {
                 self.invalidate(error);
                 return;
             }
         };
-        if self.binding.as_ref().is_none_or(|binding| {
-            binding.epoch != snapshot.epoch || binding.avatar_id != snapshot.avatar_id
-        }) {
+        let same = matches!(self.binding.as_ref().map(|b| &b.route), Some(Route::Osc { epoch, avatar_id }) if *epoch == snapshot.epoch && *avatar_id == snapshot.avatar_id);
+        if !same {
             let update = self.controller.bind();
             self.binding = Some(Binding {
-                epoch: snapshot.epoch,
-                avatar_id: snapshot.avatar_id,
+                route: Route::Osc {
+                    epoch: snapshot.epoch,
+                    avatar_id: snapshot.avatar_id,
+                },
                 generation: update.generation,
             });
             self.connection_diagnostic = None;
             self.effects.extend(update.effects);
-            // The snapshot that establishes a binding is never a user request.
             return;
         }
-
-        let generation = self.binding.as_ref().expect("validated binding").generation;
+        let generation = self.binding.as_ref().unwrap().generation;
         if let Some(token) = self.controller.snapshot().pending_reset {
             if snapshot.query_id == Some(token.sequence()) && !enabled {
                 self.effects.extend(self.controller.confirm_reset(token));
             } else if snapshot.query_id.is_none() {
-                // Retry at the transport's normal reconciliation cadence, not
-                // in an immediate write/query loop when a UDP write is lost.
                 self.effects.push(Effect::ResetEnabled { token });
             }
         } else if snapshot.query_id.is_none() {
             self.effects
                 .extend(self.controller.request_enabled(generation, enabled));
         }
-        // Refresh actual status, including after a lost UDP feedback packet.
         self.effects.push(Effect::WriteStatus {
             generation,
             value: self.controller.snapshot().status,
         });
     }
-
     fn flush_effects(&mut self, transport: &OscTransportHandle) {
         for effect in std::mem::take(&mut self.effects) {
-            let result = match effect {
-                Effect::Start(operation) => {
-                    self.host_actions.push(HostAction::Start(operation));
+            match effect {
+                Effect::Start(op) => {
+                    self.host_actions.push(HostAction::Start(op));
                     continue;
                 }
-                Effect::Cancel(operation) => {
-                    self.host_actions.push(HostAction::Cancel(operation));
+                Effect::Cancel(op) => {
+                    self.captions.clear_owner();
+                    self.host_actions.push(HostAction::Cancel(op));
                     continue;
                 }
-                Effect::ResetEnabled { token } => match &self.binding {
-                    Some(binding)
-                        if binding.generation == token.generation()
-                            && self.controller.snapshot().pending_reset == Some(token) =>
-                    {
-                        transport.write_and_query(
-                            binding.epoch,
-                            protocol::ENABLED_ADDRESS,
+                _ => {}
+            }
+            let Some(binding) = &self.binding else {
+                continue;
+            };
+            let generation = match effect {
+                Effect::ResetEnabled { token } => {
+                    if self.controller.snapshot().pending_reset != Some(token) {
+                        continue;
+                    }
+                    token.generation()
+                }
+                Effect::WriteEnabled { generation, .. }
+                | Effect::WriteStatus { generation, .. } => generation,
+                _ => unreachable!(),
+            };
+            if binding.generation != generation {
+                continue;
+            }
+            let result = match &binding.route {
+                Route::Osc { epoch, .. } => {
+                    let contract = self.settings.connector.osc().unwrap();
+                    match effect {
+                        Effect::ResetEnabled { token } => transport.write_and_query(
+                            *epoch,
+                            contract.enabled,
                             OscValue::Bool(false),
                             token.sequence(),
-                        )
+                        ),
+                        // Never overwrite a newer user OFF with an old ON echo.
+                        Effect::WriteEnabled { value: true, .. } => continue,
+                        Effect::WriteEnabled { value: false, .. } => transport.write_parameter(
+                            *epoch,
+                            contract.enabled,
+                            OscValue::Bool(false),
+                        ),
+                        Effect::WriteStatus { value, .. } => transport.write_parameter(
+                            *epoch,
+                            contract.status,
+                            OscValue::Int(value.wire_value()),
+                        ),
+                        _ => unreachable!(),
                     }
-                    _ => continue,
-                },
-                // Accepting ON needs no acknowledgement write: a later user OFF
-                // may already exist by the time this queued effect reaches VRChat.
-                // Echoing the old true value would erase that newer request.
-                Effect::WriteEnabled { value: true, .. } => continue,
-                Effect::WriteEnabled {
-                    generation,
-                    value: false,
-                } => match &self.binding {
-                    Some(binding) if binding.generation == generation => transport.write_parameter(
-                        binding.epoch,
-                        protocol::ENABLED_ADDRESS,
-                        OscValue::Bool(false),
-                    ),
-                    _ => continue,
-                },
-                Effect::WriteStatus { generation, value } => match &self.binding {
-                    Some(binding) if binding.generation == generation => transport.write_parameter(
-                        binding.epoch,
-                        protocol::STATUS_ADDRESS,
-                        OscValue::Int(value.wire_value()),
-                    ),
-                    _ => continue,
-                },
+                }
+                Route::WebSocket { session, .. } => {
+                    let Some(runtime) = &self.websocket else {
+                        continue;
+                    };
+                    let snapshot = self.controller.snapshot();
+                    let frame = match effect {
+                        Effect::ResetEnabled { token } => {
+                            serde_json::json!({"type":"reset", "reset":token.sequence()})
+                        }
+                        _ => {
+                            serde_json::json!({"type":"state", "status":status_name(snapshot.status), "enabled":snapshot.requested_enabled})
+                        }
+                    };
+                    runtime.sender.send(session, frame)
+                }
             };
             if let Err(error) = result {
                 self.invalidate(error);
             }
         }
-        // A transport write failure must still cancel immediately. Its reset
-        // feedback has no valid endpoint and is discarded with the binding.
         for effect in std::mem::take(&mut self.effects) {
-            if let Effect::Cancel(operation) = effect {
-                self.host_actions.push(HostAction::Cancel(operation));
+            if let Effect::Cancel(op) = effect {
+                self.host_actions.push(HostAction::Cancel(op));
             }
         }
     }
 }
-
-fn enabled_value(snapshot: &AvatarSnapshot) -> Result<bool, String> {
+fn status_name(status: Status) -> &'static str {
+    match status {
+        Status::Unavailable => "unavailable",
+        Status::Off => "off",
+        Status::Starting => "starting",
+        Status::Active => "active",
+        Status::Stopping => "stopping",
+        Status::Error => "error",
+    }
+}
+fn enabled_value(snapshot: &AvatarSnapshot, contract: &OscContract) -> Result<bool, String> {
     if snapshot.avatar_id.is_empty() {
-        return Err("VRChat has not provided a current Avatar identity".into());
+        return Err("The game has not provided a current Avatar identity".into());
     }
     let node = |path: &str| {
         snapshot
@@ -256,36 +365,33 @@ fn enabled_value(snapshot: &AvatarSnapshot) -> Result<bool, String> {
             .get(path)
             .ok_or_else(|| "This Avatar does not have XRT-Avatar-Plugin controls".to_owned())
     };
-    let version = node(protocol::VERSION_ADDRESS)?;
-    if version.osc_type != "i"
-        || version.access & 1 == 0
-        || version.value != Some(OscValue::Int(protocol::PROTOCOL_VERSION))
+    let version = node(contract.version)?;
+    if version.osc_type != "i" || version.access & 1 == 0 || version.value != Some(OscValue::Int(1))
     {
         return Err("The Avatar control protocol version is unsupported".into());
     }
-    let status = node(protocol::STATUS_ADDRESS)?;
+    let status = node(contract.status)?;
     if status.osc_type != "i"
         || status.access & 3 != 3
         || !matches!(status.value, Some(OscValue::Int(_)))
     {
         return Err("The Avatar status parameter must be a readable and writable integer".into());
     }
-    let enabled = node(protocol::ENABLED_ADDRESS)?;
+    let enabled = node(contract.enabled)?;
     if !matches!(enabled.osc_type.as_str(), "T" | "F") || enabled.access & 3 != 3 {
         return Err("The Avatar enable parameter must be a readable and writable boolean".into());
     }
     match enabled.value {
         Some(OscValue::Bool(value)) => Ok(value),
-        _ => Err("VRChat returned an invalid Avatar enable value".into()),
+        _ => Err("The game returned an invalid Avatar enable value".into()),
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::plugins::osc::transport::OscQueryNode;
     use std::{collections::BTreeMap, time::Instant};
-    use xrt_avatar_control::Status;
+    use xrt_avatar_control::{Status, protocol};
 
     fn snapshot(epoch: u64, enabled: bool, query_id: Option<u64>) -> AvatarSnapshot {
         AvatarSnapshot {
@@ -324,7 +430,7 @@ mod tests {
 
     #[test]
     fn reset_queries_and_epoch_validation_prevent_stale_startup() {
-        let mut plugin = VrcAvatarPlugin::default();
+        let mut plugin = AvatarPlugin::default();
         plugin.observe_snapshot(snapshot(1, true, None));
         assert!(
             !plugin
@@ -360,7 +466,7 @@ mod tests {
 
     #[test]
     fn incompatible_avatar_cancels_only_the_owned_operation() {
-        let mut plugin = VrcAvatarPlugin::default();
+        let mut plugin = AvatarPlugin::default();
         plugin.observe_snapshot(snapshot(1, false, None));
         let token = plugin.snapshot().pending_reset.unwrap();
         plugin.observe_snapshot(snapshot(1, false, Some(token.sequence())));
@@ -377,7 +483,7 @@ mod tests {
 
     #[test]
     fn cancelled_start_in_same_poll_never_acquires_host_audio() {
-        let mut plugin = VrcAvatarPlugin::default();
+        let mut plugin = AvatarPlugin::default();
         plugin.observe_snapshot(snapshot(1, false, None));
         let token = plugin.snapshot().pending_reset.unwrap();
         plugin.observe_snapshot(snapshot(1, false, Some(token.sequence())));

@@ -1,9 +1,10 @@
 # VRChat Avatar controls
 
 XRTranslate includes an opt-in built-in plugin that lets a prepared VRChat Avatar
-request translation through its Expressions Menu. The companion
+request translation through its Expressions Menu. The [shared connector guide](avatar-connectors.md)
+defines connector selection and common session behavior. The companion
 [XRT-Avatar-Plugin](https://github.com/NowLoadY/XRT-Avatar-Plugin) repository owns
-its VRChat adapter's editor package, parameter manifest and control core.
+its VRChat adapter's editor package, parameter manifest and shared connector core.
 XRTranslate owns the desktop adapter and runtime resources. Host source is implemented; Unity import,
 Avatar upload and end-to-end behavior with a real VRChat client remain unverified.
 
@@ -85,7 +86,7 @@ configuration or launch a competing fixed-port receiver to resolve discovery.
 
 | Module | Responsibility |
 |---|---|
-| `plugins::vrc_avatar` | Settings, verified control intent, reset/binding state and host actions |
+| `plugins::avatar` | Settings, verified control intent, reset/binding state and host actions |
 | `avatar_host` | Owner-scoped acquisition, readiness, cancellation and terminal outcomes |
 | `plugins::osc::transport` | Shared local discovery, queries, receiver and parameter writes |
 | `session_coordinator` | Neutral task, owner, exclusive-input and result contracts |
