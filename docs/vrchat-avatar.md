@@ -3,8 +3,8 @@
 XRTranslate includes an opt-in built-in plugin that lets a prepared VRChat Avatar
 request translation through its Expressions Menu. The companion
 [XRT-Avatar-Plugin](https://github.com/NowLoadY/XRT-Avatar-Plugin) repository owns
-the editor package, parameter manifest and control core. XRTranslate owns the
-desktop adapter and runtime resources. Host source is implemented; Unity import,
+its VRChat adapter's editor package, parameter manifest and control core.
+XRTranslate owns the desktop adapter and runtime resources. Host source is implemented; Unity import,
 Avatar upload and end-to-end behavior with a real VRChat client remain unverified.
 
 ## Setup
@@ -13,7 +13,7 @@ Avatar upload and end-to-end behavior with a real VRChat client remain unverifie
    XRTranslate setup and select the languages, microphone/system audio source
    and recognition settings. Configure the existing outputs you want to use.
 2. In an existing Avatar authoring project, follow the companion
-   [installation guide](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/installation.md)
+   [installation guide](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/vrchat/installation.md)
    to add the `XRT → Translation` menu and upload with the official SDK. No Unity
    installation is part of the desktop integration.
 3. Select that Avatar in VRChat, enable VRChat OSC, then enable **Avatar translation
@@ -39,7 +39,7 @@ pipeline. The selected languages, source and recognition profiles are captured
 at request time, including while the backend starts. Change these before the
 next Avatar session. Device and prompt configuration are resolved when the
 session is created. Shared output settings retain their existing runtime behavior;
-the companion [host integration contract](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/host-integration.md)
+the companion [host integration contract](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/vrchat/host-integration.md)
 documents setting lifetimes.
 
 The Avatar task holds an exclusive lease for its live inputs. A request overlapping
@@ -93,6 +93,6 @@ configuration or launch a competing fixed-port receiver to resolve discovery.
 
 The [plugin architecture](plugin-architecture.md) owns host dependency rules.
 The companion repository owns the
-[wire protocol](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/control-protocol.md),
-[compatibility criteria](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/compatibility.md)
-and [presentation boundary](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/presentation-architecture.md).
+[wire protocol](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/vrchat/control-protocol.md),
+[compatibility criteria](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/vrchat/compatibility.md)
+and [presentation boundary](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/vrchat/presentation.md).
