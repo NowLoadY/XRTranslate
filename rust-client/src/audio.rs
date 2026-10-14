@@ -312,8 +312,111 @@ impl InputPeakMeter {
     }
 }
 
+#[derive(Clone, Default)]
+struct RouteSample {
+    value: f32,
+    cancelled: Option<Arc<AtomicBool>>,
+}
+
+impl RouteSample {
+    fn value(&self) -> f32 {
+        if self
+            .cancelled
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            0.0
+        } else {
+            self.value
+        }
+    }
+}
+
+struct RouteAudioChunk {
+    samples: VecDeque<f32>,
+    cancelled: Option<Arc<AtomicBool>>,
+}
+
+/// Keep ownership once per PCM chunk rather than once per sample. Reader-held
+/// interpolation samples retain the same cancellation flag after leaving here.
+#[derive(Default)]
+struct RouteAudioQueue {
+    chunks: VecDeque<RouteAudioChunk>,
+    len: usize,
+}
+
+impl RouteAudioQueue {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn clear(&mut self) {
+        self.chunks.clear();
+        self.len = 0;
+    }
+
+    fn push(&mut self, samples: Vec<f32>, cancelled: Option<Arc<AtomicBool>>) {
+        if samples.is_empty() {
+            return;
+        }
+        self.len += samples.len();
+        self.chunks.push_back(RouteAudioChunk {
+            samples: samples.into(),
+            cancelled,
+        });
+    }
+
+    fn pop_front(&mut self) -> Option<RouteSample> {
+        loop {
+            let chunk = self.chunks.front_mut()?;
+            if chunk
+                .cancelled
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Acquire))
+            {
+                self.len -= chunk.samples.len();
+                self.chunks.pop_front();
+                continue;
+            }
+            let sample = RouteSample {
+                value: chunk.samples.pop_front()?,
+                cancelled: chunk.cancelled.clone(),
+            };
+            self.len -= 1;
+            if chunk.samples.is_empty() {
+                self.chunks.pop_front();
+            }
+            return Some(sample);
+        }
+    }
+
+    fn discard(&mut self, count: usize) {
+        for _ in 0..count {
+            if self.pop_front().is_none() {
+                break;
+            }
+        }
+    }
+
+    fn cancel(&mut self, cancelled: &Arc<AtomicBool>) -> usize {
+        let previous = self.len;
+        self.chunks.retain(|chunk| {
+            !chunk
+                .cancelled
+                .as_ref()
+                .is_some_and(|flag| Arc::ptr_eq(flag, cancelled))
+        });
+        self.len = self.chunks.iter().map(|chunk| chunk.samples.len()).sum();
+        previous - self.len
+    }
+}
+
 struct AudioRouteSourceBuffer {
-    queue: Arc<Mutex<VecDeque<f32>>>,
+    queue: Arc<Mutex<RouteAudioQueue>>,
     /// Live capture keeps only recent samples; synthesized utterances must be
     /// retained in full, like the standalone TTS player.
     capacity: Option<usize>,
@@ -335,7 +438,7 @@ impl AudioRouteSourceBuffer {
         metering_enabled: Arc<AtomicBool>,
     ) -> Self {
         Self {
-            queue: Arc::new(Mutex::new(VecDeque::with_capacity(capacity.unwrap_or(0)))),
+            queue: Arc::new(Mutex::new(RouteAudioQueue::default())),
             capacity,
             gain: AtomicU32::new(gain.to_bits()),
             level: Arc::new(AtomicU32::new(0.0f32.to_bits())),
@@ -347,7 +450,11 @@ impl AudioRouteSourceBuffer {
         }
     }
 
-    fn push(&self, mut samples: Vec<f32>) {
+    fn push(&self, samples: Vec<f32>) {
+        self.push_scoped(samples, None);
+    }
+
+    fn push_scoped(&self, mut samples: Vec<f32>, cancelled: Option<Arc<AtomicBool>>) {
         let metering = self.metering_enabled.load(Ordering::Relaxed);
         if metering {
             self.input_meter.observe(&samples, AUDIO_ROUTE_SAMPLE_RATE);
@@ -373,9 +480,9 @@ impl AudioRouteSourceBuffer {
                 .saturating_sub(capacity)
         });
         if queued_excess != 0 {
-            queue.drain(..queued_excess);
+            queue.discard(queued_excess);
         }
-        queue.extend(samples);
+        queue.push(samples, cancelled);
         self.dropped_samples
             .fetch_add((input_excess + queued_excess) as u64, Ordering::Relaxed);
     }
@@ -420,13 +527,14 @@ impl RoutedTtsTarget {
         })
     }
 
-    fn enqueue_samples(&self, samples: &[f32]) {
+    fn enqueue_samples(&self, samples: &[f32], cancelled: &Arc<AtomicBool>) {
         if self.source.playback_tail_samples.load(Ordering::Acquire) == 0
             && self.source.queue.lock().is_empty()
         {
             self.source.processing.lock().reset();
         }
-        self.source.push(samples.to_vec());
+        self.source
+            .push_scoped(samples.to_vec(), Some(cancelled.clone()));
         let queued_samples = self.source.queue.lock().len();
         self.source.playback_tail_samples.store(
             queued_samples as u64 * u64::from(self.output_sample_rate)
@@ -587,10 +695,21 @@ pub struct AudioSystem {
 pub struct TtsPlayerHandle {
     source_sample_rate: u32,
     routed_tts_targets: Arc<Mutex<Vec<RoutedTtsTarget>>>,
+    playback: Arc<TtsPlaybackScope>,
+}
+
+#[derive(Default)]
+struct TtsPlaybackScope {
+    cancelled: Arc<AtomicBool>,
+    /// Serialize cancellation with the final enqueue; resampling stays outside.
+    enqueue: Mutex<()>,
 }
 
 impl TtsPlayerHandle {
     pub fn play_pcm(&self, pcm: &[u8]) -> Result<(), String> {
+        if self.playback.cancelled.load(Ordering::Acquire) {
+            return Ok(());
+        }
         if pcm.len() < 2 {
             return Ok(());
         }
@@ -613,8 +732,12 @@ impl TtsPlayerHandle {
             self.source_sample_rate,
             AUDIO_ROUTE_SAMPLE_RATE,
         )?;
+        let _enqueue = self.playback.enqueue.lock();
+        if self.playback.cancelled.load(Ordering::Acquire) {
+            return Ok(());
+        }
         for target in &targets {
-            target.enqueue_samples(&samples);
+            target.enqueue_samples(&samples, &self.playback.cancelled);
         }
         log::info!(
             "Queued TTS audio for {} routed outputs: input_bytes={}, output_samples={}, source_rate={}, route_rate={}",
@@ -625,6 +748,32 @@ impl TtsPlayerHandle {
             AUDIO_ROUTE_SAMPLE_RATE,
         );
         Ok(())
+    }
+
+    /// Cancel only this session, including audio already queued on shared routes.
+    /// A device buffer already handed to the driver cannot be recalled.
+    pub(crate) fn cancel(&self) {
+        let _enqueue = self.playback.enqueue.lock();
+        self.playback.cancelled.store(true, Ordering::Release);
+        for target in self.routed_tts_targets.lock().iter() {
+            let mut queue = target.source.queue.lock();
+            if queue.cancel(&self.playback.cancelled) == 0 {
+                continue;
+            }
+            let remaining = queue.len() as u64 * u64::from(target.output_sample_rate)
+                / u64::from(AUDIO_ROUTE_SAMPLE_RATE);
+            target.source.playback_tail_samples.store(
+                // A short device drain can include another session's audio.
+                remaining + u64::from(target.output_sample_rate) * 150 / 1_000,
+                Ordering::Release,
+            );
+            if remaining == 0 {
+                target
+                    .source
+                    .level
+                    .store(0.0f32.to_bits(), Ordering::Relaxed);
+            }
+        }
     }
 
     pub fn is_playing(&self) -> bool {
@@ -657,6 +806,7 @@ enum ActiveCapture {
 /// backends, so route-local workers subscribe to this fanout instead.
 struct MicrophoneFanout {
     senders: Arc<Mutex<Vec<Sender<Vec<f32>>>>>,
+    failure: Arc<Mutex<Option<String>>>,
     sample_rate: u32,
     _stream: Stream,
 }
@@ -705,6 +855,14 @@ impl AudioRouteResources {
 }
 
 impl ActiveCapture {
+    fn failure(&self) -> Option<String> {
+        match self {
+            Self::MicrophoneSubscription { _fanout, .. } => _fanout.failure.lock().clone(),
+            #[cfg(any(windows, target_os = "linux"))]
+            Self::Loopback(capture) => capture.failure.as_ref()?.lock().clone(),
+        }
+    }
+
     fn stop(self) {
         match self {
             Self::MicrophoneSubscription {
@@ -730,6 +888,8 @@ impl ActiveCapture {
 struct LoopbackCapture {
     stop_requested: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
+    // Audio Studio routes already publish faults through their route control.
+    failure: Option<Arc<Mutex<Option<String>>>>,
 }
 
 #[cfg(any(windows, target_os = "linux"))]
@@ -791,6 +951,7 @@ fn start_route_loopback_capture(
         Ok(Ok(())) => Ok(LoopbackCapture {
             stop_requested,
             worker: Some(worker),
+            failure: None,
         }),
         Ok(Err(error)) => {
             stop_requested.store(true, Ordering::Release);
@@ -1025,6 +1186,14 @@ impl AudioSystem {
             .retain(|_, fanout| fanout.strong_count() > 0);
     }
 
+    /// Actual device errors affect only sessions subscribed to that capture.
+    pub(crate) fn capture_group_error(&self, id: u64) -> Option<String> {
+        self.active_captures
+            .iter()
+            .filter(|(group, _)| *group == id)
+            .find_map(|(_, capture)| capture.failure())
+    }
+
     pub fn stop(&mut self) {
         for (_, capture) in self.active_captures.drain(..) {
             capture.stop();
@@ -1049,7 +1218,9 @@ impl AudioSystem {
             device_id.to_owned()
         };
         if let Some(fanout) = self.microphone_fanouts.get(&key).and_then(Weak::upgrade) {
-            return Ok(fanout);
+            if fanout.failure.lock().is_none() {
+                return Ok(fanout);
+            }
         }
         let fanout = Arc::new(self.build_microphone_fanout(&key)?);
         self.microphone_fanouts.insert(key, Arc::downgrade(&fanout));
@@ -1076,6 +1247,7 @@ impl AudioSystem {
         TtsPlayerHandle {
             source_sample_rate,
             routed_tts_targets: Arc::clone(&self.routed_tts_targets),
+            playback: Arc::new(TtsPlaybackScope::default()),
         }
     }
 
@@ -1425,78 +1597,91 @@ impl AudioSystem {
         let sample_format = config.sample_format();
         let stream_config: cpal::StreamConfig = config.into();
         let senders = Arc::new(Mutex::new(Vec::<Sender<Vec<f32>>>::new()));
+        let failure = Arc::new(Mutex::new(None));
         let stream = match sample_format {
             cpal::SampleFormat::F32 => build_microphone_fanout_stream::<f32>(
                 &device,
                 stream_config,
                 channels,
                 Arc::clone(&senders),
+                Arc::clone(&failure),
             ),
             cpal::SampleFormat::F64 => build_microphone_fanout_stream::<f64>(
                 &device,
                 stream_config,
                 channels,
                 Arc::clone(&senders),
+                Arc::clone(&failure),
             ),
             cpal::SampleFormat::I8 => build_microphone_fanout_stream::<i8>(
                 &device,
                 stream_config,
                 channels,
                 Arc::clone(&senders),
+                Arc::clone(&failure),
             ),
             cpal::SampleFormat::I16 => build_microphone_fanout_stream::<i16>(
                 &device,
                 stream_config,
                 channels,
                 Arc::clone(&senders),
+                Arc::clone(&failure),
             ),
             cpal::SampleFormat::I24 => build_microphone_fanout_stream::<cpal::I24>(
                 &device,
                 stream_config,
                 channels,
                 Arc::clone(&senders),
+                Arc::clone(&failure),
             ),
             cpal::SampleFormat::I32 => build_microphone_fanout_stream::<i32>(
                 &device,
                 stream_config,
                 channels,
                 Arc::clone(&senders),
+                Arc::clone(&failure),
             ),
             cpal::SampleFormat::I64 => build_microphone_fanout_stream::<i64>(
                 &device,
                 stream_config,
                 channels,
                 Arc::clone(&senders),
+                Arc::clone(&failure),
             ),
             cpal::SampleFormat::U8 => build_microphone_fanout_stream::<u8>(
                 &device,
                 stream_config,
                 channels,
                 Arc::clone(&senders),
+                Arc::clone(&failure),
             ),
             cpal::SampleFormat::U16 => build_microphone_fanout_stream::<u16>(
                 &device,
                 stream_config,
                 channels,
                 Arc::clone(&senders),
+                Arc::clone(&failure),
             ),
             cpal::SampleFormat::U24 => build_microphone_fanout_stream::<cpal::U24>(
                 &device,
                 stream_config,
                 channels,
                 Arc::clone(&senders),
+                Arc::clone(&failure),
             ),
             cpal::SampleFormat::U32 => build_microphone_fanout_stream::<u32>(
                 &device,
                 stream_config,
                 channels,
                 Arc::clone(&senders),
+                Arc::clone(&failure),
             ),
             cpal::SampleFormat::U64 => build_microphone_fanout_stream::<u64>(
                 &device,
                 stream_config,
                 channels,
                 Arc::clone(&senders),
+                Arc::clone(&failure),
             ),
             format => Err(AudioRouteError::StreamStart(format!(
                 "unsupported microphone sample format: {format}"
@@ -1507,6 +1692,7 @@ impl AudioSystem {
         })?;
         Ok(MicrophoneFanout {
             senders,
+            failure,
             sample_rate,
             _stream: stream,
         })
@@ -1921,6 +2107,7 @@ fn build_microphone_fanout_stream<T>(
     config: cpal::StreamConfig,
     channels: usize,
     senders: Arc<Mutex<Vec<Sender<Vec<f32>>>>>,
+    failure: Arc<Mutex<Option<String>>>,
 ) -> Result<Stream, AudioRouteError>
 where
     T: Sample + cpal::SizedSample,
@@ -1929,6 +2116,7 @@ where
     let device = device.clone();
     let create = move || {
         let senders = senders.clone();
+        let failure = Arc::clone(&failure);
         device.build_input_stream(
             config.clone(),
             move |data: &[T], _: &cpal::InputCallbackInfo| {
@@ -1944,6 +2132,9 @@ where
             },
             move |error| {
                 log::error!("shared microphone stream failed: {error}");
+                failure
+                    .lock()
+                    .get_or_insert_with(|| format!("Microphone capture failed: {error}"));
             },
             None,
         )
@@ -2129,26 +2320,61 @@ fn spawn_route_source_worker(
 #[derive(Default)]
 struct RouteRateReader {
     phase: f64,
-    current: f32,
-    next: f32,
+    current: RouteSample,
+    next: RouteSample,
     primed: bool,
 }
 
 impl RouteRateReader {
-    fn read(&mut self, queue: &mut VecDeque<f32>, output_rate: u32) -> f32 {
+    fn read(&mut self, queue: &mut RouteAudioQueue, output_rate: u32) -> f32 {
         if !self.primed {
-            self.current = queue.pop_front().unwrap_or(0.0);
-            self.next = queue.pop_front().unwrap_or(self.current);
+            self.current = queue.pop_front().unwrap_or_default();
+            self.next = queue.pop_front().unwrap_or_else(|| self.current.clone());
             self.primed = true;
         }
-        let sample = self.current + (self.next - self.current) * self.phase as f32;
+        let current = self.current.value();
+        let sample = current + (self.next.value() - current) * self.phase as f32;
         self.phase += f64::from(AUDIO_ROUTE_SAMPLE_RATE) / f64::from(output_rate);
         while self.phase >= 1.0 {
-            self.current = self.next;
-            self.next = queue.pop_front().unwrap_or(0.0);
+            self.current = std::mem::take(&mut self.next);
+            self.next = queue.pop_front().unwrap_or_default();
             self.phase -= 1.0;
         }
         sample
+    }
+}
+
+#[cfg(test)]
+mod playback_cancellation_tests {
+    use super::*;
+
+    #[test]
+    fn cancelling_one_session_preserves_other_queued_audio() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let other = Arc::new(AtomicBool::new(false));
+        let mut queue = RouteAudioQueue::default();
+        queue.push(vec![0.1, 0.2], Some(other.clone()));
+        queue.push(vec![0.3, 0.4], Some(cancelled.clone()));
+        queue.push(vec![0.5], Some(other));
+        cancelled.store(true, Ordering::Release);
+        assert_eq!(queue.cancel(&cancelled), 2);
+        let mut retained = Vec::new();
+        while let Some(sample) = queue.pop_front() {
+            retained.push(sample.value());
+        }
+        assert_eq!(retained, vec![0.1, 0.2, 0.5]);
+    }
+
+    #[test]
+    fn cancellation_silences_interpolation_samples_already_dequeued() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut queue = RouteAudioQueue::default();
+        queue.push(vec![0.5; 8], Some(cancelled.clone()));
+        let mut reader = RouteRateReader::default();
+        assert_eq!(reader.read(&mut queue, AUDIO_ROUTE_SAMPLE_RATE * 2), 0.5);
+        cancelled.store(true, Ordering::Release);
+        queue.cancel(&cancelled);
+        assert_eq!(reader.read(&mut queue, AUDIO_ROUTE_SAMPLE_RATE * 2), 0.0);
     }
 }
 
@@ -2458,6 +2684,8 @@ impl AudioSystem {
     ) -> Result<(), String> {
         let stop_requested = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop_requested);
+        let failure = Arc::new(Mutex::new(None));
+        let worker_failure = Arc::clone(&failure);
         let effects = Arc::clone(&self.loopback_effects);
         let input_meter = Arc::clone(&self.loopback_input_meter);
         let studio_metering = Arc::clone(&self.studio_metering);
@@ -2477,6 +2705,7 @@ impl AudioSystem {
                     Some(input_meter),
                     studio_metering,
                 ) {
+                    *worker_failure.lock() = Some(error.clone());
                     let _ = ready_tx.send(Err(error.clone()));
                     log::error!("WASAPI loopback capture stopped: {error}");
                 }
@@ -2488,6 +2717,7 @@ impl AudioSystem {
                 self.add_active_capture(ActiveCapture::Loopback(LoopbackCapture {
                     stop_requested,
                     worker: Some(worker),
+                    failure: Some(failure),
                 }));
                 Ok(())
             }
@@ -2575,6 +2805,8 @@ impl AudioSystem {
         )?;
         let stop_requested = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop_requested);
+        let failure = Arc::new(Mutex::new(None));
+        let worker_failure = Arc::clone(&failure);
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let worker = thread::Builder::new()
             .name("pulse-loopback".into())
@@ -2584,6 +2816,7 @@ impl AudioSystem {
                         let _ = raw_tx.try_send(samples);
                     })
                 {
+                    *worker_failure.lock() = Some(error.clone());
                     let _ = ready_tx.send(Err(error.clone()));
                     log::error!("Linux audio capture stopped: {error}");
                 }
@@ -2594,6 +2827,7 @@ impl AudioSystem {
                 self.add_active_capture(ActiveCapture::Loopback(LoopbackCapture {
                     stop_requested,
                     worker: Some(worker),
+                    failure: Some(failure),
                 }));
                 reap_worker(processing);
                 Ok(())
@@ -2652,6 +2886,7 @@ fn start_route_loopback_capture(
         Ok(Ok(())) => Ok(LoopbackCapture {
             stop_requested,
             worker: Some(worker),
+            failure: None,
         }),
         Ok(Err(error)) => {
             stop_requested.store(true, Ordering::Release);

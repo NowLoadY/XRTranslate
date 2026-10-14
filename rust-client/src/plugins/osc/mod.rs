@@ -1,6 +1,7 @@
 mod chatbox;
 pub mod runtime;
 mod sys_info;
+pub mod transport;
 pub mod ui;
 
 use eframe::egui;
@@ -21,7 +22,7 @@ impl HostOutputSubscriber for OscHandle {
                 entries,
             } => self.set_previews(stream_id, is_typing, entries),
             HostOutputEvent::CommittedTranslation { .. } => {}
-            HostOutputEvent::StreamCancelled(stream_id) => self.set_previews(stream_id, false, &[]),
+            HostOutputEvent::StreamCancelled(stream_id) => self.cancel_stream(stream_id),
             HostOutputEvent::Caption {
                 stream_id,
                 audio_source,
@@ -50,7 +51,7 @@ impl HostOutputSubscriber for OscHandle {
 
 /// Owns all OSC state and runtime resources behind the desktop plugin boundary.
 ///
-/// `host_enabled` controls whether the plugin may run at all, while
+/// `host_enabled` controls Chatbox output and the manual listener, while
 /// `draft.enabled` retains the user's OSC-output preference across sidebar
 /// activation changes.
 pub struct OscPlugin {
@@ -109,6 +110,10 @@ impl OscPlugin {
 
     pub fn publisher(&self) -> OscHandle {
         self.manager.handle()
+    }
+
+    pub fn transport(&self) -> transport::OscTransportHandle {
+        self.manager.transport()
     }
 
     pub fn mute_state(&self) -> Arc<AtomicBool> {

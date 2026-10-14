@@ -184,6 +184,18 @@ impl AudioTask {
             let _ = worker.join();
         }
     }
+
+    /// Natural completion closes transport but lets completed TTS finish playing.
+    pub fn retire(mut self) {
+        self.invalidate();
+        for channel in &mut self.channels {
+            channel.session.disconnect();
+            channel.audio_tx.take();
+        }
+        for worker in self.routers {
+            let _ = worker.join();
+        }
+    }
 }
 
 /// Host audio and text lanes belong to one live conversation in this client.

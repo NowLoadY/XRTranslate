@@ -120,6 +120,8 @@ pub struct ClientSettings {
     #[serde(default = "OscSettings::from_project_config")]
     pub osc_settings: OscSettings,
     #[serde(default)]
+    pub avatar_connector: crate::plugins::avatar::connectors::Settings,
+    #[serde(default)]
     pub vr_overlay_settings: VrOverlaySettings,
     #[serde(default, rename = "plugins", alias = "plugin_preferences")]
     pub plugin_preferences: PluginPreferences,
@@ -209,6 +211,7 @@ impl Default for ClientSettings {
             download_proxy_url: String::new(),
             update_channel: UpdateChannel::Stable,
             osc_settings: OscSettings::from_project_config(),
+            avatar_connector: Default::default(),
             vr_overlay_settings: VrOverlaySettings::default(),
             plugin_preferences: PluginPreferences::default(),
             active_page: Page::default(),

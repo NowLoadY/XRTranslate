@@ -7,6 +7,7 @@
 //! remains explicit in the host adapter.
 
 pub(crate) mod auto_input;
+pub(crate) mod avatar;
 #[cfg(any(windows, target_os = "linux"))]
 pub(crate) mod lyrics;
 pub mod media;
@@ -28,6 +29,7 @@ impl PluginId {
     pub const LYRICS: Self = Self("lyrics");
     pub const VOCABULARY: Self = Self("vocabulary");
     pub const OSC: Self = Self("osc");
+    pub const AVATAR: Self = Self("avatar");
     pub const MEETING: Self = Self("meeting");
     pub const MEDIA: Self = Self("video_player");
     pub const VR_OVERLAY: Self = Self("vr_overlay");
@@ -38,6 +40,7 @@ impl PluginId {
         match self {
             Self::AUTO_INPUT => cfg!(windows),
             Self::LYRICS | Self::OCR => cfg!(any(target_os = "windows", target_os = "linux")),
+            Self::AVATAR => cfg!(any(target_os = "windows", target_os = "linux")),
             Self::VR_OVERLAY => !cfg!(target_os = "android"),
             _ => true,
         }
@@ -52,6 +55,7 @@ impl PluginId {
             "lyrics" => Some(Self::LYRICS),
             "vocabulary" => Some(Self::VOCABULARY),
             "osc" => Some(Self::OSC),
+            "avatar" | "vrc_avatar" => Some(Self::AVATAR),
             "meeting" => Some(Self::MEETING),
             "video_player" | "media" => Some(Self::MEDIA),
             "vr_overlay" => Some(Self::VR_OVERLAY),
@@ -133,7 +137,7 @@ pub struct PluginDescriptor {
     pub default_enabled: bool,
 }
 
-const PLUGIN_DESCRIPTORS: [PluginDescriptor; 6] = [
+const PLUGIN_DESCRIPTORS: [PluginDescriptor; 7] = [
     PluginDescriptor {
         id: PluginId::VOCABULARY,
         title_key: "Vocabulary",
@@ -211,6 +215,19 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 6] = [
         scroll_policy: PluginScrollPolicy::Plugin,
         settings_contribution: PluginSettingsContribution::EnablementOnly,
         default_enabled: true,
+    },
+    PluginDescriptor {
+        id: PluginId::AVATAR,
+        title_key: "Avatar translation controls",
+        description_key: "Allow game components to control their own translation session.",
+        navigation_order: None,
+        icon: PluginIcon {
+            uri: "bytes://plugins/avatar/icon.svg",
+            bytes: include_bytes!("../../resources/plugins/osc/icon.svg"),
+        },
+        scroll_policy: PluginScrollPolicy::Plugin,
+        settings_contribution: PluginSettingsContribution::Plugin,
+        default_enabled: false,
     },
 ];
 
