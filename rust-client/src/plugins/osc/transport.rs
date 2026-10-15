@@ -6,7 +6,7 @@
 use super::runtime::{MUTE_PATH, OscSettings, RuntimeStatus, parse_mute_value};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use parking_lot::Mutex;
-use rosc::{OscMessage, OscPacket, OscType, decoder, encoder};
+use rosc::{OscBundle, OscMessage, OscPacket, OscType, decoder, encoder};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
@@ -149,6 +149,63 @@ enum Command {
         value: OscValue,
         query_id: Option<u64>,
     },
+    Batch {
+        epoch: u64,
+        values: Vec<(String, OscValue)>,
+        lease: WriteLease,
+    },
+}
+
+/// Revokes queued writes when a consumer replaces or cancels pending output.
+#[derive(Clone, Default)]
+pub(crate) struct WriteLease(Arc<WriteLeaseState>);
+
+#[derive(Default)]
+struct WriteLeaseState {
+    revoked: AtomicBool,
+    pending: AtomicBool,
+    sent: Mutex<Option<Instant>>,
+    interval: Duration,
+}
+
+impl WriteLease {
+    pub(crate) fn new(interval: Duration) -> Self {
+        Self(Arc::new(WriteLeaseState {
+            interval,
+            ..WriteLeaseState::default()
+        }))
+    }
+
+    pub(crate) fn revoke(&self) {
+        self.0.revoked.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn last_sent(&self) -> Option<Instant> {
+        if self.0.pending.load(Ordering::Acquire) || self.0.revoked.load(Ordering::Acquire) {
+            None
+        } else {
+            *self.0.sent.lock()
+        }
+    }
+
+    fn claim(&self) -> bool {
+        !self.0.revoked.load(Ordering::Acquire)
+            && !self
+                .0
+                .sent
+                .lock()
+                .is_some_and(|sent| sent.elapsed() < self.0.interval)
+            && self
+                .0
+                .pending
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+    }
+
+    fn completed(&self) {
+        *self.0.sent.lock() = Some(Instant::now());
+        self.0.pending.store(false, Ordering::Release);
+    }
 }
 
 #[derive(Clone)]
@@ -191,6 +248,37 @@ impl OscTransportHandle {
         self.write(epoch, path, value, None)
     }
 
+    /// A bounded group uses one datagram; its consumer owns ordering and pacing.
+    pub(crate) fn write_batch(
+        &self,
+        epoch: u64,
+        values: Vec<(String, OscValue)>,
+        lease: &WriteLease,
+    ) -> Result<bool, String> {
+        if values.is_empty()
+            || values.len() > 16
+            || values.iter().any(|(path, value)| {
+                !valid_path(path)
+                    || matches!(value, OscValue::String(s) if s.len() > 1024)
+                    || matches!(value, OscValue::Float(v) if !v.is_finite())
+            })
+        {
+            return Err("Invalid OSC parameter batch".into());
+        }
+        if !lease.claim() {
+            return Ok(false);
+        }
+        if let Err(error) = self.enqueue(Command::Batch {
+            epoch,
+            values,
+            lease: lease.clone(),
+        }) {
+            lease.0.pending.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(true)
+    }
+
     /// The returned snapshot carries query_id only if this epoch was still valid
     /// when the write occurred and when its subsequent query completed.
     pub fn write_and_query(
@@ -216,22 +304,24 @@ impl OscTransportHandle {
         {
             return Err("Invalid OSC parameter write".into());
         }
+        self.enqueue(Command::Write {
+            epoch,
+            path: path.to_owned(),
+            value,
+            query_id,
+        })
+    }
+
+    fn enqueue(&self, command: Command) -> Result<(), String> {
         if self.stop.load(Ordering::Acquire) {
             return Err("OSC transport is stopped".into());
         }
-        self.tx
-            .try_send(Command::Write {
-                epoch,
-                path: path.to_owned(),
-                value,
-                query_id,
-            })
-            .map_err(|error| {
-                if matches!(error, mpsc::error::TrySendError::Full(_)) {
-                    self.overflow.store(true, Ordering::Release);
-                }
-                "OSC control command queue unavailable; reconnect required".into()
-            })
+        self.tx.try_send(command).map_err(|error| {
+            if matches!(error, mpsc::error::TrySendError::Full(_)) {
+                self.overflow.store(true, Ordering::Release);
+            }
+            "OSC control command queue unavailable; reconnect required".into()
+        })
     }
 }
 
@@ -657,12 +747,25 @@ impl Worker {
     }
 
     async fn command(&mut self, command: Command) {
-        let Command::Write {
-            epoch,
-            path,
-            value,
-            query_id,
-        } = command;
+        let (epoch, values, query_id, lease) = match command {
+            Command::Write {
+                epoch,
+                path,
+                value,
+                query_id,
+            } => (epoch, vec![(path, value)], query_id, None),
+            Command::Batch {
+                epoch,
+                values,
+                lease,
+            } => (epoch, values, None, Some(lease)),
+        };
+        if lease
+            .as_ref()
+            .is_some_and(|lease| lease.0.revoked.load(Ordering::Acquire))
+        {
+            return;
+        }
         if self.health_expired() {
             self.invalidate("Avatar OSCQuery connection timed out");
             return;
@@ -677,13 +780,26 @@ impl Worker {
         let Some(paths) = self.config.as_ref().and_then(|c| c.control_paths.as_ref()) else {
             return;
         };
-        if !paths.contains(&path) {
+        if values.iter().any(|(path, _)| !paths.contains(path)) {
             return;
         }
-        let packet = OscPacket::Message(OscMessage {
-            addr: path,
-            args: vec![value.osc()],
-        });
+        let mut packets = values
+            .into_iter()
+            .map(|(path, value)| {
+                OscPacket::Message(OscMessage {
+                    addr: path,
+                    args: vec![value.osc()],
+                })
+            })
+            .collect::<Vec<_>>();
+        let packet = if lease.is_none() {
+            packets.pop().unwrap()
+        } else {
+            OscPacket::Bundle(OscBundle {
+                timetag: (0, 1).into(),
+                content: packets,
+            })
+        };
         let encoded = encoder::encode(&packet).map_err(|e| e.to_string());
         let result = encoded.and_then(|bytes| {
             self.socket
@@ -696,6 +812,9 @@ impl Worker {
                         .map_err(|e| e.to_string())
                 })
         });
+        if let Some(lease) = lease {
+            lease.completed();
+        }
         match result {
             Ok(()) if query_id.is_some() => self.query(query_id).await,
             Ok(()) => {}
@@ -1400,6 +1519,43 @@ mod tests {
             .unwrap();
         // Revocation takes effect before a slow HTTP query or worker config pass.
         assert!(!worker.control_config_current());
+    }
+
+    #[tokio::test]
+    async fn parameter_batches_are_paced_from_delivery_and_revocable() {
+        let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        udp.set_nonblocking(true).unwrap();
+        let mut worker = worker(9002, udp.local_addr().unwrap().port());
+        let lease = WriteLease::new(Duration::from_millis(200));
+        assert!(lease.claim());
+        assert!(!lease.claim()); // A slow discovery query cannot accumulate frames.
+        let values = vec![(CONTROL.to_owned(), OscValue::Int(7))];
+        worker
+            .command(Command::Batch {
+                epoch: 7,
+                values: values.clone(),
+                lease: lease.clone(),
+            })
+            .await;
+        let mut bytes = [0; 2048];
+        let size = udp.recv(&mut bytes).unwrap();
+        assert!(matches!(decoder::decode_udp(&bytes[..size]).unwrap().1,
+            OscPacket::Bundle(bundle) if bundle.content.len() == 1));
+        assert!(!lease.claim()); // Hold begins after the worker actually sent it.
+
+        let obsolete = WriteLease::default();
+        obsolete.revoke();
+        worker
+            .command(Command::Batch {
+                epoch: 7,
+                values,
+                lease: obsolete,
+            })
+            .await;
+        assert_eq!(
+            udp.recv(&mut bytes).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
     }
 
     #[test]

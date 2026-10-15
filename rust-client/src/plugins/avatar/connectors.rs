@@ -66,9 +66,13 @@ pub struct OscContract {
 }
 impl OscContract {
     pub fn paths(&self) -> Vec<String> {
-        [self.enabled, self.status, self.version]
+        let mut paths = [self.enabled, self.status, self.version]
             .map(str::to_owned)
-            .to_vec()
+            .to_vec();
+        if self.profile == OscPeerProfile::VrChat {
+            paths.extend(super::vrchat_caption::paths());
+        }
+        paths
     }
 }
 

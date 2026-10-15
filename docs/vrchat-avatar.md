@@ -28,10 +28,20 @@ retained until cleanup finishes. Error and Unavailable include diagnostics in
 plugin settings. A failed or interrupted operation resets the request and cannot
 restart merely because an old On value is still present.
 
-Avatar control uses the current output path and does not enable Chatbox, overlay,
-TTS or a new audio route automatically. It does not require a world component.
-Each Avatar using the controls needs its own installation. A floating Avatar
-bubble is a separate future presentation adapter and is not included.
+Avatar control uses the current output path. Each Avatar using the controls
+needs its own installation. To display translated text on a prepared caption
+object, enable **Send captions to the game component**. The host discovers its
+layout and sync budget automatically; a menu-only Avatar continues to work.
+Chatbox, overlay and TTS retain their own output settings.
+
+Caption objects receive completed translations from the Avatar's session. New
+sentences replace pending text, clear the previous display, and fill a 128-glyph
+cache in held chunks. Text clears 15 seconds after its last chunk is sent.
+Horizontal and portrait presets use 32 or 8 columns; custom 16-column objects
+are also supported.
+The selected Avatar package supplies the font, mesh, shader and receiver.
+Other players see the Avatar's synchronized bus through VRChat's normal Avatar
+rendering and visibility settings.
 
 ## Sessions and settings
 
@@ -58,7 +68,13 @@ releasing capture, so muting is not equivalent to stopping the session.
 
 Avatar control and existing OSC receive consumers share one transport owner.
 Control advertises an available local receive port through OSCQuery; it does not
-open a second fixed-port 9001 listener. Chatbox output retains its configured
+open a second fixed-port 9001 listener. Caption capability discovery and writes
+use that same verified binding. The installed receiver reserves 24, 40 or 72
+synced bits, independently of display length.
+Chunks are held for at least 200 ms after local transmission; game replication
+remains best effort. A newer sentence cancels queued older chunks. Stop,
+Avatar change and disconnect retire the writer and clear where the current
+binding remains reachable. Chatbox output retains its configured
 destination and can be disabled independently of Avatar control. Discovery,
 queries and socket work run off the UI thread.
 
@@ -86,7 +102,8 @@ configuration or launch a competing fixed-port receiver to resolve discovery.
 
 | Module | Responsibility |
 |---|---|
-| `plugins::avatar` | Settings, verified control intent, reset/binding state and host actions |
+| `plugins::avatar` | Settings, verified control intent, reset/binding state, owner-scoped captions and host actions |
+| `plugins::avatar::vrchat_caption` | Caption capability, BMP glyph layout and paced VRChat bus encoding |
 | `avatar_host` | Owner-scoped acquisition, readiness, cancellation and terminal outcomes |
 | `plugins::osc::transport` | Shared local discovery, queries, receiver and parameter writes |
 | `session_coordinator` | Neutral task, owner, exclusive-input and result contracts |

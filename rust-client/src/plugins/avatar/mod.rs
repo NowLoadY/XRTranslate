@@ -3,6 +3,7 @@
 pub(crate) mod connectors;
 mod control;
 mod output;
+mod vrchat_caption;
 mod websocket;
 
 pub(crate) use control::{AvatarPlugin, HostAction};
@@ -46,8 +47,8 @@ impl AvatarPlugin {
                     ui.selectable_value(&mut self.settings.connector, connector, connector.label());
                 }
             });
-        let snapshot = self.snapshot();
-        let status = match snapshot.status {
+        let status_value = self.snapshot().status;
+        let status = match status_value {
             Status::Unavailable if self.enabled_for_reset() => "Synchronizing Avatar controls",
             Status::Unavailable => "Avatar control unavailable",
             Status::Off => "Avatar translation is off",
@@ -64,11 +65,23 @@ impl AvatarPlugin {
             language,
             "Uses your selected languages, audio input and output settings.",
         ));
-        if self.settings.connector.osc().is_none() {
+        if self.settings.connector != connectors::Connector::Chilloutvr {
             ui.checkbox(
                 &mut self.settings.captions,
                 tr(language, "Send captions to the game component"),
             );
+            if self.settings.connector == connectors::Connector::Vrchat
+                && self.settings.captions
+                && matches!(
+                    status_value,
+                    Status::Off | Status::Starting | Status::Active
+                )
+                && !self.captions.available()
+            {
+                ui.weak(tr(language, "No caption object found on this Avatar."));
+            }
+        }
+        if self.settings.connector.osc().is_none() {
             if let Some(runtime) = &self.websocket {
                 ui.horizontal(|ui| {
                     ui.label(&runtime.url);

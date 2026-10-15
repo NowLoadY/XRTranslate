@@ -31,9 +31,11 @@ pending startup and running work, with Stopping retained until cleanup finishes.
 Read connection diagnostics in plugin settings and session failures in host
 notifications. Reconnection and connector changes start with the control Off.
 
-**Send captions to the game component** enables owner-scoped text delivery for
-WebSocket connectors. Their renderers determine visibility. Existing OSC Chatbox,
-overlay and TTS settings remain owned by their respective host plugins.
+**Send captions to the game component** enables owner-scoped text delivery
+to prepared VRChat caption objects and WebSocket game components. Each
+connector discovers the component's display capability; its renderer determines
+visibility. Existing OSC Chatbox, overlay and TTS settings remain owned by their
+respective host plugins.
 
 ## Ownership and configuration
 

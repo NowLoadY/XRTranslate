@@ -83,7 +83,19 @@ impl AvatarPlugin {
                 continue;
             }
             match event {
-                TransportEvent::Snapshot(snapshot) => self.observe_snapshot(snapshot),
+                TransportEvent::Snapshot(snapshot) => {
+                    let epoch = snapshot.epoch;
+                    let layout = if self.settings.connector == Connector::Vrchat {
+                        super::vrchat_caption::Layout::discover(&snapshot)
+                    } else {
+                        None
+                    };
+                    self.observe_snapshot(snapshot);
+                    if matches!(self.binding.as_ref().map(|b| &b.route), Some(Route::Osc { epoch: current, .. }) if *current == epoch)
+                    {
+                        self.captions.bind_osc(transport.clone(), epoch, layout);
+                    }
+                }
                 TransportEvent::Invalidated { epoch, reason } if epoch >= self.latest_epoch => {
                     self.latest_epoch = epoch;
                     self.invalidate(reason);
@@ -108,9 +120,13 @@ impl AvatarPlugin {
             && self.controller.snapshot().status == Status::Active
             && matches!(
                 self.binding.as_ref().map(|b| &b.route),
-                Some(Route::WebSocket { captions: true, .. })
-            );
+                Some(Route::WebSocket { captions: true, .. }) | Some(Route::Osc { .. })
+            )
+            && self.captions.available();
         self.captions.set_enabled(send_captions);
+        if let Err(error) = self.captions.poll() {
+            self.invalidate(error);
+        }
         if self.enabled && self.binding.is_none() && self.settings.connector.osc().is_some() {
             if let Some(error) = transport.state().diagnostic {
                 self.connection_diagnostic = Some(error);
@@ -234,6 +250,7 @@ impl AvatarPlugin {
         };
         let same = matches!(self.binding.as_ref().map(|b| &b.route), Some(Route::Osc { epoch, avatar_id }) if *epoch == snapshot.epoch && *avatar_id == snapshot.avatar_id);
         if !same {
+            self.captions.disconnect();
             let update = self.controller.bind();
             self.binding = Some(Binding {
                 route: Route::Osc {
