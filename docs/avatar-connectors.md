@@ -32,8 +32,8 @@ Read connection diagnostics in plugin settings and session failures in host
 notifications. Reconnection and connector changes start with the control Off.
 
 **Send captions to the game component** enables owner-scoped text delivery
-to prepared VRChat caption objects and WebSocket game components. Each
-connector discovers the component's display capability; its renderer determines
+to prepared VRChat and ChilloutVR caption objects and WebSocket game components.
+Each connector discovers the component's display capability; its renderer determines
 visibility. Existing OSC Chatbox, overlay and TTS settings remain owned by their
 respective host plugins.
 
@@ -57,8 +57,14 @@ filter by exact session owner. Old connection traffic and late worker callbacks
 cannot activate a later binding.
 
 OSC profiles share discovery, authoritative reset queries and sockets with the
-OSC transport owner. They do not alter the Chatbox destination. WebSocket games
-share a bounded local transport, session fencing, reset acknowledgements and
+OSC transport owner. `plugins::avatar::osc_caption` formats and paces the common
+128-slot glyph layout, discovers each profile's installed capabilities and revokes
+queued text when its owner or binding changes. VRChat and ChilloutVR receivers
+use the same SDF font resources; their game-side buffering stays in their
+companion adapters. VRChat sends byte parameters; ChilloutVR packs four glyphs
+into two signed 32-bit parameters, using 96 synchronized bits including the pointer.
+Chatbox retains its own destination. WebSocket games share
+a bounded local transport, session fencing, reset acknowledgements and
 heartbeat checks. Platform-specific bridge details stay in the companion repo.
 
 The [plugin architecture](plugin-architecture.md) owns host dependency rules;

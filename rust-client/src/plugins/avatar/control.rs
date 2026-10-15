@@ -85,11 +85,9 @@ impl AvatarPlugin {
             match event {
                 TransportEvent::Snapshot(snapshot) => {
                     let epoch = snapshot.epoch;
-                    let layout = if self.settings.connector == Connector::Vrchat {
-                        super::vrchat_caption::Layout::discover(&snapshot)
-                    } else {
-                        None
-                    };
+                    let layout = self.settings.connector.osc().and_then(|contract| {
+                        super::osc_caption::Layout::discover(contract.profile, &snapshot)
+                    });
                     self.observe_snapshot(snapshot);
                     if matches!(self.binding.as_ref().map(|b| &b.route), Some(Route::Osc { epoch: current, .. }) if *current == epoch)
                     {

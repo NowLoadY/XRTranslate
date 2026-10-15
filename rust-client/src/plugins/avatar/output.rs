@@ -1,6 +1,6 @@
 //! Owner-scoped captions, delivered through the selected game connector.
 use super::{
-    vrchat_caption::{Board, Layout},
+    osc_caption::{Board, Layout},
     websocket::SenderHandle,
 };
 use crate::{
@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 enum Connection {
     WebSocket(SenderHandle, String),
-    Vrchat(Board),
+    Osc(Board),
 }
 
 #[derive(Default)]
@@ -41,20 +41,20 @@ impl CaptionSink {
         layout: Option<Layout>,
     ) {
         let mut state = self.0.lock();
-        if matches!(&state.connection, Some(Connection::Vrchat(board)) if board.epoch == epoch && Some(board.layout) == layout)
+        if matches!(&state.connection, Some(Connection::Osc(board)) if board.epoch == epoch && Some(board.layout) == layout)
         {
             return;
         }
         clear(&mut state);
         state.connection =
-            layout.map(|layout| Connection::Vrchat(Board::new(transport, epoch, layout)));
+            layout.map(|layout| Connection::Osc(Board::new(transport, epoch, layout)));
         state.revision = 0;
     }
     pub(super) fn available(&self) -> bool {
         self.0.lock().connection.is_some()
     }
     pub(super) fn poll(&self) -> Result<(), String> {
-        if let Some(Connection::Vrchat(board)) = &mut self.0.lock().connection {
+        if let Some(Connection::Osc(board)) = &mut self.0.lock().connection {
             board.poll()?;
         }
         Ok(())
@@ -84,7 +84,7 @@ fn clear(state: &mut State) {
         Some(Connection::WebSocket(sender, session)) => {
             let _ = sender.send(session, json!({"type":"clear"}));
         }
-        Some(Connection::Vrchat(board)) => board.clear(),
+        Some(Connection::Osc(board)) => board.clear(),
         None => {}
     }
 }
@@ -97,10 +97,10 @@ impl SessionEventSubscriber for CaptionSink {
         if !state.enabled || state.owner.as_ref() != Some(owner) {
             return;
         }
-        let vrchat = matches!(state.connection, Some(Connection::Vrchat(_)));
+        let buffered = matches!(state.connection, Some(Connection::Osc(_)));
         let (stream, id, text) = match event {
             TranslationEvent::Segment(segment)
-                if !vrchat || (!segment.revisable && !segment.live) =>
+                if !buffered || (!segment.revisable && !segment.live) =>
             {
                 let Some(text) = segment
                     .translated
@@ -113,7 +113,7 @@ impl SessionEventSubscriber for CaptionSink {
             }
             TranslationEvent::ReplaceSegments(segments) => {
                 let Some(last) = segments.last() else {
-                    if vrchat {
+                    if buffered {
                         clear(&mut state);
                     }
                     return;
@@ -122,13 +122,13 @@ impl SessionEventSubscriber for CaptionSink {
                 // prefix of a turn's growing authoritative replacement batch.
                 let mut texts = segments
                     .iter()
-                    .filter(|s| !vrchat || (!s.revisable && !s.live))
+                    .filter(|s| !buffered || (!s.revisable && !s.live))
                     .filter_map(|s| {
                         s.translated
                             .as_deref()
                             .or_else(|| s.asr_only.then_some(s.source.as_str()))
                     });
-                let text = if vrchat {
+                let text = if buffered {
                     texts.next_back().unwrap_or_default().to_owned()
                 } else {
                     texts.collect::<Vec<_>>().join(" ")
@@ -147,7 +147,7 @@ impl SessionEventSubscriber for CaptionSink {
             }
             _ => return,
         };
-        let text = if vrchat {
+        let text = if buffered {
             // The glyph formatter normalizes before applying its slot bound.
             text
         } else {
@@ -168,7 +168,7 @@ impl SessionEventSubscriber for CaptionSink {
                     "revision":revision, "text":text, "expires_ms":15000
                 }));
             }
-            Some(Connection::Vrchat(board)) => board.replace(&text),
+            Some(Connection::Osc(board)) => board.replace(&text),
             None => {}
         }
     }

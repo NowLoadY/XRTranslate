@@ -1,34 +1,55 @@
-//! VRChat's compact caption bus: held chunks update the Avatar's local glyph cache.
-use crate::plugins::osc::transport::{AvatarSnapshot, OscTransportHandle, OscValue, WriteLease};
+//! Buffered captions over verified OSC Avatar parameters.
+//! Glyph layout and delivery are shared; each profile uses its native parameter width.
+use crate::plugins::osc::transport::{
+    AvatarSnapshot, OscPeerProfile, OscTransportHandle, OscValue, WriteLease,
+};
 use std::{collections::VecDeque, time::Duration};
 use unicode_normalization::UnicodeNormalization;
 
 const PREFIX: &str = "/avatar/parameters/XRT/Caption/";
 const POINTER: &str = "/avatar/parameters/XRT/Caption/Pointer";
 const SLOTS: usize = 128;
-// Parameter sync is best effort. Keep each complete bus value visible instead
-// of relying on OSC arrival rate or replaying missed deadlines in a burst.
+// Receivers repeatedly sample the held bus. Pacing follows local delivery,
+// rather than replaying missed deadlines in a burst.
 const HOLD: Duration = Duration::from_millis(200);
 const DISPLAY_TIME: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Layout {
+    profile: OscPeerProfile,
     columns: usize,
     bytes: usize,
 }
 
-pub(super) fn paths() -> Vec<String> {
-    ["Version", "Columns", "Bytes", "Pointer"]
+fn capability_prefix(profile: OscPeerProfile) -> &'static str {
+    match profile {
+        OscPeerProfile::VrChat => PREFIX,
+        OscPeerProfile::ChilloutVr => "/avatar/parameters/#XRT/Caption/",
+    }
+}
+
+pub(super) fn paths(profile: OscPeerProfile) -> Vec<String> {
+    let capabilities = capability_prefix(profile);
+    let (field, count) = payload_fields(profile);
+    ["Version", "Columns", "Bytes"]
         .into_iter()
-        .map(|name| format!("{PREFIX}{name}"))
-        .chain((0..8).map(|index| format!("{PREFIX}Byte{index}")))
+        .map(|name| format!("{capabilities}{name}"))
+        .chain(std::iter::once(POINTER.to_owned()))
+        .chain((0..count).map(|index| format!("{PREFIX}{field}{index}")))
         .collect()
 }
 
+fn payload_fields(profile: OscPeerProfile) -> (&'static str, usize) {
+    match profile {
+        OscPeerProfile::VrChat => ("Byte", 8),
+        OscPeerProfile::ChilloutVr => ("Word", 2),
+    }
+}
+
 impl Layout {
-    pub(super) fn discover(snapshot: &AvatarSnapshot) -> Option<Self> {
-        let integer = |name: &str, access: u8| {
-            let node = snapshot.nodes.get(&format!("{PREFIX}{name}"))?;
+    pub(super) fn discover(profile: OscPeerProfile, snapshot: &AvatarSnapshot) -> Option<Self> {
+        let integer = |path: String, access: u8| {
+            let node = snapshot.nodes.get(&path)?;
             if node.osc_type != "i" || node.access & access != access {
                 return None;
             }
@@ -37,23 +58,35 @@ impl Layout {
                 _ => None,
             }
         };
-        if integer("Version", 1)? != 1 {
+        let capabilities = capability_prefix(profile);
+        if integer(format!("{capabilities}Version"), 1)? != 1 {
             return None;
         }
-        let columns = integer("Columns", 1)?;
-        let bytes = integer("Bytes", 1)?;
+        let columns = integer(format!("{capabilities}Columns"), 1)?;
+        let bytes = integer(format!("{capabilities}Bytes"), 1)?;
         if !matches!(columns, 8 | 16 | 32) || !matches!(bytes, 2 | 4 | 8) {
             return None;
         }
-        if !(0..=255).contains(&integer("Pointer", 3)?) {
+        if profile == OscPeerProfile::ChilloutVr && bytes != 8 {
             return None;
         }
-        for index in 0..bytes {
-            if !(0..=255).contains(&integer(&format!("Byte{index}"), 3)?) {
+        if !(0..=255).contains(&integer(POINTER.into(), 3)?) {
+            return None;
+        }
+        let (field, count) = payload_fields(profile);
+        let count = if profile == OscPeerProfile::VrChat {
+            bytes as usize
+        } else {
+            count
+        };
+        for index in 0..count {
+            let value = integer(format!("{PREFIX}{field}{index}"), 3)?;
+            if profile == OscPeerProfile::VrChat && !(0..=255).contains(&value) {
                 return None;
             }
         }
         Some(Self {
+            profile,
             columns: columns as usize,
             bytes: bytes as usize,
         })
@@ -116,16 +149,30 @@ impl Layout {
         let mut frames = VecDeque::from([vec![(POINTER.into(), OscValue::Int(255))]]);
         for (pointer, chunk) in glyphs.chunks(self.bytes / 2).enumerate() {
             let mut values = Vec::with_capacity(self.bytes + 1);
-            for index in 0..self.bytes / 2 {
-                let glyph = chunk.get(index).copied().unwrap_or_default();
-                for (offset, byte) in glyph.to_be_bytes().into_iter().enumerate() {
-                    values.push((
-                        format!("{PREFIX}Byte{}", index * 2 + offset),
-                        OscValue::Int(i32::from(byte)),
-                    ));
+            match self.profile {
+                OscPeerProfile::VrChat => {
+                    for index in 0..self.bytes / 2 {
+                        let glyph = chunk.get(index).copied().unwrap_or_default();
+                        for (offset, byte) in glyph.to_be_bytes().into_iter().enumerate() {
+                            values.push((
+                                format!("{PREFIX}Byte{}", index * 2 + offset),
+                                OscValue::Int(i32::from(byte)),
+                            ));
+                        }
+                    }
+                }
+                OscPeerProfile::ChilloutVr => {
+                    for index in 0..2 {
+                        let high = u32::from(chunk.get(index * 2).copied().unwrap_or_default());
+                        let low = u32::from(chunk.get(index * 2 + 1).copied().unwrap_or_default());
+                        values.push((
+                            format!("{PREFIX}Word{index}"),
+                            OscValue::Int(((high << 16) | low) as i32),
+                        ));
+                    }
                 }
             }
-            // Bytes precede the pointer within one immediate OSC bundle.
+            // Payload precedes the pointer within one immediate OSC bundle.
             values.push((POINTER.into(), OscValue::Int(pointer as i32)));
             frames.push_back(values);
         }
@@ -198,8 +245,75 @@ mod tests {
     use super::*;
 
     #[test]
+    fn caption_profiles_share_layout_and_preserve_signed_packed_glyphs() {
+        use crate::plugins::osc::transport::OscQueryNode;
+        use std::time::Instant;
+
+        let snapshot = |profile| AvatarSnapshot {
+            epoch: 1,
+            query_id: None,
+            avatar_id: "caption-avatar".into(),
+            queried_at: Instant::now(),
+            nodes: paths(profile)
+                .into_iter()
+                .map(|path| {
+                    let value = match path.rsplit('/').next().unwrap() {
+                        "Version" => 1,
+                        "Columns" => 8,
+                        "Bytes" => 8,
+                        "Pointer" => 255,
+                        "Word0" => i32::MIN,
+                        "Word1" => i32::MAX,
+                        _ => 0,
+                    };
+                    (
+                        path,
+                        OscQueryNode {
+                            osc_type: "i".into(),
+                            access: 3,
+                            value: Some(OscValue::Int(value)),
+                        },
+                    )
+                })
+                .collect(),
+        };
+        let vrchat =
+            Layout::discover(OscPeerProfile::VrChat, &snapshot(OscPeerProfile::VrChat)).unwrap();
+        let mut cvr_snapshot = snapshot(OscPeerProfile::ChilloutVr);
+        let cvr = Layout::discover(OscPeerProfile::ChilloutVr, &cvr_snapshot).unwrap();
+        let text = "文한🙂A";
+        assert_eq!(cvr.glyphs(text), vrchat.glyphs(text));
+        let frames = cvr.frames(text);
+        assert_eq!(frames[0], vec![(POINTER.into(), OscValue::Int(255))]);
+        assert_eq!(frames[1].len(), 3);
+        let decoded: Vec<_> = frames[1][..2]
+            .iter()
+            .flat_map(|(_, value)| {
+                let OscValue::Int(word) = value else {
+                    panic!("packed word must be an Int")
+                };
+                [((*word as u32) >> 16) as u16, *word as u16]
+            })
+            .collect();
+        assert_eq!(decoded, vec![0x6587, 0xd55c, 0xfffd, 65]);
+        assert!(matches!(frames[1][1].1, OscValue::Int(word) if word < 0));
+        assert_eq!(frames[1][2], (POINTER.into(), OscValue::Int(0)));
+        assert!(
+            !paths(OscPeerProfile::ChilloutVr)
+                .iter()
+                .any(|path| path.starts_with(&format!("{PREFIX}Byte")))
+        );
+        assert!(Layout::discover(OscPeerProfile::VrChat, &cvr_snapshot).is_none());
+
+        // A partial or differently typed bus must not become a display target.
+        cvr_snapshot.nodes.get_mut(POINTER).unwrap().osc_type = "f".into();
+        assert!(Layout::discover(OscPeerProfile::ChilloutVr, &cvr_snapshot).is_none());
+    }
+
+    #[test]
     fn caption_bus_preserves_bmp_layout_and_clears_before_writing() {
         let layout = Layout {
+            profile: OscPeerProfile::VrChat,
             columns: 16,
             bytes: 4,
         };

@@ -99,7 +99,8 @@ companion Avatar repository and pinned by the host. The OSC capability owns
 discovery, receive sockets, snapshots and parameter writes; control demand is
 independent of Chatbox-output enablement. Its bounded, revocable batch writes
 provide send-time pacing without owning any caption format. Avatar caption
-layout and bus encoding remain in the game-specific adapter; completed text
+layout and bus encoding remain in the Avatar adapter, shared by compatible
+game profiles; completed text
 comes through the existing owner-scoped result subscriber. The adapter receives
 verified snapshots and capability handles, while `avatar_host` reports actual
 session outcomes.

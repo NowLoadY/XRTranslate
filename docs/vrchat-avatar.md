@@ -103,7 +103,7 @@ configuration or launch a competing fixed-port receiver to resolve discovery.
 | Module | Responsibility |
 |---|---|
 | `plugins::avatar` | Settings, verified control intent, reset/binding state, owner-scoped captions and host actions |
-| `plugins::avatar::vrchat_caption` | Caption capability, BMP glyph layout and paced VRChat bus encoding |
+| `plugins::avatar::osc_caption` | Shared caption capability, BMP glyph layout and paced OSC bus encoding |
 | `avatar_host` | Owner-scoped acquisition, readiness, cancellation and terminal outcomes |
 | `plugins::osc::transport` | Shared local discovery, queries, receiver and parameter writes |
 | `session_coordinator` | Neutral task, owner, exclusive-input and result contracts |
