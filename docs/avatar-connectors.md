@@ -72,8 +72,13 @@ Chatbox retains its own destination.
 
 `AvatarPlugin` consumes normalized `HostOutputEvent` values and composes one
 `DisplaySnapshot` containing `header`, `messages` and `footer`. Only messages
-carry remaining lifetimes. Content selection and expiry stay in the host;
-connectors adapt the regions to their available objects and capacity.
+carry remaining lifetimes. Source filtering, formatting and expiry stay in the
+host. It supplies recent, unexpired candidates rather than a user-selected message
+count. Capacity-limited connector layouts select the newest messages that fit
+their objects, retaining chronological order and clipping an oversized latest
+message when necessary. Native auto-sizing remains a presentation setting.
+The protocol's eight-entry bound limits the candidate snapshot, not the number
+of messages a surface must show.
 
 The internal `TextOutputPlugin` supplies shared formatting, banner controls and
 one owned system sampler through a handle injected by the host. OSC and Avatar
@@ -85,7 +90,9 @@ captions. Stream cancellation removes only that stream's messages. Connection
 changes clear all pending presentation. WebSocket coalesces full snapshots and
 deducts queue time from message lifetimes. The companion SDK lays out OSC regions,
 prioritizes body updates and selects changed chunks; the host confirms its cache
-only after actual send. Header/footer updates never restart the whole board.
+only after actual send. The Avatar page uses the same OSC layout for its preview.
+Header/footer updates never restart the whole board. Superseded snapshots do not
+form a playback queue, and hidden messages do not gain extra lifetime.
 
 The [plugin architecture](plugin-architecture.md) owns host dependency rules;
 the companion [connector protocol](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/connector-protocol.md)

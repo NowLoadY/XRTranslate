@@ -52,6 +52,12 @@ impl TextDisplay {
     pub(crate) fn prefers_completed_text(&self) -> bool {
         matches!(self.connection, Some(Connection::Osc(_)))
     }
+    pub(crate) fn project(&self, snapshot: &DisplaySnapshot) -> DisplaySnapshot {
+        match &self.connection {
+            Some(Connection::Osc(board)) => board.layout.project(snapshot),
+            _ => snapshot.clone(),
+        }
+    }
     pub(super) fn poll(&mut self) -> Result<(), String> {
         if let Some(Connection::Osc(board)) = &mut self.connection {
             board.poll()?;
@@ -91,7 +97,7 @@ impl TextDisplay {
                         json!({"type":"clear"})
                     } else {
                         json!({"type":"caption", "stream":"display", "id":"current", "revision":self.revision,
-                            "text":text, "expires_ms":snapshot.messages.iter().map(|message| message.ttl_ms).min().unwrap_or(8000)})
+                            "text":text, "expires_ms":snapshot.messages.last().map(|message| message.ttl_ms).unwrap_or(8000)})
                     }
                 };
                 let _ = sender.send(session, value);

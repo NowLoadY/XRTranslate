@@ -16,7 +16,6 @@ pub struct Settings {
     pub messages: bool,
     pub format: MessageFormat,
     pub audio_source_filter: AudioSourceFilter,
-    pub message_count: usize,
     pub message_seconds: u64,
 }
 impl Default for Settings {
@@ -29,7 +28,6 @@ impl Default for Settings {
             messages: true,
             format: MessageFormat::TargetOnly,
             audio_source_filter: AudioSourceFilter::default(),
-            message_count: 3,
             message_seconds: 8,
         }
     }

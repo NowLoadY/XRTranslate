@@ -70,11 +70,6 @@ impl State {
                         ttl_ms: entry.expires.saturating_duration_since(now).as_millis() as u64,
                     })
                 })
-                .rev()
-                .take(self.settings.message_count.clamp(1, 8))
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
                 .collect()
         } else {
             Vec::new()
@@ -145,7 +140,8 @@ impl DisplayOutput {
         state.dirty = true;
     }
     pub(super) fn preview(&self) -> DisplaySnapshot {
-        self.0.lock().snapshot(Instant::now())
+        let state = self.0.lock();
+        state.display.project(&state.snapshot(Instant::now()))
     }
     pub(super) fn poll(&self) -> Result<(), String> {
         let mut state = self.0.lock();

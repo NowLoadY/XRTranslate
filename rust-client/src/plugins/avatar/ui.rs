@@ -107,10 +107,6 @@ impl AvatarPlugin {
                             }
                         });
                     ui.add(
-                        egui::Slider::new(&mut self.settings.message_count, 1..=8)
-                            .text(tr(language, "Visible messages")),
-                    );
-                    ui.add(
                         egui::Slider::new(&mut self.settings.message_seconds, 1..=15)
                             .text(tr(language, "Display seconds")),
                     );

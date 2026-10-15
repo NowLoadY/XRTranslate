@@ -109,9 +109,10 @@ neither owns or reads the other's private runtime or settings.
 
 Avatar consumes the existing host output subscription. It retains message
 identity and expiry, accepts native previews and promotes completed text for
-buffered displays. Cancellation clears affected messages; connection loss clears
-the entire display. Header/footer visibility is independent of translation
-activity. The [Avatar guide](avatar-connectors.md) owns setup and connector rules.
+buffered displays. The host supplies bounded recent candidates; connector layouts
+own fitting to their objects. Cancellation clears affected messages; connection
+loss clears the entire display. Header/footer visibility is independent of
+translation activity. The [Avatar guide](avatar-connectors.md) owns setup and connector rules.
 
 Lyrics has no page. It runs only when available and requested by an active output with a lyric region. Its platform adapters use system media interfaces and distinguish
 missing playback progress from a valid song-start position. The plugin owns
