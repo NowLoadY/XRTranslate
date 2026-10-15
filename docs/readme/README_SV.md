@@ -9,6 +9,11 @@
 </p>
 
 <p align="center">
+  <a href="https://xrtranslate.nowloady.chatgpt.site"><img src="https://img.shields.io/badge/Website-0078D4?style=for-the-badge" alt="Website" /></a>
+  <a href="https://github.com/NowLoadY/XRT-Avatar-Plugin"><img src="https://img.shields.io/badge/XRT--Avatar--Plugin-DB2777?style=for-the-badge&amp;logo=github&amp;logoColor=white" alt="XRT-Avatar-Plugin" /></a>
+</p>
+
+<p align="center">
   <strong>Realtidsundertexter och röstöversättning för skrivbord, media och VRChat</strong>
 </p>
 
