@@ -62,7 +62,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config libx11-dev libxcursor-dev libxrandr-dev \
+            build-essential pkg-config curl bzip2 libx11-dev libxcursor-dev libxrandr-dev \
             libxi-dev libwayland-dev libxkbcommon-dev libasound2-dev \
             libpipewire-0.3-dev libclang-dev libegl-mesa0 libglx-mesa0 \
             libgl1-mesa-dri fontconfig fonts-noto-core fonts-noto-cjk \

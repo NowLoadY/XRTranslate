@@ -2,6 +2,11 @@
 
 # Sourced by the Linux entry points; development files never enter the release.
 prepare_linux_build_env() {
+  prepare_linux_system_deps "$1"
+  prepare_linux_sherpa "$1"
+}
+
+prepare_linux_system_deps() {
   local root="$1" pipewire_version='' clang_package='' clang_version='' clang_major=''
   local cache cache_version multiarch pipewire_library header pc
   local -a packages=() headers=()
@@ -79,4 +84,30 @@ prepare_linux_build_env() {
   if [[ -n "${clang_major}" && -f "${headers[0]}" ]]; then
     export BINDGEN_EXTRA_CLANG_ARGS="-I'${headers[0]%/stddef.h}'"
   fi
+}
+
+prepare_linux_sherpa() {
+  if [[ -n "${SHERPA_ONNX_LIB_DIR:-}" || -n "${SHERPA_ONNX_ARCHIVE_DIR:-}" ]]; then
+    return 0
+  fi
+  local root="$1" version arch name cache archive
+  version="$(awk '$0 == "name = \"sherpa-onnx-sys\"" {found=1; next}
+    found && $1 == "version" {gsub(/"/, "", $3); print $3; exit}' "${root}/Cargo.lock")"
+  [[ -n "${version}" ]] || { printf '%s\n' 'sherpa-onnx-sys is missing from Cargo.lock.' >&2; return 1; }
+  case "$(uname -m)" in
+    x86_64) arch=x64 ;;
+    aarch64) arch=aarch64 ;;
+    *) return 0 ;; # Let the crate report unsupported targets.
+  esac
+  name="sherpa-onnx-v${version}-linux-${arch}-static-lib"
+  cache="${root}/target/sherpa-onnx-prebuilt"
+  archive="${cache}/${name}.tar.bz2"
+  if [[ -d "${cache}/${name}/lib" || -f "${archive}" ]]; then return 0; fi
+  mkdir -p "${cache}"
+  printf 'Downloading sherpa-onnx %s.\n' "${version}" >&2
+  # curl supports SOCKS proxies; the crate's built-in downloader does not.
+  curl --fail --location --retry 3 --connect-timeout 15 --output "${archive}.part" \
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${version}/${name}.tar.bz2" || return
+  tar -tjf "${archive}.part" >/dev/null || return
+  mv -- "${archive}.part" "${archive}"
 }

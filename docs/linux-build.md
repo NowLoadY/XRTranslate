@@ -10,7 +10,7 @@ Install Rust 1.95 or newer. On Debian/Ubuntu, install the native build and
 desktop dependencies:
 
 ```sh
-sudo apt install build-essential pkg-config libx11-dev libxcursor-dev \
+sudo apt install build-essential pkg-config curl bzip2 libx11-dev libxcursor-dev \
   libxrandr-dev libxi-dev libwayland-dev libxkbcommon-dev libasound2-dev \
   libpipewire-0.3-dev libclang-dev \
   libegl-mesa0 libglx-mesa0 libgl1-mesa-dri \
@@ -23,6 +23,13 @@ scripts can download missing PipeWire/SPA development files and libclang C
 headers into `target/linux-build-deps/`, without sudo. This build cache is
 reused on later runs and excluded from release packages. Other distributions
 need the equivalent development packages installed through their package manager.
+
+The scripts download Sherpa's official native libraries with curl, using the
+version resolved in `Cargo.lock` and the current proxy settings. They share the
+crate's `target/sherpa-onnx-prebuilt/` cache. `cargo clean` removes this cache, so
+the next build downloads it again; Cargo's source cache remains available.
+Set `SHERPA_ONNX_LIB_DIR` or `SHERPA_ONNX_ARCHIVE_DIR` to supply matching local
+libraries or an official archive instead.
 
 ## Run from source
 
