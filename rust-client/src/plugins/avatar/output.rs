@@ -179,6 +179,8 @@ impl HostOutputSubscriber for DisplayOutput {
         if !state.enabled {
             return;
         }
+        let expires = Instant::now()
+            + Duration::from_secs(state.settings.message_seconds.clamp(1, 15));
         match event {
             HostOutputEvent::Caption {
                 stream_id,
@@ -235,14 +237,9 @@ impl HostOutputSubscriber for DisplayOutput {
                     is_typing,
                     live,
                     preview: false,
-                    expires: Instant::now()
-                        + Duration::from_secs(state.settings.message_seconds.clamp(1, 15)),
+                    expires,
                 };
                 state.entries.push_back(entry);
-                while state.entries.len() > 8 {
-                    state.entries.pop_front();
-                }
-                state.dirty = true;
             }
             HostOutputEvent::Previews {
                 stream_id,
@@ -285,15 +282,10 @@ impl HostOutputSubscriber for DisplayOutput {
                         is_typing,
                         live: true,
                         preview: true,
-                        expires: Instant::now()
-                            + Duration::from_secs(state.settings.message_seconds.clamp(1, 15)),
+                        expires,
                     };
                     state.entries.push_back(entry);
                 }
-                while state.entries.len() > 8 {
-                    state.entries.pop_front();
-                }
-                state.dirty = true;
             }
             HostOutputEvent::CommittedTranslation {
                 stream_id,
@@ -301,8 +293,6 @@ impl HostOutputSubscriber for DisplayOutput {
                 ..
             } => {
                 let translated: String = translated.chars().take(1024).collect();
-                let expiry = Instant::now()
-                    + Duration::from_secs(state.settings.message_seconds.clamp(1, 15));
                 for entry in &mut state.entries {
                     if entry.stream == stream_id
                         && entry.live
@@ -310,14 +300,12 @@ impl HostOutputSubscriber for DisplayOutput {
                         && entry.target == translated
                     {
                         entry.live = false;
-                        entry.expires = expiry;
+                        entry.expires = expires;
                     }
                 }
-                state.dirty = true;
             }
             HostOutputEvent::StreamCancelled(stream) => {
                 state.entries.retain(|entry| entry.stream != stream);
-                state.dirty = true;
             }
             HostOutputEvent::StreamEnded(stream) => {
                 state
@@ -328,13 +316,15 @@ impl HostOutputSubscriber for DisplayOutput {
                         entry.live = false;
                     }
                 }
-                state.dirty = true;
             }
             HostOutputEvent::Clear => {
                 state.entries.clear();
-                state.dirty = true;
             }
         }
+        while state.entries.len() > 8 {
+            state.entries.pop_front();
+        }
+        state.dirty = true;
     }
 }
 

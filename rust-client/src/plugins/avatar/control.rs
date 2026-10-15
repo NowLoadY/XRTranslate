@@ -287,8 +287,7 @@ impl AvatarPlugin {
                     }
                     token.generation()
                 }
-                Effect::WriteEnabled { generation, .. }
-                | Effect::WriteStatus { generation, .. } => generation,
+                Effect::WriteStatus { generation, .. } => generation,
                 _ => unreachable!(),
             };
             if binding.generation != generation {
@@ -303,13 +302,6 @@ impl AvatarPlugin {
                             contract.enabled,
                             OscValue::Bool(false),
                             token.sequence(),
-                        ),
-                        // Never overwrite a newer user OFF with an old ON echo.
-                        Effect::WriteEnabled { value: true, .. } => continue,
-                        Effect::WriteEnabled { value: false, .. } => transport.write_parameter(
-                            *epoch,
-                            contract.enabled,
-                            OscValue::Bool(false),
                         ),
                         Effect::WriteStatus { value, .. } => transport.write_parameter(
                             *epoch,
