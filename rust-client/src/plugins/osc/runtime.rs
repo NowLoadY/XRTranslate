@@ -2,6 +2,10 @@ use super::chatbox::{
     HistoryMessage, ManualMessage, build_chatbox_text, render_entry, sanitize_chatbox_segment,
 };
 use crate::client_settings::CaptureSource;
+use crate::plugins::text_output::TextOutputHandle;
+pub use crate::plugins::text_output::{
+    BannerConfig, BannerContentType, MessageFormat as OscFormatMode,
+};
 use crate::session_coordinator::AudioSourceFilter;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use parking_lot::Mutex;
@@ -36,31 +40,6 @@ impl From<CaptureSource> for OscInputSource {
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum OscFormatMode {
-    BilingualSourceFirst, // Source \n Target
-    BilingualTargetFirst, // Target \n Source
-    Inline,               // Source | Target
-    TargetOnly,           // Target only
-}
-
-impl OscFormatMode {
-    pub fn label(&self, language: crate::i18n::UiLanguage) -> &'static str {
-        if matches!(self, Self::BilingualSourceFirst) {
-            return crate::i18n::tr(language, "Bilingual (Source → Target)");
-        }
-        if matches!(self, Self::BilingualTargetFirst) {
-            return crate::i18n::tr(language, "Bilingual (Target → Source)");
-        }
-        match self {
-            Self::BilingualSourceFirst => "Bilingual (Source → Target)",
-            Self::BilingualTargetFirst => "Bilingual (Target → Source)",
-            Self::Inline => crate::i18n::tr(language, "Single Line (Source | Target)"),
-            Self::TargetOnly => crate::i18n::tr(language, "Target Only"),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OscMessageSeparator {
     #[default]
@@ -97,81 +76,6 @@ impl OscMessageSeparator {
         match self {
             Self::NewLine => "\n",
             Self::Space => " ",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BannerContentType {
-    None,
-    CustomText,
-    SystemTime,
-    CpuStatus,
-    GpuStatus,
-    Lyrics,
-}
-
-impl BannerContentType {
-    pub fn label(&self, language: crate::i18n::UiLanguage) -> &'static str {
-        match self {
-            Self::None => crate::i18n::tr(language, "None (Disabled)"),
-            Self::CustomText => crate::i18n::tr(language, "Custom Text"),
-            Self::SystemTime => crate::i18n::tr(language, "System Time"),
-            Self::CpuStatus => crate::i18n::tr(language, "CPU Usage"),
-            Self::GpuStatus => crate::i18n::tr(language, "GPU Usage"),
-            Self::Lyrics => crate::i18n::tr(language, "Lyrics"),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BannerConfig {
-    pub content_type: BannerContentType,
-    pub custom_text: String,
-    pub show_device_name: bool,
-}
-
-impl Default for BannerConfig {
-    fn default() -> Self {
-        Self {
-            content_type: BannerContentType::None,
-            custom_text: String::new(),
-            show_device_name: false,
-        }
-    }
-}
-
-impl BannerConfig {
-    pub fn render_text(&self, metrics: &super::sys_info::SystemMetrics, lyric: &str) -> String {
-        match self.content_type {
-            BannerContentType::Lyrics => lyric.to_owned(),
-            BannerContentType::None => String::new(),
-            BannerContentType::CustomText => self.custom_text.trim().to_string(),
-            BannerContentType::SystemTime => {
-                if metrics.time_str.is_empty() {
-                    String::new()
-                } else {
-                    format!("[{}]", metrics.time_str)
-                }
-            }
-            BannerContentType::CpuStatus => {
-                if metrics.cpu_name.is_empty() {
-                    "[CPU unavailable]".to_string()
-                } else if self.show_device_name {
-                    format!("[{} {}%]", metrics.cpu_name, metrics.cpu_usage)
-                } else {
-                    format!("[CPU {}%]", metrics.cpu_usage)
-                }
-            }
-            BannerContentType::GpuStatus => {
-                if metrics.gpu_name.is_empty() {
-                    "[GPU unavailable]".to_string()
-                } else if self.show_device_name {
-                    format!("[{} {}%]", metrics.gpu_name, metrics.gpu_usage)
-                } else {
-                    format!("[GPU {}%]", metrics.gpu_usage)
-                }
-            }
         }
     }
 }
@@ -558,7 +462,7 @@ pub struct OscManager {
 }
 
 impl OscManager {
-    pub fn new(settings: OscSettings) -> Self {
+    pub fn new(settings: OscSettings, text_output: TextOutputHandle) -> Self {
         let (tx, rx) = unbounded();
         let status = Arc::new(Mutex::new(RuntimeStatus::default()));
         let dispatch_settings = settings.clone();
@@ -573,6 +477,7 @@ impl OscManager {
                     dispatch_settings,
                     dispatch_status,
                     dispatch_cancellations,
+                    text_output,
                 )
             })
             .expect("failed to start OSC dispatcher");
@@ -668,8 +573,8 @@ fn dispatch_loop(
     mut settings: OscSettings,
     status: Arc<Mutex<RuntimeStatus>>,
     pending_cancellations: Arc<Mutex<BTreeSet<u64>>>,
+    text_output: TextOutputHandle,
 ) {
-    let monitor = super::sys_info::SystemMonitor::new();
     let mut history = Vec::new();
     let mut live = Vec::new();
     let mut previews: Vec<HistoryMessage> = Vec::new();
@@ -913,7 +818,7 @@ fn dispatch_loop(
                     &live.iter().chain(&previews).cloned().collect::<Vec<_>>(),
                     manual_message.as_ref(),
                     &settings,
-                    &monitor.snapshot(),
+                    &text_output.snapshot(),
                     &lyric,
                     !live.is_empty() || !previews.is_empty(),
                     notify,
@@ -993,7 +898,7 @@ fn build_queued_message(
     live: &[HistoryMessage],
     manual_message: Option<&ManualMessage>,
     settings: &OscSettings,
-    metrics: &super::sys_info::SystemMetrics,
+    metrics: &crate::plugins::text_output::SystemMetrics,
     lyric: &str,
     typing: bool,
     notify: bool,

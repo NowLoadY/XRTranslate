@@ -1,6 +1,7 @@
 use super::super::runtime::{
     BannerConfig, BannerContentType, MAX_PREFIX_LENGTH, OscFormatMode, OscMessageSeparator,
 };
+use crate::plugins::text_output::render_banner_selector;
 use crate::ui::{
     components::{self, card},
     layout,
@@ -358,87 +359,6 @@ pub fn render_toolbar(
         actions.push(super::OscUiAction::SettingsApplied(plugin.apply_draft()));
         actions.push(super::OscUiAction::SaveSettings);
     }
-}
-
-fn render_banner_selector(
-    ui: &mut egui::Ui,
-    label: &str,
-    combo_id: &str,
-    banner: &mut BannerConfig,
-    language: crate::i18n::UiLanguage,
-    lyrics_available: bool,
-) -> bool {
-    let mut changed = false;
-    if !lyrics_available && banner.content_type == BannerContentType::Lyrics {
-        banner.content_type = BannerContentType::None;
-        changed = true;
-    }
-
-    layout::flow_row(ui, |ui| {
-        ui.label(
-            egui::RichText::new(label)
-                .color(crate::ui::theme::text_strong())
-                .strong(),
-        );
-
-        let combo_resp =
-            components::combobox_ui(ui, combo_id, banner.content_type.label(language), |ui| {
-                let mut changed = false;
-                for kind in [
-                    BannerContentType::None,
-                    BannerContentType::CustomText,
-                    BannerContentType::SystemTime,
-                    BannerContentType::CpuStatus,
-                    BannerContentType::GpuStatus,
-                    BannerContentType::Lyrics,
-                ] {
-                    if kind == BannerContentType::Lyrics && !lyrics_available {
-                        continue;
-                    }
-                    changed |= ui
-                        .selectable_value(&mut banner.content_type, kind, kind.label(language))
-                        .changed();
-                }
-                changed
-            });
-
-        if combo_resp.inner.unwrap_or(false) {
-            changed = true;
-        }
-
-        ui.add_space(8.0);
-
-        match banner.content_type {
-            BannerContentType::None => {}
-            BannerContentType::CustomText => {
-                if components::text_edit_ui(
-                    ui,
-                    combo_id,
-                    egui::TextEdit::singleline(&mut banner.custom_text)
-                        .hint_text("e.g. [AFK] or [CN/JP]")
-                        .desired_width(150.0),
-                )
-                .changed()
-                {
-                    changed = true;
-                }
-            }
-            BannerContentType::SystemTime | BannerContentType::Lyrics => {}
-            BannerContentType::CpuStatus | BannerContentType::GpuStatus => {
-                if components::checkbox(
-                    ui,
-                    &mut banner.show_device_name,
-                    crate::i18n::tr(language, "Full Name"),
-                )
-                .changed()
-                {
-                    changed = true;
-                }
-            }
-        }
-    });
-
-    changed
 }
 
 fn banner_field_width(

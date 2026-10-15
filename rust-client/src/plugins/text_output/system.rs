@@ -1,7 +1,9 @@
-use std::sync::Arc;
+//! One system sampler with an explicit owner and read-only output handles.
+use std::sync::{Arc, mpsc};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SystemMetrics {
     pub time_str: String,
     pub cpu_name: String,
@@ -10,73 +12,84 @@ pub struct SystemMetrics {
     pub gpu_usage: u32,
 }
 
-impl Default for SystemMetrics {
-    fn default() -> Self {
-        Self {
-            time_str: String::new(),
-            cpu_name: String::new(),
-            cpu_usage: 0,
-            gpu_name: String::new(),
-            gpu_usage: 0,
-        }
+/// Cloning a handle never starts a sampler. A default handle is empty.
+#[derive(Clone, Default)]
+pub struct TextOutputHandle(Arc<parking_lot::Mutex<SystemMetrics>>);
+
+impl TextOutputHandle {
+    pub fn snapshot(&self) -> SystemMetrics {
+        self.0.lock().clone()
     }
 }
 
-pub struct SystemMonitor {
-    metrics: Arc<parking_lot::Mutex<SystemMetrics>>,
+pub(super) struct SystemMonitor {
+    handle: TextOutputHandle,
+    stop: mpsc::Sender<()>,
+    worker: Option<JoinHandle<()>>,
 }
 
 impl SystemMonitor {
-    pub fn new() -> Self {
-        let metrics = Arc::new(parking_lot::Mutex::new(SystemMetrics::default()));
-        let metrics_clone = Arc::clone(&metrics);
-
-        let cpu_name = detect_cpu_name();
-        let gpu_name = detect_gpu_name();
-
-        std::thread::Builder::new()
-            .name("sys-monitor".into())
+    pub(super) fn new() -> Self {
+        let handle = TextOutputHandle(Arc::new(parking_lot::Mutex::new(SystemMetrics {
+            time_str: get_formatted_time(),
+            ..SystemMetrics::default()
+        })));
+        let metrics = handle.0.clone();
+        let (stop, stopped) = mpsc::channel();
+        let worker = thread::Builder::new()
+            .name("text-output-metrics".into())
             .spawn(move || {
+                let cpu_name = detect_cpu_name();
+                let gpu_name = detect_gpu_name();
                 let mut cpu_sampler = CpuUsageSampler::new();
                 let mut gpu_sampler = GpuUsageSampler::new();
                 loop {
                     let now_str = get_formatted_time();
                     let cpu_usage = cpu_sampler.sample();
                     let gpu_usage = gpu_sampler.as_mut().and_then(GpuUsageSampler::sample);
-
                     {
-                        let mut guard = metrics_clone.lock();
-                        guard.time_str = now_str;
-                        guard.cpu_name = cpu_name.clone();
-                        guard.gpu_name = gpu_name.clone();
-                        if let Some(cpu_usage) = cpu_usage {
-                            guard.cpu_usage = cpu_usage;
+                        let mut value = metrics.lock();
+                        value.time_str = now_str;
+                        value.cpu_name.clone_from(&cpu_name);
+                        value.gpu_name.clone_from(&gpu_name);
+                        if let Some(usage) = cpu_usage {
+                            value.cpu_usage = usage;
                         }
-                        if let Some(gpu_usage) = gpu_usage {
-                            guard.gpu_usage = gpu_usage;
+                        if let Some(usage) = gpu_usage {
+                            value.gpu_usage = usage;
                         }
                     }
-
-                    std::thread::sleep(Duration::from_millis(1000));
+                    if stopped.recv_timeout(Duration::from_secs(1))
+                        != Err(mpsc::RecvTimeoutError::Timeout)
+                    {
+                        break;
+                    }
                 }
             })
+            .map_err(|error| log::warn!("Cannot start text-output sampler: {error}"))
             .ok();
-
-        Self { metrics }
+        Self {
+            handle,
+            stop,
+            worker,
+        }
     }
 
-    pub fn snapshot(&self) -> SystemMetrics {
-        let mut m = self.metrics.lock().clone();
-        if m.time_str.is_empty() {
-            m.time_str = get_formatted_time();
+    pub(super) fn handle(&self) -> TextOutputHandle {
+        self.handle.clone()
+    }
+
+    pub(super) fn shutdown(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            let _ = self.stop.send(());
+            let _ = worker.join();
         }
-        if m.cpu_name.is_empty() {
-            m.cpu_name = detect_cpu_name();
-        }
-        if m.gpu_name.is_empty() {
-            m.gpu_name = detect_gpu_name();
-        }
-        m
+    }
+}
+
+impl Drop for SystemMonitor {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -102,17 +115,23 @@ fn get_formatted_time() -> String {
     )
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 fn get_formatted_time() -> String {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs() % 86_400);
+    let timestamp = unsafe { libc::time(std::ptr::null_mut()) };
+    let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
+    if unsafe { libc::localtime_r(&timestamp, local.as_mut_ptr()) }.is_null() {
+        return String::new();
+    }
+    let local = unsafe { local.assume_init() };
     format!(
         "{:02}:{:02}:{:02}",
-        seconds / 3_600,
-        (seconds / 60) % 60,
-        seconds % 60
+        local.tm_hour, local.tm_min, local.tm_sec
     )
+}
+
+#[cfg(not(any(windows, unix)))]
+fn get_formatted_time() -> String {
+    String::new()
 }
 
 #[cfg(target_os = "windows")]

@@ -1,11 +1,9 @@
+use crate::plugins::text_output::{SystemMetrics, message_parts};
 use std::{collections::VecDeque, time::Instant};
 
 use crate::presentation::speaker::compact_speaker_label;
 
-use super::{
-    runtime::{OscFormatMode, OscInputSource, OscMessageSeparator, OscSettings},
-    sys_info::SystemMetrics,
-};
+use super::runtime::{OscFormatMode, OscInputSource, OscMessageSeparator, OscSettings};
 
 const MAX_LINES: usize = 9;
 
@@ -348,40 +346,23 @@ fn entry_parts(
     settings: &OscSettings,
 ) -> (Vec<(String, String)>, &'static str) {
     let source = sanitize_chatbox_segment(&entry.source);
-    let translated = sanitize_chatbox_segment(&entry.translated);
-    let show_source = !source.is_empty()
-        && !translated.is_empty()
-        && source != translated
-        && settings.format_mode != OscFormatMode::TargetOnly;
-    let mut parts = Vec::new();
-    if show_source && settings.format_mode != OscFormatMode::BilingualTargetFirst {
-        parts.push((String::new(), source.clone()));
-    }
-    let main = if translated.is_empty() && settings.format_mode != OscFormatMode::TargetOnly {
-        &source
-    } else {
-        &translated
-    };
-    if !main.is_empty() {
-        parts.push((String::new(), main.clone()));
-    }
-    for (_, text) in &entry.additional_translations {
-        let text = sanitize_chatbox_segment(text);
-        if !text.is_empty() {
-            parts.push((String::new(), text));
-        }
-    }
-    if show_source && settings.format_mode == OscFormatMode::BilingualTargetFirst {
-        parts.push((String::new(), source));
-    }
+    let target = sanitize_chatbox_segment(&entry.translated);
+    let (texts, separator) = message_parts(
+        &source,
+        &target,
+        entry
+            .additional_translations
+            .iter()
+            .map(|(_, text)| sanitize_chatbox_segment(text)),
+        settings.format_mode,
+    );
+    let mut parts = texts
+        .into_iter()
+        .map(|text| (String::new(), text))
+        .collect::<Vec<_>>();
     if let Some((label, _)) = parts.first_mut() {
-        label.insert_str(0, &entry_prefix(entry, settings));
+        *label = entry_prefix(entry, settings);
     }
-    let separator = if settings.format_mode == OscFormatMode::Inline {
-        " | "
-    } else {
-        "\n"
-    };
     (parts, separator)
 }
 

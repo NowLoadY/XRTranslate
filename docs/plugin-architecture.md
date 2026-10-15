@@ -19,7 +19,7 @@ plugin-named protocol variants or branches in the translation pipeline.
 Plugins receive focused snapshots or capability handles and return typed actions
 for host effects. They do not receive the root application object or access
 another plugin's private state. The host connects collaborating plugins through
-small contracts, as it connects the lyric text output to OSC.
+small contracts, as it distributes lyric text to selected outputs.
 
 ## Translation and result contracts
 
@@ -85,8 +85,9 @@ affecting unrelated tasks.
 | Module | Owns and consumes |
 |---|---|
 | `plugins::osc` | Shared OSC receive/OSCQuery transport and Chatbox presentation; consumes shared host output |
-| `plugins::avatar` | Verified Avatar control intent, binding/reset state and typed actions; `avatar_host` composes owned translation sessions |
-| `plugins::lyrics` | Music observation, lyric lookup, synchronization, and bounded persistent cache; publishes text through the host to OSC |
+| `plugins::avatar` | Game display composition, verified control intent and connection lifecycle; `avatar_host` composes owned translation sessions |
+| `plugins::text_output` | Internal shared text formatting, banner controls and one owned system sampler |
+| `plugins::lyrics` | Music observation, lyric lookup, synchronization, and bounded persistent cache; publishes text through the host to selected outputs |
 | `plugins::vocabulary` | Wordbooks and saved vocabulary views; uses shared storage and stateless ask for example work |
 | `plugins::meeting` | Meeting state, recording, and persistence; consumes its normalized session results |
 | `plugins::media` | Media tasks, playback, subtitles, and export; uses shared import and translation |
@@ -94,23 +95,25 @@ affecting unrelated tasks.
 | `plugins::ocr` | Screen-text workflow; uses host capture, recognition, and translation capabilities |
 | `plugins::auto_input` | Automatic text output; consumes committed results through a platform input capability |
 
-Avatar control has settings and no page. Its single companion SDK owns the
-connector catalogue, pure lifecycle, peer descriptors and text codecs. The host
-consumes those contracts through shared OSC and WebSocket transports. The OSC
-capability owns discovery, receive sockets, snapshots and revocable paced writes;
-control demand is independent of Chatbox-output enablement. It does not interpret
-game parameters or text layout.
+Avatar has its own page for connection and header/message/footer composition.
+Its single companion SDK owns the connector catalogue, pure lifecycle, region
+layout and buffered text codecs. Shared OSC transport owns discovery, verified
+snapshots and revocable paced writes independently of Chatbox enablement.
+WebSocket sends one latest display snapshot separately from ordered controls.
 
-The source-neutral `TextDisplay` accepts plain text, opaque identity and lifetime.
-The host selects its producer; content does not introduce game-specific message
-types. The translation subscriber filters by session owner and extracts the
-appropriate normalized result before publishing. `avatar_host` reports actual
-session outcomes. An Avatar toggle neither starts a parallel translation pipeline
-nor changes another session's ownership. Setup belongs to the
-[Avatar connector guide](avatar-connectors.md).
+`TextOutputPlugin` is an internal capability plugin, composed explicitly by the
+host rather than exposed as another output destination. It owns the shared
+system sampler and joins it on shutdown. OSC and Avatar receive cloneable
+`TextOutputHandle` values and use its public formatting and editor components;
+neither owns or reads the other's private runtime or settings.
 
-Lyrics has no page. It runs only when available and requested by active OSC
-lyric output. Its platform adapters use system media interfaces and distinguish
+Avatar consumes the existing host output subscription. It retains message
+identity and expiry, accepts native previews and promotes completed text for
+buffered displays. Cancellation clears affected messages; connection loss clears
+the entire display. Header/footer visibility is independent of translation
+activity. The [Avatar guide](avatar-connectors.md) owns setup and connector rules.
+
+Lyrics has no page. It runs only when available and requested by an active output with a lyric region. Its platform adapters use system media interfaces and distinguish
 missing playback progress from a valid song-start position. The plugin owns
 the presentation policy: synchronize music with an available timeline and
 timed lyrics, otherwise show its title; other media supplies titles only.

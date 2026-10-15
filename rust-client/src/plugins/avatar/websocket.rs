@@ -17,10 +17,22 @@ use std::{
 use tungstenite::{Message, WebSocket, accept_hdr_with_config, protocol::WebSocketConfig};
 
 pub(super) enum Event {
-    Connected { session: String, captions: bool },
-    ResetAck { session: String, reset: u64 },
-    SetEnabled { session: String, enabled: bool },
-    Disconnected { session: String },
+    Connected {
+        session: String,
+        captions: bool,
+        structured: bool,
+    },
+    ResetAck {
+        session: String,
+        reset: u64,
+    },
+    SetEnabled {
+        session: String,
+        enabled: bool,
+    },
+    Disconnected {
+        session: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -53,9 +65,27 @@ struct Outbound {
     session: String,
     value: Value,
     caption_epoch: Option<u64>,
+    queued_at: Instant,
 }
 
 impl Outbound {
+    fn remaining(mut self) -> Value {
+        let elapsed = self.queued_at.elapsed().as_millis() as u64;
+        if let Some(messages) = self.value.get_mut("messages").and_then(Value::as_array_mut) {
+            for message in messages.iter_mut() {
+                message["ttl_ms"] = message["ttl_ms"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .saturating_sub(elapsed)
+                    .into();
+            }
+            messages.retain(|message| message["ttl_ms"].as_u64().unwrap_or(0) > 0);
+        }
+        if let Some(ttl) = self.value["expires_ms"].as_u64() {
+            self.value["expires_ms"] = ttl.saturating_sub(elapsed).into();
+        }
+        self.value
+    }
     fn is_current(&self, session: &str, epoch: &AtomicU64) -> bool {
         self.session == session
             && self
@@ -67,30 +97,32 @@ impl Outbound {
 #[derive(Clone)]
 pub(super) struct SenderHandle {
     frames: Sender<Outbound>,
+    latest: Arc<Mutex<Option<Outbound>>>,
     caption_epoch: Arc<AtomicU64>,
     failed: Arc<AtomicBool>,
 }
 impl SenderHandle {
     pub fn send(&self, session: &str, mut value: Value) -> Result<(), String> {
         value["session"] = session.into();
-        let caption_epoch = match value["type"].as_str() {
-            Some("clear") => {
-                self.caption_epoch.fetch_add(1, Ordering::AcqRel);
-                None
-            }
-            Some("caption") => Some(self.caption_epoch.load(Ordering::Acquire)),
-            _ => None,
+        let is_display = matches!(value["type"].as_str(), Some("caption" | "display"));
+        if value["type"] == "clear" {
+            self.caption_epoch.fetch_add(1, Ordering::AcqRel);
+            self.latest.lock().take();
+        }
+        let frame = Outbound {
+            session: session.to_owned(),
+            value,
+            caption_epoch: is_display.then(|| self.caption_epoch.load(Ordering::Acquire)),
+            queued_at: Instant::now(),
         };
-        self.frames
-            .try_send(Outbound {
-                session: session.to_owned(),
-                value,
-                caption_epoch,
-            })
-            .map_err(|_| {
-                self.failed.store(true, Ordering::Release);
-                "Avatar connector output queue is full or disconnected".into()
-            })
+        if is_display {
+            *self.latest.lock() = Some(frame);
+            return Ok(());
+        }
+        self.frames.try_send(frame).map_err(|_| {
+            self.failed.store(true, Ordering::Release);
+            "Avatar connector output queue is full or disconnected".into()
+        })
     }
 }
 
@@ -118,8 +150,10 @@ impl Runtime {
         let failed = Arc::new(AtomicBool::new(false));
         let error = Arc::new(Mutex::new(None));
         let caption_epoch = Arc::new(AtomicU64::new(0));
+        let latest = Arc::new(Mutex::new(None));
         let sender = SenderHandle {
             frames: tx,
+            latest: latest.clone(),
             failed: failed.clone(),
             caption_epoch: caption_epoch.clone(),
         };
@@ -134,6 +168,7 @@ impl Runtime {
                         Ok((socket, address)) if address.ip().is_loopback() => {
                             // Old session output is never delivered to a new connection.
                             while rx.try_recv().is_ok() {}
+                            latest.lock().take();
                             if let Some(mut peer) =
                                 handshake(socket, connector, &secret, run.clone())
                             {
@@ -142,12 +177,13 @@ impl Runtime {
                                     .try_send(Event::Connected {
                                         session: session.clone(),
                                         captions: peer.captions,
+                                        structured: peer.structured,
                                     })
                                     .is_err()
                                 {
                                     break;
                                 }
-                                peer.run(&run, &failed, &caption_epoch, &rx, &events_tx);
+                                peer.run(&run, &failed, &caption_epoch, &rx, &latest, &events_tx);
                                 if events_tx.try_send(Event::Disconnected { session }).is_err() {
                                     break;
                                 }
@@ -192,6 +228,7 @@ struct Peer {
     socket: WebSocket<GuardedStream>,
     session: String,
     captions: bool,
+    structured: bool,
 }
 /// A whole-handshake deadline survives fragmented reads; stop is checked on I/O.
 struct GuardedStream {
@@ -302,7 +339,10 @@ fn handshake(
     Some(Peer {
         socket: ws,
         session,
-        captions: capabilities.iter().any(|c| c == "captions"),
+        captions: capabilities
+            .iter()
+            .any(|c| c == "captions" || c == "display-v1"),
+        structured: capabilities.iter().any(|c| c == "display-v1"),
     })
 }
 impl Peer {
@@ -312,6 +352,7 @@ impl Peer {
         failed: &AtomicBool,
         caption_epoch: &AtomicU64,
         output: &Receiver<Outbound>,
+        latest: &Mutex<Option<Outbound>>,
         events: &Sender<Event>,
     ) {
         let mut last_seen = Instant::now();
@@ -320,13 +361,14 @@ impl Peer {
             && !failed.load(Ordering::Acquire)
             && last_seen.elapsed() < Duration::from_secs(15)
         {
-            for frame in output.try_iter().take(64) {
+            let latest_frame = latest.lock().take();
+            for frame in output.try_iter().take(64).chain(latest_frame) {
                 if !frame.is_current(&self.session, caption_epoch) {
                     continue;
                 }
                 if self
                     .socket
-                    .send(Message::Text(frame.value.to_string().into()))
+                    .send(Message::Text(frame.remaining().to_string().into()))
                     .is_err()
                 {
                     return;
@@ -401,6 +443,7 @@ mod tests {
         let epoch = Arc::new(AtomicU64::new(0));
         let sender = SenderHandle {
             frames,
+            latest: Arc::new(Mutex::new(None)),
             failed: Arc::new(AtomicBool::new(false)),
             caption_epoch: epoch.clone(),
         };
@@ -408,117 +451,83 @@ mod tests {
     }
 
     #[test]
-    fn clear_revokes_queued_captions_but_preserves_control_frames() {
+    fn latest_display_is_coalesced_expired_and_revoked_without_losing_controls() {
         let (sender, queue, epoch) = output_queue();
-        sender
-            .send("old", json!({"type":"caption", "text":"old result"}))
-            .unwrap();
-        sender
-            .send("old", json!({"type":"state", "status":"stopping"}))
-            .unwrap();
-        sender.send("old", json!({"type":"clear"})).unwrap();
-        let caption = queue.recv().unwrap();
-        assert!(!caption.is_current("old", &epoch));
-        let control = queue.recv().unwrap();
-        assert!(control.is_current("old", &epoch));
-        assert!(!control.is_current("new", &epoch));
-        assert!(queue.recv().unwrap().is_current("old", &epoch));
-    }
-
-    #[test]
-    fn translation_display_preserves_pending_results_and_fences_old_owners() {
-        use crate::plugins::avatar::output::CaptionSink;
-        use crate::session_coordinator::{
-            PluginSessionOwner, SessionEventSubscriber, TranslationEvent, TranslationSegment,
-            TranslationSessionOwner,
-        };
-
-        let (sender, queue, epoch) = output_queue();
-        let owner = |operation| {
-            TranslationSessionOwner::Plugin(PluginSessionOwner::new(
-                "avatar", operation, "Avatar", "Open", "Running",
-            ))
-        };
-        let original_owner = owner("first");
-        let sink = CaptionSink::default();
-        sink.set_owner(original_owner.clone());
-        sink.bind(sender, "session".into());
-        sink.set_enabled(true);
-        let translated = TranslationSegment {
-            stream_id: 1,
-            audio_source: crate::client_settings::CaptureSource::Microphone,
-            turn_id: "turn-1".into(),
-            segment_index: 1,
-            segment_count: 1,
-            source: "Hello".into(),
-            translated: Some("Bonjour".into()),
-            source_lang: "en".into(),
-            target_lang: "fr".into(),
-            additional_translations: Vec::new(),
-            asr_only: false,
-            speaker_id: String::new(),
-            source_start_ms: 0.0,
-            source_end_ms: 1000.0,
-            timing: Default::default(),
-            boundary: Default::default(),
-            revisable: false,
-            live: false,
-        };
-        let event = TranslationEvent::Segment(translated.clone());
-        sink.on_translation_event(&original_owner, &event);
-        let caption = queue.try_recv().unwrap();
-        assert_eq!(caption.value["text"], "Bonjour");
-        let source_only = TranslationSegment {
-            translated: None,
-            ..translated
-        };
-        sink.on_translation_event(
-            &original_owner,
-            &TranslationEvent::ReplaceSegments(vec![source_only]),
-        );
-        assert!(queue.is_empty());
-        assert!(caption.is_current("session", &epoch));
-
-        sink.on_translation_event(&original_owner, &TranslationEvent::ReplaceSegments(vec![]));
-        assert_eq!(queue.try_recv().unwrap().value["type"], "clear");
-        assert!(!caption.is_current("session", &epoch));
-
-        let replacement_owner = owner("second");
-        sink.set_owner(replacement_owner.clone());
-        assert_eq!(queue.try_recv().unwrap().value["type"], "clear");
-        sink.on_translation_event(&original_owner, &event);
-        assert!(queue.is_empty());
-        sink.on_translation_event(&replacement_owner, &event);
-        let current = queue.try_recv().unwrap();
-        assert_eq!(current.value["text"], "Bonjour");
-        sink.on_translation_event(&original_owner, &TranslationEvent::ReplaceSegments(vec![]));
-        assert!(queue.is_empty());
-        assert!(current.is_current("session", &epoch));
-    }
-
-    #[test]
-    fn text_display_carries_opaque_identity_and_renewable_lifetime() {
-        use crate::plugins::avatar::display::{TextDisplay, TextUpdate};
-
-        let (sender, queue, epoch) = output_queue();
-        let mut display = TextDisplay::default();
-        display.bind(sender, "session".into());
-        for revision in 1..=2 {
-            display.replace(TextUpdate {
-                stream: "clock/local",
-                id: "tick-42",
-                text: "11:04:22",
-                lifetime: Duration::from_secs(2),
-            });
-            let frame = queue.try_recv().unwrap();
-            assert!(frame.is_current("session", &epoch));
-            assert_eq!(frame.value, json!({
-                "type":"caption", "session":"session", "stream":"clock/local",
-                "id":"tick-42", "revision":revision, "text":"11:04:22", "expires_ms":2000
-            }));
+        for revision in 1..=100 {
+            sender.send("session", json!({"type":"display", "revision":revision,
+                "header":"clock", "messages":[{"id":"one","text":"Hi","ttl_ms":1000}], "footer":null})).unwrap();
         }
-        display.clear();
+        assert!(queue.is_empty());
+        let mut display = sender.latest.lock().take().unwrap();
+        assert_eq!(display.value["revision"], 100);
+        display.queued_at -= Duration::from_secs(2);
+        let remaining = display.remaining();
+        assert_eq!(remaining["header"], "clock");
+        assert!(remaining["messages"].as_array().unwrap().is_empty());
+        sender.send("session", json!({"type":"display"})).unwrap();
+        let old = sender.latest.lock().take().unwrap();
+        sender
+            .send("session", json!({"type":"state", "status":"stopping"}))
+            .unwrap();
+        sender.send("session", json!({"type":"clear"})).unwrap();
+        assert!(!old.is_current("session", &epoch));
+        assert!(queue.try_recv().unwrap().is_current("session", &epoch));
         assert_eq!(queue.try_recv().unwrap().value["type"], "clear");
+        assert!(sender.latest.lock().is_none());
+    }
+
+    #[test]
+    fn stopping_messages_preserves_independent_banners() {
+        use crate::{
+            plugins::{
+                avatar::{connectors::Settings, output::DisplayOutput},
+                text_output::{BannerConfig, BannerContentType},
+            },
+            session_coordinator::{CaptionUpdate, HostOutputEvent, HostOutputSubscriber},
+        };
+        let (sender, _, _) = output_queue();
+        let output = DisplayOutput::default();
+        let settings = Settings {
+            header: BannerConfig {
+                content_type: BannerContentType::CustomText,
+                custom_text: "Header".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        output.configure(&settings, true);
+        output.bind(sender.clone(), "session".into(), true);
+        let caption = |stream| HostOutputEvent::Caption {
+            stream_id: stream,
+            audio_source: crate::client_settings::CaptureSource::Microphone,
+            is_typing: false,
+            source: "Hello",
+            translated: "Bonjour",
+            additional_translations: &[],
+            asr_only: false,
+            speaker: "",
+            update: CaptionUpdate::Append,
+        };
+        output.on_host_output(caption(1));
+        output.on_host_output(caption(2));
+        output.poll().unwrap();
+        assert_eq!(
+            sender.latest.lock().take().unwrap().value["messages"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        output.on_host_output(HostOutputEvent::StreamCancelled(1));
+        output.poll().unwrap();
+        let snapshot = sender.latest.lock().take().unwrap().value;
+        assert_eq!(snapshot["header"], "Header");
+        assert_eq!(snapshot["messages"].as_array().unwrap().len(), 1);
+        output.on_host_output(HostOutputEvent::Clear);
+        output.poll().unwrap();
+        let snapshot = sender.latest.lock().take().unwrap().value;
+        assert_eq!(snapshot["header"], "Header");
+        assert!(snapshot["messages"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -533,7 +542,7 @@ mod tests {
             }
             ws
         };
-        let hello = |token: &str| json!({"type":"hello","protocol":1,"connector":"overte","token":token,"client_id":"fixture","capabilities":["captions"]});
+        let hello = |token: &str| json!({"type":"hello","protocol":1,"connector":"overte","token":token,"client_id":"fixture","capabilities":["captions","display-v1"]});
         let mut rejected = open();
         rejected
             .send(Message::Text(hello("wrong").to_string().into()))
@@ -546,7 +555,11 @@ mod tests {
         let session = welcome["session"].as_str().unwrap();
         assert!(matches!(
             runtime.events.recv_timeout(Duration::from_secs(2)).unwrap(),
-            Event::Connected { captions: true, .. }
+            Event::Connected {
+                captions: true,
+                structured: true,
+                ..
+            }
         ));
         runtime
             .sender

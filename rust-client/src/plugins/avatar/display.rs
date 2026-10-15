@@ -1,38 +1,33 @@
-//! Source-neutral text display over the selected connector.
+//! Deliver one structured display through the selected connector.
 use super::{
     osc_caption::{Board, Layout},
     websocket::SenderHandle,
 };
 use crate::plugins::osc::transport::OscTransportHandle;
 use serde_json::json;
-use std::time::Duration;
-
-pub(crate) const TEXT_LIFETIME: Duration = Duration::from_secs(15);
-
-/// Opaque source/result identity, plain text and a renewable display lifetime.
-/// Content selection belongs to the host; connectors do not interpret the source.
-pub(crate) struct TextUpdate<'a> {
-    pub stream: &'a str,
-    pub id: &'a str,
-    pub text: &'a str,
-    pub lifetime: Duration,
-}
+use xrt_connector_core::DisplaySnapshot;
 
 enum Connection {
-    WebSocket(SenderHandle, String),
+    WebSocket {
+        sender: SenderHandle,
+        session: String,
+        structured: bool,
+    },
     Osc(Board),
 }
-
 #[derive(Default)]
 pub(crate) struct TextDisplay {
     connection: Option<Connection>,
     revision: u64,
 }
-
 impl TextDisplay {
-    pub(super) fn bind(&mut self, sender: SenderHandle, session: String) {
+    pub(super) fn bind(&mut self, sender: SenderHandle, session: String, structured: bool) {
         self.clear();
-        self.connection = Some(Connection::WebSocket(sender, session));
+        self.connection = Some(Connection::WebSocket {
+            sender,
+            session,
+            structured,
+        });
         self.revision = 0;
     }
     pub(super) fn bind_osc(
@@ -40,15 +35,16 @@ impl TextDisplay {
         transport: OscTransportHandle,
         epoch: u64,
         layout: Option<Layout>,
-    ) {
+    ) -> bool {
         if matches!(&self.connection, Some(Connection::Osc(board)) if board.epoch == epoch && Some(board.layout) == layout)
         {
-            return;
+            return false;
         }
         self.clear();
         self.connection =
             layout.map(|layout| Connection::Osc(Board::new(transport, epoch, layout)));
         self.revision = 0;
+        true
     }
     pub(crate) fn available(&self) -> bool {
         self.connection.is_some()
@@ -68,39 +64,39 @@ impl TextDisplay {
     }
     pub(crate) fn clear(&mut self) {
         match &mut self.connection {
-            Some(Connection::WebSocket(sender, session)) => {
+            Some(Connection::WebSocket {
+                sender, session, ..
+            }) => {
                 let _ = sender.send(session, json!({"type":"clear"}));
             }
             Some(Connection::Osc(board)) => board.clear(),
             None => {}
         }
     }
-    pub(crate) fn replace(&mut self, update: TextUpdate<'_>) {
-        if update.text.trim().is_empty() || update.lifetime.is_zero() {
-            self.clear();
-            return;
-        }
+    pub(crate) fn replace(&mut self, snapshot: &DisplaySnapshot) {
         self.revision += 1;
-        let lifetime = update.lifetime.min(TEXT_LIFETIME);
         match &mut self.connection {
-            Some(Connection::WebSocket(sender, session)) => {
-                let text: String = update
-                    .text
-                    .chars()
-                    .filter(|c| !c.is_control() || *c == '\n')
-                    .take(256)
-                    .collect();
-                if text.is_empty() {
-                    let _ = sender.send(session, json!({"type":"clear"}));
+            Some(Connection::WebSocket {
+                sender,
+                session,
+                structured,
+            }) => {
+                let value = if *structured {
+                    json!({"type":"display", "revision":self.revision,
+                        "header":snapshot.header, "messages":snapshot.messages, "footer":snapshot.footer})
                 } else {
-                    let _ = sender.send(session, json!({
-                        "type":"caption", "stream":update.stream.chars().take(64).collect::<String>(),
-                        "id":update.id.chars().take(64).collect::<String>(), "revision":self.revision,
-                        "text":text, "expires_ms":lifetime.as_millis() as u64
-                    }));
-                }
+                    // Legacy projection is maintained with the connector contract.
+                    let text = snapshot.legacy_text();
+                    if text.is_empty() {
+                        json!({"type":"clear"})
+                    } else {
+                        json!({"type":"caption", "stream":"display", "id":"current", "revision":self.revision,
+                            "text":text, "expires_ms":snapshot.messages.iter().map(|message| message.ttl_ms).min().unwrap_or(8000)})
+                    }
+                };
+                let _ = sender.send(session, value);
             }
-            Some(Connection::Osc(board)) => board.replace(update.text, lifetime),
+            Some(Connection::Osc(board)) => board.replace(snapshot),
             None => {}
         }
     }

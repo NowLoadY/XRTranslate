@@ -1,6 +1,6 @@
 use super::{
     connectors::{Connector, OscContract, Settings},
-    output::CaptionSink,
+    output::DisplayOutput,
     websocket,
 };
 use crate::plugins::osc::{
@@ -8,9 +8,7 @@ use crate::plugins::osc::{
     transport::{AvatarSnapshot, OscPeerProfile, OscTransportHandle, OscValue, TransportEvent},
 };
 use std::time::Duration;
-use xrt_connector_core::{
-    Controller, Effect, Generation, HostResult, OperationId, Snapshot, Status,
-};
+use xrt_connector_core::{Controller, Effect, Generation, HostResult, OperationId, Snapshot};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HostAction {
@@ -20,7 +18,7 @@ pub(crate) enum HostAction {
 
 enum Route {
     Osc { epoch: u64, avatar_id: String },
-    WebSocket { session: String, captions: bool },
+    WebSocket { session: String },
 }
 struct Binding {
     route: Route,
@@ -39,16 +37,18 @@ pub(crate) struct AvatarPlugin {
     host_actions: Vec<HostAction>,
     connection_diagnostic: Option<String>,
     pub(super) websocket: Option<websocket::Runtime>,
-    pub captions: CaptionSink,
+    pub output: DisplayOutput,
 }
 impl AvatarPlugin {
-    pub fn new(settings: Settings) -> Self {
+    pub fn new(settings: Settings, text: crate::plugins::text_output::TextOutputHandle) -> Self {
         Self {
             settings,
+            output: DisplayOutput::new(text),
             ..Self::default()
         }
     }
     pub(crate) fn poll(&mut self, enabled: bool, osc: &OscPlugin) {
+        self.output.configure(&self.settings, enabled);
         let transport = osc.transport();
         if self.enabled != enabled || self.applied_connector != self.settings.connector {
             self.invalidate("Avatar control is disconnected".into());
@@ -87,7 +87,7 @@ impl AvatarPlugin {
                     self.observe_snapshot(snapshot);
                     if matches!(self.binding.as_ref().map(|b| &b.route), Some(Route::Osc { epoch: current, .. }) if *current == epoch)
                     {
-                        self.captions.bind_osc(transport.clone(), epoch, layout);
+                        self.output.bind_osc(transport.clone(), epoch, layout);
                     }
                 }
                 TransportEvent::Invalidated { epoch, reason } if epoch >= self.latest_epoch => {
@@ -110,15 +110,7 @@ impl AvatarPlugin {
             self.websocket = None;
         }
         self.flush_effects(&transport);
-        let send_captions = self.settings.captions
-            && self.controller.snapshot().status == Status::Active
-            && matches!(
-                self.binding.as_ref().map(|b| &b.route),
-                Some(Route::WebSocket { captions: true, .. }) | Some(Route::Osc { .. })
-            )
-            && self.captions.available();
-        self.captions.set_enabled(send_captions);
-        if let Err(error) = self.captions.poll() {
+        if let Err(error) = self.output.poll() {
             self.invalidate(error);
         }
         if self.enabled && self.binding.is_none() && self.settings.connector.osc().is_some() {
@@ -149,17 +141,12 @@ impl AvatarPlugin {
             .collect()
     }
     pub(crate) fn report_host_result(&mut self, operation: OperationId, result: HostResult) {
-        if result != HostResult::Started && self.controller.snapshot().operation == Some(operation)
-        {
-            self.captions.clear_owner();
-        }
         self.effects
             .extend(self.controller.host_result(operation, result));
     }
     pub(crate) fn request_host_stop(&mut self, operation: OperationId) {
         let snapshot = self.controller.snapshot();
         if snapshot.operation == Some(operation) {
-            self.captions.clear_owner();
             self.effects
                 .extend(self.controller.request_enabled(snapshot.generation, false));
         }
@@ -174,7 +161,7 @@ impl AvatarPlugin {
             .or(self.connection_diagnostic.as_deref())
     }
     fn invalidate(&mut self, diagnostic: String) {
-        self.captions.disconnect();
+        self.output.disconnect();
         let generation = self.controller.snapshot().generation;
         self.effects
             .extend(self.controller.disconnect(generation, diagnostic.clone()));
@@ -183,13 +170,20 @@ impl AvatarPlugin {
     }
     fn observe_websocket(&mut self, event: websocket::Event) {
         match event {
-            websocket::Event::Connected { session, captions } => {
+            websocket::Event::Connected {
+                session,
+                captions,
+                structured,
+            } => {
                 let update = self.controller.bind();
-                if let Some(runtime) = &self.websocket {
-                    self.captions.bind(runtime.sender.clone(), session.clone());
+                if let Some(runtime) = &self.websocket
+                    && captions
+                {
+                    self.output
+                        .bind(runtime.sender.clone(), session.clone(), structured);
                 }
                 self.binding = Some(Binding {
-                    route: Route::WebSocket { session, captions },
+                    route: Route::WebSocket { session },
                     generation: update.generation,
                 });
                 self.connection_diagnostic = None;
@@ -209,9 +203,6 @@ impl AvatarPlugin {
                 }
             }
             websocket::Event::SetEnabled { session, enabled } if self.has_session(&session) => {
-                if !enabled {
-                    self.captions.clear_owner();
-                }
                 self.effects.extend(
                     self.controller
                         .request_enabled(self.controller.snapshot().generation, enabled),
@@ -244,7 +235,7 @@ impl AvatarPlugin {
         };
         let same = matches!(self.binding.as_ref().map(|b| &b.route), Some(Route::Osc { epoch, avatar_id }) if *epoch == snapshot.epoch && *avatar_id == snapshot.avatar_id);
         if !same {
-            self.captions.disconnect();
+            self.output.disconnect();
             let update = self.controller.bind();
             self.binding = Some(Binding {
                 route: Route::Osc {
@@ -281,7 +272,6 @@ impl AvatarPlugin {
                     continue;
                 }
                 Effect::Cancel(op) => {
-                    self.captions.clear_owner();
                     self.host_actions.push(HostAction::Cancel(op));
                     continue;
                 }

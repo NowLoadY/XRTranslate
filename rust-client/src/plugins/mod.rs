@@ -15,6 +15,7 @@ pub mod meeting;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 pub mod ocr;
 pub mod osc;
+pub(crate) mod text_output;
 pub(crate) mod vocabulary;
 pub mod vr_overlay;
 
@@ -206,7 +207,7 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 7] = [
     PluginDescriptor {
         id: PluginId::LYRICS,
         title_key: "Lyrics",
-        description_key: "Show synced song lyrics in OSC, or the title when lyrics or playback progress are unavailable. Videos show their title. Runs only while the slot is in use.",
+        description_key: "Show synced lyrics or the current media title in your selected outputs.",
         navigation_order: None,
         icon: PluginIcon {
             uri: "bytes://plugins/lyrics/icon.svg",
@@ -218,9 +219,9 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 7] = [
     },
     PluginDescriptor {
         id: PluginId::AVATAR,
-        title_key: "Avatar translation controls",
-        description_key: "Allow game components to control their own translation session.",
-        navigation_order: None,
+        title_key: "Avatar",
+        description_key: "Arrange messages, lyrics and information on game objects.",
+        navigation_order: Some(210),
         icon: PluginIcon {
             uri: "bytes://plugins/avatar/icon.svg",
             bytes: include_bytes!("../../resources/plugins/osc/icon.svg"),

@@ -1,6 +1,6 @@
 # Avatar connectors
 
-**Settings → Plugins → Avatar translation controls** connects game components to
+**Settings → Plugins → Avatar** connects game components to
 XRTranslate. Select the game connector, enable the plugin, and install its
 [XRT-Avatar-Plugin component](https://github.com/NowLoadY/XRT-Avatar-Plugin).
 The plugin is disabled by default.
@@ -31,11 +31,16 @@ pending startup and running work, with Stopping retained until cleanup finishes.
 Read connection diagnostics in plugin settings and session failures in host
 notifications. Reconnection and connector changes start with the control Off.
 
-**Send captions to the game component** enables owner-scoped text delivery
-to prepared VRChat and ChilloutVR caption objects and WebSocket game components.
-Each connector discovers the component's display capability; its renderer determines
-visibility. Existing OSC Chatbox, overlay and TTS settings remain owned by their
-respective host plugins.
+Open **Avatar** in the sidebar and enable **Display content**. Select Header,
+Messages or Footer in the preview to edit that region. Messages have their own
+source filter, language format, visible count and duration. Header and Footer
+can show custom text, system information or lyrics. Lyrics run when either Avatar
+or OSC requests them.
+
+Game controls start and stop their translation task. Stopping removes that task's
+messages while configured header/footer content remains. Disabling display or
+losing the connection clears the game objects. Existing OSC Chatbox, overlay
+and TTS outputs keep their own settings.
 
 ## Ownership and configuration
 
@@ -53,8 +58,9 @@ plugin or turning off a required desktop input ends that operation.
 
 Languages, source and recognition profiles are captured when requested; device
 and prompt settings are resolved when the session is created. TTS and existing
-output settings follow their owners' runtime rules. Host output subscriptions
-filter by exact session owner. Old connection traffic and late worker callbacks
+output settings follow their owners' runtime rules. Display subscriptions use
+shared host output; cancellation identifies the affected stream. Old connection
+traffic and late worker callbacks
 cannot activate a later binding.
 
 OSC and WebSocket are transport capabilities. Their workers own sockets,
@@ -64,20 +70,22 @@ only schedules its encoded frames using the existing transport lease.
 Game-specific rendering and wire details are maintained in the companion repo.
 Chatbox retains its own destination.
 
-`plugins::avatar::display::TextDisplay` accepts plain-text replacement and clear,
-with an opaque stream/result identity and a renewable lifetime. It has no
-translation, lyric or clock message variants. The host chooses the content
-producer; connectors only adapt the text to their display capability. A producer
-refreshes content while it should remain visible and clears when relinquishing
-its output. Clearing revokes pending older output; a buffered replacement also
-supersedes the previous transfer.
+`AvatarPlugin` consumes normalized `HostOutputEvent` values and composes one
+`DisplaySnapshot` containing `header`, `messages` and `footer`. Only messages
+carry remaining lifetimes. Content selection and expiry stay in the host;
+connectors adapt the regions to their available objects and capacity.
 
-The translation subscriber separately validates its session owner and extracts
-normalized results. Native text accepts revisions; buffered displays prefer the
-latest completed sentence. An empty authoritative replacement clears either
-transport. Repeated text renews its lifetime without restarting an unfinished
-transfer. Existing lyric and clock routing keeps its own host settings; those
-producers can use the same display interface when selected for an Avatar.
+The internal `TextOutputPlugin` supplies shared formatting, banner controls and
+one owned system sampler through a handle injected by the host. OSC and Avatar
+retain separate preferences. Lyrics has one worker, requested by either output;
+the host distributes its text without introducing a new event bus.
+
+Native text accepts replaceable previews; buffered displays use completed
+captions. Stream cancellation removes only that stream's messages. Connection
+changes clear all pending presentation. WebSocket coalesces full snapshots and
+deducts queue time from message lifetimes. The companion SDK lays out OSC regions,
+prioritizes body updates and selects changed chunks; the host confirms its cache
+only after actual send. Header/footer updates never restart the whole board.
 
 The [plugin architecture](plugin-architecture.md) owns host dependency rules;
 the companion [connector protocol](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/connector-protocol.md)

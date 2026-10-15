@@ -1,9 +1,9 @@
 mod chatbox;
 pub mod runtime;
-mod sys_info;
 pub mod transport;
 pub mod ui;
 
+use crate::plugins::text_output::TextOutputHandle;
 use eframe::egui;
 use std::sync::{Arc, atomic::AtomicBool};
 
@@ -62,8 +62,8 @@ pub struct OscPlugin {
 }
 
 impl OscPlugin {
-    pub fn new(draft: OscSettings, host_enabled: bool) -> Self {
-        let manager = OscManager::new(effective_settings(&draft, host_enabled));
+    pub fn new(draft: OscSettings, host_enabled: bool, text_output: TextOutputHandle) -> Self {
+        let manager = OscManager::new(effective_settings(&draft, host_enabled), text_output);
         Self {
             manager,
             draft,

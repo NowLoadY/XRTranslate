@@ -47,7 +47,7 @@ xrtranslate-download = { path = "../crates/xrtranslate-download" }
 xrtranslate-engine = { path = "../crates/xrtranslate-engine" }
 xrtranslate-prompt = { path = "../crates/xrtranslate-prompt" }
 xrtranslate-protocol = { path = "../crates/xrtranslate-protocol" }
-xrt-connector-core = { git = "https://github.com/NowLoadY/XRT-Avatar-Plugin.git", rev = "bb928c7fbeebf842167bfe1a36c98b0cccdc282d" }
+xrt-connector-core = { git = "https://github.com/NowLoadY/XRT-Avatar-Plugin.git", rev = "99b5760fd73812f107d6d7dcaacabe6c4bd0ba86" }
 libmpv-sys = { version = "3.1.0", optional = true }
 
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
@@ -110,5 +110,7 @@ eframe = { version = "0.36.1", default-features = false, features = ["default_fo
 winit = { version = "0.30.13", features = ["android-game-activity"] }
 android-activity = { version = "0.6.1", features = ["game-activity"] }
 android_logger = "0.15.1"
-libc = "0.2"
 jni = "0.21.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

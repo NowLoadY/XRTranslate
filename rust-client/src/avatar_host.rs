@@ -120,7 +120,6 @@ impl XRTranslateApp {
                         };
                     let binding = plugins::avatar::session_binding(operation);
                     let owner = TranslationSessionOwner::Plugin(binding.owner.clone());
-                    self.avatar_plugin.captions.set_owner(owner.clone());
                     self.avatar_host_session = Some(AvatarHostSession {
                         operation,
                         owner,

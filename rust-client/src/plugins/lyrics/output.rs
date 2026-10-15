@@ -26,7 +26,7 @@ pub(crate) enum Status {
 impl Status {
     pub(crate) fn message_key(self) -> &'static str {
         match self {
-            Self::Idle => "Select Lyrics in an enabled OSC header or footer to start.",
+            Self::Idle => "Select Lyrics in an enabled header or footer to start.",
             Self::Waiting => "Waiting for a player. Enable system media controls in your player.",
             Self::Paused => "Playback paused.",
             Self::MediaTitle => "Showing media title.",

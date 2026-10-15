@@ -686,6 +686,7 @@ struct XRTranslateApp {
     tts_runtime_cuda_version: Option<String>,
     osc_plugin: OscPlugin,
     avatar_plugin: AvatarPlugin,
+    text_output_plugin: plugins::text_output::TextOutputPlugin,
     #[cfg(any(windows, target_os = "linux"))]
     lyrics_plugin: plugins::lyrics::LyricsPlugin,
     auto_input_plugin: plugins::auto_input::AutoInputPlugin,
@@ -943,24 +944,42 @@ impl Default for XRTranslateApp {
         let initial_system_audio_input = SystemAudioInputSelection::Endpoint {
             device_id: settings.selected_loopback_device_id.clone(),
         };
+        let text_output_plugin = plugins::text_output::TextOutputPlugin::new();
         let osc_plugin = OscPlugin::new(
             settings.osc_settings.clone(),
             settings.plugin_preferences.is_enabled(PluginId::OSC),
+            text_output_plugin.handle(),
+        );
+        let avatar_plugin = AvatarPlugin::new(
+            settings.avatar_connector.clone(),
+            text_output_plugin.handle(),
         );
         #[cfg(any(windows, target_os = "linux"))]
         let lyrics_plugin = {
             let output = osc_plugin.publisher();
+            let avatar_output = avatar_plugin.output.clone();
             let mut plugin = plugins::lyrics::LyricsPlugin::new(
                 backend_manager
                     .runtime_layout()
                     .runtime_root()
                     .join("cache/lyrics"),
-                move |text| output.set_lyric(text),
+                move |text| {
+                    output.set_lyric(text.clone());
+                    avatar_output.set_lyric(text);
+                },
             );
-            if settings.plugin_preferences.is_enabled(PluginId::LYRICS)
-                && settings.plugin_preferences.is_enabled(PluginId::OSC)
-            {
-                plugin.set_budget(settings.osc_settings.lyric_budget());
+            if settings.plugin_preferences.is_enabled(PluginId::LYRICS) {
+                let osc = settings
+                    .plugin_preferences
+                    .is_enabled(PluginId::OSC)
+                    .then(|| settings.osc_settings.lyric_budget())
+                    .flatten();
+                let avatar = settings
+                    .plugin_preferences
+                    .is_enabled(PluginId::AVATAR)
+                    .then(|| settings.avatar_connector.lyric_budget())
+                    .flatten();
+                plugin.set_budget(osc.into_iter().chain(avatar).max());
             }
             plugin
         };
@@ -1039,10 +1058,8 @@ impl Default for XRTranslateApp {
         let microphone_vad_active_clone = Arc::clone(&microphone_vad_active);
         let loopback_vad_active_clone = Arc::clone(&loopback_vad_active);
         let rx = event_rx.clone();
-        let avatar_plugin = AvatarPlugin::new(settings.avatar_connector.clone());
         let session_event_subscribers: Arc<Vec<Box<dyn SessionEventSubscriber>>> = Arc::new(vec![
             Box::new(history_archive.subscriber()),
-            Box::new(avatar_plugin.captions.clone()),
             #[cfg(target_os = "android")]
             Box::new(android_translation_history::ResultSubscriber::default()),
             #[cfg(any(windows, target_os = "linux"))]
@@ -1055,6 +1072,7 @@ impl Default for XRTranslateApp {
         let host_output_subscribers: Arc<Vec<Box<dyn HostOutputSubscriber>>> = Arc::new(vec![
             Box::new(auto_input_plugin.publisher()),
             Box::new(osc_plugin.publisher()),
+            Box::new(avatar_plugin.output.clone()),
             Box::new(vr_overlay_plugin.handle()),
         ]);
         let result_subscribers = Arc::clone(&session_event_subscribers);
@@ -1806,6 +1824,7 @@ impl Default for XRTranslateApp {
             tts_runtime_cuda_version: None,
             osc_plugin,
             avatar_plugin,
+            text_output_plugin,
             #[cfg(any(windows, target_os = "linux"))]
             lyrics_plugin,
             auto_input_plugin,
@@ -2756,6 +2775,7 @@ impl XRTranslateApp {
         if id == PluginId::AVATAR {
             if self.avatar_plugin.render_settings(ui, self.ui_language) {
                 self.poll_avatar(None);
+                self.sync_lyrics();
                 self.save_settings();
             }
             return;
@@ -2835,13 +2855,20 @@ impl XRTranslateApp {
     fn sync_lyrics(&mut self) {
         #[cfg(any(windows, target_os = "linux"))]
         {
-            let active =
-                self.plugin_enabled(PluginId::LYRICS) && self.plugin_enabled(PluginId::OSC);
-            self.lyrics_plugin.set_budget(if active {
-                self.osc_plugin.draft().lyric_budget()
-            } else {
-                None
-            });
+            let osc = self
+                .plugin_enabled(PluginId::OSC)
+                .then(|| self.osc_plugin.draft().lyric_budget())
+                .flatten();
+            let avatar = self
+                .plugin_enabled(PluginId::AVATAR)
+                .then(|| self.avatar_plugin.settings.lyric_budget())
+                .flatten();
+            self.lyrics_plugin
+                .set_budget(if self.plugin_enabled(PluginId::LYRICS) {
+                    osc.into_iter().chain(avatar).max()
+                } else {
+                    None
+                });
         }
     }
 
@@ -3147,6 +3174,14 @@ impl XRTranslateApp {
             PluginId::MEDIA => self.render_media_plugin_page(ui),
             PluginId::VR_OVERLAY => self.render_vr_overlay_plugin_page(ui),
             PluginId::OSC => self.render_osc_plugin_page(ui),
+            PluginId::AVATAR => {
+                let lyrics = self.plugin_enabled(PluginId::LYRICS);
+                if self.avatar_plugin.render_page(ui, self.ui_language, lyrics) {
+                    self.poll_avatar(None);
+                    self.sync_lyrics();
+                    self.save_settings();
+                }
+            }
             _ => self.navigation.page = Page::Translation,
         }
     }
@@ -5596,6 +5631,7 @@ impl XRTranslateApp {
 impl Drop for XRTranslateApp {
     fn drop(&mut self) {
         self.shutdown_avatar();
+        self.text_output_plugin.shutdown();
         self.stop();
         if let Some(route) = self.voicemeeter_route.take() {
             let _ = route.clear();

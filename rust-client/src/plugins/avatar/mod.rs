@@ -5,6 +5,7 @@ mod control;
 pub(crate) mod display;
 mod osc_caption;
 mod output;
+mod ui;
 mod websocket;
 
 pub(crate) use control::{AvatarPlugin, HostAction};
@@ -62,21 +63,13 @@ impl AvatarPlugin {
         if let Some(message) = self.diagnostic() {
             ui.label(tr_dynamic(language, message));
         }
-        ui.label(tr(
-            language,
-            "Uses your selected languages, audio input and output settings.",
-        ));
-        ui.checkbox(
-            &mut self.settings.captions,
-            tr(language, "Send captions to the game component"),
-        );
         if self.settings.connector.osc().is_some()
             && self.settings.captions
             && matches!(
                 status_value,
                 Status::Off | Status::Starting | Status::Active
             )
-            && !self.captions.available()
+            && !self.output.available()
         {
             ui.weak(tr(language, "No caption object found on this Avatar."));
         }
@@ -84,10 +77,14 @@ impl AvatarPlugin {
             if let Some(runtime) = &self.websocket {
                 ui.horizontal(|ui| {
                     ui.label(&runtime.url);
-                    if ui.button(tr(language, "Copy address")).clicked() {
+                    if crate::ui::components::copy_button(ui, tr(language, "Copy address"))
+                        .clicked()
+                    {
                         ui.ctx().copy_text(runtime.url.clone());
                     }
-                    if ui.button(tr(language, "Copy pairing token")).clicked() {
+                    if crate::ui::components::copy_button(ui, tr(language, "Copy pairing token"))
+                        .clicked()
+                    {
                         ui.ctx().copy_text(runtime.token.clone());
                     }
                 });
