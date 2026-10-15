@@ -8,7 +8,7 @@ use crate::plugins::osc::{
     transport::{AvatarSnapshot, OscPeerProfile, OscTransportHandle, OscValue, TransportEvent},
 };
 use std::time::Duration;
-use xrt_avatar_control::{
+use xrt_connector_core::{
     Controller, Effect, Generation, HostResult, OperationId, Snapshot, Status,
 };
 
@@ -58,13 +58,9 @@ impl AvatarPlugin {
             let contract = self.settings.connector.osc();
             if let Err(error) = transport.set_control_profile(
                 contract
-                    .as_ref()
                     .filter(|_| enabled)
-                    .map_or(OscPeerProfile::VrChat, |c| c.profile),
-                contract
-                    .as_ref()
-                    .filter(|_| enabled)
-                    .map(OscContract::paths),
+                    .map_or_else(OscPeerProfile::default, |c| c.peer),
+                contract.filter(|_| enabled).map(OscContract::paths),
             ) {
                 self.invalidate(error);
             }
@@ -86,7 +82,7 @@ impl AvatarPlugin {
                 TransportEvent::Snapshot(snapshot) => {
                     let epoch = snapshot.epoch;
                     let layout = self.settings.connector.osc().and_then(|contract| {
-                        super::osc_caption::Layout::discover(contract.profile, &snapshot)
+                        super::osc_caption::discover(&contract.caption, &snapshot)
                     });
                     self.observe_snapshot(snapshot);
                     if matches!(self.binding.as_ref().map(|b| &b.route), Some(Route::Osc { epoch: current, .. }) if *current == epoch)
@@ -239,7 +235,7 @@ impl AvatarPlugin {
         let Some(contract) = self.settings.connector.osc() else {
             return;
         };
-        let enabled = match enabled_value(&snapshot, &contract) {
+        let enabled = match enabled_value(&snapshot, contract) {
             Ok(value) => value,
             Err(error) => {
                 self.invalidate(error);
@@ -343,7 +339,7 @@ impl AvatarPlugin {
                             serde_json::json!({"type":"reset", "reset":token.sequence()})
                         }
                         _ => {
-                            serde_json::json!({"type":"state", "status":status_name(snapshot.status), "enabled":snapshot.requested_enabled})
+                            serde_json::json!({"type":"state", "status":snapshot.status.name(), "enabled":snapshot.requested_enabled})
                         }
                     };
                     runtime.sender.send(session, frame)
@@ -360,16 +356,6 @@ impl AvatarPlugin {
         }
     }
 }
-fn status_name(status: Status) -> &'static str {
-    match status {
-        Status::Unavailable => "unavailable",
-        Status::Off => "off",
-        Status::Starting => "starting",
-        Status::Active => "active",
-        Status::Stopping => "stopping",
-        Status::Error => "error",
-    }
-}
 fn enabled_value(snapshot: &AvatarSnapshot, contract: &OscContract) -> Result<bool, String> {
     if snapshot.avatar_id.is_empty() {
         return Err("The game has not provided a current Avatar identity".into());
@@ -381,7 +367,9 @@ fn enabled_value(snapshot: &AvatarSnapshot, contract: &OscContract) -> Result<bo
             .ok_or_else(|| "This Avatar does not have XRT-Avatar-Plugin controls".to_owned())
     };
     let version = node(contract.version)?;
-    if version.osc_type != "i" || version.access & 1 == 0 || version.value != Some(OscValue::Int(1))
+    if version.osc_type != "i"
+        || version.access & 1 == 0
+        || version.value != Some(OscValue::Int(contract.protocol_version))
     {
         return Err("The Avatar control protocol version is unsupported".into());
     }
@@ -406,9 +394,10 @@ mod tests {
     use super::*;
     use crate::plugins::osc::transport::OscQueryNode;
     use std::{collections::BTreeMap, time::Instant};
-    use xrt_avatar_control::{Status, protocol};
+    use xrt_connector_core::Status;
 
     fn snapshot(epoch: u64, enabled: bool, query_id: Option<u64>) -> AvatarSnapshot {
+        let contract = Connector::Vrchat.osc().unwrap();
         AvatarSnapshot {
             epoch,
             query_id,
@@ -416,7 +405,7 @@ mod tests {
             queried_at: Instant::now(),
             nodes: BTreeMap::from([
                 (
-                    protocol::ENABLED_ADDRESS.into(),
+                    contract.enabled.into(),
                     OscQueryNode {
                         osc_type: if enabled { "T" } else { "F" }.into(),
                         access: 3,
@@ -424,7 +413,7 @@ mod tests {
                     },
                 ),
                 (
-                    protocol::STATUS_ADDRESS.into(),
+                    contract.status.into(),
                     OscQueryNode {
                         osc_type: "i".into(),
                         access: 3,
@@ -432,11 +421,11 @@ mod tests {
                     },
                 ),
                 (
-                    protocol::VERSION_ADDRESS.into(),
+                    contract.version.into(),
                     OscQueryNode {
                         osc_type: "i".into(),
                         access: 3,
-                        value: Some(OscValue::Int(protocol::PROTOCOL_VERSION)),
+                        value: Some(OscValue::Int(contract.protocol_version)),
                     },
                 ),
             ]),
@@ -489,7 +478,9 @@ mod tests {
         let operation = plugin.snapshot().operation.unwrap();
         plugin.effects.clear();
         let mut incompatible = snapshot(2, true, None);
-        incompatible.nodes.remove(protocol::VERSION_ADDRESS);
+        incompatible
+            .nodes
+            .remove(Connector::Vrchat.osc().unwrap().version);
         plugin.observe_snapshot(incompatible);
         assert!(plugin.effects.contains(&Effect::Cancel(operation)));
         assert!(plugin.binding.is_none());

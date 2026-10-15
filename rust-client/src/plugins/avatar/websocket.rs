@@ -395,8 +395,8 @@ impl Peer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn clear_revokes_queued_captions_but_preserves_control_frames() {
+
+    fn output_queue() -> (SenderHandle, Receiver<Outbound>, Arc<AtomicU64>) {
         let (frames, queue) = bounded(8);
         let epoch = Arc::new(AtomicU64::new(0));
         let sender = SenderHandle {
@@ -404,6 +404,12 @@ mod tests {
             failed: Arc::new(AtomicBool::new(false)),
             caption_epoch: epoch.clone(),
         };
+        (sender, queue, epoch)
+    }
+
+    #[test]
+    fn clear_revokes_queued_captions_but_preserves_control_frames() {
+        let (sender, queue, epoch) = output_queue();
         sender
             .send("old", json!({"type":"caption", "text":"old result"}))
             .unwrap();
@@ -417,6 +423,102 @@ mod tests {
         assert!(control.is_current("old", &epoch));
         assert!(!control.is_current("new", &epoch));
         assert!(queue.recv().unwrap().is_current("old", &epoch));
+    }
+
+    #[test]
+    fn translation_display_preserves_pending_results_and_fences_old_owners() {
+        use crate::plugins::avatar::output::CaptionSink;
+        use crate::session_coordinator::{
+            PluginSessionOwner, SessionEventSubscriber, TranslationEvent, TranslationSegment,
+            TranslationSessionOwner,
+        };
+
+        let (sender, queue, epoch) = output_queue();
+        let owner = |operation| {
+            TranslationSessionOwner::Plugin(PluginSessionOwner::new(
+                "avatar", operation, "Avatar", "Open", "Running",
+            ))
+        };
+        let original_owner = owner("first");
+        let sink = CaptionSink::default();
+        sink.set_owner(original_owner.clone());
+        sink.bind(sender, "session".into());
+        sink.set_enabled(true);
+        let translated = TranslationSegment {
+            stream_id: 1,
+            audio_source: crate::client_settings::CaptureSource::Microphone,
+            turn_id: "turn-1".into(),
+            segment_index: 1,
+            segment_count: 1,
+            source: "Hello".into(),
+            translated: Some("Bonjour".into()),
+            source_lang: "en".into(),
+            target_lang: "fr".into(),
+            additional_translations: Vec::new(),
+            asr_only: false,
+            speaker_id: String::new(),
+            source_start_ms: 0.0,
+            source_end_ms: 1000.0,
+            timing: Default::default(),
+            boundary: Default::default(),
+            revisable: false,
+            live: false,
+        };
+        let event = TranslationEvent::Segment(translated.clone());
+        sink.on_translation_event(&original_owner, &event);
+        let caption = queue.try_recv().unwrap();
+        assert_eq!(caption.value["text"], "Bonjour");
+        let source_only = TranslationSegment {
+            translated: None,
+            ..translated
+        };
+        sink.on_translation_event(
+            &original_owner,
+            &TranslationEvent::ReplaceSegments(vec![source_only]),
+        );
+        assert!(queue.is_empty());
+        assert!(caption.is_current("session", &epoch));
+
+        sink.on_translation_event(&original_owner, &TranslationEvent::ReplaceSegments(vec![]));
+        assert_eq!(queue.try_recv().unwrap().value["type"], "clear");
+        assert!(!caption.is_current("session", &epoch));
+
+        let replacement_owner = owner("second");
+        sink.set_owner(replacement_owner.clone());
+        assert_eq!(queue.try_recv().unwrap().value["type"], "clear");
+        sink.on_translation_event(&original_owner, &event);
+        assert!(queue.is_empty());
+        sink.on_translation_event(&replacement_owner, &event);
+        let current = queue.try_recv().unwrap();
+        assert_eq!(current.value["text"], "Bonjour");
+        sink.on_translation_event(&original_owner, &TranslationEvent::ReplaceSegments(vec![]));
+        assert!(queue.is_empty());
+        assert!(current.is_current("session", &epoch));
+    }
+
+    #[test]
+    fn text_display_carries_opaque_identity_and_renewable_lifetime() {
+        use crate::plugins::avatar::display::{TextDisplay, TextUpdate};
+
+        let (sender, queue, epoch) = output_queue();
+        let mut display = TextDisplay::default();
+        display.bind(sender, "session".into());
+        for revision in 1..=2 {
+            display.replace(TextUpdate {
+                stream: "clock/local",
+                id: "tick-42",
+                text: "11:04:22",
+                lifetime: Duration::from_secs(2),
+            });
+            let frame = queue.try_recv().unwrap();
+            assert!(frame.is_current("session", &epoch));
+            assert_eq!(frame.value, json!({
+                "type":"caption", "session":"session", "stream":"clock/local",
+                "id":"tick-42", "revision":revision, "text":"11:04:22", "expires_ms":2000
+            }));
+        }
+        display.clear();
+        assert_eq!(queue.try_recv().unwrap().value["type"], "clear");
     }
 
     #[test]

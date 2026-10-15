@@ -42,7 +42,8 @@ respective host plugins.
 `plugins::avatar` owns connector selection, validated intent and feedback.
 `avatar_host` turns shared controller effects into owned translation tasks.
 `session_coordinator` owns input acquisition, task identity and cancellation.
-The companion `xrt-connector-core` supplies one pure lifecycle for all connectors.
+The companion `xrt-connector-core` supplies the connector catalogue, parameter
+contracts, text codecs and one pure lifecycle. The host pins that single SDK.
 
 Each accepted request holds an exclusive lease on its selected live inputs.
 Overlapping active, paused or pending tasks are preserved and the request is
@@ -56,16 +57,27 @@ output settings follow their owners' runtime rules. Host output subscriptions
 filter by exact session owner. Old connection traffic and late worker callbacks
 cannot activate a later binding.
 
-OSC profiles share discovery, authoritative reset queries and sockets with the
-OSC transport owner. `plugins::avatar::osc_caption` formats and paces the common
-128-slot glyph layout, discovers each profile's installed capabilities and revokes
-queued text when its owner or binding changes. VRChat and ChilloutVR receivers
-use the same SDF font resources; their game-side buffering stays in their
-companion adapters. VRChat sends byte parameters; ChilloutVR packs four glyphs
-into two signed 32-bit parameters, using 96 synchronized bits including the pointer.
-Chatbox retains its own destination. WebSocket games share
-a bounded local transport, session fencing, reset acknowledgements and
-heartbeat checks. Platform-specific bridge details stay in the companion repo.
+OSC and WebSocket are transport capabilities. Their workers own sockets,
+verification, bounded queues and cancellation. OSC peer discovery rules and
+parameter maps come from the companion SDK; `plugins::avatar::osc_caption`
+only schedules its encoded frames using the existing transport lease.
+Game-specific rendering and wire details are maintained in the companion repo.
+Chatbox retains its own destination.
+
+`plugins::avatar::display::TextDisplay` accepts plain-text replacement and clear,
+with an opaque stream/result identity and a renewable lifetime. It has no
+translation, lyric or clock message variants. The host chooses the content
+producer; connectors only adapt the text to their display capability. A producer
+refreshes content while it should remain visible and clears when relinquishing
+its output. Clearing revokes pending older output; a buffered replacement also
+supersedes the previous transfer.
+
+The translation subscriber separately validates its session owner and extracts
+normalized results. Native text accepts revisions; buffered displays prefer the
+latest completed sentence. An empty authoritative replacement clears either
+transport. Repeated text renews its lifetime without restarting an unfinished
+transfer. Existing lyric and clock routing keeps its own host settings; those
+producers can use the same display interface when selected for an Avatar.
 
 The [plugin architecture](plugin-architecture.md) owns host dependency rules;
 the companion [connector protocol](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/connector-protocol.md)

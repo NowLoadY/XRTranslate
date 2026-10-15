@@ -94,18 +94,19 @@ affecting unrelated tasks.
 | `plugins::ocr` | Screen-text workflow; uses host capture, recognition, and translation capabilities |
 | `plugins::auto_input` | Automatic text output; consumes committed results through a platform input capability |
 
-Avatar control has settings and no page. Its control core is maintained in the
-companion Avatar repository and pinned by the host. The OSC capability owns
-discovery, receive sockets, snapshots and parameter writes; control demand is
-independent of Chatbox-output enablement. Its bounded, revocable batch writes
-provide send-time pacing without owning any caption format. Avatar caption
-layout and bus encoding remain in the Avatar adapter, shared by compatible
-game profiles; completed text
-comes through the existing owner-scoped result subscriber. The adapter receives
-verified snapshots and capability handles, while `avatar_host` reports actual
-session outcomes.
-An Avatar toggle neither starts a parallel translation pipeline nor changes
-another session's ownership. Setup and compatibility belong to the
+Avatar control has settings and no page. Its single companion SDK owns the
+connector catalogue, pure lifecycle, peer descriptors and text codecs. The host
+consumes those contracts through shared OSC and WebSocket transports. The OSC
+capability owns discovery, receive sockets, snapshots and revocable paced writes;
+control demand is independent of Chatbox-output enablement. It does not interpret
+game parameters or text layout.
+
+The source-neutral `TextDisplay` accepts plain text, opaque identity and lifetime.
+The host selects its producer; content does not introduce game-specific message
+types. The translation subscriber filters by session owner and extracts the
+appropriate normalized result before publishing. `avatar_host` reports actual
+session outcomes. An Avatar toggle neither starts a parallel translation pipeline
+nor changes another session's ownership. Setup belongs to the
 [Avatar connector guide](avatar-connectors.md).
 
 Lyrics has no page. It runs only when available and requested by active OSC

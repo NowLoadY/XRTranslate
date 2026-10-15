@@ -14,7 +14,6 @@ use std::sync::{Arc, atomic::AtomicBool};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-pub(super) const MUTE_PATH: &str = "/avatar/parameters/MuteSelf";
 const COOLDOWN: Duration = Duration::from_millis(500);
 const BANNER_REFRESH_INTERVAL: Duration = Duration::from_millis(1050);
 pub const MAX_PREFIX_LENGTH: usize = 24;

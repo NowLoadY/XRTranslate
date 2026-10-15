@@ -2,6 +2,7 @@
 
 pub(crate) mod connectors;
 mod control;
+pub(crate) mod display;
 mod osc_caption;
 mod output;
 mod websocket;

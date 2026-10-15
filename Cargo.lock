@@ -5695,7 +5695,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tungstenite 0.30.0",
- "unicode-normalization",
  "unicode-segmentation",
  "uuid",
  "wasapi",
@@ -5706,8 +5705,6 @@ dependencies = [
  "winres",
  "x11rb",
  "xr-corpus-client",
- "xrt-avatar-control",
- "xrt-chilloutvr-control",
  "xrt-connector-core",
  "xrtranslate-assets",
  "xrtranslate-config",
@@ -8777,22 +8774,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "xrt-avatar-control"
-version = "0.1.0-dev.1"
-source = "git+https://github.com/NowLoadY/XRT-Avatar-Plugin.git?rev=62dbf42c4688b5d307ca892c71a2938bf8c24227#62dbf42c4688b5d307ca892c71a2938bf8c24227"
-dependencies = [
- "xrt-connector-core",
-]
-
-[[package]]
-name = "xrt-chilloutvr-control"
-version = "0.1.0-dev.1"
-source = "git+https://github.com/NowLoadY/XRT-Avatar-Plugin.git?rev=62dbf42c4688b5d307ca892c71a2938bf8c24227#62dbf42c4688b5d307ca892c71a2938bf8c24227"
-
-[[package]]
 name = "xrt-connector-core"
 version = "0.1.0-dev.1"
-source = "git+https://github.com/NowLoadY/XRT-Avatar-Plugin.git?rev=62dbf42c4688b5d307ca892c71a2938bf8c24227#62dbf42c4688b5d307ca892c71a2938bf8c24227"
+source = "git+https://github.com/NowLoadY/XRT-Avatar-Plugin.git?rev=bb928c7fbeebf842167bfe1a36c98b0cccdc282d#bb928c7fbeebf842167bfe1a36c98b0cccdc282d"
+dependencies = [
+ "serde",
+ "unicode-normalization",
+]
 
 [[package]]
 name = "xrtranslate-assets"

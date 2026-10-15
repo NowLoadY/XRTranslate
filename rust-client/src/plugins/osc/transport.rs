@@ -3,7 +3,7 @@
 //! OSCQuery discovery and all socket I/O live on this owner's worker. Consumers
 //! provide paths, inspect typed snapshots and carry epochs through their writes;
 //! this module has no knowledge of a particular Avatar feature's parameters.
-use super::runtime::{MUTE_PATH, OscSettings, RuntimeStatus, parse_mute_value};
+use super::runtime::{OscSettings, RuntimeStatus, parse_mute_value};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use parking_lot::Mutex;
 use rosc::{OscBundle, OscMessage, OscPacket, OscType, decoder, encoder};
@@ -18,42 +18,16 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
+pub use xrt_connector_core::osc::Peer as OscPeerProfile;
 
 const QUERY_SERVICE: &str = "_oscjson._tcp.local.";
 const OSC_SERVICE: &str = "_osc._udp.local.";
-const AVATAR_CHANGE: &str = "/avatar/change";
-const AVATAR_PROFILE_CHANGE: &str = "/avatar/profile/change";
 const QUERY_INTERVAL: Duration = Duration::from_secs(1);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_TIMEOUT: Duration = Duration::from_millis(1000);
 const MAX_BODY: usize = 4 * 1024 * 1024;
 const MAX_EVENTS: usize = 128;
 const MAX_PATHS: usize = 32;
-
-/// Platform identity and lifecycle details; transport ownership stays shared.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum OscPeerProfile {
-    #[default]
-    VrChat,
-    ChilloutVr,
-}
-
-impl OscPeerProfile {
-    fn accepts_name(self, name: &str) -> bool {
-        let prefix = match self {
-            Self::VrChat => "VRChat",
-            Self::ChilloutVr => "ChilloutVR",
-        };
-        name.eq_ignore_ascii_case(prefix)
-            || name
-                .to_ascii_lowercase()
-                .starts_with(&format!("{}-", prefix.to_ascii_lowercase()))
-    }
-
-    fn invalidates_on(self, path: &str) -> bool {
-        path == AVATAR_CHANGE || (self == Self::ChilloutVr && path == AVATAR_PROFILE_CHANGE)
-    }
-}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum OscValue {
@@ -137,7 +111,7 @@ impl Config {
             manual_ip: settings.ip.clone(),
             manual_port: settings.listen_port,
             control_paths: None,
-            peer_profile: OscPeerProfile::VrChat,
+            peer_profile: OscPeerProfile::default(),
         }
     }
 }
@@ -719,7 +693,7 @@ impl Worker {
             self.invalidate("Avatar changed or reloaded");
         }
         for message in messages {
-            if self.peer_profile() == OscPeerProfile::VrChat && message.addr == MUTE_PATH {
+            if self.peer_profile().mute_path == Some(message.addr.as_str()) {
                 if let Some(value) = message.args.first().and_then(parse_mute_value) {
                     self.muted.store(value, Ordering::Release);
                 }
@@ -921,6 +895,7 @@ impl Worker {
                         .as_ref()
                         .and_then(|c| c.control_paths.as_ref())
                         .unwrap(),
+                    self.peer_profile(),
                 )
             });
         // A change that arrived during HTTP takes precedence over its snapshot.
@@ -939,12 +914,13 @@ impl Worker {
                     self.invalidate("Avatar identity changed");
                     return;
                 }
-                if self.peer_profile() == OscPeerProfile::VrChat {
-                    if let Some(OscValue::Bool(value)) =
-                        nodes.get(MUTE_PATH).and_then(|n| n.value.as_ref())
-                    {
-                        self.muted.store(*value, Ordering::Release);
-                    }
+                if let Some(OscValue::Bool(value)) = self
+                    .peer_profile()
+                    .mute_path
+                    .and_then(|path| nodes.get(path))
+                    .and_then(|node| node.value.as_ref())
+                {
+                    self.muted.store(*value, Ordering::Release);
                 }
                 self.endpoint = Some(endpoint);
                 self.avatar_id = Some(avatar_id.clone());
@@ -1094,6 +1070,7 @@ async fn fetch_json(client: &reqwest::Client, port: u16, path: &str) -> Result<V
 fn parse_avatar_tree(
     tree: &Value,
     paths: &BTreeSet<String>,
+    peer: OscPeerProfile,
 ) -> Result<(String, BTreeMap<String, OscQueryNode>), String> {
     let mut nodes = BTreeMap::new();
     let mut stack = vec![(tree, 0_usize)];
@@ -1107,7 +1084,7 @@ fn parse_avatar_tree(
             .get("FULL_PATH")
             .and_then(Value::as_str)
             .ok_or("Invalid OSCQuery node path")?;
-        if path == AVATAR_CHANGE || path == MUTE_PATH || paths.contains(path) {
+        if path == peer.identity_path || peer.mute_path == Some(path) || paths.contains(path) {
             let osc_type = node
                 .get("TYPE")
                 .and_then(Value::as_str)
@@ -1171,7 +1148,7 @@ fn parse_avatar_tree(
             stack.extend(children.values().map(|child| (child, depth + 1)));
         }
     }
-    let avatar_id = match nodes.get(AVATAR_CHANGE).and_then(|n| n.value.as_ref()) {
+    let avatar_id = match nodes.get(peer.identity_path).and_then(|n| n.value.as_ref()) {
         Some(OscValue::String(id)) if !id.is_empty() && id.len() <= 256 => id.clone(),
         _ => return Err("Invalid OSCQuery snapshot has no current Avatar identity".into()),
     };
@@ -1297,7 +1274,7 @@ mod tests {
     fn tree(avatar: &str, enabled: Value, osc_type: &str) -> Value {
         json!({"FULL_PATH":"/", "CONTENTS": {
             "avatar": {"FULL_PATH":"/avatar", "CONTENTS": {
-                "change": {"FULL_PATH":AVATAR_CHANGE,"TYPE":"s","ACCESS":1,"VALUE":[avatar]},
+                "change": {"FULL_PATH":OscPeerProfile::default().identity_path,"TYPE":"s","ACCESS":1,"VALUE":[avatar]},
                 "parameters": {"FULL_PATH":"/avatar/parameters", "CONTENTS": {
                     "ExampleEnabled": {"FULL_PATH":CONTROL,"TYPE":osc_type,"ACCESS":3,"VALUE":[enabled]}
                 }}
@@ -1496,14 +1473,17 @@ mod tests {
 
     #[test]
     fn oscquery_peer_profiles_keep_identity_and_writes_separate() {
-        let cvr = OscPeerProfile::ChilloutVr;
-        let vrchat = OscPeerProfile::VrChat;
+        let cvr = xrt_connector_core::Connector::Chilloutvr
+            .osc()
+            .unwrap()
+            .peer;
+        let vrchat = OscPeerProfile::default();
         let host = json!({"NAME":"ChilloutVR-ABCDEF", "OSC_PORT":9000});
         assert!(parse_host_info(&host, cvr).is_ok());
         assert!(parse_host_info(&host, vrchat).is_err());
         assert!(!cvr.accepts_name("ChilloutVRFake"));
-        assert!(cvr.invalidates_on(AVATAR_PROFILE_CHANGE));
-        assert!(!vrchat.invalidates_on(AVATAR_PROFILE_CHANGE));
+        assert!(cvr.invalidates_on("/avatar/profile/change"));
+        assert!(!vrchat.invalidates_on("/avatar/profile/change"));
         assert!(valid_path("/avatar/parameters/#XRT/Enabled"));
         let local_parameter = OscPacket::Message(OscMessage {
             addr: "/avatar/parameters/#XRT/Enabled".into(),
@@ -1561,19 +1541,36 @@ mod tests {
     #[test]
     fn oscquery_types_identity_and_bundle_bounds() {
         let paths = [CONTROL.to_owned()].into_iter().collect();
-        let (_, nodes) = parse_avatar_tree(&tree("avtr_a", json!(true), "T"), &paths).unwrap();
+        let (_, nodes) = parse_avatar_tree(
+            &tree("avtr_a", json!(true), "T"),
+            &paths,
+            OscPeerProfile::default(),
+        )
+        .unwrap();
         assert_eq!(nodes[CONTROL].value, Some(OscValue::Bool(true)));
-        let (_, nodes) = parse_avatar_tree(&tree("avtr_a", json!(true), "i"), &paths).unwrap();
+        let (_, nodes) = parse_avatar_tree(
+            &tree("avtr_a", json!(true), "i"),
+            &paths,
+            OscPeerProfile::default(),
+        )
+        .unwrap();
         assert_eq!(nodes[CONTROL].value, None); // The consumer rejects this schema.
-        assert!(parse_avatar_tree(&tree("", json!(false), "F"), &paths).is_err());
+        assert!(
+            parse_avatar_tree(
+                &tree("", json!(false), "F"),
+                &paths,
+                OscPeerProfile::default()
+            )
+            .is_err()
+        );
         let mut malformed = tree("avtr_a", json!(false), "F");
         malformed["CONTENTS"]["avatar"]["CONTENTS"]["parameters"]["CONTENTS"]["ExampleEnabled"]["ACCESS"] =
             json!(8);
-        assert!(parse_avatar_tree(&malformed, &paths).is_err());
+        assert!(parse_avatar_tree(&malformed, &paths, OscPeerProfile::default()).is_err());
         assert!(
             parse_host_info(
                 &json!({"NAME":"VRChat", "OSC_PORT":9000,"OSC_IP":"192.0.2.5"}),
-                OscPeerProfile::VrChat
+                OscPeerProfile::default()
             )
             .is_err()
         );
