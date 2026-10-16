@@ -128,7 +128,7 @@ fn render_translation_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::U
                         if danger_button(ui, crate::i18n::tr(app.ui_language, "Stop Translation"))
                             .clicked()
                         {
-                            app.stop();
+                            app.stop_translation();
                         }
                     } else if components::primary_button(
                         ui,

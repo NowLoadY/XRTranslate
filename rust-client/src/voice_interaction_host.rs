@@ -8,7 +8,14 @@ use crate::{
 use crossbeam_channel::Receiver;
 use eframe::egui;
 use parking_lot::Mutex;
-use std::{collections::VecDeque, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 #[derive(Clone, PartialEq)]
 struct Sentence {
@@ -151,10 +158,49 @@ pub(crate) struct VoiceHost {
     controller: VoiceController,
     pub inbox: VoiceInbox,
     active: bool,
+    pub microphone_sync_active: Arc<AtomicBool>,
     ask: Option<(u64, ask::Reply)>,
     publication: Option<(u64, Receiver<Result<(), String>>)>,
 }
 impl XRTranslateApp {
+    pub(crate) fn refresh_microphone_sync(&self) {
+        let enabled = !self.first_run
+            && self.microphone_sync_enabled
+            && self.plugin_enabled(PluginId::OSC)
+            && self.osc_plugin.draft().enabled;
+        self.voice_interaction
+            .microphone_sync_active
+            .store(enabled, Ordering::Release);
+        self.osc_plugin.transport().set_microphone_sync(enabled);
+    }
+
+    /// Explicit microphone intent, not capture startup, failure or model cleanup.
+    pub(crate) fn sync_game_microphone(&self, enabled: bool) {
+        self.refresh_microphone_sync();
+        if self
+            .voice_interaction
+            .microphone_sync_active
+            .load(Ordering::Acquire)
+        {
+            self.osc_plugin.transport().request_microphone(enabled);
+        }
+    }
+
+    pub(crate) fn poll_microphone_sync(&mut self, ctx: &egui::Context) {
+        self.refresh_microphone_sync();
+        if self.osc_plugin.transport().take_microphone_mute() {
+            self.set_microphone_input(false, Some(ctx.clone()), false, Self::start_task_capture);
+            self.vr_overlay_plugin.manager().dock_microphone();
+        }
+        if self
+            .voice_interaction
+            .microphone_sync_active
+            .load(Ordering::Acquire)
+        {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
+    }
+
     fn voice_effects(&mut self, effects: Vec<VoiceEffect>, ctx: &egui::Context) {
         let mut effects = VecDeque::from(effects);
         while let Some(effect) = effects.pop_front() {
@@ -200,7 +246,13 @@ impl XRTranslateApp {
         // Only entering/leaving spatial control or a real proximity event changes
         // capture. Review, Send and Ask completion never call an audio control.
         if active != self.voice_interaction.active {
+            // An idle surface may still have an old off event. It must not
+            // become a game-mute gesture when spatial control first starts.
+            self.vr_overlay_plugin.manager().take_voice_actions();
             self.set_microphone_input(false, Some(ctx.clone()), false, Self::start_task_capture);
+            if self.voice_interaction.active {
+                self.sync_game_microphone(false);
+            }
         }
         self.voice_interaction.active = active;
         self.osc_plugin.set_microphone_review(review);
@@ -218,6 +270,7 @@ impl XRTranslateApp {
             }
             if let VoiceAction::Microphone(near) = action {
                 self.set_microphone_input(near, Some(ctx.clone()), true, Self::start_task_capture);
+                self.sync_game_microphone(near);
             } else {
                 let effects = self.voice_interaction.controller.apply(action);
                 self.voice_effects(effects, ctx);
@@ -272,7 +325,7 @@ impl XRTranslateApp {
             self.voice_effects(effects, ctx);
         }
         let mut snapshot = self.voice_interaction.controller.snapshot();
-        snapshot.recording = self.input_capturing(CaptureSource::Microphone);
+        snapshot.recording = active && self.input_capturing(CaptureSource::Microphone);
         if snapshot.review_enabled && !snapshot.text.is_empty() {
             match self.osc_plugin.prepare_voice_text(&snapshot.text) {
                 Ok(text) => snapshot.text = text,

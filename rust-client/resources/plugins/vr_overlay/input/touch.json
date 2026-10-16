@@ -7,11 +7,11 @@
       "poses": [
         {
           "output": "/actions/voice/in/hand",
-          "path": "/user/hand/left/pose/raw"
+          "path": "/user/hand/left/pose/openxr_grip"
         },
         {
           "output": "/actions/voice/in/hand",
-          "path": "/user/hand/right/pose/raw"
+          "path": "/user/hand/right/pose/openxr_grip"
         }
       ],
       "haptics": [

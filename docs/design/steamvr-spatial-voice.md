@@ -5,13 +5,25 @@
 The overlay adds a grabbable microphone and two optional spatial buttons in the
 companion's shared SteamVR tracking space. It is not another settings panel,
 editor or history browser.
-The microphone controls XRTranslate recognition, not the game's audio route.
+The microphone controls XRTranslate recognition. The optional OSC microphone
+sync also controls the game's microphone through its input API.
 Desktop settings configure the feature; spatial voice controls are off by default.
 
 Grip holds the microphone. Mouth distance hysteresis controls recognition;
 release returns the microphone to its dock, and tracking loss stops recognition.
 Send and Edit never toggle the microphone, close a capture batch or restart the
 pipeline. Holding the microphone near the mouth keeps recognition running.
+
+Default bindings use the controller's official grip pose (Vive/Index `grip`,
+Touch `openxr_grip`). The grip center serves both grabbing and bare-hand strikes.
+Each free hand highlights its nearest grabbable prop, using the rendered handle
+or button ellipsoid and a shared 2.5 cm surface-gap tolerance. Radial projection
+is a conservative proximity approximation; overlapping candidates compare gap,
+then center distance. Grip takes that candidate with a short haptic pulse.
+The microphone centers in the palm and aligns its shaft with the grip axis;
+buttons retain their pickup offset so placement never jumps. Unavailable buttons
+remain gray when highlighted. All of this stays in the existing interaction and
+mesh code, without another SDK, physics engine or configuration panel.
 
 The optional **Review before sending** setting is off by default. When off,
 OSC keeps its existing behavior and the two review buttons are hidden. When on,
@@ -22,6 +34,27 @@ direction; slow contact, side swipes and stale tracking frames do not activate i
 Each contact is consumed once, then rearms after separation. Slow approach plus
 Grip grabs a button for placement; release keeps its position and orientation.
 Grabbing never activates a button. Icons, motion and haptics supplement color.
+
+## Game microphone sync
+
+OSC's optional **Sync game microphone** replaces the former **Pause while muted**
+switch and keeps its saved preference. With VRChat's **Toggle Voice** enabled,
+explicit microphone on/off actions (including spatial near/far and Stop Translation)
+also request the matching game state. Starting or failing an inference task and
+initially entering spatial interaction do not change the game's microphone.
+
+The existing OSC transport reads `MuteSelf` and sends `/input/Voice` press/release
+only when a requested state differs from a known game state. It discovers the
+initial state through OSCQuery, serializes toggles, and treats its own feedback as
+confirmation. Unknown state waits for feedback; an unconfirmed toggle is not
+blindly retried. Game-side muting stops local microphone recognition and returns
+the prop to its dock once. Re-grabbing and bringing it to the mouth is a new open
+request. Game-side unmuting does not move the prop or start local recognition.
+
+The host connects these events. OSC owns game state and input delivery; SteamVR
+owns grabbing and docking. Neither plugin calls the other. Only microphone audio
+uses the mute gate; system audio remains independent. Send, Edit and review state
+do not control either microphone.
 
 ## Shared space and appearance
 

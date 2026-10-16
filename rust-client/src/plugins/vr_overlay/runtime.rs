@@ -240,10 +240,16 @@ struct VoiceBridge {
     snapshot: VoiceSnapshot,
     actions: VecDeque<VoiceAction>,
     microphone: bool,
+    dock_requested: bool,
 }
 
 impl VoiceBridge {
     fn push(&mut self, action: VoiceAction) {
+        // A frame already in progress can return an obsolete near event after
+        // the host requests docking. Reject it until the worker consumes that request.
+        if self.dock_requested && action == VoiceAction::Microphone(true) {
+            return;
+        }
         if !self.snapshot.enabled && action != VoiceAction::Microphone(false) {
             return;
         }
@@ -264,8 +270,20 @@ impl VoiceBridge {
         }
     }
 
+    fn dock_microphone(&mut self) {
+        self.dock_requested = true;
+        self.microphone = false;
+        self.actions
+            .retain(|action| !matches!(action, VoiceAction::Microphone(_)));
+        // Keep other spatial actions, giving microphone-off priority at capacity.
+        if self.actions.len() >= 16 {
+            self.actions.pop_back();
+        }
+        self.actions.push_front(VoiceAction::Microphone(false));
+    }
+
     fn stop(&mut self) {
-        let active = self.microphone || self.snapshot.recording;
+        let active = self.microphone || (self.snapshot.enabled && self.snapshot.recording);
         self.actions.clear();
         self.microphone = false;
         if active {
@@ -345,6 +363,10 @@ impl VrOverlayManager {
 
     pub(crate) fn take_voice_actions(&self) -> Vec<VoiceAction> {
         self.voice.lock().actions.drain(..).collect()
+    }
+
+    pub(crate) fn dock_microphone(&self) {
+        self.voice.lock().dock_microphone();
     }
 
     pub(crate) fn set_voice_snapshot(&self, snapshot: VoiceSnapshot) {
@@ -963,7 +985,13 @@ fn run_vr_worker(
         // faded out. Captions and host commands continue on this same worker.
         if Instant::now() >= next_avatar_frame {
             next_avatar_frame = Instant::now() + Duration::from_secs_f64(1.0 / 60.0);
-            let mut snapshot = voice_bridge.lock().snapshot.clone();
+            let (mut snapshot, dock_microphone) = {
+                let mut bridge = voice_bridge.lock();
+                (
+                    bridge.snapshot.clone(),
+                    std::mem::take(&mut bridge.dock_requested),
+                )
+            };
             snapshot.review_enabled &= settings.review_before_send;
             let active = settings.interaction_enabled
                 && snapshot.enabled
@@ -999,6 +1027,9 @@ fn run_vr_worker(
                 .then(|| avatar.as_ref().and_then(AvatarOverlay::control_root))
                 .flatten();
             if let Some(objects) = voice.as_mut() {
+                if dock_microphone {
+                    objects.dock_microphone();
+                }
                 if control_root.is_none() {
                     objects.suspend();
                     voice_bridge.lock().stop();

@@ -8,7 +8,7 @@ use eframe::egui;
 pub struct OscPageContext<'a> {
     pub language: crate::i18n::UiLanguage,
     pub preparing_text: bool,
-    pub mute_gate_enabled: bool,
+    pub microphone_sync_enabled: bool,
     pub lyrics_available: bool,
     pub languages: xrtranslate_engine::language::LanguageCapabilities,
     pub source_lang: &'a str,
@@ -20,7 +20,7 @@ pub struct OscPageContext<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum OscUiAction {
     ClearHostHistory,
-    SetMuteGateEnabled(bool),
+    SetMicrophoneSyncEnabled(bool),
     SetSpeakerNumberVisible(bool),
     SaveSettings,
     SettingsApplied(Result<(), String>),
@@ -79,7 +79,7 @@ pub fn render(
                                 plugin,
                                 ui,
                                 context.language,
-                                context.mute_gate_enabled,
+                                context.microphone_sync_enabled,
                                 context.lyrics_available,
                                 &mut actions,
                             );
@@ -98,7 +98,7 @@ pub fn render(
                     plugin,
                     ui,
                     context.language,
-                    context.mute_gate_enabled,
+                    context.microphone_sync_enabled,
                     context.lyrics_available,
                     &mut actions,
                 );

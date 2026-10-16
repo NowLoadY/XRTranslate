@@ -12,7 +12,7 @@ pub fn render_toolbar(
     plugin: &mut super::super::OscPlugin,
     ui: &mut egui::Ui,
     language: crate::i18n::UiLanguage,
-    mute_gate_enabled: bool,
+    microphone_sync_enabled: bool,
     lyrics_available: bool,
     actions: &mut Vec<super::OscUiAction>,
 ) {
@@ -71,17 +71,24 @@ pub fn render_toolbar(
 
                     settings.show_body_unindented(ui, |ui| {
                         ui.add_space(8.0);
-                        let mut mute_gate_enabled = mute_gate_enabled;
+                        let mut microphone_sync_enabled = microphone_sync_enabled;
                         if components::feature_checkbox(
                             ui,
                             crate::feature_access::Feature::MuteSync,
                             language,
-                            &mut mute_gate_enabled,
-                            crate::i18n::tr(language, "Pause while muted"),
+                            &mut microphone_sync_enabled,
+                            crate::i18n::tr(language, "Sync game microphone"),
                         )
+                        .on_hover_text(crate::i18n::tr(language, "Microphone controls work both ways. Enable Toggle Voice in VRChat. Muting in-game also returns the spatial microphone to its dock."))
                         .changed()
                         {
-                            actions.push(super::OscUiAction::SetMuteGateEnabled(mute_gate_enabled));
+                            actions.push(super::OscUiAction::SetMicrophoneSyncEnabled(microphone_sync_enabled));
+                        }
+                        if microphone_sync_enabled {
+                            ui.small(crate::i18n::tr(language, "Enable Toggle Voice in VRChat."));
+                            if let Some(status) = plugin.transport().microphone_sync_status() {
+                                ui.small(crate::i18n::tr(language, status));
+                            }
                         }
 
                         ui.add_space(8.0);

@@ -1,4 +1,5 @@
 mod chatbox;
+mod microphone;
 pub mod runtime;
 pub mod transport;
 pub mod ui;

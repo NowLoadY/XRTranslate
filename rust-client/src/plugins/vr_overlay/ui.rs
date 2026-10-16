@@ -108,11 +108,6 @@ fn render_header(
         settings.avatar_enabled = true;
     }
     if settings.interaction_enabled {
-        ui.label(egui::RichText::new(if english {
-                "Objects rest within reach in the companion's shared space. Grip the microphone and bring it near your mouth to record; move it away or release it to stop."
-        } else {
-                "物件放在陪伴所在空间的伸手范围内。按握持键拿起麦克风，靠近嘴巴录音，移开或松手停止。"
-        }).small().color(theme::text_weak()));
         ui.checkbox(
             &mut settings.review_before_send,
             if english {
@@ -121,23 +116,6 @@ fn render_header(
                 "审核后发送 OSC 正文"
             },
         );
-        if settings.review_before_send {
-            ui.label(egui::RichText::new(if english {
-                "The latest sentence replaces the review text. Strike the arrow to send through OSC, or the pencil to freeze and edit it with spoken Ask instructions; strike again to finish editing. Slow contact does not activate buttons: use Grip to move them. Your hand or the held microphone can strike a button. Recording still follows microphone distance."
-            } else {
-                "最新一句替换待审核文字。拍箭头通过 OSC 发送；拍铅笔冻结文字，用语音指令交给 Ask 修订，再拍结束编辑。慢触不会执行，靠近后按握持键可调整按钮位置；手和拿起的麦克风都能拍击。录音始终由麦克风远近控制。"
-            }).small().color(theme::text_weak()));
-        } else {
-            ui.label(
-                egui::RichText::new(if english {
-                    "OSC continues using its automatic output settings."
-                } else {
-                    "OSC 按现有设置自动输出。"
-                })
-                .small()
-                .color(theme::text_weak()),
-            );
-        }
     }
     crate::ui::notifications::observe_error(
         ui.ctx(),
@@ -324,12 +302,6 @@ fn render_preview_card(
             &context.status.cards
         };
         spatial_preview(ui, settings, cards, preview_height);
-        ui.label(
-            egui::RichText::new(tr("Drag up or down · Pinch or drag a corner to resize"))
-                .small()
-                .color(theme::text_weak()),
-        )
-        .on_hover_text(tr("Pinch or Ctrl+scroll over the preview to resize. Two-finger scrolling scrolls the page."));
     });
 }
 
@@ -382,12 +354,6 @@ fn render_combined_preview_and_position_card(
             &context.status.cards
         };
         spatial_preview(ui, settings, cards, preview_height);
-        ui.label(
-            egui::RichText::new(tr("Drag up or down · Pinch or drag a corner to resize"))
-                .small()
-                .color(theme::text_weak()),
-        )
-        .on_hover_text(tr("Pinch or Ctrl+scroll over the preview to resize. Two-finger scrolling scrolls the page."));
         ModernSlider::new(
             &tr("Distance in Front"),
             &mut settings.distance_meters,

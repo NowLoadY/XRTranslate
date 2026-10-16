@@ -3,7 +3,10 @@
 //! OSCQuery discovery and all socket I/O live on this owner's worker. Consumers
 //! provide paths, inspect typed snapshots and carry epochs through their writes;
 //! this module has no knowledge of a particular Avatar feature's parameters.
-use super::runtime::{OscSettings, RuntimeStatus, parse_mute_value};
+use super::{
+    microphone::{Edge, MicrophoneSync},
+    runtime::{OscSettings, RuntimeStatus, parse_mute_value},
+};
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use parking_lot::Mutex;
 use rosc::{OscBundle, OscMessage, OscPacket, OscType, decoder, encoder};
@@ -93,6 +96,7 @@ pub struct TransportState {
 struct Shared {
     state: TransportState,
     events: VecDeque<TransportEvent>,
+    microphone: MicrophoneSync,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -100,6 +104,8 @@ struct Config {
     manual_enabled: bool,
     manual_ip: String,
     manual_port: u16,
+    send_port: u16,
+    microphone_sync: bool,
     control_paths: Option<BTreeSet<String>>,
     peer_profile: OscPeerProfile,
 }
@@ -110,9 +116,16 @@ impl Config {
             manual_enabled: settings.enabled,
             manual_ip: settings.ip.clone(),
             manual_port: settings.listen_port,
+            send_port: settings.send_port,
+            microphone_sync: false,
             control_paths: None,
             peer_profile: OscPeerProfile::default(),
         }
+    }
+
+    fn query_enabled(&self) -> bool {
+        self.control_paths.is_some()
+            || (self.microphone_sync && self.peer_profile == OscPeerProfile::default())
     }
 }
 
@@ -192,6 +205,31 @@ pub struct OscTransportHandle {
 }
 
 impl OscTransportHandle {
+    pub fn set_microphone_sync(&self, enabled: bool) {
+        let mut config = self.config.lock();
+        if config.microphone_sync != enabled {
+            config.microphone_sync = enabled;
+            self.shared.lock().microphone.set_enabled(enabled);
+        }
+    }
+
+    /// An explicit host gesture, not a continuously maintained desired state.
+    pub fn request_microphone(&self, enabled: bool) {
+        self.shared.lock().microphone.request(enabled);
+    }
+
+    pub fn take_microphone_mute(&self) -> bool {
+        self.shared.lock().microphone.take_external_mute()
+    }
+
+    pub fn microphone_sync_status(&self) -> Option<&'static str> {
+        let config = self.config.lock();
+        if config.microphone_sync && config.peer_profile != OscPeerProfile::default() {
+            return Some("Microphone sync requires VRChat with Toggle Voice enabled");
+        }
+        self.shared.lock().microphone.status()
+    }
+
     /// This receiver demand is independent of Chatbox output and its plugin tab.
     pub fn set_control_profile(
         &self,
@@ -356,6 +394,7 @@ impl TransportOwner {
         config.manual_enabled = settings.enabled;
         config.manual_ip.clone_from(&settings.ip);
         config.manual_port = settings.listen_port;
+        config.send_port = settings.send_port;
     }
 
     pub(super) fn shutdown(&mut self) {
@@ -414,6 +453,8 @@ struct Worker {
     next_query: Instant,
     retry_configuration: Instant,
     last_udp_values: BTreeMap<String, OscValue>,
+    last_mute_datagram: Option<Instant>,
+    microphone_pressed_target: Option<String>,
     client: Result<reqwest::Client, String>,
 }
 
@@ -443,6 +484,8 @@ impl Worker {
             next_query: Instant::now(),
             retry_configuration: Instant::now(),
             last_udp_values: BTreeMap::new(),
+            last_mute_datagram: None,
+            microphone_pressed_target: None,
             client,
         }
     }
@@ -451,7 +494,7 @@ impl Worker {
         while !self.handle.stop.load(Ordering::Acquire) {
             let desired = self.handle.config.lock().clone();
             let needs_retry = self.config.as_ref().is_some_and(|c| {
-                c.control_paths.is_some() && (self.socket.is_none() || self.discovery.is_none())
+                c.query_enabled() && (self.socket.is_none() || self.discovery.is_none())
             }) && Instant::now() >= self.retry_configuration;
             if needs_retry {
                 self.config = None;
@@ -465,14 +508,23 @@ impl Worker {
             }
             self.discover();
             self.receive();
-            for _ in 0..16 {
-                let Ok(command) = rx.try_recv() else { break };
-                self.command(command).await;
-                if self.handle.stop.load(Ordering::Acquire) {
-                    break;
+            self.sync_microphone();
+            // A slow OSCQuery must not hold /input/Voice down. Finish its two
+            // edges before processing commands that can await an HTTP reply.
+            if self.microphone_pressed_target.is_none() {
+                for _ in 0..16 {
+                    let Ok(command) = rx.try_recv() else { break };
+                    self.command(command).await;
+                    if self.handle.stop.load(Ordering::Acquire) {
+                        break;
+                    }
                 }
             }
-            if self.control_enabled() && Instant::now() >= self.next_query {
+            self.sync_microphone();
+            if self.microphone_pressed_target.is_none()
+                && self.query_enabled()
+                && Instant::now() >= self.next_query
+            {
                 self.query(None).await;
             }
             if self.endpoint.is_some()
@@ -505,16 +557,111 @@ impl Worker {
         })
     }
 
+    fn query_config_current(&self) -> bool {
+        self.control_config_current() && self.handle.config.lock().query_enabled()
+    }
+
     fn control_enabled(&self) -> bool {
         self.config
             .as_ref()
             .is_some_and(|c| c.control_paths.is_some())
     }
 
+    fn query_enabled(&self) -> bool {
+        self.config.as_ref().is_some_and(Config::query_enabled)
+    }
+
+    fn observe_microphone(&self, muted: bool) {
+        self.muted.store(muted, Ordering::Release);
+        self.handle.shared.lock().microphone.observe(muted);
+    }
+
+    fn voice_edge(&self, target: &str, pressed: bool) -> Result<(), String> {
+        let packet = OscPacket::Message(OscMessage {
+            addr: "/input/Voice".into(),
+            args: vec![OscType::Int(i32::from(pressed))],
+        });
+        let bytes = encoder::encode(&packet).map_err(|error| error.to_string())?;
+        self.socket
+            .as_ref()
+            .ok_or_else(|| "OSC receiver unavailable".to_owned())?
+            .send_to(&bytes, target)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn release_microphone(&mut self) {
+        if let Some(target) = self.microphone_pressed_target.take()
+            && let Err(error) = self.voice_edge(&target, false)
+        {
+            self.error(format!("Cannot release VRChat Voice input: {error}"));
+        }
+    }
+
+    fn sync_microphone(&mut self) {
+        if self.handle.stop.load(Ordering::Acquire) {
+            self.release_microphone();
+            return;
+        }
+        let Some(config) = self.config.as_ref() else {
+            return;
+        };
+        if !config.microphone_sync {
+            self.release_microphone();
+            return;
+        }
+        if config.peer_profile != OscPeerProfile::default() {
+            self.release_microphone();
+            self.handle
+                .shared
+                .lock()
+                .microphone
+                .fail("Microphone sync requires VRChat with Toggle Voice enabled");
+            return;
+        }
+        let target = self.endpoint.as_ref().map_or_else(
+            || format!("{}:{}", config.manual_ip, config.send_port),
+            |endpoint| endpoint.osc.to_string(),
+        );
+        let shared = Arc::clone(&self.handle.shared);
+        let mut shared = shared.lock();
+        // Hold the short state lock through UDP submission: once disabling sync
+        // returns, an already polled opening request cannot still be submitted.
+        let edge = shared.microphone.poll(Instant::now());
+        let result = match edge {
+            Some(Edge::Press) => {
+                self.microphone_pressed_target = Some(target.clone());
+                self.voice_edge(&target, true)
+            }
+            Some(Edge::Release) => {
+                let result = self
+                    .microphone_pressed_target
+                    .as_ref()
+                    .map_or(Ok(()), |target| self.voice_edge(target, false));
+                if result.is_ok() {
+                    self.microphone_pressed_target = None;
+                }
+                result
+            }
+            None => return,
+        };
+        if let Err(error) = result {
+            shared
+                .microphone
+                .fail("Could not control the VRChat microphone; check OSC settings");
+            drop(shared);
+            self.release_microphone();
+            self.handle.shared.lock().microphone.disconnected();
+            self.error(format!("Cannot control VRChat microphone: {error}"));
+        }
+    }
+
     async fn configure(&mut self, config: Config) {
-        // Output-only changes cannot interrupt an active receive consumer.
+        // Chatbox output and mic-sync toggles do not interrupt an existing
+        // OSCQuery receiver when its peer and Avatar subscriptions stay intact.
         let same_control = self.config.as_ref().is_some_and(|old| {
-            old.control_paths.is_some()
+            old.query_enabled()
+                && config.query_enabled()
                 && old.control_paths == config.control_paths
                 && old.peer_profile == config.peer_profile
         });
@@ -528,11 +675,11 @@ impl Worker {
         self.socket = None;
         self.muted.store(false, Ordering::Release);
         self.handle.shared.lock().state.control_enabled = config.control_paths.is_some();
-        if config.control_paths.is_none() && !config.manual_enabled {
+        if !config.query_enabled() && !config.manual_enabled {
             self.listener("Disabled".into());
             return;
         }
-        let address = if config.control_paths.is_some() {
+        let address = if config.query_enabled() {
             "127.0.0.1:0".to_owned()
         } else {
             format!("{}:{}", config.manual_ip, config.manual_port)
@@ -547,13 +694,13 @@ impl Worker {
                 self.socket = Some(socket);
                 self.listener(format!(
                     "Listening on {}",
-                    if config.control_paths.is_some() {
+                    if config.query_enabled() {
                         format!("127.0.0.1:{port} (OSCQuery)")
                     } else {
                         address
                     }
                 ));
-                if config.control_paths.is_some() {
+                if config.query_enabled() {
                     match start_discovery(port).await {
                         Ok(discovery) => {
                             self.discovery = Some(discovery);
@@ -578,6 +725,8 @@ impl Worker {
     }
 
     fn invalidate(&mut self, reason: &str) {
+        self.release_microphone();
+        self.handle.shared.lock().microphone.disconnected();
         self.epoch = self
             .epoch
             .checked_add(1)
@@ -587,6 +736,7 @@ impl Worker {
         self.muted.store(false, Ordering::Release);
         self.last_query_success = None;
         self.last_udp_values.clear();
+        self.last_mute_datagram = None;
         self.next_query = Instant::now();
         let mut shared = self.handle.shared.lock();
         shared.state.epoch = self.epoch;
@@ -663,7 +813,7 @@ impl Worker {
         for _ in 0..64 {
             match socket.recv_from(&mut buffer) {
                 Ok((size, source)) => {
-                    if self.control_enabled() && !source.ip().is_loopback() {
+                    if self.query_enabled() && !source.ip().is_loopback() {
                         continue;
                     }
                     if bounded_packet(&buffer[..size], 0, &mut 0) {
@@ -685,7 +835,7 @@ impl Worker {
             collect_messages(packet, 0, &mut messages);
         }
         // Retire first, regardless of the order of parameter messages in a bundle.
-        if self.control_enabled()
+        if self.query_enabled()
             && messages
                 .iter()
                 .any(|m| self.peer_profile().invalidates_on(&m.addr))
@@ -695,7 +845,8 @@ impl Worker {
         for message in messages {
             if self.peer_profile().mute_path == Some(message.addr.as_str()) {
                 if let Some(value) = message.args.first().and_then(parse_mute_value) {
-                    self.muted.store(value, Ordering::Release);
+                    self.last_mute_datagram = Some(Instant::now());
+                    self.observe_microphone(value);
                 }
             }
             let subscribed = self
@@ -821,7 +972,7 @@ impl Worker {
 
     async fn query(&mut self, query_id: Option<u64>) {
         self.next_query = Instant::now() + QUERY_INTERVAL;
-        if !self.control_enabled() {
+        if !self.query_enabled() {
             return;
         }
         let candidates = match &self.discovery {
@@ -880,28 +1031,24 @@ impl Worker {
             self.invalidate("Avatar OSCQuery destination changed");
             return;
         }
-        if self.handle.stop.load(Ordering::Acquire) || !self.control_config_current() {
+        if self.handle.stop.load(Ordering::Acquire) || !self.query_config_current() {
             return;
         }
         let epoch = self.epoch;
         let queried_at = Instant::now();
+        let paths = self
+            .config
+            .as_ref()
+            .and_then(|c| c.control_paths.clone())
+            .unwrap_or_default();
         let result = self
             .fetch_peer(&client, endpoint.http_port, "/")
             .await
-            .and_then(|tree| {
-                parse_avatar_tree(
-                    &tree,
-                    self.config
-                        .as_ref()
-                        .and_then(|c| c.control_paths.as_ref())
-                        .unwrap(),
-                    self.peer_profile(),
-                )
-            });
+            .and_then(|tree| parse_avatar_tree(&tree, &paths, self.peer_profile()));
         // A change that arrived during HTTP takes precedence over its snapshot.
         self.discover();
         self.receive();
-        if epoch != self.epoch || !self.control_config_current() {
+        if epoch != self.epoch || !self.query_config_current() {
             return;
         }
         match result {
@@ -914,25 +1061,28 @@ impl Worker {
                     self.invalidate("Avatar identity changed");
                     return;
                 }
-                if let Some(OscValue::Bool(value)) = self
-                    .peer_profile()
-                    .mute_path
-                    .and_then(|path| nodes.get(path))
-                    .and_then(|node| node.value.as_ref())
+                if self.last_mute_datagram.is_none_or(|at| at <= queried_at)
+                    && let Some(OscValue::Bool(value)) = self
+                        .peer_profile()
+                        .mute_path
+                        .and_then(|path| nodes.get(path))
+                        .and_then(|node| node.value.as_ref())
                 {
-                    self.muted.store(*value, Ordering::Release);
+                    self.observe_microphone(*value);
                 }
                 self.endpoint = Some(endpoint);
                 self.avatar_id = Some(avatar_id.clone());
                 self.last_query_success = Some(Instant::now());
                 self.handle.shared.lock().state.diagnostic = None;
-                self.emit(TransportEvent::Snapshot(AvatarSnapshot {
-                    epoch,
-                    query_id,
-                    avatar_id,
-                    nodes,
-                    queried_at,
-                }));
+                if self.control_enabled() {
+                    self.emit(TransportEvent::Snapshot(AvatarSnapshot {
+                        epoch,
+                        query_id,
+                        avatar_id,
+                        nodes,
+                        queried_at,
+                    }));
+                }
             }
             Err(error) => {
                 self.error(error.clone());

@@ -97,8 +97,8 @@ pub struct ClientSettings {
     pub microphone_clone_state: Option<xrtranslate_protocol::VoiceCloneState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loopback_clone_state: Option<xrtranslate_protocol::VoiceCloneState>,
-    #[serde(default)]
-    pub mute_self_pauses_translation: bool,
+    #[serde(default, alias = "mute_self_pauses_translation")]
+    pub microphone_sync_enabled: bool,
     #[serde(default = "default_ui_language")]
     pub ui_language: UiLanguage,
     #[serde(default)]
@@ -200,7 +200,7 @@ impl Default for ClientSettings {
             tts_enabled: false,
             microphone_clone_state: None,
             loopback_clone_state: None,
-            mute_self_pauses_translation: false,
+            microphone_sync_enabled: false,
             ui_language: default_ui_language(),
             ui_theme: UiTheme::default(),
             background_settings: crate::ui::background::BackgroundSettings::default(),
@@ -323,7 +323,7 @@ impl ClientSettings {
                 *prefix = replacement.into();
             }
         }
-        self.mute_self_pauses_translation &=
+        self.microphone_sync_enabled &=
             crate::feature_access::is_available(crate::feature_access::Feature::MuteSync);
     }
 

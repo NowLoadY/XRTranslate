@@ -7,6 +7,10 @@ use std::path::Path;
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct Hand {
+    /// Standing-space pose selected by the SteamVR action binding. Defaults use
+    /// the grip origin within the hand; -Z runs along a held handle toward the
+    /// thumb. Keep this distinct from the device origin or its pointing ray.
+    /// Custom pose bindings are used as-is; choose grip for the same pivot.
     pub pose: Option<Mat4>,
     pub grab: bool,
     pub pressed: bool,
@@ -97,6 +101,9 @@ impl Input {
         let api = unsafe { &*table };
         // Stable bundled defaults let SteamVR retain user bindings across runs.
         // User custom bindings are stored by SteamVR, not in these resource files.
+        // Valve's profiles expose the OpenXR grip pose as /pose/grip on Vive and
+        // Index, but /pose/openxr_grip on Touch (CV1's "grip" is a moving button).
+        // https://github.com/ValveSoftware/openvr/wiki/Render-Model-Reference
         std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
         for (name, body) in [
             (

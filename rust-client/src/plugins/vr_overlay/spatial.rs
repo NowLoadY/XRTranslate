@@ -62,6 +62,10 @@ impl VoiceOverlay {
         self.visible && self.interaction.freeze_controls
     }
 
+    pub fn dock_microphone(&mut self) {
+        self.interaction.dock_microphone();
+    }
+
     pub fn suspend(&mut self) -> Vec<VoiceAction> {
         self.input.suspend();
         if self.visible {

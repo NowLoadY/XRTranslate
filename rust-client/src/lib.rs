@@ -740,7 +740,7 @@ struct XRTranslateApp {
     background_image: ui::background::BackgroundImage,
     navigation: NavigationState,
     window_backdrop: window_backdrop::WindowBackdrop,
-    mute_self_pauses_translation: Arc<AtomicBool>,
+    microphone_sync_enabled: bool,
     pub floating_subtitles_enabled: bool,
     pub floating_subtitles_max_count: usize,
     pub floating_subtitles_font_size: f64,
@@ -1906,9 +1906,7 @@ impl Default for XRTranslateApp {
                 page: settings.active_page,
             },
             window_backdrop: window_backdrop::WindowBackdrop::default(),
-            mute_self_pauses_translation: Arc::new(AtomicBool::new(
-                settings.mute_self_pauses_translation,
-            )),
+            microphone_sync_enabled: settings.microphone_sync_enabled,
             floating_subtitles_enabled: settings.floating_subtitles_enabled,
             floating_subtitles_max_count: settings.floating_subtitles_max_count,
             floating_subtitles_font_size: settings.floating_subtitles_font_size,
@@ -2049,10 +2047,11 @@ impl XRTranslateApp {
                 .then(translation_service::host_conversation_id),
             server_url: self.server_url.clone(),
             languages,
-            external_audio_gate: if external_audio_gate {
+            external_audio_gate: if external_audio_gate && audio_source == CaptureSource::Microphone
+            {
                 ExternalAudioGate::new(
                     self.osc_plugin.mute_state(),
-                    Arc::clone(&self.mute_self_pauses_translation),
+                    Arc::clone(&self.voice_interaction.microphone_sync_active),
                 )
             } else {
                 ExternalAudioGate::default()
@@ -2731,7 +2730,7 @@ impl XRTranslateApp {
                     if enabled {
                         self.start(None);
                     } else {
-                        self.stop();
+                        self.stop_translation();
                     }
                 }
             }
@@ -2823,8 +2822,8 @@ impl XRTranslateApp {
         for action in actions {
             match action {
                 OscUiAction::ClearHostHistory => self.clear_history(),
-                OscUiAction::SetMuteGateEnabled(enabled) => {
-                    self.set_mute_self_pauses_translation(enabled)
+                OscUiAction::SetMicrophoneSyncEnabled(enabled) => {
+                    self.set_microphone_sync_enabled(enabled)
                 }
                 OscUiAction::SetSpeakerNumberVisible(enabled) => {
                     self.set_osc_speaker_number_visible(enabled)
@@ -2894,7 +2893,7 @@ impl XRTranslateApp {
     }
 
     fn render_osc_plugin_page(&mut self, ui: &mut egui::Ui) {
-        let mute_gate_enabled = self.mute_self_pauses_translation.load(Ordering::Acquire);
+        let microphone_sync_enabled = self.microphone_sync_enabled;
         let languages = self.language_capabilities();
         let lyrics_available = self.plugin_enabled(PluginId::LYRICS);
         let actions = self.osc_plugin.render_page(
@@ -2902,7 +2901,7 @@ impl XRTranslateApp {
             OscPageContext {
                 language: self.ui_language,
                 preparing_text: self.text_translation.preparing_host(),
-                mute_gate_enabled,
+                microphone_sync_enabled,
                 lyrics_available,
                 languages,
                 source_lang: &self.source_lang,
@@ -3346,7 +3345,7 @@ impl XRTranslateApp {
             tts_enabled: self.tts_enabled,
             microphone_clone_state: self.microphone_clone_state.clone(),
             loopback_clone_state: self.loopback_clone_state.clone(),
-            mute_self_pauses_translation: self.mute_self_pauses_translation.load(Ordering::Relaxed),
+            microphone_sync_enabled: self.microphone_sync_enabled,
             ui_language: self.ui_language,
             ui_theme: self.ui_theme,
             background_settings: self.background_settings.clone(),
@@ -3790,6 +3789,10 @@ impl XRTranslateApp {
             }
         }
         self.set_microphone_input(enabled, ctx, true, Self::start_task_capture);
+        self.sync_game_microphone(enabled);
+        if !enabled {
+            self.vr_overlay_plugin.manager().dock_microphone();
+        }
     }
 
     fn set_microphone_input(
@@ -5053,11 +5056,11 @@ impl XRTranslateApp {
         self.save_settings();
     }
 
-    fn set_mute_self_pauses_translation(&mut self, enabled: bool) {
+    fn set_microphone_sync_enabled(&mut self, enabled: bool) {
         let enabled = enabled
             && crate::feature_access::is_available(crate::feature_access::Feature::MuteSync);
-        self.mute_self_pauses_translation
-            .store(enabled, Ordering::Release);
+        self.microphone_sync_enabled = enabled;
+        self.refresh_microphone_sync();
         self.save_settings();
     }
 
@@ -5284,6 +5287,12 @@ impl XRTranslateApp {
         }
     }
 
+    pub(crate) fn stop_translation(&mut self) {
+        self.sync_game_microphone(false);
+        self.vr_overlay_plugin.manager().dock_microphone();
+        self.stop();
+    }
+
     fn stop(&mut self) {
         self.stop_avatar();
         self.auto_input_plugin.set_enabled(false);
@@ -5460,7 +5469,7 @@ impl XRTranslateApp {
                     if enabled {
                         self.start(None);
                     } else {
-                        self.stop();
+                        self.stop_translation();
                     }
                 }
                 overlay_ipc::OverlayEvent::MicrophoneEnabled(enabled) => {
@@ -5670,6 +5679,7 @@ impl eframe::App for XRTranslateApp {
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_avatar(Some(ctx.clone()));
+        self.poll_microphone_sync(ctx);
         self.poll_voice_interaction(ctx);
         if self.plugin_enabled(PluginId::AVATAR) || self.avatar_host_session.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));

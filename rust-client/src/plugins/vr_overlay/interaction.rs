@@ -1,7 +1,7 @@
 //! Direct interaction in the companion's shared tracking space, in metres.
 use super::{
     input::Hand,
-    voice_props::{self, ButtonVisual, MICROPHONE_HEAD},
+    voice_props::{self, ButtonVisual, MICROPHONE_GRIP_HALF, MICROPHONE_HEAD},
 };
 use crate::{
     ui::components::avatar::Model,
@@ -39,6 +39,19 @@ const DOCK: Vec3 = Vec3::new(0.20, 0.05, 0.0);
 const MOUTH: Vec3 = Vec3::new(0.0, -0.10, -0.08);
 const MIN_STRIKE_SPEED: f32 = 0.40;
 const MAX_STRIKE_INTERVAL: f32 = 0.10;
+const GRAB_MARGIN: f32 = 0.025;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GrabTarget {
+    Microphone,
+    Button(usize),
+}
+
+// Radial projection gives a conservative surface gap for these rounded props,
+// in metres. One small tolerance serves both shapes without a physics engine.
+fn surface_gap(point: Vec3, half: Vec3) -> f32 {
+    point.length() * (1.0 - 1.0 / (point / half).length().max(1.0))
+}
 
 fn on_face(point: Vec3, half: Vec3, margin: f32) -> bool {
     (point.x / (half.x + margin)).powi(2) + (point.y / (half.y + margin)).powi(2) <= 1.0
@@ -50,7 +63,6 @@ struct ButtonState {
     held: Option<(usize, Mat4)>,
     owner: Option<usize>,
     latched: bool,
-    hover: bool,
     depth: f32,
     feedback: f32,
 }
@@ -58,7 +70,6 @@ impl ButtonState {
     fn clear_contact(&mut self) {
         self.owner = None;
         self.latched = false;
-        self.hover = false;
         self.depth = 0.0;
         self.feedback = 0.0;
     }
@@ -67,6 +78,7 @@ impl ButtonState {
 pub(super) struct Interaction {
     pub microphone: Mat4,
     held: Option<(usize, Mat4)>,
+    candidates: [Option<GrabTarget>; 2],
     previous: [Option<Vec3>; 2],
     buttons: [ButtonState; BUTTONS.len()],
     root: Option<Mat4>,
@@ -80,6 +92,7 @@ impl Default for Interaction {
         Self {
             microphone: Mat4::IDENTITY,
             held: None,
+            candidates: [None; 2],
             previous: [None; 2],
             buttons: std::array::from_fn(|i| ButtonState {
                 pose: Mat4::from_translation(BUTTONS[i].position),
@@ -94,9 +107,63 @@ impl Default for Interaction {
 }
 
 impl Interaction {
+    fn nearest_grabbable(&self, root: Mat4, point: Vec3, review: bool) -> Option<GrabTarget> {
+        let mut nearest: Option<(GrabTarget, f32, f32)> = None;
+        let mut consider = |target, pose: Mat4, half| {
+            let local = pose.inverse().transform_point3(point);
+            let gap = surface_gap(local, half);
+            let distance = local.length_squared();
+            if gap <= GRAB_MARGIN
+                && nearest.is_none_or(|(_, best_gap, best_distance)| {
+                    gap.total_cmp(&best_gap)
+                        .then(distance.total_cmp(&best_distance))
+                        .is_lt()
+                })
+            {
+                nearest = Some((target, gap, distance));
+            }
+        };
+        if self.held.is_none() {
+            consider(
+                GrabTarget::Microphone,
+                self.microphone,
+                MICROPHONE_GRIP_HALF,
+            );
+        }
+        if review {
+            for (i, (spec, state)) in BUTTONS.iter().zip(&self.buttons).enumerate() {
+                if state.held.is_none() {
+                    consider(GrabTarget::Button(i), root * state.pose, spec.half);
+                }
+            }
+        }
+        nearest.map(|(target, _, _)| target)
+    }
+
+    pub fn dock_microphone(&mut self) {
+        if let Some((hand, _)) = self.held.take() {
+            // Its contact point changes from the microphone head to the hand;
+            // that jump must not become a button strike on the next frame.
+            self.previous[hand] = None;
+            for button in &mut self.buttons {
+                if button.owner == Some(hand) {
+                    button.clear_contact();
+                }
+            }
+        }
+        self.gate = false;
+        self.gate_time = 0.0;
+        if let Some(root) = self.root {
+            self.microphone = root * Mat4::from_translation(DOCK);
+        }
+        // Grabbing requires a fresh pressed edge; an already held grip cannot
+        // take the microphone back. Button poses, holds and the root are kept.
+    }
+
     pub fn suspend(&mut self) -> Vec<VoiceAction> {
         let active = self.gate;
         self.held = None;
+        self.candidates = [None; 2];
         self.previous = [None; 2];
         self.root = None;
         self.gate = false;
@@ -165,8 +232,9 @@ impl Interaction {
                 }
             }
         }
+        self.candidates = [None; 2];
         for (hand, input) in hands.iter().enumerate() {
-            if !input.pressed
+            if (input.grab && !input.pressed)
                 || self.held.is_some_and(|(owner, _)| owner == hand)
                 || self
                     .buttons
@@ -178,36 +246,41 @@ impl Interaction {
             let Some(pose) = input.pose else {
                 continue;
             };
-            let point = pose.w_axis.truncate();
-            if self.held.is_none() {
-                let local = self.microphone.inverse().transform_point3(point);
-                let closest = Vec3::new(0.0, local.y.clamp(-0.085, 0.055), 0.0);
-                if local.distance(closest) <= 0.085 {
-                    self.held = Some((hand, pose.inverse() * self.microphone));
-                    grab_changed = true;
-                    pulses.push(hand);
-                    continue;
-                }
-            }
-            if !snapshot.review_enabled {
+            let candidate =
+                self.nearest_grabbable(root, pose.w_axis.truncate(), snapshot.review_enabled);
+            self.candidates[hand] = candidate;
+            if !input.pressed {
                 continue;
             }
-            let nearest = BUTTONS
-                .iter()
-                .zip(&self.buttons)
-                .enumerate()
-                .filter(|(_, (_, state))| state.held.is_none())
-                .filter_map(|(i, (spec, state))| {
-                    let local = (root * state.pose).inverse().transform_point3(point);
-                    (on_face(local, spec.half, 0.045) && local.z.abs() <= spec.half.z + 0.045)
-                        .then_some((i, local.length_squared()))
-                })
-                .min_by(|a, b| a.1.total_cmp(&b.1));
-            if let Some((i, _)) = nearest {
-                let state = &mut self.buttons[i];
-                state.held = Some((hand, pose.inverse() * root * state.pose));
-                grab_changed = true;
-                pulses.push(hand);
+            match candidate {
+                Some(GrabTarget::Microphone) => {
+                    // Grip -Z runs along the held tube toward the thumb. Align
+                    // the microphone's +Y with it for the same natural hold
+                    // every time, centered in the palm instead of floating.
+                    let offset = Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+                    self.microphone = pose * offset;
+                    self.held = Some((hand, offset));
+                }
+                Some(GrabTarget::Button(i)) => {
+                    let state = &mut self.buttons[i];
+                    // Placement keeps the exact pickup pose, with no snap.
+                    state.held = Some((hand, pose.inverse() * root * state.pose));
+                }
+                None => continue,
+            }
+            self.candidates[hand] = None;
+            grab_changed = true;
+            pulses.push(hand);
+        }
+        // A later hand may have taken an earlier hand's hovered object.
+        for candidate in &mut self.candidates {
+            let held = match *candidate {
+                Some(GrabTarget::Microphone) => self.held.is_some(),
+                Some(GrabTarget::Button(i)) => self.buttons[i].held.is_some(),
+                None => false,
+            };
+            if held {
+                *candidate = None;
             }
         }
         if moved || grab_changed {
@@ -257,7 +330,9 @@ impl Interaction {
                 // Grip is manipulation intent. A held button cannot activate another.
                 None
             } else {
-                Some(pose.transform_point3(Vec3::new(0.0, 0.0, -0.055)))
+                // The same grip center serves both touch and pickup, with no
+                // controller-specific tip offset to learn.
+                Some(pose.w_axis.truncate())
             }
         });
         let mut used = [false; 2];
@@ -278,7 +353,6 @@ impl Interaction {
         }
         for (spec, state) in BUTTONS.iter().zip(&mut self.buttons) {
             state.feedback = (state.feedback - dt).max(0.0);
-            state.hover = false;
             state.depth = 0.012 * (state.feedback / 0.22).clamp(0.0, 1.0);
             if state.held.is_some() {
                 continue;
@@ -288,7 +362,6 @@ impl Interaction {
             let inside = |p: Vec3, margin: f32| {
                 on_face(p, spec.half, margin) && p.z > -0.09 && p.z < 0.12 + margin
             };
-            state.hover = local.iter().flatten().any(|p| inside(*p, 0.025));
             let press_z = |hand| {
                 spec.half.z
                     + if self.held.is_some_and(|(owner, _)| owner == hand) {
@@ -298,7 +371,7 @@ impl Interaction {
                     }
                     - 0.010
             };
-            // Raw hand positions also hold the anchor still during slow grip approach.
+            // Grip positions also hold the anchor still during slow approach.
             self.freeze_controls |= hands
                 .iter()
                 .filter_map(|hand| hand.pose)
@@ -377,7 +450,7 @@ impl Interaction {
                     ButtonId::Revise => snapshot.can_revise,
                 },
                 held: state.held.is_some(),
-                hover: state.hover,
+                hover: self.candidates.contains(&Some(GrabTarget::Button(i))),
                 depth: state.depth,
                 feedback: state.feedback,
             }
@@ -386,6 +459,7 @@ impl Interaction {
             root * Mat4::from_translation(DOCK),
             self.microphone,
             self.held.is_some(),
+            self.candidates.contains(&Some(GrabTarget::Microphone)),
             snapshot,
             &buttons,
         )

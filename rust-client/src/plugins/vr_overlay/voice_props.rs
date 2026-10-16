@@ -8,6 +8,7 @@ use eframe::egui::Color32;
 use glam::{Mat4, Quat, Vec3};
 
 pub(super) const MICROPHONE_HEAD: Vec3 = Vec3::new(0.0, 0.115, 0.0);
+pub(super) const MICROPHONE_GRIP_HALF: Vec3 = Vec3::new(0.023, 0.089, 0.022);
 
 pub(super) struct ButtonVisual {
     pub kind: ButtonId,
@@ -33,6 +34,7 @@ pub(super) fn render(
     dock: Mat4,
     microphone: Mat4,
     held: bool,
+    hover: bool,
     snapshot: &VoiceSnapshot,
     buttons: &[ButtonVisual],
 ) -> Model {
@@ -53,8 +55,12 @@ pub(super) fn render(
     solid(
         &mut model,
         microphone,
-        Vec3::new(0.023, 0.089, 0.022),
-        CREAM,
+        MICROPHONE_GRIP_HALF,
+        if hover {
+            mix(CREAM, PAPER, 0.28)
+        } else {
+            CREAM
+        },
     );
     let head = microphone * Mat4::from_translation(MICROPHONE_HEAD);
     let head_half = Vec3::new(0.038, 0.048, 0.036);
@@ -119,7 +125,13 @@ fn button_model(model: &mut Model, button: &ButtonVisual, editing: bool) {
             },
         )
     } else {
-        Color32::from_gray(if button.held { 184 } else { 166 })
+        Color32::from_gray(if button.held {
+            184
+        } else if button.hover {
+            178
+        } else {
+            166
+        })
     };
 
     // Two low, rounded cushions replace the old rectangular housing. The cap
