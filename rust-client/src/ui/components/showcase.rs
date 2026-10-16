@@ -5,39 +5,31 @@ use crate::{
 use eframe::egui;
 
 #[derive(Clone, Default)]
-struct PackagePreview {
+struct ShowcaseState {
     index: usize,
     paused: bool,
     next_at: Option<f64>,
 }
 
-pub(crate) fn avatar_plugin_preview(ui: &mut egui::Ui, language: UiLanguage) {
-    let slides = [
-        (
-            "VRChat",
-            egui::include_image!("../../../../assets/avatar-plugin-preview.jpg"),
-        ),
-        (
-            "ChilloutVR",
-            egui::include_image!("../../../../assets/avatar-plugin-chilloutvr.webp"),
-        ),
-        (
-            "Overte",
-            egui::include_image!("../../../../assets/avatar-plugin-overte.webp"),
-        ),
-        (
-            "Resonite",
-            egui::include_image!("../../../../assets/avatar-plugin-resonite.webp"),
-        ),
-        (
-            "Second Life",
-            egui::include_image!("../../../../assets/avatar-plugin-secondlife.webp"),
-        ),
-    ];
-    let id = ui.id().with("avatar_package_preview");
+pub(crate) struct ShowcaseSlide {
+    pub title: &'static str,
+    pub description: &'static str,
+    pub image: egui::ImageSource<'static>,
+    pub detail: Option<&'static str>,
+    pub url: Option<&'static str>,
+}
+
+pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[ShowcaseSlide]) {
+    if slides.is_empty() {
+        return;
+    }
+    let id = ui.id().with("showcase");
     let mut preview = ui
-        .data(|data| data.get_temp::<PackagePreview>(id))
+        .data(|data| data.get_temp::<ShowcaseState>(id))
         .unwrap_or_default();
+    preview.index = preview.index.min(slides.len() - 1);
+    let slide = &slides[preview.index];
+    let title = tr(language, slide.title);
     let mut selected = None;
     let mut focused = false;
     let radius = theme::container_radius(16);
@@ -50,36 +42,30 @@ pub(crate) fn avatar_plugin_preview(ui: &mut egui::Ui, language: UiLanguage) {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 4.0;
             ui.style_mut().interaction.selectable_labels = false;
-            let response = ui.link(egui::RichText::new("XRT-Avatar-Plugin").strong());
             let enabled = ui.is_enabled();
-            let response = automation::button_response(
-                ui,
-                response.id,
-                "XRT-Avatar-Plugin",
-                enabled,
-                response,
-            )
-            .on_hover_text("GitHub · XRT-Avatar-Plugin");
-            focused |= response.has_focus();
-            if response.clicked() {
-                ui.ctx().open_url(egui::OpenUrl::new_tab(
-                    "https://github.com/NowLoadY/XRT-Avatar-Plugin",
-                ));
+            if let Some(url) = slide.url {
+                let response = ui.link(egui::RichText::new(title).strong());
+                let response =
+                    automation::button_response(ui, response.id, title, enabled, response)
+                        .on_hover_text(url);
+                focused |= response.has_focus();
+                if response.clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                }
+            } else {
+                ui.label(egui::RichText::new(title).strong().color(theme::text_strong()));
             }
-            ui.add(egui::Label::new(tr(language, "Add live translations to your avatar!")).wrap());
+            ui.add(egui::Label::new(tr(language, slide.description)).wrap());
             ui.add_space(4.0);
             let width = ui.available_width();
-            let height = ((ui.ctx().content_rect().height() * 0.30).clamp(160.0, 280.0) + 40.0)
-                .min(width * 2.0 / 3.0);
+            let height = (ui.ctx().content_rect().height() * 0.30).clamp(160.0, 280.0) + 40.0;
             let (image_area, _) =
                 ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-            let image_rect =
-                egui::Rect::from_center_size(image_area.center(), egui::vec2(height * 1.5, height));
             ui.place(
-                image_rect,
-                egui::Image::new(slides[preview.index].1.clone())
-                    .fit_to_exact_size(image_rect.size())
-                    .alt_text(slides[preview.index].0)
+                image_area,
+                egui::Image::new(slide.image.clone())
+                    .fit_to_exact_size(image_area.size())
+                    .alt_text(tr(language, slide.detail.unwrap_or(slide.title)))
                     .corner_radius(theme::container_radius(8)),
             );
             // Leave the credits along the bottom edge of the artwork visible.
@@ -95,13 +81,18 @@ pub(crate) fn avatar_plugin_preview(ui: &mut egui::Ui, language: UiLanguage) {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             controls.set_clip_rect(image_area.intersect(ui.clip_rect()));
-            egui::Frame::new()
-                .fill(overlay_fill)
-                .corner_radius(theme::container_radius(12))
-                .inner_margin(egui::Margin::symmetric(8, 4))
-                .show(&mut controls, |ui| {
-                    ui.add(egui::Label::new(slides[preview.index].0).truncate());
-                });
+            if let Some(detail) = slide.detail {
+                egui::Frame::new()
+                    .fill(overlay_fill)
+                    .corner_radius(theme::container_radius(12))
+                    .inner_margin(egui::Margin::symmetric(8, 4))
+                    .show(&mut controls, |ui| {
+                        ui.add(egui::Label::new(tr(language, detail)).truncate());
+                    });
+            }
+            if slides.len() == 1 {
+                return;
+            }
             controls.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let playback = render_playback_button(ui, language, preview.paused);
                 focused |= playback.has_focus();
@@ -133,18 +124,19 @@ pub(crate) fn avatar_plugin_preview(ui: &mut egui::Ui, language: UiLanguage) {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             dots.set_clip_rect(image_area.intersect(ui.clip_rect()));
-            for (index, (game, _)) in slides.iter().enumerate() {
+            for (index, slide) in slides.iter().enumerate() {
+                let label = tr(language, slide.detail.unwrap_or(slide.title));
                 let response = dots.add_sized([22.0, 24.0], egui::Button::new("").frame(false));
                 let response =
-                    automation::button_response(&mut dots, response.id, game, enabled, response)
-                        .on_hover_text(*game)
+                    automation::button_response(&mut dots, response.id, label, enabled, response)
+                        .on_hover_text(label)
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
                 response.widget_info(|| {
                     egui::WidgetInfo::selected(
                         egui::WidgetType::RadioButton,
                         enabled,
                         preview.index == index,
-                        *game,
+                        label,
                     )
                 });
                 focused |= response.has_focus();
@@ -166,7 +158,8 @@ pub(crate) fn avatar_plugin_preview(ui: &mut egui::Ui, language: UiLanguage) {
         preview.next_at = None;
         ui.ctx().request_repaint();
     }
-    if preview.paused
+    if slides.len() == 1
+        || preview.paused
         || focused
         || ui.rect_contains_pointer(card.response.rect)
         || !ui.is_rect_visible(card.response.rect)
@@ -189,8 +182,7 @@ pub(crate) fn avatar_plugin_preview(ui: &mut egui::Ui, language: UiLanguage) {
 
 fn render_playback_button(ui: &mut egui::Ui, language: UiLanguage, paused: bool) -> egui::Response {
     let label = tr(language, if paused { "Play" } else { "Pause" });
-    let response =
-        components::compact_icon_button(ui, "avatar_preview_playback", false, label, None);
+    let response = components::compact_icon_button(ui, "showcase_playback", false, label, None);
     let center = response.rect.center();
     let color = theme::text_normal();
     if paused {

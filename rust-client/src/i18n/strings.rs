@@ -1,5 +1,11 @@
 /// Consolidated single-source-of-truth dictionary: `(English Key, Chinese (zh), Japanese (ja), Korean (ko), Russian (ru))`
 pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
+    ("Live translation", "实时翻译", "リアルタイム翻訳", "실시간 번역", "Перевод в реальном времени"),
+    ("Translate microphone and desktop audio in real time.", "实时翻译麦克风和电脑中的声音。", "マイクやパソコンの音声をリアルタイムで翻訳します。", "마이크와 컴퓨터 소리를 실시간으로 번역하세요.", "Переводите звук микрофона и компьютера в реальном времени."),
+    ("Media subtitles", "媒体字幕", "メディア字幕", "미디어 자막", "Субтитры для медиа"),
+    ("Create and translate subtitles for audio and video.", "为音频和视频生成、翻译字幕。", "音声や動画の字幕を作成・翻訳します。", "오디오와 동영상의 자막을 만들고 번역하세요.", "Создавайте и переводите субтитры для аудио и видео."),
+    ("Translation styles", "翻译风格", "翻訳スタイル", "번역 스타일", "Стили перевода"),
+    ("Choose how your translations sound.", "选择适合你的翻译风格。", "好みに合った翻訳スタイルを選べます。", "나에게 맞는 번역 스타일을 선택하세요.", "Выберите подходящий стиль перевода."),
     ("Arrange messages, lyrics and information on game objects.", "编排游戏对象上的消息、歌词和信息。", "ゲーム内オブジェクトにメッセージ、歌詞、情報を配置します。", "게임 오브젝트의 메시지, 가사, 정보를 구성합니다.", "Настройте сообщения, тексты песен и информацию на игровых объектах."),
     ("Show synced lyrics or the current media title in your selected outputs.", "在所选输出中显示同步歌词或当前媒体标题。", "選択した出力に同期歌詞やメディアのタイトルを表示します。", "선택한 출력에 동기화된 가사나 현재 미디어 제목을 표시합니다.", "Показывать синхронные тексты песен или название медиа в выбранных выводах."),
     ("Display content", "显示内容", "表示内容", "콘텐츠 표시", "Показывать содержимое"),

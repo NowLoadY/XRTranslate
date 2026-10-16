@@ -488,7 +488,7 @@ fn render_onboarding_welcome(
     });
 
     ui.add_space(20.0);
-    components::avatar_plugin_preview(ui, language);
+    components::showcase(ui, language, &crate::ui::previews::welcome());
     bounds
 }
 

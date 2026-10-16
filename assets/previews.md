@@ -1,6 +1,18 @@
-# Avatar plugin previews
+# Preview assets
 
-The Avatar and welcome pages embed these 1536 × 1024 concept illustrations. They were
+## Application screenshots
+
+The welcome showcase uses 1080 × 720 captures of the application, bundled as lossless WebP images.
+
+| Image | Content |
+|---|---|
+| `showcase-translation.webp` | Translation input with an unsent example sentence and audio settings. |
+| `showcase-media.webp` | Four original sample subtitles imported from a local SRT file. |
+| `showcase-styles.webp` | Built-in translation style selection. |
+
+## Avatar concepts
+
+The Avatar page uses these 1536 × 1024 illustrations; the welcome showcase includes the VRChat example. They were
 generated with imagegen using the references below; they are not runtime
 screenshots. Character appearance follows complete visual references, while
 poses, lighting and scenery are illustrative. Each image carries a concept label.

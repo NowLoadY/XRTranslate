@@ -12,8 +12,8 @@ pub use action_button::{
 mod audio_source_filter;
 pub use audio_source_filter::audio_source_filter;
 pub mod avatar;
-mod avatar_plugin_preview;
-pub(crate) use avatar_plugin_preview::avatar_plugin_preview;
+mod showcase;
+pub(crate) use showcase::{ShowcaseSlide, showcase};
 pub mod faded_scroll_text;
 mod segmented_switch;
 pub mod selection_card;

@@ -63,7 +63,7 @@ impl AvatarPlugin {
                     self.render_region_settings(ui, language, lyrics, selected);
                 }
                 ui.add_space(16.0);
-                components::avatar_plugin_preview(ui, language);
+                components::showcase(ui, language, &crate::ui::previews::avatar());
                 ui.add_space(8.0);
             });
         ui.data_mut(|data| data.insert_temp(selection_id, selected));

@@ -14,6 +14,7 @@ pub(crate) mod notifications;
 pub mod organic_border;
 pub mod organic_line;
 pub mod pages;
+pub(crate) mod previews;
 pub mod theme;
 
 use eframe::egui::{self, Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Stroke};
