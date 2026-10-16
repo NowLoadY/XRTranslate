@@ -65,6 +65,17 @@ retain applied changes. Pending instructions and late Ask results are discarded.
 An Ask failure retains the current text. The next ordinary phrase can replace the
 slot after editing ends. No undo history or second confirmation button is needed.
 
+`voice_interaction/prompt.rs` follows vocabulary examples' feature-owned Ask
+request and result checks, and Prompt Studio's separation of task, current input
+and references. Each request contains a short fixed edit task plus JSON-quoted
+original speech, original translation language, latest accepted message and this
+spoken change. The current message carries its existing style and language;
+the change may alter either. The original language is a reference, so later edits
+keep a newly requested language. Prompts are built when each instruction starts,
+after the preceding result is accepted. Empty results and obvious request echoes
+retain the text; unchanged results retain its version. Ask transport and the
+translation graph stay unchanged, with no extra model call or style/history store.
+
 Send submits the currently displayed slot through OSC, exits editing and ignores
 pending edit results. It does not alter capture or the translation pipeline.
 Later ordinary recognition immediately resumes replacing the slot, including while
