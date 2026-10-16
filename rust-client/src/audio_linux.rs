@@ -13,8 +13,13 @@ use std::time::{Duration, Instant};
 
 type Ptr = *mut c_void;
 type SinkCb = unsafe extern "C" fn(Ptr, *const SinkInfo, c_int, Ptr);
+type SourceCb = unsafe extern "C" fn(Ptr, *const SourceInfo, c_int, Ptr);
+type IndexCb = unsafe extern "C" fn(Ptr, u32, Ptr);
 type InputCb = unsafe extern "C" fn(Ptr, *const SinkInputInfo, c_int, Ptr);
 type ServerCb = unsafe extern "C" fn(Ptr, *const ServerInfo, Ptr);
+
+pub const VIRTUAL_SINK_NAME: &str = "xrtranslate_output";
+const VIRTUAL_SOURCE_NAME: &str = "xrtranslate_microphone";
 
 // These are ABI prefixes of the public libpulse structs. Fields after the last
 // value read here are deliberately omitted; libpulse only appends new fields.
@@ -50,6 +55,10 @@ struct SinkInfo {
     driver: *const c_char,
     flags: u32,
     proplist: Ptr,
+}
+#[repr(C)]
+struct SourceInfo {
+    name: *const c_char,
 }
 #[repr(C)]
 struct SinkInputInfo {
@@ -116,10 +125,13 @@ symbols! {
     pa_context_disconnect: unsafe extern "C" fn(Ptr),
     pa_context_unref: unsafe extern "C" fn(Ptr),
     pa_context_get_sink_info_list: unsafe extern "C" fn(Ptr, SinkCb, Ptr) -> Ptr,
+    pa_context_get_source_info_list: unsafe extern "C" fn(Ptr, SourceCb, Ptr) -> Ptr,
+    pa_context_load_module: unsafe extern "C" fn(Ptr, *const c_char, *const c_char, IndexCb, Ptr) -> Ptr,
     pa_context_get_sink_input_info_list: unsafe extern "C" fn(Ptr, InputCb, Ptr) -> Ptr,
     pa_context_get_server_info: unsafe extern "C" fn(Ptr, ServerCb, Ptr) -> Ptr,
     pa_proplist_gets: unsafe extern "C" fn(Ptr, *const c_char) -> *const c_char,
     pa_operation_get_state: unsafe extern "C" fn(Ptr) -> c_int,
+    pa_operation_cancel: unsafe extern "C" fn(Ptr),
     pa_operation_unref: unsafe extern "C" fn(Ptr),
     pa_stream_new: unsafe extern "C" fn(Ptr, *const c_char, *const SampleSpec, Ptr) -> Ptr,
     pa_stream_set_monitor_stream: unsafe extern "C" fn(Ptr, u32) -> c_int,
@@ -230,6 +242,14 @@ unsafe extern "C" fn input_cb(_: Ptr, info: *const SinkInputInfo, eol: c_int, da
         name,
     });
 }
+unsafe extern "C" fn source_cb(_: Ptr, info: *const SourceInfo, eol: c_int, data: Ptr) {
+    if eol == 0 && !info.is_null() {
+        unsafe { &mut *(data as *mut Vec<String>) }.push(string(unsafe { (*info).name }));
+    }
+}
+unsafe extern "C" fn module_cb(_: Ptr, index: u32, data: Ptr) {
+    *unsafe { &mut *(data as *mut u32) } = index;
+}
 unsafe extern "C" fn server_cb(_: Ptr, info: *const ServerInfo, data: Ptr) {
     if !info.is_null() {
         *unsafe { &mut *(data as *mut String) } = string(unsafe { (*info).default_sink_name });
@@ -251,7 +271,7 @@ impl Client {
         let context = unsafe {
             (api.pa_context_new)(
                 (api.pa_mainloop_get_api)(mainloop),
-                c"XRTranslate audio capture".as_ptr(),
+                c"XRTranslate audio".as_ptr(),
             )
         };
         if context.is_null() {
@@ -318,8 +338,91 @@ impl Client {
                 _ => Some(Err(client.error("audio server query was cancelled"))),
             }
         });
-        unsafe { (self.api.pa_operation_unref)(operation) };
+        unsafe {
+            // A timed-out operation must not retain a callback to stack data.
+            if result.is_err() {
+                (self.api.pa_operation_cancel)(operation);
+            }
+            (self.api.pa_operation_unref)(operation);
+        }
         result
+    }
+    fn sources(&mut self) -> Result<Vec<String>, String> {
+        let mut sources = Vec::<String>::new();
+        let operation = unsafe {
+            (self.api.pa_context_get_source_info_list)(
+                self.context,
+                source_cb,
+                (&mut sources as *mut Vec<String>).cast(),
+            )
+        };
+        self.operation(operation)?;
+        Ok(sources)
+    }
+    fn load_module(&mut self, name: &CStr, arguments: &CStr) -> Result<(), String> {
+        let mut index = u32::MAX;
+        let operation = unsafe {
+            (self.api.pa_context_load_module)(
+                self.context,
+                name.as_ptr(),
+                arguments.as_ptr(),
+                module_cb,
+                (&mut index as *mut u32).cast(),
+            )
+        };
+        self.operation(operation)?;
+        if index == u32::MAX {
+            Err(self.error(&format!("cannot load {}", name.to_string_lossy())))
+        } else {
+            Ok(())
+        }
+    }
+    fn ensure_virtual_microphone(&mut self) -> Result<(), String> {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // PulseAudio may suffix duplicate names. Serialize discovery + creation
+        // across app instances; the OS releases this lock even after a crash.
+        let lock_path = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("xrtranslate-audio-{}.lock", unsafe {
+                libc::geteuid()
+            }));
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(lock_path)
+            .map_err(|error| format!("cannot open virtual microphone lock: {error}"))?;
+        lock.lock()
+            .map_err(|error| format!("cannot lock virtual microphone setup: {error}"))?;
+
+        // The audio server owns the pair. Keep it across app exits so other
+        // applications retain their microphone selection; recreate after a
+        // server restart using the same names. Never change system defaults.
+        if !self
+            .sinks()?
+            .iter()
+            .any(|sink| sink.id == VIRTUAL_SINK_NAME)
+        {
+            self.load_module(
+                c"module-null-sink",
+                c"sink_name=xrtranslate_output rate=48000 channels=2 sink_properties='device.description=\"XRTranslate Output\" node.virtual=true priority.session=0'",
+            )?;
+        }
+        if !self
+            .sources()?
+            .iter()
+            .any(|name| name == VIRTUAL_SOURCE_NAME)
+        {
+            self.load_module(
+                c"module-remap-source",
+                c"master=xrtranslate_output.monitor source_name=xrtranslate_microphone rate=48000 channels=2 source_properties='device.description=\"XRTranslate Microphone\" node.virtual=true priority.session=0'",
+            )?;
+        }
+        Ok(())
     }
     fn sinks(&mut self) -> Result<Vec<Sink>, String> {
         let mut context: (Vec<Sink>, *const Api) = (Vec::new(), &self.api);
@@ -479,10 +582,19 @@ pub fn available_devices() -> Result<Vec<InputDevice>, String> {
 }
 
 pub fn virtual_outputs() -> Result<Vec<OutputDevice>, String> {
-    Ok(Client::connect()?
+    let mut client = Client::connect()?;
+    let microphone_ready = match client.ensure_virtual_microphone() {
+        Ok(()) => true,
+        Err(error) => {
+            log::warn!("Could not prepare XRTranslate Microphone: {error}");
+            false
+        }
+    };
+    Ok(client
         .sinks()?
         .into_iter()
         .filter(|sink| sink.is_virtual)
+        .filter(|sink| sink.id != VIRTUAL_SINK_NAME || microphone_ready)
         .map(|sink| OutputDevice {
             // Share the monitor's endpoint identity so existing feedback checks apply.
             id: sink.id,

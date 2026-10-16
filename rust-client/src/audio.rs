@@ -1131,7 +1131,7 @@ impl AudioSystem {
             let mut devices = devices;
             match crate::audio_linux::virtual_outputs() {
                 Ok(outputs) => devices.extend(outputs),
-                Err(error) => log::debug!("Could not enumerate Linux virtual outputs: {error}"),
+                Err(error) => log::warn!("Could not prepare Linux virtual outputs: {error}"),
             }
             devices
         };
@@ -2429,10 +2429,12 @@ mod linux_output_tests {
     use super::*;
 
     #[test]
-    #[ignore = "Requires XRTRANSLATE_TEST_VIRTUAL_SINK and XRTRANSLATE_TEST_VIRTUAL_SOURCE naming a temporary virtual cable"]
+    #[ignore = "Creates a virtual microphone on a running PulseAudio/PipeWire server; optional XRTRANSLATE_TEST_VIRTUAL_SINK/SOURCE select an external cable"]
     fn virtual_output_routes_tts_to_microphone() {
-        let sink = std::env::var("XRTRANSLATE_TEST_VIRTUAL_SINK").unwrap();
-        let source = std::env::var("XRTRANSLATE_TEST_VIRTUAL_SOURCE").unwrap();
+        let sink = std::env::var("XRTRANSLATE_TEST_VIRTUAL_SINK")
+            .unwrap_or_else(|_| crate::audio_linux::VIRTUAL_SINK_NAME.into());
+        let source = std::env::var("XRTRANSLATE_TEST_VIRTUAL_SOURCE")
+            .unwrap_or_else(|_| "xrtranslate_microphone".into());
         let mut audio = AudioSystem::new();
         let outputs = audio.available_output_devices();
         assert!(

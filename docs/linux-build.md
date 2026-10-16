@@ -146,32 +146,29 @@ handle additional playback formats and audio extraction.
 
 ## Virtual microphone output
 
-Audio Studio uses the same app microphone output node and connections as Windows.
-Select your virtual cable's **playback** endpoint on that node, and select its
-paired **recording** endpoint in VRChat or the receiving app. TTS, original voice,
-mixing, effects, and the Follow TTS switch use the existing Audio Studio routes.
+XRTranslate automatically prepares a virtual microphone at startup and when
+refreshing audio devices. No terminal commands or separate cable installation
+are needed on PulseAudio or PipeWire with `pipewire-pulse`.
+
+Audio Studio uses the same app microphone output node and connections as Windows:
+
+- **XRTranslate Output** is the default playback endpoint for that node.
+- Select **XRTranslate Microphone** as the microphone in VRChat or the receiving app.
+
+TTS, original voice, mixing, effects, and the Follow TTS switch use the existing
+Audio Studio routes. Saved selections of other virtual cables remain unchanged.
 
 Linux discovers software playback endpoints through PulseAudio, including
 PipeWire's `pipewire-pulse`, using device metadata rather than Windows product
 names. The existing ALSA microphone and speaker selections remain available.
-The virtual cable must already exist; XRTranslate does not install drivers,
-create devices, or change system audio defaults. A recording-only source needs a
-paired playback endpoint before an application can send audio into it.
+The pair uses the sound server's built-in
+[null sink](https://docs.pipewire.org/page_pulse_module_null_sink.html) and
+[remapped source](https://docs.pipewire.org/page_pulse_module_remap_source.html),
+with stable names `xrtranslate_output` and `xrtranslate_microphone`. It is reused
+across application exits and recreated after audio-server restarts. XRTranslate
+does not write system audio configuration or change default input/output devices.
 
-If you need a cable, PulseAudio and PipeWire's PulseAudio server support a
-[null sink](https://docs.pipewire.org/page_pulse_module_null_sink.html) paired with
-a [remapped source](https://docs.pipewire.org/page_pulse_module_remap_source.html):
-
-```sh
-pactl load-module module-null-sink sink_name=xrtranslate_output \
-  sink_properties='device.description=XRTranslate_Output priority.session=0'
-pactl load-module module-remap-source master=xrtranslate_output.monitor \
-  source_name=xrtranslate_microphone \
-  source_properties='device.description=XRTranslate_Microphone priority.session=0'
-```
-
-Refresh Audio Studio's devices and select **XRTranslate_Output** for the app
-microphone output; select **XRTranslate_Microphone** in the receiving app. Each
-command prints a module ID. To remove this temporary cable, run
-`pactl unload-module ID` for the source module first, then the sink module.
-These commands do not make the cable persistent across audio-server restarts.
+If automatic creation fails, check that the PulseAudio-compatible server is
+running and permits these modules, then re-enter Audio Studio to retry discovery.
+The application log records the server error. Existing external virtual cables
+remain usable even if creation of the built-in pair is unavailable.

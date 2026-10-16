@@ -936,10 +936,10 @@ fn initialize_live_audio<Host, Dependencies>(
 impl Default for XRTranslateApp {
     fn default() -> Self {
         let audio_system = AudioSystem::new();
+        let tts_output_devices = audio_system.available_output_devices();
         let devices = audio_system.available_devices();
         let loopback_devices = audio_system.available_loopback_devices();
         let audio_applications = audio_system.available_audio_applications();
-        let tts_output_devices = audio_system.available_output_devices();
         let (event_tx, event_rx) = bounded(256);
         let backend_manager = backend::BackendManager::load();
         let service_config = service_config::ServiceConfigEditor::load();
@@ -2377,7 +2377,16 @@ impl XRTranslateApp {
                     id: audio_studio::DeviceId::new(device.id.clone()),
                     name: device.name.clone(),
                     role: AudioDeviceRole::GameMicrophoneSink,
-                    is_default: false,
+                    is_default: {
+                        #[cfg(target_os = "linux")]
+                        {
+                            device.id == crate::audio_linux::VIRTUAL_SINK_NAME
+                        }
+                        #[cfg(not(target_os = "linux"))]
+                        {
+                            false
+                        }
+                    },
                     voicemeeter_strip_index: strip.map(VoiceMeeterStripIndex),
                 });
             }
@@ -4575,10 +4584,11 @@ impl XRTranslateApp {
             .name("audio-device-refresh".into())
             .spawn(move || {
                 let audio_system = AudioSystem::new();
+                let output_devices = audio_system.available_output_devices();
                 let snapshot = AudioDeviceSnapshot {
                     devices: audio_system.available_devices(),
                     loopback_devices: audio_system.available_loopback_devices(),
-                    output_devices: audio_system.available_output_devices(),
+                    output_devices,
                 };
                 let _ = tx.send(snapshot);
             });

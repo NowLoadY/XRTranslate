@@ -142,7 +142,7 @@ pub struct HostAudioSnapshot {
 }
 
 impl HostAudioSnapshot {
-    fn automatic_device(&self, role: AudioDeviceRole) -> Option<&HostAudioDevice> {
+    pub(crate) fn automatic_device(&self, role: AudioDeviceRole) -> Option<&HostAudioDevice> {
         let mut candidates = self.devices.iter().filter(|device| device.role == role);
         let first = candidates.next()?;
         if first.is_default {

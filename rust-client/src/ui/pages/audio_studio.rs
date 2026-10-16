@@ -1310,7 +1310,6 @@ fn render_node(
         render_gain_orb_node(graph, node, host_audio, canvas, ui, state, commands);
         return;
     }
-    let devices = &host_audio.devices;
     let rect = node_rect(graph, canvas, state, node, host_audio);
     let header = Rect::from_min_max(
         rect.min,
@@ -1508,7 +1507,7 @@ fn render_node(
             && (device_role(&node.kind).is_some()
                 || matches!(node.kind, AudioNodeKind::SystemAudio { .. })) =>
         {
-            Some(device_selection_text(&node.kind, devices))
+            Some(device_selection_text(&node.kind, host_audio, language))
         }
         _ => None,
     };
@@ -1672,7 +1671,30 @@ fn device_role(kind: &AudioNodeKind) -> Option<AudioDeviceRole> {
     }
 }
 
-fn device_selection_text(kind: &AudioNodeKind, devices: &[HostAudioDevice]) -> String {
+fn automatic_device_text(
+    role: AudioDeviceRole,
+    host: &HostAudioSnapshot,
+    language: crate::i18n::UiLanguage,
+) -> String {
+    if role != AudioDeviceRole::GameMicrophoneSink {
+        return tr(language, "System default").into();
+    }
+    if let Some(device) = host.automatic_device(role) {
+        return format!("{} · {}", tr(language, "Automatic"), device.name);
+    }
+    if host.devices.iter().any(|device| device.role == role) {
+        tr(language, "Select virtual mic feed output").into()
+    } else {
+        tr(language, "No virtual mic feed output found").into()
+    }
+}
+
+fn device_selection_text(
+    kind: &AudioNodeKind,
+    host: &HostAudioSnapshot,
+    language: crate::i18n::UiLanguage,
+) -> String {
+    let devices = &host.devices;
     if let AudioNodeKind::SystemAudio { capture } = kind {
         return match capture {
             SystemAudioCapture::Endpoint { device_id, .. } => device_id
@@ -1704,14 +1726,7 @@ fn device_selection_text(kind: &AudioNodeKind, devices: &[HostAudioDevice]) -> S
     {
         return device.name.clone();
     }
-    if role == AudioDeviceRole::GameMicrophoneSink {
-        return match candidates.as_slice() {
-            [device] => format!("Auto · {}", device.name),
-            [] => "No virtual mic feed output found".into(),
-            _ => "Select virtual mic feed output".into(),
-        };
-    }
-    "System default".into()
+    automatic_device_text(role, host, language)
 }
 
 fn node_control_row(rect: Rect, scale: f32, row_from_bottom: usize) -> Rect {
@@ -1789,7 +1804,7 @@ fn render_node_control(
             .selected_device()
             .cloned()
             .filter(|id| candidates.iter().any(|device| &device.id == id));
-        let selected_text = device_selection_text(&node.kind, devices);
+        let selected_text = device_selection_text(&node.kind, host_audio, language);
         let control_rect = node_control_row(rect, scale, 0);
         let mut child = ui.new_child(
             egui::UiBuilder::new()
@@ -1804,15 +1819,7 @@ fn render_node_control(
                 &selected_text,
                 Some(control_rect.width()),
                 |ui| {
-                    let automatic_label = if role == AudioDeviceRole::GameMicrophoneSink {
-                        match candidates.as_slice() {
-                            [device] => format!("Auto · {}", device.name),
-                            [] => "No virtual mic feed output found".into(),
-                            _ => "Select virtual mic feed output".into(),
-                        }
-                    } else {
-                        "System default".into()
-                    };
+                    let automatic_label = automatic_device_text(role, host_audio, language);
                     if ui
                         .selectable_label(selected.is_none(), automatic_label)
                         .clicked()
@@ -2532,7 +2539,7 @@ fn render_quick_controls(
                 ui.strong(tr_dynamic(language, &node.label));
                 let locked = snapshot.host_audio.translation_workflow_locked_by.is_some() && snapshot.selected_graph.reaches_asr_sink(&node.id);
                 ui.add_enabled_ui(!locked, |ui| {
-                    crate::ui::components::combobox_ui_with_width(ui, "device", device_selection_text(&node.kind, &snapshot.host_audio.devices), Some(420.0), |ui| {
+                    crate::ui::components::combobox_ui_with_width(ui, "device", device_selection_text(&node.kind, &snapshot.host_audio, language), Some(420.0), |ui| {
                         if ui.selectable_label(node.kind.selected_device().is_none(), tr(language, "Automatic")).clicked() {
                             actions.push(AudioStudioUiAction::SetNodeDevice { node_id: node.id.clone(), device_id: None });
                         }
@@ -2570,7 +2577,15 @@ fn render_quick_controls(
                         });
                         ui.label(format!("{}: {}", tr(language, "Select this microphone in VRChat"), paired_recording_device(bus)));
                     } else {
-                        ui.label(tr(language, "In the target app, select the recording end of the chosen virtual cable."));
+                        let hint = "In the target app, select the recording end of the chosen virtual cable.";
+                        #[cfg(target_os = "linux")]
+                        let hint = if node.kind.selected_device().map(|id| &id.0)
+                            .or_else(|| snapshot.host_audio.automatic_device(AudioDeviceRole::GameMicrophoneSink).map(|device| &device.id.0))
+                            .is_some_and(|id| id == crate::audio_linux::VIRTUAL_SINK_NAME)
+                        {
+                            "In the target app, select XRTranslate Microphone."
+                        } else { hint };
+                        ui.label(tr(language, hint));
                     }
                 }
             });
@@ -2580,7 +2595,7 @@ fn render_quick_controls(
             #[cfg(windows)]
             ui.hyperlink_to(tr(language, "Get a virtual audio cable"), "https://vb-audio.com/Cable/");
             #[cfg(target_os = "linux")]
-            ui.hyperlink_to(tr(language, "Get a virtual audio cable"), "https://github.com/NowLoadY/XRTranslate/blob/main/docs/linux-build.md#virtual-microphone-output");
+            ui.hyperlink_to(tr(language, "Virtual microphone unavailable · Troubleshoot"), "https://github.com/NowLoadY/XRTranslate/blob/main/docs/linux-build.md#virtual-microphone-output");
         }
     });
 }
