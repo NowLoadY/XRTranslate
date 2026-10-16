@@ -6492,11 +6492,11 @@ pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Общайтесь на разных языках.",
     ),
     (
-        "Subtitles, voice & VRChat.",
-        "字幕、语音与 VRChat。",
-        "字幕、音声、VRChat。",
-        "자막, 음성, VRChat.",
-        "Субтитры, голос и VRChat.",
+        "Subtitles, voice, VRChat & ChilloutVR.",
+        "字幕、语音、VRChat 与 ChilloutVR。",
+        "字幕、音声、VRChat、ChilloutVR。",
+        "자막, 음성, VRChat과 ChilloutVR.",
+        "Субтитры, голос, VRChat и ChilloutVR.",
     ),
     (
         "Plugins & Integrations",

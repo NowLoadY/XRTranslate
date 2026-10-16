@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <strong>Real-Time Subtitles & Voice Translation for Desktop, Media, and VRChat</strong>
+  <strong>Real-Time Subtitles & Voice Translation for Desktop, Media, VRChat, and ChilloutVR</strong>
 </p>
 
 <p align="center">
@@ -63,7 +63,7 @@ Supports generating video subtitles and playing them directly at high performanc
   <img src="assets/preview-Translation.png" alt="XRTranslate translation screen" width="900" />
 </p>
 
-OSC subtitles can keep messages separate or arrange them together.
+Send subtitles to VRChat and ChilloutVR through OSC, with messages kept separate or arranged together.
 
 <table>
   <tr>

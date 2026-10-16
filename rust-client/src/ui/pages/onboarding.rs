@@ -477,7 +477,7 @@ fn render_onboarding_welcome(
         ),
         (
             "Plugins & Integrations",
-            "Subtitles, voice & VRChat.",
+            "Subtitles, voice, VRChat & ChilloutVR.",
             Color32::from_rgb(245, 158, 11),
         ),
     ];

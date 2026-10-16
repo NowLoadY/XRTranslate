@@ -21,7 +21,7 @@ display duration. Recent messages fill the available text budget automatically.
 Header and footer can show custom text, system information or lyrics. Their
 space is included in the same budget shown by the preview.
 
-VRChat allows [144 characters and up to nine displayed lines](https://docs.vrchat.com/docs/osc-as-input-controller#chatbox), including wrapping. ChilloutVR's official OSC documentation does not specify a text limit; its configurable application budget starts at 144 characters. Updates are coalesced at 1.5-second intervals.
+VRChat allows [144 characters and up to nine displayed lines](https://docs.vrchat.com/docs/osc-as-input-controller#chatbox), including wrapping. ChilloutVR's official OSC documentation does not specify a text limit; its configurable application budget starts at 144 characters. Updates are coalesced at 0.6-second intervals.
 
 ChilloutVR updates the bubble without sound or chat-history entries, so changing
 lyrics and partial translations do not fill the conversation history. Players

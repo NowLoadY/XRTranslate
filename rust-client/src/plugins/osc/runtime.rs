@@ -18,9 +18,8 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-// VRChat recommends 1.5 seconds between Chatbox updates. Coalesce revisions
-// during this interval; both native outputs use the same quiet cadence.
-const COOLDOWN: Duration = Duration::from_millis(1500);
+// Coalesce revisions during this interval before sending the latest content.
+const COOLDOWN: Duration = Duration::from_millis(600);
 const BANNER_REFRESH_INTERVAL: Duration = Duration::from_millis(1050);
 pub const MAX_PREFIX_LENGTH: usize = 24;
 
