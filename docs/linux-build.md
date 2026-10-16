@@ -18,6 +18,14 @@ sudo apt install build-essential pkg-config curl bzip2 libx11-dev libxcursor-dev
 git submodule update --init XR-Corpus
 ```
 
+The build scripts compile the current working tree and never switch source
+revisions. They warn if XR-Corpus differs from the revision recorded by the main
+repository, while allowing local development to build as-is. A normal `git pull`
+can leave the submodule at an older, incompatible revision. When updating a
+checkout without local submodule work, run `git submodule update --init XR-Corpus`
+after pulling. Preserve any local submodule work before deliberately switching
+revisions. For a fresh clone, use `git clone --recurse-submodules`.
+
 On Debian/Ubuntu with PipeWire and libclang already installed, both Linux
 scripts can download missing PipeWire/SPA development files and libclang C
 headers into `target/linux-build-deps/`, without sudo. This build cache is

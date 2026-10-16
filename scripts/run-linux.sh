@@ -6,11 +6,6 @@ FEATURES="${XRTRANSLATE_FEATURES:-}"
 
 cd "${ROOT_DIR}"
 
-if [[ ! -f "XR-Corpus/crates/core/Cargo.toml" ]]; then
-  printf '%s\n' 'XR-Corpus is not initialized. Run: git submodule update --init XR-Corpus' >&2
-  exit 2
-fi
-
 if ! command -v cargo >/dev/null 2>&1; then
   printf '%s\n' 'cargo is required; install Rust 1.95 or newer.' >&2
   exit 127

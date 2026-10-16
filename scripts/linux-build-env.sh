@@ -2,8 +2,27 @@
 
 # Sourced by the Linux entry points; development files never enter the release.
 prepare_linux_build_env() {
+  check_linux_corpus "$1" || return
   prepare_linux_system_deps "$1"
   prepare_linux_sherpa "$1"
+}
+
+check_linux_corpus() {
+  local root="$1"
+  if [[ ! -f "${root}/XR-Corpus/crates/core/Cargo.toml" ]]; then
+    printf '%s\n' 'XR-Corpus is not initialized. Run: git submodule update --init XR-Corpus' >&2
+    return 1
+  fi
+
+  # Builds use the working tree, including intentional submodule development.
+  if command -v git >/dev/null 2>&1; then
+    case "$(git -C "${root}" submodule status -- XR-Corpus 2>/dev/null)" in
+      +*)
+        printf '%s\n' 'Warning: XR-Corpus differs from the recorded revision; building current local sources.' \
+          'If this is unintentional, preserve local work before running: git submodule update --init XR-Corpus' >&2
+        ;;
+    esac
+  fi
 }
 
 prepare_linux_system_deps() {

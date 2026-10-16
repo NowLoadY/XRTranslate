@@ -17,11 +17,6 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 127
 fi
 
-if [[ ! -f "XR-Corpus/crates/core/Cargo.toml" ]]; then
-  printf '%s\n' 'XR-Corpus is not initialized. Run: git submodule update --init XR-Corpus' >&2
-  exit 2
-fi
-
 if [[ -e "${TARGET_DIR}" ]]; then
   printf 'Release directory already exists: %s\n' "${TARGET_DIR}" >&2
   exit 2
