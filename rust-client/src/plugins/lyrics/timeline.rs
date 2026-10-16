@@ -36,11 +36,19 @@ pub(super) fn parse(lrc: &str) -> Vec<Cue> {
             rest = tail;
         }
         let text = rest.split_whitespace().collect::<Vec<_>>().join(" ");
-        let text = text
+        let mut text = text
             .chars()
             .filter(|c| !c.is_control())
             .take(2048)
             .collect::<String>();
+        // Ellipsis-only cues mark gaps. Keep their timestamps so the existing
+        // title/artist fallback handles display and scrolling during the gap.
+        if text
+            .chars()
+            .all(|c| matches!(c, '.' | '…' | '⋯' | '。' | '．' | ' '))
+        {
+            text.clear();
+        }
         for start_ms in times {
             cues.push(Cue {
                 start_ms,
