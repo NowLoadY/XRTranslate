@@ -416,6 +416,7 @@
       "kind": "llama-text-chat",
       "model_alias": "hy-mt2",
       "prompt_style": "contextual",
+      "supports_chat": false,
       "flash_attention": true,
       "allow_reference_context": true
     }
@@ -501,6 +502,7 @@
       "kind": "llama-text-chat",
       "model_alias": "hy-mt2",
       "prompt_style": "contextual",
+      "supports_chat": false,
       "flash_attention": true,
       "allow_reference_context": true,
       "extra_args": [
@@ -596,6 +598,7 @@
       "kind": "llama-text-chat",
       "model_alias": "hy-mt2",
       "prompt_style": "contextual",
+      "supports_chat": false,
       "flash_attention": true,
       "allow_reference_context": true
     }
@@ -645,6 +648,7 @@
       "kind": "llama-text-chat",
       "model_alias": "haidass-translate",
       "prompt_style": "bilingual",
+      "supports_chat": false,
       "flash_attention": true,
       "allow_reference_context": false
     }

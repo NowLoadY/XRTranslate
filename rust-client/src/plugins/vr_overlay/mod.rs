@@ -5,6 +5,8 @@
 
 mod avatar;
 mod graphics;
+mod input;
+mod interaction;
 mod openvr;
 #[cfg(debug_assertions)]
 mod preview;
@@ -13,12 +15,15 @@ pub(crate) use preview::render as render_avatar_preview;
 mod renderer;
 pub mod runtime;
 mod space;
+mod spatial;
 pub mod ui;
+mod voice_props;
 
 pub use runtime::{VrOverlayHandle, VrOverlayManager, VrOverlaySettings};
 pub use ui::{VrOverlayPageContext, VrOverlayUiAction};
 
 use crate::session_coordinator::{CaptionUpdate, HostOutputEvent, HostOutputSubscriber};
+use std::path::PathBuf;
 
 impl HostOutputSubscriber for VrOverlayHandle {
     fn on_host_output(&self, event: HostOutputEvent<'_>) {
@@ -85,13 +90,13 @@ pub struct VrOverlayPlugin {
 }
 
 impl VrOverlayPlugin {
-    pub fn new(mut draft: VrOverlaySettings, host_enabled: bool) -> Self {
+    pub fn new(mut draft: VrOverlaySettings, host_enabled: bool, input_directory: PathBuf) -> Self {
         draft.normalize();
         let mut effective = draft.clone();
         if !host_enabled {
             effective.enabled = false;
         }
-        let manager = VrOverlayManager::new(effective);
+        let manager = VrOverlayManager::new(effective, input_directory);
         Self {
             manager,
             draft,

@@ -129,6 +129,8 @@ struct IVROverlayFnTable {
     set_overlay_texture: unsafe extern "system" fn(u64, *const NativeTexture) -> i32, // 60
     _clear_overlay_texture: usize,          // 61
     set_overlay_raw: unsafe extern "system" fn(u64, *mut c_void, u32, u32, u32) -> i32, // 62
+    _texture_and_dashboard: [usize; 5],     // 63..67
+    is_dashboard_visible: unsafe extern "system" fn() -> bool, // 68
 }
 
 pub struct OpenVrApi {
@@ -309,6 +311,7 @@ impl OpenVrApi {
 
 // All native calls stay on the worker. An overlay keeps its session alive,
 // even if the caller drops the session first; shutdown follows DestroyOverlay.
+#[derive(Clone)]
 pub struct OpenVrSession {
     inner: Rc<OpenVrSessionInner>,
 }
@@ -351,13 +354,13 @@ struct IVRCompositorFnTable {
 }
 #[repr(C)]
 #[derive(Default)]
-struct TrackedPose {
-    transform: HmdMatrix34,
+pub(super) struct TrackedPose {
+    pub transform: HmdMatrix34,
     velocity: [f32; 3],
     angular_velocity: [f32; 3],
     result: i32,
-    valid: bool,
-    connected: bool,
+    pub valid: bool,
+    pub connected: bool,
 }
 #[repr(C)]
 pub(super) struct VulkanTexture {
@@ -489,6 +492,24 @@ impl HmdMatrix34 {
 }
 
 impl OpenVrSession {
+    pub(super) fn dashboard_visible(&self) -> bool {
+        let table = unsafe { &*(self.inner.overlay_interface as *const IVROverlayFnTable) };
+        unsafe { (table.is_dashboard_visible)() }
+    }
+
+    pub(super) fn interface(&self, name: &CStr) -> Result<*mut c_void, String> {
+        let mut error = 0;
+        let ptr = unsafe { (self.inner.api.vr_get_generic_interface)(name.as_ptr(), &mut error) };
+        if ptr.is_null() || error != 0 {
+            Err(format!(
+                "SteamVR interface {} is unavailable ({error})",
+                name.to_string_lossy()
+            ))
+        } else {
+            Ok(ptr)
+        }
+    }
+
     pub(super) fn avatar_tracking(&self) -> Result<AvatarTracking, String> {
         let interface = |name: &CStr| {
             let mut error = 0;

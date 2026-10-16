@@ -32,6 +32,8 @@ pub(super) struct AvatarOverlay {
     bubble_texture: graphics::RgbaTexture,
     bubble_position: Option<Vec3>,
     texture: VulkanTexture,
+    control_root: Option<glam::Mat4>,
+    voice: Option<crate::voice_interaction::VoiceSnapshot>,
 }
 
 impl AvatarOverlay {
@@ -76,6 +78,8 @@ impl AvatarOverlay {
             bubble_texture,
             bubble_position: None,
             texture,
+            control_root: None,
+            voice: None,
         })
     }
 
@@ -88,7 +92,7 @@ impl AvatarOverlay {
     }
 
     pub fn resume(&mut self) {
-        self.space = CompanionSpace::default();
+        self.space.resume();
         self.presentation = PresentationSampler::default();
         self.bubble_position = None;
         self.last_frame = Instant::now();
@@ -96,6 +100,18 @@ impl AvatarOverlay {
 
     pub fn visible(&self) -> bool {
         self.visible
+    }
+
+    pub fn control_root(&self) -> Option<glam::Mat4> {
+        self.control_root
+    }
+
+    pub fn freeze_controls(&mut self, frozen: bool) {
+        self.space.freeze_controls(frozen);
+    }
+
+    pub fn voice_snapshot(&mut self, snapshot: Option<crate::voice_interaction::VoiceSnapshot>) {
+        self.voice = snapshot;
     }
 
     pub fn attentive(&self) -> bool {
@@ -108,9 +124,6 @@ impl AvatarOverlay {
 
     pub fn frame(&mut self, presentation: &Presentation) -> Result<(), OverlayError> {
         let presentation = self.presentation.sample(presentation);
-        if !presentation.visible {
-            return self.hide();
-        }
         // The worker paces frames. Waiting for another compositor signal here
         // would delay or discard valid frames before sampling the latest pose.
         let Some((eyes, head)) = self.tracking.eyes_and_head() else {
@@ -119,9 +132,17 @@ impl AvatarOverlay {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
-        let Some(scene) = self.space.update(head, eyes, dt) else {
-            return self.hide();
+        let scene = self.space.update(head, eyes, dt);
+        // A hidden/fading body or an unusable avatar projection does not remove
+        // the independent controls; only missing tracking invalidates them.
+        self.control_root = self.space.control_root();
+        let Some(scene) = scene else {
+            return self.hide_body();
         };
+        self.control_root = Some(scene.control_root);
+        if !presentation.visible {
+            return self.hide_body();
+        }
         let mut renderer = self.renderer.borrow_mut();
         // The shared owner supplies expression gestures; tracking supplies only
         // spatial gaze. Desktop pointer/entrance transforms never enter this view.
@@ -158,16 +179,21 @@ impl AvatarOverlay {
             glam::camera::rh::view::look_at_mat4(*position, *position + away, Vec3::Y).inverse(),
         )?;
         self.bubble.set_alpha(opacity)?;
-        if (!presentation.speech.finished(presentation.clock) || self.bubble_visible)
+        if (self.voice.is_some()
+            || !presentation.speech.finished(presentation.clock)
+            || self.bubble_visible)
             && now.duration_since(self.last_bubble) >= Duration::from_secs_f64(1.0 / 30.0)
         {
             let elapsed = now.duration_since(self.last_bubble).as_secs_f32();
             self.last_bubble = now;
-            let pixels = self
-                .text
-                .render_speech(&presentation.speech, presentation.clock, elapsed)
-                .map_err(OverlayError::InvalidFrame)?;
-            if !self.text.speech_visible() {
+            let pixels = if let Some(voice) = &self.voice {
+                self.text.render_voice(voice)
+            } else {
+                self.text
+                    .render_speech(&presentation.speech, presentation.clock, elapsed)
+            }
+            .map_err(OverlayError::InvalidFrame)?;
+            if self.voice.is_none() && !self.text.speech_visible() {
                 if self.bubble_visible {
                     self.bubble.hide()?;
                     self.bubble_visible = false;
@@ -187,6 +213,12 @@ impl AvatarOverlay {
     }
 
     pub fn hide(&mut self) -> Result<(), OverlayError> {
+        self.control_root = None;
+        self.space.freeze_controls(false);
+        self.hide_body()
+    }
+
+    fn hide_body(&mut self) -> Result<(), OverlayError> {
         self.attentive = false;
         self.greeting = false;
         if self.visible {

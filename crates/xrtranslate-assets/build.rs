@@ -202,8 +202,12 @@ fn runtime(card: &Value) -> String {
                 other => panic!("unknown translation prompt style {other}"),
             };
             format!(
-                "ModelRuntime::LlamaTextChat {{ model_alias: {}, prompt_style: {style}, flash_attention: {}, allow_reference_context: {}, extra_args: {extra_args} }}",
+                "ModelRuntime::LlamaTextChat {{ model_alias: {}, prompt_style: {style}, supports_chat: {}, flash_attention: {}, allow_reference_context: {}, extra_args: {extra_args} }}",
                 alias(),
+                value
+                    .get("supports_chat")
+                    .map(boolean)
+                    .unwrap_or_else(|| "false".into()),
                 boolean(field(value, "flash_attention")),
                 boolean(field(value, "allow_reference_context"))
             )

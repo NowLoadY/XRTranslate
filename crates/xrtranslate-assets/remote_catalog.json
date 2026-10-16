@@ -283,6 +283,7 @@
       "model": "tencent/Hunyuan-MT-7B",
       "connector": "openai-chat",
       "capabilities": {
+        "supports_chat": false,
         "streaming": "delta",
         "single_user_message": true
       }
@@ -291,6 +292,7 @@
       "model": "gemini-3.5-flash-lite",
       "connector": "openai-chat",
       "capabilities": {
+        "supports_chat": true,
         "streaming": "delta",
         "supports_context": true,
         "reasoning_effort": "minimal"
@@ -300,6 +302,7 @@
       "model": "qwen/qwen3.8-27b",
       "connector": "openai-chat",
       "capabilities": {
+        "supports_chat": true,
         "streaming": "delta",
         "supports_context": true,
         "reasoning_effort": "none"
@@ -309,6 +312,7 @@
       "model": "openrouter/free",
       "connector": "openai-chat",
       "capabilities": {
+        "supports_chat": true,
         "streaming": "delta",
         "supports_context": true
       }
@@ -343,6 +347,7 @@
       "model": "gpt-4o-mini",
       "connector": "openai-chat",
       "capabilities": {
+        "supports_chat": true,
         "streaming": "delta",
         "supports_context": true
       }
@@ -399,6 +404,7 @@
       "model": "qwen-mt-flash",
       "connector": "openai-chat",
       "capabilities": {
+        "supports_chat": false,
         "streaming": "delta",
         "supports_context": true,
         "single_user_message": true
@@ -408,6 +414,7 @@
       "model": "qwen-mt-lite",
       "connector": "openai-chat",
       "capabilities": {
+        "supports_chat": false,
         "streaming": "delta",
         "supports_context": true,
         "single_user_message": true
@@ -417,6 +424,7 @@
       "model": "qwen-mt-plus",
       "connector": "openai-chat",
       "capabilities": {
+        "supports_chat": false,
         "streaming": "cumulative",
         "supports_context": true,
         "single_user_message": true
@@ -426,6 +434,7 @@
       "model": "qwen-mt-turbo",
       "connector": "openai-chat",
       "capabilities": {
+        "supports_chat": false,
         "streaming": "cumulative",
         "supports_context": true,
         "single_user_message": true

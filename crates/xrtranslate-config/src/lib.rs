@@ -1815,6 +1815,24 @@ fn active_native_provider(
 }
 
 impl NativeProviderConfig {
+    /// Whether the selected translation model supports freeform Ask instructions.
+    pub fn supports_chat(&self) -> Result<bool, String> {
+        if !self.uses_local_runtime() {
+            return Ok(self.capabilities.supports_chat);
+        }
+        let model = xrtranslate_assets::language::provider_model(
+            &self.provider,
+            self.model_asset.as_deref(),
+            xrtranslate_assets::ModelCapability::Translation,
+        )?;
+        match model.runtime {
+            Some(xrtranslate_assets::ModelRuntime::LlamaTextChat { supports_chat, .. }) => {
+                Ok(supports_chat)
+            }
+            _ => Err("selected translation model has no chat capability contract".into()),
+        }
+    }
+
     /// One model contract for Prompt Studio and inference, resolved from the same
     /// local model card or normalized remote capabilities as the connector.
     pub fn translation_prompt_profile(

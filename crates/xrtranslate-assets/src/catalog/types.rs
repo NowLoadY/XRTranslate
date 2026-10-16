@@ -133,6 +133,8 @@ pub enum ModelRuntime {
     LlamaTextChat {
         model_alias: &'static str,
         prompt_style: TranslationPromptProfile,
+        /// Supports freeform instructions in addition to translation.
+        supports_chat: bool,
         flash_attention: bool,
         allow_reference_context: bool,
         extra_args: &'static [&'static str],

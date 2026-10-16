@@ -1,0 +1,57 @@
+{
+  "controller_type": "oculus_touch",
+  "description": "Grab a nearby microphone; game inputs remain available.",
+  "name": "XRTranslate microphone",
+  "bindings": {
+    "/actions/voice": {
+      "poses": [
+        {
+          "output": "/actions/voice/in/hand",
+          "path": "/user/hand/left/pose/raw"
+        },
+        {
+          "output": "/actions/voice/in/hand",
+          "path": "/user/hand/right/pose/raw"
+        }
+      ],
+      "haptics": [
+        {
+          "output": "/actions/voice/out/touch",
+          "path": "/user/hand/left/output/haptic"
+        },
+        {
+          "output": "/actions/voice/out/touch",
+          "path": "/user/hand/right/output/haptic"
+        }
+      ],
+      "sources": [
+        {
+          "path": "/user/hand/left/input/grip",
+          "mode": "trigger",
+          "inputs": {
+            "click": {
+              "output": "/actions/voice/in/grab"
+            }
+          },
+          "parameters": {
+            "click_activate_threshold": "0.55",
+            "click_deactivate_threshold": "0.35"
+          }
+        },
+        {
+          "path": "/user/hand/right/input/grip",
+          "mode": "trigger",
+          "inputs": {
+            "click": {
+              "output": "/actions/voice/in/grab"
+            }
+          },
+          "parameters": {
+            "click_activate_threshold": "0.55",
+            "click_deactivate_threshold": "0.35"
+          }
+        }
+      ]
+    }
+  }
+}

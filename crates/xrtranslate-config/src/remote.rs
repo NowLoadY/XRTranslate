@@ -178,6 +178,10 @@ pub(crate) fn resolve(
         };
         RemoteCapabilities {
             translation_prompt_profile: Default::default(),
+            // Preserve Ask for existing custom chat endpoints. Specialized models
+            // can override this through capabilities.supports_chat.
+            supports_chat: capability == ModelCapability::Translation
+                && connector == Some(RemoteConnector::OpenaiChat),
             streaming: if capability == ModelCapability::Translation {
                 RemoteStreaming::Delta
             } else {

@@ -12,9 +12,11 @@ pub enum Geometry {
     Visor,
     Scarf,
     Tail,
+    SolidSphere,
+    SolidBox,
 }
 impl Geometry {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Body,
         Self::Eye,
         Self::Mouth,
@@ -23,6 +25,8 @@ impl Geometry {
         Self::Visor,
         Self::Scarf,
         Self::Tail,
+        Self::SolidSphere,
+        Self::SolidBox,
     ];
 }
 

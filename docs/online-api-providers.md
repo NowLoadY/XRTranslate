@@ -33,14 +33,14 @@ authentication. They add no provider-specific execution branches. The
 uses `reasoning_effort: minimal`; the
 [Groq Qwen model](https://console.groq.com/docs/model/qwen/qwen3.8-27b)
 uses `reasoning_effort: none` for direct responses. These catalogue options apply
-to both translation and context-free `ask`. OpenRouter keeps the serving model's
+to translation and, for models declaring `supports_chat`, context-free `ask`.
+OpenRouter keeps the serving model's
 default and reserves a larger output budget for models that include reasoning.
 
 Hunyuan-MT uses the existing single-user-message encoding. It is a
 [specialized translation model](https://huggingface.co/tencent/Hunyuan-MT-7B),
-so general instruction following (including vocabulary sentence generation)
-is not assumed; the shared vocabulary result validation and failure notice
-still apply. This preset does not declare reference-context support.
+so it declares `supports_chat: false`: Ask-based editing and vocabulary sentence
+generation are unavailable. This preset does not declare reference-context support.
 
 ## Free-tier ASR presets
 

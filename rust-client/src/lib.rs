@@ -65,6 +65,8 @@ mod translation_service;
 mod ui;
 pub(crate) mod usage_guidelines;
 pub mod version;
+mod voice_interaction;
+mod voice_interaction_host;
 mod voicemeeter;
 mod window_backdrop;
 
@@ -651,6 +653,7 @@ struct XRTranslateApp {
     audio_tasks: Vec<translation_service::AudioTask>,
     exclusive_live_inputs: Vec<(TranslationSessionOwner, CaptureSource)>,
     avatar_host_session: Option<avatar_host::AvatarHostSession>,
+    voice_interaction: voice_interaction_host::VoiceHost,
     input_level: Arc<AtomicU32>,
     loopback_level: Arc<AtomicU32>,
     microphone_vad_active: Arc<AtomicBool>,
@@ -986,6 +989,7 @@ impl Default for XRTranslateApp {
         let vr_overlay_plugin = VrOverlayPlugin::new(
             settings.vr_overlay_settings.clone(),
             settings.plugin_preferences.is_enabled(PluginId::VR_OVERLAY),
+            backend_manager.project_root().join("runtime/steamvr-input"),
         );
         let meeting_plugin = MeetingPlugin::open(&backend_manager.project_root());
         let audio_studio = AudioStudioController::open(&backend_manager.project_root());
@@ -1058,6 +1062,8 @@ impl Default for XRTranslateApp {
         let microphone_vad_active_clone = Arc::clone(&microphone_vad_active);
         let loopback_vad_active_clone = Arc::clone(&loopback_vad_active);
         let rx = event_rx.clone();
+        let voice_interaction = voice_interaction_host::VoiceHost::default();
+        let voice_inbox = voice_interaction.inbox.clone();
         let session_event_subscribers: Arc<Vec<Box<dyn SessionEventSubscriber>>> = Arc::new(vec![
             Box::new(history_archive.subscriber()),
             #[cfg(target_os = "android")]
@@ -1112,6 +1118,20 @@ impl Default for XRTranslateApp {
                         }
                     );
                     let results = scope.publish(&event, &result_subscribers);
+                    if !scope.is_text
+                        && matches!(
+                            &event,
+                            SessionEvent::SourceSegment {
+                                publish_to_host_outputs: true,
+                                ..
+                            } | SessionEvent::Translation {
+                                publish_to_host_outputs: true,
+                                ..
+                            }
+                        )
+                    {
+                        voice_inbox.observe(&results);
+                    }
                     if scope.publish_to_host_outputs && !results.is_empty() {
                         for result in &results {
                             host_previews.observe(result);
@@ -1789,6 +1809,7 @@ impl Default for XRTranslateApp {
             audio_tasks: Vec::new(),
             exclusive_live_inputs: Vec::new(),
             avatar_host_session: None,
+            voice_interaction,
             input_level,
             loopback_level,
             microphone_vad_active,
@@ -5649,6 +5670,7 @@ impl eframe::App for XRTranslateApp {
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_avatar(Some(ctx.clone()));
+        self.poll_voice_interaction(ctx);
         if self.plugin_enabled(PluginId::AVATAR) || self.avatar_host_session.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }

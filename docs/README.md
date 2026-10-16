@@ -44,6 +44,8 @@ across documents; link to its owner.
 - [Avatar connectors](avatar-connectors.md): game components, connection setup and shared lifecycle.
 - [VRChat Avatar controls](vrchat-avatar.md): paired Avatar package, setup,
   session ownership and connection behavior.
+- [SteamVR spatial voice](design/steamvr-spatial-voice.md): microphone interaction,
+  optional latest-phrase review, spoken editing and direct-action ownership.
 - [Terminology library](terminology-library.md)
 - [Speaker diarization](speaker-diarization.md)
 - [Linux build](linux-build.md)

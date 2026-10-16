@@ -589,6 +589,12 @@ async fn ask(
             .into_response();
     }
     let result = async {
+        if !state.model_plan.translation_supports_chat()? {
+            return Err(
+                "Selected translation model does not support Ask or general chat instructions"
+                    .into(),
+            );
+        }
         let inference = NativeInference::for_text(&state.model_plan)?;
         let _permit = state
             .inference_scheduler

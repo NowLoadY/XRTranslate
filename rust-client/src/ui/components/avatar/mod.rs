@@ -19,6 +19,7 @@ pub use face::{Face, Nose};
 pub use geometry::body::HeadShape;
 pub use hair::Hair;
 pub use model::{Material, Part};
+pub(crate) use model::{Geometry, Model};
 pub(crate) use motion::Motion;
 pub use motion::{Expression, Gaze, Pose};
 pub use presentation::Presentation;
@@ -35,7 +36,6 @@ pub(crate) use surface::Surface;
 
 use eframe::egui::{self, Color32, Id, Pos2, Rect, Vec2};
 use glam::{Mat4, Vec3};
-use model::{Geometry, Model};
 use wardrobe::Attachment;
 
 #[derive(Clone)]

@@ -3,7 +3,8 @@
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -13,9 +14,11 @@ use super::avatar::AvatarOverlay;
 use super::graphics;
 use super::openvr::{OpenVrApi, OpenVrOverlay, OpenVrSession, OverlayError};
 use super::renderer::{VrOverlayRenderer, VrSubtitleCard};
+use super::spatial::VoiceOverlay;
 use crate::client_settings::CaptureSource;
 use crate::session_coordinator::AudioSourceFilter;
 use crate::ui::components::avatar::Presentation;
+use crate::voice_interaction::{VoiceAction, VoiceSnapshot};
 
 const RENDER_WIDTH: u32 = 640;
 const RENDER_HEIGHT: u32 = 320;
@@ -28,6 +31,10 @@ pub struct VrOverlaySettings {
     pub enabled: bool,
     #[serde(default)]
     pub avatar_enabled: bool,
+    #[serde(default)]
+    pub interaction_enabled: bool,
+    #[serde(default)]
+    pub review_before_send: bool,
     #[serde(default = "default_true")]
     pub captions_enabled: bool,
     #[serde(default = "default_max_items")]
@@ -135,6 +142,8 @@ impl Default for VrOverlaySettings {
             audio_source_filter: AudioSourceFilter::default(),
             enabled: true,
             avatar_enabled: false,
+            interaction_enabled: false,
+            review_before_send: false,
             captions_enabled: true,
             max_items: default_max_items(),
             bilingual: true,
@@ -158,6 +167,8 @@ pub struct VrRuntimeStatus {
     pub avatar_attention: bool,
     pub avatar_greeting: bool,
     pub avatar_error: Option<String>,
+    pub interaction_available: bool,
+    pub interaction_error: Option<String>,
     pub last_error: Option<String>,
     pub active_card_count: usize,
     pub latest_caption_preview: Option<String>,
@@ -221,10 +232,57 @@ pub struct VrOverlayManager {
     worker: Option<JoinHandle<()>>,
     companion: Arc<Mutex<Presentation>>,
     pending_cancellations: Arc<Mutex<HashSet<u64>>>,
+    voice: Arc<Mutex<VoiceBridge>>,
+}
+
+#[derive(Default)]
+struct VoiceBridge {
+    snapshot: VoiceSnapshot,
+    actions: VecDeque<VoiceAction>,
+    microphone: bool,
+}
+
+impl VoiceBridge {
+    fn push(&mut self, action: VoiceAction) {
+        if !self.snapshot.enabled && action != VoiceAction::Microphone(false) {
+            return;
+        }
+        if let VoiceAction::Microphone(enabled) = action {
+            if enabled == self.microphone {
+                return;
+            }
+            self.microphone = enabled;
+        }
+        // A stalled UI must not turn a bounded queue into an unbounded command
+        // backlog. Overflow fails closed, retaining the mandatory microphone-off.
+        if self.actions.len() >= 16 {
+            self.actions.clear();
+            self.microphone = false;
+            self.actions.push_back(VoiceAction::Microphone(false));
+        } else {
+            self.actions.push_back(action);
+        }
+    }
+
+    fn stop(&mut self) {
+        let active = self.microphone || self.snapshot.recording;
+        self.actions.clear();
+        self.microphone = false;
+        if active {
+            self.actions.push_back(VoiceAction::Microphone(false));
+        }
+    }
+}
+
+struct StopVoiceOnDrop(Arc<Mutex<VoiceBridge>>);
+impl Drop for StopVoiceOnDrop {
+    fn drop(&mut self) {
+        self.0.lock().stop();
+    }
 }
 
 impl VrOverlayManager {
-    pub fn new(settings: VrOverlaySettings) -> Self {
+    pub fn new(settings: VrOverlaySettings, input_directory: PathBuf) -> Self {
         let (command_tx, command_rx) = unbounded();
         let status = Arc::new(Mutex::new(VrRuntimeStatus::default()));
         let worker_status = Arc::clone(&status);
@@ -235,6 +293,8 @@ impl VrOverlayManager {
         let worker_companion = Arc::clone(&companion);
         let pending_cancellations = Arc::new(Mutex::new(HashSet::new()));
         let worker_cancellations = Arc::clone(&pending_cancellations);
+        let voice = Arc::new(Mutex::new(VoiceBridge::default()));
+        let worker_voice = Arc::clone(&voice);
         let worker = std::thread::Builder::new()
             .name("vr-overlay-worker".into())
             .spawn(move || {
@@ -245,6 +305,8 @@ impl VrOverlayManager {
                     worker_shutdown,
                     worker_companion,
                     worker_cancellations,
+                    worker_voice,
+                    input_directory,
                 )
             })
             .expect("failed to spawn VR overlay worker");
@@ -256,6 +318,7 @@ impl VrOverlayManager {
             worker: Some(worker),
             companion,
             pending_cancellations,
+            voice,
         }
     }
 
@@ -278,6 +341,18 @@ impl VrOverlayManager {
 
     pub fn status(&self) -> VrRuntimeStatus {
         self.status.lock().clone()
+    }
+
+    pub(crate) fn take_voice_actions(&self) -> Vec<VoiceAction> {
+        self.voice.lock().actions.drain(..).collect()
+    }
+
+    pub(crate) fn set_voice_snapshot(&self, snapshot: VoiceSnapshot) {
+        let mut voice = self.voice.lock();
+        if !snapshot.enabled {
+            voice.stop();
+        }
+        voice.snapshot = snapshot;
     }
 
     pub fn update_settings(&self, settings: VrOverlaySettings) {
@@ -409,7 +484,10 @@ fn run_vr_worker(
     shutdown: Arc<AtomicBool>,
     companion: Arc<Mutex<Presentation>>,
     pending_cancellations: Arc<Mutex<HashSet<u64>>>,
+    voice_bridge: Arc<Mutex<VoiceBridge>>,
+    input_directory: PathBuf,
 ) {
+    let _stop_voice = StopVoiceOnDrop(Arc::clone(&voice_bridge));
     settings.normalize();
     let mut renderer = VrOverlayRenderer::new(RENDER_WIDTH, RENDER_HEIGHT)
         .expect("fixed subtitle dimensions are valid");
@@ -419,6 +497,8 @@ fn run_vr_worker(
     let mut graphics = None;
     let mut avatar: Option<AvatarOverlay> = None;
     let mut avatar_initialized = false;
+    let mut voice: Option<VoiceOverlay> = None;
+    let mut voice_initialized = false;
     let mut next_avatar_frame = Instant::now();
     let mut next_session_check = Instant::now();
 
@@ -432,7 +512,9 @@ fn run_vr_worker(
     }
 
     while !shutdown.load(Ordering::Acquire) {
-        let timeout = if settings.avatar_enabled && status.lock().avatar_available {
+        let timeout = if settings.interaction_enabled
+            || (settings.avatar_enabled && status.lock().avatar_available)
+        {
             next_avatar_frame
                 .saturating_duration_since(Instant::now())
                 .min(Duration::from_millis(100))
@@ -511,6 +593,8 @@ fn run_vr_worker(
                                             };
                                             is_overlay_visible = false;
                                             avatar_initialized = false;
+                                            voice_initialized = false;
+                                            status.lock().interaction_error = None;
                                             vr_overlay = Some(overlay);
                                             vr_session = Some(session);
                                             needs_redraw = true;
@@ -543,6 +627,9 @@ fn run_vr_worker(
                     }
                 }
                 Ok(VrCommand::Disconnect) => {
+                    voice_bridge.lock().stop();
+                    voice = None;
+                    status.lock().interaction_available = false;
                     avatar = None;
                     vr_overlay = None;
                     graphics = None;
@@ -663,6 +750,16 @@ fn run_vr_worker(
                 }
                 Ok(VrCommand::UpdateSettings(mut updated)) => {
                     updated.normalize();
+                    if updated.interaction_enabled && !settings.interaction_enabled {
+                        voice_initialized = voice.is_some();
+                        status.lock().interaction_error = None;
+                    }
+                    if !updated.interaction_enabled {
+                        voice_bridge.lock().stop();
+                        if let Some(objects) = voice.as_mut() {
+                            objects.suspend();
+                        }
+                    }
                     if updated.avatar_enabled && !settings.avatar_enabled {
                         if let Some(avatar) = avatar.as_mut() {
                             avatar.resume();
@@ -717,6 +814,9 @@ fn run_vr_worker(
                 true
             };
             if !running || !settings.enabled {
+                voice_bridge.lock().stop();
+                voice = None;
+                status.lock().interaction_available = false;
                 avatar = None;
                 vr_overlay = None;
                 graphics = None;
@@ -795,6 +895,9 @@ fn run_vr_worker(
                         st.last_error = Some(error.to_string());
                         if lost {
                             // Destroy before shutdown. Captions remain available for reconnect.
+                            voice_bridge.lock().stop();
+                            voice = None;
+                            st.interaction_available = false;
                             avatar = None;
                             vr_overlay = None;
                             graphics = None;
@@ -813,7 +916,7 @@ fn run_vr_worker(
         drop(pending);
         // Create lazily once per session: OpenVR retains its GPU resources until
         // shutdown. Toggling only suspends the same companion, never the captions.
-        if settings.avatar_enabled {
+        if settings.avatar_enabled || settings.interaction_enabled {
             if !avatar_initialized
                 && let Some(session) = &vr_session
                 && let Some((gpu, _)) = &graphics
@@ -838,13 +941,42 @@ fn run_vr_worker(
             st.avatar_attention = false;
             st.avatar_greeting = false;
         }
-        // Captions have already drained and rendered; companion dialogue timing
-        // never gates subtitle consumption. Avoid command bursts starving frames.
-        if status.lock().avatar_available && Instant::now() >= next_avatar_frame {
-            // One start-to-start clock; native/GPU waits must not add another frame.
+        if settings.interaction_enabled
+            && !voice_initialized
+            && let Some(session) = &vr_session
+            && let Some((gpu, _)) = &graphics
+        {
+            voice_initialized = true;
+            match VoiceOverlay::new(session, gpu.clone(), &input_directory) {
+                Ok(created) => voice = Some(created),
+                Err(error) => status.lock().interaction_error = Some(error),
+            }
+        }
+        {
+            let mut st = status.lock();
+            st.interaction_available = settings.interaction_enabled
+                && voice.is_some()
+                && st.interaction_error.is_none()
+                && st.avatar_available;
+        }
+        // Input and release cleanup keep ticking even when the companion has
+        // faded out. Captions and host commands continue on this same worker.
+        if Instant::now() >= next_avatar_frame {
             next_avatar_frame = Instant::now() + Duration::from_secs_f64(1.0 / 60.0);
+            let mut snapshot = voice_bridge.lock().snapshot.clone();
+            snapshot.review_enabled &= settings.review_before_send;
+            let active = settings.interaction_enabled
+                && snapshot.enabled
+                && status.lock().interaction_available;
             let presentation = companion.lock().clone();
-            if let Some(current) = avatar.as_mut() {
+            if status.lock().avatar_available
+                && let Some(current) = avatar.as_mut()
+            {
+                current.freeze_controls(
+                    active && voice.as_ref().is_some_and(VoiceOverlay::freeze_controls),
+                );
+                current
+                    .voice_snapshot((active && snapshot.review_enabled).then(|| snapshot.clone()));
                 let result = current.frame(&presentation);
                 let mut st = status.lock();
                 match result {
@@ -862,6 +994,33 @@ fn run_vr_worker(
                         st.avatar_error = Some(error.to_string());
                     }
                 }
+            }
+            let control_root = active
+                .then(|| avatar.as_ref().and_then(AvatarOverlay::control_root))
+                .flatten();
+            if let Some(objects) = voice.as_mut() {
+                if control_root.is_none() {
+                    objects.suspend();
+                    voice_bridge.lock().stop();
+                } else {
+                    match objects.frame(control_root, &snapshot) {
+                        Ok(actions) => {
+                            let mut bridge = voice_bridge.lock();
+                            for action in actions {
+                                bridge.push(action);
+                            }
+                        }
+                        Err(error) => {
+                            objects.suspend();
+                            voice_bridge.lock().stop();
+                            let mut st = status.lock();
+                            st.interaction_available = false;
+                            st.interaction_error = Some(error.to_string());
+                        }
+                    }
+                }
+            } else {
+                voice_bridge.lock().stop();
             }
         }
     }

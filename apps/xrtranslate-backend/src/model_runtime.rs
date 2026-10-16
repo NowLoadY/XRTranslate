@@ -342,6 +342,10 @@ impl NativeProviderPlan {
         self.translation_supports_reference_context
     }
 
+    pub(crate) fn translation_supports_chat(&self) -> Result<bool, String> {
+        self.route.translation.supports_chat()
+    }
+
     pub(crate) fn asr_adapter(
         &self,
         http: ReqwestClient,

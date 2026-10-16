@@ -7,7 +7,7 @@ pub use crate::plugins::text_output::{
     BannerConfig, BannerContentType, MessageFormat as OscFormatMode,
 };
 use crate::session_coordinator::AudioSourceFilter;
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use parking_lot::Mutex;
 use rosc::{OscMessage, OscPacket, OscType, encoder};
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,12 @@ use std::time::{Duration, Instant};
 
 const COOLDOWN: Duration = Duration::from_millis(500);
 const BANNER_REFRESH_INTERVAL: Duration = Duration::from_millis(1050);
+const MAX_VOICE_CHARACTERS: usize = 144;
+const MAX_VOICE_LINES: usize = 9;
 pub const MAX_PREFIX_LENGTH: usize = 24;
+
+/// Acknowledges local UDP delivery, not receipt by the game.
+pub(crate) type VoicePublishReply = Receiver<Result<(), String>>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OscInputSource {
@@ -175,6 +180,34 @@ struct OscConfig {
 }
 
 impl OscSettings {
+    pub(crate) fn prepare_voice_text(&self, text: &str) -> Result<String, String> {
+        let text = sanitize_chatbox_segment(text);
+        self.validate_voice_text(&text)?;
+        Ok(text)
+    }
+
+    fn validate_voice_text(&self, text: &str) -> Result<(), String> {
+        if !self.enabled {
+            return Err("OSC Chatbox output is disabled".into());
+        }
+        if text.trim().is_empty() {
+            return Err("There is no voice text to send".into());
+        }
+        let length = text.chars().count();
+        let limit = self.max_text_length.min(MAX_VOICE_CHARACTERS);
+        if length > limit {
+            return Err(format!(
+                "Voice text has {length} characters; the Chatbox limit is {limit}. Shorten it before sending."
+            ));
+        }
+        if text.lines().count() > MAX_VOICE_LINES {
+            return Err(format!(
+                "Voice text exceeds the Chatbox limit of {MAX_VOICE_LINES} lines. Shorten it before sending."
+            ));
+        }
+        Ok(())
+    }
+
     /// Reserve at most one third of the chatbox for lyrics, capped at 48
     /// characters. The remaining space belongs to speech and other banners.
     pub(crate) fn lyric_budget(&self) -> Option<usize> {
@@ -291,16 +324,44 @@ struct QueuedMessage {
     notify: bool,
     expires_at: Option<Instant>,
 }
+
+struct VoicePublication {
+    operation: u64,
+    review_generation: u64,
+    text: String,
+    reply: Sender<Result<(), String>>,
+}
+
+struct PublishedVoice {
+    text: String,
+    expires_at: Instant,
+}
+
+#[derive(Debug, Default)]
+struct MicrophoneReview {
+    enabled: bool,
+    generation: u64,
+    last_exit_generation: u64,
+}
+
+impl MicrophoneReview {
+    fn accepts(&self, source: OscInputSource, generation: u64) -> bool {
+        source != OscInputSource::Microphone || (!self.enabled && self.generation == generation)
+    }
+}
+
 enum Command {
     Lyric(String),
     Previews(
         u64,
         bool,
         Vec<crate::session_coordinator::TranslationPreview>,
+        u64,
     ),
     Message {
         stream_id: u64,
         audio_source: OscInputSource,
+        microphone_generation: u64,
         is_typing: bool,
         source: String,
         translated: String,
@@ -314,9 +375,11 @@ enum Command {
         text: String,
         ttl: Option<Duration>,
     },
+    PublishVoice(VoicePublication),
     RollStream {
         stream_id: u64,
         audio_source: OscInputSource,
+        microphone_generation: u64,
         is_typing: bool,
         source: String,
         translated: String,
@@ -324,6 +387,7 @@ enum Command {
     },
     EndStream(u64),
     CancelStream(u64),
+    MicrophoneReviewChanged,
     Clear,
     Update(OscSettings),
     Shutdown,
@@ -333,9 +397,25 @@ enum Command {
 pub struct OscHandle {
     tx: Sender<Command>,
     pending_cancellations: Arc<Mutex<BTreeSet<u64>>>,
+    microphone_review: Arc<Mutex<MicrophoneReview>>,
 }
 
 impl OscHandle {
+    pub(crate) fn set_microphone_review(&self, enabled: bool) {
+        let mut review = self.microphone_review.lock();
+        if review.enabled == enabled {
+            return;
+        }
+        review.enabled = enabled;
+        review.generation = review.generation.wrapping_add(1);
+        if !enabled {
+            review.last_exit_generation = review.generation;
+        }
+        // Wake the worker even when no caption or expiry is pending. The shared
+        // state also fences output already queued before this mode change.
+        let _ = self.tx.send(Command::MicrophoneReviewChanged);
+    }
+
     pub(crate) fn set_lyric(&self, text: String) {
         let _ = self.tx.send(Command::Lyric(text));
     }
@@ -346,9 +426,13 @@ impl OscHandle {
         is_typing: bool,
         entries: &[crate::session_coordinator::TranslationPreview],
     ) {
-        let _ = self
-            .tx
-            .send(Command::Previews(stream, is_typing, entries.to_vec()));
+        let generation = self.microphone_review.lock().generation;
+        let _ = self.tx.send(Command::Previews(
+            stream,
+            is_typing,
+            entries.to_vec(),
+            generation,
+        ));
     }
 
     pub fn add_message_for_stream(
@@ -362,6 +446,7 @@ impl OscHandle {
         speaker_id: &str,
         ongoing: bool,
     ) {
+        let microphone_generation = self.microphone_review.lock().generation;
         let _ = self.tx.send(Command::Message {
             stream_id,
             audio_source: if is_typing {
@@ -369,6 +454,7 @@ impl OscHandle {
             } else {
                 audio_source.into()
             },
+            microphone_generation,
             is_typing,
             source: sanitize_chatbox_segment(source),
             translated: sanitize_chatbox_segment(translated),
@@ -395,6 +481,23 @@ impl OscHandle {
         });
     }
 
+    /// Publishes an already prepared body exactly once for this monotonic
+    /// operation number. A single pending publication bounds explicit work.
+    pub(crate) fn publish_voice(&self, operation: u64, text: &str) -> VoicePublishReply {
+        let (reply, receiver) = bounded(1);
+        let review_generation = self.microphone_review.lock().generation;
+        if let Err(error) = self.tx.send(Command::PublishVoice(VoicePublication {
+            operation,
+            review_generation,
+            text: text.to_owned(),
+            reply,
+        })) && let Command::PublishVoice(publication) = error.0
+        {
+            let _ = publication.reply.send(Err("OSC output has stopped".into()));
+        }
+        receiver
+    }
+
     pub fn cancel_stream(&self, stream_id: u64) {
         // Fence immediately, before the dispatcher reaches this queued command.
         self.pending_cancellations.lock().insert(stream_id);
@@ -415,6 +518,7 @@ impl OscHandle {
         translated: &str,
         speaker_id: &str,
     ) {
+        let microphone_generation = self.microphone_review.lock().generation;
         let _ = self.tx.send(Command::RollStream {
             stream_id,
             audio_source: if is_typing {
@@ -422,6 +526,7 @@ impl OscHandle {
             } else {
                 audio_source.into()
             },
+            microphone_generation,
             is_typing,
             source: sanitize_chatbox_segment(source),
             translated: sanitize_chatbox_segment(translated),
@@ -459,6 +564,7 @@ pub struct OscManager {
     worker: Option<JoinHandle<()>>,
     transport: super::transport::TransportOwner,
     pending_cancellations: Arc<Mutex<BTreeSet<u64>>>,
+    microphone_review: Arc<Mutex<MicrophoneReview>>,
 }
 
 impl OscManager {
@@ -469,6 +575,8 @@ impl OscManager {
         let dispatch_status = Arc::clone(&status);
         let pending_cancellations = Arc::new(Mutex::new(BTreeSet::new()));
         let dispatch_cancellations = pending_cancellations.clone();
+        let microphone_review = Arc::new(Mutex::new(MicrophoneReview::default()));
+        let dispatch_review = Arc::clone(&microphone_review);
         let worker = thread::Builder::new()
             .name("osc-chatbox-dispatch".into())
             .spawn(move || {
@@ -477,6 +585,7 @@ impl OscManager {
                     dispatch_settings,
                     dispatch_status,
                     dispatch_cancellations,
+                    dispatch_review,
                     text_output,
                 )
             })
@@ -491,6 +600,7 @@ impl OscManager {
             worker: Some(worker),
             transport,
             pending_cancellations,
+            microphone_review,
         }
     }
 
@@ -528,6 +638,7 @@ impl OscManager {
         OscHandle {
             tx: self.tx.clone(),
             pending_cancellations: self.pending_cancellations.clone(),
+            microphone_review: Arc::clone(&self.microphone_review),
         }
     }
     pub fn update_settings(&mut self, settings: OscSettings) -> Result<(), String> {
@@ -573,12 +684,16 @@ fn dispatch_loop(
     mut settings: OscSettings,
     status: Arc<Mutex<RuntimeStatus>>,
     pending_cancellations: Arc<Mutex<BTreeSet<u64>>>,
+    microphone_review: Arc<Mutex<MicrophoneReview>>,
     text_output: TextOutputHandle,
 ) {
     let mut history = Vec::new();
     let mut live = Vec::new();
     let mut previews: Vec<HistoryMessage> = Vec::new();
     let mut manual_message = None;
+    let mut pending_voice: Option<VoicePublication> = None;
+    let mut published_voice: Option<PublishedVoice> = None;
+    let mut last_voice_operation: Option<u64> = None;
     let mut lyric = String::new();
     // Keep only the latest snapshot, while preserving a final notification.
     let mut pending: Option<bool> = None;
@@ -586,13 +701,15 @@ fn dispatch_loop(
     let mut force_send = false;
     let mut last_send = Instant::now() - COOLDOWN;
     let mut next_banner_refresh = banner_refresh_deadline(&settings, Instant::now(), false);
+    let mut microphone_generation = 0;
     loop {
         let wait = dispatch_wait(
-            pending.is_some(),
+            pending.is_some() || pending_voice.is_some(),
             last_send,
             next_content_expiry(&history, &live, manual_message.as_ref())
                 .into_iter()
                 .chain(previews.iter().map(|entry| entry.expires_at))
+                .chain(published_voice.iter().map(|entry| entry.expires_at))
                 .min(),
             next_banner_refresh,
         );
@@ -601,17 +718,40 @@ fn dispatch_loop(
         let mut changed = false;
         let mut notify = false;
         let mut shutdown = false;
+        // Hold through packet submission so a mode setter cannot return while
+        // the dispatcher is still about to send an old microphone body.
+        let review = microphone_review.lock();
+        if microphone_generation != review.generation {
+            if review.last_exit_generation > microphone_generation {
+                // Leaving review immediately restores the normal composer. A
+                // successful publication remains acknowledged, but no longer
+                // owns the visible body until its original TTL.
+                cancel_voice_publication(&mut pending_voice, "Microphone review was disabled");
+                published_voice = None;
+            }
+            history
+                .retain(|entry: &HistoryMessage| entry.source_kind != OscInputSource::Microphone);
+            live.retain(|entry: &HistoryMessage| entry.source_kind != OscInputSource::Microphone);
+            previews.retain(|entry| entry.source_kind != OscInputSource::Microphone);
+            microphone_generation = review.generation;
+            changed = true;
+        }
         match command {
             Ok(Command::Lyric(text)) => {
                 let text = text
                     .chars()
                     .take(settings.lyric_budget().unwrap_or(0))
                     .collect::<String>();
-                changed = text != lyric;
+                changed |= text != lyric;
                 lyric = text;
                 next_banner_refresh = banner_refresh_deadline(&settings, now, !lyric.is_empty());
             }
             Ok(Command::ManualMessage { text, ttl }) if settings.enabled => {
+                cancel_voice_publication(
+                    &mut pending_voice,
+                    "A newer manual message replaced this publication",
+                );
+                published_voice = None;
                 clear_pending = false;
                 manual_message = Some(ManualMessage {
                     text,
@@ -624,7 +764,25 @@ fn dispatch_loop(
                 changed = true;
                 notify = true;
             }
-            Ok(Command::Previews(stream_id, is_typing, incoming)) => {
+            Ok(Command::PublishVoice(publication)) => {
+                let validation = settings.validate_voice_text(&publication.text);
+                if let Err(error) = validation {
+                    let _ = publication.reply.send(Err(error));
+                } else if last_voice_operation.is_some_and(|last| publication.operation <= last) {
+                    let _ = publication.reply.send(Ok(()));
+                } else if publication.review_generation < review.last_exit_generation {
+                    let _ = publication.reply.send(Err(
+                        "Microphone review was disabled before publication".into(),
+                    ));
+                } else if pending_voice.is_some() {
+                    let _ = publication
+                        .reply
+                        .send(Err("Another voice publication is still pending".into()));
+                } else {
+                    pending_voice = Some(publication);
+                }
+            }
+            Ok(Command::Previews(stream_id, is_typing, incoming, generation)) => {
                 previews.retain(|entry| entry.stream_id != stream_id);
                 if settings.enabled {
                     previews.extend(
@@ -647,7 +805,10 @@ fn dispatch_loop(
                                 expires_at: now
                                     + Duration::from_secs_f64(settings.history_ttl_seconds),
                             })
-                            .filter(|entry| settings.accepts_source(entry.source_kind)),
+                            .filter(|entry| {
+                                settings.accepts_source(entry.source_kind)
+                                    && review.accepts(entry.source_kind, generation)
+                            }),
                     );
                 }
                 changed = true;
@@ -655,6 +816,7 @@ fn dispatch_loop(
             Ok(Command::Message {
                 stream_id,
                 audio_source,
+                microphone_generation,
                 is_typing,
                 source,
                 translated,
@@ -662,7 +824,7 @@ fn dispatch_loop(
                 speaker_id,
                 ongoing,
                 ttl,
-            }) if settings.enabled => {
+            }) if settings.enabled && review.accepts(audio_source, microphone_generation) => {
                 let entry = HistoryMessage {
                     stream_id,
                     source_kind: if is_typing {
@@ -697,11 +859,15 @@ fn dispatch_loop(
             Ok(Command::RollStream {
                 stream_id,
                 audio_source,
+                microphone_generation,
                 is_typing,
                 source,
                 translated,
                 speaker_id,
-            }) if settings.enabled && (is_typing || settings.accepts_source(audio_source)) => {
+            }) if settings.enabled
+                && (is_typing || settings.accepts_source(audio_source))
+                && review.accepts(audio_source, microphone_generation) =>
+            {
                 clear_pending = false;
                 if let Some(index) = live.iter().position(|entry| entry.stream_id == stream_id) {
                     history.push(live.remove(index));
@@ -737,10 +903,13 @@ fn dispatch_loop(
                 history.retain(|entry| entry.stream_id != stream_id);
                 live.retain(|entry| entry.stream_id != stream_id);
                 previews.retain(|entry| entry.stream_id != stream_id);
-                changed = before != history.len() + live.len() + previews.len();
+                changed |= before != history.len() + live.len() + previews.len();
                 pending_cancellations.lock().remove(&stream_id);
             }
+            Ok(Command::MicrophoneReviewChanged) => {}
             Ok(Command::Clear) => {
+                cancel_voice_publication(&mut pending_voice, "Chatbox output was cleared");
+                published_voice = None;
                 previews.clear();
                 manual_message = None;
                 history.clear();
@@ -754,7 +923,9 @@ fn dispatch_loop(
                     || settings.send_port != updated.send_port
                     || settings.enabled != updated.enabled;
                 if settings.enabled && !updated.enabled {
-                    send_message(&settings, &clear_message(), &status);
+                    cancel_voice_publication(&mut pending_voice, "OSC Chatbox output was disabled");
+                    published_voice = None;
+                    let _ = send_message(&settings, &clear_message(), &status);
                     pending = None;
                     manual_message = None;
                     history.clear();
@@ -796,6 +967,13 @@ fn dispatch_loop(
             Duration::from_secs_f64(settings.history_ttl_seconds),
             now,
         );
+        if published_voice
+            .as_ref()
+            .is_some_and(|entry| entry.expires_at <= now)
+        {
+            published_voice = None;
+            changed = true;
+        }
         if next_banner_refresh.is_some_and(|deadline| now >= deadline) {
             next_banner_refresh = banner_refresh_deadline(&settings, now, !lyric.is_empty());
             force_send = true;
@@ -808,10 +986,46 @@ fn dispatch_loop(
                 clear_runtime_preview(&status);
             }
         }
+        if shutdown {
+            cancel_voice_publication(&mut pending_voice, "OSC output has stopped");
+        } else if pending_voice.is_some() && last_send.elapsed() >= COOLDOWN {
+            let publication = pending_voice.take().unwrap();
+            let expires_at = Instant::now() + Duration::from_secs_f64(settings.history_ttl_seconds);
+            let message = QueuedMessage {
+                text: publication.text,
+                typing: false,
+                notify: true,
+                expires_at: Some(expires_at),
+            };
+            // Validate again because settings may have changed during cooldown.
+            // Never trim or reformat a body after the user's send gesture.
+            let result = settings
+                .validate_voice_text(&message.text)
+                .and_then(|()| send_message(&settings, &message, &status));
+            last_send = Instant::now();
+            if result.is_ok() {
+                last_voice_operation = Some(publication.operation);
+                published_voice = Some(PublishedVoice {
+                    text: message.text,
+                    expires_at,
+                });
+                clear_pending = false;
+            }
+            let _ = publication.reply.send(result);
+        }
         if pending.is_some() && (last_send.elapsed() >= COOLDOWN || shutdown) {
             let notify = pending.take().unwrap_or(false);
             let message = if std::mem::take(&mut clear_pending) {
                 clear_message()
+            } else if let Some(voice) = &published_voice {
+                // Automatic sources keep updating in the background. The
+                // accepted voice body owns the visible Chatbox until its TTL.
+                QueuedMessage {
+                    text: voice.text.clone(),
+                    typing: false,
+                    notify: false,
+                    expires_at: Some(voice.expires_at),
+                }
             } else {
                 build_queued_message(
                     &history,
@@ -829,8 +1043,8 @@ fn dispatch_loop(
                 runtime.next_message_expires_at = message.expires_at;
                 runtime.chatbox_text == message.text && runtime.chatbox_typing == message.typing
             };
-            if !unchanged || notify || force_send {
-                send_message(&settings, &message, &status);
+            if !unchanged || message.notify || (force_send && published_voice.is_none()) {
+                let _ = send_message(&settings, &message, &status);
                 last_send = Instant::now();
             }
             force_send = false;
@@ -839,6 +1053,12 @@ fn dispatch_loop(
         if shutdown {
             return;
         }
+    }
+}
+
+fn cancel_voice_publication(pending: &mut Option<VoicePublication>, reason: &str) {
+    if let Some(publication) = pending.take() {
+        let _ = publication.reply.send(Err(reason.to_owned()));
     }
 }
 
@@ -851,20 +1071,27 @@ fn clear_message() -> QueuedMessage {
     }
 }
 
-fn send_message(settings: &OscSettings, message: &QueuedMessage, status: &Mutex<RuntimeStatus>) {
-    {
-        let mut runtime = status.lock();
-        runtime.chatbox_text.clone_from(&message.text);
-        runtime.chatbox_typing = message.typing;
-        runtime.next_message_expires_at = message.expires_at;
-    }
-    let socket = match UdpSocket::bind("0.0.0.0:0") {
-        Ok(socket) => socket,
-        Err(error) => {
-            status.lock().last_error = Some(format!("Cannot create OSC sender: {error}"));
-            return;
+fn send_message(
+    settings: &OscSettings,
+    message: &QueuedMessage,
+    status: &Mutex<RuntimeStatus>,
+) -> Result<(), String> {
+    let result = send_packets(settings, message);
+    let mut runtime = status.lock();
+    match &result {
+        Ok(()) => {
+            runtime.chatbox_text.clone_from(&message.text);
+            runtime.chatbox_typing = message.typing;
+            runtime.next_message_expires_at = message.expires_at;
         }
-    };
+        Err(error) => runtime.last_error = Some(error.clone()),
+    }
+    result
+}
+
+fn send_packets(settings: &OscSettings, message: &QueuedMessage) -> Result<(), String> {
+    let socket = UdpSocket::bind("0.0.0.0:0")
+        .map_err(|error| format!("Cannot create OSC sender: {error}"))?;
     let target = format!("{}:{}", settings.ip, settings.send_port);
     for packet in [
         OscPacket::Message(OscMessage {
@@ -880,17 +1107,13 @@ fn send_message(settings: &OscSettings, message: &QueuedMessage, status: &Mutex<
             ],
         }),
     ] {
-        match encoder::encode(&packet) {
-            Ok(bytes) => {
-                if let Err(error) = socket.send_to(&bytes, &target) {
-                    status.lock().last_error = Some(format!("Cannot send VRChat OSC: {error}"));
-                }
-            }
-            Err(error) => {
-                status.lock().last_error = Some(format!("Cannot encode VRChat OSC: {error}"));
-            }
-        }
+        let bytes = encoder::encode(&packet)
+            .map_err(|error| format!("Cannot encode VRChat OSC: {error}"))?;
+        socket
+            .send_to(&bytes, &target)
+            .map_err(|error| format!("Cannot send VRChat OSC: {error}"))?;
     }
+    Ok(())
 }
 
 fn build_queued_message(

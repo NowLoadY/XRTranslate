@@ -1,0 +1,54 @@
+{
+  "action_sets": [
+    {
+      "name": "/actions/voice",
+      "usage": "leftright"
+    }
+  ],
+  "actions": [
+    {
+      "name": "/actions/voice/in/hand",
+      "type": "pose",
+      "requirement": "mandatory"
+    },
+    {
+      "name": "/actions/voice/in/grab",
+      "type": "boolean",
+      "requirement": "mandatory"
+    },
+    {
+      "name": "/actions/voice/out/touch",
+      "type": "vibration"
+    }
+  ],
+  "default_bindings": [
+    {
+      "controller_type": "vive_controller",
+      "binding_url": "vive.json"
+    },
+    {
+      "controller_type": "oculus_touch",
+      "binding_url": "touch.json"
+    },
+    {
+      "controller_type": "knuckles",
+      "binding_url": "index.json"
+    }
+  ],
+  "localization": [
+    {
+      "language_tag": "en_us",
+      "/actions/voice": "XRTranslate voice objects",
+      "/actions/voice/in/hand": "Hand position",
+      "/actions/voice/in/grab": "Hold microphone",
+      "/actions/voice/out/touch": "Touch feedback"
+    },
+    {
+      "language_tag": "zh_cn",
+      "/actions/voice": "XRTranslate 语音物件",
+      "/actions/voice/in/hand": "手柄位置",
+      "/actions/voice/in/grab": "握持麦克风",
+      "/actions/voice/out/touch": "触碰反馈"
+    }
+  ]
+}

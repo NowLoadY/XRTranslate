@@ -17,6 +17,11 @@ enum VisitPhase {
     Return,
 }
 
+struct ControlAnchor {
+    root: Mat4,
+    viewer: Vec3,
+}
+
 #[derive(Default)]
 pub(super) struct CompanionSpace {
     position: Option<Vec3>,
@@ -30,9 +35,13 @@ pub(super) struct CompanionSpace {
     recenter_requested: bool,
     visit_requested: bool,
     visit: Option<Visit>,
+    controls: Option<ControlAnchor>,
+    controls_frozen: bool,
+    controls_outside_for: f32,
 }
 
 pub(super) struct Scene {
+    pub control_root: Mat4,
     pub plane: Mat4,
     pub model: Mat4,
     pub cameras: [Mat4; 2],
@@ -43,6 +52,49 @@ pub(super) struct Scene {
 }
 
 impl CompanionSpace {
+    pub fn freeze_controls(&mut self, frozen: bool) {
+        self.controls_frozen = frozen;
+    }
+
+    pub fn control_root(&self) -> Option<Mat4> {
+        self.controls.as_ref().map(|anchor| anchor.root)
+    }
+
+    pub fn resume(&mut self) {
+        // Restart the companion's entrance without moving its sibling objects.
+        let controls = self.controls.take();
+        *self = Self {
+            controls,
+            ..Self::default()
+        };
+    }
+
+    fn update_controls(&mut self, viewer: Vec3, forward: Vec3, dt: f32) {
+        let make_anchor = || ControlAnchor {
+            root: Mat4::from_rotation_translation(
+                Quat::from_rotation_y((-forward.x).atan2(-forward.z)),
+                viewer + forward * 0.45 - Vec3::Y * 0.35,
+            ),
+            viewer,
+        };
+        let Some(anchor) = self.controls.as_ref() else {
+            self.controls = Some(make_anchor());
+            return;
+        };
+        // These are peers of the avatar in tracking space. Body turns, visits,
+        // animation and head turns never move them. Relocate only after walking
+        // out of reach, once neither hand is manipulating or touching an object.
+        if self.controls_frozen || viewer.distance(anchor.viewer) <= 0.35 {
+            self.controls_outside_for = 0.0;
+        } else {
+            self.controls_outside_for += dt;
+            if self.controls_outside_for >= 0.4 {
+                self.controls = Some(make_anchor());
+                self.controls_outside_for = 0.0;
+            }
+        }
+    }
+
     pub fn recenter(&mut self) {
         self.visit = None;
         self.visit_requested = false;
@@ -92,14 +144,15 @@ impl CompanionSpace {
                 .try_normalize()?
         };
         let right = forward.cross(Vec3::Y);
-        let home = viewer + forward * 1.15 + right * 0.43 - Vec3::Y * 0.35;
-        let first = self.position.is_none();
-        let mut position = self.position.unwrap_or(home);
         let dt = if dt.is_finite() {
             dt.clamp(0.0, 0.05)
         } else {
             0.0
         };
+        self.update_controls(viewer, forward, dt);
+        let home = viewer + forward * 1.15 + right * 0.43 - Vec3::Y * 0.35;
+        let first = self.position.is_none();
+        let mut position = self.position.unwrap_or(home);
         if std::mem::take(&mut self.visit_requested) {
             self.visit = Some(Visit {
                 anchor: self.target.unwrap_or(position),
@@ -192,6 +245,18 @@ impl CompanionSpace {
             self.opacity = (self.opacity + dt / 0.45).min(1.0);
         }
         self.position = Some(position);
+        self.scene(viewer, looking, eyes, position, dt, first)
+    }
+
+    fn scene(
+        &mut self,
+        viewer: Vec3,
+        looking: Vec3,
+        eyes: [Mat4; 2],
+        position: Vec3,
+        dt: f32,
+        first: bool,
+    ) -> Option<Scene> {
         let toward = viewer - position;
         let plane_yaw = toward.x.atan2(toward.z);
         let turn = (plane_yaw - self.facing)
@@ -225,6 +290,7 @@ impl CompanionSpace {
             position,
         );
         Some(Scene {
+            control_root: self.control_root()?,
             plane,
             model: inverse * world_model,
             cameras,

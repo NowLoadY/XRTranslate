@@ -124,6 +124,8 @@ impl AsrResponseFormat {
 pub struct RemoteCapabilities {
     pub streaming: RemoteStreaming,
     pub translation_prompt_profile: crate::TranslationPromptProfile,
+    /// Supports freeform instructions in addition to translation.
+    pub supports_chat: bool,
     pub supports_context: bool,
     pub asr_prompt_mode: AsrPromptMode,
     /// Override the transcription connector's optional language parameter.

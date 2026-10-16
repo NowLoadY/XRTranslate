@@ -1,5 +1,5 @@
 //! Two real mesh views packed left/right into one reusable GPU overlay texture.
-use super::super::{Appearance, Pose};
+use super::super::{Appearance, Model, Pose};
 use super::{CallbackResources, CallbackTrait, Draw, Renderer, ScreenDescriptor, egui, wgpu};
 use glam::Mat4;
 use std::time::{Duration, Instant};
@@ -64,28 +64,6 @@ impl StereoRenderer {
         model_transform: Mat4,
         cameras: [Mat4; 2],
     ) -> Result<bool, String> {
-        if let Some(error) = self.errors.lock().take() {
-            return Err(error);
-        }
-        // Bound frames in flight without stalling the caption worker. A busy
-        // GPU keeps its submitted image; the next successful tick uses fresh poses.
-        if let Some(submission) = self.pending.take() {
-            match self.device.poll(wgpu::PollType::Wait {
-                submission_index: Some(submission.clone()),
-                timeout: Some(Duration::ZERO),
-            }) {
-                Ok(_) => {
-                    if let Some(error) = self.errors.lock().take() {
-                        return Err(error);
-                    }
-                }
-                Err(wgpu::PollError::Timeout) => {
-                    self.pending = Some(submission);
-                    return Ok(false);
-                }
-                Err(error) => return Err(error.to_string()),
-            }
-        }
         if !model_transform.is_finite() || cameras.iter().any(|m| !m.is_finite()) {
             return Err("Invalid companion camera".into());
         }
@@ -108,6 +86,43 @@ impl StereoRenderer {
         for part in &mut model.parts {
             part.transform = model_transform * part.transform;
             part.material.outline_width *= outline_scale;
+        }
+        self.render_model(model, cameras)
+    }
+
+    /// Shared mesh path for small tracked props. The caller supplies all transforms
+    /// in the same coordinates as the two cameras, including their physical scale.
+    pub(crate) fn render_model(
+        &mut self,
+        model: Model,
+        cameras: [Mat4; 2],
+    ) -> Result<bool, String> {
+        if let Some(error) = self.errors.lock().take() {
+            return Err(error);
+        }
+        // Bound frames in flight without stalling the caption worker. A busy
+        // GPU keeps its submitted image; the next successful tick uses fresh poses.
+        if let Some(submission) = self.pending.take() {
+            match self.device.poll(wgpu::PollType::Wait {
+                submission_index: Some(submission.clone()),
+                timeout: Some(Duration::ZERO),
+            }) {
+                Ok(_) => {
+                    if let Some(error) = self.errors.lock().take() {
+                        return Err(error);
+                    }
+                }
+                Err(wgpu::PollError::Timeout) => {
+                    self.pending = Some(submission);
+                    return Ok(false);
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        if cameras.iter().any(|m| !m.is_finite())
+            || model.parts.iter().any(|part| !part.transform.is_finite())
+        {
+            return Err("Invalid spatial prop transform".into());
         }
         let mut encoder = self.device.create_command_encoder(&Default::default());
         // Both eyes share instance transforms and batches, only their cameras differ.

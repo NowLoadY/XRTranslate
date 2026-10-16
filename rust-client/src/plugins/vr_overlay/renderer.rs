@@ -250,6 +250,28 @@ impl VrOverlayRenderer {
         self.speech_layout.bounds().is_some()
     }
 
+    pub(super) fn render_voice(
+        &mut self,
+        voice: &crate::voice_interaction::VoiceSnapshot,
+    ) -> Result<Vec<u8>, String> {
+        let card = VrSubtitleCard {
+            source: String::new(),
+            translated: if voice.text.trim().is_empty() {
+                voice.status.clone()
+            } else {
+                voice.text.clone()
+            },
+            additional_translations: Vec::new(),
+            speaker: if voice.text.trim().is_empty() {
+                String::new()
+            } else {
+                voice.status.clone()
+            },
+            live: voice.recording,
+        };
+        self.render(&[card], false, 24.0)
+    }
+
     pub(super) fn render_surface(
         &mut self,
         mut paint: impl FnMut(&Painter, Rect),

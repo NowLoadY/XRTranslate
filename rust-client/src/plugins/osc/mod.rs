@@ -92,6 +92,22 @@ impl OscPlugin {
         self.manager.send_manual_message(text);
     }
 
+    /// Review suppresses automatic microphone bodies until explicitly sent.
+    /// Switching either way discards old microphone output, including previews.
+    pub(crate) fn set_microphone_review(&self, enabled: bool) {
+        self.manager.handle().set_microphone_review(enabled);
+    }
+
+    /// Produces the exact voice body shown before an explicit publication.
+    /// Decorations and automatic captions never consume this body's budget.
+    pub(crate) fn prepare_voice_text(&self, text: &str) -> Result<String, String> {
+        effective_settings(&self.draft, self.host_enabled).prepare_voice_text(text)
+    }
+
+    pub(crate) fn publish_voice(&self, operation: u64, text: &str) -> runtime::VoicePublishReply {
+        self.manager.handle().publish_voice(operation, text)
+    }
+
     pub fn apply_draft(&mut self) -> Result<(), String> {
         self.manager
             .update_settings(effective_settings(&self.draft, self.host_enabled))

@@ -2,6 +2,7 @@
 pub(super) mod body;
 mod features;
 mod profile;
+mod props;
 mod sampling;
 mod spline;
 
@@ -193,6 +194,8 @@ pub(super) fn atlas() -> (Vec<Vertex>, Vec<u32>, Vec<Range<u32>>) {
             Geometry::Eye => features::eye(),
             Geometry::Mouth => features::mouth(),
             Geometry::Hair => super::hair::geometry::mesh(),
+            Geometry::SolidSphere => props::solid(false),
+            Geometry::SolidBox => props::solid(true),
             _ => clothing::mesh(geometry),
         };
         let start = atlas.indices.len() as u32;

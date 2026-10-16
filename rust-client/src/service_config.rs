@@ -63,7 +63,7 @@ pub struct ServiceConfigEditor {
     dirty: bool,
     message: Option<String>,
     onboarding_save_error: Option<String>,
-    prompt_profile: std::sync::OnceLock<TranslationPromptProfile>,
+    translation_contract: std::sync::OnceLock<Option<(TranslationPromptProfile, bool)>>,
     language_capabilities:
         std::sync::OnceLock<Result<xrtranslate_engine::language::LanguageCapabilities, String>>,
 }
@@ -79,7 +79,7 @@ impl ServiceConfigEditor {
             message: None,
             onboarding_save_error: None,
             language_capabilities: Default::default(),
-            prompt_profile: Default::default(),
+            translation_contract: Default::default(),
         };
         if let Err(error) = editor.reload() {
             editor.message = Some(error);
@@ -89,7 +89,7 @@ impl ServiceConfigEditor {
 
     pub fn reload(&mut self) -> Result<(), String> {
         self.language_capabilities.take();
-        self.prompt_profile.take();
+        self.translation_contract.take();
         self.document = xrtranslate_config::load_user_config_document(&self.path, &project_root())
             .map_err(|error| format!("Cannot read {}: {error}", self.path.display()))?;
         self.categories = [
@@ -109,12 +109,27 @@ impl ServiceConfigEditor {
     }
 
     pub fn translation_prompt_profile(&self) -> TranslationPromptProfile {
-        *self.prompt_profile.get_or_init(|| {
+        self.translation_contract()
+            .map(|(profile, _)| profile)
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn supports_chat(&self) -> bool {
+        self.translation_contract()
+            .is_some_and(|(_, supported)| supported)
+    }
+
+    fn translation_contract(&self) -> Option<(TranslationPromptProfile, bool)> {
+        *self.translation_contract.get_or_init(|| {
             xrtranslate_config::AppConfig::from_value(self.document.clone())
                 .ok()
                 .and_then(|config| config.native_model_route().ok())
-                .and_then(|route| route.translation.translation_prompt_profile().ok())
-                .unwrap_or_default()
+                .and_then(|route| {
+                    Some((
+                        route.translation.translation_prompt_profile().ok()?,
+                        route.translation.supports_chat().ok()?,
+                    ))
+                })
         })
     }
 
@@ -536,7 +551,7 @@ impl ServiceConfigEditor {
 
     fn save(&mut self) -> Result<(), String> {
         self.language_capabilities.take();
-        self.prompt_profile.take();
+        self.translation_contract.take();
         Self::sync_categories(&mut self.document, &self.categories)?;
         let parsed = xrtranslate_config::AppConfig::from_value(self.document.clone())
             .map_err(|error| format!("Invalid configuration: {error}"))?;
@@ -557,7 +572,7 @@ impl ServiceConfigEditor {
 
     fn save_draft(&mut self) -> Result<(), String> {
         self.language_capabilities.take();
-        self.prompt_profile.take();
+        self.translation_contract.take();
         Self::sync_categories(&mut self.document, &self.categories)?;
         xrtranslate_config::save_user_config_document(&self.path, &project_root(), &self.document)?;
         self.dirty = false;
