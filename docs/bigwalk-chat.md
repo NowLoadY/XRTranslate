@@ -2,8 +2,8 @@
 
 1. Install the [XRT Big Walk bridge](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/bigwalk/installation.md)
    in your BepInEx game profile and launch Big Walk.
-2. In XRTranslate, enable **Big Walk** in Settings → Plugins, open its sidebar
-   page and turn on **Send to Big Walk**.
+2. In XRTranslate, open **Game Plugins** in the sidebar, select **Big Walk**,
+   and turn on **Enable** at the top of the page.
 3. Join a game, start microphone translation, and speak. **Connected** means
    the bridge has found your local player. The text editor also supports typed
    translation and direct sending.
@@ -12,7 +12,8 @@ The bridge invokes the game's native chat command. Other players receive normal
 game chat and do not need the bridge. This is a community-mod integration; Big
 Walk does not publish an external chat API.
 
-Microphone translations are selected by default. System audio is optional, so
+The audio source switches filter messages sent to chat. Microphone translations
+are selected by default. System audio is optional, so
 other players' speech is not automatically repeated into chat. The format menu
 offers translation only, bilingual lines, or a single bilingual line.
 

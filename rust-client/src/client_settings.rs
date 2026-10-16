@@ -124,6 +124,8 @@ pub struct ClientSettings {
     #[serde(default)]
     pub bigwalk_settings: crate::plugins::bigwalk::BigWalkSettings,
     #[serde(default)]
+    pub game_plugins: crate::plugins::game_plugins::Settings,
+    #[serde(default)]
     pub avatar_connector: crate::plugins::avatar::connectors::Settings,
     #[serde(default)]
     pub vr_overlay_settings: VrOverlaySettings,
@@ -221,6 +223,7 @@ impl Default for ClientSettings {
             osc_settings: OscSettings::from_project_config(),
             chilloutvr_osc_settings: default_chilloutvr_osc_settings(),
             bigwalk_settings: Default::default(),
+            game_plugins: Default::default(),
             avatar_connector: Default::default(),
             vr_overlay_settings: VrOverlaySettings::default(),
             plugin_preferences: PluginPreferences::default(),

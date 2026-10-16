@@ -23,7 +23,7 @@ pub(crate) fn session_binding(operation: OperationId) -> PluginSessionBinding {
                 operation.sequence()
             ),
             "Avatar translation",
-            "Open Avatar controls",
+            "Open Game Plugins",
             "Translation controlled by your Avatar",
         ),
         output_policy: SessionOutputPolicy::Host,
@@ -34,21 +34,13 @@ pub(crate) fn session_binding(operation: OperationId) -> PluginSessionBinding {
 }
 
 impl AvatarPlugin {
-    pub(crate) fn render_settings(
-        &mut self,
+    pub(crate) fn render_connection(
+        &self,
         ui: &mut eframe::egui::Ui,
         language: crate::i18n::UiLanguage,
-    ) -> bool {
+    ) {
         use crate::i18n::{tr, tr_dynamic};
         use xrt_connector_core::Status;
-        let before = self.settings.clone();
-        eframe::egui::ComboBox::from_label(tr(language, "Game connector"))
-            .selected_text(self.settings.connector.label())
-            .show_ui(ui, |ui| {
-                for connector in connectors::Connector::ALL {
-                    ui.selectable_value(&mut self.settings.connector, connector, connector.label());
-                }
-            });
         let status_value = self.snapshot().status;
         let status = match status_value {
             Status::Unavailable if self.enabled_for_reset() => "Synchronizing Avatar controls",
@@ -102,7 +94,6 @@ impl AvatarPlugin {
                 self.settings.connector.id()
             ),
         );
-        before != self.settings
     }
     fn enabled_for_reset(&self) -> bool {
         self.snapshot().pending_reset.is_some() && self.diagnostic().is_none()

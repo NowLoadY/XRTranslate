@@ -6,7 +6,7 @@ use crate::{
         HostAction as AvatarHostAction, HostResult as AvatarHostResult,
         OperationId as AvatarOperationId,
     },
-    plugins::{self, PluginId},
+    plugins::{self, game_plugins::Selection},
     session_coordinator::{TranslationInput, TranslationSessionOwner, TranslationTask},
     translation_service,
 };
@@ -23,6 +23,10 @@ pub(crate) struct AvatarHostSession {
 }
 
 impl XRTranslateApp {
+    pub(crate) fn avatar_enabled(&self) -> bool {
+        self.game_plugins.active(Selection::Avatar)
+    }
+
     pub(crate) fn avatar_owns(&self, owner: &TranslationSessionOwner) -> bool {
         self.avatar_host_session
             .as_ref()
@@ -73,7 +77,7 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn poll_avatar(&mut self, ctx: Option<egui::Context>) {
-        let enabled = self.plugin_enabled(PluginId::AVATAR);
+        let enabled = self.avatar_enabled();
         self.avatar_plugin
             .poll(enabled, &self.osc_transport.handle());
         let actions = self.avatar_plugin.take_host_actions();
@@ -85,9 +89,9 @@ impl XRTranslateApp {
         for action in actions {
             match action {
                 AvatarHostAction::Start(operation) => {
-                    if self.first_run || !self.plugin_enabled(PluginId::AVATAR) {
+                    if self.first_run || !self.avatar_enabled() {
                         self.avatar_plugin.report_host_result(operation, AvatarHostResult::Failed(
-                            "Complete XRTranslate setup and enable the Avatar plugin before starting translation.".into(),
+                            "Complete XRTranslate setup and select your game in Game Plugins before starting translation.".into(),
                         ));
                         continue;
                     }

@@ -63,14 +63,13 @@ struct State {
 
 impl State {
     fn new(settings: &BigWalkSettings, host_enabled: bool) -> Self {
-        let enabled = settings.enabled && host_enabled;
         Self {
             settings: settings.clone(),
-            enabled,
+            enabled: host_enabled,
             shutdown: false,
             generation: 0,
             snapshot: BigWalkSnapshot {
-                status: if enabled {
+                status: if host_enabled {
                     ConnectionStatus::Connecting
                 } else {
                     ConnectionStatus::Disabled
@@ -221,15 +220,14 @@ impl Runtime {
 
     pub fn configure(&self, settings: &BigWalkSettings, host_enabled: bool) {
         let mut state = self.shared.state.lock();
-        let enabled = host_enabled && settings.enabled;
-        if state.settings == *settings && state.enabled == enabled {
+        if state.settings == *settings && state.enabled == host_enabled {
             return;
         }
         state.settings = settings.clone();
-        state.enabled = enabled;
+        state.enabled = host_enabled;
         state.generation = state.generation.wrapping_add(1);
         state.discard_pending();
-        state.snapshot.status = if enabled {
+        state.snapshot.status = if host_enabled {
             ConnectionStatus::Connecting
         } else {
             ConnectionStatus::Disabled

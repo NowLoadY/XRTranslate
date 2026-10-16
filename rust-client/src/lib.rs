@@ -95,6 +95,7 @@ use i18n::UiLanguage;
 use network::{ExternalAudioGate, SessionConfig, SessionEvent, start_session};
 use plugins::avatar::AvatarPlugin;
 use plugins::bigwalk::{BigWalkPageContext, BigWalkPlugin, BigWalkUiAction};
+use plugins::game_plugins::Selection as GamePluginSelection;
 use plugins::meeting::{
     MeetingAction, MeetingAudioSource, MeetingInputRequest, MeetingPlugin, MeetingUiSnapshot,
 };
@@ -692,6 +693,7 @@ struct XRTranslateApp {
     osc_plugin: OscPlugin,
     chilloutvr_osc_plugin: OscPlugin,
     bigwalk_plugin: BigWalkPlugin,
+    game_plugins: plugins::game_plugins::Settings,
     osc_transport: TransportOwner,
     avatar_plugin: AvatarPlugin,
     text_output_plugin: plugins::text_output::TextOutputPlugin,
@@ -968,7 +970,7 @@ fn lyric_requests(
     preferences: &PluginPreferences,
     vrchat: &OscPlugin,
     chilloutvr: &OscPlugin,
-    avatar: &AvatarPlugin,
+    avatar: Option<&AvatarPlugin>,
 ) -> Vec<plugins::lyrics::DisplayRequest> {
     use plugins::lyrics::DisplayRequest;
     if !preferences.is_enabled(PluginId::LYRICS) {
@@ -989,9 +991,7 @@ fn lyric_requests(
             });
         }
     }
-    if preferences.is_enabled(PluginId::AVATAR)
-        && let Some(budget) = avatar.settings.lyric_budget()
-    {
+    if let Some(budget) = avatar.and_then(|plugin| plugin.settings.lyric_budget()) {
         requests.push(DisplayRequest {
             output: PluginId::AVATAR,
             budget,
@@ -1048,7 +1048,7 @@ impl Default for XRTranslateApp {
         );
         let bigwalk_plugin = BigWalkPlugin::new(
             settings.bigwalk_settings.clone(),
-            settings.plugin_preferences.is_enabled(PluginId::BIGWALK),
+            settings.game_plugins.active(GamePluginSelection::BigWalk),
         );
         let avatar_plugin = AvatarPlugin::new(
             settings.avatar_connector.clone(),
@@ -1075,7 +1075,10 @@ impl Default for XRTranslateApp {
                 &settings.plugin_preferences,
                 &osc_plugin,
                 &chilloutvr_osc_plugin,
-                &avatar_plugin,
+                settings
+                    .game_plugins
+                    .active(GamePluginSelection::Avatar)
+                    .then_some(&avatar_plugin),
             ));
             plugin
         };
@@ -1945,6 +1948,7 @@ impl Default for XRTranslateApp {
             osc_plugin,
             chilloutvr_osc_plugin,
             bigwalk_plugin,
+            game_plugins: settings.game_plugins,
             osc_transport,
             avatar_plugin,
             text_output_plugin,
@@ -2879,10 +2883,6 @@ impl XRTranslateApp {
                     self.osc_output_mut(id).deactivate()
                 }
             }
-            PluginId::BIGWALK => {
-                self.bigwalk_plugin.set_host_enabled(enabled);
-                Ok(())
-            }
             PluginId::VR_OVERLAY => {
                 self.vr_overlay_plugin.set_host_enabled(enabled);
                 Ok(())
@@ -2897,23 +2897,12 @@ impl XRTranslateApp {
 
         let registry = PluginRegistry::builtin();
         registry.set_enabled(&mut self.plugin_preferences, id, enabled);
-        if id == PluginId::AVATAR {
-            self.poll_avatar(None);
-        }
         self.sync_lyrics();
         registry.normalize_active_page(&self.plugin_preferences, &mut self.navigation.page);
         self.save_settings();
     }
 
     pub(crate) fn render_plugin_settings(&mut self, id: PluginId, ui: &mut egui::Ui) {
-        if id == PluginId::AVATAR {
-            if self.avatar_plugin.render_settings(ui, self.ui_language) {
-                self.poll_avatar(None);
-                self.sync_lyrics();
-                self.save_settings();
-            }
-            return;
-        }
         if id == PluginId::VR_OVERLAY {
             if plugins::vr_overlay::ui::render_settings_contribution(
                 self.vr_overlay_plugin.draft_mut(),
@@ -3054,7 +3043,9 @@ impl XRTranslateApp {
             &self.plugin_preferences,
             &self.osc_plugin,
             &self.chilloutvr_osc_plugin,
-            &self.avatar_plugin,
+            self.game_plugins
+                .active(GamePluginSelection::Avatar)
+                .then_some(&self.avatar_plugin),
         ));
     }
 
@@ -3083,9 +3074,68 @@ impl XRTranslateApp {
         self.apply_osc_actions(id, actions);
     }
 
-    fn render_bigwalk_plugin_page(&mut self, ui: &mut egui::Ui) {
+    fn sync_game_plugins(&mut self) {
+        self.bigwalk_plugin
+            .set_host_enabled(self.game_plugins.active(GamePluginSelection::BigWalk));
+        self.poll_avatar(None);
+    }
+
+    fn render_game_plugins_page(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical()
+            .id_salt("game_plugins_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let mut changed = false;
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(i18n::tr(self.ui_language, "Game Plugins"))
+                            .size(22.0)
+                            .color(ui::theme::text_strong())
+                            .strong(),
+                    );
+                    ui.add_space(8.0);
+                    changed = ui::components::toggle_with_label(
+                        ui,
+                        &mut self.game_plugins.enabled,
+                        i18n::tr(self.ui_language, "Enable"),
+                    )
+                    .changed();
+                });
+                ui.add_space(12.0);
+                changed |= self.game_plugins.selection.render(
+                    ui,
+                    &mut self.avatar_plugin.settings.connector,
+                    self.ui_language,
+                );
+                if changed {
+                    self.sync_game_plugins();
+                    self.sync_lyrics();
+                    self.save_settings();
+                }
+                ui.add_space(16.0);
+                match self.game_plugins.selection {
+                    GamePluginSelection::Avatar => {
+                        let lyrics = self.plugin_enabled(PluginId::LYRICS);
+                        if self
+                            .avatar_plugin
+                            .render_content(ui, self.ui_language, lyrics)
+                        {
+                            self.poll_avatar(None);
+                            self.sync_lyrics();
+                            self.save_settings();
+                        }
+                    }
+                    GamePluginSelection::BigWalk => self.render_bigwalk_content(ui),
+                }
+                ui.add_space(16.0);
+                ui::components::showcase(ui, self.ui_language, &ui::previews::game_plugins());
+                ui.add_space(8.0);
+            });
+    }
+
+    fn render_bigwalk_content(&mut self, ui: &mut egui::Ui) {
         let languages = self.language_capabilities();
-        let actions = self.bigwalk_plugin.render_page(
+        let actions = self.bigwalk_plugin.render_content(
             ui,
             BigWalkPageContext {
                 language: self.ui_language,
@@ -3415,15 +3465,6 @@ impl XRTranslateApp {
             PluginId::MEDIA => self.render_media_plugin_page(ui),
             PluginId::VR_OVERLAY => self.render_vr_overlay_plugin_page(ui),
             PluginId::OSC | PluginId::CHILLOUTVR_OSC => self.render_osc_plugin_page(id, ui),
-            PluginId::BIGWALK => self.render_bigwalk_plugin_page(ui),
-            PluginId::AVATAR => {
-                let lyrics = self.plugin_enabled(PluginId::LYRICS);
-                if self.avatar_plugin.render_page(ui, self.ui_language, lyrics) {
-                    self.poll_avatar(None);
-                    self.sync_lyrics();
-                    self.save_settings();
-                }
-            }
             _ => self.navigation.page = Page::Translation,
         }
     }
@@ -3580,6 +3621,7 @@ impl XRTranslateApp {
             osc_settings: self.osc_plugin.draft().clone(),
             chilloutvr_osc_settings: self.chilloutvr_osc_plugin.draft().clone(),
             bigwalk_settings: self.bigwalk_plugin.settings().clone(),
+            game_plugins: self.game_plugins,
             avatar_connector: self.avatar_plugin.settings.clone(),
             vr_overlay_settings: self.vr_overlay_plugin.draft().clone(),
             plugin_preferences: self.plugin_preferences.clone(),
@@ -5883,7 +5925,7 @@ impl XRTranslateApp {
                 Page::Plugin(PluginId::VOCABULARY) => "Plugin:Vocabulary".to_string(),
                 Page::Plugin(PluginId::OSC) => "Plugin:OSC".to_string(),
                 Page::Plugin(PluginId::CHILLOUTVR_OSC) => "Plugin:ChilloutVR OSC".to_string(),
-                Page::Plugin(PluginId::BIGWALK) => "Plugin:Big Walk".to_string(),
+                Page::GamePlugins => "GamePlugins".to_string(),
                 Page::Plugin(PluginId::MEETING) => "Plugin:Meeting".to_string(),
                 Page::Plugin(PluginId::VR_OVERLAY) => "Plugin:VROverlay".to_string(),
                 Page::Plugin(PluginId::MEDIA) => "Plugin:Media".to_string(),
@@ -5916,7 +5958,7 @@ impl eframe::App for XRTranslateApp {
         self.poll_avatar(Some(ctx.clone()));
         self.poll_microphone_sync(ctx);
         self.poll_voice_interaction(ctx);
-        if self.plugin_enabled(PluginId::AVATAR) || self.avatar_host_session.is_some() {
+        if self.avatar_enabled() || self.avatar_host_session.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.media_plugin.controller.tick();
@@ -6283,6 +6325,14 @@ impl eframe::App for XRTranslateApp {
                     );
                     return;
                 }
+                if self.navigation.page == Page::GamePlugins {
+                    ui::animation::AnimationSystem::render_animated_page(
+                        ui,
+                        Page::GamePlugins,
+                        |ui| self.render_game_plugins_page(ui),
+                    );
+                    return;
+                }
                 let plugin_owned_scroll = match self.navigation.page {
                     Page::Plugin(id) => {
                         PluginRegistry::builtin()
@@ -6403,6 +6453,7 @@ impl eframe::App for XRTranslateApp {
                             );
                         }
                         Page::AudioStudio => unreachable!(),
+                        Page::GamePlugins => unreachable!(),
                         Page::PromptStudio => unreachable!(),
                         Page::CorpusStudio => unreachable!(),
                         Page::TtsCenter => unreachable!(),

@@ -85,6 +85,7 @@ affecting unrelated tasks.
 | Module | Owns and consumes |
 |---|---|
 | `plugins::osc` | Native Chatbox composition and game wire profiles; exposes the shared OSC receive/OSCQuery transport |
+| `plugins::game_plugins` | Shared game selector and selection value used by page composition and runtime activation |
 | `plugins::bigwalk` | Completed chat messages, bounded one-shot delivery and the local game bridge connection |
 | `plugins::avatar` | Game display composition, verified control intent and connection lifecycle; `avatar_host` composes owned translation sessions |
 | `plugins::text_output` | Internal shared text formatting, banner controls and one owned system sampler |
@@ -104,14 +105,21 @@ enabling another, preventing delayed clears from the old writer. The host owns
 one OSC receive/OSCQuery service; Chatbox writers never open duplicate listeners.
 See the [OSC Chatbox guide](osc-chatbox.md) for setup.
 
+**Game Plugins** is an always-visible group page. Its top-level **Enable**
+switch, off by default, activates the selected game. Switching games retires the
+previous connection, owned session and pending output. The page composes Avatar
+display and Big Walk chat controls; their settings and runtime owners remain
+independent.
+
 Big Walk consumes committed translations with their stable result identity and
 audio provenance. It reuses text-output formatting and the shared text composer.
 Its worker sends each accepted message once; connection and game-session changes
 discard pending messages. The game adapter owns native API calls on the game
 thread. See [Big Walk chat](bigwalk-chat.md) for setup.
 
-Avatar has its own page for connection and header/message/footer composition.
-Its single companion SDK owns the connector catalogue, pure lifecycle, region
+Avatar connectors use the Game Plugins page for connection and
+header/message/footer composition. Their single companion SDK owns the
+connector catalogue, pure lifecycle, region
 layout and buffered text codecs. Shared OSC transport owns discovery, verified
 snapshots and revocable paced writes independently of Chatbox enablement.
 WebSocket sends one latest display snapshot separately from ordered controls.
@@ -127,7 +135,7 @@ identity and expiry, accepts native previews and promotes completed text for
 buffered displays. The host supplies bounded recent candidates; connector layouts
 own fitting to their objects. Cancellation clears affected messages; connection
 loss clears the entire display. Header/footer visibility is independent of
-translation activity. The [Avatar guide](avatar-connectors.md) owns setup and connector rules.
+translation activity. The [Game Plugins guide](avatar-connectors.md) owns setup and connector rules.
 
 Lyrics has no page. It runs when requested by an active output with a lyric
 region. One worker observes playback and looks up lyrics; the host supplies

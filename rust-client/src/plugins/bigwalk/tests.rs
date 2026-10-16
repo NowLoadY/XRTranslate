@@ -7,13 +7,7 @@ use std::{
 
 fn shared() -> Arc<Shared> {
     Arc::new(Shared {
-        state: Mutex::new(State::new(
-            &BigWalkSettings {
-                enabled: true,
-                ..Default::default()
-            },
-            true,
-        )),
+        state: Mutex::new(State::new(&BigWalkSettings::default(), true)),
         wake: Condvar::new(),
     })
 }

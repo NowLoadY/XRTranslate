@@ -7,7 +7,7 @@ use crate::{
 use eframe::egui;
 
 impl AvatarPlugin {
-    pub(crate) fn render_page(
+    pub(crate) fn render_content(
         &mut self,
         ui: &mut egui::Ui,
         language: UiLanguage,
@@ -18,54 +18,39 @@ impl AvatarPlugin {
         let mut selected = ui
             .data(|data| data.get_temp::<usize>(selection_id))
             .unwrap_or(1);
-        egui::ScrollArea::vertical()
-            .id_salt("avatar_page_scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(tr(language, "Avatar"))
-                        .size(22.0)
-                        .color(theme::text_strong())
-                        .strong(),
+        let width = ui.available_width();
+        if width >= 720.0 {
+            let left_width = (width * 0.46).clamp(320.0, 420.0);
+            let right_width = width - left_width - ui.spacing().item_spacing.x;
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(left_width, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        components::card(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            self.render_connection(ui, language);
+                        });
+                        ui.add_space(12.0);
+                        self.render_region_settings(ui, language, lyrics, selected);
+                    },
                 );
-                ui.add_space(12.0);
-                let width = ui.available_width();
-                if width >= 720.0 {
-                    let left_width = (width * 0.46).clamp(320.0, 420.0);
-                    let right_width = width - left_width - ui.spacing().item_spacing.x;
-                    ui.horizontal_top(|ui| {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(left_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                components::card(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    self.render_settings(ui, language);
-                                });
-                                ui.add_space(12.0);
-                                self.render_region_settings(ui, language, lyrics, selected);
-                            },
-                        );
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(right_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| self.render_preview(ui, language, &mut selected),
-                        );
-                    });
-                } else {
-                    components::card(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        self.render_settings(ui, language);
-                    });
-                    ui.add_space(12.0);
-                    self.render_preview(ui, language, &mut selected);
-                    ui.add_space(12.0);
-                    self.render_region_settings(ui, language, lyrics, selected);
-                }
-                ui.add_space(16.0);
-                components::showcase(ui, language, &crate::ui::previews::avatar());
-                ui.add_space(8.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(right_width, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| self.render_preview(ui, language, &mut selected),
+                );
             });
+        } else {
+            components::card(ui, |ui| {
+                ui.set_width(ui.available_width());
+                self.render_connection(ui, language);
+            });
+            ui.add_space(12.0);
+            self.render_preview(ui, language, &mut selected);
+            ui.add_space(12.0);
+            self.render_region_settings(ui, language, lyrics, selected);
+        }
         ui.data_mut(|data| data.insert_temp(selection_id, selected));
         before != self.settings
     }

@@ -1,7 +1,7 @@
 # VRChat Avatar controls
 
-XRTranslate includes an opt-in built-in plugin that lets a prepared VRChat Avatar
-request translation through its Expressions Menu. The [shared connector guide](avatar-connectors.md)
+XRTranslate lets a prepared VRChat Avatar request translation through its
+Expressions Menu when the VRChat connection is enabled in **Game Plugins**. The [shared connector guide](avatar-connectors.md)
 defines connector selection and common session behavior. The companion
 [XRT-Avatar-Plugin](https://github.com/NowLoadY/XRT-Avatar-Plugin) repository owns
 its VRChat adapter's editor package, parameter manifest and shared connector core.
@@ -10,26 +10,25 @@ Avatar upload and end-to-end behavior with a real VRChat client remain unverifie
 
 ## Setup
 
-1. Use a build with **Settings → Plugins → Avatar**. Finish
-   XRTranslate setup and select the languages, microphone/system audio source
-   and recognition settings. Configure the existing outputs you want to use.
+1. Finish XRTranslate setup and select the languages, microphone/system audio
+   source and recognition settings. Configure the existing outputs you want to use.
 2. In an existing Avatar authoring project, follow the companion
    [installation guide](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/vrchat/installation.md)
    to add the `XRT → Translation` menu and upload with the official SDK. No Unity
    installation is part of the desktop integration.
-3. Select that Avatar in VRChat, enable VRChat OSC, then enable **Avatar**
-   in XRTranslate. The default is disabled.
-4. Wait for synchronization to finish and the plugin settings to report Off.
+3. Select that Avatar in VRChat and enable VRChat OSC. In XRTranslate, open
+   **Game Plugins** in the sidebar, select **VRChat**, and turn on **Enable**.
+4. Wait for synchronization to finish and the page to report Off.
    Use `Expressions → XRT → Translation` to start or stop its session.
 
 The menu tick represents a request. Starting means startup is pending; Active
 requires capture and backend readiness. Off requests cancellation, with Stopping
 retained until cleanup finishes. Error and Unavailable include diagnostics in
-plugin settings. A failed or interrupted operation resets the request and cannot
+the Game Plugins page. A failed or interrupted operation resets the request and cannot
 restart merely because an old On value is still present.
 
 Each Avatar needs its own installed menu and caption objects. In XRTranslate's
-**Avatar** page, **Display content** selects output to those objects; Header,
+**Game Plugins** page, **Display content** selects output to those objects; Header,
 Messages and Footer control its composition. Chatbox, overlay and TTS retain
 their own output settings. A menu-only Avatar continues to work.
 

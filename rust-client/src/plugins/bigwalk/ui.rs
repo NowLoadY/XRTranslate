@@ -36,7 +36,7 @@ pub(crate) enum BigWalkUiAction {
 }
 
 impl BigWalkPlugin {
-    pub(crate) fn render_page(
+    pub(crate) fn render_content(
         &mut self,
         ui: &mut egui::Ui,
         context: BigWalkPageContext<'_>,
@@ -45,49 +45,33 @@ impl BigWalkPlugin {
             .request_repaint_after(std::time::Duration::from_millis(300));
         let mut actions = Vec::new();
         let snapshot = self.snapshot();
-        egui::Panel::bottom(ui.make_persistent_id("bigwalk_input"))
-            .show_separator_line(false)
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| {
-                ui.add_space(10.0);
-                self.render_composer(ui, &context, &snapshot, &mut actions);
-            });
-        egui::ScrollArea::vertical()
-            .id_salt("bigwalk_page_scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new("Big Walk")
-                        .size(22.0)
-                        .color(theme::text_strong())
-                        .strong(),
+        let width = ui.available_width();
+        if width >= 720.0 {
+            let left_width = (width * 0.46).clamp(320.0, 420.0);
+            let right_width = width - left_width - ui.spacing().item_spacing.x;
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(left_width, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| self.render_controls(ui, context.language, &snapshot, &mut actions),
                 );
-                ui.add_space(12.0);
-                let width = ui.available_width();
-                if width >= 720.0 {
-                    let left_width = (width * 0.46).clamp(300.0, 420.0);
-                    let right_width = width - left_width - ui.spacing().item_spacing.x;
-                    ui.horizontal_top(|ui| {
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(left_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                self.render_controls(ui, context.language, &snapshot, &mut actions)
-                            },
-                        );
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(right_width, 0.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| render_last_sent(ui, context.language, &snapshot),
-                        );
-                    });
-                } else {
-                    self.render_controls(ui, context.language, &snapshot, &mut actions);
-                    ui.add_space(12.0);
-                    render_last_sent(ui, context.language, &snapshot);
-                }
-                ui.add_space(8.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(right_width, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| render_last_sent(ui, context.language, &snapshot),
+                );
             });
+        } else {
+            self.render_controls(ui, context.language, &snapshot, &mut actions);
+            ui.add_space(12.0);
+            render_last_sent(ui, context.language, &snapshot);
+        }
+        ui.add_space(16.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| self.render_composer(ui, &context, &snapshot, &mut actions),
+        );
         actions
     }
 
@@ -101,13 +85,6 @@ impl BigWalkPlugin {
         let mut changed = false;
         components::card(ui, |ui| {
             ui.set_width(ui.available_width());
-            changed |= components::toggle_with_label(
-                ui,
-                &mut self.settings.enabled,
-                tr(language, "Send to Big Walk"),
-            )
-            .changed();
-            ui.add_space(8.0);
             let status = match snapshot.status {
                 ConnectionStatus::Disabled => "Sending is off",
                 ConnectionStatus::Connecting => "Open Big Walk with the XRT bridge.",
@@ -198,10 +175,9 @@ impl BigWalkPlugin {
                 language: context.language,
                 capabilities: context.languages,
                 preparing: context.preparing_text,
-                translation_enabled: self.settings.enabled
-                    && snapshot.status == ConnectionStatus::Ready,
+                translation_enabled: snapshot.status == ConnectionStatus::Ready,
                 allow_direct: true,
-                direct_enabled: self.settings.enabled && snapshot.status == ConnectionStatus::Ready,
+                direct_enabled: snapshot.status == ConnectionStatus::Ready,
                 show_languages: false,
             },
         ) {

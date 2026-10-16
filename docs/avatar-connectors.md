@@ -1,9 +1,10 @@
-# Avatar connectors
+# Game Plugins
 
-**Settings → Plugins → Avatar** connects game components to
-XRTranslate. Select the game connector, enable the plugin, and install its
-[XRT-Avatar-Plugin component](https://github.com/NowLoadY/XRT-Avatar-Plugin).
-The plugin is disabled by default.
+Open **Game Plugins** in the sidebar, choose your **Game**, and turn on
+**Enable** at the top of the page. Install its
+[XRT-Avatar-Plugin component](https://github.com/NowLoadY/XRT-Avatar-Plugin)
+using the game guide. The page is always available; **Enable** is off by default.
+Switching games changes the active connection and clears its pending output.
 
 | Connector | Game interaction | Host transport |
 |---|---|---|
@@ -12,6 +13,7 @@ The plugin is disabled by default.
 | Overte | Avatar script and Tablet button | Paired local WebSocket |
 | Resonite | Native controls through ResoniteLink | Paired local WebSocket bridge |
 | Second Life | LSL attachment | HTTPS relay and local WebSocket bridge |
+| Big Walk | Native chat | Local TCP bridge |
 
 These are development-preview integrations. Platform setup and game-client
 verification are maintained in the companion guides. ResoniteLink requires an
@@ -20,7 +22,10 @@ eligible session hosted by the user. Second Life requires an HTTPS relay.
 ## Setup and use
 
 Finish XRTranslate setup and select languages, input and recognition settings.
-Configure desired host outputs. For VRChat and ChilloutVR, enable OSC in the game;
+Configure desired host outputs. For Big Walk, follow the [chat guide](bigwalk-chat.md).
+Its audio source switches filter completed translations for chat.
+
+For avatar controls in VRChat and ChilloutVR, enable OSC in the game;
 for WebSocket connectors, copy the address and pairing token into the local
 component or bridge using its guide. Pairing credentials are runtime values and
 are not saved into shared game assets.
@@ -28,12 +33,12 @@ are not saved into shared game assets.
 Wait for synchronization and Off, then operate the game control. Starting means
 startup is pending; Active requires capture and backend readiness. Off cancels
 pending startup and running work, with Stopping retained until cleanup finishes.
-Read connection diagnostics in plugin settings and session failures in host
+Read connection diagnostics on the page and session failures in host
 notifications. Reconnection and connector changes start with the control Off.
 
-Open **Avatar** in the sidebar and enable **Display content**. Select Header,
+For caption objects, enable **Display content** in **Game Plugins**. Select Header,
 Messages or Footer in the preview to edit that region. Messages have their own
-source filter, language format, visible count and duration. Header and Footer
+source filter, language format and duration. Header and Footer
 can show custom text, system information or lyrics. Lyrics run when either Avatar
 or OSC requests them.
 
@@ -44,6 +49,13 @@ and TTS outputs keep their own settings.
 
 ## Ownership and configuration
 
+`plugins::game_plugins` supplies the shared game selector for this group page.
+The host activates its selected output while **Enable** is on and retires the
+previous one. `plugins::bigwalk` consumes committed results and sends bounded,
+one-shot chat messages; `plugins::avatar` manages structured
+caption displays and game-controlled translation sessions. Each retains its own
+settings and delivery lifecycle.
+
 `plugins::avatar` owns connector selection, validated intent and feedback.
 `avatar_host` turns shared controller effects into owned translation tasks.
 `session_coordinator` owns input acquisition, task identity and cancellation.
@@ -53,8 +65,8 @@ contracts, text codecs and one pure lifecycle. The host pins that single SDK.
 Each accepted request holds an exclusive lease on its selected live inputs.
 Overlapping active, paused or pending tasks are preserved and the request is
 rejected. Cancellation affects the requesting owner and retains its lease until
-workers finish. Switching connectors, losing the connection, disabling the
-plugin or turning off a required desktop input ends that operation.
+workers finish. Switching connectors, losing the connection, turning off
+**Enable** or a required desktop input ends that operation.
 
 Languages, source and recognition profiles are captured when requested; device
 and prompt settings are resolved when the session is created. TTS and existing
@@ -90,7 +102,7 @@ captions. Stream cancellation removes only that stream's messages. Connection
 changes clear all pending presentation. WebSocket coalesces full snapshots and
 deducts queue time from message lifetimes. The companion SDK lays out OSC regions,
 prioritizes body updates and selects changed chunks; the host confirms its cache
-only after actual send. The Avatar page uses the same OSC layout for its preview.
+only after actual send. The Game Plugins page uses the same OSC layout for its preview.
 Header/footer updates never restart the whole board. Superseded snapshots do not
 form a playback queue, and hidden messages do not gain extra lifetime.
 

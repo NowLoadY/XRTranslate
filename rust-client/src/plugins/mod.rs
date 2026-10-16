@@ -9,6 +9,7 @@
 pub(crate) mod auto_input;
 pub(crate) mod avatar;
 pub(crate) mod bigwalk;
+pub(crate) mod game_plugins;
 #[cfg(any(windows, target_os = "linux"))]
 pub(crate) mod lyrics;
 pub mod media;
@@ -32,7 +33,6 @@ impl PluginId {
     pub const VOCABULARY: Self = Self("vocabulary");
     pub const OSC: Self = Self("osc");
     pub const CHILLOUTVR_OSC: Self = Self("chilloutvr_osc");
-    pub const BIGWALK: Self = Self("bigwalk");
     pub const AVATAR: Self = Self("avatar");
     pub const MEETING: Self = Self("meeting");
     pub const MEDIA: Self = Self("video_player");
@@ -44,7 +44,7 @@ impl PluginId {
         match self {
             Self::AUTO_INPUT => cfg!(windows),
             Self::LYRICS | Self::OCR => cfg!(any(target_os = "windows", target_os = "linux")),
-            Self::AVATAR | Self::BIGWALK => cfg!(any(target_os = "windows", target_os = "linux")),
+            Self::AVATAR => cfg!(any(target_os = "windows", target_os = "linux")),
             Self::VR_OVERLAY => !cfg!(target_os = "android"),
             _ => true,
         }
@@ -60,7 +60,6 @@ impl PluginId {
             "vocabulary" => Some(Self::VOCABULARY),
             "osc" => Some(Self::OSC),
             "chilloutvr_osc" => Some(Self::CHILLOUTVR_OSC),
-            "bigwalk" => Some(Self::BIGWALK),
             "avatar" | "vrc_avatar" => Some(Self::AVATAR),
             "meeting" => Some(Self::MEETING),
             "video_player" | "media" => Some(Self::MEDIA),
@@ -143,7 +142,7 @@ pub struct PluginDescriptor {
     pub default_enabled: bool,
 }
 
-const PLUGIN_DESCRIPTORS: [PluginDescriptor; 9] = [
+const PLUGIN_DESCRIPTORS: [PluginDescriptor; 7] = [
     PluginDescriptor {
         id: PluginId::VOCABULARY,
         title_key: "Vocabulary",
@@ -223,19 +222,6 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 9] = [
         default_enabled: false,
     },
     PluginDescriptor {
-        id: PluginId::BIGWALK,
-        title_key: "Big Walk",
-        description_key: "Send translations to Big Walk text chat.",
-        navigation_order: Some(207),
-        icon: PluginIcon {
-            uri: "bytes://plugins/bigwalk/icon.svg",
-            bytes: include_bytes!("../../resources/icons/translation.svg"),
-        },
-        scroll_policy: PluginScrollPolicy::Plugin,
-        settings_contribution: PluginSettingsContribution::EnablementOnly,
-        default_enabled: false,
-    },
-    PluginDescriptor {
         id: PluginId::LYRICS,
         title_key: "Lyrics",
         description_key: "Show synced lyrics or the current media title in your selected outputs.",
@@ -247,19 +233,6 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 9] = [
         scroll_policy: PluginScrollPolicy::Plugin,
         settings_contribution: PluginSettingsContribution::EnablementOnly,
         default_enabled: true,
-    },
-    PluginDescriptor {
-        id: PluginId::AVATAR,
-        title_key: "Avatar",
-        description_key: "Arrange messages, lyrics and information on game objects.",
-        navigation_order: Some(210),
-        icon: PluginIcon {
-            uri: "bytes://plugins/avatar/icon.svg",
-            bytes: include_bytes!("../../resources/plugins/osc/icon.svg"),
-        },
-        scroll_policy: PluginScrollPolicy::Plugin,
-        settings_contribution: PluginSettingsContribution::Plugin,
-        default_enabled: false,
     },
 ];
 

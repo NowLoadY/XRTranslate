@@ -43,7 +43,7 @@ across documents; link to its owner.
 
 - [OSC Chatbox](osc-chatbox.md): native VRChat and ChilloutVR captions and shared content layout.
 - [Big Walk chat](bigwalk-chat.md): completed translations sent through the local game bridge.
-- [Avatar connectors](avatar-connectors.md): game components, connection setup and shared lifecycle.
+- [Game Plugins](avatar-connectors.md): game selection, connection setup and shared lifecycle.
 - [VRChat Avatar controls](vrchat-avatar.md): paired Avatar package, setup,
   session ownership and connection behavior.
 - [SteamVR spatial voice](design/steamvr-spatial-voice.md): microphone interaction,

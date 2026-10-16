@@ -197,6 +197,11 @@ impl AutomationDriver {
                 }
                 let page = match target.as_str() {
                     "translation" => Some(Page::Translation),
+                    "gameplugins" | "game_plugins" | "game-plugins" => {
+                        crate::plugins::PluginId::AVATAR
+                            .is_supported()
+                            .then_some(Page::GamePlugins)
+                    }
                     "settings" => Some(Page::Settings),
                     "audiostudio" | "audio_studio" | "audio-studio" | "audio" => {
                         Some(Page::AudioStudio)
@@ -227,7 +232,7 @@ impl AutomationDriver {
                     ));
                 } else {
                     let _ = responder.send(DirectorResponse::err(format!(
-                        "Unknown page '{page_name}'. Valid pages: Translation, Settings, AudioStudio, PromptStudio, CorpusStudio, TtsCenter, plugin:<id>, onboarding:<step>"
+                        "Unknown page '{page_name}'. Valid pages: Translation, GamePlugins, Settings, AudioStudio, PromptStudio, CorpusStudio, TtsCenter, plugin:<id>, onboarding:<step>"
                     )));
                 }
             }

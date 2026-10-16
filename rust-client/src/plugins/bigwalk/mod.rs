@@ -16,7 +16,6 @@ pub(crate) use ui::{BigWalkPageContext, BigWalkUiAction};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct BigWalkSettings {
-    pub enabled: bool,
     pub audio_sources: AudioSourceFilter,
     pub format: MessageFormat,
 }
@@ -24,7 +23,6 @@ pub(crate) struct BigWalkSettings {
 impl Default for BigWalkSettings {
     fn default() -> Self {
         Self {
-            enabled: false,
             audio_sources: AudioSourceFilter {
                 microphone: true,
                 system_audio: false,

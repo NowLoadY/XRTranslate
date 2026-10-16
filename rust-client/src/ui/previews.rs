@@ -45,7 +45,19 @@ pub(crate) fn welcome() -> Vec<ShowcaseSlide> {
     slides
 }
 
-pub(crate) fn avatar() -> [ShowcaseSlide; 5] {
+pub(crate) fn game_plugins() -> Vec<ShowcaseSlide> {
+    let mut slides = Vec::from(avatar());
+    slides.push(ShowcaseSlide {
+        title: "XRT-Avatar-Plugin",
+        description: "Translate your speech into Big Walk chat.",
+        image: egui::include_image!("../../../assets/showcase-bigwalk.webp"),
+        detail: Some("Big Walk"),
+        url: Some("https://github.com/NowLoadY/XRT-Avatar-Plugin"),
+    });
+    slides
+}
+
+fn avatar() -> [ShowcaseSlide; 5] {
     [
         (
             "VRChat",

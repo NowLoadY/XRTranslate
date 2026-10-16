@@ -27,6 +27,7 @@ pub enum Page {
     #[default]
     Translation,
     Plugin(crate::plugins::PluginId),
+    GamePlugins,
     Settings,
     AudioStudio,
     PromptStudio,
@@ -41,6 +42,7 @@ impl Serialize for Page {
     {
         match self {
             Self::Translation => serializer.serialize_str("Translation"),
+            Self::GamePlugins => serializer.serialize_str("GamePlugins"),
             Self::Settings => serializer.serialize_str("Settings"),
             Self::AudioStudio => serializer.serialize_str("AudioStudio"),
             Self::TtsCenter => serializer.serialize_str("TtsCenter"),
@@ -59,6 +61,7 @@ impl<'de> Deserialize<'de> for Page {
         let value = String::deserialize(deserializer)?;
         match value.as_str() {
             "Translation" | "translation" => Ok(Self::Translation),
+            "GamePlugins" | "game_plugins" => Ok(Self::GamePlugins),
             "Settings" | "settings" => Ok(Self::Settings),
             "AudioStudio" => Ok(Self::AudioStudio),
             "PromptStudio" | "prompt_studio" | "prompt-studio" => Ok(Self::PromptStudio),
@@ -185,13 +188,10 @@ pub fn render_sidebar(
                 for entry in navigation_entries(plugin_preferences, tts_configured) {
                     let is_game_plugin = matches!(
                         entry.page,
-                        Page::Plugin(
-                            PluginId::VR_OVERLAY
-                                | PluginId::OSC
-                                | PluginId::CHILLOUTVR_OSC
-                                | PluginId::BIGWALK
-                                | PluginId::AVATAR
-                        )
+                        Page::GamePlugins
+                            | Page::Plugin(
+                                PluginId::VR_OVERLAY | PluginId::OSC | PluginId::CHILLOUTVR_OSC
+                            )
                     );
                     if (is_game_plugin && !in_game_group) || entry.page == Page::AudioStudio {
                         ui.add_space(if compact_height { 3.0 } else { 8.0 });
@@ -599,6 +599,13 @@ fn navigation_entries(
                 icon: descriptor.icon.image_source(),
             }),
     );
+    if crate::plugins::PluginId::AVATAR.is_supported() {
+        entries.push(NavigationEntry {
+            page: Page::GamePlugins,
+            title: "Game Plugins",
+            icon: include_image!("../../resources/plugins/game_plugins/icon.svg"),
+        });
+    }
     entries.push(NavigationEntry {
         page: Page::AudioStudio,
         title: "Audio Studio",
