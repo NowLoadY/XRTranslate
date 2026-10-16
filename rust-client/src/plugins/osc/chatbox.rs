@@ -7,7 +7,7 @@ use super::runtime::{
     BannerContentType, OscFormatMode, OscInputSource, OscMessageSeparator, OscSettings,
 };
 
-const MAX_LINES: usize = 9;
+const MAX_ENTRIES: usize = 9;
 
 #[derive(Clone)]
 pub(super) struct HistoryMessage {
@@ -46,7 +46,7 @@ pub(super) fn build_chatbox_text(
     entries
         .make_contiguous()
         .sort_by_key(|entry| entry.updated_at);
-    while entries.len() > MAX_LINES {
+    while entries.len() > MAX_ENTRIES {
         entries.pop_front();
     }
 
@@ -74,7 +74,7 @@ pub(super) fn build_chatbox_text(
         // Keep their established priority; decorations may not consume the body.
         let mut prefix = prefix.as_str();
         let mut suffix = suffix.as_str();
-        while decoration_length(prefix, suffix) >= settings.max_text_length {
+        while decoration_length(prefix, suffix) >= settings.text_limit() {
             if !suffix.is_empty() {
                 suffix = "";
             } else if !prefix.is_empty() {
@@ -84,18 +84,28 @@ pub(super) fn build_chatbox_text(
             }
         }
         let limit = settings
-            .max_text_length
+            .text_limit()
             .saturating_sub(decoration_length(prefix, suffix));
-        let lines = MAX_LINES.saturating_sub(prefix.lines().count() + suffix.lines().count());
+        let lines = settings
+            .line_limit()
+            .saturating_sub(prefix.lines().count() + suffix.lines().count());
         let body = fit_manual_entries(&mut entries, manual, settings, limit, lines);
-        return fit_lines(compose_chatbox(prefix, &body, suffix), MAX_LINES);
+        return fit_lines(
+            compose_chatbox(prefix, &body, suffix),
+            settings.line_limit(),
+        );
     }
 
     // In persistent mode the decorations remain visible after message TTLs
     // expire; ordinary messages still disappear from `history`/`live`.
     if entries.is_empty() {
         return if settings.persistent_banners {
-            fit_decorations(&prefix, &suffix, settings.max_text_length)
+            fit_decorations(
+                &prefix,
+                &suffix,
+                settings.text_limit(),
+                settings.line_limit(),
+            )
         } else {
             // A selected lyric is a live output, independent of caption TTLs.
             let header = if settings.header_config.content_type == BannerContentType::Lyrics {
@@ -108,7 +118,7 @@ pub(super) fn build_chatbox_text(
             } else {
                 ""
             };
-            fit_decorations(header, footer, settings.max_text_length)
+            fit_decorations(header, footer, settings.text_limit(), settings.line_limit())
         };
     }
 
@@ -119,8 +129,8 @@ pub(super) fn build_chatbox_text(
             &suffix,
         );
 
-        if combined.chars().count() <= settings.max_text_length
-            && combined.lines().count() <= MAX_LINES
+        if combined.chars().count() <= settings.text_limit()
+            && combined.lines().count() <= settings.line_limit()
         {
             return combined;
         }
@@ -324,7 +334,7 @@ fn compose_chatbox(prefix: &str, content: &str, suffix: &str) -> String {
         .join("\n")
 }
 
-fn fit_decorations(prefix: &str, suffix: &str, limit: usize) -> String {
+fn fit_decorations(prefix: &str, suffix: &str, limit: usize, lines: usize) -> String {
     if limit == 0 {
         return String::new();
     }
@@ -339,7 +349,7 @@ fn fit_decorations(prefix: &str, suffix: &str, limit: usize) -> String {
             break;
         }
     }
-    fit_lines(compose_chatbox(&prefix, &suffix, ""), MAX_LINES)
+    fit_lines(compose_chatbox(&prefix, &suffix, ""), lines)
 }
 
 pub(super) fn render_entry(entry: &HistoryMessage, settings: &OscSettings) -> String {
@@ -481,7 +491,7 @@ fn fit_single_entry(
     settings: &OscSettings,
 ) -> String {
     let rendered = render_entry(entry, settings);
-    let limit = settings.max_text_length;
+    let limit = settings.text_limit();
     let mut prefix = prefix;
     let mut suffix = suffix;
 
@@ -504,7 +514,10 @@ fn fit_single_entry(
     } else {
         trim_text(&rendered, content_limit)
     };
-    fit_lines(compose_chatbox(prefix, &content, suffix), MAX_LINES)
+    fit_lines(
+        compose_chatbox(prefix, &content, suffix),
+        settings.line_limit(),
+    )
 }
 
 fn fit_lines(text: String, limit: usize) -> String {
@@ -704,7 +717,7 @@ mod tests {
                     &lyrics,
                 );
                 assert!(text.chars().count() <= limit, "limit {limit}: {text}");
-                assert!(text.lines().count() <= MAX_LINES);
+                assert!(text.lines().count() <= settings.line_limit());
             }
         }
     }
@@ -762,7 +775,7 @@ mod tests {
                 ),
                 "🎤 译文"
             );
-            let previews = vec![recognized.clone(); MAX_LINES];
+            let previews = vec![recognized.clone(); MAX_ENTRIES];
             assert_eq!(
                 build_chatbox_text(
                     &[translated],

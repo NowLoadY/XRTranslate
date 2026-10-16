@@ -1,4 +1,6 @@
 mod chatbox;
+mod game;
+pub use game::OscGame;
 mod microphone;
 pub mod runtime;
 pub mod transport;
@@ -6,7 +8,6 @@ pub mod ui;
 
 use crate::plugins::text_output::TextOutputHandle;
 use eframe::egui;
-use std::sync::{Arc, atomic::AtomicBool};
 
 use runtime::{OscHandle, OscManager, OscSettings};
 pub use ui::{OscPageContext, OscUiAction};
@@ -50,27 +51,62 @@ impl HostOutputSubscriber for OscHandle {
     }
 }
 
-/// Owns all OSC state and runtime resources behind the desktop plugin boundary.
-///
-/// `host_enabled` controls Chatbox output and the manual listener, while
-/// `draft.enabled` retains the user's OSC-output preference across sidebar
-/// activation changes.
+/// One game's Chatbox state, composition and writer. An optional shared receiver
+/// supplies game controls independently of the writer's lifetime.
 pub struct OscPlugin {
     manager: OscManager,
     draft: OscSettings,
+    applied: OscSettings,
     composer: TextComposer,
     host_enabled: bool,
+    receiver: Option<transport::OscTransportHandle>,
 }
 
 impl OscPlugin {
-    pub fn new(draft: OscSettings, host_enabled: bool, text_output: TextOutputHandle) -> Self {
-        let manager = OscManager::new(effective_settings(&draft, host_enabled), text_output);
+    pub fn new(
+        game: OscGame,
+        mut draft: OscSettings,
+        host_enabled: bool,
+        text_output: TextOutputHandle,
+        receiver: Option<transport::OscTransportHandle>,
+    ) -> Self {
+        draft.game = game;
+        draft.max_text_length = draft.text_limit().max(1);
+        let applied = effective_settings(&draft, host_enabled);
+        let manager = OscManager::new(applied.clone(), text_output);
         Self {
             manager,
             draft,
+            applied,
             composer: TextComposer::default(),
             host_enabled,
+            receiver,
         }
+    }
+
+    pub fn game(&self) -> OscGame {
+        self.draft.game
+    }
+
+    pub fn receiver(&self) -> Option<&transport::OscTransportHandle> {
+        self.receiver.as_ref()
+    }
+
+    pub fn applied(&self) -> &OscSettings {
+        &self.applied
+    }
+
+    pub fn relinquish_endpoint(&mut self) -> Result<(), String> {
+        self.manager.relinquish_endpoint();
+        self.disable_output()
+    }
+
+    pub fn disable_output(&mut self) -> Result<(), String> {
+        let mut settings = self.applied.clone();
+        settings.enabled = false;
+        self.apply_settings(settings)?;
+        self.draft.enabled = false;
+        Ok(())
     }
 
     pub fn manager(&self) -> &OscManager {
@@ -110,31 +146,35 @@ impl OscPlugin {
     }
 
     pub fn apply_draft(&mut self) -> Result<(), String> {
-        self.manager
-            .update_settings(effective_settings(&self.draft, self.host_enabled))
+        let settings = effective_settings(&self.draft, self.host_enabled);
+        self.apply_settings(settings)
+    }
+
+    fn apply_settings(&mut self, settings: OscSettings) -> Result<(), String> {
+        self.manager.update_settings(settings.clone())?;
+        if let Some(receiver) = &self.receiver {
+            receiver.update_settings(&settings);
+        }
+        self.applied = settings;
+        Ok(())
     }
 
     pub fn activate(&mut self) -> Result<(), String> {
+        self.apply_settings(effective_settings(&self.draft, true))?;
         self.host_enabled = true;
-        self.apply_draft()
+        Ok(())
     }
 
     pub fn deactivate(&mut self) -> Result<(), String> {
-        self.manager.clear_chatbox();
+        let mut settings = self.applied.clone();
+        settings.enabled = false;
+        self.apply_settings(settings)?;
         self.host_enabled = false;
-        self.apply_draft()
+        Ok(())
     }
 
     pub fn publisher(&self) -> OscHandle {
         self.manager.handle()
-    }
-
-    pub fn transport(&self) -> transport::OscTransportHandle {
-        self.manager.transport()
-    }
-
-    pub fn mute_state(&self) -> Arc<AtomicBool> {
-        self.manager.muted_state()
     }
 
     pub fn clear_chatbox(&self) {

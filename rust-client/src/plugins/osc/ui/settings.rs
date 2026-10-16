@@ -7,6 +7,10 @@ pub fn render(
     language: crate::i18n::UiLanguage,
 ) -> Vec<super::OscUiAction> {
     let mut actions = Vec::new();
+    let game = plugin.game();
+    let receiver_status = (game == super::super::OscGame::VRChat)
+        .then(|| plugin.receiver().map(|receiver| receiver.state().listener))
+        .flatten();
     components::action_card(ui, |ui| {
         components::feature_ui(
             ui,
@@ -14,42 +18,19 @@ pub fn render(
             language,
             |ui| {
                 ui.vertical(|ui| {
-                    let status = plugin.manager().listener_status();
-                    let is_active = status.contains("Listening") || status.contains("Active");
-                    let compact = ui.available_width() < 420.0;
-                    if compact {
-                        ui.vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new(crate::i18n::tr(
-                                    language,
-                                    "OSC Network Settings",
-                                ))
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            egui::RichText::new(crate::i18n::tr(language, "OSC Network Settings"))
                                 .size(14.0)
                                 .color(crate::ui::theme::text_strong())
                                 .strong(),
-                            );
-                            ui.add_space(4.0);
-                            components::status_badge(ui, &status, is_active, false);
-                        });
-                    } else {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(crate::i18n::tr(
-                                    language,
-                                    "OSC Network Settings",
-                                ))
-                                .size(14.0)
-                                .color(crate::ui::theme::text_strong())
-                                .strong(),
-                            );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    components::status_badge(ui, &status, is_active, false);
-                                },
-                            );
-                        });
-                    }
+                        );
+                        if let Some(status) = &receiver_status {
+                            let is_active =
+                                status.contains("Listening") || status.contains("Active");
+                            components::status_badge(ui, status, is_active, false);
+                        }
+                    });
 
                     ui.add_space(10.0);
 
@@ -81,16 +62,18 @@ pub fn render(
                             );
                             ui.end_row();
 
-                            ui.label(
-                                egui::RichText::new(crate::i18n::tr(language, "Listen Port:"))
-                                    .color(crate::ui::theme::text_strong())
-                                    .size(12.5),
-                            );
-                            ui.add(
-                                egui::DragValue::new(&mut plugin.draft_mut().listen_port)
-                                    .range(1..=u16::MAX),
-                            );
-                            ui.end_row();
+                            if game == super::super::OscGame::VRChat {
+                                ui.label(
+                                    egui::RichText::new(crate::i18n::tr(language, "Listen Port:"))
+                                        .color(crate::ui::theme::text_strong())
+                                        .size(12.5),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut plugin.draft_mut().listen_port)
+                                        .range(1..=u16::MAX),
+                                );
+                                ui.end_row();
+                            }
 
                             ui.label(
                                 egui::RichText::new(crate::i18n::tr(language, "Max Text Length:"))
@@ -99,12 +82,10 @@ pub fn render(
                             );
                             ui.add(
                                 egui::DragValue::new(&mut plugin.draft_mut().max_text_length)
-                                    .range(1..=10_000),
+                                    .range(1..=game.max_text_length()),
                             );
                             ui.end_row();
                         });
-
-                    ui.add_space(10.0);
 
                     ui.add_space(12.0);
 
@@ -116,10 +97,7 @@ pub fn render(
                             )
                             .clicked()
                             {
-                                actions.push(super::OscUiAction::SettingsApplied(
-                                    plugin.apply_draft(),
-                                ));
-                                actions.push(super::OscUiAction::SaveSettings);
+                                actions.push(super::OscUiAction::ApplySettings);
                             }
                         });
                     });

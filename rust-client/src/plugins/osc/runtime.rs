@@ -9,19 +9,19 @@ use crate::plugins::text_output::{LyricsText, TextOutputHandle};
 use crate::session_coordinator::AudioSourceFilter;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use parking_lot::Mutex;
-use rosc::{OscMessage, OscPacket, OscType, encoder};
+use rosc::{OscType, encoder};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::net::UdpSocket;
 use std::path::PathBuf;
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const COOLDOWN: Duration = Duration::from_millis(500);
+// VRChat recommends 1.5 seconds between Chatbox updates. Coalesce revisions
+// during this interval; both native outputs use the same quiet cadence.
+const COOLDOWN: Duration = Duration::from_millis(1500);
 const BANNER_REFRESH_INTERVAL: Duration = Duration::from_millis(1050);
-const MAX_VOICE_CHARACTERS: usize = 144;
-const MAX_VOICE_LINES: usize = 9;
 pub const MAX_PREFIX_LENGTH: usize = 24;
 
 /// Acknowledges local UDP delivery, not receipt by the game.
@@ -95,6 +95,8 @@ fn default_typing_target_lang() -> String {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OscSettings {
+    #[serde(skip)]
+    pub game: super::OscGame,
     pub enabled: bool,
     #[serde(default)]
     pub audio_source_filter: AudioSourceFilter,
@@ -146,6 +148,7 @@ pub(super) fn default_lyric_offset_seconds() -> f64 {
 impl Default for OscSettings {
     fn default() -> Self {
         Self {
+            game: super::OscGame::VRChat,
             enabled: true,
             audio_source_filter: AudioSourceFilter::default(),
             ip: "127.0.0.1".into(),
@@ -189,6 +192,24 @@ struct OscConfig {
 }
 
 impl OscSettings {
+    pub fn for_game(game: super::OscGame) -> Self {
+        Self {
+            game,
+            ..Self::default()
+        }
+    }
+
+    pub fn text_limit(&self) -> usize {
+        self.max_text_length.min(self.game.max_text_length())
+    }
+
+    pub fn line_limit(&self) -> usize {
+        match self.game {
+            super::OscGame::VRChat => 9,
+            super::OscGame::ChilloutVR => self.text_limit(),
+        }
+    }
+
     pub(crate) fn prepare_voice_text(&self, text: &str) -> Result<String, String> {
         let text = sanitize_chatbox_segment(text);
         self.validate_voice_text(&text)?;
@@ -203,15 +224,16 @@ impl OscSettings {
             return Err("There is no voice text to send".into());
         }
         let length = text.chars().count();
-        let limit = self.max_text_length.min(MAX_VOICE_CHARACTERS);
+        let limit = self.text_limit();
         if length > limit {
             return Err(format!(
                 "Voice text has {length} characters; the Chatbox limit is {limit}. Shorten it before sending."
             ));
         }
-        if text.lines().count() > MAX_VOICE_LINES {
+        let line_limit = self.line_limit();
+        if text.lines().count() > line_limit {
             return Err(format!(
-                "Voice text exceeds the Chatbox limit of {MAX_VOICE_LINES} lines. Shorten it before sending."
+                "Voice text exceeds the Chatbox limit of {line_limit} lines. Shorten it before sending."
             ));
         }
         Ok(())
@@ -224,7 +246,7 @@ impl OscSettings {
             .into_iter()
             .filter(|banner| banner.content_type == BannerContentType::Lyrics)
             .count();
-        (self.enabled && slots > 0).then(|| (self.max_text_length / 3).min(48) / slots)
+        (self.enabled && slots > 0).then(|| (self.text_limit() / 3).min(48) / slots)
     }
 
     pub(crate) fn lyric_offset_ms(&self) -> i32 {
@@ -268,12 +290,15 @@ impl OscSettings {
         settings
     }
 
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         if self.ip.trim().is_empty() {
             return Err("OSC IP address cannot be empty".into());
         }
-        if self.max_text_length == 0 {
-            return Err("OSC maximum text length must be at least 1".into());
+        if !(1..=self.game.max_text_length()).contains(&self.max_text_length) {
+            return Err(format!(
+                "OSC text budget must be between 1 and {}",
+                self.game.max_text_length()
+            ));
         }
         if !self.history_ttl_seconds.is_finite() || self.history_ttl_seconds < 0.0 {
             return Err("OSC history TTL must be non-negative".into());
@@ -554,7 +579,6 @@ impl OscHandle {
 
 #[derive(Default)]
 pub(super) struct RuntimeStatus {
-    pub(super) listener: String,
     pub(super) last_error: Option<String>,
     chatbox_text: String,
     chatbox_typing: bool,
@@ -568,14 +592,12 @@ pub struct ChatboxPreview {
     pub next_message_expires_in: Option<Duration>,
 }
 
-/// Owns the VRChat OSC UDP listener and a single coalescing chatbox writer.
-/// This keeps VRChat mute-state handling off the ASR path.
+/// One game's coalescing Chatbox writer. Receive/control has a separate owner.
 pub struct OscManager {
-    muted: Arc<AtomicBool>,
     status: Arc<Mutex<RuntimeStatus>>,
     tx: Sender<Command>,
     worker: Option<JoinHandle<()>>,
-    transport: super::transport::TransportOwner,
+    send_permitted: Arc<Mutex<bool>>,
     pending_cancellations: Arc<Mutex<BTreeSet<u64>>>,
     microphone_review: Arc<Mutex<MicrophoneReview>>,
 }
@@ -585,6 +607,8 @@ impl OscManager {
         let (tx, rx) = unbounded();
         let status = Arc::new(Mutex::new(RuntimeStatus::default()));
         let dispatch_settings = settings.clone();
+        let send_permitted = Arc::new(Mutex::new(true));
+        let dispatch_permission = send_permitted.clone();
         let dispatch_status = Arc::clone(&status);
         let pending_cancellations = Arc::new(Mutex::new(BTreeSet::new()));
         let dispatch_cancellations = pending_cancellations.clone();
@@ -599,35 +623,26 @@ impl OscManager {
                     dispatch_status,
                     dispatch_cancellations,
                     dispatch_review,
+                    dispatch_permission,
                     text_output,
                 )
             })
             .expect("failed to start OSC dispatcher");
-        let muted = Arc::new(AtomicBool::new(false));
-        let transport =
-            super::transport::TransportOwner::new(&settings, muted.clone(), status.clone());
         Self {
-            muted,
             status,
             tx,
             worker: Some(worker),
-            transport,
+            send_permitted,
             pending_cancellations,
             microphone_review,
         }
     }
 
-    pub fn transport(&self) -> super::transport::OscTransportHandle {
-        self.transport.handle()
+    /// Transfer an endpoint without an old queued clear erasing the new writer.
+    pub fn relinquish_endpoint(&self) {
+        *self.send_permitted.lock() = false;
     }
 
-    pub fn muted_state(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.muted)
-    }
-
-    pub fn listener_status(&self) -> String {
-        self.status.lock().listener.clone()
-    }
     pub fn take_error(&self) -> Option<String> {
         self.status.lock().last_error.take()
     }
@@ -656,13 +671,14 @@ impl OscManager {
     }
     pub fn update_settings(&mut self, settings: OscSettings) -> Result<(), String> {
         settings.validate()?;
-        self.transport.update_settings(&settings);
+        if settings.enabled {
+            *self.send_permitted.lock() = true;
+        }
         let _ = self.tx.send(Command::Update(settings));
         Ok(())
     }
     pub fn shutdown(&mut self) {
         self.clear_chatbox();
-        self.transport.shutdown();
         let _ = self.tx.send(Command::Shutdown);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -698,6 +714,7 @@ fn dispatch_loop(
     status: Arc<Mutex<RuntimeStatus>>,
     pending_cancellations: Arc<Mutex<BTreeSet<u64>>>,
     microphone_review: Arc<Mutex<MicrophoneReview>>,
+    send_permitted: Arc<Mutex<bool>>,
     text_output: TextOutputHandle,
 ) {
     let mut history = Vec::new();
@@ -934,7 +951,7 @@ fn dispatch_loop(
                 if settings.enabled && !updated.enabled {
                     cancel_voice_publication(&mut pending_voice, "OSC Chatbox output was disabled");
                     published_voice = None;
-                    let _ = send_message(&settings, &clear_message(), &status);
+                    let _ = send_message(&settings, &clear_message(), &status, &send_permitted);
                     pending = None;
                     manual_message = None;
                     history.clear();
@@ -1010,7 +1027,7 @@ fn dispatch_loop(
             // Never trim or reformat a body after the user's send gesture.
             let result = settings
                 .validate_voice_text(&message.text)
-                .and_then(|()| send_message(&settings, &message, &status));
+                .and_then(|()| send_message(&settings, &message, &status, &send_permitted));
             last_send = Instant::now();
             if result.is_ok() {
                 last_voice_operation = Some(publication.operation);
@@ -1053,7 +1070,7 @@ fn dispatch_loop(
                 runtime.chatbox_text == message.text && runtime.chatbox_typing == message.typing
             };
             if !unchanged || message.notify || (force_send && published_voice.is_none()) {
-                let _ = send_message(&settings, &message, &status);
+                let _ = send_message(&settings, &message, &status, &send_permitted);
                 last_send = Instant::now();
             }
             force_send = false;
@@ -1084,7 +1101,13 @@ fn send_message(
     settings: &OscSettings,
     message: &QueuedMessage,
     status: &Mutex<RuntimeStatus>,
+    send_permitted: &Mutex<bool>,
 ) -> Result<(), String> {
+    // Held only across local UDP submission, so handover fences both packets.
+    let permission = send_permitted.lock();
+    if !*permission {
+        return Err("OSC destination was transferred to another output".into());
+    }
     let result = send_packets(settings, message);
     let mut runtime = status.lock();
     match &result {
@@ -1102,25 +1125,15 @@ fn send_packets(settings: &OscSettings, message: &QueuedMessage) -> Result<(), S
     let socket = UdpSocket::bind("0.0.0.0:0")
         .map_err(|error| format!("Cannot create OSC sender: {error}"))?;
     let target = format!("{}:{}", settings.ip, settings.send_port);
-    for packet in [
-        OscPacket::Message(OscMessage {
-            addr: "/chatbox/typing".into(),
-            args: vec![OscType::Bool(message.typing)],
-        }),
-        OscPacket::Message(OscMessage {
-            addr: "/chatbox/input".into(),
-            args: vec![
-                OscType::String(message.text.clone()),
-                OscType::Bool(true),
-                OscType::Bool(message.notify),
-            ],
-        }),
-    ] {
-        let bytes = encoder::encode(&packet)
-            .map_err(|error| format!("Cannot encode VRChat OSC: {error}"))?;
+    for packet in settings
+        .game
+        .packets(&message.text, message.typing, message.notify)
+    {
+        let bytes =
+            encoder::encode(&packet).map_err(|error| format!("Cannot encode OSC: {error}"))?;
         socket
             .send_to(&bytes, &target)
-            .map_err(|error| format!("Cannot send VRChat OSC: {error}"))?;
+            .map_err(|error| format!("Cannot send OSC: {error}"))?;
     }
     Ok(())
 }

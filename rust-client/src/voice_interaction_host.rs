@@ -167,11 +167,11 @@ impl XRTranslateApp {
         let enabled = !self.first_run
             && self.microphone_sync_enabled
             && self.plugin_enabled(PluginId::OSC)
-            && self.osc_plugin.draft().enabled;
+            && self.osc_plugin.applied().enabled;
         self.voice_interaction
             .microphone_sync_active
             .store(enabled, Ordering::Release);
-        self.osc_plugin.transport().set_microphone_sync(enabled);
+        self.osc_transport.handle().set_microphone_sync(enabled);
     }
 
     /// Explicit microphone intent, not capture startup, failure or model cleanup.
@@ -182,13 +182,13 @@ impl XRTranslateApp {
             .microphone_sync_active
             .load(Ordering::Acquire)
         {
-            self.osc_plugin.transport().request_microphone(enabled);
+            self.osc_transport.handle().request_microphone(enabled);
         }
     }
 
     pub(crate) fn poll_microphone_sync(&mut self, ctx: &egui::Context) {
         self.refresh_microphone_sync();
-        if self.osc_plugin.transport().take_microphone_mute() {
+        if self.osc_transport.handle().take_microphone_mute() {
             self.set_microphone_input(false, Some(ctx.clone()), false, Self::start_task_capture);
             self.vr_overlay_plugin.manager().dock_microphone();
         }

@@ -41,6 +41,7 @@ across documents; link to its owner.
 
 ## Features and operations
 
+- [OSC Chatbox](osc-chatbox.md): native VRChat and ChilloutVR captions and shared content layout.
 - [Avatar connectors](avatar-connectors.md): game components, connection setup and shared lifecycle.
 - [VRChat Avatar controls](vrchat-avatar.md): paired Avatar package, setup,
   session ownership and connection behavior.

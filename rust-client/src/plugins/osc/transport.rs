@@ -5,7 +5,7 @@
 //! this module has no knowledge of a particular Avatar feature's parameters.
 use super::{
     microphone::{Edge, MicrophoneSync},
-    runtime::{OscSettings, RuntimeStatus, parse_mute_value},
+    runtime::{OscSettings, parse_mute_value},
 };
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use parking_lot::Mutex;
@@ -97,6 +97,7 @@ struct Shared {
     state: TransportState,
     events: VecDeque<TransportEvent>,
     microphone: MicrophoneSync,
+    last_error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -197,6 +198,7 @@ impl WriteLease {
 
 #[derive(Clone)]
 pub struct OscTransportHandle {
+    muted: Arc<AtomicBool>,
     config: Arc<Mutex<Config>>,
     shared: Arc<Mutex<Shared>>,
     tx: mpsc::Sender<Command>,
@@ -205,6 +207,14 @@ pub struct OscTransportHandle {
 }
 
 impl OscTransportHandle {
+    pub(crate) fn update_settings(&self, settings: &OscSettings) {
+        let mut config = self.config.lock();
+        config.manual_enabled = settings.enabled;
+        config.manual_ip.clone_from(&settings.ip);
+        config.manual_port = settings.listen_port;
+        config.send_port = settings.send_port;
+    }
+
     pub fn set_microphone_sync(&self, enabled: bool) {
         let mut config = self.config.lock();
         if config.microphone_sync != enabled {
@@ -337,23 +347,20 @@ impl OscTransportHandle {
     }
 }
 
-pub(super) struct TransportOwner {
+pub(crate) struct TransportOwner {
     handle: OscTransportHandle,
     worker: Option<JoinHandle<()>>,
 }
 
 impl TransportOwner {
-    pub(super) fn new(
-        settings: &OscSettings,
-        muted: Arc<AtomicBool>,
-        status: Arc<Mutex<RuntimeStatus>>,
-    ) -> Self {
+    pub(crate) fn new(settings: &OscSettings) -> Self {
         let config = Arc::new(Mutex::new(Config::new(settings)));
         let shared = Arc::new(Mutex::new(Shared::default()));
         let stop = Arc::new(AtomicBool::new(false));
         let overflow = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel(64);
         let handle = OscTransportHandle {
+            muted: Arc::new(AtomicBool::new(false)),
             config,
             shared,
             tx,
@@ -368,13 +375,11 @@ impl TransportOwner {
                     .enable_all()
                     .build();
                 match runtime {
-                    Ok(runtime) => {
-                        runtime.block_on(Worker::new(worker_handle, muted, status).run(rx))
-                    }
+                    Ok(runtime) => runtime.block_on(Worker::new(worker_handle).run(rx)),
                     Err(error) => {
                         let reason = format!("Cannot start OSC transport runtime: {error}");
                         worker_handle.shared.lock().state.diagnostic = Some(reason.clone());
-                        status.lock().last_error = Some(reason);
+                        worker_handle.shared.lock().last_error = Some(reason);
                     }
                 }
             })
@@ -385,19 +390,19 @@ impl TransportOwner {
         }
     }
 
-    pub(super) fn handle(&self) -> OscTransportHandle {
+    pub(crate) fn handle(&self) -> OscTransportHandle {
         self.handle.clone()
     }
 
-    pub(super) fn update_settings(&self, settings: &OscSettings) {
-        let mut config = self.handle.config.lock();
-        config.manual_enabled = settings.enabled;
-        config.manual_ip.clone_from(&settings.ip);
-        config.manual_port = settings.listen_port;
-        config.send_port = settings.send_port;
+    pub(crate) fn mute_state(&self) -> Arc<AtomicBool> {
+        self.handle.muted.clone()
     }
 
-    pub(super) fn shutdown(&mut self) {
+    pub(crate) fn take_error(&self) -> Option<String> {
+        self.handle.shared.lock().last_error.take()
+    }
+
+    pub(crate) fn shutdown(&mut self) {
         self.handle.stop.store(true, Ordering::Release);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -441,8 +446,6 @@ impl Drop for Discovery {
 
 struct Worker {
     handle: OscTransportHandle,
-    muted: Arc<AtomicBool>,
-    status: Arc<Mutex<RuntimeStatus>>,
     config: Option<Config>,
     socket: Option<UdpSocket>,
     discovery: Option<Discovery>,
@@ -459,11 +462,7 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(
-        handle: OscTransportHandle,
-        muted: Arc<AtomicBool>,
-        status: Arc<Mutex<RuntimeStatus>>,
-    ) -> Self {
+    fn new(handle: OscTransportHandle) -> Self {
         let client = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -472,8 +471,6 @@ impl Worker {
             .map_err(|e| format!("Cannot create OSCQuery client: {e}"));
         Self {
             handle,
-            muted,
-            status,
             config: None,
             socket: None,
             discovery: None,
@@ -539,7 +536,7 @@ impl Worker {
         self.invalidate("OSC transport stopped");
         self.discovery = None;
         self.socket = None;
-        self.muted.store(false, Ordering::Release);
+        self.handle.muted.store(false, Ordering::Release);
     }
 
     fn peer_profile(&self) -> OscPeerProfile {
@@ -572,7 +569,7 @@ impl Worker {
     }
 
     fn observe_microphone(&self, muted: bool) {
-        self.muted.store(muted, Ordering::Release);
+        self.handle.muted.store(muted, Ordering::Release);
         self.handle.shared.lock().microphone.observe(muted);
     }
 
@@ -673,7 +670,7 @@ impl Worker {
         self.invalidate("OSC receive configuration changed");
         self.discovery = None;
         self.socket = None;
-        self.muted.store(false, Ordering::Release);
+        self.handle.muted.store(false, Ordering::Release);
         self.handle.shared.lock().state.control_enabled = config.control_paths.is_some();
         if !config.query_enabled() && !config.manual_enabled {
             self.listener("Disabled".into());
@@ -715,12 +712,11 @@ impl Worker {
     }
 
     fn listener(&self, value: String) {
-        self.status.lock().listener.clone_from(&value);
         self.handle.shared.lock().state.listener = value;
     }
 
     fn error(&self, value: String) {
-        self.status.lock().last_error = Some(value.clone());
+        self.handle.shared.lock().last_error = Some(value.clone());
         self.handle.shared.lock().state.diagnostic = Some(value);
     }
 
@@ -733,7 +729,7 @@ impl Worker {
             .expect("OSC transport epoch exhausted");
         self.endpoint = None;
         self.avatar_id = None;
-        self.muted.store(false, Ordering::Release);
+        self.handle.muted.store(false, Ordering::Release);
         self.last_query_success = None;
         self.last_udp_values.clear();
         self.last_mute_datagram = None;
@@ -1437,17 +1433,14 @@ mod tests {
         let mut config = Config::new(&OscSettings::default());
         config.control_paths = Some([CONTROL.to_owned()].into_iter().collect());
         let handle = OscTransportHandle {
+            muted: Arc::new(AtomicBool::new(false)),
             config: Arc::new(Mutex::new(config.clone())),
             shared: Arc::new(Mutex::new(Shared::default())),
             tx,
             stop: Arc::new(AtomicBool::new(false)),
             overflow: Arc::new(AtomicBool::new(false)),
         };
-        let mut worker = Worker::new(
-            handle,
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(Mutex::new(RuntimeStatus::default())),
-        );
+        let mut worker = Worker::new(handle);
         worker.config = Some(config);
         worker.socket = Some(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap());
         worker

@@ -84,7 +84,7 @@ affecting unrelated tasks.
 
 | Module | Owns and consumes |
 |---|---|
-| `plugins::osc` | Shared OSC receive/OSCQuery transport and Chatbox presentation; consumes shared host output |
+| `plugins::osc` | Native Chatbox composition and game wire profiles; exposes the shared OSC receive/OSCQuery transport |
 | `plugins::avatar` | Game display composition, verified control intent and connection lifecycle; `avatar_host` composes owned translation sessions |
 | `plugins::text_output` | Internal shared text formatting, banner controls and one owned system sampler |
 | `plugins::lyrics` | Music observation, lyric lookup, synchronization, and bounded persistent cache; publishes text through the host to selected outputs |
@@ -94,6 +94,14 @@ affecting unrelated tasks.
 | `plugins::vr_overlay` | SteamVR presentation and runtime; consumes shared host output |
 | `plugins::ocr` | Screen-text workflow; uses host capture, recognition, and translation capabilities |
 | `plugins::auto_input` | Automatic text output; consumes committed results through a platform input capability |
+
+VRChat OSC and ChilloutVR OSC are independent registered instances of the same
+plugin. They share composition, scheduling and UI; game profiles own packet
+arguments and text limits. Settings and manual input remain per output. The host
+allows one publisher per configured endpoint and transfers ownership before
+enabling another, preventing delayed clears from the old writer. The host owns
+one OSC receive/OSCQuery service; Chatbox writers never open duplicate listeners.
+See the [OSC Chatbox guide](osc-chatbox.md) for setup.
 
 Avatar has its own page for connection and header/message/footer composition.
 Its single companion SDK owns the connector catalogue, pure lifecycle, region
@@ -114,23 +122,14 @@ own fitting to their objects. Cancellation clears affected messages; connection
 loss clears the entire display. Header/footer visibility is independent of
 translation activity. The [Avatar guide](avatar-connectors.md) owns setup and connector rules.
 
-Lyrics has no page. It runs only when available and requested by an active output with a lyric region. Its platform adapters use system media interfaces and distinguish
-missing playback progress from a valid song-start position. The plugin owns
-the presentation policy: synchronize music with an available timeline and
-timed lyrics, otherwise show its title; other media supplies titles only.
-The plugin owns the bounded text window, its music marker, and title/lyric
-scrolling; the host's output budget includes the marker. It supplies title/artist
-and current lyric separately through the shared text-output contract. In OSC,
-selecting Lyrics for both header and footer shows the title/artist above and the
-available lyric below, both prefixed with 🎵. A missing lyric leaves the footer
-empty. A single lyric region retains lyric-first display with a title fallback.
-OSC's lyric timing slider adjusts presentation by up to one second in 0.1-second
-steps: the rabbit means earlier, the turtle means later, and reset returns to
-zero. The offset is saved with OSC preferences. The shared lyric worker renders
-original and adjusted timing from the same playback/cues, leaving Avatar timing,
-song metadata and the cache unchanged.
-Read-only playback status is exposed in plugin settings. Cache maintenance
-belongs to the lyric plugin, independently of display activity.
+Lyrics has no page. It runs when requested by an active output with a lyric
+region. One worker observes playback and looks up lyrics; the host supplies
+output IDs, text budgets and timing offsets. The worker publishes title/artist
+and lyric text per output and clears removed subscribers. Platform adapters
+distinguish missing playback progress from a valid song-start position.
+Presentation and bounded cache ownership remain in the lyric plugin; offsets
+do not alter shared playback, song metadata or cached cues. Read-only playback
+status and cache maintenance belong to its settings contribution.
 
 Quick translation and history archive also use the shared task and subscriber
 contracts. Audio Studio and Prompt Studio remain core infrastructure, outside

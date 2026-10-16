@@ -30,6 +30,7 @@ impl PluginId {
     pub const LYRICS: Self = Self("lyrics");
     pub const VOCABULARY: Self = Self("vocabulary");
     pub const OSC: Self = Self("osc");
+    pub const CHILLOUTVR_OSC: Self = Self("chilloutvr_osc");
     pub const AVATAR: Self = Self("avatar");
     pub const MEETING: Self = Self("meeting");
     pub const MEDIA: Self = Self("video_player");
@@ -56,6 +57,7 @@ impl PluginId {
             "lyrics" => Some(Self::LYRICS),
             "vocabulary" => Some(Self::VOCABULARY),
             "osc" => Some(Self::OSC),
+            "chilloutvr_osc" => Some(Self::CHILLOUTVR_OSC),
             "avatar" | "vrc_avatar" => Some(Self::AVATAR),
             "meeting" => Some(Self::MEETING),
             "video_player" | "media" => Some(Self::MEDIA),
@@ -138,7 +140,7 @@ pub struct PluginDescriptor {
     pub default_enabled: bool,
 }
 
-const PLUGIN_DESCRIPTORS: [PluginDescriptor; 7] = [
+const PLUGIN_DESCRIPTORS: [PluginDescriptor; 8] = [
     PluginDescriptor {
         id: PluginId::VOCABULARY,
         title_key: "Vocabulary",
@@ -203,6 +205,19 @@ const PLUGIN_DESCRIPTORS: [PluginDescriptor; 7] = [
         scroll_policy: PluginScrollPolicy::Plugin,
         settings_contribution: PluginSettingsContribution::Plugin,
         default_enabled: !cfg!(target_os = "android"),
+    },
+    PluginDescriptor {
+        id: PluginId::CHILLOUTVR_OSC,
+        title_key: "ChilloutVR OSC",
+        description_key: "Send translation captions to ChilloutVR chat bubbles.",
+        navigation_order: Some(205),
+        icon: PluginIcon {
+            uri: "bytes://plugins/osc/icon.svg",
+            bytes: include_bytes!("../../resources/plugins/osc/icon.svg"),
+        },
+        scroll_policy: PluginScrollPolicy::Plugin,
+        settings_contribution: PluginSettingsContribution::Plugin,
+        default_enabled: false,
     },
     PluginDescriptor {
         id: PluginId::LYRICS,

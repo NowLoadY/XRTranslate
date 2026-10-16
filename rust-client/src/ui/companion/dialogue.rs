@@ -166,7 +166,7 @@ impl Context {
                             Cue::Wordbooks
                         }
                     }
-                    Page::Plugin(PluginId::OSC) => Cue::Osc,
+                    Page::Plugin(PluginId::OSC | PluginId::CHILLOUTVR_OSC) => Cue::Osc,
                     Page::Plugin(PluginId::MEETING) => Cue::Meeting,
                     Page::Plugin(PluginId::MEDIA) => Cue::Player,
                     Page::Plugin(PluginId::VR_OVERLAY) => Cue::Vr,

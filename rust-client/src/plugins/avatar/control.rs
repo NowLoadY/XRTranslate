@@ -3,9 +3,8 @@ use super::{
     output::DisplayOutput,
     websocket,
 };
-use crate::plugins::osc::{
-    OscPlugin,
-    transport::{AvatarSnapshot, OscPeerProfile, OscTransportHandle, OscValue, TransportEvent},
+use crate::plugins::osc::transport::{
+    AvatarSnapshot, OscPeerProfile, OscTransportHandle, OscValue, TransportEvent,
 };
 use std::time::Duration;
 use xrt_connector_core::{Controller, Effect, Generation, HostResult, OperationId, Snapshot};
@@ -47,9 +46,8 @@ impl AvatarPlugin {
             ..Self::default()
         }
     }
-    pub(crate) fn poll(&mut self, enabled: bool, osc: &OscPlugin) {
+    pub(crate) fn poll(&mut self, enabled: bool, transport: &OscTransportHandle) {
         self.output.configure(&self.settings, enabled);
-        let transport = osc.transport();
         if self.enabled != enabled || self.applied_connector != self.settings.connector {
             self.invalidate("Avatar control is disconnected".into());
             self.enabled = enabled;
@@ -109,7 +107,7 @@ impl AvatarPlugin {
             self.invalidate(error);
             self.websocket = None;
         }
-        self.flush_effects(&transport);
+        self.flush_effects(transport);
         if let Err(error) = self.output.poll() {
             self.invalidate(error);
         }

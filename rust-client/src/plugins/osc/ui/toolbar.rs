@@ -29,16 +29,17 @@ pub fn render_toolbar(
                 ui.vertical(|ui| {
                     let mut settings = ui
                         .horizontal(|ui| {
+                            let mut enabled = plugin.applied().enabled;
                             if components::feature_checkbox(
                                 ui,
                                 crate::feature_access::Feature::OscChatbox,
                                 language,
-                                &mut plugin.draft_mut().enabled,
+                                &mut enabled,
                                 "OSC",
                             )
                             .changed()
                             {
-                                changed = true;
+                                actions.push(super::OscUiAction::SetOutputEnabled(enabled));
                             }
 
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -72,29 +73,32 @@ pub fn render_toolbar(
 
                     settings.show_body_unindented(ui, |ui| {
                         ui.add_space(8.0);
-                        let mut microphone_sync_enabled = microphone_sync_enabled;
-                        if components::feature_checkbox(
-                            ui,
-                            crate::feature_access::Feature::MuteSync,
-                            language,
-                            &mut microphone_sync_enabled,
-                            crate::i18n::tr(language, "Sync game microphone"),
-                        )
-                        .on_hover_text(crate::i18n::tr(language, "Microphone controls work both ways. Enable Toggle Voice in VRChat. Muting in-game also returns the spatial microphone to its dock."))
-                        .changed()
-                        {
-                            actions.push(super::OscUiAction::SetMicrophoneSyncEnabled(microphone_sync_enabled));
-                        }
-                        if microphone_sync_enabled {
-                            ui.small(crate::i18n::tr(language, "Enable Toggle Voice in VRChat."));
-                            if let Some(status) = plugin.transport().microphone_sync_status() {
-                                ui.small(crate::i18n::tr(language, status));
+                        if plugin.game() == super::super::OscGame::VRChat {
+                            if let Some(receiver) = plugin.receiver() {
+                                let mut microphone_sync_enabled = microphone_sync_enabled;
+                                if components::feature_checkbox(
+                                    ui,
+                                    crate::feature_access::Feature::MuteSync,
+                                    language,
+                                    &mut microphone_sync_enabled,
+                                    crate::i18n::tr(language, "Sync game microphone"),
+                                )
+                                .on_hover_text(crate::i18n::tr(language, "Microphone controls work both ways. Enable Toggle Voice in VRChat. Muting in-game also returns the spatial microphone to its dock."))
+                                .changed()
+                                {
+                                    actions.push(super::OscUiAction::SetMicrophoneSyncEnabled(microphone_sync_enabled));
+                                }
+                                if microphone_sync_enabled {
+                                    ui.small(crate::i18n::tr(language, "Enable Toggle Voice in VRChat."));
+                                    if let Some(status) = receiver.microphone_sync_status() {
+                                        ui.small(crate::i18n::tr(language, status));
+                                    }
+                                }
+                                ui.add_space(8.0);
+                                components::wavy_divider(ui, crate::ui::theme::text_strong());
+                                ui.add_space(8.0);
                             }
                         }
-
-                        ui.add_space(8.0);
-                        components::wavy_divider(ui, crate::ui::theme::text_strong());
-                        ui.add_space(8.0);
 
                         ui.horizontal_wrapped(|ui| {
                             ui.allocate_ui_with_layout(
@@ -153,11 +157,9 @@ pub fn render_toolbar(
                             .changed()
                             {
                                 plugin.draft_mut().show_speaker_number = speaker_number_enabled;
-                                let _ = plugin.apply_draft();
                                 actions.push(super::OscUiAction::SetSpeakerNumberVisible(
                                     speaker_number_enabled,
                                 ));
-                                actions.push(super::OscUiAction::SaveSettings);
                             }
                         });
 
@@ -381,8 +383,7 @@ pub fn render_toolbar(
     });
 
     if changed {
-        actions.push(super::OscUiAction::SettingsApplied(plugin.apply_draft()));
-        actions.push(super::OscUiAction::SaveSettings);
+        actions.push(super::OscUiAction::ApplySettings);
     }
 }
 

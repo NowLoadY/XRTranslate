@@ -97,7 +97,7 @@ use plugins::avatar::AvatarPlugin;
 use plugins::meeting::{
     MeetingAction, MeetingAudioSource, MeetingInputRequest, MeetingPlugin, MeetingUiSnapshot,
 };
-use plugins::osc::{OscPageContext, OscPlugin, OscUiAction};
+use plugins::osc::{OscGame, OscPageContext, OscPlugin, OscUiAction, transport::TransportOwner};
 use plugins::vr_overlay::{VrOverlayPageContext, VrOverlayPlugin, VrOverlayUiAction};
 use plugins::{PluginId, PluginPreferences, PluginRegistry, PluginScrollPolicy};
 pub(crate) use presentation::speaker::compact_speaker_label;
@@ -689,6 +689,8 @@ struct XRTranslateApp {
     tts_runtime_backend: Option<String>,
     tts_runtime_cuda_version: Option<String>,
     osc_plugin: OscPlugin,
+    chilloutvr_osc_plugin: OscPlugin,
+    osc_transport: TransportOwner,
     avatar_plugin: AvatarPlugin,
     text_output_plugin: plugins::text_output::TextOutputPlugin,
     #[cfg(any(windows, target_os = "linux"))]
@@ -933,6 +935,63 @@ fn initialize_live_audio<Host, Dependencies>(
     Ok(dependencies)
 }
 
+fn same_osc_endpoint(
+    a: &plugins::osc::runtime::OscSettings,
+    b: &plugins::osc::runtime::OscSettings,
+) -> bool {
+    fn address(value: &str) -> Option<std::net::IpAddr> {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("localhost") {
+            Some(std::net::Ipv4Addr::LOCALHOST.into())
+        } else {
+            value.trim_matches(['[', ']']).parse().ok()
+        }
+    }
+    a.send_port == b.send_port
+        && match (address(&a.ip), address(&b.ip)) {
+            (Some(a), Some(b)) => a == b,
+            _ => a.ip.trim().eq_ignore_ascii_case(b.ip.trim()),
+        }
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+fn lyric_requests(
+    preferences: &PluginPreferences,
+    vrchat: &OscPlugin,
+    chilloutvr: &OscPlugin,
+    avatar: &AvatarPlugin,
+) -> Vec<plugins::lyrics::DisplayRequest> {
+    use plugins::lyrics::DisplayRequest;
+    if !preferences.is_enabled(PluginId::LYRICS) {
+        return Vec::new();
+    }
+    let mut requests = Vec::new();
+    for (output, plugin) in [
+        (PluginId::OSC, vrchat),
+        (PluginId::CHILLOUTVR_OSC, chilloutvr),
+    ] {
+        if preferences.is_enabled(output)
+            && let Some(budget) = plugin.applied().lyric_budget()
+        {
+            requests.push(DisplayRequest {
+                output,
+                budget,
+                offset_ms: plugin.applied().lyric_offset_ms(),
+            });
+        }
+    }
+    if preferences.is_enabled(PluginId::AVATAR)
+        && let Some(budget) = avatar.settings.lyric_budget()
+    {
+        requests.push(DisplayRequest {
+            output: PluginId::AVATAR,
+            budget,
+            offset_ms: 0,
+        });
+    }
+    requests
+}
+
 impl Default for XRTranslateApp {
     fn default() -> Self {
         let audio_system = AudioSystem::new();
@@ -945,14 +1004,38 @@ impl Default for XRTranslateApp {
         let service_config = service_config::ServiceConfigEditor::load();
         let mut settings = ClientSettings::load(&backend_manager.project_root());
         settings.sanitize_devices(&devices, &loopback_devices);
+        if settings.plugin_preferences.is_enabled(PluginId::OSC)
+            && settings
+                .plugin_preferences
+                .is_enabled(PluginId::CHILLOUTVR_OSC)
+            && settings.osc_settings.enabled
+            && settings.chilloutvr_osc_settings.enabled
+            && same_osc_endpoint(&settings.osc_settings, &settings.chilloutvr_osc_settings)
+        {
+            settings.chilloutvr_osc_settings.enabled = false;
+        }
         let initial_system_audio_input = SystemAudioInputSelection::Endpoint {
             device_id: settings.selected_loopback_device_id.clone(),
         };
         let text_output_plugin = plugins::text_output::TextOutputPlugin::new();
+        let mut receive_settings = settings.osc_settings.clone();
+        receive_settings.enabled &= settings.plugin_preferences.is_enabled(PluginId::OSC);
+        let osc_transport = TransportOwner::new(&receive_settings);
         let osc_plugin = OscPlugin::new(
+            OscGame::VRChat,
             settings.osc_settings.clone(),
             settings.plugin_preferences.is_enabled(PluginId::OSC),
             text_output_plugin.handle(),
+            Some(osc_transport.handle()),
+        );
+        let chilloutvr_osc_plugin = OscPlugin::new(
+            OscGame::ChilloutVR,
+            settings.chilloutvr_osc_settings.clone(),
+            settings
+                .plugin_preferences
+                .is_enabled(PluginId::CHILLOUTVR_OSC),
+            text_output_plugin.handle(),
+            None,
         );
         let avatar_plugin = AvatarPlugin::new(
             settings.avatar_connector.clone(),
@@ -961,33 +1044,26 @@ impl Default for XRTranslateApp {
         #[cfg(any(windows, target_os = "linux"))]
         let lyrics_plugin = {
             let output = osc_plugin.publisher();
+            let chilloutvr_output = chilloutvr_osc_plugin.publisher();
             let avatar_output = avatar_plugin.output.clone();
             let mut plugin = plugins::lyrics::LyricsPlugin::new(
                 backend_manager
                     .runtime_layout()
                     .runtime_root()
                     .join("cache/lyrics"),
-                move |text, adjusted| {
-                    avatar_output.set_lyric(text.preferred().to_owned());
-                    output.set_lyrics(adjusted);
+                move |destination, text| match destination {
+                    PluginId::OSC => output.set_lyrics(text),
+                    PluginId::CHILLOUTVR_OSC => chilloutvr_output.set_lyrics(text),
+                    PluginId::AVATAR => avatar_output.set_lyric(text.preferred().to_owned()),
+                    _ => {}
                 },
             );
-            if settings.plugin_preferences.is_enabled(PluginId::LYRICS) {
-                let osc = settings
-                    .plugin_preferences
-                    .is_enabled(PluginId::OSC)
-                    .then(|| settings.osc_settings.lyric_budget())
-                    .flatten();
-                let avatar = settings
-                    .plugin_preferences
-                    .is_enabled(PluginId::AVATAR)
-                    .then(|| settings.avatar_connector.lyric_budget())
-                    .flatten();
-                plugin.configure(
-                    osc.into_iter().chain(avatar).max(),
-                    settings.osc_settings.lyric_offset_ms(),
-                );
-            }
+            plugin.configure(lyric_requests(
+                &settings.plugin_preferences,
+                &osc_plugin,
+                &chilloutvr_osc_plugin,
+                &avatar_plugin,
+            ));
             plugin
         };
         let vr_overlay_plugin = VrOverlayPlugin::new(
@@ -1082,6 +1158,7 @@ impl Default for XRTranslateApp {
         let host_output_subscribers: Arc<Vec<Box<dyn HostOutputSubscriber>>> = Arc::new(vec![
             Box::new(auto_input_plugin.publisher()),
             Box::new(osc_plugin.publisher()),
+            Box::new(chilloutvr_osc_plugin.publisher()),
             Box::new(avatar_plugin.output.clone()),
             Box::new(vr_overlay_plugin.handle()),
         ]);
@@ -1848,6 +1925,8 @@ impl Default for XRTranslateApp {
             tts_runtime_backend: None,
             tts_runtime_cuda_version: None,
             osc_plugin,
+            chilloutvr_osc_plugin,
+            osc_transport,
             avatar_plugin,
             text_output_plugin,
             #[cfg(any(windows, target_os = "linux"))]
@@ -2054,7 +2133,7 @@ impl XRTranslateApp {
             external_audio_gate: if external_audio_gate && audio_source == CaptureSource::Microphone
             {
                 ExternalAudioGate::new(
-                    self.osc_plugin.mute_state(),
+                    self.osc_transport.mute_state(),
                     Arc::clone(&self.voice_interaction.microphone_sync_active),
                 )
             } else {
@@ -2757,7 +2836,6 @@ impl XRTranslateApp {
                     None
                 }
             }
-            PluginId::OSC => None,
             _ => None,
         }
     }
@@ -2772,8 +2850,16 @@ impl XRTranslateApp {
         }
 
         let lifecycle = match id {
-            PluginId::OSC if enabled => self.osc_plugin.activate(),
-            PluginId::OSC => self.osc_plugin.deactivate(),
+            PluginId::OSC | PluginId::CHILLOUTVR_OSC => {
+                if enabled {
+                    self.osc_output_mut(id).draft().validate().and_then(|()| {
+                        self.reconcile_osc_endpoint(id)?;
+                        self.osc_output_mut(id).activate()
+                    })
+                } else {
+                    self.osc_output_mut(id).deactivate()
+                }
+            }
             PluginId::VR_OVERLAY => {
                 self.vr_overlay_plugin.set_host_enabled(enabled);
                 Ok(())
@@ -2816,14 +2902,60 @@ impl XRTranslateApp {
             }
             return;
         }
-        if id != PluginId::OSC {
-            return;
+        if matches!(id, PluginId::OSC | PluginId::CHILLOUTVR_OSC) {
+            let language = self.ui_language;
+            let actions = self.osc_output_mut(id).render_settings(ui, language);
+            self.apply_osc_actions(id, actions);
         }
-        let actions = self.osc_plugin.render_settings(ui, self.ui_language);
-        self.apply_osc_actions(actions);
     }
 
-    fn apply_osc_actions(&mut self, actions: Vec<OscUiAction>) {
+    fn osc_output_mut(&mut self, id: PluginId) -> &mut OscPlugin {
+        match id {
+            PluginId::OSC => &mut self.osc_plugin,
+            PluginId::CHILLOUTVR_OSC => &mut self.chilloutvr_osc_plugin,
+            _ => unreachable!("not an OSC output"),
+        }
+    }
+
+    /// A shared endpoint has one publisher; switching games preserves both layouts.
+    fn reconcile_osc_endpoint(&mut self, id: PluginId) -> Result<(), String> {
+        let (active, other, other_id) = match id {
+            PluginId::OSC => (
+                &self.osc_plugin,
+                &mut self.chilloutvr_osc_plugin,
+                PluginId::CHILLOUTVR_OSC,
+            ),
+            PluginId::CHILLOUTVR_OSC => (
+                &self.chilloutvr_osc_plugin,
+                &mut self.osc_plugin,
+                PluginId::OSC,
+            ),
+            _ => return Ok(()),
+        };
+        let settings = active.draft();
+        if settings.enabled
+            && self.plugin_preferences.is_enabled(other_id)
+            && other.applied().enabled
+            && same_osc_endpoint(settings, other.applied())
+        {
+            other.relinquish_endpoint()?;
+        }
+        Ok(())
+    }
+
+    fn apply_osc_settings(&mut self, id: PluginId) -> Result<(), String> {
+        self.osc_output_mut(id).draft().validate()?;
+        if self.plugin_enabled(id) {
+            self.reconcile_osc_endpoint(id)?;
+        }
+        self.osc_output_mut(id).apply_draft()?;
+        self.last_error = None;
+        self.sync_lyrics();
+        self.save_settings();
+        Ok(())
+    }
+
+    fn apply_osc_actions(&mut self, id: PluginId, actions: Vec<OscUiAction>) {
         for action in actions {
             match action {
                 OscUiAction::ClearHostHistory => self.clear_history(),
@@ -2831,16 +2963,29 @@ impl XRTranslateApp {
                     self.set_microphone_sync_enabled(enabled)
                 }
                 OscUiAction::SetSpeakerNumberVisible(enabled) => {
-                    self.set_osc_speaker_number_visible(enabled)
+                    self.set_osc_speaker_number_visible(id, enabled)
                 }
-                OscUiAction::SaveSettings => self.save_settings(),
-                OscUiAction::SettingsApplied(result) => match result {
-                    Ok(()) => {
-                        self.last_error = None;
-                        self.sync_lyrics();
+                OscUiAction::ApplySettings => {
+                    if let Err(error) = self.apply_osc_settings(id) {
+                        self.notify_error("Could not apply OSC settings.", error);
                     }
-                    Err(error) => self.notify_error("Could not apply OSC settings.", error),
-                },
+                }
+                OscUiAction::SetOutputEnabled(enabled) => {
+                    let result = if enabled {
+                        self.osc_output_mut(id).draft_mut().enabled = true;
+                        self.apply_osc_settings(id)
+                    } else {
+                        self.osc_output_mut(id).disable_output().map(|()| {
+                            self.sync_lyrics();
+                            self.save_settings();
+                        })
+                    };
+                    if let Err(error) = result {
+                        let plugin = self.osc_output_mut(id);
+                        plugin.draft_mut().enabled = plugin.applied().enabled;
+                        self.notify_error("Could not apply OSC settings.", error);
+                    }
+                }
                 OscUiAction::SetLanguageRoute {
                     source_lang,
                     target_lang,
@@ -2864,13 +3009,16 @@ impl XRTranslateApp {
                 }
                 OscUiAction::TranslateInput { text } => {
                     if self.submit_text_translation(&text, None, None, None) {
-                        self.osc_plugin.draft_input_mut().clear();
+                        self.osc_output_mut(id).draft_input_mut().clear();
                     }
                 }
                 OscUiAction::DirectInput(text) => {
-                    if self.osc_plugin.draft().enabled && self.plugin_enabled(PluginId::OSC) {
-                        self.osc_plugin.send_manual_message(&text);
-                        self.osc_plugin.draft_input_mut().clear();
+                    if self.plugin_enabled(id) {
+                        let plugin = self.osc_output_mut(id);
+                        if plugin.applied().enabled {
+                            plugin.send_manual_message(&text);
+                            plugin.draft_input_mut().clear();
+                        }
                     }
                 }
             }
@@ -2879,36 +3027,28 @@ impl XRTranslateApp {
 
     fn sync_lyrics(&mut self) {
         #[cfg(any(windows, target_os = "linux"))]
-        {
-            let osc = self
-                .plugin_enabled(PluginId::OSC)
-                .then(|| self.osc_plugin.draft().lyric_budget())
-                .flatten();
-            let avatar = self
-                .plugin_enabled(PluginId::AVATAR)
-                .then(|| self.avatar_plugin.settings.lyric_budget())
-                .flatten();
-            self.lyrics_plugin.configure(
-                if self.plugin_enabled(PluginId::LYRICS) {
-                    osc.into_iter().chain(avatar).max()
-                } else {
-                    None
-                },
-                self.osc_plugin.draft().lyric_offset_ms(),
-            );
-        }
+        self.lyrics_plugin.configure(lyric_requests(
+            &self.plugin_preferences,
+            &self.osc_plugin,
+            &self.chilloutvr_osc_plugin,
+            &self.avatar_plugin,
+        ));
     }
 
-    fn render_osc_plugin_page(&mut self, ui: &mut egui::Ui) {
-        let microphone_sync_enabled = self.microphone_sync_enabled;
+    fn render_osc_plugin_page(&mut self, id: PluginId, ui: &mut egui::Ui) {
         let languages = self.language_capabilities();
         let lyrics_available = self.plugin_enabled(PluginId::LYRICS);
-        let actions = self.osc_plugin.render_page(
+        let plugin = match id {
+            PluginId::OSC => &mut self.osc_plugin,
+            PluginId::CHILLOUTVR_OSC => &mut self.chilloutvr_osc_plugin,
+            _ => return,
+        };
+        let actions = plugin.render_page(
             ui,
             OscPageContext {
                 language: self.ui_language,
                 preparing_text: self.text_translation.preparing_host(),
-                microphone_sync_enabled,
+                microphone_sync_enabled: self.microphone_sync_enabled,
                 lyrics_available,
                 languages,
                 source_lang: &self.source_lang,
@@ -2917,7 +3057,7 @@ impl XRTranslateApp {
                 additional_target_lang: self.additional_target_lang.as_deref(),
             },
         );
-        self.apply_osc_actions(actions);
+        self.apply_osc_actions(id, actions);
     }
 
     fn render_text_composer(&mut self, ui: &mut egui::Ui) {
@@ -3200,7 +3340,7 @@ impl XRTranslateApp {
             PluginId::MEETING => self.render_meeting_plugin_page(ui),
             PluginId::MEDIA => self.render_media_plugin_page(ui),
             PluginId::VR_OVERLAY => self.render_vr_overlay_plugin_page(ui),
-            PluginId::OSC => self.render_osc_plugin_page(ui),
+            PluginId::OSC | PluginId::CHILLOUTVR_OSC => self.render_osc_plugin_page(id, ui),
             PluginId::AVATAR => {
                 let lyrics = self.plugin_enabled(PluginId::LYRICS);
                 if self.avatar_plugin.render_page(ui, self.ui_language, lyrics) {
@@ -3363,6 +3503,7 @@ impl XRTranslateApp {
             download_proxy_url: self.download_proxy_url.clone(),
             update_channel: self.update_channel,
             osc_settings: self.osc_plugin.draft().clone(),
+            chilloutvr_osc_settings: self.chilloutvr_osc_plugin.draft().clone(),
             avatar_connector: self.avatar_plugin.settings.clone(),
             vr_overlay_settings: self.vr_overlay_plugin.draft().clone(),
             plugin_preferences: self.plugin_preferences.clone(),
@@ -5053,15 +5194,13 @@ impl XRTranslateApp {
     }
 
     /// Controls only whether OSC presentation includes the infrastructure-provided ID.
-    fn set_osc_speaker_number_visible(&mut self, enabled: bool) {
+    fn set_osc_speaker_number_visible(&mut self, id: PluginId, enabled: bool) {
         let enabled = enabled
             && crate::feature_access::is_available(crate::feature_access::Feature::SpeakerNumbers);
-        self.osc_plugin.draft_mut().show_speaker_number = enabled;
-        match self.osc_plugin.apply_draft() {
-            Ok(()) => self.last_error = None,
-            Err(error) => self.last_error = Some(error),
+        self.osc_output_mut(id).draft_mut().show_speaker_number = enabled;
+        if let Err(error) = self.apply_osc_settings(id) {
+            self.notify_error("Could not apply OSC settings.", error);
         }
-        self.save_settings();
     }
 
     fn set_microphone_sync_enabled(&mut self, enabled: bool) {
@@ -5149,6 +5288,7 @@ impl XRTranslateApp {
             state.companion_reader.clear_history();
         }
         self.osc_plugin.clear_chatbox();
+        self.chilloutvr_osc_plugin.clear_chatbox();
         self.auto_input_plugin.clear();
     }
 
@@ -5392,7 +5532,14 @@ impl XRTranslateApp {
         if let Some(error) = self.auto_input_plugin.take_error() {
             self.last_error = Some(error);
         }
-        if let Some(error) = self.osc_plugin.manager().take_error() {
+        for error in [
+            self.osc_plugin.manager().take_error(),
+            self.chilloutvr_osc_plugin.manager().take_error(),
+            self.osc_transport.take_error(),
+        ]
+        .into_iter()
+        .flatten()
+        {
             self.last_error = Some(error);
         }
 
@@ -5657,6 +5804,7 @@ impl XRTranslateApp {
                 Page::TtsCenter => "TtsCenter".to_string(),
                 Page::Plugin(PluginId::VOCABULARY) => "Plugin:Vocabulary".to_string(),
                 Page::Plugin(PluginId::OSC) => "Plugin:OSC".to_string(),
+                Page::Plugin(PluginId::CHILLOUTVR_OSC) => "Plugin:ChilloutVR OSC".to_string(),
                 Page::Plugin(PluginId::MEETING) => "Plugin:Meeting".to_string(),
                 Page::Plugin(PluginId::VR_OVERLAY) => "Plugin:VROverlay".to_string(),
                 Page::Plugin(PluginId::MEDIA) => "Plugin:Media".to_string(),

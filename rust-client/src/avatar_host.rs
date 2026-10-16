@@ -67,14 +67,15 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn shutdown_avatar(&mut self) {
-        self.avatar_plugin.poll(false, &self.osc_plugin);
+        self.avatar_plugin.poll(false, &self.osc_transport.handle());
         let actions = self.avatar_plugin.take_host_actions();
         self.apply_avatar_actions(actions, None);
     }
 
     pub(crate) fn poll_avatar(&mut self, ctx: Option<egui::Context>) {
         let enabled = self.plugin_enabled(PluginId::AVATAR);
-        self.avatar_plugin.poll(enabled, &self.osc_plugin);
+        self.avatar_plugin
+            .poll(enabled, &self.osc_transport.handle());
         let actions = self.avatar_plugin.take_host_actions();
         self.apply_avatar_actions(actions, ctx);
         self.poll_avatar_session();

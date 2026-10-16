@@ -22,8 +22,8 @@ pub enum OscUiAction {
     ClearHostHistory,
     SetMicrophoneSyncEnabled(bool),
     SetSpeakerNumberVisible(bool),
-    SaveSettings,
-    SettingsApplied(Result<(), String>),
+    ApplySettings,
+    SetOutputEnabled(bool),
     DirectInput(String),
     SetLanguageRoute {
         source_lang: String,
@@ -40,8 +40,17 @@ pub fn render(
     ui: &mut egui::Ui,
     context: OscPageContext<'_>,
 ) -> Vec<OscUiAction> {
+    ui.push_id(plugin.game(), |ui| render_page(plugin, ui, context))
+        .inner
+}
+
+fn render_page(
+    plugin: &mut super::OscPlugin,
+    ui: &mut egui::Ui,
+    context: OscPageContext<'_>,
+) -> Vec<OscUiAction> {
     let mut actions = Vec::new();
-    egui::Panel::bottom("osc_bottom_input_bar")
+    egui::Panel::bottom(ui.make_persistent_id("osc_bottom_input_bar"))
         .show_separator_line(false)
         .frame(egui::Frame::NONE)
         .show(ui, |ui| {
@@ -54,10 +63,25 @@ pub fn render(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.label(
-                egui::RichText::new(crate::i18n::tr(context.language, "VRChat OSC Studio"))
-                    .size(22.0)
-                    .color(crate::ui::theme::text_strong())
-                    .strong(),
+                egui::RichText::new(crate::i18n::tr(
+                    context.language,
+                    plugin.game().studio_title(),
+                ))
+                .size(22.0)
+                .color(crate::ui::theme::text_strong())
+                .strong(),
+            );
+            ui.hyperlink_to(
+                crate::i18n::tr(
+                    context.language,
+                    match plugin.game() {
+                        super::OscGame::VRChat => "Enable OSC in VRChat.",
+                        super::OscGame::ChilloutVR => {
+                            "Enable OSC in Settings → Implementation → OSC."
+                        }
+                    },
+                ),
+                plugin.game().setup_url(),
             );
 
             ui.add_space(12.0);
@@ -118,5 +142,6 @@ pub fn render_settings(
     ui: &mut egui::Ui,
     language: crate::i18n::UiLanguage,
 ) -> Vec<OscUiAction> {
-    settings::render(plugin, ui, language)
+    ui.push_id(plugin.game(), |ui| settings::render(plugin, ui, language))
+        .inner
 }

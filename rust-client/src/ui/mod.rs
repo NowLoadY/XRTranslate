@@ -185,7 +185,12 @@ pub fn render_sidebar(
                 for entry in navigation_entries(plugin_preferences, tts_configured) {
                     let is_game_plugin = matches!(
                         entry.page,
-                        Page::Plugin(PluginId::VR_OVERLAY | PluginId::OSC | PluginId::AVATAR)
+                        Page::Plugin(
+                            PluginId::VR_OVERLAY
+                                | PluginId::OSC
+                                | PluginId::CHILLOUTVR_OSC
+                                | PluginId::AVATAR
+                        )
                     );
                     if (is_game_plugin && !in_game_group) || entry.page == Page::AudioStudio {
                         ui.add_space(if compact_height { 3.0 } else { 8.0 });
@@ -584,7 +589,9 @@ fn navigation_entries(
     entries.extend(
         descriptors
             .into_iter()
-            .filter(|descriptor| descriptor.navigation_order.is_some() && plugins.is_enabled(descriptor.id))
+            .filter(|descriptor| {
+                descriptor.navigation_order.is_some() && plugins.is_enabled(descriptor.id)
+            })
             .map(|descriptor| NavigationEntry {
                 page: Page::Plugin(descriptor.id),
                 title: descriptor.title_key,

@@ -7,12 +7,13 @@ mod output;
 mod player;
 mod timeline;
 
-use crate::plugins::text_output::LyricsText;
+use crate::plugins::{PluginId, text_output::LyricsText};
 use output::Lookup;
 pub(crate) use output::Status;
 use parking_lot::Mutex;
 use player::Playback;
 use std::{
+    collections::BTreeMap,
     future::Future,
     path::PathBuf,
     pin::Pin,
@@ -22,19 +23,19 @@ use std::{
 };
 use tokio::sync::watch;
 
-// Publish original timing and adjusted timing together; the host selects the
-// presentation for each output without duplicating observation or lyric lookup.
-type Publish = Arc<dyn Fn(LyricsText, LyricsText) + Send + Sync>;
+// Each output owns its timing and budget; playback and lyric lookup are shared.
+type Publish = Arc<dyn Fn(PluginId, LyricsText) + Send + Sync>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct DisplayConfig {
-    budget: usize,
-    offset_ms: i32,
+pub(crate) struct DisplayRequest {
+    pub output: PluginId,
+    pub budget: usize,
+    pub offset_ms: i32,
 }
 
 pub(crate) struct LyricsPlugin {
     publish: Publish,
-    worker: Option<(watch::Sender<Option<DisplayConfig>>, JoinHandle<()>)>,
+    worker: Option<(watch::Sender<Vec<DisplayRequest>>, JoinHandle<()>)>,
     cache: Arc<cache::Cache>,
     cleanup: Option<JoinHandle<()>>,
     status: Arc<Mutex<Status>>,
@@ -43,7 +44,7 @@ pub(crate) struct LyricsPlugin {
 impl LyricsPlugin {
     pub fn new(
         cache_directory: PathBuf,
-        publish: impl Fn(LyricsText, LyricsText) + Send + Sync + 'static,
+        publish: impl Fn(PluginId, LyricsText) + Send + Sync + 'static,
     ) -> Self {
         Self {
             publish: Arc::new(publish),
@@ -55,16 +56,13 @@ impl LyricsPlugin {
     }
 
     /// No playback worker, media subscription or HTTP client while off.
-    pub fn configure(&mut self, budget: Option<usize>, offset_ms: i32) {
-        let config = budget
-            .filter(|budget| *budget > 0)
-            .map(|budget| DisplayConfig { budget, offset_ms });
-        if config.is_none() {
+    pub fn configure(&mut self, mut config: Vec<DisplayRequest>) {
+        config.retain(|request| request.budget > 0);
+        if config.is_empty() {
             if let Some((tx, worker)) = self.worker.take() {
-                let _ = tx.send(None);
+                let _ = tx.send(config);
                 let _ = worker.join();
             }
-            (self.publish)(LyricsText::default(), LyricsText::default());
             *self.status.lock() = Status::Idle;
             return;
         }
@@ -93,7 +91,6 @@ impl LyricsPlugin {
                     Ok(runtime) => runtime.block_on(run(rx, &publish, cache, &status)),
                     Err(error) => log::warn!("Lyrics: {error}"),
                 }
-                publish(LyricsText::default(), LyricsText::default());
             }) {
             Ok(worker) => self.worker = Some((tx, worker)),
             Err(error) => log::warn!("Lyrics: {error}"),
@@ -136,7 +133,7 @@ impl LyricsPlugin {
 
 impl Drop for LyricsPlugin {
     fn drop(&mut self) {
-        self.configure(None, 0);
+        self.configure(Vec::new());
         if let Some(worker) = self.cleanup.take() {
             let _ = worker.join();
         }
@@ -144,7 +141,7 @@ impl Drop for LyricsPlugin {
 }
 
 async fn run(
-    config: watch::Receiver<Option<DisplayConfig>>,
+    config: watch::Receiver<Vec<DisplayRequest>>,
     publish: &Publish,
     cache: Arc<cache::Cache>,
     status: &Mutex<Status>,
@@ -196,7 +193,7 @@ async fn observe(tx: watch::Sender<Option<Playback>>) {
 type Fetch = Pin<Box<dyn Future<Output = Result<Vec<timeline::Cue>, String>>>>;
 
 async fn display(
-    mut config: watch::Receiver<Option<DisplayConfig>>,
+    mut config: watch::Receiver<Vec<DisplayRequest>>,
     mut player: watch::Receiver<Option<Playback>>,
     publish: &Publish,
     cache: Arc<cache::Cache>,
@@ -206,7 +203,7 @@ async fn display(
     let mut cues = Vec::new();
     let mut fetching: Option<Fetch> = None;
     let mut lookup = Lookup::NotStarted;
-    let mut last_text = (LyricsText::default(), LyricsText::default());
+    let mut last_text = BTreeMap::<PluginId, LyricsText>::new();
     let mut renderer = output::Renderer::default();
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -214,10 +211,10 @@ async fn display(
         tokio::select! {
             biased;
             changed = config.changed() => {
-                if changed.is_err() || config.borrow().is_none() { return; }
+                if changed.is_err() { break; }
             },
             changed = player.changed() => {
-                if changed.is_err() { return; }
+                if changed.is_err() { break; }
                 let next = player.borrow_and_update().clone();
                 let same = current.as_ref().zip(next.as_ref()).is_some_and(|(a, b)| a.track == b.track && a.is_music == b.is_music && a.embedded_lyrics == b.embedded_lyrics);
                 if !same {
@@ -245,33 +242,36 @@ async fn display(
             },
             _ = tick.tick() => {},
         }
-        let config = *config.borrow();
-        let Some(config) = config else {
-            return;
-        };
-        let now = std::time::Instant::now();
-        let (text, next_status) =
-            renderer.render(current.as_ref(), &cues, lookup, config.budget, 0, now);
-        let adjusted = if config.offset_ms == 0 {
-            text.clone()
-        } else {
-            renderer
-                .render(
-                    current.as_ref(),
-                    &cues,
-                    lookup,
-                    config.budget,
-                    config.offset_ms,
-                    now,
-                )
-                .0
-        };
-        let text = (text, adjusted);
-        *status.lock() = next_status;
-        if text != last_text {
-            publish(text.0.clone(), text.1.clone());
-            last_text = text;
+        let config = config.borrow().clone();
+        last_text.retain(|output, _| {
+            let keep = config.iter().any(|request| request.output == *output);
+            if !keep {
+                publish(*output, LyricsText::default());
+            }
+            keep
+        });
+        if config.is_empty() {
+            break;
         }
+        let now = std::time::Instant::now();
+        for request in config {
+            let (text, next_status) = renderer.render(
+                current.as_ref(),
+                &cues,
+                lookup,
+                request.budget,
+                request.offset_ms,
+                now,
+            );
+            *status.lock() = next_status;
+            if last_text.get(&request.output) != Some(&text) {
+                publish(request.output, text.clone());
+                last_text.insert(request.output, text);
+            }
+        }
+    }
+    for output in last_text.keys() {
+        publish(*output, LyricsText::default());
     }
 }
 
@@ -306,17 +306,33 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn live_offset_changes_preserve_the_original_output_and_reset() {
+    async fn live_offsets_keep_outputs_independent_and_clear_removed_outputs() {
         let cache_directory = tempfile::tempdir().unwrap();
         let cache = Arc::new(cache::Cache::new(cache_directory.path().to_owned()));
-        let (config, config_rx) = watch::channel(Some(DisplayConfig {
-            budget: 24,
-            offset_ms: 0,
-        }));
+        let requests = |offset_ms| {
+            vec![
+                DisplayRequest {
+                    output: PluginId::AVATAR,
+                    budget: 24,
+                    offset_ms: 0,
+                },
+                DisplayRequest {
+                    output: PluginId::OSC,
+                    budget: 24,
+                    offset_ms,
+                },
+                DisplayRequest {
+                    output: PluginId::CHILLOUTVR_OSC,
+                    budget: 24,
+                    offset_ms: 100,
+                },
+            ]
+        };
+        let (config, config_rx) = watch::channel(requests(0));
         let (player, player_rx) = watch::channel(None);
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let publish: Publish = Arc::new(move |original, adjusted| {
-            let _ = tx.send((original, adjusted));
+        let publish: Publish = Arc::new(move |output, text| {
+            let _ = tx.send((output, text));
         });
         let status = Mutex::new(Status::Waiting);
         tokio::time::timeout(Duration::from_secs(3), async {
@@ -339,37 +355,39 @@ mod tests {
                             playing: true,
                         }))
                         .unwrap();
-                    let original = loop {
-                        let (original, adjusted) = rx.recv().await.unwrap();
-                        if original.lyric == "🎵 First" {
-                            assert_eq!(original, adjusted);
-                            break original;
+                    let mut outputs = BTreeMap::new();
+                    while outputs.len() < 3 {
+                        let (output, text) = rx.recv().await.unwrap();
+                        if text.lyric == "🎵 First" {
+                            outputs.insert(output, text);
                         }
-                    };
-                    config
-                        .send(Some(DisplayConfig {
-                            budget: 24,
-                            offset_ms: -100,
-                        }))
-                        .unwrap();
-                    let (unchanged, adjusted) = rx.recv().await.unwrap();
-                    assert_eq!(unchanged, original);
-                    assert_eq!(adjusted.title, original.title);
+                    }
+                    config.send(requests(-100)).unwrap();
+                    let (output, adjusted) = rx.recv().await.unwrap();
+                    assert_eq!(output, PluginId::OSC);
                     assert_eq!(adjusted.lyric, "🎵 Second");
-                    config
-                        .send(Some(DisplayConfig {
-                            budget: 24,
-                            offset_ms: 0,
-                        }))
-                        .unwrap();
-                    let (unchanged, adjusted) = rx.recv().await.unwrap();
-                    assert_eq!(unchanged, original);
-                    assert_eq!(adjusted, original);
-                    config.send(None).unwrap();
+                    assert_eq!(adjusted.title, outputs[&PluginId::OSC].title);
+                    config.send(requests(0)).unwrap();
+                    let (output, restored) = rx.recv().await.unwrap();
+                    assert_eq!(output, PluginId::OSC);
+                    assert_eq!(restored, outputs[&PluginId::OSC]);
+                    config.send(vec![requests(0)[0]]).unwrap();
+                    let mut cleared = Vec::new();
+                    for _ in 0..2 {
+                        let (output, text) = rx.recv().await.unwrap();
+                        assert_eq!(text, LyricsText::default());
+                        cleared.push(output);
+                    }
+                    assert!(cleared.contains(&PluginId::OSC));
+                    assert!(cleared.contains(&PluginId::CHILLOUTVR_OSC));
+                    config.send(Vec::new()).unwrap();
+                    let (output, text) = rx.recv().await.unwrap();
+                    assert_eq!(output, PluginId::AVATAR);
+                    assert_eq!(text, LyricsText::default());
                 }
             );
         })
         .await
-        .expect("the lyric worker did not apply the live timing change");
+        .expect("the lyric worker did not apply the timing change");
     }
 }

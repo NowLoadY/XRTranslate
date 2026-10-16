@@ -1,6 +1,6 @@
 use crate::audio::InputDevice;
 use crate::i18n::UiLanguage;
-use crate::plugins::osc::runtime::OscSettings;
+use crate::plugins::osc::{OscGame, runtime::OscSettings};
 use crate::plugins::vr_overlay::VrOverlaySettings;
 use crate::plugins::{PluginPreferences, PluginRegistry};
 use crate::ui::{Page, theme::UiTheme};
@@ -119,6 +119,8 @@ pub struct ClientSettings {
     pub update_channel: UpdateChannel,
     #[serde(default = "OscSettings::from_project_config")]
     pub osc_settings: OscSettings,
+    #[serde(default = "default_chilloutvr_osc_settings")]
+    pub chilloutvr_osc_settings: OscSettings,
     #[serde(default)]
     pub avatar_connector: crate::plugins::avatar::connectors::Settings,
     #[serde(default)]
@@ -141,6 +143,10 @@ pub struct ClientSettings {
     pub preferred_gpu: Option<String>,
     #[serde(skip)]
     pub prompt_library: PromptTemplateLibrary,
+}
+
+fn default_chilloutvr_osc_settings() -> OscSettings {
+    OscSettings::for_game(OscGame::ChilloutVR)
 }
 
 fn default_source_lang() -> String {
@@ -211,6 +217,7 @@ impl Default for ClientSettings {
             download_proxy_url: String::new(),
             update_channel: UpdateChannel::Stable,
             osc_settings: OscSettings::from_project_config(),
+            chilloutvr_osc_settings: default_chilloutvr_osc_settings(),
             avatar_connector: Default::default(),
             vr_overlay_settings: VrOverlaySettings::default(),
             plugin_preferences: PluginPreferences::default(),
@@ -308,10 +315,12 @@ impl ClientSettings {
             crate::feature_access::is_available(crate::feature_access::Feature::TtsPlayback);
         self.floating_subtitles_enabled &=
             crate::feature_access::is_available(crate::feature_access::Feature::FloatingSubtitles);
-        self.osc_settings.enabled &=
-            crate::feature_access::is_available(crate::feature_access::Feature::OscChatbox);
-        self.osc_settings.show_speaker_number &=
-            crate::feature_access::is_available(crate::feature_access::Feature::SpeakerNumbers);
+        for settings in [&mut self.osc_settings, &mut self.chilloutvr_osc_settings] {
+            settings.enabled &=
+                crate::feature_access::is_available(crate::feature_access::Feature::OscChatbox);
+            settings.show_speaker_number &=
+                crate::feature_access::is_available(crate::feature_access::Feature::SpeakerNumbers);
+        }
         // Replace the old emoji defaults that render as tofu on systems without
         // an emoji-capable egui font, while preserving user-customized prefixes.
         for (prefix, legacy, replacement) in [
@@ -332,8 +341,9 @@ impl ClientSettings {
         available_mics: &[InputDevice],
         available_loopbacks: &[InputDevice],
     ) {
-        self.osc_settings.history_ttl_seconds =
-            self.osc_settings.history_ttl_seconds.clamp(10.0, 20.0);
+        for settings in [&mut self.osc_settings, &mut self.chilloutvr_osc_settings] {
+            settings.history_ttl_seconds = settings.history_ttl_seconds.clamp(10.0, 20.0);
+        }
         self.floating_subtitles_max_count = self.floating_subtitles_max_count.clamp(1, 10);
         self.floating_subtitles_font_size = self.floating_subtitles_font_size.clamp(10.0, 24.0);
 

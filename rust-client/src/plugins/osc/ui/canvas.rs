@@ -24,7 +24,7 @@ pub fn render_canvas(
         );
         let is_empty = preview.text.trim().is_empty();
         let char_count = preview.text.chars().count();
-        let limit = plugin.draft().max_text_length;
+        let limit = plugin.draft().text_limit();
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
             let text_color = if char_count > limit {
