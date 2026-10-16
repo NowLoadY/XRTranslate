@@ -1709,7 +1709,7 @@ fn device_selection_text(
             SystemAudioCapture::Application { application, .. } => {
                 application.as_ref().map_or_else(
                     || "App · Select an application".into(),
-                    |application| format!("App · {}", application.display_name),
+                    |application| format!("App · {}", application_display_name(application, host)),
                 )
             }
         };
@@ -1727,6 +1727,16 @@ fn device_selection_text(
         return device.name.clone();
     }
     automatic_device_text(role, host, language)
+}
+
+fn application_display_name<'a>(
+    selection: &'a ApplicationSelection,
+    host: &'a HostAudioSnapshot,
+) -> &'a str {
+    host.applications
+        .iter()
+        .find(|candidate| candidate.id == selection.id)
+        .map_or(&selection.display_name, |candidate| &candidate.display_name)
 }
 
 fn node_control_row(rect: Rect, scale: f32, row_from_bottom: usize) -> Rect {
@@ -2035,8 +2045,8 @@ fn render_system_audio_control(
         SystemAudioCapture::Application { application, .. } => {
             let selected_text = application
                 .as_ref()
-                .map(|application| application.display_name.clone())
-                .unwrap_or_else(|| "Select an application…".into());
+                .map(|application| application_display_name(application, host_audio))
+                .unwrap_or("Select an application…");
             let combo = crate::ui::components::combobox_ui_with_width(
                 &mut source_ui,
                 ("system_audio_application", &node.id.0),

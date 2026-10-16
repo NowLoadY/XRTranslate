@@ -2440,7 +2440,9 @@ impl XRTranslateApp {
                     && !self.loopback_devices.is_empty(),
                 exclude_own_process_audio: false,
                 tts_feedback_suppression: !self.loopback_devices.is_empty(),
-                tts_source: self.service_config.tts_is_configured(),
+                // The TTS audio queue is always available. An unconfigured
+                // speech provider leaves it silent; it must not block BGM or mic routes.
+                tts_source: true,
                 media_source: true,
                 monitor_output: !self.tts_output_devices.is_empty(),
                 game_microphone_output,

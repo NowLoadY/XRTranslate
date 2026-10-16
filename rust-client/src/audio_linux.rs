@@ -227,13 +227,19 @@ unsafe extern "C" fn input_cb(_: Ptr, info: *const SinkInputInfo, eol: c_int, da
     } else {
         return;
     };
-    let name = if !app_name.is_empty() {
-        app_name
-    } else if !binary.is_empty() {
-        binary
-    } else {
-        string(info.name)
-    };
+    // Some apps report their shared runtime's name (for example Chromium).
+    // Keep the friendly name, but disambiguate it with the process identity
+    // already used for selection instead of special-casing individual apps.
+    let name =
+        if !app_name.is_empty() && !binary.is_empty() && !app_name.eq_ignore_ascii_case(&binary) {
+            format!("{app_name} ({binary})")
+        } else if !app_name.is_empty() {
+            app_name
+        } else if !binary.is_empty() {
+            binary
+        } else {
+            string(info.name)
+        };
     inputs.push(Input {
         index: info.index,
         sink: info.sink,
