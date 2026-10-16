@@ -37,7 +37,9 @@ pub fn render_onboarding_fullscreen(
     let compact_height = ui.available_height() < 480.0;
     let compact = narrow || compact_height;
     let margin = if compact { 16 } else { 36 };
-    let footer_margin_y = if compact_height { 8 } else { 14 };
+    let footer_margin_y = if compact_height { 8 } else { 10 };
+    let footer_gap = if compact_height { 8.0 } else { 12.0 };
+    let page_rect = ui.available_rect_before_wrap();
     let content_margin_y = if compact_height { 8 } else { 20 };
     if app.onboarding_page >= total_pages {
         app.onboarding_page = total_pages - 1;
@@ -58,10 +60,13 @@ pub fn render_onboarding_fullscreen(
         ..Default::default()
     };
 
-    let footer = egui::Panel::bottom("onboarding_bottom_nav")
-        .resizable(false)
-        .show_separator_line(true)
-        .frame(
+    let footer = egui::Area::new(egui::Id::new("onboarding_bottom_nav"))
+        .order(egui::Order::Middle)
+        .constrain_to(page_rect)
+        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -footer_gap])
+        .fade_in(false)
+        .show(ui.ctx(), |ui| {
+            ui.set_width((page_rect.width() - 2.0 * margin as f32).min(720.0));
             Frame::new()
                 .fill(if custom_background {
                     theme::surface_panel()
@@ -69,74 +74,85 @@ pub fn render_onboarding_fullscreen(
                     theme::sidebar(viewport_focused)
                 })
                 .stroke(Stroke::new(1.0, theme::border()))
-                .inner_margin(Margin::symmetric(margin, footer_margin_y)),
-        )
-        .show(ui, |ui| {
-            let final_page = app.onboarding_page + 1 == total_pages;
-            let tts_configured = app.service_config.tts_is_configured();
-            let agreement_satisfied = !tts_configured || app.usage_guidelines_accepted;
-            if final_page {
-                ui.horizontal_wrapped(|ui| {
-                    if tts_configured
-                        && components::checkbox(
-                            ui,
-                            &mut app.usage_guidelines_accepted,
-                            i18n::tr(app.ui_language, "I have read and agree"),
-                        )
-                        .changed()
-                    {
-                        app.save_settings();
+                .corner_radius(theme::container_radius(18))
+                .shadow(egui::Shadow {
+                    offset: [0, 3],
+                    blur: 12,
+                    spread: 0,
+                    color: Color32::from_black_alpha(18),
+                })
+                .inner_margin(Margin::symmetric(16, footer_margin_y))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let final_page = app.onboarding_page + 1 == total_pages;
+                    let tts_configured = app.service_config.tts_is_configured();
+                    let agreement_satisfied = !tts_configured || app.usage_guidelines_accepted;
+                    if final_page {
+                        ui.horizontal_wrapped(|ui| {
+                            if tts_configured
+                                && components::checkbox(
+                                    ui,
+                                    &mut app.usage_guidelines_accepted,
+                                    i18n::tr(app.ui_language, "I have read and agree"),
+                                )
+                                .changed()
+                            {
+                                app.save_settings();
+                            }
+                            if ui
+                                .link(
+                                    RichText::new(i18n::tr(app.ui_language, "Usage Guidelines"))
+                                        .size(12.5),
+                                )
+                                .clicked()
+                            {
+                                app.modal_dialog = crate::ui::modal::ModalDialog::usage_guidelines(
+                                    app.ui_language,
+                                );
+                            }
+                        });
                     }
-                    if ui
-                        .link(
-                            RichText::new(i18n::tr(app.ui_language, "Usage Guidelines")).size(12.5),
-                        )
-                        .clicked()
-                    {
-                        app.modal_dialog =
-                            crate::ui::modal::ModalDialog::usage_guidelines(app.ui_language);
-                    }
-                });
-            }
-            let hint = requirement.or_else(|| {
-                (final_page && !agreement_satisfied)
-                    .then_some("Please agree to the Usage Guidelines to continue.")
-            });
-            companion.requirement = hint;
-            ui.horizontal(|ui| {
-                if app.onboarding_page > 0
-                    && components::animated_button(ui, i18n::tr(app.ui_language, "Back")).clicked()
-                {
-                    app.onboarding_page -= 1;
-                }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let next = components::primary_button_enabled(
-                        ui,
-                        i18n::tr(
-                            app.ui_language,
-                            if final_page {
-                                "Open Translation"
-                            } else {
-                                "Continue"
-                            },
-                        ),
-                        requirement.is_none() && (!final_page || agreement_satisfied),
-                    );
-                    companion.next = next.rect;
-                    let next = if let Some(hint) = hint {
-                        next.on_disabled_hover_text(i18n::tr(app.ui_language, hint))
-                    } else {
-                        next
-                    };
-                    if next.clicked() {
-                        if final_page {
-                            app.finish_onboarding();
-                        } else {
-                            app.onboarding_page += 1;
+                    let hint = requirement.or_else(|| {
+                        (final_page && !agreement_satisfied)
+                            .then_some("Please agree to the Usage Guidelines to continue.")
+                    });
+                    companion.requirement = hint;
+                    ui.horizontal(|ui| {
+                        if app.onboarding_page > 0
+                            && components::animated_button(ui, i18n::tr(app.ui_language, "Back"))
+                                .clicked()
+                        {
+                            app.onboarding_page -= 1;
                         }
-                    }
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let next = components::primary_button_enabled(
+                                ui,
+                                i18n::tr(
+                                    app.ui_language,
+                                    if final_page {
+                                        "Open Translation"
+                                    } else {
+                                        "Continue"
+                                    },
+                                ),
+                                requirement.is_none() && (!final_page || agreement_satisfied),
+                            );
+                            companion.next = next.rect;
+                            let next = if let Some(hint) = hint {
+                                next.on_disabled_hover_text(i18n::tr(app.ui_language, hint))
+                            } else {
+                                next
+                            };
+                            if next.clicked() {
+                                if final_page {
+                                    app.finish_onboarding();
+                                } else {
+                                    app.onboarding_page += 1;
+                                }
+                            }
+                        });
+                    });
                 });
-            });
         });
 
     egui::CentralPanel::default()
@@ -185,13 +201,15 @@ pub fn render_onboarding_fullscreen(
                             |ui| match cur {
                                 0 => {
                                     companion.features =
-                                        Some(render_onboarding_welcome(app.ui_language, ui))
+                                        Some(render_onboarding_welcome(app.ui_language, ui));
+                                    companion.welcome_bottom = Some(ui.min_rect().bottom());
                                 }
                                 1 => render_onboarding_models(app, ui),
                                 2 => render_onboarding_optional(app, ui),
                                 _ => render_onboarding_download(app, ui),
                             },
                         );
+                        ui.add_space(footer.response.rect.height() + footer_gap);
                     });
             });
         });
@@ -469,6 +487,8 @@ fn render_onboarding_welcome(
         bounds[index] = onboarding_feature_card(ui, title, description, color, language);
     });
 
+    ui.add_space(20.0);
+    components::avatar_plugin_preview(ui, language);
     bounds
 }
 

@@ -29,6 +29,7 @@ use std::{
 
 pub(crate) struct OnboardingLayout {
     pub features: Option<[Rect; 3]>,
+    pub welcome_bottom: Option<f32>,
     pub header: Rect,
     pub next: Rect,
     pub footer: Rect,
@@ -44,6 +45,7 @@ impl Default for OnboardingLayout {
     fn default() -> Self {
         Self {
             features: None,
+            welcome_bottom: None,
             header: Rect::NOTHING,
             next: Rect::NOTHING,
             footer: Rect::NOTHING,
@@ -448,12 +450,9 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     let welcome = layout
         .as_ref()
         .and_then(|layout| {
-            layout.features.map(|cards| {
+            layout.welcome_bottom.map(|bottom| {
                 Rect::from_min_max(
-                    egui::pos2(
-                        screen.left() + 20.0,
-                        cards.iter().map(Rect::bottom).fold(screen.top(), f32::max) + 14.0,
-                    ),
+                    egui::pos2(screen.left() + 20.0, bottom + 14.0),
                     egui::pos2(screen.right() - 20.0, layout.footer.top() - 10.0),
                 )
             })

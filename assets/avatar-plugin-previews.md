@@ -1,6 +1,6 @@
 # Avatar plugin previews
 
-The Avatar page embeds these 1536 × 1024 concept illustrations. They were
+The Avatar and welcome pages embed these 1536 × 1024 concept illustrations. They were
 generated with imagegen using the references below; they are not runtime
 screenshots. Character appearance follows complete visual references, while
 poses, lighting and scenery are illustrative. Each image carries a concept label.
