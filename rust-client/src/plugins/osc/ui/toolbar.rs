@@ -1,5 +1,6 @@
 use super::super::runtime::{
     BannerConfig, BannerContentType, MAX_PREFIX_LENGTH, OscFormatMode, OscMessageSeparator,
+    default_lyric_offset_seconds,
 };
 use crate::plugins::text_output::render_banner_selector;
 use crate::ui::{
@@ -268,7 +269,7 @@ pub fn render_toolbar(
                                 crate::i18n::tr(language, "Lyric timing offset:"),
                                 &mut plugin.draft_mut().lyric_offset_seconds,
                                 -1.0..=1.0,
-                                0.0,
+                                default_lyric_offset_seconds(),
                             )
                             .step(0.1)
                             .precision(1)

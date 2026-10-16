@@ -106,7 +106,7 @@ pub struct OscSettings {
     pub header_config: BannerConfig,
     pub footer_config: BannerConfig,
     /// Positive values delay lyrics; negative values advance them.
-    #[serde(default)]
+    #[serde(default = "default_lyric_offset_seconds")]
     pub lyric_offset_seconds: f64,
     /// Keeps configured header/footer content visible after message TTL expiry.
     #[serde(default)]
@@ -138,6 +138,11 @@ fn default_typing_prefix() -> String {
     "💬".into()
 }
 
+pub(super) fn default_lyric_offset_seconds() -> f64 {
+    // A small initial allowance for remote voice playback, adjustable per setup.
+    0.3
+}
+
 impl Default for OscSettings {
     fn default() -> Self {
         Self {
@@ -150,7 +155,7 @@ impl Default for OscSettings {
             history_ttl_seconds: 15.0,
             header_config: BannerConfig::default(),
             footer_config: BannerConfig::default(),
-            lyric_offset_seconds: 0.0,
+            lyric_offset_seconds: default_lyric_offset_seconds(),
             persistent_banners: false,
             format_mode: OscFormatMode::BilingualSourceFirst,
             message_separator: OscMessageSeparator::default(),
@@ -1262,12 +1267,19 @@ mod settings_tests {
     use super::*;
 
     #[test]
-    fn lyric_offset_defaults_to_zero_and_round_trips_with_osc_preferences() {
+    fn lyric_offset_default_and_saved_overrides_round_trip_with_osc_preferences() {
+        assert_eq!(OscSettings::default().lyric_offset_ms(), 300);
         let mut old = serde_json::to_value(OscSettings::default()).unwrap();
         old.as_object_mut().unwrap().remove("lyric_offset_seconds");
         let mut settings: OscSettings = serde_json::from_value(old).unwrap();
-        assert_eq!(settings.lyric_offset_ms(), 0);
-        for (seconds, milliseconds) in [(-1.0, -1000), (-0.3, -300), (0.1, 100), (1.0, 1000)] {
+        assert_eq!(settings.lyric_offset_ms(), 300);
+        for (seconds, milliseconds) in [
+            (-1.0, -1000),
+            (-0.3, -300),
+            (0.0, 0),
+            (0.1, 100),
+            (1.0, 1000),
+        ] {
             settings.lyric_offset_seconds = seconds;
             let saved = serde_json::to_string(&settings).unwrap();
             let restored: OscSettings = serde_json::from_str(&saved).unwrap();
