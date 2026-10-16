@@ -119,7 +119,11 @@ missing playback progress from a valid song-start position. The plugin owns
 the presentation policy: synchronize music with an available timeline and
 timed lyrics, otherwise show its title; other media supplies titles only.
 The plugin owns the bounded text window, its music marker, and title/lyric
-scrolling; the host's output budget includes the marker.
+scrolling; the host's output budget includes the marker. It supplies title/artist
+and current lyric separately through the shared text-output contract. In OSC,
+selecting Lyrics for both header and footer shows the title/artist above and the
+available lyric below, both prefixed with 🎵. A missing lyric leaves the footer
+empty. A single lyric region retains lyric-first display with a title fallback.
 Read-only playback status is exposed in plugin settings. Cache maintenance
 belongs to the lyric plugin, independently of display activity.
 

@@ -3,6 +3,7 @@ use super::{
     player::{Playback, Track},
     timeline,
 };
+use crate::plugins::text_output::LyricsText;
 use std::time::{Duration, Instant};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -51,8 +52,8 @@ pub(super) enum Lookup {
 
 #[derive(Default)]
 pub(super) struct Renderer {
-    // The title clock belongs to its visible lifetime, not to the one-second
-    // media snapshots. Lyrics, pause, disconnect and track changes reset it.
+    // Scroll the title independently of lyric changes and media snapshots.
+    // Pause, disconnect and track changes reset it.
     title: Option<(Track, Instant)>,
 }
 
@@ -64,14 +65,14 @@ impl Renderer {
         lookup: Lookup,
         budget: usize,
         now: Instant,
-    ) -> (String, Status) {
+    ) -> (LyricsText, Status) {
         let Some(playback) = playback else {
             self.title = None;
-            return (String::new(), Status::Waiting);
+            return (LyricsText::default(), Status::Waiting);
         };
         if !playback.playing {
             self.title = None;
-            return (String::new(), Status::Paused);
+            return (LyricsText::default(), Status::Paused);
         }
         let budget = budget.min(MAX_LINE_CHARS);
         let content_budget = budget.saturating_sub(MUSIC_PREFIX.chars().count());
@@ -92,29 +93,36 @@ impl Renderer {
         } else {
             (String::new(), Status::NoTimeline)
         };
-        let text = if lyric.is_empty() {
-            if self
-                .title
-                .as_ref()
-                .is_none_or(|(track, _)| *track != playback.track)
-            {
-                self.title = Some((playback.track.clone(), now));
+        if self
+            .title
+            .as_ref()
+            .is_none_or(|(track, _)| *track != playback.track)
+        {
+            self.title = Some((playback.track.clone(), now));
+        }
+        let elapsed = now.saturating_duration_since(self.title.as_ref().unwrap().1);
+        let title = title(&playback.track, content_budget, elapsed);
+        let prefix = |text: &str| {
+            if budget == 0 {
+                String::new()
+            } else if text.is_empty() {
+                MUSIC_PREFIX.trim_end().to_owned()
+            } else {
+                format!("{MUSIC_PREFIX}{text}")
             }
-            let elapsed = now.saturating_duration_since(self.title.as_ref().unwrap().1);
-            // Also identify the song during intros, instrumental gaps and outros.
-            title(&playback.track, content_budget, elapsed)
-        } else {
-            self.title = None;
-            lyric
         };
-        let text = if budget == 0 {
-            String::new()
-        } else if text.is_empty() {
-            MUSIC_PREFIX.trim_end().to_owned()
-        } else {
-            format!("{MUSIC_PREFIX}{text}")
-        };
-        (text, status)
+        (
+            LyricsText {
+                title: prefix(&title),
+                // An unavailable lyric leaves the second region empty.
+                lyric: if lyric.is_empty() {
+                    String::new()
+                } else {
+                    prefix(&lyric)
+                },
+            },
+            status,
+        )
     }
 }
 
@@ -160,4 +168,102 @@ fn title(track: &Track, budget: usize, elapsed: Duration) -> String {
         used += length;
     }
     output.trim().to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn playback(now: Instant) -> Playback {
+        Playback {
+            track: Track {
+                title: "歌名".into(),
+                artists: vec!["歌手".into()],
+                album: String::new(),
+            },
+            is_music: true,
+            embedded_lyrics: None,
+            duration_ms: 30_000,
+            position_ms: Some(5_000),
+            observed: now,
+            rate: 0.0,
+            playing: true,
+        }
+    }
+
+    #[test]
+    fn title_and_lyric_are_independent_and_unavailable_lyrics_stay_empty() {
+        let now = Instant::now();
+        let mut playback = playback(now);
+        let mut renderer = Renderer::default();
+        let cues = timeline::parse("[00:01]当前歌词\n[00:10]...");
+        let (text, status) = renderer.render(Some(&playback), &cues, Lookup::Ready, 24, now);
+        assert_eq!(status, Status::Synced);
+        assert_eq!(text.title, "🎵 歌名 · 歌手");
+        assert_eq!(text.lyric, "🎵 当前歌词");
+        assert_eq!(text.preferred(), text.lyric);
+
+        for lookup in [Lookup::Loading, Lookup::Failed, Lookup::Ready] {
+            let (text, _) = renderer.render(Some(&playback), &[], lookup, 24, now);
+            assert_eq!(text.title, "🎵 歌名 · 歌手");
+            assert!(text.lyric.is_empty());
+            assert_eq!(text.preferred(), text.title);
+        }
+        for position in [Some(0), Some(12_000), None] {
+            playback.position_ms = position;
+            let (text, _) = renderer.render(Some(&playback), &cues, Lookup::Ready, 24, now);
+            assert_eq!(text.title, "🎵 歌名 · 歌手");
+            assert!(text.lyric.is_empty());
+        }
+        playback.playing = false;
+        assert!(
+            renderer
+                .render(Some(&playback), &cues, Lookup::Ready, 24, now)
+                .0
+                .is_empty()
+        );
+        assert!(
+            renderer
+                .render(None, &cues, Lookup::Ready, 24, now)
+                .0
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn title_scrolls_while_lyrics_are_visible_and_resets_for_a_new_track() {
+        let now = Instant::now();
+        let mut playback = playback(now);
+        playback.track.title = "这是一个需要滚动才能显示完整名称的歌曲标题".into();
+        let cues = timeline::parse("[00:01]当前歌词");
+        let mut renderer = Renderer::default();
+        let (start, _) = renderer.render(Some(&playback), &cues, Lookup::Ready, 12, now);
+        let (scrolled, _) = renderer.render(
+            Some(&playback),
+            &cues,
+            Lookup::Ready,
+            12,
+            now + Duration::from_secs(5),
+        );
+        assert_ne!(start.title, scrolled.title);
+        assert_eq!(start.lyric, scrolled.lyric);
+        for text in [&start.title, &start.lyric, &scrolled.title, &scrolled.lyric] {
+            assert!(text.starts_with(MUSIC_PREFIX));
+            assert!(text.chars().count() <= 12);
+        }
+        playback.track.title = "新歌".into();
+        assert_eq!(
+            renderer
+                .render(
+                    Some(&playback),
+                    &cues,
+                    Lookup::Ready,
+                    12,
+                    now + Duration::from_secs(6)
+                )
+                .0
+                .title,
+            "🎵 新歌 · 歌手"
+        );
+    }
 }

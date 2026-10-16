@@ -2,10 +2,10 @@ use super::chatbox::{
     HistoryMessage, ManualMessage, build_chatbox_text, render_entry, sanitize_chatbox_segment,
 };
 use crate::client_settings::CaptureSource;
-use crate::plugins::text_output::TextOutputHandle;
 pub use crate::plugins::text_output::{
     BannerConfig, BannerContentType, MessageFormat as OscFormatMode,
 };
+use crate::plugins::text_output::{LyricsText, TextOutputHandle};
 use crate::session_coordinator::AudioSourceFilter;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use parking_lot::Mutex;
@@ -351,7 +351,7 @@ impl MicrophoneReview {
 }
 
 enum Command {
-    Lyric(String),
+    Lyrics(LyricsText),
     Previews(
         u64,
         bool,
@@ -416,8 +416,8 @@ impl OscHandle {
         let _ = self.tx.send(Command::MicrophoneReviewChanged);
     }
 
-    pub(crate) fn set_lyric(&self, text: String) {
-        let _ = self.tx.send(Command::Lyric(text));
+    pub(crate) fn set_lyrics(&self, text: LyricsText) {
+        let _ = self.tx.send(Command::Lyrics(text));
     }
 
     pub fn set_previews(
@@ -694,7 +694,7 @@ fn dispatch_loop(
     let mut pending_voice: Option<VoicePublication> = None;
     let mut published_voice: Option<PublishedVoice> = None;
     let mut last_voice_operation: Option<u64> = None;
-    let mut lyric = String::new();
+    let mut lyrics = LyricsText::default();
     // Keep only the latest snapshot, while preserving a final notification.
     let mut pending: Option<bool> = None;
     let mut clear_pending = false;
@@ -737,14 +737,10 @@ fn dispatch_loop(
             changed = true;
         }
         match command {
-            Ok(Command::Lyric(text)) => {
-                let text = text
-                    .chars()
-                    .take(settings.lyric_budget().unwrap_or(0))
-                    .collect::<String>();
-                changed |= text != lyric;
-                lyric = text;
-                next_banner_refresh = banner_refresh_deadline(&settings, now, !lyric.is_empty());
+            Ok(Command::Lyrics(text)) => {
+                changed |= text != lyrics;
+                lyrics = text;
+                next_banner_refresh = banner_refresh_deadline(&settings, now, !lyrics.is_empty());
             }
             Ok(Command::ManualMessage { text, ttl }) if settings.enabled => {
                 cancel_voice_publication(
@@ -935,12 +931,12 @@ fn dispatch_loop(
                 }
                 settings = updated;
                 if settings.lyric_budget().is_none() {
-                    lyric.clear();
+                    lyrics = LyricsText::default();
                 }
                 history.retain(|entry| settings.accepts_source(entry.source_kind));
                 live.retain(|entry| settings.accepts_source(entry.source_kind));
                 previews.retain(|entry| settings.accepts_source(entry.source_kind));
-                next_banner_refresh = banner_refresh_deadline(&settings, now, !lyric.is_empty());
+                next_banner_refresh = banner_refresh_deadline(&settings, now, !lyrics.is_empty());
                 changed = true;
             }
             Ok(Command::Shutdown) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
@@ -975,7 +971,7 @@ fn dispatch_loop(
             changed = true;
         }
         if next_banner_refresh.is_some_and(|deadline| now >= deadline) {
-            next_banner_refresh = banner_refresh_deadline(&settings, now, !lyric.is_empty());
+            next_banner_refresh = banner_refresh_deadline(&settings, now, !lyrics.is_empty());
             force_send = true;
             changed = true;
         }
@@ -1033,7 +1029,7 @@ fn dispatch_loop(
                     manual_message.as_ref(),
                     &settings,
                     &text_output.snapshot(),
-                    &lyric,
+                    &lyrics,
                     !live.is_empty() || !previews.is_empty(),
                     notify,
                 )
@@ -1122,12 +1118,12 @@ fn build_queued_message(
     manual_message: Option<&ManualMessage>,
     settings: &OscSettings,
     metrics: &crate::plugins::text_output::SystemMetrics,
-    lyric: &str,
+    lyrics: &LyricsText,
     typing: bool,
     notify: bool,
 ) -> QueuedMessage {
     QueuedMessage {
-        text: build_chatbox_text(history, live, manual_message, settings, metrics, lyric),
+        text: build_chatbox_text(history, live, manual_message, settings, metrics, lyrics),
         typing,
         notify,
         expires_at: next_content_expiry(history, live, manual_message),

@@ -3,6 +3,27 @@ use crate::ui::{components, layout};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
+/// Bounded song metadata and the current lyric, supplied together by the host.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LyricsText {
+    pub title: String,
+    pub lyric: String,
+}
+
+impl LyricsText {
+    pub fn preferred(&self) -> &str {
+        if self.lyric.is_empty() {
+            &self.title
+        } else {
+            &self.lyric
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.title.is_empty() && self.lyric.is_empty()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageFormat {
     BilingualSourceFirst, // Source \n Target

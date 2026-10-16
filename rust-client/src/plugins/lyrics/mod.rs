@@ -1,11 +1,13 @@
 //! On-demand media titles and current-song lyrics. The host supplies activation, character
-//! budget and a text sink; this plugin never imports OSC or starts translation.
+//! budget and a text sink; outputs choose their own layout. This plugin never
+//! imports OSC or starts translation.
 mod cache;
 mod netease;
 mod output;
 mod player;
 mod timeline;
 
+use crate::plugins::text_output::LyricsText;
 use output::Lookup;
 pub(crate) use output::Status;
 use parking_lot::Mutex;
@@ -20,7 +22,7 @@ use std::{
 };
 use tokio::sync::watch;
 
-type Publish = Arc<dyn Fn(String) + Send + Sync>;
+type Publish = Arc<dyn Fn(LyricsText) + Send + Sync>;
 
 pub(crate) struct LyricsPlugin {
     publish: Publish,
@@ -31,7 +33,10 @@ pub(crate) struct LyricsPlugin {
 }
 
 impl LyricsPlugin {
-    pub fn new(cache_directory: PathBuf, publish: impl Fn(String) + Send + Sync + 'static) -> Self {
+    pub fn new(
+        cache_directory: PathBuf,
+        publish: impl Fn(LyricsText) + Send + Sync + 'static,
+    ) -> Self {
         Self {
             publish: Arc::new(publish),
             worker: None,
@@ -49,7 +54,7 @@ impl LyricsPlugin {
                 let _ = tx.send(None);
                 let _ = worker.join();
             }
-            (self.publish)(String::new());
+            (self.publish)(LyricsText::default());
             *self.status.lock() = Status::Idle;
             return;
         }
@@ -78,7 +83,7 @@ impl LyricsPlugin {
                     Ok(runtime) => runtime.block_on(run(rx, &publish, cache, &status)),
                     Err(error) => log::warn!("Lyrics: {error}"),
                 }
-                publish(String::new());
+                publish(LyricsText::default());
             }) {
             Ok(worker) => self.worker = Some((tx, worker)),
             Err(error) => log::warn!("Lyrics: {error}"),
@@ -191,7 +196,7 @@ async fn display(
     let mut cues = Vec::new();
     let mut fetching: Option<Fetch> = None;
     let mut lookup = Lookup::NotStarted;
-    let mut last_text = String::new();
+    let mut last_text = LyricsText::default();
     let mut renderer = output::Renderer::default();
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

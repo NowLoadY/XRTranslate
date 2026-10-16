@@ -4,7 +4,7 @@ mod text;
 
 pub use system::{SystemMetrics, TextOutputHandle};
 pub use text::{BannerConfig, BannerContentType, MessageFormat};
-pub(crate) use text::{format_message, message_parts, render_banner_selector};
+pub(crate) use text::{LyricsText, format_message, message_parts, render_banner_selector};
 
 pub(crate) struct TextOutputPlugin {
     monitor: system::SystemMonitor,

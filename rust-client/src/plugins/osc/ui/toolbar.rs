@@ -254,18 +254,6 @@ pub fn render_toolbar(
                                     },
                                 );
                                 changed |= banner_changed;
-                                if banner_changed
-                                    && banner.content_type == BannerContentType::Lyrics
-                                {
-                                    let other = if header {
-                                        &mut plugin.draft_mut().footer_config
-                                    } else {
-                                        &mut plugin.draft_mut().header_config
-                                    };
-                                    if other.content_type == BannerContentType::Lyrics {
-                                        other.content_type = BannerContentType::None;
-                                    }
-                                }
                             }
                         });
 

@@ -968,8 +968,8 @@ impl Default for XRTranslateApp {
                     .runtime_root()
                     .join("cache/lyrics"),
                 move |text| {
-                    output.set_lyric(text.clone());
-                    avatar_output.set_lyric(text);
+                    avatar_output.set_lyric(text.preferred().to_owned());
+                    output.set_lyrics(text);
                 },
             );
             if settings.plugin_preferences.is_enabled(PluginId::LYRICS) {

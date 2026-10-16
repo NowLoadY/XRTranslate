@@ -1,9 +1,11 @@
-use crate::plugins::text_output::{SystemMetrics, message_parts};
+use crate::plugins::text_output::{LyricsText, SystemMetrics, message_parts};
 use std::{collections::VecDeque, time::Instant};
 
 use crate::presentation::speaker::compact_speaker_label;
 
-use super::runtime::{OscFormatMode, OscInputSource, OscMessageSeparator, OscSettings};
+use super::runtime::{
+    BannerContentType, OscFormatMode, OscInputSource, OscMessageSeparator, OscSettings,
+};
 
 const MAX_LINES: usize = 9;
 
@@ -32,7 +34,7 @@ pub(super) fn build_chatbox_text(
     manual_message: Option<&ManualMessage>,
     settings: &OscSettings,
     metrics: &SystemMetrics,
-    lyric: &str,
+    lyrics: &LyricsText,
 ) -> String {
     let mut entries = history
         .iter()
@@ -48,12 +50,24 @@ pub(super) fn build_chatbox_text(
         entries.pop_front();
     }
 
-    let lyric = lyric
-        .chars()
-        .take(settings.lyric_budget().unwrap_or(0))
-        .collect::<String>();
-    let prefix = settings.header_config.render_text(metrics, &lyric);
-    let suffix = settings.footer_config.render_text(metrics, &lyric);
+    let split_lyrics = settings.header_config.content_type == BannerContentType::Lyrics
+        && settings.footer_config.content_type == BannerContentType::Lyrics;
+    let (header_lyric, footer_lyric) = if split_lyrics {
+        (lyrics.title.as_str(), lyrics.lyric.as_str())
+    } else {
+        (lyrics.preferred(), lyrics.preferred())
+    };
+    let bounded = |text: &str| {
+        text.chars()
+            .take(settings.lyric_budget().unwrap_or(0))
+            .collect::<String>()
+    };
+    let prefix = settings
+        .header_config
+        .render_text(metrics, &bounded(header_lyric));
+    let suffix = settings
+        .footer_config
+        .render_text(metrics, &bounded(footer_lyric));
 
     if let Some(manual) = manual_message.filter(|manual| !manual.text.trim().is_empty()) {
         // Manual text and translations share the same space below/above lyrics.
@@ -84,17 +98,13 @@ pub(super) fn build_chatbox_text(
             fit_decorations(&prefix, &suffix, settings.max_text_length)
         } else {
             // A selected lyric is a live output, independent of caption TTLs.
-            let header = if settings.header_config.content_type
-                == super::runtime::BannerContentType::Lyrics
-            {
-                &lyric
+            let header = if settings.header_config.content_type == BannerContentType::Lyrics {
+                prefix.as_str()
             } else {
                 ""
             };
-            let footer = if settings.footer_config.content_type
-                == super::runtime::BannerContentType::Lyrics
-            {
-                &lyric
+            let footer = if settings.footer_config.content_type == BannerContentType::Lyrics {
+                suffix.as_str()
             } else {
                 ""
             };
@@ -599,6 +609,107 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn lyrics_split_between_banners_with_a_single_region_fallback() {
+        let metrics = SystemMetrics::default();
+        for persistent_banners in [false, true] {
+            for (header, footer, lyric, expected) in [
+                (true, true, "🎵 当前歌词", "🎵 歌名 · 歌手\n🎵 当前歌词"),
+                (true, true, "", "🎵 歌名 · 歌手"),
+                (true, false, "🎵 当前歌词", "🎵 当前歌词"),
+                (false, true, "🎵 当前歌词", "🎵 当前歌词"),
+                (true, false, "", "🎵 歌名 · 歌手"),
+                (false, true, "", "🎵 歌名 · 歌手"),
+            ] {
+                let mut settings = OscSettings {
+                    persistent_banners,
+                    ..Default::default()
+                };
+                if header {
+                    settings.header_config.content_type = BannerContentType::Lyrics;
+                }
+                if footer {
+                    settings.footer_config.content_type = BannerContentType::Lyrics;
+                }
+                let lyrics = LyricsText {
+                    title: "🎵 歌名 · 歌手".into(),
+                    lyric: lyric.into(),
+                };
+                assert_eq!(
+                    build_chatbox_text(&[], &[], None, &settings, &metrics, &lyrics),
+                    expected,
+                );
+                assert!(
+                    build_chatbox_text(&[], &[], None, &settings, &metrics, &LyricsText::default())
+                        .is_empty()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn split_lyrics_surround_speech_and_manual_text_within_the_budget() {
+        let now = Instant::now();
+        let mut settings = OscSettings::default();
+        settings.header_config.content_type = BannerContentType::Lyrics;
+        settings.footer_config.content_type = BannerContentType::Lyrics;
+        let metrics = SystemMetrics::default();
+        let lyrics = LyricsText {
+            title: "🎵 歌名 · 歌手".into(),
+            lyric: "🎵 当前歌词".into(),
+        };
+        let speech = HistoryMessage {
+            stream_id: 1,
+            source_kind: OscInputSource::Microphone,
+            source: String::new(),
+            translated: "译文".into(),
+            additional_translations: Vec::new(),
+            speaker_id: String::new(),
+            updated_at: now,
+            expires_at: now + Duration::from_secs(15),
+        };
+        let manual = ManualMessage {
+            text: "手动消息".into(),
+            updated_at: now,
+            expires_at: now + Duration::from_secs(15),
+        };
+        assert_eq!(
+            build_chatbox_text(
+                std::slice::from_ref(&speech),
+                &[],
+                None,
+                &settings,
+                &metrics,
+                &lyrics
+            ),
+            "🎵 歌名 · 歌手\n🎤 译文\n🎵 当前歌词",
+        );
+        assert_eq!(
+            build_chatbox_text(&[], &[], Some(&manual), &settings, &metrics, &lyrics),
+            "🎵 歌名 · 歌手\n💬 手动消息\n🎵 当前歌词",
+        );
+
+        let lyrics = LyricsText {
+            title: format!("🎵 {}", "歌名".repeat(50)),
+            lyric: format!("🎵 {}", "歌词".repeat(50)),
+        };
+        for limit in [0, 1, 6, 24, 48, 144] {
+            settings.max_text_length = limit;
+            for manual in [None, Some(&manual)] {
+                let text = build_chatbox_text(
+                    std::slice::from_ref(&speech),
+                    &[],
+                    manual,
+                    &settings,
+                    &metrics,
+                    &lyrics,
+                );
+                assert!(text.chars().count() <= limit, "limit {limit}: {text}");
+                assert!(text.lines().count() <= MAX_LINES);
+            }
+        }
+    }
+
+    #[test]
     fn target_only_waits_for_translation_without_evicting_visible_history() {
         let now = Instant::now();
         let recognized = HistoryMessage {
@@ -625,7 +736,15 @@ mod tests {
                 };
                 assert!(render_entry(&preview, &settings).is_empty());
                 assert!(
-                    build_chatbox_text(&[], &[preview], None, &settings, &metrics, "").is_empty()
+                    build_chatbox_text(
+                        &[],
+                        &[preview],
+                        None,
+                        &settings,
+                        &metrics,
+                        &LyricsText::default()
+                    )
+                    .is_empty()
                 );
             }
             let translated = HistoryMessage {
@@ -633,19 +752,40 @@ mod tests {
                 ..recognized.clone()
             };
             assert_eq!(
-                build_chatbox_text(&[], &[translated.clone()], None, &settings, &metrics, ""),
+                build_chatbox_text(
+                    &[],
+                    &[translated.clone()],
+                    None,
+                    &settings,
+                    &metrics,
+                    &LyricsText::default()
+                ),
                 "🎤 译文"
             );
             let previews = vec![recognized.clone(); MAX_LINES];
             assert_eq!(
-                build_chatbox_text(&[translated], &previews, None, &settings, &metrics, ""),
+                build_chatbox_text(
+                    &[translated],
+                    &previews,
+                    None,
+                    &settings,
+                    &metrics,
+                    &LyricsText::default()
+                ),
                 "🎤 译文"
             );
             let additional = HistoryMessage {
                 additional_translations: vec![("de".into(), "Übersetzung".into())],
                 ..recognized.clone()
             };
-            let text = build_chatbox_text(&[], &[additional], None, &settings, &metrics, "");
+            let text = build_chatbox_text(
+                &[],
+                &[additional],
+                None,
+                &settings,
+                &metrics,
+                &LyricsText::default(),
+            );
             assert!(text.contains("Übersetzung"));
             assert!(!text.contains(&recognized.source));
             let bilingual = OscSettings {
@@ -653,8 +793,15 @@ mod tests {
                 ..settings
             };
             assert!(
-                build_chatbox_text(&[], &[recognized.clone()], None, &bilingual, &metrics, "")
-                    .contains(&recognized.source)
+                build_chatbox_text(
+                    &[],
+                    &[recognized.clone()],
+                    None,
+                    &bilingual,
+                    &metrics,
+                    &LyricsText::default()
+                )
+                .contains(&recognized.source)
             );
         }
     }
