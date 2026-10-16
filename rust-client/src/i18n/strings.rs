@@ -1,5 +1,7 @@
 /// Consolidated single-source-of-truth dictionary: `(English Key, Chinese (zh), Japanese (ja), Korean (ko), Russian (ru))`
 pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
+    ("Show your translations above your avatar.", "让翻译显示在你的角色头顶。", "アバターの頭上に翻訳を表示します。", "아바타 머리 위에 번역을 표시하세요.", "Показывайте переводы над своим аватаром."),
+    ("Translate your speech into Big Walk chat.", "把你说的话翻译到 Big Walk 聊天中。", "話した内容を翻訳してBig Walkのチャットに送ります。", "말한 내용을 번역해 Big Walk 채팅으로 보내세요.", "Переводите свою речь в текстовый чат Big Walk."),
     ("Live translation", "实时翻译", "リアルタイム翻訳", "실시간 번역", "Перевод в реальном времени"),
     ("Translate microphone and desktop audio in real time.", "实时翻译麦克风和电脑中的声音。", "マイクやパソコンの音声をリアルタイムで翻訳します。", "마이크와 컴퓨터 소리를 실시간으로 번역하세요.", "Переводите звук микрофона и компьютера в реальном времени."),
     ("Media subtitles", "媒体字幕", "メディア字幕", "미디어 자막", "Субтитры для медиа"),

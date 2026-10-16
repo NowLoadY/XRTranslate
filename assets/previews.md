@@ -10,9 +10,32 @@ The welcome showcase uses 1080 × 720 captures of the application, bundled as lo
 | `showcase-media.webp` | Four original sample subtitles imported from a local SRT file. |
 | `showcase-styles.webp` | Built-in translation style selection. |
 
+## VRChat concept
+
+`showcase-vrchat.webp` is a 1536 × 1024 imagegen illustration, bundled at WebP
+quality 90. Kipfel's complete outfit and appearance follow the creator's
+[full-body reference](https://booth.pximg.net/c80ffe79-d9d7-4481-bc64-40d80bcd71e6/i/5813187/a1dfcd32-162b-4172-81d4-c3d21ed0fd73_base_resized.jpg)
+and [character page](https://mukumi.booth.pm/items/5813187) by もち山金魚.
+Chatbox placement follows the [official example](https://wiki.vrchat.com/wiki/Chatbox),
+with multiline typography checked against the [VRCT author's example](https://booth.pm/ja/items/4814313).
+The two lines, `🎤 What a lovely day!` and `天气真好！`, follow the OSC plugin's
+default source-first bilingual format and microphone prefix. The sunny hill is
+illustrative; the image carries an AI-generated concept label.
+
+## Big Walk concept
+
+`showcase-bigwalk.webp` is a 1536 × 1024 imagegen illustration, bundled at WebP
+quality 90 for the welcome showcase. Characters and coastal scenery follow the
+[official screenshots](https://bigwalk.game/presskit/) and the hiking scene at
+00:24–00:26 in the [release-date trailer](https://youtu.be/c_uvpWSlBV0).
+The floating, outlined chat lettering follows the
+[BigTalk ConversationStarters example](https://cdn.vixen.link/62v9gr/example.png).
+The waveform bubble and arrow illustrate voice-to-text translation. The image
+carries an AI-generated concept label.
+
 ## Avatar concepts
 
-The Avatar page uses these 1536 × 1024 illustrations; the welcome showcase includes the VRChat example. They were
+The Avatar page and welcome showcase share these 1536 × 1024 illustrations. They were
 generated with imagegen using the references below; they are not runtime
 screenshots. Character appearance follows complete visual references, while
 poses, lighting and scenery are illustrative. Each image carries a concept label.

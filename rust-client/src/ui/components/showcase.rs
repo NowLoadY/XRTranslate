@@ -58,7 +58,7 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
             ui.add(egui::Label::new(tr(language, slide.description)).wrap());
             ui.add_space(4.0);
             let width = ui.available_width();
-            let height = (ui.ctx().content_rect().height() * 0.30).clamp(160.0, 280.0) + 40.0;
+            let height = (ui.ctx().content_rect().height() * 0.34).clamp(180.0, 320.0) + 40.0;
             let (image_area, _) =
                 ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
             ui.place(
@@ -168,10 +168,10 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
         preview.next_at = None;
     } else {
         let now = ui.input(|input| input.time);
-        let next = preview.next_at.get_or_insert(now + 8.0);
+        let next = preview.next_at.get_or_insert(now + 3.0);
         if now >= *next {
             preview.index = (preview.index + 1) % slides.len();
-            *next = now + 8.0;
+            *next = now + 3.0;
             ui.ctx().request_repaint();
         }
         ui.ctx()

@@ -5,7 +5,7 @@
 <h1 align="center">XRTranslate</h1>
 
 <p align="center">
-  <a href="https://github.com/NowLoadY/XRTranslate/releases/latest">Download the latest release</a>
+  <a href="https://github.com/NowLoadY/XRTranslate/releases/latest"><img src="https://img.shields.io/badge/Download%20the%20latest%20release-249C69?style=for-the-badge&amp;logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGQ9Ik0xMiAzdjEybS01LTUgNSA1IDUtNU00IDE2djVoMTZ2LTUiLz48L3N2Zz4%3D" alt="Download the latest release" /></a>
 </p>
 
 <p align="center">
@@ -14,7 +14,16 @@
 </p>
 
 <p align="center">
-  <strong>Real-Time Subtitles & Voice Translation for Desktop, Media, VRChat, and ChilloutVR</strong>
+  <a href="docs/osc-chatbox.md"><img src="https://img.shields.io/badge/VRChat-268BD2?style=flat" alt="VRChat" /></a>
+  <a href="docs/osc-chatbox.md"><img src="https://img.shields.io/badge/ChilloutVR-8B5CF6?style=flat" alt="ChilloutVR" /></a>
+  <a href="docs/bigwalk-chat.md"><img src="https://img.shields.io/badge/Big%20Walk-D48824?style=flat" alt="Big Walk" /></a>
+  <a href="https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/overte/installation.md"><img src="https://img.shields.io/badge/Overte-129C8C?style=flat" alt="Overte" /></a>
+  <a href="https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/resonite/installation.md"><img src="https://img.shields.io/badge/Resonite-E15B80?style=flat" alt="Resonite" /></a>
+  <a href="https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/secondlife/installation.md"><img src="https://img.shields.io/badge/Second%20Life-6875C9?style=flat" alt="Second Life" /></a>
+</p>
+
+<p align="center">
+  <strong>Real-Time Subtitles & Voice Translation for Desktop, Media, VRChat, ChilloutVR, and Big Walk</strong>
 </p>
 
 <p align="center">
@@ -63,9 +72,7 @@ Supports generating video subtitles and playing them directly at high performanc
   <img src="assets/preview-Translation.png" alt="XRTranslate translation screen" width="900" />
 </p>
 
-Send subtitles to VRChat and ChilloutVR through OSC, with messages kept separate or arranged together.
-
-[Big Walk](docs/bigwalk-chat.md) can receive completed translations in its native chat through the XRT game bridge.
+Send translations to VRChat and ChilloutVR through OSC, or to [Big Walk](docs/bigwalk-chat.md)'s native chat through the XRT game bridge. OSC messages can be kept separate or arranged together.
 
 <table>
   <tr>

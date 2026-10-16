@@ -5,12 +5,21 @@
 <h1 align="center">XRTranslate</h1>
 
 <p align="center">
-  <a href="https://github.com/NowLoadY/XRTranslate/releases/latest">Télécharger la dernière version</a>
+  <a href="https://github.com/NowLoadY/XRTranslate/releases/latest"><img src="https://img.shields.io/badge/T%C3%A9l%C3%A9charger%20la%20derni%C3%A8re%20version-249C69?style=for-the-badge&amp;logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGQ9Ik0xMiAzdjEybS01LTUgNSA1IDUtNU00IDE2djVoMTZ2LTUiLz48L3N2Zz4%3D" alt="Télécharger la dernière version" /></a>
 </p>
 
 <p align="center">
   <a href="https://xrtranslate.nowloady.chatgpt.site"><img src="https://img.shields.io/badge/Website-0078D4?style=for-the-badge" alt="Website" /></a>
   <a href="https://github.com/NowLoadY/XRT-Avatar-Plugin"><img src="https://img.shields.io/badge/XRT--Avatar--Plugin-DB2777?style=for-the-badge&amp;logo=github&amp;logoColor=white" alt="XRT-Avatar-Plugin" /></a>
+</p>
+
+<p align="center">
+  <a href="../osc-chatbox.md"><img src="https://img.shields.io/badge/VRChat-268BD2?style=flat" alt="VRChat" /></a>
+  <a href="../osc-chatbox.md"><img src="https://img.shields.io/badge/ChilloutVR-8B5CF6?style=flat" alt="ChilloutVR" /></a>
+  <a href="../bigwalk-chat.md"><img src="https://img.shields.io/badge/Big%20Walk-D48824?style=flat" alt="Big Walk" /></a>
+  <a href="https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/overte/installation.md"><img src="https://img.shields.io/badge/Overte-129C8C?style=flat" alt="Overte" /></a>
+  <a href="https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/resonite/installation.md"><img src="https://img.shields.io/badge/Resonite-E15B80?style=flat" alt="Resonite" /></a>
+  <a href="https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/secondlife/installation.md"><img src="https://img.shields.io/badge/Second%20Life-6875C9?style=flat" alt="Second Life" /></a>
 </p>
 
 <p align="center">

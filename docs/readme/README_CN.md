@@ -5,7 +5,7 @@
 <h1 align="center">XRTranslate</h1>
 
 <p align="center">
-  <a href="https://github.com/NowLoadY/XRTranslate/releases/latest">下载最新版本</a>
+  <a href="https://github.com/NowLoadY/XRTranslate/releases/latest"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC-249C69?style=for-the-badge&amp;logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0ibm9uZSIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGQ9Ik0xMiAzdjEybS01LTUgNSA1IDUtNU00IDE2djVoMTZ2LTUiLz48L3N2Zz4%3D" alt="下载最新版本" /></a>
 </p>
 
 <p align="center">
@@ -14,7 +14,16 @@
 </p>
 
 <p align="center">
-  <strong>适用于桌面、多媒体与 VRChat 的实时字幕与双向语音翻译</strong>
+  <a href="../osc-chatbox.md"><img src="https://img.shields.io/badge/VRChat-268BD2?style=flat" alt="VRChat" /></a>
+  <a href="../osc-chatbox.md"><img src="https://img.shields.io/badge/ChilloutVR-8B5CF6?style=flat" alt="ChilloutVR" /></a>
+  <a href="../bigwalk-chat.md"><img src="https://img.shields.io/badge/Big%20Walk-D48824?style=flat" alt="Big Walk" /></a>
+  <a href="https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/overte/installation.md"><img src="https://img.shields.io/badge/Overte-129C8C?style=flat" alt="Overte" /></a>
+  <a href="https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/resonite/installation.md"><img src="https://img.shields.io/badge/Resonite-E15B80?style=flat" alt="Resonite" /></a>
+  <a href="https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/secondlife/installation.md"><img src="https://img.shields.io/badge/Second%20Life-6875C9?style=flat" alt="Second Life" /></a>
+</p>
+
+<p align="center">
+  <strong>适用于桌面、多媒体、VRChat、ChilloutVR 与 Big Walk 的实时字幕与双向语音翻译</strong>
 </p>
 
 <p align="center">
@@ -63,7 +72,7 @@
   <img src="../../assets/preview-Translation.png" alt="XRTranslate 翻译界面" width="900" />
 </p>
 
-OSC 字幕可以逐条显示，也可以合并排列。
+向游戏聊天发送翻译：VRChat 和 ChilloutVR 使用 OSC，[Big Walk 使用 XRT 游戏桥接](../bigwalk-chat.md)。OSC 字幕可以逐条显示，也可以合并排列。
 
 <table>
   <tr>

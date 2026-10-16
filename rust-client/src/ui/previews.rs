@@ -1,9 +1,25 @@
 use super::components::ShowcaseSlide;
 use eframe::egui;
 
-pub(crate) fn welcome() -> [ShowcaseSlide; 4] {
-    let [avatar, ..] = avatar();
-    [
+pub(crate) fn welcome() -> Vec<ShowcaseSlide> {
+    let mut slides = vec![
+        ShowcaseSlide {
+            title: "VRChat",
+            description: "Show your translations above your avatar.",
+            image: egui::include_image!("../../../assets/showcase-vrchat.webp"),
+            detail: None,
+            url: None,
+        },
+        ShowcaseSlide {
+            title: "Big Walk",
+            description: "Translate your speech into Big Walk chat.",
+            image: egui::include_image!("../../../assets/showcase-bigwalk.webp"),
+            detail: None,
+            url: None,
+        },
+    ];
+    slides.extend(avatar());
+    slides.extend([
         ShowcaseSlide {
             title: "Live translation",
             description: "Translate microphone and desktop audio in real time.",
@@ -25,8 +41,8 @@ pub(crate) fn welcome() -> [ShowcaseSlide; 4] {
             detail: None,
             url: None,
         },
-        avatar,
-    ]
+    ]);
+    slides
 }
 
 pub(crate) fn avatar() -> [ShowcaseSlide; 5] {
