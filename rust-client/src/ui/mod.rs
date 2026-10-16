@@ -178,12 +178,20 @@ pub fn render_sidebar(
             .auto_shrink([false, false])
             .min_scrolled_height(0.0)
             .show(ui, |ui| {
+                use crate::plugins::PluginId;
+
+                let mut in_game_group = false;
                 for entry in navigation_entries(plugin_preferences, tts_configured) {
-                    if entry.page == Page::AudioStudio {
+                    let is_game_plugin = matches!(
+                        entry.page,
+                        Page::Plugin(PluginId::VR_OVERLAY | PluginId::OSC | PluginId::AVATAR)
+                    );
+                    if (is_game_plugin && !in_game_group) || entry.page == Page::AudioStudio {
                         ui.add_space(if compact_height { 3.0 } else { 8.0 });
                         components::wavy_divider_black_shadow(ui);
                         ui.add_space(if compact_height { 3.0 } else { 8.0 });
                     }
+                    in_game_group = is_game_plugin;
                     nav_item_animated(
                         ui,
                         navigation,
