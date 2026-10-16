@@ -29,6 +29,7 @@ pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     ("Avatar translation could not continue", "角色翻译未能继续", "アバター翻訳を続行できませんでした", "아바타 번역을 계속할 수 없습니다", "Не удалось продолжить перевод с аватара"),
     ("Uses your selected languages, audio input and output settings. Enable OSC in VRChat, then use XRT > Translation on your Avatar.", "沿用已选语言、音频输入和输出设置。在 VRChat 中启用 OSC，然后使用角色菜单 XRT > Translation。", "選択済みの言語・音声入出力を使用します。VRChatでOSCを有効にし、アバターのXRT > Translationを操作してください。", "선택한 언어와 오디오 입출력 설정을 사용합니다. VRChat에서 OSC를 켜고 아바타의 XRT > Translation을 사용하세요.", "Используются выбранные языки и настройки аудио. Включите OSC в VRChat и используйте XRT > Translation в меню аватара."),
     ("Avatar package and setup", "角色插件与安装说明", "アバターパッケージと設定", "아바타 패키지 및 설정", "Пакет аватара и настройка"),
+    ("Add live translations to your avatar!", "给你的 Avatar 加上实时翻译吧！", "アバターにリアルタイム翻訳を加えてみよう！", "아바타에 실시간 번역을 더해 보세요!", "Добавьте своему аватару перевод в реальном времени!"),
     ("Advanced view: up to 400 matching terms. Use domains or search to narrow the view.", "高级视图最多显示 400 个匹配词条，可通过领域或搜索缩小范围。", "詳細表示は一致する用語を最大400件表示します。分野や検索で絞り込めます。", "고급 보기에는 최대 400개 용어가 표시됩니다. 분야 또는 검색으로 좁히세요.", "Подробный вид показывает до 400 терминов. Уточните область или поиск."),
     ("Recent items", "最近记录", "最近の項目", "최근 항목", "Недавние"),
     ("All items", "全部记录", "すべての項目", "모든 항목", "Все записи"),
