@@ -71,7 +71,13 @@ pub enum HostOutputEvent<'a> {
         stream_id: u64,
         turn_id: &'a str,
         segment_index: u32,
+        audio_source: CaptureSource,
+        is_typing: bool,
+        source: &'a str,
         translated: &'a str,
+        additional_translations: &'a [xrtranslate_protocol::AdditionalTranslation],
+        speaker: &'a str,
+        asr_only: bool,
     },
     Caption {
         stream_id: u64,

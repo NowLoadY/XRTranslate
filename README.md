@@ -65,6 +65,8 @@ Supports generating video subtitles and playing them directly at high performanc
 
 Send subtitles to VRChat and ChilloutVR through OSC, with messages kept separate or arranged together.
 
+[Big Walk](docs/bigwalk-chat.md) can receive completed translations in its native chat through the XRT game bridge.
+
 <table>
   <tr>
     <td width="50%" align="center"><img src="assets/preview-OSC-Bilingual-Separate.png" alt="OSC subtitles shown separately" /></td>

@@ -189,6 +189,7 @@ pub fn render_sidebar(
                             PluginId::VR_OVERLAY
                                 | PluginId::OSC
                                 | PluginId::CHILLOUTVR_OSC
+                                | PluginId::BIGWALK
                                 | PluginId::AVATAR
                         )
                     );

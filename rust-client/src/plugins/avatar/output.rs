@@ -362,7 +362,13 @@ mod tests {
             stream_id: 1,
             turn_id: "first",
             segment_index: 1,
+            audio_source: CaptureSource::Microphone,
+            is_typing: false,
+            source: "Hello",
             translated: "Bonjour",
+            additional_translations: &[],
+            speaker: "",
+            asr_only: false,
         });
         assert!(!output.0.lock().entries[0].live);
         for stream in 2..12 {

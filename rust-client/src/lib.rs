@@ -94,6 +94,7 @@ use history::{
 use i18n::UiLanguage;
 use network::{ExternalAudioGate, SessionConfig, SessionEvent, start_session};
 use plugins::avatar::AvatarPlugin;
+use plugins::bigwalk::{BigWalkPageContext, BigWalkPlugin, BigWalkUiAction};
 use plugins::meeting::{
     MeetingAction, MeetingAudioSource, MeetingInputRequest, MeetingPlugin, MeetingUiSnapshot,
 };
@@ -690,6 +691,7 @@ struct XRTranslateApp {
     tts_runtime_cuda_version: Option<String>,
     osc_plugin: OscPlugin,
     chilloutvr_osc_plugin: OscPlugin,
+    bigwalk_plugin: BigWalkPlugin,
     osc_transport: TransportOwner,
     avatar_plugin: AvatarPlugin,
     text_output_plugin: plugins::text_output::TextOutputPlugin,
@@ -890,6 +892,7 @@ fn publish_host_output(subscribers: &[Box<dyn HostOutputSubscriber>], event: Hos
 fn publish_committed_translations(
     subscribers: &[Box<dyn HostOutputSubscriber>],
     events: &[TranslationEvent],
+    is_typing: bool,
 ) -> bool {
     let mut committed = false;
     for event in events {
@@ -910,7 +913,13 @@ fn publish_committed_translations(
                         stream_id: segment.stream_id,
                         turn_id: &segment.turn_id,
                         segment_index: segment.segment_index,
+                        audio_source: segment.audio_source,
+                        is_typing,
+                        source: &segment.source,
                         translated,
+                        additional_translations: &segment.additional_translations,
+                        speaker: &segment.speaker_id,
+                        asr_only: segment.asr_only,
                     },
                 );
             }
@@ -1037,6 +1046,10 @@ impl Default for XRTranslateApp {
             text_output_plugin.handle(),
             None,
         );
+        let bigwalk_plugin = BigWalkPlugin::new(
+            settings.bigwalk_settings.clone(),
+            settings.plugin_preferences.is_enabled(PluginId::BIGWALK),
+        );
         let avatar_plugin = AvatarPlugin::new(
             settings.avatar_connector.clone(),
             text_output_plugin.handle(),
@@ -1159,6 +1172,7 @@ impl Default for XRTranslateApp {
             Box::new(auto_input_plugin.publisher()),
             Box::new(osc_plugin.publisher()),
             Box::new(chilloutvr_osc_plugin.publisher()),
+            Box::new(bigwalk_plugin.publisher()),
             Box::new(avatar_plugin.output.clone()),
             Box::new(vr_overlay_plugin.handle()),
         ]);
@@ -1840,7 +1854,11 @@ impl Default for XRTranslateApp {
                     }
 
                     if host_translation
-                        && publish_committed_translations(&output_subscribers, &results)
+                        && publish_committed_translations(
+                            &output_subscribers,
+                            &results,
+                            scope.is_text,
+                        )
                     {
                         state.record_recovery();
                     }
@@ -1926,6 +1944,7 @@ impl Default for XRTranslateApp {
             tts_runtime_cuda_version: None,
             osc_plugin,
             chilloutvr_osc_plugin,
+            bigwalk_plugin,
             osc_transport,
             avatar_plugin,
             text_output_plugin,
@@ -2860,6 +2879,10 @@ impl XRTranslateApp {
                     self.osc_output_mut(id).deactivate()
                 }
             }
+            PluginId::BIGWALK => {
+                self.bigwalk_plugin.set_host_enabled(enabled);
+                Ok(())
+            }
             PluginId::VR_OVERLAY => {
                 self.vr_overlay_plugin.set_host_enabled(enabled);
                 Ok(())
@@ -3060,6 +3083,56 @@ impl XRTranslateApp {
         self.apply_osc_actions(id, actions);
     }
 
+    fn render_bigwalk_plugin_page(&mut self, ui: &mut egui::Ui) {
+        let languages = self.language_capabilities();
+        let actions = self.bigwalk_plugin.render_page(
+            ui,
+            BigWalkPageContext {
+                language: self.ui_language,
+                preparing_text: self.text_translation.preparing_host(),
+                languages,
+                source_lang: &self.source_lang,
+                target_lang: &self.target_lang,
+                additional_target_lang: self.additional_target_lang.as_deref(),
+                asr_only: self.asr_only,
+            },
+        );
+        for action in actions {
+            match action {
+                BigWalkUiAction::SettingsChanged => {
+                    self.bigwalk_plugin.apply_settings();
+                    self.save_settings();
+                }
+                BigWalkUiAction::SetLanguageRoute {
+                    source_lang,
+                    target_lang,
+                    asr_only,
+                } => {
+                    if self
+                        .select_language_options(
+                            &source_lang,
+                            &target_lang,
+                            self.additional_target_lang.clone().as_deref(),
+                            asr_only,
+                        )
+                        .is_none()
+                    {
+                        return;
+                    }
+                    self.source_lang = source_lang;
+                    self.target_lang = target_lang;
+                    self.asr_only = asr_only;
+                    self.apply_language_route();
+                }
+                BigWalkUiAction::TranslateInput { text } => {
+                    if self.submit_text_translation(&text, None, None, None) {
+                        self.bigwalk_plugin.draft_input_mut().clear();
+                    }
+                }
+            }
+        }
+    }
+
     fn render_text_composer(&mut self, ui: &mut egui::Ui) {
         use ui::components::text_composer::{ComposerContext, TextAction};
         let capabilities = self.language_capabilities().for_text();
@@ -3071,6 +3144,7 @@ impl XRTranslateApp {
                 language: self.ui_language,
                 capabilities,
                 preparing: self.text_translation.preparing_host(),
+                translation_enabled: true,
                 allow_direct: false,
                 direct_enabled: false,
                 show_languages: false,
@@ -3341,6 +3415,7 @@ impl XRTranslateApp {
             PluginId::MEDIA => self.render_media_plugin_page(ui),
             PluginId::VR_OVERLAY => self.render_vr_overlay_plugin_page(ui),
             PluginId::OSC | PluginId::CHILLOUTVR_OSC => self.render_osc_plugin_page(id, ui),
+            PluginId::BIGWALK => self.render_bigwalk_plugin_page(ui),
             PluginId::AVATAR => {
                 let lyrics = self.plugin_enabled(PluginId::LYRICS);
                 if self.avatar_plugin.render_page(ui, self.ui_language, lyrics) {
@@ -3504,6 +3579,7 @@ impl XRTranslateApp {
             update_channel: self.update_channel,
             osc_settings: self.osc_plugin.draft().clone(),
             chilloutvr_osc_settings: self.chilloutvr_osc_plugin.draft().clone(),
+            bigwalk_settings: self.bigwalk_plugin.settings().clone(),
             avatar_connector: self.avatar_plugin.settings.clone(),
             vr_overlay_settings: self.vr_overlay_plugin.draft().clone(),
             plugin_preferences: self.plugin_preferences.clone(),
@@ -5289,6 +5365,7 @@ impl XRTranslateApp {
         }
         self.osc_plugin.clear_chatbox();
         self.chilloutvr_osc_plugin.clear_chatbox();
+        self.bigwalk_plugin.clear();
         self.auto_input_plugin.clear();
     }
 
@@ -5489,6 +5566,7 @@ impl XRTranslateApp {
             }
             self.retire_audio_task(task);
         }
+        self.bigwalk_plugin.clear();
         self.finalize_meeting_recording();
         self.meeting_plugin.event_sink.cancel_sessions();
         self.meeting_plugin.event_sink.finish_active();
@@ -5805,6 +5883,7 @@ impl XRTranslateApp {
                 Page::Plugin(PluginId::VOCABULARY) => "Plugin:Vocabulary".to_string(),
                 Page::Plugin(PluginId::OSC) => "Plugin:OSC".to_string(),
                 Page::Plugin(PluginId::CHILLOUTVR_OSC) => "Plugin:ChilloutVR OSC".to_string(),
+                Page::Plugin(PluginId::BIGWALK) => "Plugin:Big Walk".to_string(),
                 Page::Plugin(PluginId::MEETING) => "Plugin:Meeting".to_string(),
                 Page::Plugin(PluginId::VR_OVERLAY) => "Plugin:VROverlay".to_string(),
                 Page::Plugin(PluginId::MEDIA) => "Plugin:Media".to_string(),

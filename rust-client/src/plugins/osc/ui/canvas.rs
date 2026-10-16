@@ -130,6 +130,7 @@ pub fn render_bottom_input_bar(
             language: context.language,
             capabilities: context.languages,
             preparing: context.preparing_text,
+            translation_enabled: true,
             allow_direct: true,
             direct_enabled: plugin.draft.enabled,
             show_languages: false,

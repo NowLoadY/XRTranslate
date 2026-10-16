@@ -85,6 +85,7 @@ affecting unrelated tasks.
 | Module | Owns and consumes |
 |---|---|
 | `plugins::osc` | Native Chatbox composition and game wire profiles; exposes the shared OSC receive/OSCQuery transport |
+| `plugins::bigwalk` | Completed chat messages, bounded one-shot delivery and the local game bridge connection |
 | `plugins::avatar` | Game display composition, verified control intent and connection lifecycle; `avatar_host` composes owned translation sessions |
 | `plugins::text_output` | Internal shared text formatting, banner controls and one owned system sampler |
 | `plugins::lyrics` | Music observation, lyric lookup, synchronization, and bounded persistent cache; publishes text through the host to selected outputs |
@@ -102,6 +103,12 @@ allows one publisher per configured endpoint and transfers ownership before
 enabling another, preventing delayed clears from the old writer. The host owns
 one OSC receive/OSCQuery service; Chatbox writers never open duplicate listeners.
 See the [OSC Chatbox guide](osc-chatbox.md) for setup.
+
+Big Walk consumes committed translations with their stable result identity and
+audio provenance. It reuses text-output formatting and the shared text composer.
+Its worker sends each accepted message once; connection and game-session changes
+discard pending messages. The game adapter owns native API calls on the game
+thread. See [Big Walk chat](bigwalk-chat.md) for setup.
 
 Avatar has its own page for connection and header/message/footer composition.
 Its single companion SDK owns the connector catalogue, pure lifecycle, region

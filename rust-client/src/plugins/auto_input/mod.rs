@@ -176,6 +176,7 @@ impl HostOutputSubscriber for AutoInputPublisher {
                 turn_id,
                 segment_index,
                 translated,
+                ..
             } => {
                 self.0
                     .state

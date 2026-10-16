@@ -21,6 +21,7 @@ pub struct ComposerContext {
     pub language: UiLanguage,
     pub capabilities: LanguageCapabilities,
     pub preparing: bool,
+    pub translation_enabled: bool,
     pub allow_direct: bool,
     pub direct_enabled: bool,
     pub show_languages: bool,
@@ -162,7 +163,10 @@ impl TextComposer {
                 let waiting = self.mode == TextMode::Translate && context.preparing;
                 // IME state guards the Enter shortcut, not an explicit click.
                 let available = !waiting
-                    && (self.mode == TextMode::Translate || context.direct_enabled);
+                    && match self.mode {
+                        TextMode::Translate => context.translation_enabled,
+                        TextMode::Direct => context.direct_enabled,
+                    };
                 let mut clicked = false;
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let label = if context.allow_direct {
@@ -186,7 +190,7 @@ impl TextComposer {
                             let hint = if self.mode == TextMode::Translate {
                                 "Type text to translate…"
                             } else {
-                                "Temporary Message"
+                                "Type a message…"
                             };
                             let response = ui.add(
                                 egui::TextEdit::multiline(&mut self.text)
