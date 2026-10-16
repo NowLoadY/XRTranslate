@@ -22,11 +22,19 @@ use std::{
 };
 use tokio::sync::watch;
 
-type Publish = Arc<dyn Fn(LyricsText) + Send + Sync>;
+// Publish original timing and adjusted timing together; the host selects the
+// presentation for each output without duplicating observation or lyric lookup.
+type Publish = Arc<dyn Fn(LyricsText, LyricsText) + Send + Sync>;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DisplayConfig {
+    budget: usize,
+    offset_ms: i32,
+}
 
 pub(crate) struct LyricsPlugin {
     publish: Publish,
-    worker: Option<(watch::Sender<Option<usize>>, JoinHandle<()>)>,
+    worker: Option<(watch::Sender<Option<DisplayConfig>>, JoinHandle<()>)>,
     cache: Arc<cache::Cache>,
     cleanup: Option<JoinHandle<()>>,
     status: Arc<Mutex<Status>>,
@@ -35,7 +43,7 @@ pub(crate) struct LyricsPlugin {
 impl LyricsPlugin {
     pub fn new(
         cache_directory: PathBuf,
-        publish: impl Fn(LyricsText) + Send + Sync + 'static,
+        publish: impl Fn(LyricsText, LyricsText) + Send + Sync + 'static,
     ) -> Self {
         Self {
             publish: Arc::new(publish),
@@ -47,28 +55,30 @@ impl LyricsPlugin {
     }
 
     /// No playback worker, media subscription or HTTP client while off.
-    pub fn set_budget(&mut self, budget: Option<usize>) {
-        let budget = budget.filter(|budget| *budget > 0);
-        if budget.is_none() {
+    pub fn configure(&mut self, budget: Option<usize>, offset_ms: i32) {
+        let config = budget
+            .filter(|budget| *budget > 0)
+            .map(|budget| DisplayConfig { budget, offset_ms });
+        if config.is_none() {
             if let Some((tx, worker)) = self.worker.take() {
                 let _ = tx.send(None);
                 let _ = worker.join();
             }
-            (self.publish)(LyricsText::default());
+            (self.publish)(LyricsText::default(), LyricsText::default());
             *self.status.lock() = Status::Idle;
             return;
         }
         if let Some((tx, _)) = &self.worker {
             tx.send_if_modified(|current| {
-                if *current == budget {
+                if *current == config {
                     return false;
                 }
-                *current = budget;
+                *current = config;
                 true
             });
             return;
         }
-        let (tx, rx) = watch::channel(budget);
+        let (tx, rx) = watch::channel(config);
         let publish = self.publish.clone();
         let cache = self.cache.clone();
         let status = self.status.clone();
@@ -83,7 +93,7 @@ impl LyricsPlugin {
                     Ok(runtime) => runtime.block_on(run(rx, &publish, cache, &status)),
                     Err(error) => log::warn!("Lyrics: {error}"),
                 }
-                publish(LyricsText::default());
+                publish(LyricsText::default(), LyricsText::default());
             }) {
             Ok(worker) => self.worker = Some((tx, worker)),
             Err(error) => log::warn!("Lyrics: {error}"),
@@ -126,7 +136,7 @@ impl LyricsPlugin {
 
 impl Drop for LyricsPlugin {
     fn drop(&mut self) {
-        self.set_budget(None);
+        self.configure(None, 0);
         if let Some(worker) = self.cleanup.take() {
             let _ = worker.join();
         }
@@ -134,7 +144,7 @@ impl Drop for LyricsPlugin {
 }
 
 async fn run(
-    config: watch::Receiver<Option<usize>>,
+    config: watch::Receiver<Option<DisplayConfig>>,
     publish: &Publish,
     cache: Arc<cache::Cache>,
     status: &Mutex<Status>,
@@ -186,7 +196,7 @@ async fn observe(tx: watch::Sender<Option<Playback>>) {
 type Fetch = Pin<Box<dyn Future<Output = Result<Vec<timeline::Cue>, String>>>>;
 
 async fn display(
-    mut config: watch::Receiver<Option<usize>>,
+    mut config: watch::Receiver<Option<DisplayConfig>>,
     mut player: watch::Receiver<Option<Playback>>,
     publish: &Publish,
     cache: Arc<cache::Cache>,
@@ -196,7 +206,7 @@ async fn display(
     let mut cues = Vec::new();
     let mut fetching: Option<Fetch> = None;
     let mut lookup = Lookup::NotStarted;
-    let mut last_text = LyricsText::default();
+    let mut last_text = (LyricsText::default(), LyricsText::default());
     let mut renderer = output::Renderer::default();
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -235,20 +245,31 @@ async fn display(
             },
             _ = tick.tick() => {},
         }
-        let budget = *config.borrow();
-        let Some(budget) = budget else {
+        let config = *config.borrow();
+        let Some(config) = config else {
             return;
         };
-        let (text, next_status) = renderer.render(
-            current.as_ref(),
-            &cues,
-            lookup,
-            budget,
-            std::time::Instant::now(),
-        );
+        let now = std::time::Instant::now();
+        let (text, next_status) =
+            renderer.render(current.as_ref(), &cues, lookup, config.budget, 0, now);
+        let adjusted = if config.offset_ms == 0 {
+            text.clone()
+        } else {
+            renderer
+                .render(
+                    current.as_ref(),
+                    &cues,
+                    lookup,
+                    config.budget,
+                    config.offset_ms,
+                    now,
+                )
+                .0
+        };
+        let text = (text, adjusted);
         *status.lock() = next_status;
         if text != last_text {
-            publish(text.clone());
+            publish(text.0.clone(), text.1.clone());
             last_text = text;
         }
     }
@@ -278,4 +299,77 @@ async fn load_lyrics(
         log::warn!("Lyrics cache: {error}");
     }
     Ok(cues)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn live_offset_changes_preserve_the_original_output_and_reset() {
+        let cache_directory = tempfile::tempdir().unwrap();
+        let cache = Arc::new(cache::Cache::new(cache_directory.path().to_owned()));
+        let (config, config_rx) = watch::channel(Some(DisplayConfig {
+            budget: 24,
+            offset_ms: 0,
+        }));
+        let (player, player_rx) = watch::channel(None);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let publish: Publish = Arc::new(move |original, adjusted| {
+            let _ = tx.send((original, adjusted));
+        });
+        let status = Mutex::new(Status::Waiting);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(
+                display(config_rx, player_rx, &publish, cache, &status),
+                async {
+                    player
+                        .send(Some(Playback {
+                            track: player::Track {
+                                title: "Song".into(),
+                                artists: vec!["Artist".into()],
+                                album: String::new(),
+                            },
+                            is_music: true,
+                            embedded_lyrics: Some("[00:00]First\n[00:05.050]Second".into()),
+                            duration_ms: 30_000,
+                            position_ms: Some(5_000),
+                            observed: std::time::Instant::now(),
+                            rate: 0.0,
+                            playing: true,
+                        }))
+                        .unwrap();
+                    let original = loop {
+                        let (original, adjusted) = rx.recv().await.unwrap();
+                        if original.lyric == "🎵 First" {
+                            assert_eq!(original, adjusted);
+                            break original;
+                        }
+                    };
+                    config
+                        .send(Some(DisplayConfig {
+                            budget: 24,
+                            offset_ms: -100,
+                        }))
+                        .unwrap();
+                    let (unchanged, adjusted) = rx.recv().await.unwrap();
+                    assert_eq!(unchanged, original);
+                    assert_eq!(adjusted.title, original.title);
+                    assert_eq!(adjusted.lyric, "🎵 Second");
+                    config
+                        .send(Some(DisplayConfig {
+                            budget: 24,
+                            offset_ms: 0,
+                        }))
+                        .unwrap();
+                    let (unchanged, adjusted) = rx.recv().await.unwrap();
+                    assert_eq!(unchanged, original);
+                    assert_eq!(adjusted, original);
+                    config.send(None).unwrap();
+                }
+            );
+        })
+        .await
+        .expect("the lyric worker did not apply the live timing change");
+    }
 }

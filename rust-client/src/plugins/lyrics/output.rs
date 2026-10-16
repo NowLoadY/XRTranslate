@@ -64,6 +64,7 @@ impl Renderer {
         cues: &[timeline::Cue],
         lookup: Lookup,
         budget: usize,
+        offset_ms: i32,
         now: Instant,
     ) -> (LyricsText, Status) {
         let Some(playback) = playback else {
@@ -79,6 +80,9 @@ impl Renderer {
         let (lyric, status) = if !playback.is_music {
             (String::new(), Status::MediaTitle)
         } else if let Some(position) = playback.position() {
+            // Adjust presentation time only; playback, cached cues and titles
+            // retain their original timing. Positive offsets delay the lyric.
+            let position = position.checked_add_signed(-i64::from(offset_ms));
             match lookup {
                 Lookup::NotStarted | Lookup::Loading => (String::new(), Status::Loading),
                 Lookup::Failed => (String::new(), Status::LookupFailed),
@@ -86,7 +90,11 @@ impl Renderer {
                     (String::new(), Status::NoLyrics)
                 }
                 Lookup::Ready => (
-                    timeline::viewport(cues, position, playback.duration_ms, content_budget),
+                    position
+                        .map(|position| {
+                            timeline::viewport(cues, position, playback.duration_ms, content_budget)
+                        })
+                        .unwrap_or_default(),
                     Status::Synced,
                 ),
             }
@@ -197,37 +205,61 @@ mod tests {
         let mut playback = playback(now);
         let mut renderer = Renderer::default();
         let cues = timeline::parse("[00:01]当前歌词\n[00:10]...");
-        let (text, status) = renderer.render(Some(&playback), &cues, Lookup::Ready, 24, now);
+        let (text, status) = renderer.render(Some(&playback), &cues, Lookup::Ready, 24, 0, now);
         assert_eq!(status, Status::Synced);
         assert_eq!(text.title, "🎵 歌名 · 歌手");
         assert_eq!(text.lyric, "🎵 当前歌词");
         assert_eq!(text.preferred(), text.lyric);
 
         for lookup in [Lookup::Loading, Lookup::Failed, Lookup::Ready] {
-            let (text, _) = renderer.render(Some(&playback), &[], lookup, 24, now);
+            let (text, _) = renderer.render(Some(&playback), &[], lookup, 24, 0, now);
             assert_eq!(text.title, "🎵 歌名 · 歌手");
             assert!(text.lyric.is_empty());
             assert_eq!(text.preferred(), text.title);
         }
         for position in [Some(0), Some(12_000), None] {
             playback.position_ms = position;
-            let (text, _) = renderer.render(Some(&playback), &cues, Lookup::Ready, 24, now);
+            let (text, _) = renderer.render(Some(&playback), &cues, Lookup::Ready, 24, 0, now);
             assert_eq!(text.title, "🎵 歌名 · 歌手");
             assert!(text.lyric.is_empty());
         }
         playback.playing = false;
         assert!(
             renderer
-                .render(Some(&playback), &cues, Lookup::Ready, 24, now)
+                .render(Some(&playback), &cues, Lookup::Ready, 24, 0, now)
                 .0
                 .is_empty()
         );
         assert!(
             renderer
-                .render(None, &cues, Lookup::Ready, 24, now)
+                .render(None, &cues, Lookup::Ready, 24, 0, now)
                 .0
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn timing_offset_moves_only_the_lyric_and_handles_song_boundaries() {
+        let now = Instant::now();
+        let mut playback = playback(now);
+        playback.duration_ms = 6_000;
+        let cues = timeline::parse("[00:00]第一句\n[00:05]第二句\n[00:05.500]...");
+        let mut renderer = Renderer::default();
+        for (position, offset, expected) in [
+            (4_999, 0, "🎵 第一句"),
+            (4_999, -100, "🎵 第二句"),
+            (5_000, 100, "🎵 第一句"),
+            (5_000, 0, "🎵 第二句"),
+            (0, 1_000, ""),
+            (0, -1_000, "🎵 第一句"),
+            (5_600, 100, ""),
+            (6_000, -1_000, ""),
+        ] {
+            playback.position_ms = Some(position);
+            let (text, _) = renderer.render(Some(&playback), &cues, Lookup::Ready, 24, offset, now);
+            assert_eq!(text.title, "🎵 歌名 · 歌手");
+            assert_eq!(text.lyric, expected, "position {position}, offset {offset}");
+        }
     }
 
     #[test]
@@ -237,12 +269,13 @@ mod tests {
         playback.track.title = "这是一个需要滚动才能显示完整名称的歌曲标题".into();
         let cues = timeline::parse("[00:01]当前歌词");
         let mut renderer = Renderer::default();
-        let (start, _) = renderer.render(Some(&playback), &cues, Lookup::Ready, 12, now);
+        let (start, _) = renderer.render(Some(&playback), &cues, Lookup::Ready, 12, 0, now);
         let (scrolled, _) = renderer.render(
             Some(&playback),
             &cues,
             Lookup::Ready,
             12,
+            0,
             now + Duration::from_secs(5),
         );
         assert_ne!(start.title, scrolled.title);
@@ -259,6 +292,7 @@ mod tests {
                     &cues,
                     Lookup::Ready,
                     12,
+                    0,
                     now + Duration::from_secs(6)
                 )
                 .0

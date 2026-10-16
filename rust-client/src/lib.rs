@@ -967,9 +967,9 @@ impl Default for XRTranslateApp {
                     .runtime_layout()
                     .runtime_root()
                     .join("cache/lyrics"),
-                move |text| {
+                move |text, adjusted| {
                     avatar_output.set_lyric(text.preferred().to_owned());
-                    output.set_lyrics(text);
+                    output.set_lyrics(adjusted);
                 },
             );
             if settings.plugin_preferences.is_enabled(PluginId::LYRICS) {
@@ -983,7 +983,10 @@ impl Default for XRTranslateApp {
                     .is_enabled(PluginId::AVATAR)
                     .then(|| settings.avatar_connector.lyric_budget())
                     .flatten();
-                plugin.set_budget(osc.into_iter().chain(avatar).max());
+                plugin.configure(
+                    osc.into_iter().chain(avatar).max(),
+                    settings.osc_settings.lyric_offset_ms(),
+                );
             }
             plugin
         };
@@ -2874,12 +2877,14 @@ impl XRTranslateApp {
                 .plugin_enabled(PluginId::AVATAR)
                 .then(|| self.avatar_plugin.settings.lyric_budget())
                 .flatten();
-            self.lyrics_plugin
-                .set_budget(if self.plugin_enabled(PluginId::LYRICS) {
+            self.lyrics_plugin.configure(
+                if self.plugin_enabled(PluginId::LYRICS) {
                     osc.into_iter().chain(avatar).max()
                 } else {
                     None
-                });
+                },
+                self.osc_plugin.draft().lyric_offset_ms(),
+            );
         }
     }
 

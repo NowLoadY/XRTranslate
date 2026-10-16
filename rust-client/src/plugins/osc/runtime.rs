@@ -105,6 +105,9 @@ pub struct OscSettings {
     pub history_ttl_seconds: f64,
     pub header_config: BannerConfig,
     pub footer_config: BannerConfig,
+    /// Positive values delay lyrics; negative values advance them.
+    #[serde(default)]
+    pub lyric_offset_seconds: f64,
     /// Keeps configured header/footer content visible after message TTL expiry.
     #[serde(default)]
     pub persistent_banners: bool,
@@ -147,6 +150,7 @@ impl Default for OscSettings {
             history_ttl_seconds: 15.0,
             header_config: BannerConfig::default(),
             footer_config: BannerConfig::default(),
+            lyric_offset_seconds: 0.0,
             persistent_banners: false,
             format_mode: OscFormatMode::BilingualSourceFirst,
             message_separator: OscMessageSeparator::default(),
@@ -216,6 +220,10 @@ impl OscSettings {
             .filter(|banner| banner.content_type == BannerContentType::Lyrics)
             .count();
         (self.enabled && slots > 0).then(|| (self.max_text_length / 3).min(48) / slots)
+    }
+
+    pub(crate) fn lyric_offset_ms(&self) -> i32 {
+        (self.lyric_offset_seconds.clamp(-1.0, 1.0) * 1000.0).round() as i32
     }
 
     /// Retains the established config.json OSC section, but only the native client reads it.
@@ -1247,4 +1255,27 @@ fn clear_runtime_preview(status: &Mutex<RuntimeStatus>) {
     runtime.chatbox_text.clear();
     runtime.chatbox_typing = false;
     runtime.next_message_expires_at = None;
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn lyric_offset_defaults_to_zero_and_round_trips_with_osc_preferences() {
+        let mut old = serde_json::to_value(OscSettings::default()).unwrap();
+        old.as_object_mut().unwrap().remove("lyric_offset_seconds");
+        let mut settings: OscSettings = serde_json::from_value(old).unwrap();
+        assert_eq!(settings.lyric_offset_ms(), 0);
+        for (seconds, milliseconds) in [(-1.0, -1000), (-0.3, -300), (0.1, 100), (1.0, 1000)] {
+            settings.lyric_offset_seconds = seconds;
+            let saved = serde_json::to_string(&settings).unwrap();
+            let restored: OscSettings = serde_json::from_str(&saved).unwrap();
+            assert_eq!(restored.lyric_offset_ms(), milliseconds);
+        }
+        settings.lyric_offset_seconds = -10.0;
+        assert_eq!(settings.lyric_offset_ms(), -1000);
+        settings.lyric_offset_seconds = 10.0;
+        assert_eq!(settings.lyric_offset_ms(), 1000);
+    }
 }

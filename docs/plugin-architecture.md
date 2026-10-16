@@ -124,6 +124,11 @@ and current lyric separately through the shared text-output contract. In OSC,
 selecting Lyrics for both header and footer shows the title/artist above and the
 available lyric below, both prefixed with 🎵. A missing lyric leaves the footer
 empty. A single lyric region retains lyric-first display with a title fallback.
+OSC's lyric timing slider adjusts presentation by up to one second in 0.1-second
+steps: the rabbit means earlier, the turtle means later, and reset returns to
+zero. The offset is saved with OSC preferences. The shared lyric worker renders
+original and adjusted timing from the same playback/cues, leaving Avatar timing,
+song metadata and the cache unchanged.
 Read-only playback status is exposed in plugin settings. Cache maintenance
 belongs to the lyric plugin, independently of display activity.
 

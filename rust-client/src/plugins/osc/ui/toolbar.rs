@@ -257,6 +257,35 @@ pub fn render_toolbar(
                             }
                         });
 
+                        if lyrics_available
+                            && [&plugin.draft().header_config, &plugin.draft().footer_config]
+                                .iter()
+                                .any(|banner| banner.content_type == BannerContentType::Lyrics)
+                        {
+                            ui.add_space(4.0);
+                            let offset = plugin.draft().lyric_offset_seconds;
+                            let mut slider = components::ModernSlider::new(
+                                crate::i18n::tr(language, "Lyric timing offset:"),
+                                &mut plugin.draft_mut().lyric_offset_seconds,
+                                -1.0..=1.0,
+                                0.0,
+                            )
+                            .step(0.1)
+                            .precision(1)
+                            .suffix(" s");
+                            if offset != 0.0 {
+                                let icon = if offset < 0.0 {
+                                    egui::include_image!("../../../../resources/icons/rabbit.svg")
+                                } else {
+                                    egui::include_image!("../../../../resources/icons/turtle.svg")
+                                };
+                                slider = slider.value_badge(icon, format!("{:.1} s", offset.abs()));
+                            }
+                            changed |= slider.show(ui)
+                            .on_hover_text(crate::i18n::tr(language, "Rabbit: earlier. Turtle: later. Only affects OSC lyrics."))
+                            .changed();
+                        }
+
                         ui.add_space(4.0);
                         let mut persistent_banners = plugin.draft().persistent_banners;
                         if components::feature_checkbox(

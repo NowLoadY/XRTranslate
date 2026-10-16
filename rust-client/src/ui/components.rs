@@ -2714,6 +2714,7 @@ pub struct ModernSlider<'a, Num: egui::emath::Numeric> {
     percentage: bool,
     id_salt: Option<String>,
     label_width: Option<f32>,
+    value_badge: Option<(egui::ImageSource<'a>, String)>,
 }
 
 impl<'a, Num: egui::emath::Numeric> ModernSlider<'a, Num> {
@@ -2735,6 +2736,7 @@ impl<'a, Num: egui::emath::Numeric> ModernSlider<'a, Num> {
             percentage: false,
             id_salt: None,
             label_width: None,
+            value_badge: None,
         }
     }
 
@@ -2773,6 +2775,11 @@ impl<'a, Num: egui::emath::Numeric> ModernSlider<'a, Num> {
         self
     }
 
+    pub fn value_badge(mut self, icon: egui::ImageSource<'a>, text: impl Into<String>) -> Self {
+        self.value_badge = Some((icon, text.into()));
+        self
+    }
+
     pub fn show(self, ui: &mut Ui) -> egui::Response {
         ui.horizontal(|ui| {
             let available = ui.available_width();
@@ -2795,7 +2802,9 @@ impl<'a, Num: egui::emath::Numeric> ModernSlider<'a, Num> {
                 );
             }
 
-            let badge_text = if !self.states.is_empty() {
+            let badge_text = if let Some((_, text)) = &self.value_badge {
+                text.clone()
+            } else if !self.states.is_empty() {
                 let val_f = self.value.to_f64() as f32;
                 let start_f = self.range.start().to_f64() as f32;
                 let end_f = self.range.end().to_f64() as f32;
@@ -2821,7 +2830,12 @@ impl<'a, Num: egui::emath::Numeric> ModernSlider<'a, Num> {
                 }
             };
 
-            let reserve_w = (badge_text.chars().count() as f32 * 7.5 + 36.0).max(82.0);
+            let icon_width = if self.value_badge.is_some() {
+                24.0 + ui.spacing().item_spacing.x
+            } else {
+                0.0
+            };
+            let reserve_w = (badge_text.chars().count() as f32 * 7.5 + 36.0).max(82.0) + icon_width;
             let slider_w = (ui.available_width() - reserve_w).max(50.0);
             let mut response = ui
                 .scope(|ui| {
@@ -2875,6 +2889,13 @@ impl<'a, Num: egui::emath::Numeric> ModernSlider<'a, Num> {
             }
 
             ui.add_space(4.0);
+            if let Some((icon, _)) = self.value_badge {
+                ui.add(
+                    egui::Image::new(icon)
+                        .fit_to_exact_size(Vec2::splat(24.0))
+                        .tint(theme::text_strong()),
+                );
+            }
             tech_numeric_badge(ui, &badge_text);
 
             let mut reset = reset_button(ui, salt);
