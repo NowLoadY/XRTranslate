@@ -1,6 +1,6 @@
 //! Find quiet space in the painted page without adding hooks to its controls.
 use super::placement;
-use eframe::egui::{self, LayerId, Pos2, Rect, Shape, TextureId};
+use eframe::egui::{self, Pos2, Rect, Shape, TextureId};
 
 const SCAN_INTERVAL: f64 = 0.5;
 const DESTINATION_DWELL: f64 = 1.2;
@@ -37,7 +37,6 @@ impl Parking {
     pub fn locate(
         &mut self,
         ctx: &egui::Context,
-        layer: LayerId,
         bounds: Rect,
         radius: f32,
         now: f64,
@@ -54,7 +53,11 @@ impl Parking {
         let layers = ctx.memory(|memory| {
             memory
                 .layer_ids()
-                .filter(|candidate| candidate.order == layer.order)
+                // Include page content and floating toolbars, excluding the
+                // foreground companion itself, popups and tooltips.
+                .filter(|candidate| {
+                    matches!(candidate.order, egui::Order::Background | egui::Order::Middle)
+                })
                 .collect::<Vec<_>>()
         });
         let layers = layers

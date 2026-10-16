@@ -6150,7 +6150,6 @@ impl eframe::App for XRTranslateApp {
                 self,
                 ui::companion::Layout::Page {
                     bounds: content.response.rect,
-                    layer: content.response.layer_id,
                 },
             );
         }

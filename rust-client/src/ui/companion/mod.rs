@@ -38,7 +38,7 @@ pub(crate) struct OnboardingLayout {
 
 pub(crate) enum Layout {
     Onboarding(OnboardingLayout),
-    Page { bounds: Rect, layer: egui::LayerId },
+    Page { bounds: Rect },
 }
 
 impl Default for OnboardingLayout {
@@ -439,9 +439,9 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         ctx.request_repaint();
         return;
     }
-    let (layout, page) = match layout {
-        Layout::Onboarding(layout) => (Some(layout), None),
-        Layout::Page { bounds, layer } => (None, Some((bounds, layer))),
+    let (layout, page_bounds) = match layout {
+        Layout::Onboarding(layout) => (Some(layout), ctx.content_rect()),
+        Layout::Page { bounds } => (None, bounds),
     };
     let scene = dialogue::Context::read(app, layout.as_ref());
     let language = app.ui_language;
@@ -538,18 +538,16 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
             state.say(state.line.clone());
         }
     }
-    let dock = page.and_then(|(bounds, layer)| {
-        state.parking.locate(
-            ctx,
-            layer,
-            bounds,
-            small,
-            state.clock,
-            app.background_image.texture_id(),
-        )
-    });
+    let dock = state.parking.locate(
+        ctx,
+        page_bounds,
+        small,
+        state.clock,
+        app.background_image.texture_id(),
+    );
     let small = dock.map_or(small, |spot| spot.radius);
-    let available = !hidden && (page.is_none() || dock.is_some() || state.clock < state.resume_at);
+    let available = !hidden
+        && (state.stage != Stage::Ready || dock.is_some() || state.clock < state.resume_at);
     if (available || (vr_active && !hidden)) && !paused && !ctx.text_edit_focused() {
         state.announce_pending();
         state.read_mail(&mut app.companion_inbox);
@@ -557,15 +555,13 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     let previous_center = state.center;
     let mut entrance_frame = state.welcome_frame(&entrance, available && !paused);
     // Hovering controls may explain them, but never sends the avatar across the
-    // page. Explicit placement survives the welcome conversation too.
+    // page. Parking preserves clear drop positions and rechecks occupied ones.
     let target = if !available {
         None
     } else if paused || state.clock < state.resume_at {
         Some(state.center)
     } else if let Some(spot) = dock {
         Some(spot.center)
-    } else if state.placement.was_dragged() {
-        Some(state.center)
     } else {
         Some(home)
     };
@@ -633,7 +629,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         state.focus = None;
         state.candidate = None;
         state.candidate_since = state.clock;
-        if page.is_some() && response.drag_stopped_by(egui::PointerButton::Primary) {
+        if response.drag_stopped_by(egui::PointerButton::Primary) {
             state.parking.dropped(anchor, size);
         }
         entrance_frame = None;
