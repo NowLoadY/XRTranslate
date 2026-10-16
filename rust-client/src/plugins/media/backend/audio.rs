@@ -305,7 +305,7 @@ impl MediaBackend for AudioBackend {
     fn set_audio_only_mode(&mut self, _: bool) {}
 }
 fn create_output(state: Arc<Mutex<State>>) -> Result<cpal::Stream, String> {
-    let device = cpal::default_host()
+    let device = crate::audio::default_host()
         .default_output_device()
         .ok_or("No audio output device is available.")?;
     let supported = device.default_output_config().map_err(|e| e.to_string())?;

@@ -91,6 +91,7 @@ windows = { version = "0.60.0", features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+cpal = { version = "0.18.1", features = ["pulseaudio"] }
 zbus = { version = "5.18.0", default-features = false, features = ["async-io"] }
 eframe = { version = "0.36.1", features = ["glow"] }
 ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "screencast"] }

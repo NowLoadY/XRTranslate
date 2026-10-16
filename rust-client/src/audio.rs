@@ -33,6 +33,22 @@ pub struct InputDevice {
     pub name: String,
 }
 
+pub struct OutputDevice {
+    pub id: String,
+    pub name: String,
+    /// A playback endpoint whose recording side can be selected in another app.
+    pub is_virtual: bool,
+}
+
+pub(crate) fn default_host() -> cpal::Host {
+    // Preserve existing microphone/speaker selection and saved ALSA IDs.
+    // Virtual outputs are resolved separately through the Linux adapter.
+    #[cfg(target_os = "linux")]
+    return cpal::host_from_id(cpal::HostId::Alsa).expect("ALSA host is available");
+    #[cfg(not(target_os = "linux"))]
+    cpal::default_host()
+}
+
 /// ALSA exposes several PCM entry points for the same physical capture endpoint.
 /// Keep the card and device number in the key so two identical USB microphones
 /// remain separate choices.
@@ -1023,7 +1039,7 @@ impl AudioSystem {
     pub fn new() -> Self {
         Self {
             tts_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            host: cpal::default_host(),
+            host: default_host(),
             active_captures: Vec::new(),
             capture_group: 0,
             voice_preview: None,
@@ -1080,21 +1096,46 @@ impl AudioSystem {
 
     /// Lists render endpoints. Virtual microphone cables appear here as an
     /// output endpoint and can therefore receive game-bound synthesized audio.
-    pub fn available_output_devices(&self) -> Vec<InputDevice> {
-        self.host
+    pub fn available_output_devices(&self) -> Vec<OutputDevice> {
+        let devices = self
+            .host
             .output_devices()
             .map(|devices| {
                 devices
                     .filter_map(|device| match (device.id(), device.description()) {
-                        (Ok(id), Ok(description)) => Some(InputDevice {
-                            id: id.to_string(),
-                            name: description.name().to_owned(),
-                        }),
+                        (Ok(id), Ok(description)) => {
+                            let name = description.name().to_owned();
+                            let is_virtual = cfg!(windows)
+                                && [
+                                    "voicemeeter",
+                                    "vb-audio",
+                                    "cable input",
+                                    "virtual cable",
+                                    "virtual audio cable",
+                                ]
+                                .iter()
+                                .any(|marker| name.to_ascii_lowercase().contains(marker));
+                            Some(OutputDevice {
+                                id: id.to_string(),
+                                name,
+                                is_virtual,
+                            })
+                        }
                         _ => None,
                     })
-                    .collect()
+                    .collect::<Vec<_>>()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        #[cfg(target_os = "linux")]
+        let devices = {
+            let mut devices = devices;
+            match crate::audio_linux::virtual_outputs() {
+                Ok(outputs) => devices.extend(outputs),
+                Err(error) => log::debug!("Could not enumerate Linux virtual outputs: {error}"),
+            }
+            devices
+        };
+        devices
     }
 
     /// Lists applications that currently own at least one render-audio
@@ -1537,6 +1578,11 @@ impl AudioSystem {
     }
 
     fn resolve_route_output(&self, device_id: &str) -> Result<cpal::Device, AudioRouteError> {
+        #[cfg(target_os = "linux")]
+        if !device_id.is_empty() && !device_id.starts_with("alsa:") {
+            return crate::audio_linux::resolve_output(device_id)
+                .map_err(AudioRouteError::DeviceUnavailable);
+        }
         if device_id.is_empty() {
             self.host.default_output_device().ok_or_else(|| {
                 AudioRouteError::DeviceUnavailable(
@@ -2378,6 +2424,121 @@ mod playback_cancellation_tests {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+mod linux_output_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "Requires XRTRANSLATE_TEST_VIRTUAL_SINK and XRTRANSLATE_TEST_VIRTUAL_SOURCE naming a temporary virtual cable"]
+    fn virtual_output_routes_tts_to_microphone() {
+        let sink = std::env::var("XRTRANSLATE_TEST_VIRTUAL_SINK").unwrap();
+        let source = std::env::var("XRTRANSLATE_TEST_VIRTUAL_SOURCE").unwrap();
+        let mut audio = AudioSystem::new();
+        let outputs = audio.available_output_devices();
+        assert!(
+            outputs
+                .iter()
+                .any(|device| device.id == sink && device.is_virtual)
+        );
+        assert!(
+            outputs
+                .iter()
+                .filter(|device| device.id.starts_with("alsa:"))
+                .all(|device| !device.is_virtual)
+        );
+        let monitor = audio
+            .available_loopback_devices()
+            .into_iter()
+            .find(|device| device.id == sink)
+            .unwrap();
+        assert!(
+            validate_audio_route_config(&AudioRouteConfig {
+                output_device_id: sink.clone(),
+                system_loopback: Some(AudioRouteLoopbackConfig {
+                    target: AudioRouteLoopbackTarget::Endpoint {
+                        device_id: monitor.id
+                    },
+                    gain: 1.0,
+                    effects: Vec::new(),
+                }),
+                ..Default::default()
+            })
+            .is_err()
+        );
+
+        let host = cpal::host_from_id(cpal::HostId::PulseAudio).unwrap();
+        let input = host
+            .device_by_id(&cpal::DeviceId::new(cpal::HostId::PulseAudio, source))
+            .unwrap();
+        let peak = Arc::new(AtomicU32::new(0));
+        let recorded_peak = Arc::clone(&peak);
+        let recording = input
+            .build_input_stream(
+                cpal::StreamConfig {
+                    channels: 2,
+                    sample_rate: AUDIO_ROUTE_SAMPLE_RATE,
+                    buffer_size: cpal::BufferSize::Fixed(AUDIO_ROUTE_SAMPLE_RATE / 100),
+                },
+                move |samples: &[f32], _| {
+                    for sample in samples {
+                        recorded_peak.fetch_max(sample.abs().to_bits(), Ordering::Relaxed);
+                    }
+                },
+                |error| eprintln!("virtual microphone capture failed: {error}"),
+                None,
+            )
+            .unwrap();
+        recording.play().unwrap();
+        audio.set_tts_enabled(true);
+        let routes = audio
+            .replace_audio_routes(vec![AudioRouteConfig {
+                output_device_id: sink,
+                tts_effects: Vec::new(),
+                ..Default::default()
+            }])
+            .unwrap();
+        let pcm: Vec<u8> = (0..AUDIO_ROUTE_SAMPLE_RATE * 2)
+            .flat_map(|frame| {
+                let phase =
+                    frame as f32 * 440.0 * std::f32::consts::TAU / AUDIO_ROUTE_SAMPLE_RATE as f32;
+                ((phase.sin() * 4096.0) as i16).to_le_bytes()
+            })
+            .collect();
+        // Exercise speech arriving after an already-running route has been silent.
+        thread::sleep(Duration::from_millis(100));
+        let started = std::time::Instant::now();
+        audio
+            .tts_handle(AUDIO_ROUTE_SAMPLE_RATE)
+            .play_pcm(&pcm)
+            .unwrap();
+        let deadline = started + Duration::from_secs(1);
+        while f32::from_bits(peak.load(Ordering::Relaxed)) < 0.02
+            && std::time::Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(20));
+        }
+        let received = f32::from_bits(peak.load(Ordering::Relaxed)) > 0.02;
+        eprintln!("Virtual microphone speech onset: {:?}", started.elapsed());
+        audio.replace_audio_routes(Vec::new()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while routes[0].status().state == AudioRouteState::Stopping
+            && std::time::Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(routes[0].status().state, AudioRouteState::Stopped);
+        assert!(
+            received,
+            "TTS did not reach the virtual microphone within one second"
+        );
+        assert!(
+            audio
+                .resolve_route_output("xrtranslate_nonexistent_output")
+                .is_err()
+        );
+    }
+}
+
 /// Read once per output buffer. Both queues continue draining, including the
 /// muted branch, so switching cannot replay buffered original speech.
 fn route_voice_selection(follow_tts: bool, tts_enabled: bool) -> (f32, f32) {
@@ -2407,6 +2568,20 @@ fn build_route_output_stream<T>(
 where
     T: Sample + cpal::SizedSample + cpal::FromSample<f32>,
 {
+    #[cfg(target_os = "linux")]
+    let config = if device
+        .id()
+        .is_ok_and(|id| id.host() == cpal::HostId::PulseAudio)
+    {
+        // The server default can queue seconds of silence. A 10 ms callback
+        // period keeps live microphone/TTS routes responsive (20 ms PA target).
+        cpal::StreamConfig {
+            buffer_size: cpal::BufferSize::Fixed((config.sample_rate / 100).max(1)),
+            ..config
+        }
+    } else {
+        config
+    };
     let callback_control = Arc::clone(&control);
     let mut microphone_reader = RouteRateReader::default();
     let mut loopback_reader = RouteRateReader::default();

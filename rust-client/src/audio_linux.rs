@@ -1,7 +1,8 @@
-//! PulseAudio protocol capture, also served by PipeWire's pipewire-pulse.
+//! Linux audio adapter for PulseAudio, also served by PipeWire's pipewire-pulse.
 //! libpulse is loaded at run time so a missing sound server/client library does
 //! not prevent the desktop client from starting.
-use crate::audio::{AudioApplication, AudioRouteLoopbackTarget, InputDevice};
+use crate::audio::{AudioApplication, AudioRouteLoopbackTarget, InputDevice, OutputDevice};
+use cpal::traits::HostTrait;
 use libloading::Library;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
@@ -45,6 +46,10 @@ struct SinkInfo {
     mute: c_int,
     monitor_source: u32,
     monitor_source_name: *const c_char,
+    latency: u64,
+    driver: *const c_char,
+    flags: u32,
+    proplist: Ptr,
 }
 #[repr(C)]
 struct SinkInputInfo {
@@ -141,6 +146,7 @@ struct Sink {
     name: String,
     monitor: String,
     index: u32,
+    is_virtual: bool,
 }
 #[derive(Clone)]
 struct Input {
@@ -155,9 +161,16 @@ unsafe extern "C" fn sink_cb(_: Ptr, info: *const SinkInfo, eol: c_int, data: Pt
     if eol != 0 || info.is_null() {
         return;
     }
-    // SAFETY: callback runs synchronously within mainloop iteration; data points at its live Vec.
-    let sinks = unsafe { &mut *(data as *mut Vec<Sink>) };
+    // SAFETY: callback runs synchronously within mainloop iteration; context and API are live.
+    let (sinks, api) = unsafe { &mut *(data as *mut (Vec<Sink>, *const Api)) };
+    let api = unsafe { &**api };
     let info = unsafe { &*info };
+    let property = |key: &'static CStr| {
+        if info.proplist.is_null() {
+            return String::new();
+        }
+        string(unsafe { (api.pa_proplist_gets)(info.proplist, key.as_ptr()) })
+    };
     let monitor = string(info.monitor_source_name);
     if !monitor.is_empty() {
         sinks.push(Sink {
@@ -165,6 +178,11 @@ unsafe extern "C" fn sink_cb(_: Ptr, info: *const SinkInfo, eol: c_int, data: Pt
             name: string(info.description),
             monitor,
             index: info.index,
+            // PipeWire can set PA_SINK_HARDWARE even on its null sink.
+            // Its node/factory metadata identifies those software endpoints.
+            is_virtual: info.flags & 0x4 == 0
+                || matches!(property(c"node.virtual").as_str(), "true" | "1")
+                || property(c"factory.name") == "support.null-audio-sink",
         });
     }
 }
@@ -304,16 +322,16 @@ impl Client {
         result
     }
     fn sinks(&mut self) -> Result<Vec<Sink>, String> {
-        let mut sinks = Vec::new();
+        let mut context: (Vec<Sink>, *const Api) = (Vec::new(), &self.api);
         let operation = unsafe {
             (self.api.pa_context_get_sink_info_list)(
                 self.context,
                 sink_cb,
-                (&mut sinks as *mut Vec<Sink>).cast(),
+                (&mut context as *mut (Vec<Sink>, *const Api)).cast(),
             )
         };
         self.operation(operation)?;
-        Ok(sinks)
+        Ok(context.0)
     }
     fn inputs(&mut self) -> Result<Vec<Input>, String> {
         let mut context: (Vec<Input>, *const Api) = (Vec::new(), &self.api as *const Api);
@@ -459,6 +477,28 @@ pub fn available_devices() -> Result<Vec<InputDevice>, String> {
         })
         .collect())
 }
+
+pub fn virtual_outputs() -> Result<Vec<OutputDevice>, String> {
+    Ok(Client::connect()?
+        .sinks()?
+        .into_iter()
+        .filter(|sink| sink.is_virtual)
+        .map(|sink| OutputDevice {
+            // Share the monitor's endpoint identity so existing feedback checks apply.
+            id: sink.id,
+            name: sink.name,
+            is_virtual: true,
+        })
+        .collect())
+}
+
+pub fn resolve_output(id: &str) -> Result<cpal::Device, String> {
+    let host = cpal::host_from_id(cpal::HostId::PulseAudio)
+        .map_err(|error| format!("PulseAudio/PipeWire output is unavailable: {error}"))?;
+    host.device_by_id(&cpal::DeviceId::new(cpal::HostId::PulseAudio, id))
+        .ok_or_else(|| format!("virtual output '{id}' is no longer available"))
+}
+
 pub fn available_applications() -> Result<Vec<AudioApplication>, String> {
     let mut client = Client::connect()?;
     let mut apps = BTreeMap::<String, AudioApplication>::new();

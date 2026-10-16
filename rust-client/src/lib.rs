@@ -73,6 +73,7 @@ mod window_backdrop;
 use audio::{
     AudioApplication, AudioRouteConfig, AudioRouteLoopbackConfig, AudioRouteLoopbackTarget,
     AudioRouteMediaConfig, AudioRouteSourceConfig, AudioSystem, InputConfigInfo, InputDevice,
+    OutputDevice,
 };
 use audio_studio::{
     ApplicationSelection, AudioDeviceRole, AudioGraph, AudioNodeKind, AudioStudioController,
@@ -642,7 +643,7 @@ struct XRTranslateApp {
     audio_applications: Vec<AudioApplication>,
     selected_loopback_device_id: String,
     system_audio_input: SystemAudioInputSelection,
-    tts_output_devices: Vec<InputDevice>,
+    tts_output_devices: Vec<OutputDevice>,
     capture_source: CaptureSource,
     microphone_recognition: RecognitionSettings,
     loopback_recognition: RecognitionSettings,
@@ -754,7 +755,7 @@ struct XRTranslateApp {
 struct AudioDeviceSnapshot {
     devices: Vec<InputDevice>,
     loopback_devices: Vec<InputDevice>,
-    output_devices: Vec<InputDevice>,
+    output_devices: Vec<OutputDevice>,
 }
 
 #[derive(Default)]
@@ -2322,18 +2323,6 @@ impl XRTranslateApp {
             .unwrap_or(inferred);
 
         let mut devices = Vec::new();
-        let is_game_microphone_render = |name: &str| {
-            let name = name.to_ascii_lowercase();
-            [
-                "voicemeeter",
-                "vb-audio",
-                "cable input",
-                "virtual cable",
-                "virtual audio cable",
-            ]
-            .iter()
-            .any(|marker| name.contains(marker))
-        };
         if !self.devices.is_empty() {
             add_default(
                 &mut devices,
@@ -2377,8 +2366,10 @@ impl XRTranslateApp {
                 is_default: false,
                 voicemeeter_strip_index: None,
             });
-            if is_game_microphone_render(&device.name) {
-                let strip = strip_for(&device.name, edition);
+            if device.is_virtual {
+                let strip = cfg!(windows)
+                    .then(|| strip_for(&device.name, edition))
+                    .flatten();
                 devices.push(HostAudioDevice {
                     id: audio_studio::DeviceId::new(device.id.clone()),
                     name: device.name.clone(),

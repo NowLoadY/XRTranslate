@@ -2570,14 +2570,17 @@ fn render_quick_controls(
                         });
                         ui.label(format!("{}: {}", tr(language, "Select this microphone in VRChat"), paired_recording_device(bus)));
                     } else {
-                        ui.label(tr(language, "In VRChat, select the recording end of the chosen virtual cable (for VB-CABLE: CABLE Output)."));
+                        ui.label(tr(language, "In the target app, select the recording end of the chosen virtual cable."));
                     }
                 }
             });
         }
         ui.add_space(12.0);
         if !snapshot.host_audio.devices.iter().any(|device| device.role == AudioDeviceRole::GameMicrophoneSink && !device.id.0.is_empty()) {
+            #[cfg(windows)]
             ui.hyperlink_to(tr(language, "Get a virtual audio cable"), "https://vb-audio.com/Cable/");
+            #[cfg(target_os = "linux")]
+            ui.hyperlink_to(tr(language, "Get a virtual audio cable"), "https://github.com/NowLoadY/XRTranslate/blob/main/docs/linux-build.md#virtual-microphone-output");
         }
     });
 }

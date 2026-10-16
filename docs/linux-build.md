@@ -143,3 +143,35 @@ playback bar supports seeking, and clicking a subtitle plays from its timestamp.
 Unavailable playback does not block task details or subtitle export.
 MPV's embedded child window is Windows-only; optional Linux MPV support can
 handle additional playback formats and audio extraction.
+
+## Virtual microphone output
+
+Audio Studio uses the same app microphone output node and connections as Windows.
+Select your virtual cable's **playback** endpoint on that node, and select its
+paired **recording** endpoint in VRChat or the receiving app. TTS, original voice,
+mixing, effects, and the Follow TTS switch use the existing Audio Studio routes.
+
+Linux discovers software playback endpoints through PulseAudio, including
+PipeWire's `pipewire-pulse`, using device metadata rather than Windows product
+names. The existing ALSA microphone and speaker selections remain available.
+The virtual cable must already exist; XRTranslate does not install drivers,
+create devices, or change system audio defaults. A recording-only source needs a
+paired playback endpoint before an application can send audio into it.
+
+If you need a cable, PulseAudio and PipeWire's PulseAudio server support a
+[null sink](https://docs.pipewire.org/page_pulse_module_null_sink.html) paired with
+a [remapped source](https://docs.pipewire.org/page_pulse_module_remap_source.html):
+
+```sh
+pactl load-module module-null-sink sink_name=xrtranslate_output \
+  sink_properties='device.description=XRTranslate_Output priority.session=0'
+pactl load-module module-remap-source master=xrtranslate_output.monitor \
+  source_name=xrtranslate_microphone \
+  source_properties='device.description=XRTranslate_Microphone priority.session=0'
+```
+
+Refresh Audio Studio's devices and select **XRTranslate_Output** for the app
+microphone output; select **XRTranslate_Microphone** in the receiving app. Each
+command prints a module ID. To remove this temporary cable, run
+`pactl unload-module ID` for the source module first, then the sink module.
+These commands do not make the cable persistent across audio-server restarts.

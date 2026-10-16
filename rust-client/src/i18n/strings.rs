@@ -1679,11 +1679,11 @@ pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Выберите этот микрофон в VRChat",
     ),
     (
-        "In VRChat, select the recording end of the chosen virtual cable (for VB-CABLE: CABLE Output).",
-        "在 VRChat 中选择所选虚拟声卡的录音端（VB-CABLE 对应 CABLE Output）。",
-        "VRChat で仮想ケーブルの録音側を選択します（VB-CABLE は CABLE Output）。",
-        "VRChat에서 가상 케이블의 녹음 장치를 선택하세요(VB-CABLE: CABLE Output).",
-        "В VRChat выберите записывающий конец виртуального кабеля (VB-CABLE: CABLE Output).",
+        "In the target app, select the recording end of the chosen virtual cable.",
+        "在目标应用中选择所选虚拟声卡对应的录音端。",
+        "対象のアプリで、選択した仮想ケーブルの録音側を選択します。",
+        "대상 앱에서 선택한 가상 케이블의 녹음 장치를 선택하세요.",
+        "В целевом приложении выберите записывающий конец выбранного виртуального кабеля.",
     ),
     (
         "Get a virtual audio cable",
