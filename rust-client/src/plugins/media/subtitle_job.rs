@@ -353,22 +353,29 @@ fn cue_ready(timeline: &SubtitleTimeline, index: usize, source_open: bool) -> bo
 pub(super) fn subtitle_context(cues: &[SubtitleCue], index: usize) -> TaskContext {
     let before = &cues[index.saturating_sub(CONTEXT_CUES)..index];
     let after = &cues[index + 1..(index + 1 + CONTEXT_CUES).min(cues.len())];
-    let recent_turns = before
-        .iter()
-        .filter_map(|cue| {
-            let translated = cue.translated_text.as_deref()?.trim();
-            let source = SupportedLanguage::parse(&cue.source_language)?;
-            let target = SupportedLanguage::parse(&cue.target_language)?;
-            (!translated.is_empty()).then(|| PromptTurn {
+    let mut recent_turns = Vec::new();
+    let mut source_before = Vec::new();
+    for cue in before {
+        if let (Some(translated), Some(source), Some(target)) = (
+            cue.translated_text
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty()),
+            SupportedLanguage::parse(&cue.source_language),
+            SupportedLanguage::parse(&cue.target_language),
+        ) {
+            recent_turns.push(PromptTurn {
                 turn_id: Some(cue.id.clone()),
                 speaker_id: cue.speaker_name.clone().unwrap_or_default(),
                 source_language: source.code().to_owned(),
                 target_language: target.code().to_owned(),
                 source_text: cue.original_text.clone(),
                 translated_text: translated.to_owned(),
-            })
-        })
-        .collect();
+            });
+        } else {
+            source_before.push(cue.original_text.as_str());
+        }
+    }
     let join = |neighbors: &[SubtitleCue]| {
         neighbors
             .iter()
@@ -381,7 +388,7 @@ pub(super) fn subtitle_context(cues: &[SubtitleCue], index: usize) -> TaskContex
         surrounding_source: Some(SurroundingSource {
             speaker_id: cues[index].speaker_name.clone().unwrap_or_default(),
             source_language: String::new(),
-            before: join(before),
+            before: source_before.join("\n"),
             after: join(after),
         }),
     })
@@ -445,7 +452,8 @@ mod tests {
         assert_eq!(facts.recent_turns[0].translated_text, "入口在左边。");
         assert_eq!(facts.recent_turns[1].source_language, "zh");
         assert_eq!(facts.recent_turns[1].target_language, "en");
-        assert!(facts.surrounding_source.unwrap().before.contains("left"));
+        assert!(facts.recent_turns[0].source_text.contains("left"));
+        assert!(facts.surrounding_source.unwrap().before.is_empty());
 
         timeline.clear_translations();
         timeline.set_translation("srt_1", "Old translation".into(), "", "");
@@ -453,8 +461,41 @@ mod tests {
             unreachable!();
         };
         assert!(facts.recent_turns.is_empty());
+        assert_eq!(
+            facts.surrounding_source.unwrap().before,
+            "The entrance is on the left.\n我们会等你。"
+        );
         assert!(timeline.cues()[0].source_language.is_empty());
         assert!(timeline.cues()[0].target_language.is_empty());
+
+        timeline.set_translation("srt_0", "入口在左边。".into(), "en", "zh");
+        let TaskContext::Snapshot { facts } = subtitle_context(timeline.cues(), 2) else {
+            unreachable!();
+        };
+        assert_eq!(facts.recent_turns.len(), 1);
+        assert_eq!(facts.surrounding_source.unwrap().before, "我们会等你。");
+    }
+
+    #[test]
+    fn identical_neighboring_cues_remain_distinct_facts() {
+        let mut timeline = SubtitleTimeline::parse(
+            "1\n00:00:00,000 --> 00:00:01,000\nAgain.\n\n\
+             2\n00:00:01,000 --> 00:00:02,000\nAgain.\n\n\
+             3\n00:00:02,000 --> 00:00:03,000\nNow.\n\n\
+             4\n00:00:03,000 --> 00:00:04,000\nLater.",
+        )
+        .unwrap();
+        for id in ["srt_0", "srt_1"] {
+            timeline.set_translation(id, "再一次。".into(), "en", "zh");
+        }
+        let TaskContext::Snapshot { facts } = subtitle_context(timeline.cues(), 2) else {
+            unreachable!();
+        };
+        assert_eq!(facts.recent_turns.len(), 2);
+        assert_ne!(facts.recent_turns[0].turn_id, facts.recent_turns[1].turn_id);
+        let neighbors = facts.surrounding_source.unwrap();
+        assert!(neighbors.before.is_empty());
+        assert_eq!(neighbors.after, "Later.");
     }
 
     fn fixture() -> (MediaPlugin, tempfile::TempDir) {

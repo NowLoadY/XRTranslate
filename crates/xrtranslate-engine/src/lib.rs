@@ -121,8 +121,6 @@ impl LanguageRoute {
 /// Configuration with explicit resource limits for a [`SessionEngine`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EngineConfig {
-    /// Maximum completed translation turns retained as model context.
-    pub context_capacity: usize,
     /// Maximum messages awaiting the single outbound writer.
     pub outbound_capacity: usize,
 }
@@ -130,7 +128,6 @@ pub struct EngineConfig {
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
-            context_capacity: 32,
             outbound_capacity: 128,
         }
     }
@@ -213,72 +210,6 @@ impl fmt::Display for QueueFull {
 
 impl Error for QueueFull {}
 
-/// A completed source/translation pair retained as translator context.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TranslationTurn {
-    /// Text recognized from the speaker.
-    pub source_text: String,
-    /// Final translation sent to listeners.
-    pub translated_text: String,
-}
-
-impl TranslationTurn {
-    /// Creates one completed translation turn.
-    pub fn new(source_text: impl Into<String>, translated_text: impl Into<String>) -> Self {
-        Self {
-            source_text: source_text.into(),
-            translated_text: translated_text.into(),
-        }
-    }
-}
-
-/// Bounded history passed to a translation implementation as conversational context.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TranslationContext {
-    turns: VecDeque<TranslationTurn>,
-    capacity: usize,
-}
-
-impl TranslationContext {
-    /// Makes an empty context with a bounded turn count.
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            turns: VecDeque::with_capacity(capacity),
-            capacity,
-        }
-    }
-
-    /// Number of retained turns.
-    pub fn len(&self) -> usize {
-        self.turns.len()
-    }
-
-    /// Whether no completed turn is retained.
-    pub fn is_empty(&self) -> bool {
-        self.turns.is_empty()
-    }
-
-    /// Iterates from the oldest to newest retained turn.
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &TranslationTurn> {
-        self.turns.iter()
-    }
-
-    /// Clears every retained turn, for example after a language-route change.
-    pub fn clear(&mut self) {
-        self.turns.clear();
-    }
-
-    fn push(&mut self, turn: TranslationTurn) {
-        if self.capacity == 0 {
-            return;
-        }
-        if self.turns.len() == self.capacity {
-            let _ = self.turns.pop_front();
-        }
-        self.turns.push_back(turn);
-    }
-}
-
 /// Event supplied by a local inference or input adapter.
 ///
 /// This is intentionally local to the engine crate during the migration.  Once
@@ -303,7 +234,7 @@ pub enum ProtocolEvent {
         source_text: String,
         /// Translated output.
         translated_text: String,
-        /// Whether the segment is complete and suitable for context retention.
+        /// Whether the segment is complete.
         is_final: bool,
     },
     /// PCM audio produced by a TTS adapter.
@@ -479,7 +410,6 @@ pub struct SessionEngine {
     route_epoch: RouteEpoch,
     tts_enabled: bool,
     tts_epoch: TtsEpoch,
-    context: TranslationContext,
     outbound: OutboundWriter,
 }
 
@@ -491,7 +421,6 @@ impl SessionEngine {
             route_epoch: RouteEpoch::INITIAL,
             tts_enabled: false,
             tts_epoch: TtsEpoch::INITIAL,
-            context: TranslationContext::new(config.context_capacity),
             outbound: OutboundWriter::new(config.outbound_capacity),
         }
     }
@@ -516,12 +445,7 @@ impl SessionEngine {
         self.tts_enabled
     }
 
-    /// Completed translations retained for a subsequent MT request.
-    pub fn context(&self) -> &TranslationContext {
-        &self.context
-    }
-
-    /// Replaces the route, invalidating in-flight work and clearing context.
+    /// Replaces the route, invalidating in-flight work.
     ///
     /// Reapplying an identical route is a no-op so callers may synchronize
     /// settings safely without invalidating active work.
@@ -529,7 +453,6 @@ impl SessionEngine {
         if self.route != route {
             self.route = route;
             self.route_epoch = self.route_epoch.next();
-            self.context.clear();
         }
         self.route_epoch
     }
@@ -552,8 +475,8 @@ impl SessionEngine {
     /// Validates one inference/input result and queues it for the only
     /// outbound writer.
     ///
-    /// On failure, the event is rejected without altering the context or
-    /// sequence.  A full outbound queue applies backpressure rather than
+    /// On failure, the event is rejected without altering the sequence.
+    /// A full outbound queue applies backpressure rather than
     /// silently discarding a visible translation.
     pub fn submit(&mut self, event: ProtocolEvent) -> Result<(), EventRejected> {
         if event.route_epoch() != self.route_epoch {
@@ -576,21 +499,17 @@ impl SessionEngine {
                 translated_text,
                 is_final,
                 ..
-            } => {
-                let payload = OutboundPayload::TranslatedText {
-                    source_text: source_text.clone(),
-                    translated_text: translated_text.clone(),
-                    is_final,
-                };
-                self.outbound
-                    .enqueue(self.route_epoch, payload)
-                    .map_err(EventRejected::OutboundQueueFull)?;
-                if is_final {
-                    self.context
-                        .push(TranslationTurn::new(source_text, translated_text));
-                }
-                Ok(())
-            }
+            } => self
+                .outbound
+                .enqueue(
+                    self.route_epoch,
+                    OutboundPayload::TranslatedText {
+                        source_text,
+                        translated_text,
+                        is_final,
+                    },
+                )
+                .map_err(EventRejected::OutboundQueueFull),
             ProtocolEvent::TtsAudio { tts_epoch, pcm, .. } => {
                 if tts_epoch != self.tts_epoch {
                     return Err(EventRejected::StaleTts {

@@ -18,8 +18,8 @@ by the graph, with transport-only conversions owned by the connector.
 
 | Owner | Responsibility |
 |---|---|
-| Task owner | Context selection, conversation scope, and task lifetime |
-| Backend context | Bounded conversation memory, ordering, and request snapshots |
+| Task owner | Choose one context owner: supply a complete snapshot or delegate an explicit conversation scope |
+| Backend context | Maintain bounded history only for delegated conversations; read snapshots without accumulating results |
 | XR Corpus | Terminology, lexical retrieval, and recognition vocabulary |
 | `xrtranslate-prompt` | Graph schema, validation, built-in graphs, and deterministic rendering into ordered messages |
 | Prompt Studio | Editing, selection, persistence, and display of execution traces |
@@ -51,11 +51,30 @@ Translation context follows task and language ownership. Stateless ask requests
 use the configured translation adapter without joining conversation history;
 the calling feature supplies the request's purpose and necessary input facts.
 
-Each translation task supplies a `TaskContext`: a complete snapshot of reference
-facts, or a conversation scope with initial facts. Owners select relevant
-completed translations and surrounding source text. A snapshot has no implicit
-history; conversation memory is held by the backend for the owner's scope.
-Starting a new document, media job, or independent capture gives it fresh context.
+Each translation task supplies exactly one `TaskContext` mode:
+
+- `Snapshot`: the caller owns and selects the reference facts for this request.
+  The backend neither reads a conversation nor accumulates the result as history.
+  Reusing a connection does not reuse its previous snapshot.
+- `Conversation`: the caller delegates history maintenance to the backend for an
+  explicit scope. Initial facts seed that scope once. Accepted results update its
+  bounded history until the last owner releases the scope.
+
+Completed bilingual turns contain their source text already. Source-only neighbors
+contain additional facts, not another copy of those turns. File subtitles and
+single-cue retranslation read the same timeline snapshot: up to two preceding
+turns and two following source cues. Preceding cues without a valid translation
+remain source-only. Distinct cues with identical text remain distinct; the runtime
+does not deduplicate sentences by their wording.
+The two reference blocks are complementary; a custom graph that needs both kinds
+of reference connects both. Language filtering and budget limits can omit a
+bilingual turn; the backend does not reconstruct a second source-only copy.
+
+The session engine owns routing, epochs, and outbound events, not another history
+cache. Prompt assembly is stateless: it applies language and model capabilities,
+reference budgets, terminology, and neighbors inside the current request. It does
+not discover or maintain a second conversation. Starting a new document, media
+job, or independent capture gives it fresh context.
 
 Microphone, system audio, and text may explicitly share a conversation. Input
 sources label current and historical speakers. Existing turn identifiers and

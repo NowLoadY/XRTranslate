@@ -128,8 +128,10 @@ impl TranslationPromptContext {
 /// Reference facts selected by the feature submitting a translation task.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextFacts {
+    /// Completed bilingual facts selected by the context owner.
     #[serde(default)]
     pub recent_turns: Vec<PromptTurn>,
+    /// Source-only neighbors, excluding facts already supplied in `recent_turns`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surrounding_source: Option<SurroundingSource>,
 }
@@ -138,10 +140,12 @@ pub struct ContextFacts {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TaskContext {
+    /// The caller owns all history. Inference uses these facts without accumulating results.
     Snapshot {
         #[serde(default)]
         facts: ContextFacts,
     },
+    /// The backend owns history for this scope; `seed` initializes it only once.
     Conversation {
         scope: String,
         #[serde(default)]

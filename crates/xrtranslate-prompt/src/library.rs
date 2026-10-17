@@ -56,6 +56,7 @@ fn default_schema_guide() -> String {
          * 'previous_revision': Renders '## Previous Revision of Current Input\\n\\n<revision>'\n\
          * 'surrounding_source': Renders '## Surrounding Source (context only; do not translate)\\n\\n<lines>'\n\
          * 'custom_text': Renders '## Custom Reference Text\\n\\n<custom user text>'\n\
+         * 'recent_turns' and 'surrounding_source' are complementary: completed bilingual turns already include their source; source-only neighbors do not repeat them. Connect both blocks to include both kinds of reference.\n\
          * NOTE FOR AI DESIGNERS: Because each data block outputs its own '## Header', DO NOT add extra duplicate headers in Compose templates (e.g. write '{0}', not 'Terminology:\\n{0}').\n\
        - Bool Value Node: {'type': 'bool_value', 'value': true | false}. This is editor-owned data, not a hidden host predicate.\n\
        - Condition Value Node: {'type': 'condition_value', 'condition': 'has_reference_context' | 'has_recognition_context' | ...}. This is a host-owned boolean fact.\n\

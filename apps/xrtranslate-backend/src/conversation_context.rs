@@ -13,16 +13,10 @@ pub(crate) struct ContextRegistry(Arc<Mutex<Vec<(String, Weak<Mutex<History>>)>>
 impl ContextRegistry {
     pub(crate) fn bind(&self, context: TaskContext) -> ContextBinding {
         match context {
-            TaskContext::Snapshot { facts } => ContextBinding {
-                facts,
-                memory: None,
-            },
+            TaskContext::Snapshot { facts } => ContextBinding::Snapshot(facts),
             TaskContext::Conversation { scope, seed } => {
                 if scope.trim().is_empty() {
-                    return ContextBinding {
-                        facts: seed,
-                        memory: None,
-                    };
+                    return ContextBinding::Snapshot(seed);
                 }
                 let ContextFacts {
                     recent_turns,
@@ -47,22 +41,25 @@ impl ContextRegistry {
                         scopes.push((scope, Arc::downgrade(&memory)));
                         memory
                     });
-                ContextBinding {
-                    facts: ContextFacts::default(),
-                    memory: Some(memory),
-                }
+                ContextBinding::Conversation(memory)
             }
         }
     }
 }
 
-#[derive(Clone, Default)]
-pub(crate) struct ContextBinding {
-    facts: ContextFacts,
-    memory: Option<Arc<Mutex<History>>>,
+/// Exactly one owner: immutable caller facts or backend conversation memory.
+#[derive(Clone)]
+pub(crate) enum ContextBinding {
+    Snapshot(ContextFacts),
+    Conversation(Arc<Mutex<History>>),
+}
+impl Default for ContextBinding {
+    fn default() -> Self {
+        Self::Snapshot(ContextFacts::default())
+    }
 }
 #[derive(Default)]
-struct History {
+pub(crate) struct History {
     next_order: u64,
     observed: VecDeque<(String, u64)>,
     turns: Vec<(u64, u64, PromptTurn)>,
@@ -115,11 +112,11 @@ impl History {
 }
 impl ContextBinding {
     pub(crate) fn is_snapshot(&self) -> bool {
-        self.memory.is_none()
+        matches!(self, Self::Snapshot(_))
     }
 
     pub(crate) fn observe(&self, id: &str) {
-        if let Some(memory) = &self.memory {
+        if let Self::Conversation(memory) = self {
             memory
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
@@ -133,21 +130,19 @@ impl ContextBinding {
         source: &str,
         target: &str,
     ) -> TranslationPromptContext {
-        let (turns, surrounding_source) = if let Some(memory) = &self.memory {
-            let memory = memory.lock().unwrap_or_else(|error| error.into_inner());
-            (
-                memory
-                    .turns
-                    .iter()
-                    .map(|(_, _, turn)| turn.clone())
-                    .collect(),
-                memory.surrounding_source.clone(),
-            )
-        } else {
-            (
-                self.facts.recent_turns.clone(),
-                self.facts.surrounding_source.clone(),
-            )
+        let (turns, surrounding_source) = match self {
+            Self::Snapshot(facts) => (facts.recent_turns.clone(), facts.surrounding_source.clone()),
+            Self::Conversation(memory) => {
+                let memory = memory.lock().unwrap_or_else(|error| error.into_inner());
+                (
+                    memory
+                        .turns
+                        .iter()
+                        .map(|(_, _, turn)| turn.clone())
+                        .collect(),
+                    memory.surrounding_source.clone(),
+                )
+            }
         };
         let mut context = TranslationPromptContext {
             current_speaker_id: surrounding_source
@@ -179,7 +174,7 @@ impl ContextBinding {
         {
             return;
         }
-        if let Some(memory) = &self.memory {
+        if let Self::Conversation(memory) = self {
             memory
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
@@ -323,6 +318,23 @@ mod tests {
         ocr.observe("ocr");
         ocr.record(turn("ocr", "screen", "zh"), 1);
         assert!(ocr.snapshot("next", "", "en", "zh").recent_turns.is_empty());
+        for text in ["document A", "document B"] {
+            let facts = ContextFacts {
+                recent_turns: vec![turn("previous", text, "zh")],
+                ..ContextFacts::default()
+            };
+            let snapshot = registry.bind(TaskContext::snapshot(facts.clone()));
+            snapshot.observe("current");
+            snapshot.record(turn("current", "must not become history", "zh"), 1);
+            assert_eq!(
+                snapshot.snapshot("next", "", "en", "zh").recent_turns,
+                facts.recent_turns
+            );
+        }
+        assert_eq!(
+            live.snapshot("next", "", "en", "zh").recent_turns,
+            vec![turn("one", "hello", "zh")]
+        );
         assert!(
             registry
                 .bind(TaskContext::conversation("other"))
