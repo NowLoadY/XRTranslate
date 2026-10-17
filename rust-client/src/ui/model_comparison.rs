@@ -10,7 +10,6 @@ use crate::{i18n, runtime_install::LocalModelAvailability};
 
 const GIB: f64 = (1024 * 1024 * 1024) as f64;
 const BLUE: Color32 = Color32::from_rgb(48, 113, 210);
-const GRID: Color32 = Color32::BLACK;
 const INK: Color32 = Color32::from_rgb(55, 65, 81);
 const MODEL_COLORS: [Color32; 6] = [
     BLUE,
@@ -202,18 +201,21 @@ pub(super) fn model_chart(
     ui.label(
         RichText::new(format!(
             "{} · {}",
-            i18n::tr(language, "Official model results"),
+            i18n::tr(language, "Local model reference"),
             spec.display_metric
         ))
         .size(12.0)
         .strong()
         .color(INK),
     );
-    ui.label(
-        RichText::new(spec.benchmark)
-            .size(10.5)
-            .color(Color32::from_gray(105)),
-    );
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new(spec.benchmark).size(10.5).weak());
+        ui.label(
+            RichText::new(format!("↑ {}", i18n::tr(language, "Higher is better")))
+                .size(10.5)
+                .weak(),
+        );
+    });
     ui.add_space(4.0);
     draw_plot(ui, language, &models, selected, spec);
 }
@@ -226,12 +228,27 @@ fn draw_plot(
     spec: ChartSpec,
 ) {
     let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 145.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 154.0), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     let plot = egui::Rect::from_min_max(
-        rect.min + Vec2::new(35.0, 10.0),
-        rect.max - Vec2::new(10.0, 28.0),
+        rect.min + Vec2::new(32.0, 8.0),
+        rect.max - Vec2::new(12.0, 32.0),
     );
+    let dark = ui.visuals().dark_mode;
+    let ink = ui.visuals().weak_text_color();
+    let fill = if dark {
+        Color32::from_rgb(35, 45, 54)
+    } else if spec.source_metric == "WER" {
+        Color32::from_rgb(236, 243, 255)
+    } else {
+        Color32::from_rgb(234, 247, 240)
+    };
+    let guide = if dark {
+        Color32::from_rgb(77, 91, 104)
+    } else {
+        Color32::from_rgb(198, 211, 222)
+    };
+    painter.rect_filled(plot.expand(7.0), 14.0, fill);
     let max_parameters = models
         .iter()
         .filter(|model| spec.value(model).is_some())
@@ -250,38 +267,36 @@ fn draw_plot(
     let y_max = ((max_score + 3.0) / 5.0).ceil() * 5.0;
     for i in 0..=2 {
         let y = egui::lerp(plot.bottom()..=plot.top(), i as f32 / 2.0);
-        painter.line_segment(
-            [egui::pos2(plot.left(), y), egui::pos2(plot.right(), y)],
-            Stroke::new(1.0, GRID),
-        );
+        painter.extend(egui::Shape::dashed_line(
+            &[egui::pos2(plot.left(), y), egui::pos2(plot.right(), y)],
+            Stroke::new(1.0, guide),
+            3.0,
+            5.0,
+        ));
         painter.text(
-            egui::pos2(plot.left() - 5.0, y),
+            egui::pos2(plot.left() - 11.0, y),
             Align2::RIGHT_CENTER,
             format!("{:.0}", y_min + (y_max - y_min) * i as f32 / 2.0),
             FontId::proportional(10.0),
-            INK,
+            ink,
         );
         let x = egui::lerp(plot.left()..=plot.right(), i as f32 / 2.0);
-        painter.line_segment(
-            [egui::pos2(x, plot.top()), egui::pos2(x, plot.bottom())],
-            Stroke::new(1.0, GRID),
-        );
         painter.text(
-            egui::pos2(x, plot.bottom() + 4.0),
+            egui::pos2(x, plot.bottom() + 11.0),
             Align2::CENTER_TOP,
             format!("{:.0}", x_max * i as f32 / 2.0),
             FontId::proportional(10.0),
-            INK,
+            ink,
         );
     }
     painter.text(
-        egui::pos2(plot.center().x, rect.bottom() - 1.0),
+        egui::pos2(plot.center().x, rect.bottom()),
         Align2::CENTER_BOTTOM,
         i18n::tr(language, "Parameters (B)"),
         FontId::proportional(10.0),
-        INK,
+        ink,
     );
-    for model in models {
+    for (index, model) in models.iter().enumerate() {
         let (Some(parameters), Some(percent)) = (model.parameters_millions, spec.value(model))
         else {
             continue;
@@ -296,37 +311,40 @@ fn draw_plot(
         );
         let point = egui::pos2(x, y);
         let response = ui.interact(
-            egui::Rect::from_center_size(point, Vec2::splat(18.0)),
+            egui::Rect::from_center_size(point, Vec2::splat(20.0)),
             ui.make_persistent_id(("model_chart_point", model.id)),
             egui::Sense::hover(),
         );
-        let selected_point = selected == Some(model.id);
-        let color = if selected_point {
-            BLUE
-        } else {
-            Color32::from_rgb(134, 154, 178)
-        };
-        painter.circle_filled(
-            point,
-            if selected_point {
-                6.5
-            } else if response.hovered() {
-                5.0
-            } else {
-                4.0
-            },
-            color,
-        );
-        if selected_point {
-            painter.circle_stroke(point, 7.5, Stroke::new(2.0, Color32::from_rgb(23, 69, 145)));
+        let active = selected == Some(model.id) || response.hovered();
+        let color = MODEL_COLORS[index % MODEL_COLORS.len()];
+        if active {
+            painter.circle_filled(point, 11.0, color.gamma_multiply(0.16));
         }
-        if response.hovered() {
-            egui::Tooltip::for_widget(&response)
-                .at_pointer()
-                .show(|ui| {
-                    ui.label(model.label);
-                });
+        painter.circle_filled(point, if active { 6.0 } else { 4.5 }, color);
+        if selected == Some(model.id) {
+            painter.circle_stroke(point, 8.0, Stroke::new(1.5, color));
+            painter.circle_filled(point, 2.0, Color32::WHITE);
         }
+        response.on_hover_ui(|ui| {
+            ui.set_max_width(300.0);
+            ui.label(RichText::new(model.label).strong());
+            ui.label(format!("{}: {percent:.2}", spec.display_metric));
+            ui.label(format!(
+                "{}: {:.2}",
+                i18n::tr(language, "Parameters (B)"),
+                parameters as f32 / 1000.0
+            ));
+            if let Some(result) = spec.benchmark(model) {
+                ui.label(
+                    RichText::new(i18n::tr(language, result.note))
+                        .small()
+                        .weak(),
+                );
+                ui.hyperlink_to(
+                    i18n::tr(language, "View benchmark source"),
+                    result.source_url,
+                );
+            }
+        });
     }
-    painter.rect_stroke(plot, 0.0, Stroke::new(1.0, GRID), StrokeKind::Inside);
 }

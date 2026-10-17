@@ -61,36 +61,45 @@ pub fn render_onboarding_fullscreen(
         ..Default::default()
     };
 
-    let footer = egui::Area::new(egui::Id::new("onboarding_bottom_nav"))
+    let footer = egui::Area::new(egui::Id::new(("onboarding_bottom_nav", welcome)))
         .order(egui::Order::Middle)
         .constrain_to(page_rect)
-        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -footer_gap])
+        .anchor(
+            if welcome {
+                egui::Align2::RIGHT_BOTTOM
+            } else {
+                egui::Align2::CENTER_BOTTOM
+            },
+            [if welcome { -margin as f32 } else { 0.0 }, -footer_gap],
+        )
         .fade_in(false)
         .show(ui.ctx(), |ui| {
+            if welcome {
+                let next = components::primary_button_enabled(
+                    ui,
+                    i18n::tr(app.ui_language, "Continue"),
+                    requirement.is_none(),
+                );
+                companion.next = next.rect;
+                if next.clicked() {
+                    app.onboarding_page += 1;
+                }
+                return;
+            }
             ui.set_width((page_rect.width() - 2.0 * margin as f32).min(720.0));
             Frame::new()
-                .fill(if welcome {
-                    Color32::from_rgb(235, 242, 255)
-                } else if custom_background {
+                .fill(if custom_background {
                     theme::surface_panel()
                 } else {
                     theme::sidebar(viewport_focused)
                 })
-                .stroke(if welcome {
-                    Stroke::NONE
-                } else {
-                    Stroke::new(1.0, theme::border())
-                })
+                .stroke(Stroke::new(1.0, theme::border()))
                 .corner_radius(theme::container_radius(18))
-                .shadow(if welcome {
-                    egui::Shadow::NONE
-                } else {
-                    egui::Shadow {
-                        offset: [0, 3],
-                        blur: 12,
-                        spread: 0,
-                        color: Color32::from_black_alpha(18),
-                    }
+                .shadow(egui::Shadow {
+                    offset: [0, 3],
+                    blur: 12,
+                    spread: 0,
+                    color: Color32::from_black_alpha(18),
                 })
                 .inner_margin(Margin::symmetric(16, footer_margin_y))
                 .show(ui, |ui| {
@@ -202,7 +211,7 @@ pub fn render_onboarding_fullscreen(
 
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
-                    .id_salt("onboarding_content_scroll")
+                    .id_salt(("onboarding_content_scroll", app.onboarding_page))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         let cur = app.onboarding_page;
@@ -779,6 +788,134 @@ fn model_hardware_hint(
     )
 }
 
+fn local_model_choices(
+    ui: &mut egui::Ui,
+    language: i18n::UiLanguage,
+    project_root: &std::path::Path,
+    selected: &mut ModelAssetId,
+    packages: &[NativeModelPackage],
+    delete_enabled: bool,
+    availability: &crate::runtime_install::LocalModelAvailability,
+) -> Option<ModelAssetId> {
+    let groups: Vec<_> = [
+        ModelLevel::Small,
+        ModelLevel::Normal,
+        ModelLevel::Big,
+        ModelLevel::Ultra,
+    ]
+    .into_iter()
+    .filter(|level| packages.iter().any(|package| package.level == *level))
+    .collect();
+    if groups.is_empty() {
+        return None;
+    }
+    let width = (groups.len() as f32 * 240.0).min(ui.ctx().content_rect().width() - 40.0);
+    let columns = ((width / 210.0) as usize).clamp(1, groups.len());
+    ui.set_width(width);
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+    ui.spacing_mut().item_spacing.x = 24.0;
+    let mut delete = None;
+    for row in groups.chunks(columns) {
+        let rects = ui.columns(columns, |columns| {
+            columns
+                .iter_mut()
+                .zip(row)
+                .map(|(ui, level)| {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(i18n::tr(language, level.as_str()))
+                            .strong()
+                            .color(theme::primary()),
+                    );
+                    ui.add_space(8.0);
+                    for package in packages.iter().filter(|package| package.level == *level) {
+                        let manifest = xrtranslate_assets::manifest_for(package.id);
+                        let present =
+                            model_asset_is_present(project_root, package.id).unwrap_or(false);
+                        let available = availability.supports(package.hardware);
+                        let choice = ui.add_enabled(
+                            available,
+                            egui::Button::selectable(
+                                *selected == package.id,
+                                RichText::new(package.label).size(12.0),
+                            )
+                            .wrap()
+                            .min_size(egui::vec2(ui.available_width(), 32.0)),
+                        );
+                        if choice.clicked() {
+                            *selected = package.id;
+                            ui.close();
+                        }
+                        choice.on_disabled_hover_text(model_hardware_hint(
+                            language,
+                            package.hardware,
+                            availability,
+                        ));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            ui.label(
+                                RichText::new(format!(
+                                    "≈ {:.1} GiB",
+                                    manifest.estimated_vram_bytes as f64
+                                        / (1024.0 * 1024.0 * 1024.0)
+                                ))
+                                .size(10.5)
+                                .weak(),
+                            );
+                            if present {
+                                ui.label(
+                                    RichText::new(i18n::tr(language, "Installed"))
+                                        .size(10.5)
+                                        .color(Color32::from_rgb(16, 150, 110)),
+                                );
+                            }
+                            if let Some(license) = manifest.required_files.iter().find(|file| {
+                                file.role == xrtranslate_assets::ModelFileRole::License
+                            }) {
+                                ui.hyperlink_to(
+                                    RichText::new(i18n::tr(language, "Model license")).size(10.5),
+                                    manifest.source.file_url(license.relative_path),
+                                );
+                            }
+                            if present
+                                && ui
+                                    .add_enabled_ui(delete_enabled, |ui| {
+                                        components::resource_delete_button(ui, package.id, language)
+                                    })
+                                    .inner
+                                    .clicked()
+                            {
+                                delete = Some(package.id);
+                                ui.close();
+                            }
+                        });
+                        ui.add_space(12.0);
+                    }
+                    ui.min_rect()
+                })
+                .collect::<Vec<_>>()
+        });
+        let bottom = rects.iter().map(egui::Rect::bottom).fold(0.0, f32::max);
+        for pair in rects.windows(2) {
+            let x = (pair[0].right() + pair[1].left()) * 0.5;
+            let height = bottom - pair[0].top();
+            let dashes = ((height * 0.65).min(96.0) / 14.0) as usize;
+            let top = pair[0].top() + (height - (dashes as f32 * 14.0 - 6.0)) * 0.5;
+            for dash in 0..dashes {
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(x - 2.0, top + dash as f32 * 14.0),
+                        egui::vec2(4.0, 8.0),
+                    ),
+                    2.0,
+                    theme::border().gamma_multiply(0.7),
+                );
+            }
+        }
+    }
+    delete
+}
+
 fn onboarding_model_config_card(
     ui: &mut egui::Ui,
     language: i18n::UiLanguage,
@@ -838,13 +975,25 @@ fn onboarding_model_config_card(
                     ));
                 }
             });
+            ui.label(
+                RichText::new(i18n::tr(
+                    language,
+                    if capability == ModelCapability::Asr {
+                        "Speech → text"
+                    } else {
+                        "Text → translation"
+                    },
+                ))
+                .size(12.0)
+                .color(theme::text_weak()),
+            );
             ui.add_space(10.0);
             let Some(provider) = provider.as_mut() else {
                 ui.label(i18n::tr(language, "No providers configured"));
                 return;
             };
 
-            crate::ui::layout::responsive_columns(ui, 2, 230.0, |ui, index| {
+            crate::ui::layout::responsive_columns(ui, 2, 200.0, |ui, index| {
                 if index == 0 {
                     ui.label(i18n::tr(language, "Mode"));
                     let mut remote = provider.remote;
@@ -859,9 +1008,7 @@ fn onboarding_model_config_card(
                                 },
                             )
                     });
-                    let mode_text =
-                        i18n::tr(language, if remote { "Online API" } else { "Local model" });
-                    components::combobox_ui(ui, (category, "provider_mode"), mode_text, |ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.add_enabled_ui(local_choice.is_some(), |ui| {
                             ui.selectable_value(
                                 &mut remote,
@@ -886,7 +1033,7 @@ fn onboarding_model_config_card(
                     let Some(mut asset_id) = selected_asset else {
                         return;
                     };
-                    ui.label(i18n::tr(language, "Level"));
+                    ui.label(i18n::tr(language, "Model"));
                     let selected_package = levels.iter().find(|package| package.id == asset_id);
                     let selected_present = selected_package.is_some_and(|package| {
                         model_asset_is_present(project_root, package.id).unwrap_or(false)
@@ -910,60 +1057,22 @@ fn onboarding_model_config_card(
                         .iter()
                         .any(|package| local_availability.supports(package.hardware));
                     ui.add_enabled_ui(local_available, |ui| {
-                        components::combobox_ui(ui, (category, "model_level"), selected_label, |ui| {
-                            for level in [ModelLevel::Small, ModelLevel::Normal, ModelLevel::Big, ModelLevel::Ultra] {
-                                let choices = levels.iter().filter(|package| package.level == level).collect::<Vec<_>>();
-                                if choices.is_empty() { continue; }
-                                ui.label(RichText::new(i18n::tr(language, level.as_str())).strong());
-                                for package in choices {
-                                    let present = model_asset_is_present(project_root, package.id)
-                                        .unwrap_or(false);
-                                    let enough_memory = local_availability.supports(package.hardware);
-                                    ui.horizontal_wrapped(|ui| {
-                                        let manifest = xrtranslate_assets::manifest_for(package.id);
-                                        let label = if present {
-                                            format!("{} · {}", package.label, i18n::tr(language, "Installed"))
-                                        } else {
-                                            package.label.to_owned()
-                                        };
-                                        let choice = ui.add_enabled_ui(enough_memory, |ui| {
-                                            ui.selectable_value(&mut asset_id, package.id, label)
-                                        }).inner;
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "≈ {:.1} GiB",
-                                                manifest.estimated_vram_bytes as f64
-                                                    / (1024.0 * 1024.0 * 1024.0)
-                                            ))
-                                            .size(10.5)
-                                            .color(theme::text_weak()),
-                                        );
-                                        if !enough_memory && package.hardware.accelerator != xrtranslate_assets::ModelAccelerator::Cpu {
-                                            choice.on_disabled_hover_text(model_hardware_hint(language, package.hardware, local_availability));
-                                        }
-                                        if let Some(license) = manifest.required_files.iter().find(
-                                            |file| file.role == xrtranslate_assets::ModelFileRole::License,
-                                        ) {
-                                            ui.hyperlink_to(
-                                                i18n::tr(language, "Model license"),
-                                                manifest.source.file_url(license.relative_path),
-                                            );
-                                        }
-                                        if present
-                                            && ui
-                                                .add_enabled_ui(delete_enabled, |ui| {
-                                                    components::resource_delete_button(ui, package.id, language)
-                                                })
-                                                .inner
-                                                .clicked()
-                                        {
-                                            result.delete_asset = Some(package.id);
-                                            ui.close();
-                                        }
-                                    });
-                                }
-                            }
-                        });
+                        components::combobox_ui(
+                            ui,
+                            (category, "model_level"),
+                            selected_label,
+                            |ui| {
+                                result.delete_asset = local_model_choices(
+                                    ui,
+                                    language,
+                                    project_root,
+                                    &mut asset_id,
+                                    levels,
+                                    delete_enabled,
+                                    local_availability,
+                                );
+                            },
+                        );
                     });
                     if Some(asset_id) != selected_asset {
                         result.selected_asset = Some(asset_id);
