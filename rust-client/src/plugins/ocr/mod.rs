@@ -42,7 +42,6 @@ pub struct OcrPlugin {
     pub event_sink: OcrTranslationSink,
     pub state: OcrOverlayState,
     owner: Option<PluginSessionOwner>,
-    conversation: Option<String>,
     recognizing: bool,
     translating: bool,
     capture_error: Option<String>,
@@ -52,7 +51,6 @@ pub struct OcrPlugin {
 impl OcrPlugin {
     pub fn clear(&mut self) {
         self.owner = None;
-        self.conversation = None;
         self.recognizing = false;
         self.translating = false;
         self.capture_error = None;
@@ -104,17 +102,13 @@ impl OcrPlugin {
         if self.state.source.is_empty() {
             return None;
         }
-        let conversation = self
-            .conversation
-            .get_or_insert_with(|| uuid::Uuid::new_v4().to_string());
         let owner = PluginSessionOwner::new(
             super::PluginId::OCR.as_str(),
             uuid::Uuid::new_v4().to_string(),
             "Screen Translation",
             "Screen Translation",
             "Translating screen text",
-        )
-        .in_conversation(conversation.clone());
+        );
         self.owner = Some(owner.clone());
         self.translating = true;
         self.refresh_status();

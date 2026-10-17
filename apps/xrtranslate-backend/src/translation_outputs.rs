@@ -11,7 +11,7 @@ use xrtranslate_protocol::{AdditionalTranslation, InferenceWorkload};
 
 use crate::{
     PipelineGeneration, align_translation_contexts,
-    conversation_context::LogicalTurnRecord,
+    conversation_context::{ContextBinding, completed_turn, context_evidence},
     pipeline::{InferenceFailure, NativeInference, RecognizedOutput, TranslationOutput},
     prompt_context::prompt_context_for_segment,
     scheduler::InferenceScheduler,
@@ -36,17 +36,18 @@ impl Drop for AdditionalOutputScope {
 }
 
 pub(crate) struct AdditionalTurn {
-    session: CorpusSessionClient,
-    context_id: u64,
+    binding: ContextBinding,
+    memory_turn_id: String,
+    revision: u64,
     target: String,
-    contexts: Vec<xr_corpus_protocol::SegmentContext>,
-    segments: Vec<TranslationSegmentPair>,
+    segments: Vec<AdditionalSegment>,
 }
 
 #[derive(Clone)]
 pub(crate) struct AdditionalSegment {
     pub(crate) target: String,
     context: xr_corpus_protocol::SegmentContext,
+    prompt: TranslationPromptContext,
     segment: TranslationSegmentPair,
 }
 
@@ -72,6 +73,9 @@ impl AdditionalOutputScope {
         budgets: ContextBudgets,
         turn_id: &str,
         speaker_id: &str,
+        binding: &ContextBinding,
+        memory_turn_id: &str,
+        revision: u64,
     ) -> Result<Option<AdditionalTurn>, String> {
         let Some(target) = target else {
             self.close().await;
@@ -102,6 +106,12 @@ impl AdditionalOutputScope {
                 });
             }
         }
+        let task_reference = binding.snapshot(
+            memory_turn_id,
+            speaker_id,
+            &recognized.source_language,
+            target,
+        );
         let session = &mut self.active.as_mut().expect("prepared additional scope").2;
         let asr = session
             .prepare_asr(&PrepareAsrRequest {
@@ -115,7 +125,7 @@ impl AdditionalOutputScope {
             .prepare_translation(&PrepareTranslationRequest {
                 asr_context_id: asr.context_id,
                 turn_id: Some(turn_id.into()),
-                speaker_id: speaker_id.into(),
+                context_evidence: context_evidence(&task_reference),
                 source_language: recognized.source_language.clone(),
                 target_language: target.into(),
                 recognized_text: recognized.source_text.clone(),
@@ -128,49 +138,49 @@ impl AdditionalOutputScope {
             })
             .await
             .map_err(|error| error.to_string())?;
+        let segments = align_translation_contexts(&recognized.segments, &context.segments)
+            .into_iter()
+            .zip(recognized.segments.iter().cloned())
+            .enumerate()
+            .map(|(index, (context, segment))| AdditionalSegment {
+                target: target.to_owned(),
+                prompt: prompt_context_for_segment(
+                    &recognized.source_language,
+                    target,
+                    &context,
+                    &task_reference,
+                    &recognized.segments,
+                    index,
+                    budgets.translation_tokens,
+                ),
+                context,
+                segment,
+            })
+            .collect();
         Ok(Some(AdditionalTurn {
-            session: session.clone(),
-            context_id: context.context_id,
-            target: target.into(),
-            contexts: align_translation_contexts(&recognized.segments, &context.segments),
-            segments: recognized.segments.clone(),
+            binding: binding.clone(),
+            memory_turn_id: memory_turn_id.to_owned(),
+            revision,
+            target: target.to_owned(),
+            segments,
         }))
     }
 }
 
 impl AdditionalTurn {
     pub(crate) fn segment(&self, index: usize) -> Option<AdditionalSegment> {
-        self.contexts
-            .get(index)
-            .cloned()
-            .zip(self.segments.get(index).cloned())
-            .map(|(context, segment)| AdditionalSegment {
-                target: self.target.clone(),
-                context,
-                segment,
-            })
+        self.segments.get(index).cloned()
     }
 
-    pub(crate) async fn record(
-        &self,
-        turn_id: String,
-        speaker_id: String,
-        source: &str,
-        pairs: &[(String, String)],
-    ) {
-        if let Some(request) = (LogicalTurnRecord {
-            context_id: self.context_id.clone(),
-            turn_id,
+    pub(crate) fn record(&self, speaker_id: String, source: &str, pairs: &[(String, String)]) {
+        if let Some(turn) = completed_turn(
+            self.memory_turn_id.clone(),
             speaker_id,
-            source_language: source,
-            target_language: &self.target,
-            completed_pairs: pairs,
-        })
-        .into_request()
-        {
-            if let Err(error) = self.session.record_translation(&request).await {
-                tracing::warn!(%error, "could not record independent additional translation context");
-            }
+            source,
+            &self.target,
+            pairs,
+        ) {
+            self.binding.record(turn, self.revision);
         }
     }
 }
@@ -228,8 +238,7 @@ where
         let mut output = if source == additional.target {
             NativeInference::recognition_output(&independent_segment, source)
         } else {
-            let mut prompt =
-                prompt_context_for_segment(source, &additional.target, &additional.context);
+            let mut prompt = additional.prompt;
             prompt.mode = context.mode;
             let _permit = scheduler.acquire_translation(workload).await;
             inference

@@ -14,6 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 use xrtranslate_engine::language::{LanguageCapabilities, LanguageMode, LanguageSelection};
+use xrtranslate_prompt::TaskContext;
 use xrtranslate_protocol::PromptGraphSet;
 
 pub(crate) fn select_languages_with_options(
@@ -69,6 +70,7 @@ struct TextTask {
     scope: Arc<ChannelScope>,
     pending: Option<String>,
     languages: LanguageSelection,
+    context: TaskContext,
     connection: TextConnection,
     started: Instant,
     segments: BTreeMap<u32, String>,
@@ -77,22 +79,45 @@ struct TextTask {
 }
 
 impl TextTask {
-    fn same_conversation(&self, other: &Self) -> bool {
+    fn compatible_connection(&self, other: &Self) -> bool {
         let pair = |mode| match mode {
             LanguageMode::Fixed { source, target } => Some([source, target]),
             LanguageMode::Bidirectional(pair) => Some(pair),
             _ => None,
         };
-        // Text routing resolves each input before submission. Reversing the
-        // same language pair must retain the conversation and its Corpus history.
+        // A conversation transport keeps its explicit context scope alive.
+        // Snapshot requests can share a transport without sharing their facts.
         let same_languages = self.languages == other.languages
             || (self.languages.additional_target == other.languages.additional_target
                 && pair(self.languages.mode)
                     .zip(pair(other.languages.mode))
                     .is_some_and(|(left, right)| left == right || left == [right[1], right[0]]));
-        self.scope.owner.same_conversation(&other.scope.owner)
-            && same_languages
+        let compatible_context = self.same_conversation(other)
+            || matches!(
+                (&self.context, &other.context),
+                (TaskContext::Snapshot { .. }, TaskContext::Snapshot { .. })
+            );
+        same_languages
+            && compatible_context
             && self.scope.publish_to_host_outputs == other.scope.publish_to_host_outputs
+    }
+
+    fn same_conversation(&self, other: &Self) -> bool {
+        matches!((&self.context, &other.context), (
+            TaskContext::Conversation { scope: left, .. },
+            TaskContext::Conversation { scope: right, .. }
+        ) if left == right)
+    }
+
+    fn precedes_conversation(&self, other: &Self) -> bool {
+        self.same_conversation(other)
+            && (!self.terminal
+                || (self.connection.session.is_some()
+                    && (!self.scope.finished.load(Ordering::Acquire) || !self.connection.drained)))
+    }
+
+    fn is_idle(&self) -> bool {
+        self.terminal && self.scope.finished.load(Ordering::Acquire) && self.connection.drained
     }
 
     fn send_pending(&mut self) -> Result<(), String> {
@@ -102,7 +127,7 @@ impl TextTask {
                 .session
                 .as_ref()
                 .ok_or("Text session is unavailable")?
-                .translate_text(text, Some(source), Some(destination))?;
+                .translate_text(text, Some(source), Some(destination), self.context.clone())?;
             self.pending = None;
             self.connection.drained = false;
             self.started = Instant::now();
@@ -235,45 +260,52 @@ impl TextTranslation {
     fn reuse_connections(&mut self) {
         for index in 0..self.tasks.len() {
             let task = &self.tasks[index];
-            if task.terminal || task.connection.session.is_some() {
+            if task.terminal
+                || task.connection.session.is_some()
+                || self.tasks[..index]
+                    .iter()
+                    .any(|previous| previous.precedes_conversation(task))
+            {
                 continue;
             }
-            let Some(previous) = self.tasks[..index]
-                .iter()
-                .position(|previous| previous.same_conversation(task))
-            else {
+            let Some(previous) = self.tasks[..index].iter().position(|previous| {
+                previous.compatible_connection(task)
+                    && previous.is_idle()
+                    && previous.connection.session.is_some()
+            }) else {
                 continue;
             };
             let (earlier, waiting) = self.tasks.split_at_mut(index);
             let previous = &mut earlier[previous];
             let task = &mut waiting[0];
-            if previous.terminal
-                && previous.scope.finished.load(Ordering::Acquire)
-                && previous.connection.drained
-                && previous.connection.session.is_some()
-            {
-                std::mem::swap(&mut previous.connection, &mut task.connection);
-                task.scope.stream_id.store(
-                    task.connection.session.as_ref().unwrap().stream_id(),
-                    Ordering::Release,
-                );
-                let _ = task.connection.tx.send(SessionEvent::Connected);
-                if let Err(error) = task.send_pending() {
-                    let _ = task.connection.tx.send(SessionEvent::Error(error));
-                }
+            std::mem::swap(&mut previous.connection, &mut task.connection);
+            task.scope.stream_id.store(
+                task.connection.session.as_ref().unwrap().stream_id(),
+                Ordering::Release,
+            );
+            let _ = task.connection.tx.send(SessionEvent::Connected);
+            if let Err(error) = task.send_pending() {
+                let _ = task.connection.tx.send(SessionEvent::Error(error));
             }
         }
         self.retire_finished();
-        // Keep a small bounded cache of conversations, most recently used last.
-        let mut idle = 0;
-        for index in (0..self.tasks.len()).rev() {
-            let task = &self.tasks[index];
-            if task.terminal && !task.scope.accepts_events() {
-                idle += 1;
-                if idle > 8 {
-                    self.tasks.remove(index);
+        // Discard old snapshot transports before evicting conversation bindings.
+        let mut excess = self
+            .tasks
+            .iter()
+            .filter(|task| task.is_idle())
+            .count()
+            .saturating_sub(8);
+        for snapshots_only in [true, false] {
+            self.tasks.retain(|task| {
+                let discard = excess > 0
+                    && task.is_idle()
+                    && (!snapshots_only || matches!(task.context, TaskContext::Snapshot { .. }));
+                if discard {
+                    excess -= 1;
                 }
-            }
+                !discard
+            });
         }
     }
 
@@ -283,7 +315,7 @@ impl TextTranslation {
             && task.connection.session.is_none()
             && !self.tasks[..index]
                 .iter()
-                .any(|previous| previous.same_conversation(task))
+                .any(|previous| previous.precedes_conversation(task))
     }
 
     /// Each accepted request captures its owner and language pair permanently.
@@ -317,6 +349,7 @@ impl TextTranslation {
             scope,
             pending: Some(text),
             languages: task.languages,
+            context: task.context,
             connection: TextConnection::default(),
             started: Instant::now(),
             segments: BTreeMap::new(),
@@ -392,11 +425,7 @@ impl TextTranslation {
                         let session = network::start_text_session(
                             task.connection.tx.clone(),
                             SessionConfig {
-                                conversation_id: task
-                                    .scope
-                                    .owner
-                                    .is_host()
-                                    .then(crate::translation_service::host_conversation_id),
+                                context: task.context.clone(),
                                 server_url: server_url.to_owned(),
                                 languages: task.languages,
                                 external_audio_gate: ExternalAudioGate::default(),

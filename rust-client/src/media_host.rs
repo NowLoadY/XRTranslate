@@ -81,6 +81,7 @@ impl XRTranslateApp {
                     TranslationTask {
                         languages,
                         plugin: self.media_plugin.translation_session_binding(),
+                        context: self.media_plugin.translation_context(),
                         input,
                         profiles: Vec::new(),
                     },

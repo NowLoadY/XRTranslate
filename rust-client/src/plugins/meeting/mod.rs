@@ -129,6 +129,61 @@ impl MeetingPlugin {
         }
     }
 
+    pub(crate) fn translation_context(&self) -> xrtranslate_prompt::TaskContext {
+        use xrtranslate_prompt::{ContextFacts, PromptTurn, TaskContext};
+        let Ok(active) = self.controller.active_capture.lock() else {
+            return TaskContext::default();
+        };
+        let Some(active) = active.as_ref() else {
+            return TaskContext::default();
+        };
+        let scope = format!(
+            "meeting:{}:{}",
+            active.meeting_id, active.recognition_run_id
+        );
+        let Some(bundle) = self.controller.bundle.as_ref().filter(|bundle| {
+            bundle.meeting.id == active.meeting_id
+                && !bundle.meeting.source_language.is_empty()
+                && bundle.meeting.source_language != "auto"
+                && !bundle.meeting.target_language.is_empty()
+                && bundle.meeting.target_language != "auto"
+                && !bundle.meeting.target_language.contains(',')
+        }) else {
+            return TaskContext::conversation(scope);
+        };
+        let mut recent_turns: Vec<_> = bundle
+            .segments
+            .iter()
+            .rev()
+            .filter_map(|segment| {
+                let translated = segment.translated_text.as_deref()?.trim();
+                if !segment.is_final
+                    || translated.is_empty()
+                    || segment.original_text.trim().is_empty()
+                {
+                    return None;
+                }
+                Some(PromptTurn {
+                    turn_id: Some(segment.id.clone()),
+                    speaker_id: segment.canonical_speaker_id.clone().unwrap_or_default(),
+                    source_language: bundle.meeting.source_language.clone(),
+                    target_language: bundle.meeting.target_language.clone(),
+                    source_text: segment.original_text.clone(),
+                    translated_text: translated.to_owned(),
+                })
+            })
+            .take(8)
+            .collect();
+        recent_turns.reverse();
+        TaskContext::Conversation {
+            scope,
+            seed: ContextFacts {
+                recent_turns,
+                surrounding_source: None,
+            },
+        }
+    }
+
     /// A busy plugin cannot be disabled without first completing or cancelling
     /// its active work and durably checkpointing owned data.
     pub fn is_busy(&self) -> bool {

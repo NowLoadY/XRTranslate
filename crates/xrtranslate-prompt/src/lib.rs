@@ -13,7 +13,7 @@ mod template;
 mod translation_style;
 
 pub use context::{
-    AsrPromptContext, PromptTurn, SurroundingSource, TranslationPromptBlock,
+    AsrPromptContext, ContextFacts, PromptTurn, SurroundingSource, TaskContext, TranslationPromptBlock,
     TranslationPromptContext,
 };
 pub use execution::{

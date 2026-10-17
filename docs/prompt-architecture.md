@@ -10,15 +10,17 @@ service and model names do not select graph pages.
 
 The graph exposes chat messages and translation-instruction delivery paths, plus
 the existing recognition-mode branches. Both translation paths share the style
-node. Fixed bilingual models retain their training template and do not advertise
-style support. Message wording, context blocks, roles, and ordering remain owned
+and context nodes. Fixed bilingual models retain their training template and do
+not advertise style support. Message wording, context blocks, roles, and ordering remain owned
 by the graph, with transport-only conversions owned by the connector.
 
 ## Ownership
 
 | Owner | Responsibility |
 |---|---|
-| XR Corpus and backend | Structured context, terminology, and recognition facts |
+| Task owner | Context selection, conversation scope, and task lifetime |
+| Backend context | Bounded conversation memory, ordering, and request snapshots |
+| XR Corpus | Terminology, lexical retrieval, and recognition vocabulary |
 | `xrtranslate-prompt` | Graph schema, validation, built-in graphs, and deterministic rendering into ordered messages |
 | Prompt Studio | Editing, selection, persistence, and display of execution traces |
 | Inference profiles and adapters | Delivery target, sampling, transport conversion, and output normalization |
@@ -49,16 +51,24 @@ Translation context follows task and language ownership. Stateless ask requests
 use the configured translation adapter without joining conversation history;
 the calling feature supplies the request's purpose and necessary input facts.
 
-The translation center's microphone, system audio, and text connections opt into
-one client conversation, including both capture mode. XR Corpus shares only
-their bounded bilingual history; recognition evidence, topic activation, and
-request snapshots remain per connection. Input sources label both the current
-speaker and historical turns. Connection-scoped turn IDs prevent collisions,
-and observation order survives asynchronous completion and streaming revisions.
-The shared history uses the existing translation history, character, and model
-token limits. Plugin tasks and additional target outputs retain their own
-contexts; unrelated clients do not join the host conversation. Shared history
-expires when its last Corpus session is closed or expires.
+Each translation task supplies a `TaskContext`: a complete snapshot of reference
+facts, or a conversation scope with initial facts. Owners select relevant
+completed translations and surrounding source text. A snapshot has no implicit
+history; conversation memory is held by the backend for the owner's scope.
+Starting a new document, media job, or independent capture gives it fresh context.
+
+Microphone, system audio, and text may explicitly share a conversation. Input
+sources label current and historical speakers. Existing turn identifiers and
+observation order distinguish asynchronous results and streaming revisions;
+only accepted translations enter completed history. Previous revisions of the
+current input remain separate from completed turns. Additional target languages
+retain their own translated history.
+
+Context facts enter the graph through shared runtime values, independently of
+style and model delivery. The backend applies character and model token budgets,
+selects supported reference capabilities, and combines task facts with retrieved
+terminology. Plugins do not maintain model-specific prompt variants. Optional
+context removal during recovery affects the request, not the owner's memory.
 
 ## Execution and validation
 

@@ -209,18 +209,20 @@ fn translate_request(
         "Translation",
         "Translation",
         "Translating…",
-    )
-    .in_conversation(conversation);
+    );
     let session_owner = TranslationSessionOwner::Plugin(owner.clone());
     translator.update_prompts(graphs.clone());
-    if let Err(error) = translator.submit(TranslationTask::text(
-        text,
-        languages,
-        Some(PluginSessionBinding::text(
-            owner,
-            SessionOutputPolicy::PluginOnly,
-        )),
-    )) {
+    if let Err(error) = translator.submit(
+        TranslationTask::text(
+            text,
+            languages,
+            Some(PluginSessionBinding::text(
+                owner,
+                SessionOutputPolicy::PluginOnly,
+            )),
+        )
+        .with_context(xrtranslate_prompt::TaskContext::conversation(conversation)),
+    ) {
         log::warn!(
             "Selected-text request {id} was rejected: {}",
             error.replace(&diagnostic_input, "[selected text]")
@@ -330,7 +332,7 @@ pub extern "system" fn Java_org_xrtranslate_app_textactions_TextTranslationServi
 impl crate::XRTranslateApp {
     pub(crate) fn poll_android_text_actions(&mut self, ctx: &eframe::egui::Context) {
         if take_open_translation() {
-            self.navigation.page = crate::ui::Page::Translation;
+            self.navigation.open(crate::ui::Page::Translation);
             self.fullscreen_history = false;
             ctx.request_repaint();
         }

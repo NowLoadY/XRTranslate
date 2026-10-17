@@ -50,7 +50,9 @@ use xrtranslate_supervisor::{
 use xrtranslate_vad::{FRAME_SAMPLES, SAMPLE_RATE_HZ, Utterance, UtteranceEndReason};
 
 use crate::{
-    conversation_context::LogicalTurnRecord,
+    conversation_context::{
+        ContextBinding, ContextRegistry, RecognitionEvidence, completed_turn, context_evidence,
+    },
     language::AdaptiveLanguageRoute,
     pipeline::{
         InferenceFailure, LiveUtterance, NativeInference, NativePipeline, PipelineEvent,
@@ -158,6 +160,7 @@ struct UtteranceJob {
 
 struct TextJob {
     text: String,
+    context: ContextBinding,
     generation: PipelineGeneration,
     turn_id: String,
     topic_turn_id: String,
@@ -452,6 +455,7 @@ struct BackendState {
     config: AppConfig,
     model_plan: Arc<NativeProviderPlan>,
     corpus_client: CorpusClient,
+    contexts: ContextRegistry,
     project_root: PathBuf,
     onnx_runtime: Arc<tokio::sync::OnceCell<()>>,
     audio_runtime: Arc<tokio::sync::OnceCell<Vec<LlamaServerProcess>>>,
@@ -534,6 +538,7 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
         config,
         model_plan,
         corpus_client,
+        contexts: ContextRegistry::default(),
         project_root,
         onnx_runtime: Arc::new(tokio::sync::OnceCell::new()),
         audio_runtime: Arc::new(tokio::sync::OnceCell::new()),
@@ -632,8 +637,6 @@ struct SessionOptions {
     #[serde(default)]
     text_only: bool,
     #[serde(default)]
-    conversation_id: Option<String>,
-    #[serde(default)]
     input_source: String,
 }
 
@@ -647,10 +650,12 @@ async fn websocket(
 
 async fn serve_session(socket: WebSocket, state: BackendState, options: SessionOptions) {
     let text_only = options.text_only;
-    let corpus_options = xr_corpus_protocol::CreateSessionRequest {
-        conversation_id: options.conversation_id,
-        input_source: options.input_source,
+    let input_source = if options.input_source.is_empty() {
+        if text_only { "text" } else { "microphone" }.to_owned()
+    } else {
+        options.input_source
     };
+    let (task_context_sender, task_context_receiver) = watch::channel(ContextBinding::default());
     let session_id = state.next_session_id.fetch_add(1, Ordering::Relaxed);
     let mut session = match SessionAdapter::new(
         &state.config.translation.source_lang,
@@ -733,7 +738,9 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
         result_sender,
         generation_receiver.clone(),
         state.corpus_client.clone(),
-        corpus_options,
+        task_context_receiver,
+        format!("session-{session_id}"),
+        input_source,
         state.inference_scheduler.clone(),
         Arc::clone(&speaker_recognition_enabled),
         Arc::clone(&speaker_state_revision),
@@ -998,6 +1005,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                             sample_rate,
                             prompt_graphs: graphs,
                             translation_options,
+                            context,
                         })) => {
                             if let Some(graphs) = graphs {
                                 if let Err(error) = validate_prompt_graph_set(&graphs) {
@@ -1037,6 +1045,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                                 if send_error(&outbound_sender, error).await.is_err() { break; }
                                 continue;
                             }
+                            task_context_sender.send_replace(state.contexts.bind(context));
                             session.set_translation_options(translation_options);
                             audio_route_valid = true;
                             if let Some(pipeline) = &mut pipeline { pipeline.reset(); }
@@ -1277,6 +1286,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                             target_lang,
                             stream_id: _,
                             translation_options,
+                            context,
                         })) => {
                             let trimmed = text.trim();
                             if !trimmed.is_empty() && input_state != SessionInputState::Draining {
@@ -1305,8 +1315,11 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                                 let turn_id = format!("text-{revision}");
                                 next_utterance_sequence = next_utterance_sequence.wrapping_add(1);
                                 let topic_turn_id = turn_id.clone();
+                                let context = state.contexts.bind(context);
+                                task_context_sender.send_replace(context.clone());
                                 let job = TextJob {
                                     text: trimmed.to_string(),
+                                    context,
                                     generation,
                                     turn_id,
                                     topic_turn_id,
@@ -1407,6 +1420,8 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
     queued_inference_jobs.clear();
     job_sender.take();
     if !graceful_shutdown {
+        generation.audio_epoch.advance();
+        generation_sender.send_replace(generation);
         worker.abort();
     }
     let _ = worker.await;
@@ -1791,11 +1806,7 @@ fn queue_pipeline_drain(
     reason: DrainReason,
     next_utterance_sequence: &mut u64,
 ) -> Result<(), String> {
-    let flush_error = match pipeline
-        .as_mut()
-        .map(NativePipeline::flush)
-        .transpose()
-    {
+    let flush_error = match pipeline.as_mut().map(NativePipeline::flush).transpose() {
         Ok(Some(utterances)) => {
             enqueue_utterances(
                 pending,
@@ -1894,7 +1905,9 @@ async fn run_inference_worker(
     events: mpsc::Sender<InferenceEvent>,
     mut generation: watch::Receiver<PipelineGeneration>,
     corpus_client: CorpusClient,
-    corpus_options: xr_corpus_protocol::CreateSessionRequest,
+    task_context: watch::Receiver<ContextBinding>,
+    namespace: String,
+    input_source: String,
     scheduler: InferenceScheduler,
     speaker_recognition_enabled: Arc<AtomicBool>,
     speaker_state_revision: Arc<AtomicU64>,
@@ -1902,6 +1915,7 @@ async fn run_inference_worker(
 ) {
     let mut previous_transcript: Option<(PipelineGeneration, String)> = None;
     let mut recognition_bias = asr_bias::RecognitionBias::default();
+    let mut recognition_evidence = RecognitionEvidence::default();
     let mut sentence_assembler = sentence_assembly::SentenceAssembler::default();
     let mut prepared_work = VecDeque::new();
     let mut active_revisable_transcript: Option<RevisableRecognition> = None;
@@ -1910,10 +1924,7 @@ async fn run_inference_worker(
     let mut diarizer_generation: Option<PipelineGeneration> = Some(*generation.borrow());
     let mut speaker_revision_seen = 0;
     let mut speaker_load_failed = false;
-    let mut corpus_session = match corpus_client
-        .create_session_with_options(corpus_options.clone())
-        .await
-    {
+    let mut corpus_session = match corpus_client.create_session().await {
         Ok(session) => session,
         Err(message) => {
             let current_generation = *generation.borrow();
@@ -2116,11 +2127,24 @@ async fn run_inference_worker(
                     route_switched: None,
                     prompt_trace: None,
                 };
+                let context_binding = job.context.clone();
+                let memory_turn_id = format!("{namespace}/{}", job.topic_turn_id);
+                context_binding.observe(&memory_turn_id);
+                let history_speaker = format!(
+                    "{input_source}/{}",
+                    job.speaker_id.as_deref().unwrap_or_default()
+                );
+                let task_reference = context_binding.snapshot(
+                    &memory_turn_id,
+                    &history_speaker,
+                    &recognized.source_language,
+                    &recognized.target_language,
+                );
                 let translation_context = match corpus_session
                     .prepare_translation(&PrepareTranslationRequest {
                         asr_context_id: asr_context.context_id,
                         turn_id: Some(job.topic_turn_id.clone()),
-                        speaker_id: job.speaker_id.clone().unwrap_or_default(),
+                        context_evidence: context_evidence(&task_reference),
                         source_language: recognized.source_language.clone(),
                         target_language: recognized.target_language.clone(),
                         recognized_text: recognized.source_text.clone(),
@@ -2185,7 +2209,10 @@ async fn run_inference_worker(
                         &additional_source,
                         context_budgets,
                         &job.topic_turn_id,
-                        job.speaker_id.as_deref().unwrap_or_default(),
+                        &history_speaker,
+                        &context_binding,
+                        &memory_turn_id,
+                        job.revision,
                     )
                     .await
                 {
@@ -2218,25 +2245,40 @@ async fn run_inference_worker(
                 let workload = job.workload;
                 let turn_started_at = job.enqueued_at;
                 let queue_elapsed = job_queue_elapsed;
-                let context_id = translation_context.context_id;
-                let corpus_session = corpus_session.clone();
+                let prompt_contexts = segments
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| {
+                        prompt_context_for_segment(
+                            &source_language,
+                            &target_language,
+                            &translation_context_segments[index],
+                            &task_reference,
+                            &segments,
+                            index,
+                            translation_tokens,
+                        )
+                    })
+                    .collect::<Vec<_>>();
                 let inference = inference.clone();
                 let scheduler = scheduler.clone();
-                let logical_turn_id = job.topic_turn_id.clone();
-                let history_speaker_id = job.speaker_id.unwrap_or_default();
+                let logical_turn_id = memory_turn_id;
+                let history_speaker_id = history_speaker;
                 let history_source_language = source_language.clone();
                 let history_target_language = target_language.clone();
                 let prompt_graph_for_turn = prompt_graphs.read().await.graph.clone();
                 let turn_id_for_end = job.turn_id.clone();
+                let asr_revision = job.revision;
                 let translation_events = events.clone();
                 pending_translations.push(tokio::spawn(async move {
                     let translations = futures_util::stream::iter(
                         segments
                             .into_iter()
                             .zip(segment_contexts)
-                            .zip(translation_context.segments),
+                            .zip(translation_context_segments)
+                            .zip(prompt_contexts),
                     )
-                    .map(|((segment, segment_context), corpus_context)| {
+                    .map(|(((segment, segment_context), corpus_context), prompt_context)| {
                         let inference = inference.clone();
                         let scheduler = scheduler.clone();
                         let source_language = source_language.clone();
@@ -2252,11 +2294,6 @@ async fn run_inference_worker(
                         let additional_segment = additional_turn.as_ref().and_then(|turn| turn.segment(segment_context.segment_index.saturating_sub(1) as usize));
                         async move {
                             if *request_generation.borrow_and_update() != event_generation { return None; }
-                            let prompt_context = prompt_context_for_segment(
-                                &source_language,
-                                &target_language,
-                                &corpus_context,
-                            );
                             let activity = if asr_only { None } else { TranslationActivityGuard::begin(&preview_events, event_generation).await };
                             let output = tokio::select! {
                                 output = translation_outputs::translate(&inference, &scheduler, workload,
@@ -2346,30 +2383,27 @@ async fn run_inference_worker(
                             return;
                         }
                     }
-                    if !cancelled && let Some(additional) = &additional_turn {
-                        additional
-                            .record(
-                                logical_turn_id.clone(),
-                                history_speaker_id.clone(),
-                                &history_source_language,
-                                &additional_pairs,
-                            )
-                            .await;
+                    if !cancelled
+                        && *translation_generation.borrow() == event_generation
+                        && let Some(additional) = &additional_turn
+                    {
+                        additional.record(
+                            history_speaker_id.clone(),
+                            &history_source_language,
+                            &additional_pairs,
+                        );
                     }
                     if !cancelled
-                        && let Some(request) = (LogicalTurnRecord {
-                            context_id,
-                            turn_id: logical_turn_id,
-                            speaker_id: history_speaker_id,
-                            source_language: &history_source_language,
-                            target_language: &history_target_language,
-                            completed_pairs: &completed_pairs,
-                        })
-                        .into_request()
+                        && *translation_generation.borrow() == event_generation
+                        && let Some(turn) = completed_turn(
+                            logical_turn_id,
+                            history_speaker_id,
+                            &history_source_language,
+                            &history_target_language,
+                            &completed_pairs,
+                        )
                     {
-                        if let Err(message) = corpus_session.record_translation(&request).await {
-                            warn!(%message, "could not record XR Corpus translation context");
-                        }
+                        context_binding.record(turn, asr_revision);
                     }
                     let _ = translation_events
                         .send(InferenceEvent::StreamEnded {
@@ -2461,13 +2495,11 @@ async fn run_inference_worker(
         }
         if diarizer_generation != Some(job.generation) {
             adaptive_route = AdaptiveLanguageRoute::default();
+            recognition_evidence = RecognitionEvidence::default();
             if let Some(diarizer) = &mut diarizer {
                 diarizer.reset();
             }
-            match corpus_client
-                .create_session_with_options(corpus_options.clone())
-                .await
-            {
+            match corpus_client.create_session().await {
                 Ok(session) => {
                     let old_session = std::mem::replace(&mut corpus_session, session);
                     tokio::spawn(async move {
@@ -2648,7 +2680,7 @@ async fn run_inference_worker(
                         &mut adaptive_route,
                         &prompt_graph_for_revision,
                         prompt_context,
-                        &asr_context.echo_guard,
+                        &recognition_evidence.texts(),
                         streamed,
                     )
                     .await
@@ -2954,11 +2986,22 @@ async fn run_inference_worker(
         } else {
             job.turn_id.clone()
         };
+        let context_binding = task_context.borrow().clone();
+        let memory_turn_id = format!("{namespace}/{}", job.topic_turn_id);
+        context_binding.observe(&memory_turn_id);
+        let history_speaker = format!("{input_source}/{speaker_id}");
+        let task_reference = context_binding.snapshot(
+            &memory_turn_id,
+            &history_speaker,
+            &recognized.source_language,
+            &recognized.target_language,
+        );
+        recognition_evidence.record(&memory_turn_id, vec![recognized.source_text.clone()]);
         let translation_context = match corpus_session
             .prepare_translation(&PrepareTranslationRequest {
                 asr_context_id: asr_context.context_id,
                 turn_id: Some(job.topic_turn_id.clone()),
-                speaker_id: speaker_id.clone(),
+                context_evidence: context_evidence(&task_reference),
                 source_language: recognized.source_language.clone(),
                 target_language: recognized.target_language.clone(),
                 recognized_text: recognized.source_text.clone(),
@@ -3059,7 +3102,10 @@ async fn run_inference_worker(
                 &additional_source,
                 context_budgets,
                 &job.topic_turn_id,
-                &speaker_id,
+                &history_speaker,
+                &context_binding,
+                &memory_turn_id,
+                job.revision,
             )
             .await
         {
@@ -3092,12 +3138,26 @@ async fn run_inference_worker(
         let workload = job.workload;
         let turn_started_at = job.enqueued_at;
         let queue_elapsed = job_queue_elapsed;
-        let context_id = translation_context.context_id;
-        let corpus_session = corpus_session.clone();
+        let prompt_contexts = segments
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                prompt_context_for_segment(
+                    &source_language,
+                    &target_language,
+                    &translation_context_segments[index],
+                    &task_reference,
+                    &segments,
+                    index,
+                    translation_tokens,
+                )
+            })
+            .collect::<Vec<_>>();
+        let turn_evidence = recognition_evidence.clone();
         let inference = inference.clone();
         let scheduler = scheduler.clone();
-        let logical_turn_id = job.topic_turn_id.clone();
-        let history_speaker_id = speaker_id;
+        let logical_turn_id = memory_turn_id;
+        let history_speaker_id = history_speaker;
         let history_source_language = source_language.clone();
         let history_target_language = target_language.clone();
         // One immutable graph drives every provider page in this revision.
@@ -3117,9 +3177,10 @@ async fn run_inference_worker(
                 segments
                     .into_iter()
                     .zip(segment_contexts)
-                    .zip(translation_context_segments),
+                    .zip(translation_context_segments)
+                    .zip(prompt_contexts),
             )
-            .map(|((segment, mut segment_context), corpus_context)| {
+            .map(|(((segment, mut segment_context), corpus_context), mut prompt_context)| {
                 let inference = inference.clone();
                 let scheduler = scheduler.clone();
                 let source_language = source_language.clone();
@@ -3146,11 +3207,6 @@ async fn run_inference_worker(
                     segment_context.revisable = false;
                     segment_context.authoritative_snapshot = false;
                     let preview_context = segment_context.clone();
-                    let mut prompt_context = prompt_context_for_segment(
-                        &source_language,
-                        &target_language,
-                        &corpus_context,
-                    );
                     prompt_context.mode = prompt_mode_for_turn;
                     let cache_key = SentenceTranslationKey {
                         additional_target: additional_segment.as_ref().map(|segment| segment.target.clone()),
@@ -3341,30 +3397,31 @@ async fn run_inference_worker(
             // A newer revision records the complete sentence set; an older
             // task must not overwrite it with a prefix after finishing late.
             cancelled |= !sentence_readiness.is_current(asr_revision);
-            if !cancelled && let Some(additional) = &additional_turn {
-                additional
-                    .record(
-                        logical_turn_id.clone(),
-                        history_speaker_id.clone(),
-                        &history_source_language,
-                        &additional_pairs,
-                    )
-                    .await;
+            if !cancelled
+                && *translation_generation.borrow() == event_generation
+                && let Some(additional) = &additional_turn
+            {
+                additional.record(
+                    history_speaker_id.clone(),
+                    &history_source_language,
+                    &additional_pairs,
+                );
             }
             if !cancelled
-                && let Some(request) = (LogicalTurnRecord {
-                    context_id,
-                    turn_id: logical_turn_id,
-                    speaker_id: history_speaker_id,
-                    source_language: &history_source_language,
-                    target_language: &history_target_language,
-                    completed_pairs: &completed_pairs,
-                })
-                .into_request()
+                && *translation_generation.borrow() == event_generation
+                && let Some(turn) = completed_turn(
+                    logical_turn_id,
+                    history_speaker_id,
+                    &history_source_language,
+                    &history_target_language,
+                    &completed_pairs,
+                )
             {
-                if let Err(message) = corpus_session.record_translation(&request).await {
-                    warn!(%message, "could not record XR Corpus translation context");
-                }
+                turn_evidence.record(
+                    turn.turn_id.as_deref().unwrap_or_default(),
+                    vec![turn.source_text.clone(), turn.translated_text.clone()],
+                );
+                context_binding.record(turn, asr_revision);
             }
         }));
     }
@@ -3662,7 +3719,6 @@ fn align_translation_contexts(
                 .unwrap_or_else(|| CorpusSegmentContext {
                     corrected_text: segment.translation_text.clone(),
                     prompt_terms: Vec::new(),
-                    context_data: Default::default(),
                     source_corrections: Vec::new(),
                     activation_matches: Vec::new(),
                     context_matches: Vec::new(),

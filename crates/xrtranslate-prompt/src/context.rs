@@ -125,9 +125,54 @@ impl TranslationPromptContext {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Reference facts selected by the feature submitting a translation task.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextFacts {
+    #[serde(default)]
+    pub recent_turns: Vec<PromptTurn>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surrounding_source: Option<SurroundingSource>,
+}
+
+/// A task either supplies its complete context or joins its owner's conversation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TaskContext {
+    Snapshot {
+        #[serde(default)]
+        facts: ContextFacts,
+    },
+    Conversation {
+        scope: String,
+        #[serde(default)]
+        seed: ContextFacts,
+    },
+}
+
+impl Default for TaskContext {
+    fn default() -> Self {
+        Self::snapshot(ContextFacts::default())
+    }
+}
+
+impl TaskContext {
+    pub fn snapshot(facts: ContextFacts) -> Self {
+        Self::Snapshot { facts }
+    }
+
+    pub fn conversation(scope: impl Into<String>) -> Self {
+        Self::Conversation {
+            scope: scope.into(),
+            seed: ContextFacts::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptTurn {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    #[serde(default)]
     pub speaker_id: String,
     pub source_language: String,
     pub target_language: String,
@@ -135,8 +180,9 @@ pub struct PromptTurn {
     pub translated_text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurroundingSource {
+    #[serde(default)]
     pub speaker_id: String,
     pub source_language: String,
     pub before: String,
@@ -228,7 +274,7 @@ pub(crate) fn render_block(
         TranslationPromptBlock::PreviousRevision => {
             context.previous_revision.as_ref().map(|turn| {
                 format!(
-                    "## Previous Revision of Current Speech\n\n{}",
+                    "## Previous Revision of Current Input\n\n{}",
                     render_turn(turn)
                 )
             })
@@ -240,7 +286,7 @@ pub(crate) fn render_block(
             append_source_line(&mut lines, source, "After current input", &source.after);
             (!lines.is_empty()).then(|| {
                 format!(
-                    "## Current Utterance Context (context only; do not translate)\n\n{}",
+                    "## Surrounding Source (context only; do not translate)\n\n{}",
                     lines.join("\n")
                 )
             })

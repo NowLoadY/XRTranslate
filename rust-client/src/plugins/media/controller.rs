@@ -149,6 +149,23 @@ impl Default for MediaController {
 }
 
 impl MediaController {
+    #[cfg(target_os = "android")]
+    pub(crate) fn handle_back(&mut self, ctx: &eframe::egui::Context) -> Option<super::MediaAction> {
+        if self.fullscreen_mode {
+            self.fullscreen_mode = false;
+            ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Fullscreen(false));
+            return Some(super::MediaAction::None);
+        }
+        if self.subtitle_edit.take().is_some() {
+            return Some(super::MediaAction::None);
+        }
+        if self.route != MediaRoute::Library {
+            self.open_library();
+            return Some(super::MediaAction::StopTranslation);
+        }
+        None
+    }
+
     pub fn release_native_host(&mut self) {
         if self.native_host.is_none() {
             return;

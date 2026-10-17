@@ -44,7 +44,7 @@ fn default_schema_guide() -> String {
     "X-Translator Prompt Studio Graph Project Guide for AI / Humans:\n\
     1. NODES (nodes: Array):\n\
        - System Value Node: {'type': 'system_value', 'value': 'current_input' | 'source_language' | 'target_language' | 'recognition_context' | 'recognition_mode' | ...}\n\
-         * 'current_input': Real-time speech transcript sentence to be translated.\n\
+         * 'current_input': Current source text to be translated.\n\
          * 'source_language': Source language name (e.g. 'English', 'Japanese').\n\
          * 'target_language': Target language name (e.g. 'Chinese').\n\
          * 'recognition_context': ASR vocabulary and an optional transient phrase from preceding audio; never a translation instruction.\n\
@@ -53,8 +53,8 @@ fn default_schema_guide() -> String {
          * 'terminology': Renders '## Terminology\\n\\n<matched glossary rows>'\n\
          * 'recent_turns': Renders '## Recent Bilingual History\\n\\n<source/target dialogue turns>'\n\
          * 'language_order': Renders '## Language Order\\n\\n<order list>'\n\
-         * 'previous_revision': Renders '## Previous Revision of Current Speech\\n\\n<revision>'\n\
-         * 'surrounding_source': Renders '## Current Utterance Context (context only; do not translate)\\n\\n<lines>'\n\
+         * 'previous_revision': Renders '## Previous Revision of Current Input\\n\\n<revision>'\n\
+         * 'surrounding_source': Renders '## Surrounding Source (context only; do not translate)\\n\\n<lines>'\n\
          * 'custom_text': Renders '## Custom Reference Text\\n\\n<custom user text>'\n\
          * NOTE FOR AI DESIGNERS: Because each data block outputs its own '## Header', DO NOT add extra duplicate headers in Compose templates (e.g. write '{0}', not 'Terminology:\\n{0}').\n\
        - Bool Value Node: {'type': 'bool_value', 'value': true | false}. This is editor-owned data, not a hidden host predicate.\n\
@@ -126,6 +126,7 @@ impl PromptTemplateProfile {
         graph =
             PromptNodeGraph::unify_mode_graphs(graph, &PromptNodeGraph::builtin_pseudo_streaming());
         graph.upgrade_known_pseudo_streaming_prompts();
+        graph.upgrade_known_translation_input_prompts();
         graph.sync_text_switch_cases(&imported_graph);
         graph.remove_invalid_socket_links();
         graph.restore_translation_style_binding();
@@ -287,6 +288,7 @@ impl PromptTemplateLibrary {
                     }
                 }
                 profile.graph.upgrade_known_pseudo_streaming_prompts();
+                profile.graph.upgrade_known_translation_input_prompts();
                 profile.graph.sync_text_switch_cases(&stored_graph);
                 profile.graph.remove_invalid_socket_links();
                 profile.graph.restore_translation_style_binding();

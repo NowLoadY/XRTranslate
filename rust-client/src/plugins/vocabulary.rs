@@ -63,6 +63,22 @@ impl Default for Page {
     }
 }
 impl Page {
+    #[cfg(target_os = "android")]
+    pub(crate) fn handle_back(&mut self) -> bool {
+        if self.word_edit.is_some() || self.folder_edit.is_some() {
+            if self.pending.is_none() {
+                self.word_edit = None;
+                self.folder_edit = None;
+            }
+            return true;
+        }
+        if self.detail.is_some() {
+            self.back();
+            return true;
+        }
+        false
+    }
+
     pub fn view_state(&self) -> ViewState {
         ViewState {
             detail: self.detail.is_some(),

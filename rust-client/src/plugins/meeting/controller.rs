@@ -501,6 +501,19 @@ impl MeetingController {
         self.playback.pause();
     }
 
+    pub(crate) fn handle_back(&mut self) -> bool {
+        if self.route == MeetingRoute::Library {
+            return false;
+        }
+        if self.save_pending_edits() {
+            self.playback.unload();
+            self.search.clear();
+            self.refresh_library();
+            self.route = MeetingRoute::Library;
+        }
+        true
+    }
+
     /// Flush text drafts before leaving a meeting or exporting its records.
     pub fn save_pending_edits(&mut self) -> bool {
         let result = (|| -> Result<(), MeetingStoreError> {

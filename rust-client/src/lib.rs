@@ -110,7 +110,7 @@ use session_coordinator::{
     TranslationSessionPlugin,
 };
 use ui::{NavigationState, Page};
-use xrtranslate_prompt::{PromptExecutionTrace, PromptTarget, PromptTemplateLibrary};
+use xrtranslate_prompt::{PromptExecutionTrace, PromptTarget, PromptTemplateLibrary, TaskContext};
 use xrtranslate_protocol::PromptGraphSet;
 
 use session_coordinator::{TranslationInput, TranslationTask};
@@ -781,8 +781,8 @@ struct SharedSessionState {
     companion_work: ui::companion::TranslationWork,
     translation_enabled: bool,
     pending_route_change: Option<(String, String)>,
-    latest_asr_prompt_trace: Option<PromptExecutionTrace>,
-    latest_translation_prompt_trace: Option<PromptExecutionTrace>,
+    latest_asr_prompt_trace: Option<(TranslationSessionOwner, PromptExecutionTrace)>,
+    latest_translation_prompt_trace: Option<(TranslationSessionOwner, PromptExecutionTrace)>,
     retired_streams: Vec<u64>,
     microphone_clone_state: Option<xrtranslate_protocol::VoiceCloneState>,
     loopback_clone_state: Option<xrtranslate_protocol::VoiceCloneState>,
@@ -1209,6 +1209,23 @@ impl Default for XRTranslateApp {
                         continue;
                     }
                     let scoped_stream = scope.stream_id.load(Ordering::Acquire);
+                    match &event {
+                        SessionEvent::SourceSegment {
+                            prompt_trace: Some(trace),
+                            ..
+                        } => {
+                            state.latest_asr_prompt_trace =
+                                Some((scope.owner.clone(), trace.clone()));
+                        }
+                        SessionEvent::Translation {
+                            prompt_trace: Some(trace),
+                            ..
+                        } => {
+                            state.latest_translation_prompt_trace =
+                                Some((scope.owner.clone(), trace.clone()));
+                        }
+                        _ => {}
+                    }
                     let host_translation = matches!(
                         &event,
                         SessionEvent::Translation {
@@ -1388,7 +1405,7 @@ impl Default for XRTranslateApp {
                             continuous,
                             publish_to_host_outputs,
                             text,
-                            prompt_trace,
+                            prompt_trace: _,
                             activation_matches,
                             context_matches,
                             turn_id,
@@ -1410,7 +1427,6 @@ impl Default for XRTranslateApp {
                             if !publish_to_host_outputs {
                                 continue;
                             }
-                            state.latest_asr_prompt_trace = prompt_trace;
                             state.translation_previews.retain(|entry| {
                                 entry.stream_id != Some(stream_id)
                                     || entry.turn_id != turn_id
@@ -1590,7 +1606,7 @@ impl Default for XRTranslateApp {
                             timing,
                             boundary,
                             term_matches,
-                            prompt_trace,
+                            prompt_trace: _,
                             revisable,
                             overlap_ratio,
                             authoritative_snapshot,
@@ -1599,7 +1615,6 @@ impl Default for XRTranslateApp {
                             if !publish_to_host_outputs {
                                 continue;
                             }
-                            state.latest_translation_prompt_trace = prompt_trace;
                             state.translation_previews.retain(|entry| {
                                 !(entry.stream_id == Some(stream_id)
                                     && entry.turn_id == turn_id
@@ -2008,10 +2023,7 @@ impl Default for XRTranslateApp {
             background_settings: settings.background_settings,
             avatar_appearance: settings.avatar_appearance,
             background_image: ui::background::BackgroundImage::default(),
-            navigation: NavigationState {
-                collapsed: settings.sidebar_collapsed,
-                page: settings.active_page,
-            },
+            navigation: NavigationState::new(settings.active_page, settings.sidebar_collapsed),
             window_backdrop: window_backdrop::WindowBackdrop::default(),
             microphone_sync_enabled: settings.microphone_sync_enabled,
             floating_subtitles_enabled: settings.floating_subtitles_enabled,
@@ -2127,6 +2139,7 @@ impl XRTranslateApp {
         &mut self,
         languages: LanguageSelection,
         plugin: Option<&PluginSessionBinding>,
+        context: TaskContext,
         recognition: &RecognitionSettings,
         audio_source: CaptureSource,
         vad_threshold: f32,
@@ -2149,9 +2162,7 @@ impl XRTranslateApp {
         };
 
         SessionConfig {
-            conversation_id: plugin
-                .is_none()
-                .then(translation_service::host_conversation_id),
+            context,
             server_url: self.server_url.clone(),
             languages,
             external_audio_gate: if external_audio_gate && audio_source == CaptureSource::Microphone
@@ -2354,7 +2365,7 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn open_audio_studio(&mut self) {
-        self.navigation.page = Page::AudioStudio;
+        self.navigation.open(Page::AudioStudio);
         self.save_settings();
     }
 
@@ -3397,6 +3408,7 @@ impl XRTranslateApp {
         let config = self.session_config(
             task.languages,
             Some(&plugin),
+            task.context,
             &recognition,
             CaptureSource::SystemAudio,
             vad_threshold_for_background_noise(recognition.background_noise),
@@ -3466,7 +3478,7 @@ impl XRTranslateApp {
             PluginId::MEDIA => self.render_media_plugin_page(ui),
             PluginId::VR_OVERLAY => self.render_vr_overlay_plugin_page(ui),
             PluginId::OSC | PluginId::CHILLOUTVR_OSC => self.render_osc_plugin_page(id, ui),
-            _ => self.navigation.page = Page::Translation,
+            _ => self.navigation.open(Page::Translation),
         }
     }
 
@@ -4034,6 +4046,7 @@ impl XRTranslateApp {
             TranslationTask {
                 languages,
                 plugin: None,
+                context: TaskContext::conversation(translation_service::host_conversation_id()),
                 input: TranslationInput::Live(source),
                 profiles: Vec::new(),
             },
@@ -4608,6 +4621,7 @@ impl XRTranslateApp {
             TranslationTask {
                 languages,
                 plugin: self.meeting_plugin.translation_session_binding(),
+                context: self.meeting_plugin.translation_context(),
                 input,
                 profiles: Vec::new(),
             },
@@ -4644,6 +4658,7 @@ impl XRTranslateApp {
             let config = self.session_config(
                 task.languages,
                 task.plugin.as_ref(),
+                task.context.clone(),
                 &recognition,
                 *source,
                 vad_threshold_for_background_noise(recognition.background_noise),
@@ -5448,10 +5463,18 @@ impl XRTranslateApp {
                     self.asr_only,
                 )
             }) {
-            Ok(languages) => self.start_translation_task(
-                TranslationTask::text(trimmed.to_owned(), languages, plugin),
-                None,
-            ),
+            Ok(languages) => {
+                let context = if plugin.is_none() {
+                    TaskContext::conversation(translation_service::host_conversation_id())
+                } else {
+                    TaskContext::default()
+                };
+                self.start_translation_task(
+                    TranslationTask::text(trimmed.to_owned(), languages, plugin)
+                        .with_context(context),
+                    None,
+                )
+            }
             Err(error) => {
                 self.last_error = Some(error);
                 false
@@ -6074,6 +6097,8 @@ impl eframe::App for XRTranslateApp {
             self.notify_error("Could not access translation history.", error);
         }
         ui::layout::begin_frame(ui.ctx());
+        #[cfg(target_os = "android")]
+        self.handle_android_back(ui.ctx());
         self.poll_file_dialogs();
         self.poll_background_image(ui.ctx());
         #[cfg(target_os = "android")]
@@ -6110,7 +6135,7 @@ impl eframe::App for XRTranslateApp {
         let page_name = self.current_page_name();
         ui::automation::begin_frame(ui.ctx(), &page_name);
         if let Some(page) = ui::automation::take_pending_page() {
-            self.navigation.page = page;
+            self.navigation.open(page);
             self.first_run = false;
         }
         if let Some(step) = ui::automation::take_pending_onboarding_step() {
@@ -6122,10 +6147,10 @@ impl eframe::App for XRTranslateApp {
         if let Page::Plugin(id) = self.navigation.page
             && !self.plugin_enabled(id)
         {
-            self.navigation.page = Page::Translation;
+            self.navigation.open(Page::Translation);
         }
         if self.navigation.page == Page::TtsCenter && !self.service_config.tts_is_configured() {
-            self.navigation.page = Page::Translation;
+            self.navigation.open(Page::Translation);
         }
         if self.navigation.page != Page::PromptStudio || self.first_run {
             let actions = ui::pages::prompt_studio::leave_page(
@@ -6646,6 +6671,8 @@ pub fn run() -> eframe::Result<()> {
             android::install_clipboard(&cc.egui_ctx);
             #[cfg(target_os = "android")]
             android::ime::install(&cc.egui_ctx);
+            #[cfg(target_os = "android")]
+            android::install_back_handler(&cc.egui_ctx);
             ui::fonts::configure_multilingual_fonts(&cc.egui_ctx);
             ui::theme::apply_theme(&cc.egui_ctx);
             file_dialog::set_context(cc.egui_ctx.clone());

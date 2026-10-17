@@ -143,6 +143,7 @@ impl XRTranslateApp {
                     self.start_translation_task(
                         TranslationTask {
                             languages,
+                            context: plugins::avatar::translation_context(operation),
                             plugin: Some(binding),
                             input: TranslationInput::ExclusiveLive(self.capture_source),
                             profiles,

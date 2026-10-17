@@ -44,6 +44,19 @@ fn state_id() -> Id {
     Id::new("prompt_studio_page")
 }
 
+#[cfg(target_os = "android")]
+pub(crate) fn handle_back(
+    ctx: &egui::Context,
+    controller: &mut PromptStudioController,
+    library: &PromptTemplateLibrary,
+) -> Option<Vec<PromptStudioAction>> {
+    let editor_open = ctx.data(|data| {
+        data.get_temp::<PageState>(state_id())
+            .is_some_and(|state| state.editor_open)
+    });
+    editor_open.then(|| leave_page(ctx, controller, library))
+}
+
 pub(crate) fn leave_page(
     ctx: &egui::Context,
     controller: &mut PromptStudioController,

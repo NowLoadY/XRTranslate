@@ -332,10 +332,17 @@ pub(super) fn render_graph_editor(
     let runtime_trace = (snapshot.selected_id == snapshot.active_id && !controller.dirty)
         .then(|| controller.runtime_trace.clone())
         .flatten()
-        .filter(|trace| {
+        .filter(|(_, trace)| {
             trace.target == controller.active_target
                 && trace.graph_fingerprint == draft.graph.fingerprint()
         });
+    if let Some((owner, _)) = &runtime_trace {
+        ui.weak(format!(
+            "{} · {}",
+            tr(language, "LIVE OUTPUT"),
+            owner.display_name(language)
+        ));
+    }
     controller.overview_positions = if draft.read_only {
         compact_positions(&draft.graph, |node| controller.node_is_visible(node))
     } else {
@@ -548,7 +555,7 @@ pub(super) fn render_graph_editor(
             &mut draft,
             controller,
             editable,
-            runtime_trace.as_ref(),
+            runtime_trace.as_ref().map(|(_, trace)| trace),
             &error_target,
             language,
         );

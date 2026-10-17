@@ -1,7 +1,9 @@
 package org.xrtranslate.app;
 
 import android.os.Bundle;
+import android.view.KeyEvent;
 import android.view.WindowManager;
+import androidx.activity.OnBackPressedCallback;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
@@ -13,6 +15,7 @@ import org.xrtranslate.app.textactions.TranslationResults;
 public final class MainActivity extends GameActivity {
     static { System.loadLibrary("rust_client"); }
     private static native void openTranslation();
+    private static native void backRequested();
     private static native void keyboardInsetChanged(int bottom);
 
     @Override protected void onSetUpWindow() {
@@ -37,6 +40,17 @@ public final class MainActivity extends GameActivity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override public void handleOnBackPressed() {
+                WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(getWindow().getDecorView());
+                if (insets != null && insets.isVisible(WindowInsetsCompat.Type.ime())) {
+                    WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView())
+                        .hide(WindowInsetsCompat.Type.ime());
+                    return;
+                }
+                backRequested();
+            }
+        });
         updates.restore(state);
         acceptNavigation(getIntent());
         requestTranslationNotifications();
@@ -47,6 +61,23 @@ public final class MainActivity extends GameActivity {
             getWindow().setAttributes(lp);
         }
         applyImmersiveFullscreen();
+    }
+
+    @Override public boolean onKeyDown(int code, KeyEvent event) {
+        // Older Android dispatches Back as a key; keep it out of GameActivity's native queue.
+        if (android.os.Build.VERSION.SDK_INT < 33 && code == KeyEvent.KEYCODE_BACK) {
+            if (event.getRepeatCount() == 0) event.startTracking();
+            return true;
+        }
+        return super.onKeyDown(code, event);
+    }
+
+    @Override public boolean onKeyUp(int code, KeyEvent event) {
+        if (android.os.Build.VERSION.SDK_INT < 33 && code == KeyEvent.KEYCODE_BACK) {
+            if (event.isTracking() && !event.isCanceled()) getOnBackPressedDispatcher().onBackPressed();
+            return true;
+        }
+        return super.onKeyUp(code, event);
     }
 
     private void applyImmersiveFullscreen() {

@@ -1,4 +1,4 @@
-//! One authored cue at a time reuses the shared translator and conversation.
+//! Authored cues use their timeline neighbors as translation context.
 use super::MediaPlugin;
 use crate::session_coordinator::{
     PluginSessionBinding, PluginSessionOwner, SessionOutputPolicy, TranslationEvent,
@@ -6,10 +6,10 @@ use crate::session_coordinator::{
 };
 use std::collections::BTreeMap;
 use xrtranslate_engine::language::{LanguageCapabilities, LanguageSelection};
+use xrtranslate_prompt::{ContextFacts, PromptTurn, SurroundingSource, TaskContext};
 
 pub(super) struct SubtitleJob {
     task: String,
-    conversation: String,
     languages: LanguageSelection,
     pending: Option<(String, String)>,
     segments: BTreeMap<(String, u32), String>,
@@ -32,7 +32,6 @@ impl MediaPlugin {
             .select(&task.source_language, &task.target_language)?;
         self.subtitle_job = Some(SubtitleJob {
             task: task.id.clone(),
-            conversation: uuid::Uuid::new_v4().to_string(),
             languages: selection,
             pending: None,
             segments: BTreeMap::new(),
@@ -53,7 +52,8 @@ impl MediaPlugin {
             self.subtitle_job = None;
             return None;
         }
-        let Some(cue) = self.controller.subtitles.cues().iter().find(|cue| {
+        let cues = self.controller.subtitles.cues();
+        let Some(index) = cues.iter().position(|cue| {
             cue.translated_text
                 .as_deref()
                 .is_none_or(|text| text.trim().is_empty())
@@ -62,6 +62,8 @@ impl MediaPlugin {
             self.controller.pause_task();
             return None;
         };
+        let cue = &cues[index];
+        let context = subtitle_context(cues, index, job.languages);
         let operation = uuid::Uuid::new_v4().to_string();
         let owner = PluginSessionOwner::new(
             super::super::PluginId::MEDIA.as_str(),
@@ -69,17 +71,19 @@ impl MediaPlugin {
             "Media",
             "Media",
             "Translating subtitles",
-        )
-        .in_conversation(&job.conversation);
+        );
         job.pending = Some((operation, cue.id.clone()));
-        Some(TranslationTask::text(
-            cue.original_text.clone(),
-            job.languages,
-            Some(PluginSessionBinding::text(
-                owner,
-                SessionOutputPolicy::PluginOnly,
-            )),
-        ))
+        Some(
+            TranslationTask::text(
+                cue.original_text.clone(),
+                job.languages,
+                Some(PluginSessionBinding::text(
+                    owner,
+                    SessionOutputPolicy::PluginOnly,
+                )),
+            )
+            .with_context(context),
+        )
     }
 
     pub(super) fn accept_subtitle_event(
@@ -153,4 +157,44 @@ impl MediaPlugin {
         }
         true
     }
+}
+
+fn subtitle_context(
+    cues: &[super::subtitles::SubtitleCue],
+    index: usize,
+    languages: LanguageSelection,
+) -> TaskContext {
+    let (source_language, target_language) = languages.wire();
+    let before = &cues[index.saturating_sub(2)..index];
+    let after = &cues[index + 1..(index + 3).min(cues.len())];
+    let recent_turns = before
+        .iter()
+        .filter_map(|cue| {
+            let translated = cue.translated_text.as_deref()?.trim();
+            (!translated.is_empty()).then(|| PromptTurn {
+                turn_id: Some(cue.id.clone()),
+                speaker_id: cue.speaker_name.clone().unwrap_or_default(),
+                source_language: source_language.clone(),
+                target_language: target_language.clone(),
+                source_text: cue.original_text.clone(),
+                translated_text: translated.to_owned(),
+            })
+        })
+        .collect();
+    let join = |neighbors: &[super::subtitles::SubtitleCue]| {
+        neighbors
+            .iter()
+            .map(|cue| cue.original_text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    TaskContext::snapshot(ContextFacts {
+        recent_turns,
+        surrounding_source: Some(SurroundingSource {
+            speaker_id: cues[index].speaker_name.clone().unwrap_or_default(),
+            source_language,
+            before: join(before),
+            after: join(after),
+        }),
+    })
 }

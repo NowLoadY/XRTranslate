@@ -2,9 +2,31 @@ use android_activity::AndroidApp;
 use std::{path::PathBuf, sync::Mutex};
 
 pub(crate) mod ime;
+mod navigation;
 
 static APP: Mutex<Option<AndroidApp>> = Mutex::new(None);
 static NATIVE_LIBRARIES: Mutex<Option<PathBuf>> = Mutex::new(None);
+static BACK_REQUESTED: AtomicBool = AtomicBool::new(false);
+static BACK_CONTEXT: Mutex<Option<eframe::egui::Context>> = Mutex::new(None);
+
+pub(crate) fn install_back_handler(ctx: &eframe::egui::Context) {
+    *BACK_CONTEXT.lock().unwrap() = Some(ctx.clone());
+}
+
+pub(crate) fn take_back_request() -> bool {
+    BACK_REQUESTED.swap(false, Ordering::AcqRel)
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_org_xrtranslate_app_MainActivity_backRequested(
+    _env: jni::JNIEnv<'_>,
+    _class: jni::objects::JClass<'_>,
+) {
+    BACK_REQUESTED.store(true, Ordering::Release);
+    if let Some(ctx) = BACK_CONTEXT.lock().unwrap().as_ref() {
+        ctx.request_repaint();
+    }
+}
 
 pub fn app() -> AndroidApp {
     APP.lock()
@@ -71,6 +93,7 @@ fn initialize(activity: &AndroidApp) -> Result<(), Box<dyn std::error::Error>> {
     RESOURCES_RESULT.lock().unwrap().take();
     MICROPHONE_RESULT.store(0, Ordering::Release);
     RESUME_MICROPHONE.store(false, Ordering::Release);
+    BACK_REQUESTED.store(false, Ordering::Release);
     // The activity owns both pointers for the lifetime of android_main.
     let vm = unsafe { jni::JavaVM::from_raw(activity.vm_as_ptr().cast()) }?;
     let mut env = vm.attach_current_thread()?;
@@ -128,6 +151,7 @@ fn android_main(activity: AndroidApp) {
         .map_err(|error| error.to_string())
         .and_then(|()| crate::run().map_err(|error| error.to_string()));
     ime::uninstall();
+    *BACK_CONTEXT.lock().unwrap() = None;
     if let Err(error) = result {
         log::error!("Application stopped: {error}");
         let shown = with_activity(|env, activity| {

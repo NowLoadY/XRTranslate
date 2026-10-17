@@ -60,7 +60,10 @@ pub(crate) struct PromptStudioController {
     branch_filters: HashMap<PromptCondition, Option<bool>>,
     text_branch_filters: HashMap<String, Option<String>>,
     branch_hidden_nodes: HashSet<String>,
-    runtime_trace: Option<PromptExecutionTrace>,
+    runtime_trace: Option<(
+        crate::session_coordinator::TranslationSessionOwner,
+        PromptExecutionTrace,
+    )>,
     overview_positions: HashMap<String, [f32; 2]>,
     style_panel: style_panel::StylePanel,
 }
@@ -207,7 +210,13 @@ impl PromptStudioController {
         self.dirty
     }
 
-    pub fn set_runtime_trace(&mut self, trace: Option<PromptExecutionTrace>) {
+    pub fn set_runtime_trace(
+        &mut self,
+        trace: Option<(
+            crate::session_coordinator::TranslationSessionOwner,
+            PromptExecutionTrace,
+        )>,
+    ) {
         self.runtime_trace = trace;
     }
 

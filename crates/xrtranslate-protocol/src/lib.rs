@@ -23,14 +23,10 @@ use std::{error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
 pub use xr_corpus_protocol::{CorpusRecognitionCorrection, CorpusTermMatch, CorpusTermSource};
-use xrtranslate_prompt::{PromptExecutionTrace, PromptNodeGraph};
+use xrtranslate_prompt::{PromptExecutionTrace, PromptNodeGraph, TaskContext};
 
-/// The current WebSocket contract version.
-///
-/// The legacy Python backend does not exchange this number on the wire yet.
-/// It is exported so the Rust client and backend can reject incompatible peers
-/// once a handshake is added without changing the individual DTOs.
-pub const PROTOCOL_VERSION: u16 = 3;
+/// The WebSocket contract version reported by the backend health endpoint.
+pub const PROTOCOL_VERSION: u16 = 4;
 
 const fn is_false(value: &bool) -> bool {
     !*value
@@ -257,6 +253,8 @@ pub enum ActionControl {
     /// Updates the active translation route. It is also the initial route
     /// supplied immediately after a WebSocket connection opens.
     SessionConfig {
+        #[serde(default)]
+        context: TaskContext,
         source_lang: String,
         target_lang: String,
         #[serde(default, skip_serializing_if = "TranslationOptions::is_default")]
@@ -279,10 +277,12 @@ pub enum ActionControl {
     /// Enables or disables a session feature.
     ToggleFeature { feature: Feature, enabled: bool },
     /// Submits a direct text turn for standard translation processing (segmenting,
-    /// XR Corpus terminology matching & context retrieval, prompt graph execution,
+    /// XR Corpus terminology matching, task context selection, prompt graph execution,
     /// translation model inference, terminology post-rewriting, and history commit).
     TranslateText {
         text: String,
+        #[serde(default)]
+        context: TaskContext,
         #[serde(default, skip_serializing_if = "TranslationOptions::is_default")]
         translation_options: TranslationOptions,
         #[serde(default, skip_serializing_if = "Option::is_none")]

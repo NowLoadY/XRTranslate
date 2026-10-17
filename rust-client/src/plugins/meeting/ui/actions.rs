@@ -40,7 +40,7 @@ pub(super) fn apply_action(
 ) -> MeetingAction {
     if matches!(
         action,
-        UiAction::NewLive | UiAction::NewImport | UiAction::Back | UiAction::Continue(_)
+        UiAction::NewLive | UiAction::NewImport | UiAction::Continue(_)
     ) && !controller.save_pending_edits()
     {
         return MeetingAction::None;
@@ -60,10 +60,7 @@ pub(super) fn apply_action(
             controller.route = MeetingRoute::Create;
         }
         UiAction::Back => {
-            controller.playback.unload();
-            controller.search.clear();
-            controller.refresh_library();
-            controller.route = MeetingRoute::Library;
+            controller.handle_back();
         }
         UiAction::Open(id) => {
             controller.search.clear();

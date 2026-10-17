@@ -89,6 +89,10 @@ impl MediaPlugin {
         }
     }
 
+    pub(crate) fn translation_context(&self) -> xrtranslate_prompt::TaskContext {
+        xrtranslate_prompt::TaskContext::conversation(format!("media:{}", uuid::Uuid::new_v4()))
+    }
+
     pub fn render_page(
         &mut self,
         snapshot: &MediaUiSnapshot,

@@ -25,8 +25,8 @@ small contracts, as it distributes lyric text to selected outputs.
 
 `session_coordinator` is the shared integration boundary:
 
-- `TranslationTask` captures input, language intent, and an optional plugin
-  binding before startup. Text, live audio, and imported audio use this contract.
+- `TranslationTask` captures input, language intent, context, and an optional
+  plugin binding before startup. Text, live audio, and imported audio use this contract.
 - `TranslationSessionPlugin` describes session ownership, output policy, and
   lifecycle requirements through `PluginSessionBinding`.
 - `SessionEventSubscriber` consumes normalized `TranslationEvent` values for
@@ -59,6 +59,32 @@ validated translations enter conversation context, TTS, or automatic insertion.
 Sentence completion belongs to the shared pipeline for both streaming and
 pseudo-streaming recognition. Plugins apply presentation policy to recognition
 facts without changing their meaning.
+
+### Task context
+
+The input owner selects `TaskContext`. A `Snapshot` supplies the current reference
+facts; a `Conversation` supplies an explicit scope and optional initial facts.
+`ContextFacts` contains bilingual turns and surrounding source text, consumed by
+the existing Prompt Studio context nodes. Output visibility does not affect
+context. A reusable conversation transport keeps its declared scope alive;
+snapshot transports can be reused without carrying facts between tasks.
+
+| Input owner | Context scope |
+|---|---|
+| Live translation | One conversation shared by its audio and text inputs |
+| Meeting | Both inputs of one recording run; resumed capture seeds recent transcript entries with known language pairs |
+| Media audio | One translation run |
+| Authored subtitles | Current cue's timeline neighbors, read when the task is submitted |
+| Screen and quick translation | Current text snapshot |
+| Avatar control | Its owned live operation |
+
+The owner decides when work starts, resumes, or clears. The runtime maintains
+bounded completed conversation turns directly in the inference path; it does not
+wait for UI events or interpret plugin IDs. Domain records remain owned by their
+plugins. Subtitle edits affect the next snapshot; seeking the player does not
+change translation context. Output subscribers do not maintain translation
+memory. Prompt Studio can inspect runtime traces from every owner while private
+results remain outside host presentation.
 
 ## Registration and lifecycle
 

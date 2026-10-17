@@ -87,14 +87,45 @@ impl<'de> Deserialize<'de> for Page {
 pub struct NavigationState {
     pub collapsed: bool,
     pub page: Page,
+    history: Vec<Page>,
+    #[cfg(target_os = "android")]
+    pub(crate) visited_app: bool,
 }
 
 impl Default for NavigationState {
     fn default() -> Self {
+        Self::new(Page::Translation, false)
+    }
+}
+
+impl NavigationState {
+    pub fn new(page: Page, collapsed: bool) -> Self {
         Self {
-            collapsed: false,
-            page: Page::Translation,
+            collapsed,
+            page,
+            history: Vec::new(),
+            #[cfg(target_os = "android")]
+            visited_app: false,
         }
+    }
+
+    pub fn open(&mut self, page: Page) {
+        if self.page == page {
+            return;
+        }
+        if page == Page::Translation {
+            self.history.clear();
+        } else if let Some(index) = self.history.iter().position(|previous| *previous == page) {
+            self.history.truncate(index);
+        } else {
+            self.history.push(self.page);
+        }
+        self.page = page;
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn back(&mut self) {
+        self.page = self.history.pop().unwrap_or(Page::Translation);
     }
 }
 
@@ -463,7 +494,7 @@ fn nav_item_animated(
     });
 
     if response.clicked() {
-        navigation.page = page;
+        navigation.open(page);
     }
 
     if response.hovered() && !is_selected {
@@ -676,7 +707,7 @@ pub fn render_top_navigation(
                             )
                             .on_hover_text(title);
                         if response.clicked() {
-                            navigation.page = entry.page;
+                            navigation.open(entry.page);
                         }
                         if selected && previous != Some(entry.page) {
                             response.scroll_to_me(Some(egui::Align::Center));

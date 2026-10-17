@@ -43,6 +43,7 @@ impl PromptNodeGraph {
 
     pub(crate) fn builtin_ordinary() -> Self {
         let mut builder = GraphBuilder::default();
+        builder.build_reference_context();
         builder.build_chat_messages_flow();
         builder.build_translation_instruction_flow();
         builder.build_asr_instruction_flow();
@@ -60,7 +61,7 @@ impl PromptNodeGraph {
             "You are translating one segment from a pseudo-streaming speech snapshot. ",
             "The Current input is the authoritative text for this segment. It may replace an earlier live tail, ",
             "so translate the current input in full and correct any changed recognition.\n\n",
-            "Previous Revision of Current Speech is only an older hypothesis of the same speech. ",
+            "Previous Revision of Current Input is only an older hypothesis of the same speech. ",
             "Use it to keep wording stable when meaning is unchanged, but never copy text or meaning that is absent ",
             "from the current input. Do not resurrect content removed from the current snapshot.\n\n",
             "Stable prefix segments may already be visible in floating subtitles or OSC. Do not repeat or translate ",
@@ -73,7 +74,7 @@ impl PromptNodeGraph {
             "You are translating one segment from a pseudo-streaming speech snapshot. ",
             "The Current input is the authoritative text for this segment and can revise a previous live tail. ",
             "Infer the source language from the current input and translate it into the other configured language among {0}.\n\n",
-            "Previous Revision of Current Speech is an older hypothesis only. It may guide correction and stable ",
+            "Previous Revision of Current Input is an older hypothesis only. It may guide correction and stable ",
             "wording, but it is not additional input: never copy absent text, repeat a stable prefix, or resurrect ",
             "content that disappeared from the current snapshot.\n\n",
             "Surrounding source, recent turns, and terminology are reference context only. Translate only the current ",
@@ -431,6 +432,28 @@ impl PromptNodeGraph {
             },
         ]);
     }
+
+    pub(crate) fn upgrade_known_translation_input_prompts(&mut self) {
+        for node in &mut self.nodes {
+            if !matches!(
+                node.id.as_str(),
+                "openai-explicit-instruction"
+                    | "openai-explicit-instruction-ordinary"
+                    | "openai-auto-instruction"
+                    | "openai-auto-instruction-ordinary"
+            ) {
+                continue;
+            }
+            if let PromptNodeKind::Compose { text } = &mut node.kind {
+                if matches!(text.as_str(),
+                    "You are a real-time speech translator. If input is already {0}, output it unchanged. Otherwise translate it into {0}. Output only the translation."
+                    | "You are a real-time speech translator. The input language is one of the following: {0}. Translate it into the OTHER language from that list. Output only the translation."
+                ) {
+                    *text = text.replacen("real-time speech translator", "translator", 1);
+                }
+            }
+        }
+    }
 }
 
 fn unique_mode_node_id(used: &mut std::collections::HashSet<String>, preferred: &str) -> String {
@@ -577,6 +600,61 @@ struct GraphBuilder {
 }
 
 impl GraphBuilder {
+    fn build_reference_context(&mut self) {
+        let page = PromptNodePage::Shared;
+        for (id, block) in [
+            (
+                "context-language-order",
+                TranslationPromptBlock::LanguageOrder,
+            ),
+            (
+                "context-terminology",
+                TranslationPromptBlock::Terminology,
+            ),
+            (
+                "context-recent-turns",
+                TranslationPromptBlock::RecentTurns { limit: None },
+            ),
+            (
+                "context-previous-revision",
+                TranslationPromptBlock::PreviousRevision,
+            ),
+            (
+                "context-surrounding-source",
+                TranslationPromptBlock::SurroundingSource,
+            ),
+        ] {
+            self.node(
+                id,
+                page,
+                PromptNodeKind::SystemValue {
+                    value: system_value_from_block(block),
+                },
+            );
+        }
+
+        self.compose(
+            "reference-sections",
+            page,
+            "ASSEMBLE CONTEXT SECTIONS",
+            "{0}\n\n{1}\n\n{2}\n\n{3}\n\n{4}",
+            &[
+                "context-language-order",
+                "context-terminology",
+                "context-recent-turns",
+                "context-previous-revision",
+                "context-surrounding-source",
+            ],
+        );
+        self.compose(
+            "reference-context",
+            page,
+            "TRANSLATION CONTEXT",
+            "# Translation Context\n\n{0}",
+            &["reference-sections"],
+        );
+    }
+
     fn build_chat_messages_flow(&mut self) {
         let page = PromptNodePage::ChatMessages;
         self.variable(
@@ -598,57 +676,6 @@ impl GraphBuilder {
             "auto",
         );
 
-        for (id, block) in [
-            (
-                "openai-context-language-order",
-                TranslationPromptBlock::LanguageOrder,
-            ),
-            (
-                "openai-context-terminology",
-                TranslationPromptBlock::Terminology,
-            ),
-            (
-                "openai-context-recent-turns",
-                TranslationPromptBlock::RecentTurns { limit: None },
-            ),
-            (
-                "openai-context-previous-revision",
-                TranslationPromptBlock::PreviousRevision,
-            ),
-            (
-                "openai-context-surrounding-source",
-                TranslationPromptBlock::SurroundingSource,
-            ),
-        ] {
-            self.node(
-                id,
-                page,
-                PromptNodeKind::SystemValue {
-                    value: system_value_from_block(block),
-                },
-            );
-        }
-
-        self.compose(
-            "openai-reference-sections",
-            page,
-            "ASSEMBLE CONTEXT SECTIONS",
-            "{0}\n\n{1}\n\n{2}\n\n{3}\n\n{4}",
-            &[
-                "openai-context-language-order",
-                "openai-context-terminology",
-                "openai-context-recent-turns",
-                "openai-context-previous-revision",
-                "openai-context-surrounding-source",
-            ],
-        );
-        self.compose(
-            "openai-reference-context",
-            page,
-            "TRANSLATION CONTEXT",
-            "# Translation Context\n\n{0}",
-            &["openai-reference-sections"],
-        );
         self.compose(
             "openai-reference-explicit-rules",
             page,
@@ -676,14 +703,14 @@ impl GraphBuilder {
             "openai-explicit-instruction",
             page,
             "EXPLICIT SOURCE INSTRUCTION",
-            "You are a real-time speech translator. If input is already {0}, output it unchanged. Otherwise translate it into {0}. Output only the translation.",
+            "You are a translator. If input is already {0}, output it unchanged. Otherwise translate it into {0}. Output only the translation.",
             &["openai-target-language"],
         );
         self.compose(
             "openai-auto-instruction",
             page,
             "AUTO SOURCE INSTRUCTION",
-            "You are a real-time speech translator. The input language is one of the following: {0}. Translate it into the OTHER language from that list. Output only the translation.",
+            "You are a translator. The input language is one of the following: {0}. Translate it into the OTHER language from that list. Output only the translation.",
             &["openai-target-language"],
         );
         self.switch_on(
@@ -703,7 +730,7 @@ impl GraphBuilder {
             &[
                 "openai-instruction",
                 "openai-reference-handling-rules",
-                "openai-reference-context",
+                "reference-context",
             ],
         );
         self.switch(
@@ -767,57 +794,6 @@ impl GraphBuilder {
             "auto",
         );
 
-        for (id, block) in [
-            (
-                "hunyuan-context-language-order",
-                TranslationPromptBlock::LanguageOrder,
-            ),
-            (
-                "hunyuan-context-terminology",
-                TranslationPromptBlock::Terminology,
-            ),
-            (
-                "hunyuan-context-recent-turns",
-                TranslationPromptBlock::RecentTurns { limit: None },
-            ),
-            (
-                "hunyuan-context-previous-revision",
-                TranslationPromptBlock::PreviousRevision,
-            ),
-            (
-                "hunyuan-context-surrounding-source",
-                TranslationPromptBlock::SurroundingSource,
-            ),
-        ] {
-            self.node(
-                id,
-                page,
-                PromptNodeKind::SystemValue {
-                    value: system_value_from_block(block),
-                },
-            );
-        }
-
-        self.compose(
-            "hunyuan-reference-sections",
-            page,
-            "ASSEMBLE CONTEXT SECTIONS",
-            "{0}\n\n{1}\n\n{2}\n\n{3}\n\n{4}",
-            &[
-                "hunyuan-context-language-order",
-                "hunyuan-context-terminology",
-                "hunyuan-context-recent-turns",
-                "hunyuan-context-previous-revision",
-                "hunyuan-context-surrounding-source",
-            ],
-        );
-        self.compose(
-            "hunyuan-reference-context",
-            page,
-            "TRANSLATION CONTEXT",
-            "# Translation Context\n\n{0}",
-            &["hunyuan-reference-sections"],
-        );
         self.compose(
             "hunyuan-reference-explicit-rules",
             page,
@@ -872,7 +848,7 @@ impl GraphBuilder {
             &[
                 "hunyuan-instruction",
                 "hunyuan-reference-handling-rules",
-                "hunyuan-reference-context",
+                "reference-context",
                 "hunyuan-current-input",
             ],
         );

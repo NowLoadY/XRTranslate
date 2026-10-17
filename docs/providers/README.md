@@ -37,7 +37,7 @@ Shared infrastructure owns:
 - VAD, language routing and recovery retries, scheduling, cancellation, and
   protocol events;
 - Prompt Studio graph storage, validation, rendering, and execution traces;
-- XR Corpus context and structured vocabulary facts.
+- Task-owned translation context and XR Corpus vocabulary facts.
 
 A provider implementation owns:
 

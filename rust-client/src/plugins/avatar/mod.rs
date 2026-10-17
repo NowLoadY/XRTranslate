@@ -13,6 +13,14 @@ pub(crate) use xrt_connector_core::{HostResult, OperationId};
 
 use crate::session_coordinator::{PluginSessionBinding, PluginSessionOwner, SessionOutputPolicy};
 
+pub(crate) fn translation_context(operation: OperationId) -> xrtranslate_prompt::TaskContext {
+    xrtranslate_prompt::TaskContext::conversation(format!(
+        "avatar:{}:{}",
+        operation.generation().value(),
+        operation.sequence()
+    ))
+}
+
 pub(crate) fn session_binding(operation: OperationId) -> PluginSessionBinding {
     PluginSessionBinding {
         owner: PluginSessionOwner::new(

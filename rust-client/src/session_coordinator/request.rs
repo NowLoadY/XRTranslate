@@ -4,12 +4,14 @@ use crate::{
     media_import::AudioImportOptions,
 };
 use xrtranslate_engine::language::LanguageSelection;
+use xrtranslate_prompt::TaskContext;
 
-/// Complete task captured before service startup, including its language intent
-/// and subscriber identity. Pending startup never reads the host language UI.
+/// Complete task captured before service startup, including language intent,
+/// context and subscriber identity. Pending startup never reads the host language UI.
 pub(crate) struct TranslationTask {
     pub languages: LanguageSelection,
     pub plugin: Option<PluginSessionBinding>,
+    pub context: TaskContext,
     pub input: TranslationInput,
     pub profiles: Vec<(CaptureSource, RecognitionSettings)>,
 }
@@ -45,9 +47,15 @@ impl TranslationTask {
         Self {
             languages,
             plugin,
+            context: TaskContext::default(),
             input: TranslationInput::Text(text),
             profiles: Vec::new(),
         }
+    }
+
+    pub fn with_context(mut self, context: TaskContext) -> Self {
+        self.context = context;
+        self
     }
 
     pub fn owner(&self) -> TranslationSessionOwner {

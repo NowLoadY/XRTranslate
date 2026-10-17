@@ -13,7 +13,7 @@ use tokio_tungstenite::{
     tungstenite::{self, Message},
 };
 use xrtranslate_engine::audio::f32_to_pcm16le;
-use xrtranslate_prompt::PromptExecutionTrace;
+use xrtranslate_prompt::{PromptExecutionTrace, TaskContext};
 use xrtranslate_protocol::{
     CorpusTermMatch, DrainReason, InferenceWorkload, PromptGraphSet, SegmentBoundary,
     SegmentTiming, ServerEvent as ProtocolServerEvent,
@@ -200,6 +200,7 @@ enum SessionCommand {
         text: String,
         source_lang: Option<String>,
         target_lang: Option<String>,
+        context: TaskContext,
     },
     Pause,
     Resume,
@@ -337,6 +338,7 @@ impl SessionHandle {
         text: impl Into<String>,
         source_lang: Option<String>,
         target_lang: Option<String>,
+        context: TaskContext,
     ) -> Result<(), String> {
         if self.stop_requested.load(Ordering::Acquire) {
             return Err("Translation session has stopped".into());
@@ -346,6 +348,7 @@ impl SessionHandle {
                 text: text.into(),
                 source_lang,
                 target_lang,
+                context,
             })
             .map_err(|error| match error {
                 mpsc::error::TrySendError::Full(_) => {
@@ -400,8 +403,7 @@ impl SessionHandle {
 }
 
 pub struct SessionConfig {
-    /// Opt-in conversation shared by translation-center input lanes.
-    pub conversation_id: Option<String>,
+    pub context: TaskContext,
     pub server_url: String,
     pub languages: xrtranslate_engine::language::LanguageSelection,
     pub external_audio_gate: ExternalAudioGate,
@@ -513,7 +515,7 @@ async fn run_session(
     stream_id: u64,
 ) {
     let SessionConfig {
-        conversation_id,
+        context,
         server_url,
         languages,
         external_audio_gate,
@@ -557,20 +559,17 @@ async fn run_session(
     if text_only {
         url.query_pairs_mut().append_pair("text_only", "true");
     }
-    if let Some(conversation_id) = conversation_id {
-        let input_source = if text_only {
-            "text"
-        } else {
-            match audio_source {
-                CaptureSource::Microphone => "microphone",
-                CaptureSource::SystemAudio => "system-audio",
-                CaptureSource::Both => "audio",
-            }
-        };
-        url.query_pairs_mut()
-            .append_pair("conversation_id", &conversation_id)
-            .append_pair("input_source", input_source);
-    }
+    let input_source = if text_only {
+        "text"
+    } else {
+        match audio_source {
+            CaptureSource::Microphone => "microphone",
+            CaptureSource::SystemAudio => "system-audio",
+            CaptureSource::Both => "audio",
+        }
+    };
+    url.query_pairs_mut()
+        .append_pair("input_source", input_source);
     let server_url = url.to_string();
     let (stream, _) = match connect_async(&server_url).await {
         Ok(connection) => connection,
@@ -591,6 +590,7 @@ async fn run_session(
             "translation_options": translation_options,
             "sample_rate": 16_000,
             "prompt_graphs": prompt_graphs,
+            "context": context,
             "vad_threshold": vad_threshold,
             "vad_silence_ms": vad_silence_ms,
             "continuous_recognition": continuous_recognition,
@@ -716,7 +716,7 @@ async fn run_session(
                 if let Some(updated) = command.audio_source() {
                     audio_source = updated;
                 }
-                if let Err(error) = send_session_command(&mut write, command, audio_source, &mut translation_options).await {
+                if let Err(error) = send_session_command(&mut write, command, audio_source, &mut translation_options, &context).await {
                     let _ = event_tx.send(SessionEvent::Error(format!("Failed to update session: {error}")));
                     return;
                 }
@@ -836,6 +836,7 @@ async fn send_session_command<S>(
     command: SessionCommand,
     audio_source: CaptureSource,
     translation_options: &mut xrtranslate_protocol::TranslationOptions,
+    context: &TaskContext,
 ) -> Result<(), tungstenite::Error>
 where
     S: futures::Sink<Message, Error = tungstenite::Error> + Unpin,
@@ -854,6 +855,7 @@ where
                     "source_lang": source_lang,
                     "target_lang": target_lang,
                     "translation_options": translation_options,
+                    "context": context,
                 }),
             )
             .await
@@ -886,6 +888,7 @@ where
             text,
             source_lang,
             target_lang,
+            context,
         } => {
             send_json(
                 write,
@@ -895,6 +898,7 @@ where
                     "source_lang": source_lang,
                     "target_lang": target_lang,
                     "translation_options": translation_options,
+                    "context": context,
                 }),
             )
             .await
