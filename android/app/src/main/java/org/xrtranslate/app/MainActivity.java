@@ -60,6 +60,7 @@ public final class MainActivity extends GameActivity {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) {
             applyImmersiveFullscreen();
+            org.xrtranslate.app.textactions.TextSelectionSetup.offer(this);
         }
     }
 

@@ -13,4 +13,8 @@
     <string name="export_save">Save a copy</string>
     <string name="export_saved">File saved</string>
     <string name="export_failed">Could not open or save this file.</string>
+    <string name="text_selection_setup_title">Translate selected text</string>
+    <string name="text_selection_setup_message">Turn on XRT on the next screen to translate directly from the text selection menu.</string>
+    <string name="text_selection_setup_open">Open settings</string>
+    <string name="text_selection_setup_unavailable">Select some text, open the menu’s app list, and turn on XRT.</string>
 </resources>

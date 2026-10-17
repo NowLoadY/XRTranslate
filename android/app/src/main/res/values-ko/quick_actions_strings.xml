@@ -13,4 +13,8 @@
     <string name="export_save">사본 저장</string>
     <string name="export_saved">파일 저장됨</string>
     <string name="export_failed">파일을 열거나 저장하지 못했습니다.</string>
+    <string name="text_selection_setup_title">선택한 텍스트 번역</string>
+    <string name="text_selection_setup_message">다음 화면에서 XRT를 켜면 텍스트 선택 메뉴에서 바로 번역할 수 있어요.</string>
+    <string name="text_selection_setup_open">설정 열기</string>
+    <string name="text_selection_setup_unavailable">텍스트를 선택한 뒤 메뉴의 앱 관리에서 XRT를 켜 주세요.</string>
 </resources>

@@ -10,6 +10,7 @@
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x00401000" android:required="true" />
     <uses-feature android:name="android.hardware.vulkan.level" android:version="0" android:required="true" />
+    <queries><package android:name="com.android.settings" /></queries>
     <application android:label="XRTranslate" android:icon="@drawable/app_icon" android:theme="@style/AppTheme" android:allowBackup="false" android:usesCleartextTraffic="true">
         <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.exports" android:exported="false" android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/shared_files" />

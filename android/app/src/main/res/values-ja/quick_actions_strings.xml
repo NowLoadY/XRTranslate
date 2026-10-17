@@ -13,4 +13,8 @@
     <string name="export_save">コピーを保存</string>
     <string name="export_saved">ファイルを保存しました</string>
     <string name="export_failed">ファイルを開くか保存できません。</string>
+    <string name="text_selection_setup_title">選択したテキストを翻訳</string>
+    <string name="text_selection_setup_message">次の画面で XRT をオンにすると、テキストの選択メニューから直接翻訳できます。</string>
+    <string name="text_selection_setup_open">設定を開く</string>
+    <string name="text_selection_setup_unavailable">テキストを選択し、メニューの「アプリを管理」で XRT をオンにしてください。</string>
 </resources>

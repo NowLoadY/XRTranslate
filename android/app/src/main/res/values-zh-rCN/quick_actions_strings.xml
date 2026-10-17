@@ -13,4 +13,8 @@
     <string name="export_save">保存副本</string>
     <string name="export_saved">文件已保存</string>
     <string name="export_failed">无法打开或保存文件。</string>
+    <string name="text_selection_setup_title">选文翻译</string>
+    <string name="text_selection_setup_message">在下一个页面开启 XRT，就能在选中文字后直接翻译。</string>
+    <string name="text_selection_setup_open">去开启</string>
+    <string name="text_selection_setup_unavailable">请选中一段文字，在菜单的“管理应用”中开启 XRT。</string>
 </resources>

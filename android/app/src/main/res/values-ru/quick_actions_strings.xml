@@ -13,4 +13,8 @@
     <string name="export_save">Сохранить копию</string>
     <string name="export_saved">Файл сохранён</string>
     <string name="export_failed">Не удалось открыть или сохранить файл.</string>
+    <string name="text_selection_setup_title">Перевод выделенного текста</string>
+    <string name="text_selection_setup_message">Включите XRT на следующем экране, чтобы переводить прямо из меню выделения текста.</string>
+    <string name="text_selection_setup_open">Открыть настройки</string>
+    <string name="text_selection_setup_unavailable">Выделите текст, откройте список приложений в меню и включите XRT.</string>
 </resources>
