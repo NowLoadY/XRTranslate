@@ -252,6 +252,7 @@ mod tests {
     use std::{
         io::{BufRead, BufReader, Read, Write},
         net::TcpListener,
+        sync::{Arc, Mutex},
         thread,
     };
 
@@ -261,6 +262,8 @@ mod tests {
     #[tokio::test]
     async fn translation_sends_one_json_content_type_and_selected_model() {
         for streaming in [false, true] {
+            let trace = Arc::new(Mutex::new(None));
+            let server_trace = trace.clone();
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let endpoint = format!(
                 "http://{}/v1/chat/completions",
@@ -292,6 +295,9 @@ mod tests {
                     .unwrap();
                 let mut body = vec![0; length];
                 reader.read_exact(&mut body).unwrap();
+                if streaming {
+                    assert!(server_trace.lock().unwrap().is_some());
+                }
                 let (content_type, response) = if streaming {
                     (
                         "text/event-stream",
@@ -321,7 +327,14 @@ mod tests {
             let options = TranslationOptions::new("zh", "en");
             let result = if streaming {
                 adapter
-                    .translate_streaming("你好。", options, |_| std::future::ready(()))
+                    .translate_streaming(
+                        "你好。",
+                        options,
+                        |_| std::future::ready(()),
+                        |current| {
+                            assert!(trace.lock().unwrap().replace(current.clone()).is_none());
+                        },
+                    )
                     .await
             } else {
                 adapter.translate("你好。", options).await
@@ -329,6 +342,9 @@ mod tests {
             .unwrap();
             let (headers, body) = server.join().unwrap();
             assert_eq!(result.text, "Hello.");
+            if streaming {
+                assert_eq!(trace.lock().unwrap().as_ref(), Some(&result.prompt_trace));
+            }
             let content_types: Vec<_> = headers
                 .iter()
                 .filter(|(name, _)| name == "content-type")

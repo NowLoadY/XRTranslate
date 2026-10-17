@@ -67,14 +67,15 @@ facts; a `Conversation` supplies an explicit scope and optional initial facts.
 `ContextFacts` contains bilingual turns and surrounding source text, consumed by
 the existing Prompt Studio context nodes. Output visibility does not affect
 context. A reusable conversation transport keeps its declared scope alive;
-snapshot transports can be reused without carrying facts between tasks.
+snapshot transports can be reused, while each task starts with fresh vocabulary
+activation and its own reference facts.
 
 | Input owner | Context scope |
 |---|---|
 | Live translation | One conversation shared by its audio and text inputs |
-| Meeting | Both inputs of one recording run; resumed capture seeds recent transcript entries with known language pairs |
+| Meeting | Both inputs of one recording run; resumed recording starts from recent source text in time order, while audio reprocessing starts fresh |
 | Media audio | One translation run |
-| Authored subtitles | Current cue's timeline neighbors, read when the task is submitted |
+| Authored subtitles | Current cue's timeline neighbors and completed translations with their actual language pairs, read when submitted |
 | Screen and quick translation | Current text snapshot |
 | Avatar control | Its owned live operation |
 
@@ -83,8 +84,9 @@ bounded completed conversation turns directly in the inference path; it does not
 wait for UI events or interpret plugin IDs. Domain records remain owned by their
 plugins. Subtitle edits affect the next snapshot; seeking the player does not
 change translation context. Output subscribers do not maintain translation
-memory. Prompt Studio can inspect runtime traces from every owner while private
-results remain outside host presentation.
+memory. Conversation startup source gives way to newly completed turns. Prompt
+Studio shows the current request's runtime facts read-only while private results
+remain outside host presentation.
 
 ## Registration and lifecycle
 

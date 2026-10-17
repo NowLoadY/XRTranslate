@@ -336,12 +336,16 @@ pub(super) fn render_graph_editor(
             trace.target == controller.active_target
                 && trace.graph_fingerprint == draft.graph.fingerprint()
         });
-    if let Some((owner, _)) = &runtime_trace {
-        ui.weak(format!(
+    if let Some((owner, trace)) = &runtime_trace {
+        egui::CollapsingHeader::new(format!(
             "{} · {}",
             tr(language, "LIVE OUTPUT"),
             owner.display_name(language)
-        ));
+        ))
+        .id_salt("prompt_runtime_request")
+        .show(ui, |ui| {
+            runtime_preview::request(ui, &draft.graph, trace);
+        });
     }
     controller.overview_positions = if draft.read_only {
         compact_positions(&draft.graph, |node| controller.node_is_visible(node))

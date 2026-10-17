@@ -1,6 +1,26 @@
 use eframe::egui;
 use xrtranslate_prompt::{PromptExecutionTrace, PromptNode, PromptNodeGraph, PromptNodeKind};
 
+/// The actual assembled request, never a separately evaluated preview.
+pub(super) fn request(ui: &mut egui::Ui, graph: &PromptNodeGraph, trace: &PromptExecutionTrace) {
+    let Some(request) = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(node.kind, PromptNodeKind::Request { target, .. } if target == trace.target)
+        })
+        .and_then(|node| trace.node(&node.id))
+    else {
+        return;
+    };
+    egui::ScrollArea::vertical()
+        .id_salt("prompt_runtime_request_text")
+        .max_height((ui.available_height() * 0.35).clamp(100.0, 260.0))
+        .show(ui, |ui| {
+            ui.add(egui::Label::new(&request.output).selectable(true).wrap());
+        });
+}
+
 /// Inspect node values on demand without reserving empty space in every card.
 pub(super) fn render(
     ui: &mut egui::Ui,

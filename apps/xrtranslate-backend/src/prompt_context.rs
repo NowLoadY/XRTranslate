@@ -121,8 +121,14 @@ fn surrounding_source(
         max_chars - before_limit
     };
     Some(SurroundingSource {
-        speaker_id: reference.current_speaker_id.clone(),
-        source_language: source_language.to_owned(),
+        speaker_id: external.map_or_else(
+            || reference.current_speaker_id.clone(),
+            |source| source.speaker_id.clone(),
+        ),
+        source_language: external.map_or_else(
+            || source_language.to_owned(),
+            |source| source.source_language.clone(),
+        ),
         before: excerpt(&before, before_limit, true),
         after: excerpt(&after, after_limit, false),
     })
@@ -215,8 +221,8 @@ mod tests {
         });
         let reference = TranslationPromptContext {
             surrounding_source: Some(SurroundingSource {
-                speaker_id: String::new(),
-                source_language: "en".into(),
+                speaker_id: "Alice".into(),
+                source_language: String::new(),
                 before: "Earlier external text".into(),
                 after: "Later external text".into(),
             }),
@@ -225,6 +231,8 @@ mod tests {
         let source = surrounding_source("en", &reference, &segments, 1, 20).unwrap();
         assert_eq!(source.before, "x".repeat(10));
         assert_eq!(source.after, "y".repeat(10));
+        assert_eq!(source.speaker_id, "Alice");
+        assert!(source.source_language.is_empty());
     }
 
     #[test]

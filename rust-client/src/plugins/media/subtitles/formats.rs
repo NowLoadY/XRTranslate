@@ -66,6 +66,8 @@ impl SubtitleTimeline {
                 speaker_name: None,
                 original_text: text,
                 translated_text: None,
+                source_language: String::new(),
+                target_language: String::new(),
             });
         }
         if timeline.count() == 0 {

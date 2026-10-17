@@ -30,7 +30,7 @@ use crate::{
 const OWNER: &str = "android_text_actions";
 static CANCELLED_THROUGH: AtomicI32 = AtomicI32::new(0);
 static OPEN_TRANSLATION: AtomicBool = AtomicBool::new(false);
-const CONTEXT_IDLE: Duration = Duration::from_secs(90);
+const RUNTIME_IDLE: Duration = Duration::from_secs(90);
 static RUNTIME: (Mutex<Option<BackgroundRuntime>>, Condvar) = (Mutex::new(None), Condvar::new());
 
 struct BackgroundRuntime {
@@ -46,7 +46,7 @@ fn start_idle_cleanup() -> bool {
         return true;
     }
     let started = std::thread::Builder::new()
-        .name("text-context-idle".into())
+        .name("text-runtime-idle".into())
         .spawn(|| {
             let (runtime, changed) = &RUNTIME;
             let mut state = runtime.lock().unwrap();
@@ -134,7 +134,7 @@ impl SessionEventSubscriber for ResultSink {
     }
 }
 
-fn translate(id: i32, text: String, conversation: String) -> (i32, String) {
+fn translate(id: i32, text: String) -> (i32, String) {
     if CANCELLED_THROUGH.load(Ordering::Acquire) >= id {
         return (4, String::new());
     }
@@ -171,11 +171,11 @@ fn translate(id: i32, text: String, conversation: String) -> (i32, String) {
         translator: TextTranslation::default(),
         backend: BackendManager::load(),
         server_url: settings.server_url.clone(),
-        idle_deadline: Instant::now() + CONTEXT_IDLE,
+        idle_deadline: Instant::now() + RUNTIME_IDLE,
     });
-    let outcome = translate_request(runtime, id, text, conversation, settings, languages);
+    let outcome = translate_request(runtime, id, text, settings, languages);
     if outcome.0 == 3 && CANCELLED_THROUGH.load(Ordering::Acquire) < id {
-        runtime.idle_deadline = Instant::now() + CONTEXT_IDLE;
+        runtime.idle_deadline = Instant::now() + RUNTIME_IDLE;
         if !start_idle_cleanup() {
             state.take();
         }
@@ -190,7 +190,6 @@ fn translate_request(
     runtime: &mut BackgroundRuntime,
     id: i32,
     text: String,
-    conversation: String,
     settings: ClientSettings,
     languages: xrtranslate_engine::language::LanguageSelection,
 ) -> (i32, String) {
@@ -206,23 +205,20 @@ fn translate_request(
     let owner = PluginSessionOwner::new(
         OWNER,
         id.to_string(),
-        "Translation",
+        "Quick translation",
         "Translation",
         "Translating…",
     );
     let session_owner = TranslationSessionOwner::Plugin(owner.clone());
     translator.update_prompts(graphs.clone());
-    if let Err(error) = translator.submit(
-        TranslationTask::text(
-            text,
-            languages,
-            Some(PluginSessionBinding::text(
-                owner,
-                SessionOutputPolicy::PluginOnly,
-            )),
-        )
-        .with_context(xrtranslate_prompt::TaskContext::conversation(conversation)),
-    ) {
+    if let Err(error) = translator.submit(TranslationTask::text(
+        text,
+        languages,
+        Some(PluginSessionBinding::text(
+            owner,
+            SessionOutputPolicy::PluginOnly,
+        )),
+    )) {
         log::warn!(
             "Selected-text request {id} was rejected: {}",
             error.replace(&diagnostic_input, "[selected text]")
@@ -240,6 +236,9 @@ fn translate_request(
         translator.poll(backend, &settings.server_url, graphs.clone(), None, &events);
         for event in received.try_iter() {
             if event.scope.accepts_events() {
+                if let crate::network::SessionEvent::PromptTrace(trace) = &event.event {
+                    crate::ui::pages::prompt_studio::record_runtime_trace(&event.scope.owner, trace);
+                }
                 let _ = event.scope.publish(&event.event, &subscribers);
             }
         }
@@ -298,13 +297,11 @@ pub extern "system" fn Java_org_xrtranslate_app_textactions_TextTranslationServi
     text: JString,
     directory: JString,
     libraries: JString,
-    conversation: JString,
 ) {
     let outcome = (|| {
         let text: String = env.get_string(&text).ok()?.into();
         let directory: String = env.get_string(&directory).ok()?.into();
         let libraries: String = env.get_string(&libraries).ok()?.into();
-        let conversation: String = env.get_string(&conversation).ok()?.into();
         if text.trim().is_empty() || text.chars().count() > 32768 {
             return None;
         }
@@ -312,7 +309,7 @@ pub extern "system" fn Java_org_xrtranslate_app_textactions_TextTranslationServi
             log::warn!("Cannot prepare selected-text translation: {error}");
             return None;
         }
-        Some(translate(id, text, conversation))
+        Some(translate(id, text))
     })()
     .unwrap_or((4, String::new()));
     if let Ok(result) = env.new_string(outcome.1) {

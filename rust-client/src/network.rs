@@ -55,6 +55,7 @@ pub enum SessionEvent {
     Connected,
     Disconnected(String),
     Status(String),
+    PromptTrace(PromptExecutionTrace),
     VadActivity {
         source: CaptureSource,
         active: bool,
@@ -116,7 +117,6 @@ pub enum SessionEvent {
         timing: SegmentTiming,
         boundary: SegmentBoundary,
         term_matches: Vec<CorpusTermMatch>,
-        prompt_trace: Option<PromptExecutionTrace>,
         revisable: bool,
         overlap_ratio: f32,
         authoritative_snapshot: bool,
@@ -1010,6 +1010,14 @@ fn forward_server_event(
     };
     let data = payload.get("data").and_then(Value::as_object);
     match payload.get("action").and_then(Value::as_str) {
+        Some("prompt_trace") => {
+            if let Some(trace) = payload
+                .get("data")
+                .and_then(|data| serde_json::from_value(data.clone()).ok())
+            {
+                let _ = event_tx.send(SessionEvent::PromptTrace(trace));
+            }
+        }
         Some("session_ready") => {
             let _ = event_tx.send(SessionEvent::Status("Connected — listening".into()));
             if let Some(backend) = data
@@ -1234,7 +1242,6 @@ fn forward_server_event(
                     .cloned()
                     .and_then(|value| serde_json::from_value(value).ok())
                     .unwrap_or_default(),
-                prompt_trace: event_metadata(data, "prompt_trace"),
                 revisable,
                 overlap_ratio: overlap_ratio as f32,
                 authoritative_snapshot: data

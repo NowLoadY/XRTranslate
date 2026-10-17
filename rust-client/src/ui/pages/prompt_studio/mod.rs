@@ -1,9 +1,11 @@
 //! Public style selection and the explicitly unlocked prompt editor.
 mod editor;
+mod runtime_trace;
 mod style_picker;
 
 pub(crate) use editor::PromptStudioController;
 pub(crate) use editor::access::editor_enabled;
+pub(crate) use runtime_trace::{clear_runtime_traces, record_runtime_trace, runtime_trace};
 #[cfg(target_os = "android")]
 pub(crate) use editor::access::unlock_editor;
 pub(crate) use style_picker::apply as selected_style_profile;

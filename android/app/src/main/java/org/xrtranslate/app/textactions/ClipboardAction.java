@@ -64,7 +64,7 @@ public final class ClipboardAction extends Activity {
             if (text.length() > 32768) { fail(R.string.text_action_too_long); return; }
             source.setText(text);
             startForegroundService(new Intent(this, TextTranslationService.class)
-                .putExtra(Intent.EXTRA_TEXT, text).putExtra("conversation", "clipboard")
+                .putExtra(Intent.EXTRA_TEXT, text)
                 .putExtra(TextTranslationService.COMPLETION, new Completion(this)));
         } catch (RuntimeException unavailable) {
             fail(R.string.text_action_failed);

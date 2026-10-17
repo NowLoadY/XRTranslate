@@ -37,7 +37,7 @@ use xrtranslate_engine::{
     RevisableTranscript, RouteEpoch, translation_segment_pairs_for_final_text_with_lang,
 };
 use xrtranslate_inference::{AsyncHttpClient, HttpRequest, ReqwestClient, pcm16_mono_16khz_to_wav};
-use xrtranslate_prompt::{AsrPromptContext, PromptMode, PromptNodeGraph};
+use xrtranslate_prompt::{AsrPromptContext, PromptExecutionTrace, PromptMode, PromptNodeGraph};
 use xrtranslate_protocol::{
     ActionControl, AudioSource, ClientControl, DrainReason, ErrorEvent, EventControl, Feature,
     InferenceWorkload, LatencyMetrics, PcmFormat, PcmFrame, PipelineDrained, PromptGraphSet,
@@ -732,6 +732,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
             }
         }
     };
+    let (prompt_trace_sender, mut prompt_trace_receiver) = watch::channel(None);
     let worker = tokio::spawn(run_inference_worker(
         inference,
         job_receiver,
@@ -745,11 +746,13 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
         Arc::clone(&speaker_recognition_enabled),
         Arc::clone(&speaker_state_revision),
         Arc::clone(&prompt_graphs),
+        prompt_trace_sender,
     ));
     let mut job_sender = Some(job_sender);
     let mut queued_inference_jobs = VecDeque::new();
     let mut input_state = SessionInputState::Running;
     let mut result_open = true;
+    let mut prompt_trace_open = true;
     let mut graceful_shutdown = false;
     let mut next_utterance_sequence = 1_u64;
     let mut workload = InferenceWorkload::Realtime;
@@ -799,6 +802,16 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
             job_sender.take();
         }
         tokio::select! {
+            changed = prompt_trace_receiver.changed(), if prompt_trace_open => {
+                if changed.is_err() {
+                    prompt_trace_open = false;
+                    continue;
+                }
+                let current = prompt_trace_receiver.borrow_and_update().clone();
+                if send_prompt_trace(&outbound_sender, generation, current).await.is_err() {
+                    break;
+                }
+            }
             permit = async { job_sender.as_ref().unwrap().reserve().await },
                 if job_sender.is_some() && !queued_inference_jobs.is_empty() => {
                 let Ok(permit) = permit else {
@@ -812,6 +825,14 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                 permit.send(queued_inference_jobs.pop_front().unwrap());
             }
             result = result_receiver.recv(), if result_open && queued_tts_jobs.len() < TTS_QUEUE_CAPACITY => {
+                // A finite task can finish before the watch branch is polled.
+                // Its request must reach the client before the final result.
+                if prompt_trace_receiver.borrow().has_changed() {
+                    let current = prompt_trace_receiver.borrow_and_update().clone();
+                    if send_prompt_trace(&outbound_sender, generation, current).await.is_err() {
+                        break;
+                    }
+                }
                 let Some(result) = result else {
                     result_open = false;
                     queued_inference_jobs.clear();
@@ -1912,6 +1933,7 @@ async fn run_inference_worker(
     speaker_recognition_enabled: Arc<AtomicBool>,
     speaker_state_revision: Arc<AtomicU64>,
     prompt_graphs: Arc<tokio::sync::RwLock<PromptGraphSet>>,
+    prompt_traces: watch::Sender<Option<(PipelineGeneration, PromptExecutionTrace)>>,
 ) {
     let mut previous_transcript: Option<(PipelineGeneration, String)> = None;
     let mut recognition_bias = asr_bias::RecognitionBias::default();
@@ -2063,6 +2085,23 @@ async fn run_inference_worker(
                 }
                 if *generation.borrow() != job.generation {
                     continue;
+                }
+                if job.context.is_snapshot() {
+                    let fresh = match corpus_client.create_session().await {
+                        Ok(session) => session,
+                        Err(error) => {
+                            let _ = events
+                                .send(InferenceEvent::Error {
+                                    generation: job.generation,
+                                    message: error.to_string(),
+                                })
+                                .await;
+                            continue;
+                        }
+                    };
+                    let previous = std::mem::replace(&mut corpus_session, fresh);
+                    let _ = previous.close().await;
+                    additional_scope.close().await;
                 }
                 let job_queue_elapsed = job.enqueued_at.elapsed();
                 let (asr_tokens, translation_tokens) = inference.prompt_context_token_budgets();
@@ -2270,6 +2309,7 @@ async fn run_inference_worker(
                 let turn_id_for_end = job.turn_id.clone();
                 let asr_revision = job.revision;
                 let translation_events = events.clone();
+                let prompt_traces = prompt_traces.clone();
                 pending_translations.push(tokio::spawn(async move {
                     let translations = futures_util::stream::iter(
                         segments
@@ -2287,6 +2327,8 @@ async fn run_inference_worker(
                         let prompt_terms = corpus_context.prompt_terms.clone();
                         let prompt_graph = prompt_graph_for_turn.clone();
                         let preview_events = translation_events.clone();
+                        let prompt_traces = prompt_traces.clone();
+                        let trace_generation = translation_generation.clone();
                         let preview_generation = translation_generation.clone();
                         let mut request_generation = translation_generation.clone();
                         let preview_context = segment_context.clone();
@@ -2319,6 +2361,12 @@ async fn run_inference_worker(
                                                     })
                                                     .await;
                                             }
+                                        }
+                                    },
+                                    move |trace| {
+                                        let current = trace_generation.borrow();
+                                        if *current == event_generation {
+                                            prompt_traces.send_replace(Some((event_generation, trace.clone())));
                                         }
                                     },
                                 ) => output,
@@ -3171,6 +3219,7 @@ async fn run_inference_worker(
         let stable_translation_cache = Arc::clone(&stable_translation_cache);
         let cache_turn_id = logical_turn_id.clone();
         let translation_events = events.clone();
+        let prompt_traces = prompt_traces.clone();
         let asr_revision = job.revision;
         pending_translations.push(tokio::spawn(async move {
             let translations = futures_util::stream::iter(
@@ -3189,6 +3238,8 @@ async fn run_inference_worker(
                 let prompt_terms = corpus_context.prompt_terms.clone();
                 let prompt_graph = prompt_graph_for_turn.clone();
                 let preview_events = translation_events.clone();
+                let prompt_traces = prompt_traces.clone();
+                let trace_generation = translation_generation.clone();
                 let preview_generation = translation_generation.clone();
                 let preview_source = segment.source_text.clone();
                 let additional_segment = additional_turn.as_ref().and_then(|turn| turn.segment(segment_context.segment_index.saturating_sub(1) as usize));
@@ -3280,6 +3331,12 @@ async fn run_inference_worker(
                                                 generation: event_generation, source_text, translated_text, context,
                                             }).await;
                                         }
+                                    }
+                                },
+                                move |trace| {
+                                    let current = trace_generation.borrow();
+                                    if *current == event_generation {
+                                        prompt_traces.send_replace(Some((event_generation, trace.clone())));
                                     }
                                 },
                             )
@@ -3466,6 +3523,19 @@ async fn emit_unfinished_recognition(
         .is_ok()
 }
 
+async fn send_prompt_trace(
+    writer: &mpsc::Sender<OutboundMessage>,
+    generation: PipelineGeneration,
+    current: Option<(PipelineGeneration, PromptExecutionTrace)>,
+) -> Result<(), axum::Error> {
+    if let Some((trace_generation, trace)) = current
+        && trace_generation == generation
+    {
+        send_event(writer, Some(generation), ServerEvent::PromptTrace(trace)).await?;
+    }
+    Ok(())
+}
+
 async fn handle_inference_event(
     writer: &mpsc::Sender<OutboundMessage>,
     session: &mut SessionAdapter,
@@ -3607,7 +3677,6 @@ async fn handle_inference_event(
                     output.term_matches,
                     output.additional_translations,
                     output.asr_only,
-                    output.prompt_trace,
                     LatencyMetrics {
                         queue_ms: millis(queue_elapsed),
                         asr_ms: millis(asr_elapsed),

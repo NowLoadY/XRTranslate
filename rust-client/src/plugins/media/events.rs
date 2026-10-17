@@ -100,6 +100,8 @@ fn translation_cue(segment: TranslationSegment) -> Option<(SubtitleCue, Subtitle
         speaker_id: segment.speaker_id,
         source: segment.source,
         translated: segment.translated?,
+        source_language: segment.source_lang,
+        target_language: segment.target_lang,
         timing: segment.timing,
         boundary: segment.boundary,
         revisable: segment.revisable,

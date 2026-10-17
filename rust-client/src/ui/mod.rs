@@ -88,8 +88,6 @@ pub struct NavigationState {
     pub collapsed: bool,
     pub page: Page,
     history: Vec<Page>,
-    #[cfg(target_os = "android")]
-    pub(crate) visited_app: bool,
 }
 
 impl Default for NavigationState {
@@ -104,8 +102,6 @@ impl NavigationState {
             collapsed,
             page,
             history: Vec::new(),
-            #[cfg(target_os = "android")]
-            visited_app: false,
         }
     }
 

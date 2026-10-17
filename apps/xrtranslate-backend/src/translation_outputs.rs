@@ -6,7 +6,7 @@ use xr_corpus_client::{CorpusClient, CorpusSessionClient};
 use xr_corpus_protocol::{ContextBudgets, PrepareAsrRequest, PrepareTranslationRequest};
 use xrtranslate_engine::TranslationSegmentPair;
 use xrtranslate_engine::language::SupportedLanguage;
-use xrtranslate_prompt::{PromptNodeGraph, TranslationPromptContext};
+use xrtranslate_prompt::{PromptExecutionTrace, PromptNodeGraph, TranslationPromptContext};
 use xrtranslate_protocol::{AdditionalTranslation, InferenceWorkload};
 
 use crate::{
@@ -187,7 +187,7 @@ impl AdditionalTurn {
 
 /// Each provider call gets its own scheduler permit. Join only after both have
 /// started, so a one-slot provider remains bounded without nested-permit deadlock.
-pub(crate) async fn translate<F, Fut>(
+pub(crate) async fn translate<F, Fut, T>(
     inference: &NativeInference,
     scheduler: &InferenceScheduler,
     workload: InferenceWorkload,
@@ -199,10 +199,12 @@ pub(crate) async fn translate<F, Fut>(
     additional: Option<AdditionalSegment>,
     asr_only: bool,
     on_update: F,
+    on_trace: T,
 ) -> Result<TranslationOutput, InferenceFailure>
 where
     F: FnMut(String) -> Fut + Send,
     Fut: Future<Output = ()> + Send,
+    T: Fn(&PromptExecutionTrace) + Send + Sync,
 {
     if asr_only {
         return Ok(NativeInference::recognition_output(segment, source));
@@ -217,6 +219,7 @@ where
                 graph.clone(),
                 context.clone(),
                 on_update,
+                &on_trace,
             )
             .await
     };
@@ -242,12 +245,14 @@ where
             prompt.mode = context.mode;
             let _permit = scheduler.acquire_translation(workload).await;
             inference
-                .translate_segment(
+                .translate_segment_streaming(
                     &independent_segment,
                     source,
                     &additional.target,
                     graph.clone(),
                     prompt,
+                    |_| std::future::ready(()),
+                    &on_trace,
                 )
                 .await?
         };

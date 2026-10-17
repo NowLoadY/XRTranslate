@@ -323,13 +323,14 @@ fn append_source_line(
     if text.is_empty() {
         return;
     }
-    let speaker = if source.speaker_id.trim().is_empty() {
-        String::new()
+    let metadata = [source.speaker_id.trim(), source.source_language.trim()]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    lines.push(if metadata.is_empty() {
+        format!("{label}: {text}")
     } else {
-        format!("{} ", source.speaker_id.trim())
-    };
-    lines.push(format!(
-        "{label}: {speaker}{} / {text}",
-        source.source_language.trim()
-    ));
+        format!("{label}: {metadata} / {text}")
+    });
 }

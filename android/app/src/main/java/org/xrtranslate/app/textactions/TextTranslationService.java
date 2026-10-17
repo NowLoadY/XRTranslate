@@ -36,7 +36,7 @@ public final class TextTranslationService extends Service {
     private volatile boolean running, loaded;
     private PowerManager.WakeLock wakeLock;
     private final Runnable timeout = () -> complete(request, 4, "");
-    private native void translate(int id, String text, String directory, String libraries, String conversation);
+    private native void translate(int id, String text, String directory, String libraries);
     private static native void cancel(int id);
 
     @Override public void onCreate() {
@@ -65,8 +65,6 @@ public final class TextTranslationService extends Service {
         serviceStartId = startId;
         int id = NEXT_REQUEST.incrementAndGet();
         request = id;
-        String caller = intent.getStringExtra("conversation");
-        String conversation = caller == null ? "request:" + id : "selection:" + caller;
         running = true;
         Notification notification = notification(PROGRESS, R.string.text_action_translating).setOngoing(true).build();
         if (Build.VERSION.SDK_INT >= 34) startForeground(NOTIFICATION, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
@@ -81,7 +79,7 @@ public final class TextTranslationService extends Service {
                 System.loadLibrary("rust_client");
                 loaded = true;
                 ApplicationResources.prepare(this, true);
-                if (request == id && running) translate(id, text, getFilesDir().getAbsolutePath(), getApplicationInfo().nativeLibraryDir, conversation);
+                if (request == id && running) translate(id, text, getFilesDir().getAbsolutePath(), getApplicationInfo().nativeLibraryDir);
             } catch (Exception | LinkageError error) {
                 complete(id, 4, "");
             }

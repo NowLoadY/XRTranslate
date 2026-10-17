@@ -1458,11 +1458,12 @@ impl NativeInference {
             prompt_graph,
             prompt_context,
             |_| std::future::ready(()),
+            |_| {},
         )
         .await
     }
 
-    pub(crate) async fn translate_segment_streaming<F, Fut>(
+    pub(crate) async fn translate_segment_streaming<F, Fut, T>(
         &self,
         segment: &TranslationSegmentPair,
         source_language: &str,
@@ -1470,10 +1471,12 @@ impl NativeInference {
         prompt_graph: PromptNodeGraph,
         prompt_context: TranslationPromptContext,
         mut on_update: F,
+        on_trace: T,
     ) -> Result<TranslationOutput, InferenceFailure>
     where
         F: FnMut(String) -> Fut + Send,
         Fut: Future<Output = ()> + Send,
+        T: Fn(&PromptExecutionTrace) + Send + Sync,
     {
         self.languages
             .for_text()
@@ -1511,13 +1514,18 @@ impl NativeInference {
         let translated = loop {
             match self
                 .translation
-                .translate_streaming(&segment.translation_text, options.clone(), |text| {
-                    on_update(if is_traditional_chinese(&route.target_code) {
-                        to_traditional_chinese(&text)
-                    } else {
-                        text
-                    })
-                })
+                .translate_streaming(
+                    &segment.translation_text,
+                    options.clone(),
+                    |text| {
+                        on_update(if is_traditional_chinese(&route.target_code) {
+                            to_traditional_chinese(&text)
+                        } else {
+                            text
+                        })
+                    },
+                    &on_trace,
+                )
                 .await
             {
                 Ok(translated) => break translated,

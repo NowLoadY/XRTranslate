@@ -110,7 +110,7 @@ use session_coordinator::{
     TranslationSessionPlugin,
 };
 use ui::{NavigationState, Page};
-use xrtranslate_prompt::{PromptExecutionTrace, PromptTarget, PromptTemplateLibrary, TaskContext};
+use xrtranslate_prompt::{PromptTemplateLibrary, TaskContext};
 use xrtranslate_protocol::PromptGraphSet;
 
 use session_coordinator::{TranslationInput, TranslationTask};
@@ -781,8 +781,6 @@ struct SharedSessionState {
     companion_work: ui::companion::TranslationWork,
     translation_enabled: bool,
     pending_route_change: Option<(String, String)>,
-    latest_asr_prompt_trace: Option<(TranslationSessionOwner, PromptExecutionTrace)>,
-    latest_translation_prompt_trace: Option<(TranslationSessionOwner, PromptExecutionTrace)>,
     retired_streams: Vec<u64>,
     microphone_clone_state: Option<xrtranslate_protocol::VoiceCloneState>,
     loopback_clone_state: Option<xrtranslate_protocol::VoiceCloneState>,
@@ -1214,15 +1212,10 @@ impl Default for XRTranslateApp {
                             prompt_trace: Some(trace),
                             ..
                         } => {
-                            state.latest_asr_prompt_trace =
-                                Some((scope.owner.clone(), trace.clone()));
+                            ui::pages::prompt_studio::record_runtime_trace(&scope.owner, trace);
                         }
-                        SessionEvent::Translation {
-                            prompt_trace: Some(trace),
-                            ..
-                        } => {
-                            state.latest_translation_prompt_trace =
-                                Some((scope.owner.clone(), trace.clone()));
+                        SessionEvent::PromptTrace(trace) => {
+                            ui::pages::prompt_studio::record_runtime_trace(&scope.owner, trace);
                         }
                         _ => {}
                     }
@@ -1279,6 +1272,7 @@ impl Default for XRTranslateApp {
                         }
                     }
                     match event {
+                        SessionEvent::PromptTrace(_) => {}
                         SessionEvent::TranslationActivity {
                             stream_id,
                             request_id,
@@ -1606,7 +1600,6 @@ impl Default for XRTranslateApp {
                             timing,
                             boundary,
                             term_matches,
-                            prompt_trace: _,
                             revisable,
                             overlap_ratio,
                             authoritative_snapshot,
@@ -2204,10 +2197,7 @@ impl XRTranslateApp {
         }
         self.prompt_library.active_id = id;
         self.prompt_studio.set_runtime_trace(None);
-        if let Ok(mut state) = self.shared_session_state.lock() {
-            state.latest_asr_prompt_trace = None;
-            state.latest_translation_prompt_trace = None;
-        }
+        ui::pages::prompt_studio::clear_runtime_traces();
         let graphs = PromptGraphSet {
             graph: self.prompt_library.active_graph(),
         };
@@ -5870,14 +5860,8 @@ impl XRTranslateApp {
             }
             self.tts_runtime_backend = state.tts_runtime_backend.clone();
             self.tts_runtime_cuda_version = state.tts_runtime_cuda_version.clone();
-            let prompt_trace = match self.prompt_studio.active_target() {
-                PromptTarget::AsrInstruction | PromptTarget::AsrContextBias => {
-                    state.latest_asr_prompt_trace.clone()
-                }
-                PromptTarget::TranslationInstruction | PromptTarget::ChatMessages => {
-                    state.latest_translation_prompt_trace.clone()
-                }
-            };
+            let prompt_trace =
+                ui::pages::prompt_studio::runtime_trace(self.prompt_studio.active_target());
             self.prompt_studio.set_runtime_trace(prompt_trace);
             if let Some((source_lang, target_lang)) = state.pending_route_change.take() {
                 let configurable =

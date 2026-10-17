@@ -21,7 +21,7 @@ public final class TextActions extends Activity {
             } else if (!text.isEmpty()) {
                 try {
                     startForegroundService(new Intent(this, TextTranslationService.class)
-                        .putExtra(Intent.EXTRA_TEXT, text).putExtra("conversation", getCallingPackage()));
+                        .putExtra(Intent.EXTRA_TEXT, text));
                 } catch (RuntimeException error) {
                     Toast.makeText(this, R.string.text_action_failed, Toast.LENGTH_LONG).show();
                 }

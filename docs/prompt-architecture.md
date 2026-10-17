@@ -76,9 +76,12 @@ Graphs are validated before activation. Typed connections, required inputs,
 delivery targets, and message ordering have one definition shared by editor and
 backend. Execution produces the messages sent to the selected provider.
 
-Execution traces come from that same evaluation and accompany the corresponding
-result. UI displays the matching graph and request trace rather than running a
-second evaluator. Recovery traces describe the request that produced the result.
+Translation execution publishes its trace after graph evaluation and before the
+model request. Prompt Studio follows the latest request automatically, including
+recovery and concurrent tasks, and displays its matching graph values and assembled
+request read-only. Plugin-owned facts are not editable in Studio. Recognition
+traces accompany their corresponding results; neither view runs a second evaluator
+or supplies translation memory.
 
 Inference validates normalized output before the pipeline accepts it as a final
 result. The backend coordinates bounded recovery using the same graph and

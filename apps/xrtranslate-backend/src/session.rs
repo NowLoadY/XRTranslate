@@ -55,7 +55,6 @@ struct TranslationMetadata {
     metrics: LatencyMetrics,
     context: SegmentContext,
     term_matches: Vec<CorpusTermMatch>,
-    prompt_trace: Option<PromptExecutionTrace>,
 }
 
 impl SessionAdapter {
@@ -176,7 +175,6 @@ impl SessionAdapter {
         term_matches: Vec<CorpusTermMatch>,
         additional_translations: Vec<xrtranslate_protocol::AdditionalTranslation>,
         asr_only: bool,
-        prompt_trace: Option<PromptExecutionTrace>,
         metrics: LatencyMetrics,
         context: SegmentContext,
     ) -> Result<bool, String> {
@@ -198,7 +196,6 @@ impl SessionAdapter {
             term_matches,
             additional_translations,
             asr_only,
-            prompt_trace,
         });
         Ok(true)
     }
@@ -289,7 +286,6 @@ impl SessionAdapter {
                                 term_matches: Vec::new(),
                                 additional_translations: Vec::new(),
                                 asr_only: false,
-                                prompt_trace: None,
                             });
                     output.push(WireOutput::Event(ServerEvent::TranslationReady(
                         TranslationReady {
@@ -300,7 +296,6 @@ impl SessionAdapter {
                             term_matches: metadata.term_matches,
                             additional_translations: metadata.additional_translations,
                             asr_only: metadata.asr_only,
-                            prompt_trace: metadata.prompt_trace,
                             turn_id: metadata.context.turn_id,
                             segment_index: metadata.context.segment_index,
                             segment_count: metadata.context.segment_count,

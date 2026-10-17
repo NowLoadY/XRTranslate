@@ -13,6 +13,10 @@ pub struct SubtitleCue {
     pub speaker_name: Option<String>,
     pub original_text: String,
     pub translated_text: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_language: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub target_language: String,
 }
 
 /// Neutral translation facts converted into a player-owned subtitle cue.
@@ -26,6 +30,8 @@ pub struct TranslationCueInput {
     pub speaker_id: String,
     pub source: String,
     pub translated: String,
+    pub source_language: String,
+    pub target_language: String,
     pub timing: SegmentTiming,
     pub boundary: SegmentBoundary,
     pub revisable: bool,
@@ -62,6 +68,8 @@ pub fn cue_from_translation(input: TranslationCueInput) -> (SubtitleCue, Subtitl
             speaker_name,
             original_text: input.source,
             translated_text: Some(input.translated),
+            source_language: input.source_language,
+            target_language: input.target_language,
         },
         metadata,
     )
@@ -362,10 +370,18 @@ impl SubtitleTimeline {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    pub(crate) fn set_translation(&mut self, id: &str, translated: String) {
+    pub(crate) fn set_translation(
+        &mut self,
+        id: &str,
+        translated: String,
+        source_language: &str,
+        target_language: &str,
+    ) {
         self.revision = self.revision.wrapping_add(1);
         if let Some(cue) = self.cues.iter_mut().find(|cue| cue.id == id) {
             cue.translated_text = Some(translated);
+            cue.source_language = source_language.to_owned();
+            cue.target_language = target_language.to_owned();
         }
     }
 
@@ -373,6 +389,8 @@ impl SubtitleTimeline {
         self.revision = self.revision.wrapping_add(1);
         for cue in &mut self.cues {
             cue.translated_text = None;
+            cue.source_language.clear();
+            cue.target_language.clear();
         }
     }
 

@@ -2,6 +2,7 @@ use crate::{
     AsyncHttpClient, InferenceError, OpenAiCompatibleClient, openai::non_streaming_chat_payload,
 };
 use xrtranslate_assets::remote::{RemoteCapabilities, RemoteStreaming};
+use xrtranslate_prompt::PromptExecutionTrace;
 
 use super::{
     TranslationOptions, TranslationPromptProfile, TranslationResult,
@@ -120,39 +121,51 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
         source_text: &str,
         options: TranslationOptions,
     ) -> Result<TranslationResult, InferenceError> {
-        self.translate_request(source_text, options, false, |_| std::future::ready(()))
-            .await
+        self.translate_request(
+            source_text,
+            options,
+            false,
+            |_| std::future::ready(()),
+            |_| {},
+        )
+        .await
     }
 
     /// Publishes cleaned cumulative text while keeping final validation shared
-    /// with ordinary requests. The callback is awaited for bounded consumers.
-    pub async fn translate_streaming<F, Fut>(
+    /// with ordinary requests. Text updates are awaited for bounded consumers;
+    /// the rendered trace is published once before the provider request.
+    pub async fn translate_streaming<F, Fut, T>(
         &self,
         source_text: &str,
         options: TranslationOptions,
         on_update: F,
+        on_trace: T,
     ) -> Result<TranslationResult, InferenceError>
     where
         F: FnMut(String) -> Fut + Send,
         Fut: Future<Output = ()> + Send,
+        T: Fn(&PromptExecutionTrace) + Send + Sync,
     {
-        self.translate_request(source_text, options, true, on_update)
+        self.translate_request(source_text, options, true, on_update, on_trace)
             .await
     }
 
-    async fn translate_request<F, Fut>(
+    async fn translate_request<F, Fut, T>(
         &self,
         source_text: &str,
         options: TranslationOptions,
         streaming: bool,
         mut on_update: F,
+        on_trace: T,
     ) -> Result<TranslationResult, InferenceError>
     where
         F: FnMut(String) -> Fut + Send,
         Fut: Future<Output = ()> + Send,
+        T: Fn(&PromptExecutionTrace) + Send + Sync,
     {
         let profile = registered(self.profile);
         let prompt = profile.build_prompt(source_text, &options)?;
+        on_trace(&prompt.trace);
         let mut payload = non_streaming_chat_payload(
             &self.model,
             prompt.messages_json(),

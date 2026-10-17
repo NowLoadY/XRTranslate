@@ -8,7 +8,6 @@ use eframe::egui;
 
 impl XRTranslateApp {
     pub(crate) fn handle_android_back(&mut self, ctx: &egui::Context) {
-        self.navigation.visited_app |= !self.first_run;
         if !super::take_back_request() {
             return;
         }
@@ -27,12 +26,7 @@ impl XRTranslateApp {
             return;
         }
         if self.first_run {
-            if self.onboarding_page > 0 {
-                self.onboarding_page -= 1;
-            } else if self.navigation.visited_app {
-                self.first_run = false;
-                self.save_settings();
-            }
+            self.onboarding_page = self.onboarding_page.saturating_sub(1);
             return;
         }
         match self.navigation.page {

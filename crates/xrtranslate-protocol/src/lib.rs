@@ -369,6 +369,7 @@ pub enum ServerEvent {
     SessionReady(SessionReady),
     VadActivity(VadActivity),
     AsrResult(AsrResult),
+    PromptTrace(PromptExecutionTrace),
     SourceSegmentReady(SourceSegmentReady),
     TranslationActivity(TranslationActivity),
     TranslationPreview(TranslationPreview),
@@ -542,8 +543,6 @@ pub struct TranslationReady {
     pub translated_text: String,
     #[serde(default)]
     pub term_matches: Vec<CorpusTermMatch>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt_trace: Option<PromptExecutionTrace>,
     pub turn_id: String,
     pub segment_index: u32,
     pub segment_count: u32,

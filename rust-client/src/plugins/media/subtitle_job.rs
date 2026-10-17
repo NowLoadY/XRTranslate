@@ -2,17 +2,17 @@
 use super::MediaPlugin;
 use crate::session_coordinator::{
     PluginSessionBinding, PluginSessionOwner, SessionOutputPolicy, TranslationEvent,
-    TranslationOutcome, TranslationTask,
+    TranslationOutcome, TranslationSegment, TranslationTask,
 };
 use std::collections::BTreeMap;
-use xrtranslate_engine::language::{LanguageCapabilities, LanguageSelection};
+use xrtranslate_engine::language::{LanguageCapabilities, LanguageSelection, SupportedLanguage};
 use xrtranslate_prompt::{ContextFacts, PromptTurn, SurroundingSource, TaskContext};
 
 pub(super) struct SubtitleJob {
     task: String,
     languages: LanguageSelection,
     pending: Option<(String, String)>,
-    segments: BTreeMap<(String, u32), String>,
+    segments: BTreeMap<(String, u32), TranslationSegment>,
 }
 
 impl MediaPlugin {
@@ -63,7 +63,7 @@ impl MediaPlugin {
             return None;
         };
         let cue = &cues[index];
-        let context = subtitle_context(cues, index, job.languages);
+        let context = subtitle_context(cues, index);
         let operation = uuid::Uuid::new_v4().to_string();
         let owner = PluginSessionOwner::new(
             super::super::PluginId::MEDIA.as_str(),
@@ -99,10 +99,10 @@ impl MediaPlugin {
         }
         match event {
             TranslationEvent::Segment(segment) => {
-                if let Some(text) = &segment.translated {
+                if segment.translated.is_some() {
                     job.segments.insert(
                         (segment.turn_id.clone(), segment.segment_index),
-                        text.clone(),
+                        segment.clone(),
                     );
                 }
             }
@@ -113,10 +113,10 @@ impl MediaPlugin {
                 {
                     job.segments.retain(|(turn, _), _| turn != &first.turn_id);
                     for segment in segments {
-                        if let Some(text) = &segment.translated {
+                        if segment.translated.is_some() {
                             job.segments.insert(
                                 (segment.turn_id.clone(), segment.segment_index),
-                                text.clone(),
+                                segment.clone(),
                             );
                         }
                     }
@@ -128,7 +128,10 @@ impl MediaPlugin {
                     TranslationOutcome::Completed if !job.segments.is_empty() => {
                         let mut text = String::new();
                         for segment in job.segments.values() {
-                            crate::streaming::append_segment(&mut text, segment);
+                            crate::streaming::append_segment(
+                                &mut text,
+                                segment.translated.as_deref().unwrap_or_default(),
+                            );
                         }
                         if text.trim().is_empty() {
                             self.controller.error =
@@ -136,7 +139,18 @@ impl MediaPlugin {
                             self.subtitle_job = None;
                             self.controller.pause_task();
                         } else {
-                            self.controller.subtitles.set_translation(&cue, text);
+                            let first = job.segments.values().next().unwrap();
+                            let (source, target) = if job.segments.values().all(|segment| {
+                                segment.source_lang == first.source_lang
+                                    && segment.target_lang == first.target_lang
+                            }) {
+                                (first.source_lang.as_str(), first.target_lang.as_str())
+                            } else {
+                                ("", "")
+                            };
+                            self.controller
+                                .subtitles
+                                .set_translation(&cue, text, source, target);
                             job.segments.clear();
                         }
                     }
@@ -159,23 +173,20 @@ impl MediaPlugin {
     }
 }
 
-fn subtitle_context(
-    cues: &[super::subtitles::SubtitleCue],
-    index: usize,
-    languages: LanguageSelection,
-) -> TaskContext {
-    let (source_language, target_language) = languages.wire();
+fn subtitle_context(cues: &[super::subtitles::SubtitleCue], index: usize) -> TaskContext {
     let before = &cues[index.saturating_sub(2)..index];
     let after = &cues[index + 1..(index + 3).min(cues.len())];
     let recent_turns = before
         .iter()
         .filter_map(|cue| {
             let translated = cue.translated_text.as_deref()?.trim();
+            let source = SupportedLanguage::parse(&cue.source_language)?;
+            let target = SupportedLanguage::parse(&cue.target_language)?;
             (!translated.is_empty()).then(|| PromptTurn {
                 turn_id: Some(cue.id.clone()),
                 speaker_id: cue.speaker_name.clone().unwrap_or_default(),
-                source_language: source_language.clone(),
-                target_language: target_language.clone(),
+                source_language: source.code().to_owned(),
+                target_language: target.code().to_owned(),
                 source_text: cue.original_text.clone(),
                 translated_text: translated.to_owned(),
             })
@@ -192,9 +203,51 @@ fn subtitle_context(
         recent_turns,
         surrounding_source: Some(SurroundingSource {
             speaker_id: cues[index].speaker_name.clone().unwrap_or_default(),
-            source_language,
+            source_language: String::new(),
             before: join(before),
             after: join(after),
         }),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::media::subtitles::SubtitleTimeline;
+
+    #[test]
+    fn subtitle_context_uses_result_languages_and_current_cues() {
+        let mut timeline = SubtitleTimeline::parse(
+            "1\n00:00:00,000 --> 00:00:01,000\nThe entrance is on the right.\n\n\
+             2\n00:00:01,000 --> 00:00:02,000\n我们会等你。\n\n\
+             3\n00:00:02,000 --> 00:00:03,000\nThank you.",
+        )
+        .unwrap();
+        timeline.set_translation("srt_0", "入口在右边。".into(), "en", "zh");
+        timeline.set_translation("srt_1", "We will wait for you.".into(), "zh", "en");
+        let mut edited = timeline.cues()[0].clone();
+        edited.original_text = "The entrance is on the left.".into();
+        edited.translated_text = Some("入口在左边。".into());
+        timeline.edit_cue(edited).unwrap();
+
+        let TaskContext::Snapshot { facts } = subtitle_context(timeline.cues(), 2) else {
+            panic!("Subtitles must use a snapshot");
+        };
+        assert_eq!(facts.recent_turns.len(), 2);
+        assert_eq!(facts.recent_turns[0].source_language, "en");
+        assert_eq!(facts.recent_turns[0].target_language, "zh");
+        assert_eq!(facts.recent_turns[0].translated_text, "入口在左边。");
+        assert_eq!(facts.recent_turns[1].source_language, "zh");
+        assert_eq!(facts.recent_turns[1].target_language, "en");
+        assert!(facts.surrounding_source.unwrap().before.contains("left"));
+
+        timeline.clear_translations();
+        timeline.set_translation("srt_1", "Old translation".into(), "", "");
+        let TaskContext::Snapshot { facts } = subtitle_context(timeline.cues(), 2) else {
+            unreachable!();
+        };
+        assert!(facts.recent_turns.is_empty());
+        assert!(timeline.cues()[0].source_language.is_empty());
+        assert!(timeline.cues()[0].target_language.is_empty());
+    }
 }

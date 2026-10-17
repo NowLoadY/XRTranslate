@@ -42,15 +42,13 @@ impl ContextRegistry {
                             history.observe(&id);
                             history.record(turn, 0);
                         }
+                        history.surrounding_source = surrounding_source;
                         let memory = Arc::new(Mutex::new(history));
                         scopes.push((scope, Arc::downgrade(&memory)));
                         memory
                     });
                 ContextBinding {
-                    facts: ContextFacts {
-                        recent_turns: Vec::new(),
-                        surrounding_source,
-                    },
+                    facts: ContextFacts::default(),
                     memory: Some(memory),
                 }
             }
@@ -68,6 +66,7 @@ struct History {
     next_order: u64,
     observed: VecDeque<(String, u64)>,
     turns: Vec<(u64, u64, PromptTurn)>,
+    surrounding_source: Option<xrtranslate_prompt::SurroundingSource>,
 }
 impl History {
     fn observe(&mut self, id: &str) {
@@ -93,10 +92,12 @@ impl History {
             if revision >= *previous_revision {
                 *previous_revision = revision;
                 *previous = turn;
+                self.surrounding_source = None;
             }
         } else if let Some((_, order)) = self.observed.iter().find(|(existing, _)| existing == id) {
             self.turns.push((*order, revision, turn));
             self.turns.sort_by_key(|(order, _, _)| *order);
+            self.surrounding_source = None;
         }
         while self.turns.len() > MAX_TURNS
             || self
@@ -113,6 +114,10 @@ impl History {
     }
 }
 impl ContextBinding {
+    pub(crate) fn is_snapshot(&self) -> bool {
+        self.memory.is_none()
+    }
+
     pub(crate) fn observe(&self, id: &str) {
         if let Some(memory) = &self.memory {
             memory
@@ -128,23 +133,31 @@ impl ContextBinding {
         source: &str,
         target: &str,
     ) -> TranslationPromptContext {
-        let turns = self
-            .memory
-            .as_ref()
-            .map(|memory| {
+        let (turns, surrounding_source) = if let Some(memory) = &self.memory {
+            let memory = memory.lock().unwrap_or_else(|error| error.into_inner());
+            (
                 memory
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
                     .turns
                     .iter()
                     .map(|(_, _, turn)| turn.clone())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_else(|| self.facts.recent_turns.clone());
+                    .collect(),
+                memory.surrounding_source.clone(),
+            )
+        } else {
+            (
+                self.facts.recent_turns.clone(),
+                self.facts.surrounding_source.clone(),
+            )
+        };
         let mut context = TranslationPromptContext {
-            current_speaker_id: speaker.to_owned(),
+            current_speaker_id: surrounding_source
+                .as_ref()
+                .map(|source| source.speaker_id.trim())
+                .filter(|speaker| !speaker.is_empty())
+                .unwrap_or(speaker)
+                .to_owned(),
             language_order: vec![source.to_owned(), target.to_owned()],
-            surrounding_source: self.facts.surrounding_source.clone(),
+            surrounding_source,
             ..Default::default()
         };
         for turn in turns.into_iter().filter(|turn| {
@@ -342,5 +355,13 @@ mod tests {
         assert_eq!(context.surrounding_source, facts.surrounding_source);
         assert_eq!(context.recent_turns.len(), 1);
         assert_eq!(first.snapshot("next", "", "en", "zh").recent_turns.len(), 1);
+        first.observe("new");
+        first.record(turn("new", "new recording", "zh"), 1);
+        assert!(
+            second
+                .snapshot("next", "", "en", "zh")
+                .surrounding_source
+                .is_none()
+        );
     }
 }
