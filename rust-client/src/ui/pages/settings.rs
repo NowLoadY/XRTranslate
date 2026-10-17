@@ -364,11 +364,6 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
         });
         ui.add_space(14.0);
         render_update_controls(app, ui);
-        ui.add_space(12.0);
-        ui.add(egui::Label::new(egui::RichText::new(crate::i18n::tr(
-            app.ui_language,
-            "Flags are visual aids for identifying languages; they do not imply exclusive ties to a country or region, or express a political position.",
-        )).size(12.0).color(crate::ui::theme::text_normal())).wrap());
 
         let groups = crate::contributors::load_contributors_cached(&app.project_root());
         if !groups.is_empty() {
@@ -454,6 +449,15 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
             }
             render_notice_item(ui, item, index == 0);
         }
+        ui.add_space(7.0);
+        render_notice_item(
+            ui,
+            crate::i18n::tr(
+                app.ui_language,
+                "Flags are visual aids for identifying languages; they do not imply exclusive ties to a country or region, or express a political position.",
+            ),
+            false,
+        );
     });
 }
 
@@ -762,15 +766,6 @@ fn render_plugins_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             .size(20.0)
             .color(crate::ui::theme::text_strong())
             .strong(),
-    );
-    ui.add_space(2.0);
-    ui.label(
-        egui::RichText::new(crate::i18n::tr(
-            language,
-            "Choose which optional tools are enabled.",
-        ))
-        .size(12.5)
-        .color(crate::ui::theme::text_weak()),
     );
     ui.add_space(16.0);
 

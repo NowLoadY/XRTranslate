@@ -71,18 +71,17 @@ fn render_page(
                 .color(crate::ui::theme::text_strong())
                 .strong(),
             );
-            ui.hyperlink_to(
-                crate::i18n::tr(
-                    context.language,
-                    match plugin.game() {
-                        super::OscGame::VRChat => "Enable OSC in VRChat.",
-                        super::OscGame::ChilloutVR => {
-                            "Enable OSC in Settings → Implementation → OSC."
-                        }
-                    },
-                ),
-                plugin.game().setup_url(),
-            );
+            ui.label(crate::i18n::tr(
+                context.language,
+                match plugin.game() {
+                    super::OscGame::VRChat => {
+                        "In VRChat's Action Menu, turn on OSC → Enabled."
+                    }
+                    super::OscGame::ChilloutVR => {
+                        "Enable OSC in Settings → Implementation → OSC."
+                    }
+                },
+            ));
 
             ui.add_space(12.0);
 

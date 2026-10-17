@@ -16,13 +16,6 @@ impl OscGame {
         }
     }
 
-    pub fn setup_url(self) -> &'static str {
-        match self {
-            Self::VRChat => "https://docs.vrchat.com/docs/osc-as-input-controller#chatbox",
-            Self::ChilloutVR => "https://docs.chilloutvr.net/chilloutvr/game/osc/#chatbox",
-        }
-    }
-
     pub fn max_text_length(self) -> usize {
         match self {
             Self::VRChat => 144,

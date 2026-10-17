@@ -55,7 +55,7 @@ pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     ("Skipped", "已跳过", "スキップ済み", "건너뜀", "Пропущено"),
     ("ChilloutVR OSC Studio", "ChilloutVR OSC 工作台", "ChilloutVR OSC スタジオ", "ChilloutVR OSC 스튜디오", "ChilloutVR OSC Студия"),
     ("Send translation captions to ChilloutVR chat bubbles.", "向 ChilloutVR 聊天气泡发送翻译字幕。", "ChilloutVRのチャットバブルに翻訳字幕を送信します。", "ChilloutVR 채팅 말풍선에 번역 자막을 전송합니다.", "Отправлять переведённые субтитры в чат-пузыри ChilloutVR."),
-    ("Enable OSC in VRChat.", "在 VRChat 中启用 OSC。", "VRChatでOSCを有効にします。", "VRChat에서 OSC를 켜세요.", "Включите OSC в VRChat."),
+    ("In VRChat's Action Menu, turn on OSC → Enabled.", "在 VRChat 动作菜单中开启 OSC → Enabled。", "VRChatのアクションメニューでOSC → Enabledをオンにします。", "VRChat 액션 메뉴에서 OSC → Enabled를 켜세요.", "В меню действий VRChat включите OSC → Enabled."),
     ("Enable OSC in Settings → Implementation → OSC.", "在 Settings → Implementation → OSC 中启用 OSC。", "Settings → Implementation → OSCでOSCを有効にします。", "Settings → Implementation → OSC에서 OSC를 켜세요.", "Включите OSC в Settings → Implementation → OSC."),
     ("Clear messages", "清空消息", "メッセージを消去", "메시지 지우기", "Очистить сообщения"),
     ("Header", "页头", "ヘッダー", "머리글", "Заголовок"),
@@ -3318,13 +3318,6 @@ pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     ("Backend", "后端", "バックエンド", "백엔드", "Бэкенд"),
     ("Server", "服务器", "サーバー", "서버", "Сервер"),
     ("Plugins", "插件", "プラグイン", "플러그인", "Плагины"),
-    (
-        "Choose which optional tools are enabled.",
-        "选择要启用的可选插件与工具。",
-        "有効にするオプションツールを選択します。",
-        "사용할 선택 도구를 활성화하세요.",
-        "Выберите дополнительные инструменты для включения.",
-    ),
     (
         "Service Providers",
         "服务与接口",
