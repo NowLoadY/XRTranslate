@@ -13,7 +13,7 @@ use crate::{
         configured_model_packages, default_model_for_vram, model_asset_is_present,
         model_packages_for_provider, set_model_asset,
     },
-    ui::{components, model_comparison, theme},
+    ui::{animation::AnimationSystem, components, model_comparison, theme},
 };
 
 const STEPS: [&str; 4] = [
@@ -55,6 +55,7 @@ pub fn render_onboarding_fullscreen(
 
     let viewport_focused = ui.input(|input| input.viewport().focused.unwrap_or(true));
     let custom_background = app.background_image.is_loaded();
+    let welcome = app.onboarding_page == 0;
     let mut companion = crate::ui::companion::OnboardingLayout {
         requirement,
         ..Default::default()
@@ -68,18 +69,28 @@ pub fn render_onboarding_fullscreen(
         .show(ui.ctx(), |ui| {
             ui.set_width((page_rect.width() - 2.0 * margin as f32).min(720.0));
             Frame::new()
-                .fill(if custom_background {
+                .fill(if welcome {
+                    Color32::from_rgb(235, 242, 255)
+                } else if custom_background {
                     theme::surface_panel()
                 } else {
                     theme::sidebar(viewport_focused)
                 })
-                .stroke(Stroke::new(1.0, theme::border()))
+                .stroke(if welcome {
+                    Stroke::NONE
+                } else {
+                    Stroke::new(1.0, theme::border())
+                })
                 .corner_radius(theme::container_radius(18))
-                .shadow(egui::Shadow {
-                    offset: [0, 3],
-                    blur: 12,
-                    spread: 0,
-                    color: Color32::from_black_alpha(18),
+                .shadow(if welcome {
+                    egui::Shadow::NONE
+                } else {
+                    egui::Shadow {
+                        offset: [0, 3],
+                        blur: 12,
+                        spread: 0,
+                        color: Color32::from_black_alpha(18),
+                    }
                 })
                 .inner_margin(Margin::symmetric(16, footer_margin_y))
                 .show(ui, |ui| {
@@ -365,13 +376,6 @@ fn render_onboarding_steps(
             } else {
                 theme::text_weak()
             };
-            let stroke = if active {
-                Stroke::NONE
-            } else if visited {
-                Stroke::new(1.0, Color32::from_rgb(147, 197, 253))
-            } else {
-                Stroke::new(1.0, theme::border())
-            };
             let label = i18n::tr(language, *title);
             let text = if compact || !active {
                 (i + 1).to_string()
@@ -386,7 +390,7 @@ fn render_onboarding_steps(
                         egui::Vec2::ZERO
                     })
                     .fill(fill)
-                    .stroke(stroke)
+                    .stroke(Stroke::NONE)
                     .corner_radius(12)
                     .wrap_mode(egui::TextWrapMode::Extend)
                     .sense(egui::Sense::hover()),
@@ -403,92 +407,109 @@ fn render_onboarding_steps(
     bounds
 }
 
-fn onboarding_feature_card(
+fn onboarding_feature(
     ui: &mut egui::Ui,
     title: &'static str,
     description: &'static str,
-    stroke_color: Color32,
+    color: Color32,
+    icon: egui::ImageSource<'static>,
     language: crate::i18n::UiLanguage,
 ) -> egui::Rect {
-    let compact_w = ui.available_width() < 440.0;
-    let compact_h = ui.available_height() < 340.0;
-    let compact = compact_w || compact_h;
-    let border_id = ui.make_persistent_id(("onboarding_feature_border", title));
-    crate::ui::organic_border::show(
-        ui,
-        border_id,
-        Frame::new()
-            .fill(theme::surface_control())
-            .corner_radius(CornerRadius::same(12))
-            .inner_margin(if compact {
-                Margin::symmetric(14, 8)
-            } else {
-                Margin::symmetric(22, 20)
-            }),
-        12.0,
-        stroke_color,
-        |ui| {
+    let response = Frame::new()
+        .inner_margin(Margin::symmetric(2, 10))
+        .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            if !compact {
-                ui.set_min_height(108.0);
-            }
-
-            ui.label(
-                RichText::new(crate::i18n::tr(language, title))
-                    .size(if compact { 14.0 } else { 16.0 })
-                    .color(theme::text_strong())
-                    .strong(),
-            );
-
-            ui.add_space(if compact { 3.0 } else { 8.0 });
-            ui.label(
-                RichText::new(crate::i18n::tr(language, description))
-                    .size(if compact { 11.5 } else { 13.0 })
-                    .color(theme::text_weak())
-                    .line_height(if compact { Some(15.0) } else { Some(19.0) }),
-            );
-        },
-    )
-    .response
-    .rect
+            ui.horizontal_top(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::hover());
+                ui.painter()
+                    .circle_filled(rect.center(), 20.0, color.gamma_multiply(0.35));
+                egui::Image::new(icon)
+                    .tint(color)
+                    .paint_at(ui, rect.shrink(9.0));
+                ui.add_space(4.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new(i18n::tr(language, title))
+                            .size(14.0)
+                            .strong()
+                            .color(theme::text_strong()),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(i18n::tr(language, description))
+                                .size(12.0)
+                                .color(theme::text_normal()),
+                        )
+                        .wrap(),
+                    );
+                });
+            });
+        });
+    ui.ctx()
+        .layer_transform_to_global(ui.layer_id())
+        .unwrap_or_default()
+        * response.response.rect
 }
 
 fn render_onboarding_welcome(
     language: crate::i18n::UiLanguage,
     ui: &mut egui::Ui,
 ) -> [egui::Rect; 3] {
-    ui.label(
-        RichText::new(i18n::tr(language, "Welcome to XRTranslate"))
-            .size(24.0)
-            .color(theme::text_strong())
-            .strong(),
-    );
+    let id = ui.make_persistent_id("welcome_entrance");
+    let frame = ui.ctx().cumulative_frame_nr();
+    let now = ui.input(|input| input.time);
+    let started = ui.data_mut(|data| {
+        let state = data.get_temp_mut_or_insert_with(id, || (frame, now));
+        if frame > state.0 + 1 {
+            state.1 = now;
+        }
+        state.0 = frame;
+        state.1
+    });
+    let elapsed = (now - started) as f32;
+    AnimationSystem::render_staggered(ui, id.with("title"), elapsed, 0, |ui| {
+        ui.label(
+            RichText::new(i18n::tr(language, "Welcome to XRTranslate"))
+                .size(26.0)
+                .color(theme::text_strong())
+                .strong(),
+        );
+    });
     ui.add_space(16.0);
     let cards = [
         (
             "Audio Input",
             "Microphone or desktop audio.",
             Color32::from_rgb(59, 130, 246),
+            egui::include_image!("../../../resources/icons/microphone.svg"),
         ),
         (
             "Recognition & Translation",
             "Speak across languages.",
             Color32::from_rgb(16, 185, 129),
+            egui::include_image!("../../../resources/icons/translation.svg"),
         ),
         (
             "Plugins & Integrations",
             "Subtitles, voice, VRChat & ChilloutVR.",
             Color32::from_rgb(245, 158, 11),
+            egui::include_image!("../../../resources/plugins/game_plugins/icon.svg"),
         ),
     ];
     let mut bounds = [egui::Rect::NOTHING; 3];
     crate::ui::layout::responsive_columns(ui, cards.len(), 220.0, |ui, index| {
-        let (title, description, color) = cards[index];
-        bounds[index] = onboarding_feature_card(ui, title, description, color, language);
+        let (title, description, color, icon) = &cards[index];
+        bounds[index] =
+            AnimationSystem::render_staggered(ui, id.with(index), elapsed, index + 1, |ui| {
+                onboarding_feature(ui, title, description, *color, icon.clone(), language)
+            });
     });
 
     ui.add_space(20.0);
-    components::showcase(ui, language, &crate::ui::previews::welcome());
+    AnimationSystem::render_staggered(ui, id.with("showcase"), elapsed, 4, |ui| {
+        components::showcase(ui, language, &crate::ui::previews::welcome());
+    });
     bounds
 }
 

@@ -155,6 +155,42 @@ impl AnimationSystem {
         )
     }
 
+    /// Reveals consecutive sections without moving their layout or scroll bounds.
+    pub fn render_staggered<R>(
+        ui: &mut egui::Ui,
+        id: Id,
+        elapsed: f32,
+        order: usize,
+        add_contents: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> R {
+        let t = ((elapsed - order as f32 * 0.08) / 0.55).clamp(0.0, 1.0);
+        let opacity = Self::ease_out_cubic(t);
+        let parent = ui.layer_id();
+        let layer = if t < 1.0 {
+            ui.ctx().request_repaint();
+            let spring = (-6.0 * t).exp() * ((9.0 * t).cos() + (2.0 / 3.0) * (9.0 * t).sin());
+            let layer = egui::LayerId::new(parent.order, id.with("entrance"));
+            let transform = ui
+                .ctx()
+                .layer_transform_to_global(parent)
+                .unwrap_or_default()
+                * egui::emath::TSTransform::from_translation(egui::vec2(0.0, 14.0 * spring));
+            ui.ctx().set_sublayer(parent, layer);
+            ui.ctx().set_transform_layer(layer, transform);
+            layer
+        } else {
+            parent
+        };
+        ui.scope_builder(egui::UiBuilder::new().layer_id(layer), |ui| {
+            ui.multiply_opacity(opacity);
+            if opacity < 0.15 {
+                ui.disable();
+            }
+            add_contents(ui)
+        })
+        .inner
+    }
+
     fn render_transition<R>(
         ui: &mut egui::Ui,
         id: Id,

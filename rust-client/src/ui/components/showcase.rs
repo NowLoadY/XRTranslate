@@ -1,6 +1,6 @@
 use crate::{
     i18n::{UiLanguage, tr},
-    ui::{automation, components, theme},
+    ui::{automation, theme},
 };
 use eframe::egui;
 
@@ -34,10 +34,9 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
     let mut focused = false;
     let radius = theme::container_radius(16);
     let card = egui::Frame::new()
-        .fill(theme::panel_fill(ui.ctx(), theme::surface_subtle()))
-        .stroke(egui::Stroke::new(1.0, theme::border()))
+        .fill(egui::Color32::from_rgb(235, 245, 241))
         .corner_radius(radius)
-        .inner_margin(12)
+        .inner_margin(16)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 4.0;
@@ -53,7 +52,11 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
                     ui.ctx().open_url(egui::OpenUrl::new_tab(url));
                 }
             } else {
-                ui.label(egui::RichText::new(title).strong().color(theme::text_strong()));
+                ui.label(
+                    egui::RichText::new(title)
+                        .strong()
+                        .color(theme::text_strong()),
+                );
             }
             ui.add(egui::Label::new(tr(language, slide.description)).wrap());
             ui.add_space(4.0);
@@ -73,7 +76,6 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
                 egui::pos2(image_area.left() + 8.0, image_area.bottom() - 60.0),
                 egui::pos2(image_area.right() - 8.0, image_area.bottom() - 24.0),
             );
-            let overlay_fill = theme::surface_subtle().gamma_multiply(0.92);
             let mut controls = ui.new_child(
                 egui::UiBuilder::new()
                     .id_salt("preview_controls")
@@ -82,30 +84,47 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
             );
             controls.set_clip_rect(image_area.intersect(ui.clip_rect()));
             if let Some(detail) = slide.detail {
-                egui::Frame::new()
-                    .fill(overlay_fill)
-                    .corner_radius(theme::container_radius(12))
-                    .inner_margin(egui::Margin::symmetric(8, 4))
-                    .show(&mut controls, |ui| {
-                        ui.add(egui::Label::new(tr(language, detail)).truncate());
-                    });
+                controls.add(
+                    egui::Label::new(
+                        egui::RichText::new(tr(language, detail))
+                            .strong()
+                            .color(theme::text_strong()),
+                    )
+                    .truncate(),
+                );
             }
             if slides.len() == 1 {
                 return;
             }
             controls.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let playback = render_playback_button(ui, language, preview.paused);
+                let playback = flat_control(
+                    ui,
+                    tr(language, if preview.paused { "Play" } else { "Pause" }),
+                    if preview.paused {
+                        egui::include_image!("../../../resources/icons/play.svg")
+                    } else {
+                        egui::include_image!("../../../resources/icons/pause.svg")
+                    },
+                );
                 focused |= playback.has_focus();
                 if playback.clicked() {
                     preview.paused = !preview.paused;
                     preview.next_at = None;
                 }
-                let next = components::next_button(ui, tr(language, "Next"));
+                let next = flat_control(
+                    ui,
+                    tr(language, "Next"),
+                    egui::include_image!("../../../resources/icons/chevron-right.svg"),
+                );
                 focused |= next.has_focus();
                 if next.clicked() {
                     selected = Some((preview.index + 1) % slides.len());
                 }
-                let previous = components::back_button(ui, tr(language, "Previous"));
+                let previous = flat_control(
+                    ui,
+                    tr(language, "Previous"),
+                    egui::include_image!("../../../resources/icons/chevron-left.svg"),
+                );
                 focused |= previous.has_focus();
                 if previous.clicked() {
                     selected = Some((preview.index + slides.len() - 1) % slides.len());
@@ -180,32 +199,27 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
     ui.data_mut(|data| data.insert_temp(id, preview));
 }
 
-fn render_playback_button(ui: &mut egui::Ui, language: UiLanguage, paused: bool) -> egui::Response {
-    let label = tr(language, if paused { "Play" } else { "Pause" });
-    let response = components::compact_icon_button(ui, "showcase_playback", false, label, None);
-    let center = response.rect.center();
-    let color = theme::text_normal();
-    if paused {
-        ui.painter().add(egui::Shape::convex_polygon(
-            vec![
-                center + egui::vec2(-3.5, -6.0),
-                center + egui::vec2(5.0, 0.0),
-                center + egui::vec2(-3.5, 6.0),
-            ],
-            color,
-            egui::Stroke::NONE,
-        ));
-    } else {
-        for offset in [-3.0, 3.0] {
-            ui.painter().rect_filled(
-                egui::Rect::from_center_size(
-                    center + egui::vec2(offset, 0.0),
-                    egui::vec2(3.0, 12.0),
-                ),
-                1,
-                color,
-            );
-        }
-    }
-    response
+fn flat_control(
+    ui: &mut egui::Ui,
+    label: &str,
+    icon: egui::ImageSource<'static>,
+) -> egui::Response {
+    let response = ui.add_sized([32.0, 32.0], egui::Button::new("").frame(false));
+    let response = automation::button_response(ui, response.id, label, ui.is_enabled(), response);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    ui.painter().circle_filled(
+        response.rect.center(),
+        16.0,
+        if response.hovered() || response.has_focus() {
+            egui::Color32::WHITE
+        } else {
+            egui::Color32::from_white_alpha(170)
+        },
+    );
+    egui::Image::new(icon)
+        .tint(theme::text_strong())
+        .paint_at(ui, response.rect.shrink(8.0));
+    response.on_hover_text(label)
 }
