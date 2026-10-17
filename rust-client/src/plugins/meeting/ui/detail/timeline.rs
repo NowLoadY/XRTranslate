@@ -4,9 +4,13 @@ use crate::plugins::meeting::{
     i18n::tr,
     store::{MeetingBundle, Segment, Speaker},
 };
-use crate::ui::{components, layout};
+use crate::ui::{components, virtual_list};
 use eframe::egui;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 
 #[derive(Clone, Copy)]
 enum Entry {
@@ -120,12 +124,32 @@ pub(super) fn render_timeline(
     if entries.is_empty() {
         entries.push(Entry::Empty);
     }
-    let evidence = entries.iter().position(|entry| matches!(entry, Entry::Segment(index) if controller.evidence_target.as_deref() == Some(bundle.segments[*index].id.as_str())));
+    let evidence = controller.evidence_target.as_deref().and_then(|target| {
+        entries.iter().position(
+            |entry| matches!(entry, Entry::Segment(index) if bundle.segments[*index].id == target),
+        )
+    });
     let active_id = controller
         .playback
         .current_segment(&bundle.segments)
         .map(|segment| segment.id.clone());
     let note_drafts = controller.marker_drafts.clone();
+    let mut drafts_hash = std::collections::hash_map::DefaultHasher::new();
+    for draft in &note_drafts {
+        draft.hash(&mut drafts_hash);
+    }
+    let revision = egui::Id::new((
+        &bundle.meeting.id,
+        controller.bundle_revision(),
+        &query,
+        controller.highlights_only,
+        drafts_hash.finish(),
+    ));
+    let measurements_id = egui::Id::new("meeting_timeline_measurements");
+    let mut measurements = ui
+        .data_mut(|data| data.remove_temp::<virtual_list::Measurements<Entry>>(measurements_id))
+        .unwrap_or_default();
+    let mut notes_changed = false;
     let follow = live && query.is_empty() && !controller.highlights_only;
     let empty_text = tr(
         language,
@@ -147,19 +171,36 @@ pub(super) fn render_timeline(
             crate::ui::automation::ElementValue::Number(entries.len() as f64),
             viewport,
         );
-        layout::show_variable_virtual_rows(
+        virtual_list::show_variable_virtual_rows(
             ui,
             "meeting_timeline_scroll",
             6.0,
             target,
-            Some(|row: &Row| row.id),
+            Some(|row: &virtual_list::MeasuredRow<Entry>| row.id),
             |ui| {
-                let prepared = entries
-                    .iter()
-                    .map(|entry| {
+                let prepared = measurements.prepare(
+                    ui,
+                    revision,
+                    language,
+                    || {
+                        entries
+                            .iter()
+                            .map(|entry| {
+                                row_geometry(
+                                    ui,
+                                    *entry,
+                                    bundle,
+                                    &by_segment,
+                                    &note_drafts,
+                                    empty_text,
+                                )
+                            })
+                            .collect()
+                    },
+                    |row| {
                         prepare_row(
                             ui,
-                            *entry,
+                            row.entry,
                             bundle,
                             &by_segment,
                             &speakers,
@@ -167,17 +208,28 @@ pub(super) fn render_timeline(
                             empty_text,
                             language,
                         )
-                    })
-                    .collect::<Vec<_>>();
-                rows::remember_geometry(ui, geometry_id, &prepared, 6.0, viewport.height());
+                        .0
+                    },
+                );
+                rows::remember_geometry(ui, geometry_id, prepared.as_ref(), 6.0, viewport.height());
                 prepared
             },
-            |ui, _, height, row| {
+            |ui, _, height, measured| {
+                let (_, row) = prepare_row(
+                    ui,
+                    measured.entry,
+                    bundle,
+                    &by_segment,
+                    &speakers,
+                    &note_drafts,
+                    empty_text,
+                    language,
+                );
                 ui.push_id(row.id, |ui| {
                     if let Entry::Segment(index) = row.entry {
                         let segment = &bundle.segments[index];
-                        render_segment(
-                            row,
+                        notes_changed |= render_segment(
+                            &row,
                             height,
                             bundle,
                             &mut controller.marker_drafts,
@@ -194,8 +246,75 @@ pub(super) fn render_timeline(
             },
         );
     });
+    if notes_changed {
+        measurements.invalidate();
+    }
+    ui.data_mut(|data| data.insert_temp(measurements_id, measurements));
     if evidence.is_some() {
         controller.evidence_target = None;
+    }
+}
+
+fn row_id(bundle: &MeetingBundle, kind: &str, id: &str) -> egui::Id {
+    egui::Id::new(("meeting_row", &bundle.meeting.id, kind, id))
+}
+
+fn row_geometry(
+    ui: &egui::Ui,
+    entry: Entry,
+    bundle: &MeetingBundle,
+    markers: &HashMap<&str, Vec<usize>>,
+    drafts: &HashMap<String, String>,
+    empty_text: &str,
+) -> virtual_list::MeasuredRow<Entry> {
+    let (id, signature) = match entry {
+        Entry::Topic(index) => {
+            let topic = &bundle.topics[index];
+            (
+                row_id(bundle, "topic", &topic.id),
+                egui::Id::new(&topic.title),
+            )
+        }
+        Entry::Waiting(index) => (
+            row_id(bundle, "waiting", &bundle.topics[index].id),
+            egui::Id::NULL,
+        ),
+        Entry::Empty => (row_id(bundle, "empty", ""), egui::Id::new(empty_text)),
+        Entry::Segment(index) => {
+            let segment = &bundle.segments[index];
+            let id = row_id(bundle, "segment", &segment.id);
+            let expanded = ui
+                .data(|data| data.get_temp::<bool>(id.with("notes")))
+                .unwrap_or(false);
+            let notes = markers
+                .get(segment.id.as_str())
+                .into_iter()
+                .flatten()
+                .map(|index| {
+                    let marker = &bundle.markers[*index];
+                    if expanded {
+                        drafts.get(&marker.id).unwrap_or(&marker.text)
+                    } else {
+                        &marker.text
+                    }
+                })
+                .collect::<Vec<_>>();
+            (
+                id,
+                egui::Id::new((
+                    &segment.original_text,
+                    &segment.translated_text,
+                    segment.is_final,
+                    expanded,
+                    notes,
+                )),
+            )
+        }
+    };
+    virtual_list::MeasuredRow {
+        id,
+        signature,
+        entry,
     }
 }
 
@@ -209,7 +328,7 @@ fn prepare_row(
     empty_text: &str,
     language: crate::i18n::UiLanguage,
 ) -> (f32, Row) {
-    let row_id = |kind, id: &str| egui::Id::new(("meeting_row", &bundle.meeting.id, kind, id));
+    let row_id = |kind, id: &str| row_id(bundle, kind, id);
     let Entry::Segment(index) = entry else {
         let (id, text, extra) = match entry {
             Entry::Topic(index) => {
@@ -379,10 +498,11 @@ fn render_segment(
     language: crate::i18n::UiLanguage,
     action: &mut UiAction,
     ui: &mut egui::Ui,
-) {
+) -> bool {
     let Entry::Segment(index) = row.entry else {
-        return;
+        return false;
     };
+    let mut notes_changed = false;
     let segment = &bundle.segments[index];
     let rect = egui::Rect::from_min_size(
         ui.next_widget_position(),
@@ -446,6 +566,7 @@ fn render_segment(
             {
                 if marked {
                     ui.data_mut(|data| data.insert_temp(row.id.with("notes"), !row.show_notes));
+                    notes_changed = true;
                     ui.ctx().request_discard("Remeasure expanded meeting notes");
                 } else {
                     *action = UiAction::Highlight(segment.id.clone());
@@ -480,8 +601,8 @@ fn render_segment(
             }
         }
     });
-    super::current_marker(ui, rect, active);
     rows::record(ui, &segment.id, rect);
+    notes_changed
 }
 
 fn segment_matches(segment: &Segment, query: &str) -> bool {

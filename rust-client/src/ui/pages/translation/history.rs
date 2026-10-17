@@ -463,7 +463,7 @@ fn render_feed(
     let count = turns.len() + usize::from(!app.partial_text.is_empty());
     let frozen_selection = selection.as_deref().cloned();
     let mut clicked = false;
-    crate::ui::layout::show_variable_virtual_rows(
+    crate::ui::virtual_list::show_variable_virtual_rows(
         ui,
         "history_scroll",
         if plain { 12.0 } else { scale.row_gap },

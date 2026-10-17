@@ -313,13 +313,3 @@ fn select_sentence(
         *action = UiAction::SelectSegment(segment_id.to_owned());
     }
 }
-
-fn current_marker(ui: &egui::Ui, rect: egui::Rect, active: bool) {
-    if active {
-        ui.painter().vline(
-            rect.left() + 4.0,
-            rect.top() + 4.0..=rect.bottom() - 4.0,
-            egui::Stroke::new(2.0, crate::ui::theme::primary()),
-        );
-    }
-}

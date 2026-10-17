@@ -118,7 +118,7 @@ pub(super) fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     if records.is_empty() && !archive.loading {
         ui.weak(tr(language, "No matching translations"));
     }
-    crate::ui::layout::show_variable_virtual_rows(
+    crate::ui::virtual_list::show_variable_virtual_rows(
         ui,
         "translation_archive",
         8.0,

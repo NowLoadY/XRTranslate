@@ -1,4 +1,4 @@
-use crate::ui::layout::ScrollTarget;
+use crate::ui::virtual_list::ScrollTarget;
 use eframe::egui;
 use std::sync::Arc;
 
@@ -112,7 +112,7 @@ mod tests {
             let geometry = id.with("geometry");
             let target = scroll_target(ui, id, geometry, true, evidence);
             let height = ui.available_height();
-            crate::ui::layout::show_variable_virtual_rows(
+            crate::ui::virtual_list::show_variable_virtual_rows(
                 ui,
                 "meeting_follow_test",
                 6.0,

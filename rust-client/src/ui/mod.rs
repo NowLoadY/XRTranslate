@@ -16,6 +16,7 @@ pub mod organic_line;
 pub mod pages;
 pub(crate) mod previews;
 pub mod theme;
+pub mod virtual_list;
 
 use eframe::egui::{self, Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Stroke};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};

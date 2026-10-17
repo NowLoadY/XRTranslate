@@ -1,7 +1,10 @@
 use super::{backend::MediaSource, subtitles::SubtitleTimeline};
 use crate::client_settings::RecognitionSettings;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{
+    io::{BufWriter, Write},
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SubtitleMode {
@@ -220,7 +223,11 @@ impl MediaTaskStore {
     pub fn save_to_dir(&self, dir: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
         let mut temporary = tempfile::NamedTempFile::new_in(dir)?;
-        serde_json::to_writer(&mut temporary, self).map_err(std::io::Error::other)?;
+        {
+            let mut writer = BufWriter::new(&mut temporary);
+            serde_json::to_writer(&mut writer, self).map_err(std::io::Error::other)?;
+            writer.flush()?;
+        }
         temporary.as_file().sync_all()?;
         temporary
             .persist(dir.join("video_tasks.json"))
@@ -246,5 +253,52 @@ impl MediaTaskStore {
 
     pub fn get_mut(&mut self, id: &str) -> Option<&mut MediaTask> {
         self.tasks.iter_mut().find(|t| t.id == id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::media::subtitles::{SubtitleCue, SubtitleMetadata};
+
+    #[test]
+    fn saving_replaces_the_store_and_roundtrips_a_large_subtitle_document() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut task = MediaTask::new_with_media_type(
+            "Subtitle document".into(),
+            MediaSource::LocalFile("subtitles.srt".into()),
+            MediaType::Subtitles,
+            "en".into(),
+            "zh".into(),
+            SubtitleMode::None,
+            default_video_recognition(),
+        );
+        for index in 0..256 {
+            task.subtitles.add_cue_with_metadata(
+                SubtitleCue {
+                    id: format!("cue-{index}"),
+                    start_ms: index * 1_000,
+                    end_ms: (index + 1) * 1_000,
+                    speaker_name: None,
+                    original_text: format!("Line {index}: \"quoted\" \\ path\n第二行。"),
+                    translated_text: Some(format!("译文 {index}\nMore translated text.")),
+                    source_language: "en".into(),
+                    target_language: "zh".into(),
+                },
+                SubtitleMetadata::authored(),
+            );
+        }
+        let mut store = MediaTaskStore { tasks: vec![task] };
+        for title in ["Initial document", "Updated document"] {
+            store.tasks[0].title = title.into();
+            store.save_to_dir(directory.path()).unwrap();
+            let serialized = std::fs::read(directory.path().join("video_tasks.json")).unwrap();
+            assert!(serialized.len() > 8 * 1_024);
+            assert_eq!(
+                serde_json::to_value(MediaTaskStore::load_from_dir(directory.path())).unwrap(),
+                serde_json::to_value(&store).unwrap(),
+            );
+            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        }
     }
 }

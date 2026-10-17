@@ -24,7 +24,13 @@ policy. Components measure their content within the available space; pages
 compose them without duplicating viewport heuristics. Wrapping and stacking take
 precedence over window growth, while user window sizing remains respected.
 
-Shared list geometry owns variable-height content, clipping, and scrolling.
+`ui::virtual_list` owns variable-height measurements, clipping, stable reading
+positions, and smooth scrolling. Media subtitles and meeting records use its
+single set of exact row heights per view for the current document. Revisions
+reconcile rows by stable identity and content; only changed rows are measured
+again. Width, scale, language, or style changes require fresh measurements.
+Only visible rows prepare text for painting; the component retains no
+font-atlas-bound text layouts. Plugins supply row content and editing behavior.
 Shared graph-editor infrastructure owns selection, wiring, navigation, and edit
 history; each studio supplies its domain rendering and validation.
 

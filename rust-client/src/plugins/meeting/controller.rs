@@ -71,6 +71,7 @@ pub struct MeetingController {
     pub pane: MeetingPane,
     pub meetings: Vec<Meeting>,
     pub bundle: Option<MeetingBundle>,
+    bundle_revision: u64,
     pub previews: crate::session_coordinator::LivePreviews,
     pub draft: MeetingDraft,
     pub minutes_draft: String,
@@ -92,6 +93,11 @@ pub struct MeetingController {
 }
 
 impl MeetingController {
+    /// Changes only when the current meeting document changes, not when it is refreshed.
+    pub fn bundle_revision(&self) -> u64 {
+        self.bundle_revision
+    }
+
     pub fn storage_available(&self) -> bool {
         self.persistent_storage_available
     }
@@ -128,6 +134,7 @@ impl MeetingController {
             pane: MeetingPane::Timeline,
             meetings,
             bundle: None,
+            bundle_revision: 0,
             previews: Default::default(),
             draft: MeetingDraft::default(),
             minutes_draft: String::new(),
@@ -200,7 +207,10 @@ impl MeetingController {
                 {
                     self.error = Some(error);
                 }
-                self.bundle = Some(bundle);
+                if self.bundle.as_ref() != Some(&bundle) {
+                    self.bundle = Some(bundle);
+                    self.bundle_revision = self.bundle_revision.wrapping_add(1);
+                }
                 self.route = MeetingRoute::Detail;
             }
             Err(error) => self.set_error(error),
@@ -521,10 +531,13 @@ impl MeetingController {
                 return Ok(());
             };
             if self.minutes_dirty {
-                bundle.minutes = Some(
-                    self.store
-                        .save_minutes(&bundle.meeting.id, &self.minutes_draft)?,
-                );
+                let minutes = self
+                    .store
+                    .save_minutes(&bundle.meeting.id, &self.minutes_draft)?;
+                if bundle.minutes.as_ref() != Some(&minutes) {
+                    bundle.minutes = Some(minutes);
+                    self.bundle_revision = self.bundle_revision.wrapping_add(1);
+                }
                 self.minutes_dirty = false;
             }
             for marker in &mut bundle.markers {
@@ -532,6 +545,7 @@ impl MeetingController {
                     if text != &marker.text {
                         self.store.update_marker(&marker.id, marker.kind, text)?;
                         marker.text.clone_from(text);
+                        self.bundle_revision = self.bundle_revision.wrapping_add(1);
                     }
                     self.marker_drafts.remove(&marker.id);
                 }
@@ -584,6 +598,7 @@ impl MeetingController {
                     .is_some_and(|bundle| bundle.meeting.id == meeting_id)
                 {
                     self.bundle = None;
+                    self.bundle_revision = self.bundle_revision.wrapping_add(1);
                     self.route = MeetingRoute::Library;
                 }
                 self.pending_delete = None;
@@ -631,10 +646,10 @@ impl MeetingController {
         else {
             return false;
         };
-        if let Err(error) =
-            self.store
-                .set_audio_run_source(&capture.meeting_id, &capture.recognition_run_id, path)
-                .and_then(|_| self.store.process_meeting(&capture.meeting_id))
+        if let Err(error) = self
+            .store
+            .set_audio_run_source(&capture.meeting_id, &capture.recognition_run_id, path)
+            .and_then(|_| self.store.process_meeting(&capture.meeting_id))
         {
             self.fail_active_meeting(&error.to_string());
             return false;
@@ -644,13 +659,16 @@ impl MeetingController {
         {
             active.imported_audio = true;
         }
+        let source_path = path.to_string_lossy();
         if let Some(run) = self.bundle.as_mut().and_then(|bundle| {
             bundle
                 .audio_runs
                 .iter_mut()
                 .find(|run| run.recognition_run_id == capture.recognition_run_id)
-        }) {
-            run.audio_source_path = Some(path.to_string_lossy().into_owned());
+        }) && run.audio_source_path.as_deref() != Some(source_path.as_ref())
+        {
+            run.audio_source_path = Some(source_path.into_owned());
+            self.bundle_revision = self.bundle_revision.wrapping_add(1);
         }
         true
     }
@@ -767,4 +785,77 @@ pub fn can_continue(meeting: &Meeting) -> bool {
                 | MeetingStatus::Interrupted
                 | MeetingStatus::Failed
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::meeting::store::{NewSegment, SegmentSource};
+
+    #[test]
+    fn bundle_revision_tracks_data_changes_but_not_refreshes() {
+        let root = tempfile::tempdir().unwrap();
+        let mut controller = MeetingController::open(root.path());
+        let meeting = controller
+            .store
+            .create_meeting(NewMeeting::live("Meeting", None, "en", "zh"))
+            .unwrap();
+        let segment = controller
+            .store
+            .upsert_segment(NewSegment {
+                meeting_id: meeting.meeting.id.clone(),
+                external_key: "sentence".into(),
+                topic_id: meeting.topics[0].id.clone(),
+                original_text: "A sentence.".into(),
+                translated_text: None,
+                source_language: "en".into(),
+                target_language: String::new(),
+                start_ms: 0,
+                end_ms: 1_000,
+                source: SegmentSource::Microphone,
+                recognition_run_id: "run".into(),
+                speaker_token: None,
+                is_final: true,
+            })
+            .unwrap();
+        let marker = controller
+            .store
+            .add_marker(&segment.id, MarkerKind::Note, "")
+            .unwrap();
+        assert_eq!(controller.bundle_revision(), 0);
+        controller.open_meeting(&meeting.meeting.id);
+        let opened = controller.bundle_revision();
+        assert!(opened > 0);
+        controller.reload_open_meeting();
+        assert_eq!(controller.bundle_revision(), opened);
+
+        controller.minutes_draft = "Meeting notes".into();
+        controller.minutes_dirty = true;
+        assert!(controller.save_pending_edits());
+        let minutes_saved = controller.bundle_revision();
+        assert!(minutes_saved > opened);
+        controller
+            .marker_drafts
+            .insert(marker.id, "Evidence note".into());
+        assert!(controller.save_pending_edits());
+        let marker_saved = controller.bundle_revision();
+        assert!(marker_saved > minutes_saved);
+        assert!(controller.save_pending_edits());
+        assert_eq!(controller.bundle_revision(), marker_saved);
+
+        assert!(controller.begin_capture(&meeting.meeting.id));
+        let capture_started = controller.bundle_revision();
+        assert!(capture_started > marker_saved);
+        let source = root.path().join("recording.wav");
+        assert!(controller.mark_imported_audio(&source));
+        let source_changed = controller.bundle_revision();
+        assert!(source_changed > capture_started);
+        assert!(controller.mark_imported_audio(&source));
+        assert_eq!(controller.bundle_revision(), source_changed);
+
+        controller.clear_active_capture();
+        controller.delete(&meeting.meeting.id);
+        assert!(controller.bundle.is_none());
+        assert!(controller.bundle_revision() > source_changed);
+    }
 }

@@ -2,8 +2,12 @@ use crate::{
     plugins::media::{
         controller::{MediaController, SubtitleField},
         i18n::tr,
+        subtitles::SubtitleCue,
     },
-    ui::{components, layout::ScrollTarget},
+    ui::{
+        components,
+        virtual_list::{self, MeasuredRow, Measurements, ScrollTarget},
+    },
 };
 use eframe::egui;
 
@@ -80,9 +84,13 @@ pub(super) fn render_subtitles_card(
                 }
             });
     }
+    let measurements_id = egui::Id::new("media_subtitle_measurements");
     if controller.subtitles.count() == 0 {
-        egui::scroll_area::State::default()
-            .store(ui.ctx(), ui.make_persistent_id("media_subtitles"));
+        ui.data_mut(|data| data.remove::<Measurements<usize>>(measurements_id));
+        egui::scroll_area::State::default().store(
+            ui.ctx(),
+            ui.make_persistent_id(egui::IdSalt::new("media_subtitles")),
+        );
         if controller.previews.entries().is_empty() {
             ui.weak(tr(language, "No subtitles yet"));
         }
@@ -139,83 +147,55 @@ pub(super) fn render_subtitles_card(
     let subtitles = &controller.subtitles;
     let task_id = controller.active_task_id.as_deref();
     let draft = &mut controller.subtitle_edit;
-    crate::ui::layout::show_variable_virtual_rows(
+    let revision = egui::Id::new((
+        task_id,
+        subtitles.revision(),
+        editing_index,
+        edit_height.to_bits(),
+    ));
+    let mut measurements = ui
+        .data_mut(|data| data.remove_temp::<Measurements<usize>>(measurements_id))
+        .unwrap_or_default();
+    virtual_list::show_variable_virtual_rows(
         ui,
         "media_subtitles",
         8.0,
         target,
-        Some(|text: &CueText| text.id),
+        Some(|row: &MeasuredRow<usize>| row.id),
         |ui| {
-            let margins = components::card_margins(ui.ctx());
-            let key = egui::Id::new((
-                task_id,
-                subtitles.revision(),
-                editing_index,
-                edit_height.to_bits(),
-                ui.available_width().to_bits(),
-                ui.ctx().pixels_per_point().to_bits(),
+            measurements.prepare(
+                ui,
+                revision,
                 language,
-                crate::ui::theme::text_strong(),
-                margins.x.to_bits(),
-                margins.y.to_bits(),
-            ));
-            let cache_id = egui::Id::new("media_subtitle_layout");
-            let cached = ui.ctx().data(|data| data.get_temp::<TextRows>(cache_id));
-            if let Some(cached) = cached.filter(|cache| cache.key == key) {
-                return cached.rows;
-            }
-            let rows: std::sync::Arc<[(f32, CueText)]> = subtitles
-                .cues()
-                .iter()
-                .enumerate()
-                .map(|(index, cue)| {
-                    let layout = |text: String| {
-                        ui.painter().layout(
-                            text,
-                            egui::FontId::proportional(14.0),
-                            crate::ui::theme::text_strong(),
-                            (ui.available_width() - margins.x).max(20.0),
-                        )
-                    };
-                    let original = layout(cue.original_text.clone());
-                    let translated = cue
-                        .translated_text
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|text| !text.is_empty() && *text != cue.original_text.trim())
-                        .map(|text| layout(text.to_owned()));
-                    let text_height = original.size().y
-                        + translated.as_ref().map_or(0.0, |text| text.size().y + 2.0);
-                    (
-                        if editing_index == Some(index) {
-                            edit_height
-                        } else {
-                            text_height
-                                + margins.y
-                                + ui.spacing().interact_size.y.max(32.0)
-                                + ui.spacing().item_spacing.y
-                        },
-                        CueText {
+                || {
+                    subtitles
+                        .cues()
+                        .iter()
+                        .enumerate()
+                        .map(|(index, cue)| MeasuredRow {
                             id: egui::Id::new((task_id, &cue.id)),
-                            original,
-                            translated,
-                        },
-                    )
-                })
-                .collect();
-            ui.ctx().data_mut(|data| {
-                data.insert_temp(
-                    cache_id,
-                    TextRows {
-                        key,
-                        rows: rows.clone(),
-                    },
-                )
-            });
-            rows
+                            signature: egui::Id::new((
+                                &cue.original_text,
+                                &cue.translated_text,
+                                (editing_index == Some(index)).then_some(edit_height.to_bits()),
+                            )),
+                            entry: index,
+                        })
+                        .collect()
+                },
+                |row| {
+                    if editing_index == Some(row.entry) {
+                        edit_height
+                    } else {
+                        prepare_cue_text(ui, &subtitles.cues()[row.entry]).0
+                    }
+                },
+            )
         },
-        |ui, index, _, text| {
+        |ui, _, _, row| {
+            let index = row.entry;
             let cue = &subtitles.cues()[index];
+            let text = (editing_index != Some(index)).then(|| prepare_cue_text(ui, cue).1);
             components::card(ui, |ui| {
                 ui.set_width(ui.available_width());
                 if editing_index == Some(index) {
@@ -286,6 +266,7 @@ pub(super) fn render_subtitles_card(
                         edit = Some((cue.id.clone(), SubtitleField::Original));
                     }
                 });
+                let text = text.as_ref().unwrap();
                 ui.scope(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     for (field, galley) in [
@@ -306,6 +287,7 @@ pub(super) fn render_subtitles_card(
             });
         },
     );
+    ui.data_mut(|data| data.insert_temp(measurements_id, measurements));
     if let Some(time) = seek {
         controller.seek_to(time, true);
     }
@@ -324,15 +306,38 @@ pub(super) fn render_subtitles_card(
     }
 }
 
-#[derive(Clone)]
-struct TextRows {
-    key: egui::Id,
-    rows: std::sync::Arc<[(f32, CueText)]>,
+fn prepare_cue_text(ui: &egui::Ui, cue: &SubtitleCue) -> (f32, CueText) {
+    let margins = components::card_margins(ui.ctx());
+    let layout = |text: &str| {
+        ui.painter().layout(
+            text.to_owned(),
+            egui::FontId::proportional(14.0),
+            crate::ui::theme::text_strong(),
+            (ui.available_width() - margins.x).max(20.0),
+        )
+    };
+    let original = layout(&cue.original_text);
+    let translated = cue
+        .translated_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && *text != cue.original_text.trim())
+        .map(layout);
+    let height = original.size().y
+        + translated.as_ref().map_or(0.0, |text| text.size().y + 2.0)
+        + margins.y
+        + ui.spacing().interact_size.y.max(32.0)
+        + ui.spacing().item_spacing.y;
+    (
+        height,
+        CueText {
+            original,
+            translated,
+        },
+    )
 }
 
-#[derive(Clone)]
 struct CueText {
-    id: egui::Id,
     original: std::sync::Arc<egui::Galley>,
     translated: Option<std::sync::Arc<egui::Galley>>,
 }
