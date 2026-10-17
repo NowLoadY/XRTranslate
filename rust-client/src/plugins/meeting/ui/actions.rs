@@ -38,6 +38,13 @@ pub(super) fn apply_action(
     action: UiAction,
     snapshot: &MeetingUiSnapshot,
 ) -> MeetingAction {
+    if matches!(
+        action,
+        UiAction::NewLive | UiAction::NewImport | UiAction::Back | UiAction::Continue(_)
+    ) && !controller.save_pending_edits()
+    {
+        return MeetingAction::None;
+    }
     match action {
         UiAction::None => {}
         UiAction::NewLive => {
@@ -87,7 +94,9 @@ pub(super) fn apply_action(
         UiAction::Highlight(id) => controller.highlight(&id),
         UiAction::RemoveMarker(id) => controller.remove_marker(&id),
         UiAction::SaveMarker(marker) => controller.save_marker(&marker),
-        UiAction::SaveMinutes => controller.save_minutes(),
+        UiAction::SaveMinutes => {
+            controller.save_pending_edits();
+        }
         UiAction::SelectSegment(segment_id) => {
             if controller.active_meeting_id().is_none() {
                 if let Some(segment) = controller.bundle.as_ref().and_then(|bundle| {

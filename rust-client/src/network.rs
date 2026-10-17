@@ -203,8 +203,6 @@ enum SessionCommand {
     },
     Pause,
     Resume,
-    #[allow(dead_code)]
-    Finish,
     Cancel,
 }
 
@@ -279,15 +277,10 @@ impl SessionHandle {
         let _ = self.command_tx.try_send(SessionCommand::Resume);
     }
 
-    /// Ends audio input and waits for the backend's ordered drain
-    /// acknowledgement before closing the WebSocket.
-    #[allow(dead_code)]
+    /// After the caller closes audio input, drain queued audio and wait for
+    /// the backend's acknowledgement before closing the WebSocket.
     pub fn finish(&self) {
-        if self.stop_requested.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        self.paused.store(true, Ordering::Release);
-        let _ = self.command_tx.try_send(SessionCommand::Finish);
+        self.stop_requested.store(true, Ordering::Release);
     }
 
     pub fn cancel(&self) {
@@ -650,11 +643,11 @@ async fn run_session(
         }
     }
     let (pcm_tx, mut pcm_rx) = mpsc::channel::<Vec<u8>>(32);
-    let producer_stop = Arc::clone(&stop_requested);
+    let producer_cancel = Arc::clone(&cancel_requested);
     let producer_paused = Arc::clone(&paused);
     if let Some(audio_rx) = audio_rx {
         thread::spawn(move || {
-            while !producer_stop.load(Ordering::Acquire) {
+            while !producer_cancel.load(Ordering::Acquire) {
                 match audio_rx.recv_timeout(Duration::from_millis(100)) {
                     Ok(samples) => {
                         if producer_paused.load(Ordering::Acquire) {
@@ -692,14 +685,12 @@ async fn run_session(
                     let _ = event_tx.send(SessionEvent::Disconnected("Cancelled".into()));
                     return;
                 }
-                if stop_requested.load(Ordering::Acquire) {
-                    if !finish_sent {
-                        if let Err(error) = send_json(&mut write, json!({"event": "finish"})).await {
-                            let _ = event_tx.send(SessionEvent::Error(format!("Failed to finish session: {error}")));
-                            break;
-                        }
-                        finish_sent = true;
+                if stop_requested.load(Ordering::Acquire) && pcm_input_closed && !finish_sent {
+                    if let Err(error) = send_json(&mut write, json!({"event": "input_ended"})).await {
+                        let _ = event_tx.send(SessionEvent::Error(format!("Failed to finish audio input: {error}")));
+                        break;
                     }
+                    finish_sent = true;
                 }
             }
             Some(command) = command_rx.recv() => {
@@ -712,7 +703,6 @@ async fn run_session(
                     let _ = event_tx.send(SessionEvent::Disconnected("Cancelled".into()));
                     return;
                 }
-                let is_finish = matches!(&command, SessionCommand::Finish);
                 let is_resume = matches!(&command, SessionCommand::Resume);
                 if command.resets_recognition_stream() {
                     let _ = event_tx.send(SessionEvent::StreamEnded {
@@ -726,15 +716,9 @@ async fn run_session(
                 if let Some(updated) = command.audio_source() {
                     audio_source = updated;
                 }
-                if is_finish && finish_sent {
-                    continue;
-                }
                 if let Err(error) = send_session_command(&mut write, command, audio_source, &mut translation_options).await {
                     let _ = event_tx.send(SessionEvent::Error(format!("Failed to update session: {error}")));
                     return;
-                }
-                if is_finish {
-                    finish_sent = true;
                 }
                 if is_resume {
                     paused.store(false, Ordering::Release);
@@ -744,7 +728,7 @@ async fn run_session(
             pcm = pcm_rx.recv(), if session_ready && !pcm_input_closed => {
                 let Some(pcm) = pcm else {
                     pcm_input_closed = true;
-                    if finish_when_audio_ends && !finish_sent {
+                    if (finish_when_audio_ends || stop_requested.load(Ordering::Acquire)) && !finish_sent {
                         if let Err(error) = send_json(&mut write, json!({"event": "input_ended"})).await {
                             let _ = event_tx.send(SessionEvent::Error(format!("Failed to finish audio input: {error}")));
                             break;
@@ -962,7 +946,6 @@ where
         }
         SessionCommand::Pause => send_json(write, json!({"event": "pause"})).await,
         SessionCommand::Resume => send_json(write, json!({"event": "resume"})).await,
-        SessionCommand::Finish => send_json(write, json!({"event": "finish"})).await,
         SessionCommand::Cancel => unreachable!("cancel closes the WebSocket before dispatch"),
     }
 }

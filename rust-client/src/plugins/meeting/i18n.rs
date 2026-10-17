@@ -132,6 +132,13 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Завершить запись",
     ),
     (
+        "Stop processing",
+        "停止处理",
+        "処理を停止",
+        "처리 중지",
+        "Остановить обработку",
+    ),
+    (
         "Keep the recording",
         "保留录音",
         "録音を保存",

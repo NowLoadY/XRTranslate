@@ -3537,11 +3537,10 @@ impl XRTranslateApp {
             }
             MeetingAction::Pause => self.pause_active_meeting(),
             MeetingAction::End => {
-                self.stop_plugin_task(PluginId::MEETING);
+                self.finish_active_meeting();
             }
             MeetingAction::Export(meeting_id) => {
-                self.meeting_plugin.controller.open_meeting(&meeting_id);
-                self.export_open_meeting_markdown();
+                self.export_meeting_markdown(&meeting_id);
             }
             MeetingAction::Reprocess(request) => {
                 self.start_stored_meeting(
@@ -5460,6 +5459,63 @@ impl XRTranslateApp {
         }
     }
 
+    fn finish_active_meeting(&mut self) {
+        let capture = self
+            .meeting_plugin
+            .controller
+            .active_capture
+            .lock()
+            .ok()
+            .and_then(|capture| capture.clone());
+        let Some(capture) = capture else {
+            return;
+        };
+        if !capture.imported_audio
+            && self
+                .meeting_plugin
+                .controller
+                .meeting(&capture.meeting_id)
+                .is_ok_and(|meeting| {
+                    meeting.status == plugins::meeting::store::MeetingStatus::Processing
+                })
+        {
+            return;
+        }
+        if capture.imported_audio
+            || !self.audio_tasks.iter().any(|task| {
+                task.owner.is_plugin(PluginId::MEETING.as_str()) && task.is_live()
+            })
+        {
+            self.stop_plugin_task(PluginId::MEETING);
+            return;
+        }
+        if let Err(error) = self
+            .meeting_plugin
+            .controller
+            .store
+            .process_meeting(&capture.meeting_id)
+        {
+            self.meeting_plugin.set_error(error.to_string());
+            return;
+        }
+        self.meeting_plugin.event_sink.request_finish();
+        for task in self
+            .audio_tasks
+            .iter_mut()
+            .filter(|task| task.owner.is_plugin(PluginId::MEETING.as_str()))
+        {
+            task.paused = true;
+            for channel in &mut task.channels {
+                self.audio_system.stop_capture_group(channel.scope.id());
+                channel.capturing = false;
+                channel.audio_tx.take();
+                channel.session.finish();
+            }
+        }
+        self.meeting_plugin.controller.reload_open_meeting();
+        self.release_unused_inputs();
+    }
+
     pub(crate) fn pause_active_meeting(&mut self) {
         for task in self
             .audio_tasks
@@ -5546,12 +5602,11 @@ impl XRTranslateApp {
         ok
     }
 
-    pub(crate) fn export_open_meeting_markdown(&mut self) {
-        let Some(bundle) = self.meeting_plugin.controller.bundle.as_ref() else {
+    fn export_meeting_markdown(&mut self, meeting_id: &str) {
+        let Some((name, markdown)) = self.meeting_plugin.controller.export_markdown(meeting_id) else {
             return;
         };
-        let markdown = plugins::meeting::store::render_markdown(bundle);
-        if let Err(error) = export::save(&bundle.meeting.name, export::Format::Markdown, markdown) {
+        if let Err(error) = export::save(&name, export::Format::Markdown, markdown) {
             self.meeting_plugin
                 .set_error(format!("Could not export meeting: {error}"));
         }

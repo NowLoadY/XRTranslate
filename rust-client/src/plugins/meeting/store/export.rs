@@ -44,12 +44,27 @@ pub fn render_markdown(bundle: &MeetingBundle) -> String {
     if !bundle.markers.is_empty() {
         output.push_str("\n## Highlights\n");
         for segment in &bundle.segments {
-            if markers.contains_key(segment.id.as_str()) {
+            if let Some(segment_markers) = markers.get(segment.id.as_str()) {
+                let text = segment
+                    .translated_text
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or(&segment.original_text);
                 output.push_str(&format!(
-                    "\n- [{}](#segment-{})",
+                    "\n### [{}](#segment-{})\n\n{}\n",
                     format_timestamp(segment.start_ms),
-                    segment.id
+                    segment.id,
+                    markdown_quote(text)
                 ));
+                for marker in segment_markers {
+                    let note = marker.text.trim();
+                    if !note.is_empty() {
+                        output.push('\n');
+                        output.push_str(note);
+                        output.push('\n');
+                    }
+                }
             }
         }
         output.push('\n');
@@ -71,13 +86,13 @@ pub fn render_markdown(bundle: &MeetingBundle) -> String {
             .filter(|segment| segment.topic_id == topic.id)
         {
             emitted_segment_ids.insert(segment.id.as_str());
-            render_segment_markdown(&mut output, segment, &speakers, &markers);
+            render_segment_markdown(&mut output, segment, &speakers);
         }
     }
     // Preserve evidence even if a forward-compatible partial bundle omitted its topic.
     for segment in &bundle.segments {
         if !emitted_segment_ids.contains(segment.id.as_str()) {
-            render_segment_markdown(&mut output, segment, &speakers, &markers);
+            render_segment_markdown(&mut output, segment, &speakers);
         }
     }
     output
@@ -90,12 +105,7 @@ fn display_name(path: &str) -> &str {
         .unwrap_or("external audio")
 }
 
-fn render_segment_markdown(
-    output: &mut String,
-    segment: &Segment,
-    speakers: &HashMap<&str, &str>,
-    markers: &HashMap<&str, Vec<&SegmentMarker>>,
-) {
+fn render_segment_markdown(output: &mut String, segment: &Segment, speakers: &HashMap<&str, &str>) {
     let timestamp = format_timestamp(segment.start_ms);
     let speaker = segment
         .canonical_speaker_id
@@ -119,20 +129,6 @@ fn render_segment_markdown(
     {
         output.push_str("\n\nTranslation:\n\n");
         output.push_str(&markdown_quote(translation));
-    }
-    if let Some(segment_markers) = markers.get(segment.id.as_str()) {
-        output.push_str("\n\nHighlights:\n");
-        for marker in segment_markers {
-            output.push_str(&format!(
-                "\n- **Highlight** ([{timestamp}](#segment-{}))",
-                segment.id
-            ));
-            let note = marker.text.trim();
-            if !note.is_empty() {
-                output.push_str(": ");
-                output.push_str(note);
-            }
-        }
     }
     output.push('\n');
 }

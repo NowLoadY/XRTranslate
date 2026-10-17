@@ -30,9 +30,20 @@ pub(super) fn render_detail(
         return UiAction::None;
     };
     let meeting = bundle.meeting.clone();
+    let capture = controller
+        .active_capture
+        .lock()
+        .ok()
+        .and_then(|capture| capture.clone());
+    let active = capture
+        .as_ref()
+        .filter(|capture| capture.meeting_id == meeting.id);
+    let processing_audio = active.is_some_and(|capture| capture.imported_audio);
+    let finishing =
+        active.is_some() && !processing_audio && meeting.status == MeetingStatus::Processing;
     let mut action = UiAction::None;
     page_header(ui, &meeting.name, language, |ui| {
-        if meeting.status == MeetingStatus::Live && controller.is_recording(&meeting.id) {
+        if meeting.status == MeetingStatus::Live && active.is_some() && !processing_audio {
             let latest = controller
                 .bundle
                 .as_ref()
@@ -63,15 +74,39 @@ pub(super) fn render_detail(
                 action = UiAction::Highlight(segment.id.clone());
             }
         }
-        if meeting.status == MeetingStatus::Live && controller.is_recording(&meeting.id) {
-            if components::danger_button(ui, tr(language, "Finish recording")).clicked() {
+        if active.is_some() {
+            if ui
+                .add_enabled_ui(!finishing, |ui| {
+                    components::danger_button(
+                        ui,
+                        tr(
+                            language,
+                            if processing_audio {
+                                "Stop processing"
+                            } else {
+                                "Finish recording"
+                            },
+                        ),
+                    )
+                })
+                .inner
+                .clicked()
+            {
                 action = UiAction::End;
             }
+        }
+        if meeting.status == MeetingStatus::Live && active.is_some() && !processing_audio {
             if components::animated_button(ui, tr(language, "Pause")).clicked() {
                 action = UiAction::Pause;
             }
-        } else if can_continue(&meeting)
-            && components::primary_button(ui, tr(language, "Continue recording")).clicked()
+        } else if !processing_audio
+            && can_continue(&meeting)
+            && components::primary_button_enabled(
+                ui,
+                tr(language, "Continue recording"),
+                capture.is_none() || active.is_some(),
+            )
+            .clicked()
         {
             action = UiAction::Continue(meeting.id.clone());
         }

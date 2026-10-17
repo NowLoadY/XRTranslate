@@ -157,6 +157,14 @@ impl MeetingController {
     }
 
     pub fn open_meeting(&mut self, meeting_id: &str) {
+        if self
+            .bundle
+            .as_ref()
+            .is_some_and(|bundle| bundle.meeting.id != meeting_id)
+            && !self.save_pending_edits()
+        {
+            return;
+        }
         match self.store.open_meeting(meeting_id) {
             Ok(bundle) => {
                 let is_same_meeting = self
@@ -164,8 +172,14 @@ impl MeetingController {
                     .as_ref()
                     .is_some_and(|current| current.meeting.id == bundle.meeting.id);
                 if !is_same_meeting {
+                    self.pane = MeetingPane::Timeline;
+                    self.search.clear();
                     self.highlights_only = false;
                     self.evidence_target = None;
+                    self.new_topic_title.clear();
+                    self.marker_drafts.clear();
+                    self.speaker_name_drafts.clear();
+                    self.speaker_merge_targets.clear();
                 }
                 for speaker in &bundle.speakers {
                     self.speaker_name_drafts
@@ -241,6 +255,9 @@ impl MeetingController {
     }
 
     pub fn create(&mut self, request: &MeetingStartRequest) -> Option<String> {
+        if !self.save_pending_edits() {
+            return None;
+        }
         if !self.persistent_storage_available {
             self.error = Some(
                 "Meeting storage is unavailable. Fix the database error before recording.".into(),
@@ -282,10 +299,7 @@ impl MeetingController {
         match result {
             Ok(bundle) => {
                 let id = bundle.meeting.id.clone();
-                self.bundle = Some(bundle);
-                self.minutes_draft.clear();
-                self.minutes_dirty = false;
-                self.route = MeetingRoute::Detail;
+                self.open_meeting(&id);
                 self.refresh_library();
                 Some(id)
             }
@@ -297,6 +311,9 @@ impl MeetingController {
     }
 
     pub fn begin_capture(&mut self, meeting_id: &str) -> bool {
+        if !self.save_pending_edits() {
+            return false;
+        }
         self.playback.unload();
         let transition =
             self.store
@@ -316,7 +333,7 @@ impl MeetingController {
                 });
         match transition {
             Ok(_) => {
-                let Ok(mut bundle) = self.store.open_meeting(meeting_id) else {
+                let Ok(bundle) = self.store.open_meeting(meeting_id) else {
                     return false;
                 };
                 let topic_id = bundle.topics.last().map(|topic| topic.id.clone());
@@ -349,8 +366,7 @@ impl MeetingController {
                             == MeetingSourceKind::ImportedAudio,
                     });
                 }
-                bundle.audio_runs.push(run);
-                self.bundle = Some(bundle);
+                self.open_meeting(meeting_id);
                 true
             }
             Err(error) => {
@@ -485,16 +501,50 @@ impl MeetingController {
         self.playback.pause();
     }
 
-    pub fn save_minutes(&mut self) {
-        let Some(meeting_id) = self.bundle.as_ref().map(|bundle| bundle.meeting.id.clone()) else {
-            return;
-        };
-        match self.store.save_minutes(&meeting_id, &self.minutes_draft) {
-            Ok(_) => {
+    /// Flush text drafts before leaving a meeting or exporting its records.
+    pub fn save_pending_edits(&mut self) -> bool {
+        let result = (|| -> Result<(), MeetingStoreError> {
+            let Some(bundle) = self.bundle.as_mut() else {
+                return Ok(());
+            };
+            if self.minutes_dirty {
+                bundle.minutes = Some(
+                    self.store
+                        .save_minutes(&bundle.meeting.id, &self.minutes_draft)?,
+                );
                 self.minutes_dirty = false;
-                self.reload_open_meeting();
             }
-            Err(error) => self.set_error(error),
+            for marker in &mut bundle.markers {
+                if let Some(text) = self.marker_drafts.get(&marker.id) {
+                    if text != &marker.text {
+                        self.store.update_marker(&marker.id, marker.kind, text)?;
+                        marker.text.clone_from(text);
+                    }
+                    self.marker_drafts.remove(&marker.id);
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.set_error(error);
+            return false;
+        }
+        true
+    }
+
+    pub fn export_markdown(&mut self, meeting_id: &str) -> Option<(String, String)> {
+        if !self.save_pending_edits() {
+            return None;
+        }
+        match self.store.open_meeting(meeting_id) {
+            Ok(bundle) => {
+                let markdown = super::store::render_markdown(&bundle);
+                Some((bundle.meeting.name, markdown))
+            }
+            Err(error) => {
+                self.set_error(error);
+                None
+            }
         }
     }
 
@@ -571,6 +621,7 @@ impl MeetingController {
         if let Err(error) =
             self.store
                 .set_audio_run_source(&capture.meeting_id, &capture.recognition_run_id, path)
+                .and_then(|_| self.store.process_meeting(&capture.meeting_id))
         {
             self.fail_active_meeting(&error.to_string());
             return false;
@@ -609,7 +660,7 @@ impl MeetingController {
             return Ok(false);
         };
         self.store.resume_meeting(&meeting_id)?;
-        self.reload_open_meeting();
+        self.open_meeting(&meeting_id);
         Ok(true)
     }
 
@@ -629,6 +680,14 @@ impl MeetingController {
 
     fn set_error(&mut self, error: impl std::fmt::Display) {
         self.error = Some(error.to_string());
+    }
+}
+
+impl Drop for MeetingController {
+    fn drop(&mut self) {
+        if !self.save_pending_edits() {
+            log::error!("Could not save meeting edits: {:?}", self.error);
+        }
     }
 }
 
@@ -693,5 +752,6 @@ pub fn can_continue(meeting: &Meeting) -> bool {
                 | MeetingStatus::Paused
                 | MeetingStatus::Ended
                 | MeetingStatus::Interrupted
+                | MeetingStatus::Failed
         )
 }

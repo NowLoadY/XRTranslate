@@ -201,6 +201,13 @@ impl MeetingEventSink {
         self.inner.finish_requested.store(false, Ordering::Release);
     }
 
+    pub fn request_finish(&self) {
+        self.inner.finish_requested.store(true, Ordering::Release);
+        if self.inner.active_sessions.load(Ordering::Acquire) == 0 {
+            self.finish_active();
+        }
+    }
+
     fn send(&self, command: Command) {
         if let Some(tx) = self.command_sender() {
             let _ = tx.send(command);

@@ -193,6 +193,10 @@ impl MeetingStore {
         self.transition_status(meeting_id, MeetingStatus::Paused, None)
     }
 
+    pub fn process_meeting(&self, meeting_id: &str) -> Result<Meeting> {
+        self.transition_status(meeting_id, MeetingStatus::Processing, None)
+    }
+
     pub fn resume_meeting(&self, meeting_id: &str) -> Result<Meeting> {
         self.start_meeting(meeting_id)
     }
@@ -1014,11 +1018,15 @@ fn is_valid_transition(from: MeetingStatus, to: MeetingStatus) -> bool {
         (Draft, Live)
             | (Draft, Ended)
             | (Live, Paused)
+            | (Live, Processing)
             | (Live, Ended)
             | (Live, Interrupted)
+            | (Live, Failed)
             | (Paused, Live)
+            | (Paused, Processing)
             | (Paused, Ended)
             | (Paused, Interrupted)
+            | (Paused, Failed)
             | (Ended, Live)
             | (Ended, Processing)
             | (Imported, Processing)
@@ -1030,6 +1038,7 @@ fn is_valid_transition(from: MeetingStatus, to: MeetingStatus) -> bool {
             | (Interrupted, Processing)
             | (Interrupted, Ended)
             | (Failed, Processing)
+            | (Failed, Live)
             | (Failed, Ended)
     )
 }
