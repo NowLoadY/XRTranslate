@@ -275,37 +275,42 @@ impl SubtitleTimeline {
         if !self.enabled {
             return None;
         }
-        // Subtitle lead-in time: display subtitles slightly ahead of speech onset
-        // (~250ms advance) to match natural human reading rhythm and visual perception.
-        const SUBTITLE_LEAD_IN_MS: i64 = 250;
-        let query_ms = current_ms + SUBTITLE_LEAD_IN_MS;
-        let end = self.cues.partition_point(|cue| cue.start_ms <= query_ms);
-        self.cues[..end]
-            .iter()
-            .enumerate()
-            .rev()
-            .find_map(|(index, cue)| {
-                let effective_end = self.effective_end_at(index);
-                (query_ms >= cue.start_ms && current_ms <= effective_end).then_some(cue)
-            })
+        let index = self
+            .cues
+            .partition_point(|cue| cue.start_ms <= current_ms)
+            .checked_sub(1)?;
+        (current_ms < self.effective_end_at(index)).then_some(&self.cues[index])
     }
 
-    fn effective_end_at(&self, index: usize) -> i64 {
+    pub(super) fn effective_end_at(&self, index: usize) -> i64 {
         let cue = &self.cues[index];
-        let supplied_end = if cue.end_ms <= cue.start_ms {
-            cue.start_ms + 3000
+        let metadata = self.metadata_for(&cue.id);
+        let supplied_end = if metadata.timing == SegmentTiming::Authored {
+            cue.end_ms.max(cue.start_ms)
+        } else if cue.end_ms <= cue.start_ms {
+            cue.start_ms.saturating_add(3000)
         } else {
             cue.end_ms
         };
-        let metadata = self.metadata_for(&cue.id);
         let padded_end = if metadata.timing == SegmentTiming::Unknown {
-            supplied_end.max(cue.start_ms + 2000)
+            supplied_end.max(cue.start_ms.saturating_add(2000))
         } else {
             supplied_end
         };
         self.cues
             .get(index + 1)
             .map_or(padded_end, |next| padded_end.min(next.start_ms))
+    }
+
+    pub(super) fn time_bounds(&self, index: usize) -> std::ops::RangeInclusive<i64> {
+        let start = index
+            .checked_sub(1)
+            .map_or(0, |previous| self.cues[previous].start_ms.max(0));
+        let end = self
+            .cues
+            .get(index + 1)
+            .map_or(i64::MAX, |next| next.start_ms.max(start));
+        start..=end
     }
 
     pub(crate) fn revision(&self) -> u64 {
@@ -320,20 +325,41 @@ impl SubtitleTimeline {
         &self.cues
     }
 
-    pub(super) fn set_text(
+    pub(super) fn edit_cue(
         &mut self,
-        id: &str,
-        original: String,
-        translated: Option<String>,
-    ) -> Option<(String, Option<String>)> {
-        let cue = self.cues.iter_mut().find(|cue| cue.id == id)?;
-        if cue.original_text != original || cue.translated_text != translated {
+        mut cue: SubtitleCue,
+    ) -> Option<(SubtitleCue, Option<SubtitleMetadata>)> {
+        let index = self.cues.iter().position(|current| current.id == cue.id)?;
+        let bounds = self.time_bounds(index);
+        cue.start_ms = cue.start_ms.clamp(*bounds.start(), *bounds.end());
+        cue.end_ms = cue.end_ms.clamp(cue.start_ms, *bounds.end());
+        let timing_changed =
+            cue.start_ms != self.cues[index].start_ms || cue.end_ms != self.effective_end_at(index);
+        let metadata = self.metadata.get(&cue.id).copied();
+        if timing_changed {
+            self.metadata
+                .insert(cue.id.clone(), SubtitleMetadata::authored());
+        } else {
+            // Display padding and overlap clipping are derived, not source edits.
+            cue.end_ms = self.cues[index].end_ms;
+        }
+        if cue != self.cues[index] || timing_changed {
             self.revision = self.revision.wrapping_add(1);
         }
-        Some((
-            std::mem::replace(&mut cue.original_text, original),
-            std::mem::replace(&mut cue.translated_text, translated),
-        ))
+        Some((std::mem::replace(&mut self.cues[index], cue), metadata))
+    }
+
+    pub(super) fn restore_cue(&mut self, cue: SubtitleCue, metadata: Option<SubtitleMetadata>) {
+        let Some(current) = self.cues.iter_mut().find(|current| current.id == cue.id) else {
+            return;
+        };
+        if let Some(metadata) = metadata {
+            self.metadata.insert(cue.id.clone(), metadata);
+        } else {
+            self.metadata.remove(&cue.id);
+        }
+        *current = cue;
+        self.revision = self.revision.wrapping_add(1);
     }
 
     pub(crate) fn set_translation(&mut self, id: &str, translated: String) {
@@ -364,19 +390,26 @@ impl SubtitleTimeline {
         }
         for cue in self.cues() {
             let time_tag = format_timestamp_lrc(cue.start_ms);
-            let orig = cue.original_text.trim();
-            if !orig.is_empty() {
-                out.push_str(&time_tag);
-                out.push_str(orig);
-                out.push('\n');
-            }
-            if let Some(trans) = &cue.translated_text {
-                let trans_trim = trans.trim();
-                if trans_trim != orig && !trans_trim.is_empty() {
-                    out.push_str(&time_tag);
-                    out.push_str(trans_trim);
-                    out.push('\n');
+            let single_line = |text: &str| {
+                text.lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            let mut text = single_line(&cue.original_text);
+            if let Some(translated) = cue.translated_text.as_deref().map(single_line) {
+                if !translated.is_empty() && translated != text {
+                    if !text.is_empty() {
+                        text.push_str(" / ");
+                    }
+                    text.push_str(&translated);
                 }
+            }
+            if !text.is_empty() {
+                out.push_str(&time_tag);
+                out.push_str(&text);
+                out.push('\n');
             }
         }
         out

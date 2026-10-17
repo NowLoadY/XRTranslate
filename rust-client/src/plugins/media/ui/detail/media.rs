@@ -145,7 +145,7 @@ fn video_surface(controller: &mut MediaController, size: egui::Vec2, ui: &mut eg
     }
     if let Some(host) = &controller.native_host {
         let rect = rect.intersect(ui.clip_rect());
-        if rect.is_positive() && controller.subtitle_edit.is_none() {
+        if rect.is_positive() {
             let scale = ui.ctx().pixels_per_point();
             host.set_rect(
                 (rect.left() * scale).round() as i32,

@@ -1,4 +1,4 @@
-//! Authored subtitles keep their text, cue identity and exact timestamps.
+//! Subtitle text and cue identity survive format conversion.
 use super::{SubtitleCue, SubtitleMetadata, SubtitleTimeline};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write;
@@ -110,17 +110,7 @@ impl SubtitleTimeline {
                         .unwrap_or_else(|| (index + 1).to_string())
                 );
             }
-            let end = if origin.is_some() {
-                cue.end_ms
-            } else if self.metadata_for(&cue.id).timing
-                == xrtranslate_protocol::SegmentTiming::Unknown
-            {
-                cue.end_ms.max(cue.start_ms + 2000)
-            } else if cue.end_ms <= cue.start_ms {
-                cue.start_ms + 3000
-            } else {
-                cue.end_ms
-            };
+            let end = self.effective_end_at(index);
             let settings = if vtt {
                 origin.map(|o| o.settings.as_str()).unwrap_or("")
             } else {

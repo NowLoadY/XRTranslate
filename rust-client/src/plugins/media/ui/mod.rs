@@ -3,6 +3,7 @@ mod detail;
 mod library;
 mod subtitle_edit;
 mod subtitles;
+mod timeline;
 
 use super::{
     MediaAction, MediaPlugin, MediaUiSnapshot,
@@ -24,7 +25,6 @@ pub(super) fn render(
         MediaRoute::Create => create::render_create(&mut plugin.controller, language, ui),
         MediaRoute::Detail => detail::render_detail(&mut plugin.controller, snapshot, ui),
     };
-    subtitle_edit::render(&mut plugin.controller, language, ui.ctx());
     crate::ui::notifications::observe_error(
         ui.ctx(),
         egui::Id::new("media_task_error"),
@@ -136,4 +136,8 @@ fn format_time_ms(ms: i64) -> String {
     } else {
         format!("{:02}:{:02}", mins, s)
     }
+}
+
+fn format_cue_time(ms: i64) -> String {
+    format!("{}.{:03}", format_time_ms(ms), ms.max(0) % 1000)
 }

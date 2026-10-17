@@ -1,6 +1,6 @@
 use super::{
     backend::{MediaBackend, MediaSource, PlaybackStatus, window::NativeVideoHost},
-    subtitles::SubtitleTimeline,
+    subtitles::{SubtitleCue, SubtitleTimeline},
     task::{AudioChannelItem, MediaTask, MediaTaskStore, SubtitleMode},
 };
 use std::path::PathBuf;
@@ -14,12 +14,19 @@ pub enum MediaRoute {
     Detail,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SubtitleField {
+    Start,
+    End,
+    Original,
+    Translation,
+}
+
 #[derive(Clone)]
 pub(super) struct SubtitleEdit {
     pub(super) task_id: String,
-    pub(super) cue_id: String,
-    pub(super) original: String,
-    pub(super) translated: String,
+    pub(super) cue: SubtitleCue,
+    pub(super) focus: Option<SubtitleField>,
 }
 
 pub struct MediaController {
@@ -344,7 +351,31 @@ impl MediaController {
         self.playback_loaded && !self.is_subtitle_task()
     }
 
-    pub(super) fn begin_subtitle_edit(&mut self, cue_id: &str) {
+    pub(super) fn subtitle_time_bounds(&self, index: usize) -> std::ops::RangeInclusive<i64> {
+        let bounds = self.subtitles.time_bounds(index);
+        if index + 1 != self.subtitles.count() || self.is_subtitle_task() {
+            return bounds;
+        }
+        let duration = self.get_duration_ms();
+        let duration = if duration > 0 {
+            duration
+        } else {
+            self.active_task_id
+                .as_deref()
+                .and_then(|id| self.store.get(id))
+                .map_or(0, |task| task.duration_ms)
+        };
+        if duration > 0 {
+            *bounds.start()..=duration.max(*bounds.start())
+        } else {
+            bounds
+        }
+    }
+
+    pub(super) fn begin_subtitle_edit(&mut self, cue_id: &str, field: SubtitleField) {
+        if self.subtitle_edit.is_some() {
+            return;
+        }
         let Some(task) = self
             .active_task_id
             .as_deref()
@@ -353,22 +384,30 @@ impl MediaController {
         else {
             return;
         };
-        let Some(cue) = self.subtitles.cues().iter().find(|cue| cue.id == cue_id) else {
+        let Some(index) = self
+            .subtitles
+            .cues()
+            .iter()
+            .position(|cue| cue.id == cue_id)
+        else {
             return;
         };
+        let mut cue = self.subtitles.cues()[index].clone();
+        cue.end_ms = self.subtitles.effective_end_at(index);
         self.subtitle_edit = Some(SubtitleEdit {
             task_id: task.id.clone(),
-            cue_id: cue.id.clone(),
-            original: cue.original_text.clone(),
-            translated: cue.translated_text.clone().unwrap_or_default(),
+            cue,
+            focus: Some(field),
         });
-        if let Some(host) = &self.native_host {
-            host.hide();
+        if let Some(backend) = &mut self.backend
+            && backend.get_status() == PlaybackStatus::Playing
+        {
+            backend.pause();
         }
     }
 
     pub(super) fn save_subtitle_edit(&mut self) {
-        let Some(edit) = &self.subtitle_edit else {
+        let Some(mut edit) = self.subtitle_edit.clone() else {
             return;
         };
         if self.active_task_id.as_deref() != Some(edit.task_id.as_str())
@@ -387,31 +426,38 @@ impl MediaController {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        let original = clean(&edit.original);
+        let original = clean(&edit.cue.original_text);
         if original.is_empty() {
             self.error = Some("Subtitle text cannot be empty".into());
             return;
         }
-        let translated = clean(&edit.translated);
-        let Some(previous) = self.subtitles.set_text(
-            &edit.cue_id,
-            original,
-            (!translated.is_empty()).then_some(translated),
-        ) else {
+        let translated = clean(edit.cue.translated_text.as_deref().unwrap_or_default());
+        edit.cue.original_text = original;
+        edit.cue.translated_text = (!translated.is_empty()).then_some(translated);
+        if let Some(index) = self
+            .subtitles
+            .cues()
+            .iter()
+            .position(|cue| cue.id == edit.cue.id)
+            && (edit.cue.start_ms != self.subtitles.cues()[index].start_ms
+                || edit.cue.end_ms != self.subtitles.effective_end_at(index))
+        {
+            let bounds = self.subtitle_time_bounds(index);
+            edit.cue.start_ms = edit.cue.start_ms.clamp(*bounds.start(), *bounds.end());
+            edit.cue.end_ms = edit.cue.end_ms.clamp(edit.cue.start_ms, *bounds.end());
+        }
+        let Some(previous) = self.subtitles.edit_cue(edit.cue) else {
             self.error = Some("Subtitle not found".into());
             return;
         };
-        let (task_id, cue_id) = (edit.task_id.clone(), edit.cue_id.clone());
         let was_dirty = self.dirty;
         self.error = None;
         self.dirty = true;
         self.save_active();
         if self.dirty {
-            let _ = self
-                .subtitles
-                .set_text(&cue_id, previous.0.clone(), previous.1.clone());
-            if let Some(task) = self.store.get_mut(&task_id) {
-                let _ = task.subtitles.set_text(&cue_id, previous.0, previous.1);
+            self.subtitles.restore_cue(previous.0.clone(), previous.1);
+            if let Some(task) = self.store.get_mut(&edit.task_id) {
+                task.subtitles.restore_cue(previous.0, previous.1);
             }
             self.dirty = was_dirty;
         } else {
@@ -582,7 +628,7 @@ impl MediaController {
         }
 
         let is_audio_only = self.is_audio_only_task();
-        let show_subs = self.show_subtitles && !is_audio_only && self.current_source.is_some();
+        let show_subs = self.show_subtitles && !is_audio_only && self.playback_loaded;
 
         if let Some(backend) = &mut self.backend {
             backend.tick();
@@ -603,7 +649,7 @@ impl MediaController {
                 self.dirty = true;
             }
 
-            if show_subs && backend.get_status() == PlaybackStatus::Playing {
+            if show_subs && backend.get_status() != PlaybackStatus::Stopped {
                 let current_time_ms = backend.get_time_ms();
                 if let Some(cue) = self.subtitles.active_cue_at(current_time_ms) {
                     let text = if let Some(trans) = &cue.translated_text {

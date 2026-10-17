@@ -17,6 +17,22 @@ pub fn tr(language: UiLanguage, english: &'static str) -> &'static str {
 
 const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     (
+        "Double-click to edit.",
+        "双击编辑。",
+        "ダブルクリックして編集。",
+        "두 번 클릭하여 편집합니다.",
+        "Дважды щёлкните для редактирования.",
+    ),
+    (
+        "Save or cancel this edit first.",
+        "请先保存或取消当前编辑。",
+        "編集中の内容を保存またはキャンセルしてください。",
+        "먼저 현재 편집을 저장하거나 취소하세요.",
+        "Сначала сохраните или отмените правки.",
+    ),
+    ("Start time", "开始", "開始", "시작", "Начало"),
+    ("End time", "结束", "終了", "종료", "Конец"),
+    (
         "Edit subtitle",
         "编辑字幕",
         "字幕を編集",

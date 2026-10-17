@@ -30,7 +30,14 @@ pub(in crate::plugins::media::ui) fn render_detail(
             .map(|task| task.title.clone())
             .unwrap_or_else(|| tr(language, "Media").to_owned());
         components::page_header(ui, &title, |ui| {
-            if components::back_button(ui, tr(language, "Back to Library")).clicked() {
+            if ui
+                .add_enabled_ui(controller.subtitle_edit.is_none(), |ui| {
+                    components::back_button(ui, tr(language, "Back to Library"))
+                })
+                .inner
+                .on_disabled_hover_text(tr(language, "Save or cancel this edit first."))
+                .clicked()
+            {
                 controller.open_library();
                 action = MediaAction::StopTranslation;
             }
@@ -65,7 +72,11 @@ pub(in crate::plugins::media::ui) fn render_detail(
                             }
                             ui.add_space(8.0);
                         }
-                        let next = render_task_control_card(controller, snapshot, ui);
+                        let next = ui
+                            .add_enabled_ui(controller.subtitle_edit.is_none(), |ui| {
+                                render_task_control_card(controller, snapshot, ui)
+                            })
+                            .inner;
                         if next != MediaAction::None {
                             action = next;
                         }
