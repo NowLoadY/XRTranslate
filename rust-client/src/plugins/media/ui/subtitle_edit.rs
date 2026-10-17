@@ -25,6 +25,7 @@ pub(super) fn render(
     let id = egui::Id::new(("media_subtitle_edit", &draft.task_id, &draft.cue.id));
     let focus = draft.focus.take();
     let translating = draft.retranslation.is_some();
+    let mut original_changed = false;
     let body_height = (height
         - components::card_margins(ui.ctx()).y
         - ui.spacing().interact_size.y.max(32.0)
@@ -83,6 +84,7 @@ pub(super) fn render(
                         .desired_rows(3),
                 )
                 .labelled_by(label.id);
+                original_changed |= field == SubtitleField::Original && response.changed();
                 if focus == Some(field) {
                     response.request_focus();
                     response.scroll_to_me(Some(egui::Align::Center));
@@ -95,10 +97,15 @@ pub(super) fn render(
                     ui.is_enabled(),
                     response.rect,
                 ) {
+                    original_changed |= field == SubtitleField::Original && *text != value;
                     *text = value;
                 }
             }
         });
+    if original_changed {
+        draft.cue.source_language.clear();
+        draft.cue.target_language.clear();
+    }
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let save = ui
             .add_enabled_ui(

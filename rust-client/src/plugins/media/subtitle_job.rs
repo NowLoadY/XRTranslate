@@ -8,7 +8,9 @@ use crate::session_coordinator::{
     TranslationOutcome, TranslationSegment, TranslationTask,
 };
 use std::collections::BTreeMap;
-use xrtranslate_engine::language::{LanguageCapabilities, LanguageSelection, SupportedLanguage};
+use xrtranslate_engine::language::{
+    LanguageCapabilities, LanguageMode, LanguageSelection, SupportedLanguage,
+};
 use xrtranslate_prompt::{ContextFacts, PromptTurn, SurroundingSource, TaskContext};
 
 const CONTEXT_CUES: usize = 2;
@@ -49,8 +51,16 @@ impl SubtitleTranslation {
         cues: &[SubtitleCue],
         index: usize,
         text: String,
-        languages: LanguageSelection,
+        mut languages: LanguageSelection,
     ) -> TranslationTask {
+        // Short recognized sentences may be too ambiguous to detect again.
+        // Reuse their known language until the user changes the actual source.
+        if text.trim() == cues[index].original_text.trim()
+            && let LanguageMode::Detect { target } = languages.mode
+            && let Some(source) = SupportedLanguage::parse(&cues[index].source_language)
+        {
+            languages.mode = LanguageMode::Fixed { source, target };
+        }
         let owner = PluginSessionOwner::new(
             super::super::PluginId::MEDIA.as_str(),
             &self.operation,
@@ -381,6 +391,35 @@ pub(super) fn subtitle_context(cues: &[SubtitleCue], index: usize) -> TaskContex
 mod tests {
     use super::*;
     use crate::plugins::media::subtitles::SubtitleTimeline;
+
+    #[test]
+    fn unchanged_subtitles_reuse_known_language_without_overriding_language_intent() {
+        let timeline =
+            SubtitleTimeline::parse("1\n00:00:00,000 --> 00:00:01,000\nRead aloud.").unwrap();
+        let mut cue = timeline.cues()[0].clone();
+        cue.source_language = "en".into();
+        let selected =
+            LanguageSelection::parse_with_options("auto", "zh", Some("ja"), false).unwrap();
+        let request = |cue: &SubtitleCue, text: &str, languages| {
+            SubtitleTranslation::new(&cue.id)
+                .task(std::slice::from_ref(cue), 0, text.into(), languages)
+                .languages
+        };
+        let recognized = request(&cue, "Read aloud.", selected);
+        assert_eq!(recognized.wire(), ("en".into(), "zh".into()));
+        assert_eq!(recognized.additional_target, selected.additional_target);
+        assert_eq!(request(&cue, "新的原文。", selected), selected);
+        for languages in [
+            LanguageSelection::parse("ja", "zh").unwrap(),
+            LanguageSelection::parse("auto", "en,zh").unwrap(),
+        ] {
+            assert_eq!(request(&cue, "Read aloud.", languages), languages);
+        }
+        for unknown in ["", "auto", "und"] {
+            cue.source_language = unknown.into();
+            assert_eq!(request(&cue, "Read aloud.", selected), selected);
+        }
+    }
 
     #[test]
     fn subtitle_context_uses_result_languages_and_current_cues() {
