@@ -251,8 +251,18 @@ pub struct MeetingMinutes {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioRun {
+    pub recognition_run_id: String,
+    /// Meeting time corresponding to the beginning of this run's audio.
+    pub timeline_offset_ms: i64,
+    /// Original file for imports and reprocessing; live tracks use the run directory.
+    pub audio_source_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeetingBundle {
     pub meeting: Meeting,
+    pub audio_runs: Vec<AudioRun>,
     pub topics: Vec<Topic>,
     pub segments: Vec<Segment>,
     pub speakers: Vec<Speaker>,

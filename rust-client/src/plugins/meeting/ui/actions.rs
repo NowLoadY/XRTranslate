@@ -22,6 +22,7 @@ pub(super) enum UiAction {
     SaveMarker(SegmentMarker),
     SaveMinutes,
     JumpToEvidence(String),
+    SelectSegment(String),
     Export,
     ExportMeeting(String),
     Reprocess,
@@ -40,16 +41,19 @@ pub(super) fn apply_action(
     match action {
         UiAction::None => {}
         UiAction::NewLive => {
+            controller.playback.unload();
             controller.search.clear();
             controller.reset_draft(false, snapshot);
             controller.route = MeetingRoute::Create;
         }
         UiAction::NewImport => {
+            controller.playback.unload();
             controller.search.clear();
             controller.reset_draft(true, snapshot);
             controller.route = MeetingRoute::Create;
         }
         UiAction::Back => {
+            controller.playback.unload();
             controller.search.clear();
             controller.refresh_library();
             controller.route = MeetingRoute::Library;
@@ -66,6 +70,7 @@ pub(super) fn apply_action(
             return MeetingAction::CreateAndStart(start_request(controller));
         }
         UiAction::Continue(id) => {
+            controller.playback.unload();
             if controller
                 .active_meeting_id()
                 .is_some_and(|active_id| active_id != id)
@@ -83,7 +88,35 @@ pub(super) fn apply_action(
         UiAction::RemoveMarker(id) => controller.remove_marker(&id),
         UiAction::SaveMarker(marker) => controller.save_marker(&marker),
         UiAction::SaveMinutes => controller.save_minutes(),
+        UiAction::SelectSegment(segment_id) => {
+            if controller.active_meeting_id().is_none() {
+                if let Some(segment) = controller.bundle.as_ref().and_then(|bundle| {
+                    bundle
+                        .segments
+                        .iter()
+                        .find(|segment| segment.id == segment_id)
+                }) {
+                    if let Err(error) = controller.playback.seek_segment(segment) {
+                        controller.error = Some(error);
+                    }
+                    controller.evidence_target = Some(segment_id);
+                }
+            }
+        }
         UiAction::JumpToEvidence(segment_id) => {
+            controller.playback.follow = false;
+            if controller.active_meeting_id().is_none() {
+                if let Some(segment) = controller.bundle.as_ref().and_then(|bundle| {
+                    bundle
+                        .segments
+                        .iter()
+                        .find(|segment| segment.id == segment_id)
+                }) {
+                    if let Err(error) = controller.playback.seek_segment(segment) {
+                        controller.error = Some(error);
+                    }
+                }
+            }
             controller.search.clear();
             controller.pane = MeetingPane::Timeline;
             controller.highlights_only = false;

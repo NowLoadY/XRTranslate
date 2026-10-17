@@ -16,13 +16,7 @@ pub enum MediaSource {
     NetworkStream(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlaybackStatus {
-    Playing,
-    #[cfg_attr(not(feature = "mpv"), allow(dead_code))]
-    Paused,
-    Stopped,
-}
+pub use crate::audio_playback::PlaybackStatus;
 
 #[derive(Debug, Clone, Default)]
 pub struct PlayerDiagnostics {

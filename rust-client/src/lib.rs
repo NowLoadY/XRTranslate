@@ -21,6 +21,7 @@ mod ask;
 mod audio;
 #[cfg(target_os = "linux")]
 mod audio_linux;
+mod audio_playback;
 mod audio_processing;
 mod audio_studio;
 mod avatar_host;
@@ -4585,7 +4586,9 @@ impl XRTranslateApp {
         ctx: Option<eframe::egui::Context>,
     ) {
         let input = if let Some(path) = path {
-            self.meeting_plugin.controller.mark_imported_audio();
+            if !self.meeting_plugin.controller.mark_imported_audio(&path) {
+                return;
+            }
             TranslationInput::File {
                 path,
                 recognition: self.loopback_recognition.clone(),
@@ -5962,6 +5965,11 @@ impl eframe::App for XRTranslateApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.media_plugin.controller.tick();
+        if self.navigation.page != Page::Plugin(PluginId::MEETING)
+            || !self.plugin_enabled(PluginId::MEETING)
+        {
+            self.meeting_plugin.controller.pause_playback();
+        }
         self.ask
             .poll(&mut self.backend_manager, &self.server_url, ctx);
         self.vocabulary_plugin.poll_examples(

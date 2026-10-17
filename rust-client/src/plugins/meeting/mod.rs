@@ -10,6 +10,7 @@ pub(crate) use crate::media_import as audio_file;
 pub mod controller;
 pub mod events;
 pub mod i18n;
+mod playback;
 pub mod recording;
 pub(crate) mod store;
 mod ui;

@@ -96,6 +96,7 @@ impl MeetingStore {
     pub fn open_meeting(&self, meeting_id: &str) -> Result<MeetingBundle> {
         let connection = self.connection()?;
         let meeting = query_meeting(&connection, meeting_id)?;
+        let audio_runs = query_audio_runs(&connection, meeting_id)?;
         let topics = query_topics(&connection, meeting_id)?;
         let segments = query_segments(&connection, meeting_id, None)?;
         let speakers = query_speakers(&connection, meeting_id)?;
@@ -103,12 +104,48 @@ impl MeetingStore {
         let minutes = query_minutes(&connection, meeting_id)?;
         Ok(MeetingBundle {
             meeting,
+            audio_runs,
             topics,
             segments,
             speakers,
             markers,
             minutes,
         })
+    }
+
+    pub fn save_audio_run(&self, meeting_id: &str, run: &AudioRun) -> Result<()> {
+        require_non_empty("recognition run id", &run.recognition_run_id)?;
+        if run.timeline_offset_ms < 0 {
+            return Err(MeetingStoreError::InvalidData(
+                "Audio run offset cannot be negative".into(),
+            ));
+        }
+        self.connection()?.execute(
+            "INSERT INTO meeting_audio_runs
+                 (meeting_id, recognition_run_id, timeline_offset_ms, audio_source_path)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                meeting_id,
+                run.recognition_run_id,
+                run.timeline_offset_ms,
+                run.audio_source_path,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_audio_run_source(
+        &self,
+        meeting_id: &str,
+        recognition_run_id: &str,
+        path: &Path,
+    ) -> Result<()> {
+        let changed = self.connection()?.execute(
+            "UPDATE meeting_audio_runs SET audio_source_path = ?1
+             WHERE meeting_id = ?2 AND recognition_run_id = ?3",
+            params![path.to_string_lossy(), meeting_id, recognition_run_id],
+        )?;
+        require_changed(changed, "audio run", recognition_run_id)
     }
 
     pub fn list_meetings(&self, limit: usize) -> Result<Vec<Meeting>> {
@@ -756,6 +793,22 @@ fn map_meeting_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Meeting> {
         ended_at_ms: row.get(14)?,
         last_activity_at_ms: row.get(15)?,
     })
+}
+
+fn query_audio_runs(connection: &Connection, meeting_id: &str) -> Result<Vec<AudioRun>> {
+    let mut statement = connection.prepare(
+        "SELECT recognition_run_id, timeline_offset_ms, audio_source_path
+         FROM meeting_audio_runs WHERE meeting_id = ?1
+         ORDER BY timeline_offset_ms, rowid",
+    )?;
+    let rows = statement.query_map(params![meeting_id], |row| {
+        Ok(AudioRun {
+            recognition_run_id: row.get(0)?,
+            timeline_offset_ms: row.get(1)?,
+            audio_source_path: row.get(2)?,
+        })
+    })?;
+    collect_rows(rows)
 }
 
 fn query_topics(connection: &Connection, meeting_id: &str) -> Result<Vec<Topic>> {

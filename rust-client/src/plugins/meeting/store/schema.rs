@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::model::{MeetingStoreError, Result};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 pub(super) fn migrate(connection: &Connection) -> Result<()> {
     let current: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -105,6 +105,20 @@ pub(super) fn migrate(connection: &Connection) -> Result<()> {
                  updated_at_ms INTEGER NOT NULL
              );
              PRAGMA user_version = 1;
+             COMMIT;",
+        )?;
+    }
+    if current < 2 {
+        connection.execute_batch(
+            "BEGIN IMMEDIATE;
+             CREATE TABLE meeting_audio_runs (
+                 meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+                 recognition_run_id TEXT NOT NULL,
+                 timeline_offset_ms INTEGER NOT NULL CHECK(timeline_offset_ms >= 0),
+                 audio_source_path TEXT,
+                 PRIMARY KEY(meeting_id, recognition_run_id)
+             );
+             PRAGMA user_version = 2;
              COMMIT;",
         )?;
     }

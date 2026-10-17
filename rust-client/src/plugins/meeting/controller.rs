@@ -1,8 +1,8 @@
 use super::{
     MeetingAudioSource, MeetingInputRequest, MeetingStartRequest, MeetingUiSnapshot, recording,
     store::{
-        MarkerKind, Meeting, MeetingBundle, MeetingSourceKind, MeetingStatus, MeetingStore,
-        MeetingStoreError, NewMeeting, SegmentMarker,
+        AudioRun, MarkerKind, Meeting, MeetingBundle, MeetingSourceKind, MeetingStatus,
+        MeetingStore, MeetingStoreError, NewMeeting, SegmentMarker,
     },
 };
 use std::{
@@ -65,6 +65,7 @@ pub struct ActiveMeetingCapture {
 pub type SharedMeetingCapture = Arc<Mutex<Option<ActiveMeetingCapture>>>;
 
 pub struct MeetingController {
+    pub(super) playback: super::playback::MeetingPlayback,
     pub store: Arc<MeetingStore>,
     pub route: MeetingRoute,
     pub pane: MeetingPane,
@@ -121,6 +122,7 @@ impl MeetingController {
         let recovery_meetings = store.list_meetings(usize::MAX).unwrap_or_default();
         recover_interrupted_recordings(&recovery_meetings);
         Self {
+            playback: Default::default(),
             store,
             route: MeetingRoute::Library,
             pane: MeetingPane::Timeline,
@@ -177,6 +179,12 @@ impl MeetingController {
                         .map(|minutes| minutes.markdown.clone())
                         .unwrap_or_default();
                     self.minutes_dirty = false;
+                }
+                if let Err(error) = self
+                    .playback
+                    .refresh(&bundle, self.active_meeting_id().is_none())
+                {
+                    self.error = Some(error);
                 }
                 self.bundle = Some(bundle);
                 self.route = MeetingRoute::Detail;
@@ -289,6 +297,7 @@ impl MeetingController {
     }
 
     pub fn begin_capture(&mut self, meeting_id: &str) -> bool {
+        self.playback.unload();
         let transition =
             self.store
                 .get_meeting(meeting_id)
@@ -307,7 +316,7 @@ impl MeetingController {
                 });
         match transition {
             Ok(_) => {
-                let Ok(bundle) = self.store.open_meeting(meeting_id) else {
+                let Ok(mut bundle) = self.store.open_meeting(meeting_id) else {
                     return false;
                 };
                 let topic_id = bundle.topics.last().map(|topic| topic.id.clone());
@@ -320,16 +329,27 @@ impl MeetingController {
                 let Some(topic_id) = topic_id else {
                     return false;
                 };
+                let run = AudioRun {
+                    recognition_run_id: Uuid::new_v4().to_string(),
+                    timeline_offset_ms: offset,
+                    audio_source_path: bundle.meeting.audio_source_path.clone(),
+                };
+                if let Err(error) = self.store.save_audio_run(meeting_id, &run) {
+                    let _ = self.store.fail_meeting(meeting_id, error.to_string());
+                    self.set_error(error);
+                    return false;
+                }
                 if let Ok(mut active) = self.active_capture.lock() {
                     *active = Some(ActiveMeetingCapture {
                         meeting_id: meeting_id.to_owned(),
                         topic_id,
-                        recognition_run_id: Uuid::new_v4().to_string(),
+                        recognition_run_id: run.recognition_run_id.clone(),
                         timeline_offset_ms: offset,
                         imported_audio: bundle.meeting.source_kind
                             == MeetingSourceKind::ImportedAudio,
                     });
                 }
+                bundle.audio_runs.push(run);
                 self.bundle = Some(bundle);
                 true
             }
@@ -455,11 +475,14 @@ impl MeetingController {
     }
 
     pub fn reprocessable_audio_path(&self) -> Option<std::path::PathBuf> {
-        let meeting = &self.bundle.as_ref()?.meeting;
-        if let Some(path) = &meeting.audio_source_path {
-            return Some(path.into());
-        }
-        find_recording_wav(&std::path::PathBuf::from(meeting.recording_path.as_ref()?))
+        self.playback
+            .clips
+            .get(self.playback.selected)
+            .map(|clip| clip.path.clone())
+    }
+
+    pub fn pause_playback(&mut self) {
+        self.playback.pause();
     }
 
     pub fn save_minutes(&mut self) {
@@ -476,6 +499,7 @@ impl MeetingController {
     }
 
     pub fn delete(&mut self, meeting_id: &str) {
+        self.playback.unload();
         if self.active_meeting_id().as_deref() == Some(meeting_id) {
             self.error = Some("Finish the active meeting before deleting it".into());
             self.pending_delete = None;
@@ -535,12 +559,36 @@ impl MeetingController {
         self.store.get_meeting(meeting_id)
     }
 
-    pub fn mark_imported_audio(&self) {
+    pub fn mark_imported_audio(&mut self, path: &Path) -> bool {
+        let Some(capture) = self
+            .active_capture
+            .lock()
+            .ok()
+            .and_then(|active| active.clone())
+        else {
+            return false;
+        };
+        if let Err(error) =
+            self.store
+                .set_audio_run_source(&capture.meeting_id, &capture.recognition_run_id, path)
+        {
+            self.fail_active_meeting(&error.to_string());
+            return false;
+        }
         if let Ok(mut active) = self.active_capture.lock()
             && let Some(active) = active.as_mut()
         {
             active.imported_audio = true;
         }
+        if let Some(run) = self.bundle.as_mut().and_then(|bundle| {
+            bundle
+                .audio_runs
+                .iter_mut()
+                .find(|run| run.recognition_run_id == capture.recognition_run_id)
+        }) {
+            run.audio_source_path = Some(path.to_string_lossy().into_owned());
+        }
+        true
     }
 
     /// Records a host-side startup failure and restores the controller to an
@@ -614,30 +662,6 @@ fn recover_interrupted_recordings(meetings: &[Meeting]) {
             }
         }
     }
-}
-
-fn find_recording_wav(directory: &Path) -> Option<std::path::PathBuf> {
-    let mut fallback = None;
-    for entry in std::fs::read_dir(directory).ok()?.flatten() {
-        let path = entry.path();
-        let found = if path.is_dir() {
-            find_recording_wav(&path)
-        } else if path.extension().is_some_and(|extension| extension == "wav") {
-            Some(path)
-        } else {
-            None
-        };
-        if let Some(found) = found {
-            if found
-                .file_name()
-                .is_some_and(|name| name == "microphone.wav")
-            {
-                return Some(found);
-            }
-            fallback.get_or_insert(found);
-        }
-    }
-    fallback
 }
 
 fn capture_source_name(source: MeetingAudioSource) -> &'static str {

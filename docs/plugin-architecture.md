@@ -91,11 +91,16 @@ affecting unrelated tasks.
 | `plugins::text_output` | Internal shared text formatting, banner controls and one owned system sampler |
 | `plugins::lyrics` | Music observation, lyric lookup, synchronization, and bounded persistent cache; publishes text through the host to selected outputs |
 | `plugins::vocabulary` | Wordbooks and saved vocabulary views; uses shared storage and stateless ask for example work |
-| `plugins::meeting` | Meeting state, recording, and persistence; consumes its normalized session results |
+| `plugins::meeting` | Meeting state, recording, playback navigation, and persistence; consumes its normalized session results |
 | `plugins::media` | Media tasks, playback, subtitles, and export; uses shared import and translation |
 | `plugins::vr_overlay` | SteamVR presentation and runtime; consumes shared host output |
 | `plugins::ocr` | Screen-text workflow; uses host capture, recognition, and translation capabilities |
 | `plugins::auto_input` | Automatic text output; consumes committed results through a platform input capability |
+
+`audio_playback` owns local audio decoding, seeking, and output. Media and meeting
+plugins use it independently. Meetings retain each recording run's time offset
+and source file so transcript navigation resolves to the matching audio track;
+the plugin owns playback selection and transcript following.
 
 VRChat OSC and ChilloutVR OSC are independent registered instances of the same
 plugin. They share composition, scheduling and UI; game profiles own packet

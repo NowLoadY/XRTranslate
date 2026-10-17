@@ -1,6 +1,7 @@
 mod highlights;
 mod minutes;
 mod organization;
+mod playback;
 mod timeline;
 mod transcript;
 
@@ -104,6 +105,7 @@ pub(super) fn render_detail(
         components::error_notice(ui, language, error);
     }
     ui.add_space(8.0);
+    playback::render(controller, language, ui);
     ui.horizontal_wrapped(|ui| {
         if ui
             .selectable_label(
@@ -145,10 +147,35 @@ pub(super) fn render_detail(
     });
     ui.add_space(8.0);
 
+    if controller.pane != MeetingPane::Minutes
+        && ui.rect_contains_pointer(ui.available_rect_before_wrap())
+        && ui.input(|input| {
+            input.smooth_scroll_delta.y.abs() > 0.1 || input.pointer.is_decidedly_dragging()
+        })
+    {
+        controller.playback.follow = false;
+    }
+    let active = controller
+        .bundle
+        .as_ref()
+        .and_then(|bundle| controller.playback.current_segment(&bundle.segments))
+        .map(|segment| segment.id.clone());
+    if controller.playback.follow
+        && controller.evidence_target.is_none()
+        && controller.search.trim().is_empty()
+        && !controller.highlights_only
+        && controller.pane != MeetingPane::Minutes
+        && active != controller.playback.last_followed
+    {
+        controller.evidence_target = active.clone();
+        controller.playback.last_followed = active;
+    }
     match controller.pane {
         MeetingPane::Timeline => timeline::render_timeline(controller, language, &mut action, ui),
         MeetingPane::Minutes => minutes::render_minutes(controller, language, &mut action, ui),
-        MeetingPane::Transcript => transcript::render_transcript(controller, language, ui),
+        MeetingPane::Transcript => {
+            transcript::render_transcript(controller, language, &mut action, ui)
+        }
     }
     action
 }
@@ -186,5 +213,66 @@ fn render_unstored_previews(
         {
             crate::ui::components::live_preview(ui, preview);
         }
+    }
+}
+
+fn timestamp(
+    segment: &crate::plugins::meeting::store::Segment,
+    can_seek: bool,
+    active: bool,
+    language: crate::i18n::UiLanguage,
+    action: &mut UiAction,
+    ui: &mut egui::Ui,
+) {
+    let text = egui::RichText::new(super::presentation::format_duration(segment.start_ms))
+        .monospace()
+        .size(11.0)
+        .color(if active {
+            crate::ui::theme::primary()
+        } else {
+            crate::ui::theme::text_weak()
+        });
+    if can_seek {
+        select_sentence(ui.link(text), &segment.id, true, language, action);
+    } else {
+        ui.label(text);
+    }
+}
+
+fn sentence_text(
+    text: egui::RichText,
+    segment_id: &str,
+    can_seek: bool,
+    language: crate::i18n::UiLanguage,
+    action: &mut UiAction,
+    ui: &mut egui::Ui,
+) {
+    let response = ui.add(egui::Label::new(text).wrap().selectable(true));
+    select_sentence(response, segment_id, can_seek, language, action);
+}
+
+fn select_sentence(
+    response: egui::Response,
+    segment_id: &str,
+    can_seek: bool,
+    language: crate::i18n::UiLanguage,
+    action: &mut UiAction,
+) {
+    if can_seek
+        && response
+            .on_hover_text(tr(language, "Locate in recording"))
+            .clicked()
+    {
+        *action = UiAction::SelectSegment(segment_id.to_owned());
+    }
+}
+
+fn current_marker(ui: &egui::Ui, rect: egui::Rect, active: bool) {
+    if active {
+        ui.painter().vline(
+            rect.left() + 4.0,
+            rect.top() + 4.0..=rect.bottom() - 4.0,
+            egui::Stroke::new(2.0, crate::ui::theme::primary()),
+        );
     }
 }
