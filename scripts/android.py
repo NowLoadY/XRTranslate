@@ -49,6 +49,7 @@ def sdk_path():
     raise SystemExit('Set ANDROID_HOME to your Android SDK directory, or configure android/local.properties in Android Studio.')
 
 def toolchain(sdk, abi):
+    (ROOT / 'target').resolve().mkdir(parents=True, exist_ok=True)
     target, clang_target = TARGETS[abi]
     ndk = sdk / 'ndk' / NDK_VERSION
     host = {'Linux': 'linux-x86_64', 'Darwin': 'darwin-x86_64', 'Windows': 'windows-x86_64'}[platform.system()]

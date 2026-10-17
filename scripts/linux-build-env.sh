@@ -2,6 +2,7 @@
 
 # Sourced by the Linux entry points; development files never enter the release.
 prepare_linux_build_env() {
+  mkdir -p "$(realpath -m "${1}/target")" || return
   check_linux_corpus "$1" || return
   prepare_linux_system_deps "$1"
   prepare_linux_sherpa "$1"
