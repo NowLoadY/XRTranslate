@@ -32,7 +32,7 @@ impl XRTranslateApp {
                     self.media_plugin.set_error(error);
                 }
             }
-            plugins::media::MediaAction::StartTranslation { request, restart } => {
+            plugins::media::MediaAction::StartTranslation { request } => {
                 use plugins::media::MediaTranslationRequest;
                 let (source, target) = match &request {
                     MediaTranslationRequest::ImportMediaFile {
@@ -50,11 +50,7 @@ impl XRTranslateApp {
                     return;
                 };
                 self.stop_plugin_task(PluginId::MEDIA);
-                if restart {
-                    self.media_plugin.controller.clear_and_restart_task();
-                } else {
-                    self.media_plugin.controller.start_task();
-                }
+                self.media_plugin.controller.start_task();
                 let previous_recognition = self.loopback_recognition.clone();
                 let input = match request {
                     MediaTranslationRequest::ImportMediaFile {

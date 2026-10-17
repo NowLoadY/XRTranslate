@@ -15,20 +15,20 @@ pub(super) fn render_audio_card(
         ui.set_width(ui.available_width());
         playback_controls(controller, language, ui);
     });
-    ui.add_space(8.0);
 }
 
 pub(super) fn render_viewport_card(
     controller: &mut MediaController,
     language: crate::i18n::UiLanguage,
     ui: &mut egui::Ui,
+    max_height: f32,
 ) {
     if controller.fullscreen_mode {
         render_fullscreen(controller, language, ui);
         return;
     }
     components::card(ui, |ui| {
-        let height = (ui.available_width() * 9.0 / 16.0).clamp(120.0, 400.0);
+        let height = (ui.available_width() * 9.0 / 16.0).clamp(100.0, max_height.max(100.0));
         video_surface(controller, egui::vec2(ui.available_width(), height), ui);
         ui.add_space(8.0);
         playback_controls(controller, language, ui);
@@ -145,7 +145,7 @@ fn video_surface(controller: &mut MediaController, size: egui::Vec2, ui: &mut eg
     }
     if let Some(host) = &controller.native_host {
         let rect = rect.intersect(ui.clip_rect());
-        if rect.is_positive() {
+        if rect.is_positive() && controller.subtitle_edit.is_none() {
             let scale = ui.ctx().pixels_per_point();
             host.set_rect(
                 (rect.left() * scale).round() as i32,

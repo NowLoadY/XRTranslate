@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     plugins::media::{MediaAction, MediaUiSnapshot, controller::MediaController, i18n::tr},
-    ui::components,
+    ui::{components, layout},
 };
 use eframe::egui;
 
@@ -44,27 +44,38 @@ pub(in crate::plugins::media::ui) fn render_detail(
     if action == MediaAction::StopTranslation {
         return action;
     }
+    let height = ui.available_height();
     if controller.fullscreen_mode {
-        render_viewport_card(controller, language, ui);
+        render_viewport_card(controller, language, ui, height);
     } else {
-        egui::ScrollArea::vertical()
-            .id_salt("media_detail_controls")
-            .max_height((ui.available_height() - 160.0).max(100.0))
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                if controller.can_play() {
-                    if !controller.can_show_video() {
-                        render_audio_card(controller, language, ui);
-                    } else {
-                        render_viewport_card(controller, language, ui);
-                    }
-                }
-                let next = render_task_control_card(controller, snapshot, ui);
-                if next != MediaAction::None {
-                    action = next;
-                }
-            });
-        super::super::subtitles::render_subtitles_card(controller, language, ui);
+        let stacked = layout::should_stack(ui.available_width(), 2, 380.0);
+        layout::responsive_columns(ui, 2, 380.0, |ui, column| {
+            if column == 0 {
+                egui::ScrollArea::vertical()
+                    .id_salt("media_detail_controls")
+                    .max_height(if stacked { height * 0.45 } else { height })
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        if controller.can_play() {
+                            if controller.can_show_video() {
+                                let video_height = height * if stacked { 0.25 } else { 0.5 };
+                                render_viewport_card(controller, language, ui, video_height);
+                            } else {
+                                render_audio_card(controller, language, ui);
+                            }
+                            ui.add_space(8.0);
+                        }
+                        let next = render_task_control_card(controller, snapshot, ui);
+                        if next != MediaAction::None {
+                            action = next;
+                        }
+                    });
+            } else {
+                ui.push_id(controller.active_task_id.clone(), |ui| {
+                    super::super::subtitles::render_subtitles_card(controller, language, ui);
+                });
+            }
+        });
     }
     action
 }

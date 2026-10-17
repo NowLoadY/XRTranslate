@@ -9,7 +9,6 @@ pub(super) fn render_subtitles_card(
     language: crate::i18n::UiLanguage,
     ui: &mut egui::Ui,
 ) {
-    ui.add_space(12.0);
     let can_play = controller.can_play();
     let current = can_play
         .then(|| {
@@ -41,6 +40,7 @@ pub(super) fn render_subtitles_card(
         controller.last_auto_scrolled_cue_id = None;
     }
     let follow = can_play
+        && controller.subtitle_edit.is_none()
         && controller
             .last_manual_scroll
             .is_none_or(|time| time.elapsed().as_secs() >= 5);
@@ -57,16 +57,39 @@ pub(super) fn render_subtitles_card(
         controller.last_auto_scrolled_cue_id = current.clone();
     }
     ui.label(egui::RichText::new(tr(language, "Subtitles")).strong());
-    for preview in controller.previews.entries() {
-        components::live_preview(ui, preview);
+    if !controller.previews.entries().is_empty() {
+        let height = ui.available_height()
+            * if controller.subtitles.count() == 0 {
+                1.0
+            } else {
+                0.3
+            };
+        egui::ScrollArea::vertical()
+            .id_salt("media_subtitle_preview")
+            .max_height(height)
+            .min_scrolled_height(0.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                for preview in controller.previews.entries() {
+                    components::live_preview(ui, preview);
+                }
+            });
     }
     if controller.subtitles.count() == 0 {
+        egui::scroll_area::State::default()
+            .store(ui.ctx(), ui.make_persistent_id("media_subtitles"));
         if controller.previews.entries().is_empty() {
             ui.weak(tr(language, "No subtitles yet"));
         }
         return;
     }
+    let can_edit = controller
+        .active_task_id
+        .as_deref()
+        .and_then(|id| controller.store.get(id))
+        .is_some_and(|task| !task.is_task_running);
     let mut seek = None;
+    let mut edit = None;
     crate::ui::layout::show_variable_virtual_rows(
         ui,
         "media_subtitles",
@@ -95,7 +118,12 @@ pub(super) fn render_subtitles_card(
                 .iter()
                 .map(|cue| {
                     let mut text = cue.original_text.clone();
-                    if let Some(translated) = &cue.translated_text {
+                    if let Some(translated) = cue
+                        .translated_text
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty() && *text != cue.original_text.trim())
+                    {
                         text.push('\n');
                         text.push_str(translated);
                     }
@@ -130,6 +158,7 @@ pub(super) fn render_subtitles_card(
             let row_start = ui.cursor().min;
             let mut copied = false;
             let mut copy_rect = egui::Rect::NOTHING;
+            let mut edit_rect = egui::Rect::NOTHING;
             components::card(ui, |ui| {
                 ui.set_width(ui.available_width());
                 crate::ui::layout::flow_row(ui, |ui| {
@@ -155,6 +184,16 @@ pub(super) fn render_subtitles_card(
                                 .clone(),
                         );
                     }
+                    let button = ui
+                        .add_enabled_ui(can_edit, |ui| {
+                            components::edit_button(ui, tr(language, "Edit subtitle"))
+                        })
+                        .inner
+                        .on_disabled_hover_text(tr(language, "Pause translation to edit."));
+                    edit_rect = button.rect;
+                    if button.clicked() {
+                        edit = Some(cue.id.clone());
+                    }
                 });
                 let text = ui.add(egui::Label::new(galley.clone()).selectable(true));
                 if can_play && text.clicked() {
@@ -176,10 +215,9 @@ pub(super) fn render_subtitles_card(
                 let clicked = ui.rect_contains_pointer(rect)
                     && ui.input(|input| {
                         input.pointer.button_clicked(egui::PointerButton::Primary)
-                            && input
-                                .pointer
-                                .interact_pos()
-                                .is_some_and(|pos| !copy_rect.contains(pos))
+                            && input.pointer.interact_pos().is_some_and(|pos| {
+                                !copy_rect.contains(pos) && !edit_rect.contains(pos)
+                            })
                     });
                 if (response.clicked() || clicked) && !copied {
                     seek = Some(cue.start_ms);
@@ -189,6 +227,9 @@ pub(super) fn render_subtitles_card(
     );
     if let Some(time) = seek {
         controller.seek_to(time, true);
+    }
+    if let Some(id) = edit {
+        controller.begin_subtitle_edit(&id);
     }
 }
 

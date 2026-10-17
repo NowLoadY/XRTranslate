@@ -92,7 +92,7 @@ pub(super) fn render_task_control_card(
             } else {
                 ui.weak(format!("{} · {count}", tr(language, "Subtitles Count")));
             }
-            if !task.is_task_running && count > 0 {
+            if subtitles && !task.is_task_running && count > 0 {
                 egui::menu::MenuButton::from_button(
                     egui::Button::new("…")
                         .frame(false)
@@ -283,7 +283,6 @@ pub(super) fn render_task_control_card(
         } else {
             MediaAction::StartTranslation {
                 request: request.unwrap(),
-                restart,
             }
         }
     } else {

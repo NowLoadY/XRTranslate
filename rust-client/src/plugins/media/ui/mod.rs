@@ -1,6 +1,7 @@
 mod create;
 mod detail;
 mod library;
+mod subtitle_edit;
 mod subtitles;
 
 use super::{
@@ -23,6 +24,7 @@ pub(super) fn render(
         MediaRoute::Create => create::render_create(&mut plugin.controller, language, ui),
         MediaRoute::Detail => detail::render_detail(&mut plugin.controller, snapshot, ui),
     };
+    subtitle_edit::render(&mut plugin.controller, language, ui.ctx());
     crate::ui::notifications::observe_error(
         ui.ctx(),
         egui::Id::new("media_task_error"),

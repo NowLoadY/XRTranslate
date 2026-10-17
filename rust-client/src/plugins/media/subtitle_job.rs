@@ -40,7 +40,6 @@ impl MediaPlugin {
         if restart {
             self.controller.subtitles.clear_translations();
         }
-        self.controller.error = None;
         self.controller.start_task();
         Ok(())
     }

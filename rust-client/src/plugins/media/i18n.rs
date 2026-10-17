@@ -17,6 +17,20 @@ pub fn tr(language: UiLanguage, english: &'static str) -> &'static str {
 
 const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     (
+        "Edit subtitle",
+        "编辑字幕",
+        "字幕を編集",
+        "자막 편집",
+        "Редактировать субтитр",
+    ),
+    (
+        "Pause translation to edit.",
+        "暂停翻译后即可编辑。",
+        "翻訳を一時停止すると編集できます。",
+        "번역을 일시 정지하면 편집할 수 있습니다.",
+        "Приостановите перевод для редактирования.",
+    ),
+    (
         "Import media",
         "导入媒体",
         "メディアを読み込む",

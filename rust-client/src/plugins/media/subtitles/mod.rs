@@ -320,6 +320,22 @@ impl SubtitleTimeline {
         &self.cues
     }
 
+    pub(super) fn set_text(
+        &mut self,
+        id: &str,
+        original: String,
+        translated: Option<String>,
+    ) -> Option<(String, Option<String>)> {
+        let cue = self.cues.iter_mut().find(|cue| cue.id == id)?;
+        if cue.original_text != original || cue.translated_text != translated {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        Some((
+            std::mem::replace(&mut cue.original_text, original),
+            std::mem::replace(&mut cue.translated_text, translated),
+        ))
+    }
+
     pub(crate) fn set_translation(&mut self, id: &str, translated: String) {
         self.revision = self.revision.wrapping_add(1);
         if let Some(cue) = self.cues.iter_mut().find(|cue| cue.id == id) {

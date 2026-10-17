@@ -61,7 +61,6 @@ pub enum MediaAction {
     None,
     StartTranslation {
         request: MediaTranslationRequest,
-        restart: bool,
     },
     StopTranslation,
     TranslateSubtitles {

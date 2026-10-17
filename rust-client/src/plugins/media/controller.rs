@@ -14,6 +14,14 @@ pub enum MediaRoute {
     Detail,
 }
 
+#[derive(Clone)]
+pub(super) struct SubtitleEdit {
+    pub(super) task_id: String,
+    pub(super) cue_id: String,
+    pub(super) original: String,
+    pub(super) translated: String,
+}
+
 pub struct MediaController {
     pub route: MediaRoute,
     pub store: MediaTaskStore,
@@ -23,6 +31,7 @@ pub struct MediaController {
     pub backend: Option<Box<dyn MediaBackend>>,
     pub native_host: Option<NativeVideoHost>,
     pub subtitles: SubtitleTimeline,
+    pub(super) subtitle_edit: Option<SubtitleEdit>,
     pub previews: crate::session_coordinator::LivePreviews,
     pub show_subtitles: bool,
     pub fullscreen_mode: bool,
@@ -93,6 +102,7 @@ impl Default for MediaController {
             backend,
             native_host: None,
             subtitles: SubtitleTimeline::new(),
+            subtitle_edit: None,
             previews: Default::default(),
             show_subtitles: true,
             fullscreen_mode: false,
@@ -143,6 +153,7 @@ impl MediaController {
     }
 
     pub fn open_library(&mut self) {
+        self.subtitle_edit = None;
         if let Some(backend) = &mut self.backend {
             backend.stop();
         }
@@ -156,6 +167,7 @@ impl MediaController {
     }
 
     pub fn open_create(&mut self) {
+        self.subtitle_edit = None;
         if let Some(backend) = &mut self.backend {
             backend.stop();
         }
@@ -259,6 +271,7 @@ impl MediaController {
 
     pub fn open_task(&mut self, task_id: &str) -> Result<(), String> {
         let task = self.store.get(task_id).ok_or("Task not found")?.clone();
+        self.subtitle_edit = None;
         self.previews = Default::default();
         self.active_task_id = Some(task_id.to_string());
         self.current_source = Some(task.source.clone());
@@ -331,6 +344,81 @@ impl MediaController {
         self.playback_loaded && !self.is_subtitle_task()
     }
 
+    pub(super) fn begin_subtitle_edit(&mut self, cue_id: &str) {
+        let Some(task) = self
+            .active_task_id
+            .as_deref()
+            .and_then(|id| self.store.get(id))
+            .filter(|task| !task.is_task_running)
+        else {
+            return;
+        };
+        let Some(cue) = self.subtitles.cues().iter().find(|cue| cue.id == cue_id) else {
+            return;
+        };
+        self.subtitle_edit = Some(SubtitleEdit {
+            task_id: task.id.clone(),
+            cue_id: cue.id.clone(),
+            original: cue.original_text.clone(),
+            translated: cue.translated_text.clone().unwrap_or_default(),
+        });
+        if let Some(host) = &self.native_host {
+            host.hide();
+        }
+    }
+
+    pub(super) fn save_subtitle_edit(&mut self) {
+        let Some(edit) = &self.subtitle_edit else {
+            return;
+        };
+        if self.active_task_id.as_deref() != Some(edit.task_id.as_str())
+            || self
+                .store
+                .get(&edit.task_id)
+                .is_none_or(|task| task.is_task_running)
+        {
+            return;
+        }
+        // Blank lines delimit cues in SRT/VTT; keep line breaks within one cue.
+        let clean = |text: &str| {
+            text.lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let original = clean(&edit.original);
+        if original.is_empty() {
+            self.error = Some("Subtitle text cannot be empty".into());
+            return;
+        }
+        let translated = clean(&edit.translated);
+        let Some(previous) = self.subtitles.set_text(
+            &edit.cue_id,
+            original,
+            (!translated.is_empty()).then_some(translated),
+        ) else {
+            self.error = Some("Subtitle not found".into());
+            return;
+        };
+        let (task_id, cue_id) = (edit.task_id.clone(), edit.cue_id.clone());
+        let was_dirty = self.dirty;
+        self.error = None;
+        self.dirty = true;
+        self.save_active();
+        if self.dirty {
+            let _ = self
+                .subtitles
+                .set_text(&cue_id, previous.0.clone(), previous.1.clone());
+            if let Some(task) = self.store.get_mut(&task_id) {
+                let _ = task.subtitles.set_text(&cue_id, previous.0, previous.1);
+            }
+            self.dirty = was_dirty;
+        } else {
+            self.subtitle_edit = None;
+        }
+    }
+
     pub fn save_active(&mut self) {
         if let Some(task) = self
             .active_task_id
@@ -353,11 +441,24 @@ impl MediaController {
     }
 
     pub fn start_task(&mut self) {
+        self.subtitle_edit = None;
+        if !self.is_subtitle_task() {
+            self.subtitles.clear();
+        }
+        self.previews = Default::default();
+        self.error = None;
         self.is_extracting = false;
         self.extraction_progress = None;
+        self.extract_position = None;
+        self.extract_duration = None;
         self.recognition_progress = None;
         self.recognize_duration = None;
         self.recognize_position = None;
+        self.last_manual_scroll = None;
+        self.last_auto_scrolled_cue_id = None;
+        if let Some(backend) = &mut self.backend {
+            backend.set_osd_subtitle("");
+        }
         if let Some(task_id) = &self.active_task_id {
             if let Some(task) = self.store.get_mut(task_id) {
                 task.is_task_running = true;
@@ -373,29 +474,6 @@ impl MediaController {
             }
             self.save_active();
         }
-    }
-
-    pub fn clear_and_restart_task(&mut self) {
-        if self.is_subtitle_task() {
-            self.subtitles.clear_translations();
-        } else {
-            self.subtitles.clear();
-        }
-        self.is_extracting = false;
-        self.extraction_progress = None;
-        self.extract_position = None;
-        self.extract_duration = None;
-        self.recognition_progress = None;
-        self.recognize_position = None;
-        self.recognize_duration = None;
-        if let Some(task_id) = &self.active_task_id {
-            if let Some(task) = self.store.get_mut(task_id) {
-                task.subtitles = self.subtitles.clone();
-                task.is_task_running = true;
-            }
-            self.save_active();
-        }
-        self.last_manual_scroll = None;
     }
 
     pub fn apply_channel_routing(&mut self) {
