@@ -34,7 +34,7 @@ use tokio::{
 use tracing::{info, warn};
 use xrtranslate_config::{AppConfig, RuntimeLayout};
 use xrtranslate_engine::{
-    RevisableTranscript, RouteEpoch, translation_segment_pairs_for_final_text_with_lang,
+    RevisableTranscript, RouteEpoch, translation_segment_pairs_for_text_with_lang,
 };
 use xrtranslate_inference::{AsyncHttpClient, HttpRequest, ReqwestClient, pcm16_mono_16khz_to_wav};
 use xrtranslate_prompt::{AsrPromptContext, PromptExecutionTrace, PromptMode, PromptNodeGraph};
@@ -2156,7 +2156,7 @@ async fn run_inference_worker(
                     }
                 };
                 let segments =
-                    translation_segment_pairs_for_final_text_with_lang(&job.text, &routed_source);
+                    translation_segment_pairs_for_text_with_lang(&job.text, &routed_source);
                 let mut recognized = RecognizedOutput {
                     source_text: job.text.clone(),
                     segments,

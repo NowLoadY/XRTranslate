@@ -20,7 +20,7 @@ pub fn sentence_end_offsets(text: &str) -> Vec<usize> {
     let mut index = 0;
     while index < characters.len() {
         let boundary = match characters[index] {
-            '.' => period_is_boundary(&characters, index, false),
+            '.' => period_is_boundary(&characters, index),
             '!' | '?' | '。' | '！' | '？' => true,
             _ => false,
         };
@@ -55,19 +55,7 @@ pub fn sentence_end_offsets(text: &str) -> Vec<usize> {
     endings
 }
 
-pub(super) fn is_translation_boundary(characters: &[char], index: usize) -> bool {
-    let character = characters[index];
-    if character == '.' {
-        return period_is_boundary(characters, index, true);
-    }
-    super::HARD_TRANSLATION_BOUNDARIES.contains(&character)
-}
-
-fn period_is_boundary(
-    characters: &[char],
-    index: usize,
-    abbreviation_at_end_is_boundary: bool,
-) -> bool {
+fn period_is_boundary(characters: &[char], index: usize) -> bool {
     let previous = index.checked_sub(1).map(|index| characters[index]);
     let next = characters.get(index + 1).copied();
 
@@ -101,8 +89,7 @@ fn period_is_boundary(
     }
 
     if is_dotted_abbreviation_ending(characters, index) {
-        return abbreviation_at_end_is_boundary
-            && next_non_whitespace(characters, index + 1).is_none();
+        return false;
     }
 
     // A single-letter token before another alphabetic token is normally a

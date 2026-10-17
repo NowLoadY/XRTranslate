@@ -32,7 +32,7 @@ use xrtranslate_config::AppConfig;
 use xrtranslate_denoise::GtcrnDenoiser;
 use xrtranslate_engine::{
     TranslationSegmentPair, remove_asr_stutters, remove_transcript_overlap,
-    strip_filler_edges_for_lang, translation_segment_pairs_for_live_text_with_lang,
+    strip_filler_edges_for_lang, translation_segment_pairs_for_text_with_lang,
 };
 use xrtranslate_inference::{
     AsrTranscript, InferenceError, ReqwestClient, TranslationAdapter, TranslationOptions,
@@ -146,7 +146,7 @@ impl RecognizedOutput {
             return;
         }
         self.source_text = corrected;
-        self.segments = translation_segment_pairs_for_live_text_with_lang(
+        self.segments = translation_segment_pairs_for_text_with_lang(
             &self.source_text,
             &self.source_language,
         );
@@ -154,7 +154,7 @@ impl RecognizedOutput {
 
     pub(crate) fn prepare_sentence_snapshot(&mut self) {
         let cleaned = strip_filler_edges_for_lang(&self.source_text, &self.source_language);
-        self.segments = translation_segment_pairs_for_live_text_with_lang(
+        self.segments = translation_segment_pairs_for_text_with_lang(
             &self.source_text,
             &self.source_language,
         );
@@ -174,7 +174,7 @@ impl RecognizedOutput {
     /// Returns false when the new result contained only duplicated context.
     pub(crate) fn remove_overlap_with(&mut self, previous: &str) -> bool {
         self.source_text = remove_transcript_overlap(previous, &self.source_text);
-        self.segments = translation_segment_pairs_for_live_text_with_lang(
+        self.segments = translation_segment_pairs_for_text_with_lang(
             &self.source_text,
             &self.source_language,
         );
@@ -1331,7 +1331,7 @@ impl NativeInference {
             source_text = to_traditional_chinese(&source_text);
         }
         Ok(Some(RecognizedOutput {
-            segments: translation_segment_pairs_for_live_text_with_lang(&source_text, source_code),
+            segments: translation_segment_pairs_for_text_with_lang(&source_text, source_code),
             source_text,
             source_language: source_code.to_owned(),
             target_language: if asr_only {

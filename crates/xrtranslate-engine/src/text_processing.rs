@@ -8,22 +8,8 @@
 
 mod sentence_boundary;
 
-use sentence_boundary::is_translation_boundary;
 pub use sentence_boundary::{ends_at_sentence_boundary, sentence_end_offsets};
 
-/// Maximum number of Unicode scalar values held before a comma may split an
-/// otherwise unfinished translation segment.
-pub const TRANSLATION_SOFT_SEGMENT_LIMIT: usize = 72;
-
-/// Adjacent sentences at or below this content size are translated together.
-/// One isolated short sentence remains independent so normal sentence timing
-/// and revision behavior do not change.
-const ULTRA_SHORT_TRANSLATION_TOKENS: usize = 2;
-const ULTRA_SHORT_TRANSLATION_CHARACTERS: usize = 12;
-
-const HARD_TRANSLATION_BOUNDARIES: &[char] =
-    &['。', '！', '？', '；', '：', '.', '!', '?', ';', ':'];
-const SOFT_TRANSLATION_BOUNDARIES: &[char] = &['，', '、', ','];
 const FILLER_WORDS_DEFAULT: &[char] = &['嗯', '啊', '呃', '额', '哦', '噢', '唉', '哎'];
 const FILLER_PUNCTUATION: &[char] = &[
     '，', '。', '！', '？', '；', '：', '、', ',', '.', '!', '?', ';', ':', '~', '…', ' ',
@@ -191,153 +177,6 @@ pub struct TranslationSegmentPair {
     pub source_text: String,
 }
 
-/// Splits text at sentence endings and uses a comma only after 72 characters.
-///
-/// This reproduces the Python `split_translation_segments` behavior, including
-/// its final `should_emit_segment(segment, 1)` filter.  Therefore an
-/// unterminated tail is deliberately not emitted until it gains an accepted
-/// terminal boundary.
-pub fn split_translation_segments(text: &str) -> Vec<String> {
-    split_translation_segments_internal(text, false)
-}
-
-fn split_translation_segments_internal(text: &str, emit_unterminated: bool) -> Vec<String> {
-    let value = text.trim();
-    if value.is_empty() {
-        return Vec::new();
-    }
-
-    let mut segments = Vec::new();
-    let mut buffer = Vec::new();
-    let characters = value.chars().collect::<Vec<_>>();
-    for (index, &character) in characters.iter().enumerate() {
-        buffer.push(character);
-        if is_translation_boundary(&characters, index) {
-            push_translation_segment(&mut segments, &buffer, emit_unterminated);
-            buffer.clear();
-            continue;
-        }
-
-        while buffer.len() >= TRANSLATION_SOFT_SEGMENT_LIMIT {
-            let soft_break = buffer
-                .iter()
-                .rposition(|character| SOFT_TRANSLATION_BOUNDARIES.contains(character));
-            let Some(cutoff_idx) = soft_break else {
-                break;
-            };
-            let cutoff = cutoff_idx + 1;
-            push_translation_segment(&mut segments, &buffer[..cutoff], emit_unterminated);
-            buffer = trim_start_chars(&buffer[cutoff..]).to_vec();
-        }
-    }
-
-    push_translation_segment(&mut segments, &buffer, emit_unterminated);
-    merge_adjacent_ultra_short_segments(segments)
-}
-
-fn merge_adjacent_ultra_short_segments(segments: Vec<String>) -> Vec<String> {
-    let mut merged: Vec<String> = Vec::with_capacity(segments.len());
-    let mut index = 0;
-    while index < segments.len() {
-        let segment = &segments[index];
-        if is_filler_segment(segment) {
-            merged.push(segment.clone());
-            index += 1;
-            continue;
-        }
-
-        if is_single_token_interjection(segment) {
-            let mut combined = segment.clone();
-            if index + 1 < segments.len() && !is_filler_segment(&segments[index + 1]) {
-                index += 1;
-                while index < segments.len() && is_single_token_interjection(&segments[index]) {
-                    if needs_segment_space(&combined, &segments[index]) {
-                        combined.push(' ');
-                    }
-                    combined.push_str(&segments[index]);
-                    index += 1;
-                }
-                if index < segments.len() && !is_filler_segment(&segments[index]) {
-                    if needs_segment_space(&combined, &segments[index]) {
-                        combined.push(' ');
-                    }
-                    combined.push_str(&segments[index]);
-                    index += 1;
-                }
-                merged.push(combined);
-                continue;
-            }
-        }
-
-        if is_ultra_short_translation_segment(segment) {
-            let run_start = index;
-            while index < segments.len()
-                && is_ultra_short_translation_segment(&segments[index])
-                && !is_filler_segment(&segments[index])
-            {
-                index += 1;
-            }
-            if index - run_start > 1 {
-                let mut combined = String::new();
-                for seg in &segments[run_start..index] {
-                    if !combined.is_empty() && needs_segment_space(&combined, seg) {
-                        combined.push(' ');
-                    }
-                    combined.push_str(seg);
-                }
-                merged.push(combined);
-                continue;
-            } else {
-                index = run_start;
-            }
-        }
-
-        merged.push(segments[index].clone());
-        index += 1;
-    }
-    merged
-}
-
-fn is_single_token_interjection(segment: &str) -> bool {
-    if is_filler_segment(segment) {
-        return false;
-    }
-    let tokens = content_token_count(segment);
-    let characters = segment
-        .chars()
-        .filter(|character| character.is_alphanumeric())
-        .count();
-    tokens == 1 && characters <= 6
-}
-
-fn is_ultra_short_translation_segment(segment: &str) -> bool {
-    let tokens = content_token_count(segment);
-    let characters = segment
-        .chars()
-        .filter(|character| character.is_alphanumeric())
-        .count();
-    tokens > 0
-        && tokens <= ULTRA_SHORT_TRANSLATION_TOKENS
-        && characters <= ULTRA_SHORT_TRANSLATION_CHARACTERS
-}
-
-fn needs_segment_space(left: &str, right: &str) -> bool {
-    let Some(left) = left
-        .chars()
-        .rev()
-        .find(|character| character.is_alphanumeric())
-    else {
-        return false;
-    };
-    let Some(right) = right.chars().find(|character| character.is_alphanumeric()) else {
-        return false;
-    };
-    !(is_content_cjk_or_kana(left)
-        || is_hangul(left)
-        || is_content_cjk_or_kana(right)
-        || is_hangul(right))
-}
-
 /// Collapses only obvious adjacent ASR repetitions across all alphabetic and CJK scripts,
 /// and merges split English words and subwords created across chunk boundaries or ASR tokenization.
 ///
@@ -478,34 +317,11 @@ pub fn is_filler_segment(text: &str) -> bool {
     strip_filler_edges(text).is_empty()
 }
 
-/// Produces translation text and display text for every emittable segment given a source language.
-pub fn translation_segment_pairs_for_text_with_lang(
-    text: &str,
-    source_lang: &str,
-) -> Vec<TranslationSegmentPair> {
-    split_translation_segments(text)
-        .into_iter()
-        .filter_map(|source_text| translation_pair_with_lang(source_text.trim(), source_lang))
-        .collect()
-}
-
-/// Produces translation segment pairs for a completed ASR chunk given a source language.
-pub fn translation_segment_pairs_for_final_text_with_lang(
-    text: &str,
-    source_lang: &str,
-) -> Vec<TranslationSegmentPair> {
-    split_translation_segments_internal(text, true)
-        .into_iter()
-        .filter_map(|source_text| translation_pair_with_lang(&source_text, source_lang))
-        .collect()
-}
-
-/// Produces bounded live-caption segments from a revisable transcript.
+/// Produces the same sentence spans for text input and recognized speech.
 ///
-/// Complete sentences remain separate from the unfinished tail, including
-/// short sentences. The caller displays the whole snapshot immediately and
-/// waits for a confirmed sentence boundary before submitting a translation.
-pub fn translation_segment_pairs_for_live_text_with_lang(
+/// Commas do not split a sentence, and short sentences stay separate.
+/// An unfinished tail is retained; live callers decide when it is ready to translate.
+pub fn translation_segment_pairs_for_text_with_lang(
     text: &str,
     source_lang: &str,
 ) -> Vec<TranslationSegmentPair> {
@@ -534,49 +350,9 @@ pub fn translation_segment_pairs_for_text(text: &str) -> Vec<TranslationSegmentP
     translation_segment_pairs_for_text_with_lang(text, "auto")
 }
 
-/// Produces translation segments for a completed ASR chunk.
-pub fn translation_segment_pairs_for_final_text(text: &str) -> Vec<TranslationSegmentPair> {
-    translation_segment_pairs_for_final_text_with_lang(text, "auto")
-}
-
-pub fn translation_segment_pairs_for_live_text(text: &str) -> Vec<TranslationSegmentPair> {
-    translation_segment_pairs_for_live_text_with_lang(text, "auto")
-}
-
 /// Produces only the cleaned source strings supplied to the translation model.
 pub fn translation_segments_for_text(text: &str) -> Vec<String> {
     translation_segments_for_text_with_lang(text, "auto")
-}
-
-fn push_if_emittable(segments: &mut Vec<String>, characters: &[char]) {
-    let segment = characters.iter().collect::<String>();
-    let trimmed = segment.trim();
-    if !trimmed.is_empty()
-        && trimmed.chars().last().is_some_and(|character| {
-            matches!(
-                character,
-                '。' | '，' | ',' | '.' | '!' | '！' | '?' | '？' | ';' | '；' | ':'
-            )
-        })
-    {
-        segments.push(trimmed.to_owned());
-    }
-}
-
-fn push_translation_segment(
-    segments: &mut Vec<String>,
-    characters: &[char],
-    emit_unterminated: bool,
-) {
-    if emit_unterminated {
-        let segment = characters.iter().collect::<String>();
-        let segment = segment.trim();
-        if !segment.is_empty() {
-            segments.push(segment.to_owned());
-        }
-    } else {
-        push_if_emittable(segments, characters);
-    }
 }
 
 fn translation_pair_with_lang(
@@ -644,14 +420,6 @@ fn overlap_tokens(text: &str) -> Vec<OverlapToken> {
 
 fn is_hangul(character: char) -> bool {
     matches!(character as u32, 0x1100..=0x11FF | 0x3130..=0x318F | 0xAC00..=0xD7AF)
-}
-
-fn trim_start_chars(characters: &[char]) -> &[char] {
-    let first_non_whitespace = characters
-        .iter()
-        .position(|character| !character.is_whitespace())
-        .unwrap_or(characters.len());
-    &characters[first_non_whitespace..]
 }
 
 fn collapse_matches(
@@ -1312,5 +1080,76 @@ fn merge_word_casing(w1: &str, w2: &str) -> String {
         format!("{}{}", w1, w2.to_uppercase())
     } else {
         format!("{}{}", w1, w2.to_lowercase())
+    }
+}
+
+#[cfg(test)]
+mod sentence_segmentation_tests {
+    use super::translation_segment_pairs_for_text_with_lang;
+
+    #[test]
+    fn long_sentences_keep_lists_and_dependent_clauses_together() {
+        for (language, text) in [
+            (
+                "en",
+                "The workshop teaches careful observation, reliable measurement, and practical problem solving.",
+            ),
+            (
+                "en",
+                "Although the delivery arrived later than expected, the staff finished checking every package before closing.",
+            ),
+            (
+                "zh",
+                "会议结束以后，我们先核对每一份材料，记录所有需要进一步讨论的问题，再根据负责人的意见调整工作安排，确认每个参与者都理解自己的任务，然后按照已经商定的顺序逐项完成。",
+            ),
+            (
+                "en",
+                "The plan has three stages: inspect the equipment; record the measurements; discuss the results with everyone.",
+            ),
+        ] {
+            assert!(text.chars().count() > 72);
+            let segments = translation_segment_pairs_for_text_with_lang(text, language);
+            assert_eq!(segments.len(), 1, "{text}");
+            assert_eq!(segments[0].source_text, text);
+        }
+    }
+
+    #[test]
+    fn sentence_boundaries_preserve_repetition_quotes_and_the_unfinished_tail() {
+        let segments = translation_segment_pairs_for_text_with_lang(
+            "Wait. Wait. \"Ready?\" Final note without a period",
+            "en",
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| segment.source_text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Wait.",
+                "Wait.",
+                "\"Ready?\"",
+                "Final note without a period"
+            ]
+        );
+    }
+
+    #[test]
+    fn decimals_initials_and_dotted_abbreviations_stay_with_their_sentence() {
+        let segments = translation_segment_pairs_for_text_with_lang(
+            "The U.S.A. office quoted 3.14 per unit. J. K. Reed accepted. O.K.",
+            "en",
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| segment.source_text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "The U.S.A. office quoted 3.14 per unit.",
+                "J. K. Reed accepted.",
+                "O.K.",
+            ]
+        );
     }
 }

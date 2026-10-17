@@ -42,6 +42,11 @@ current input, and optional reference facts remain distinct so that reference
 handling is explicit and optional context can be removed without changing the
 task's meaning.
 
+Text input and recognized speech use the same sentence boundaries. Commas,
+colons, and semicolons stay within the current sentence instead of turning its
+remaining clauses into reference-only text. An unfinished tail is retained;
+live recognition decides when that tail is ready to translate.
+
 ASR instruction, lexical context bias, and weighted vocabulary are independent
 capabilities. The prompt graph renders supported text inputs. Structured
 vocabulary passes through its own typed contract. Providers declare support;
