@@ -64,8 +64,19 @@ pub(super) fn open_database(path: &Path) -> rusqlite::Result<Connection> {
         CREATE TABLE IF NOT EXISTS vocabulary_examples (
             source TEXT NOT NULL, source_lang TEXT NOT NULL, target_lang TEXT NOT NULL,
             translated TEXT NOT NULL, sentence TEXT NOT NULL DEFAULT '', back_translation TEXT NOT NULL DEFAULT '',
+            sentence_lang TEXT NOT NULL DEFAULT '',
             PRIMARY KEY(source,source_lang,target_lang,translated));
         PRAGMA foreign_keys=ON;")?;
+    let has_sentence_language: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('vocabulary_examples') WHERE name='sentence_lang')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_sentence_language {
+        connection.execute_batch(
+            "ALTER TABLE vocabulary_examples ADD COLUMN sentence_lang TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
     Ok(connection)
 }
 pub(super) fn save(
@@ -199,4 +210,79 @@ pub(super) fn remove(database: &mut Connection, ids: &[RecordId]) -> rusqlite::R
         }
     }
     transaction.commit()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::history::archive::vocabulary::{self, Action, Entry, Example, Output};
+
+    #[test]
+    fn vocabulary_example_migration_preserves_old_content_and_new_direction() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("history.sqlite");
+        let legacy = Connection::open(&path).unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE vocabulary_examples (
+                    source TEXT NOT NULL, source_lang TEXT NOT NULL, target_lang TEXT NOT NULL,
+                    translated TEXT NOT NULL, sentence TEXT NOT NULL DEFAULT '', back_translation TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY(source,source_lang,target_lang,translated));
+                INSERT INTO vocabulary_examples VALUES ('resilient','en','zh','有韧性的','这是一棵有韧性的树。','This tree is resilient.');",
+            )
+            .unwrap();
+        drop(legacy);
+
+        let mut database = open_database(&path).unwrap();
+        let entry = Entry {
+            source: "resilient".into(),
+            translated: "有韧性的".into(),
+            source_lang: "en".into(),
+            target_lang: "zh".into(),
+        };
+        vocabulary::execute(
+            &mut database,
+            &Action::Add {
+                folder: vocabulary::DEFAULT_FOLDER,
+                entry: entry.clone(),
+            },
+        )
+        .unwrap();
+        let detail = Action::Detail {
+            folder: vocabulary::DEFAULT_FOLDER,
+            source: entry.source.clone(),
+            source_lang: entry.source_lang.clone(),
+        };
+        let Output::Detail(rows) = vocabulary::execute(&mut database, &detail).unwrap() else {
+            panic!("expected the saved word");
+        };
+        assert_eq!(rows[0].example.sentence, "这是一棵有韧性的树。");
+        assert_eq!(rows[0].example.back_translation, "This tree is resilient.");
+        assert!(rows[0].example.sentence_lang.is_empty());
+
+        vocabulary::execute(
+            &mut database,
+            &Action::SaveExample {
+                entry,
+                example: Example {
+                    sentence: "A resilient tree survives the storm.".into(),
+                    back_translation: String::new(),
+                    sentence_lang: "en".into(),
+                },
+            },
+        )
+        .unwrap();
+        drop(database);
+
+        let mut reopened = open_database(&path).unwrap();
+        let Output::Detail(rows) = vocabulary::execute(&mut reopened, &detail).unwrap() else {
+            panic!("expected the saved word after reopening");
+        };
+        assert_eq!(
+            rows[0].example.sentence,
+            "A resilient tree survives the storm."
+        );
+        assert_eq!(rows[0].example.sentence_lang, "en");
+        assert!(rows[0].example.back_translation.is_empty());
+    }
 }

@@ -75,19 +75,17 @@ impl AvatarPlugin {
         }
         if self.settings.connector.osc().is_none() {
             if let Some(runtime) = &self.websocket {
-                ui.horizontal(|ui| {
-                    ui.label(&runtime.url);
-                    if crate::ui::components::copy_button(ui, tr(language, "Copy address"))
-                        .clicked()
-                    {
-                        ui.ctx().copy_text(runtime.url.clone());
-                    }
-                    if crate::ui::components::copy_button(ui, tr(language, "Copy pairing token"))
-                        .clicked()
-                    {
-                        ui.ctx().copy_text(runtime.token.clone());
-                    }
-                });
+                if ui.button(tr(language, "Copy connection info")).clicked() {
+                    ui.ctx().copy_text(
+                        serde_json::json!({
+                            "protocol": 1,
+                            "connector": self.settings.connector.id(),
+                            "address": runtime.url,
+                            "token": runtime.token,
+                        })
+                        .to_string(),
+                    );
+                }
             }
         } else {
             ui.label(tr(
@@ -95,10 +93,14 @@ impl AvatarPlugin {
                 "Enable OSC in the game, then use the XRT control on your Avatar.",
             ));
         }
+        if self.settings.connector.id() == "vrchat" {
+            ui.hyperlink_to(tr(language, "Add to VCC / ALCOM"),
+                "vcc://vpm/addRepo?url=https%3A%2F%2Fraw.githubusercontent.com%2FNowLoadY%2FXRT-Avatar-Plugin%2Fmain%2Fvpm%2Findex.json");
+        }
         ui.hyperlink_to(
             tr(language, "Avatar package and setup"),
             format!(
-                "https://github.com/NowLoadY/XRT-Avatar-Plugin/tree/main/docs/adapters/{}",
+                "https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/{}/installation.md",
                 self.settings.connector.id()
             ),
         );

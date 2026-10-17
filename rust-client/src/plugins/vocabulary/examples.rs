@@ -14,7 +14,7 @@ use xrtranslate_engine::language::{LanguageCapabilities, Script, SupportedLangua
 #[derive(Clone, Copy)]
 pub(super) enum Step {
     Sentence,
-    BackTranslation,
+    Translation,
 }
 
 enum Pending {
@@ -60,25 +60,8 @@ impl Requests {
         if self.busy(&row.entry) || !supported(&row.entry, capabilities) {
             return;
         }
-        let source = SupportedLanguage::parse(&row.entry.source_lang).unwrap();
-        let target = SupportedLanguage::parse(&row.entry.target_lang).unwrap();
-        let prompt = match step {
-            Step::Sentence => format!(
-                "Write one natural sentence in {} using <word> exactly, with the meaning of <source> ({}). Output only the sentence.\n\n<source>{}</source>\n<word>{}</word>",
-                target.name(),
-                source.name(),
-                row.entry.source,
-                row.entry.translated
-            ),
-            Step::BackTranslation if !row.example.sentence.is_empty() => {
-                format!(
-                    "Translate this {} sentence into {}. Output only the translation.\n\n{}",
-                    target.name(),
-                    source.name(),
-                    row.example.sentence
-                )
-            }
-            _ => return,
+        let Some(prompt) = prompt(row, step) else {
+            return;
         };
         self.jobs.push(Job {
             translation: row.clone(),
@@ -107,14 +90,17 @@ impl Requests {
                     Ok(Ok(text)) => {
                         match job.step {
                             Step::Sentence => {
-                                if job.translation.example.sentence != text {
+                                if job.translation.example.sentence != text
+                                    || job.translation.example.sentence_lang
+                                        != job.translation.entry.source_lang
+                                {
                                     job.translation.example.back_translation.clear();
                                 }
                                 job.translation.example.sentence = text;
+                                job.translation.example.sentence_lang =
+                                    job.translation.entry.source_lang.clone();
                             }
-                            Step::BackTranslation => {
-                                job.translation.example.back_translation = text
-                            }
+                            Step::Translation => job.translation.example.back_translation = text,
                         }
                         job.pending = Pending::Save(archive.vocabulary(
                             Action::SaveExample {
@@ -139,7 +125,7 @@ impl Requests {
                 if let Err(error) = result {
                     let message = match job.step {
                         Step::Sentence => "Could not generate an example.",
-                        Step::BackTranslation => "Could not back-translate the example.",
+                        Step::Translation => "Could not translate the example.",
                     };
                     notifications.error(tr(language, message), error);
                 }
@@ -149,6 +135,43 @@ impl Requests {
                 true
             }
         });
+    }
+}
+
+fn prompt(row: &Translation, step: Step) -> Option<String> {
+    let source = SupportedLanguage::parse(&row.entry.source_lang)?;
+    let target = SupportedLanguage::parse(&row.entry.target_lang)?;
+    match step {
+        Step::Sentence => Some(format!(
+            "Write one natural sentence in {} using <word> exactly, with the meaning of <meaning> ({}). Output only the sentence.\n\n<word>{}</word>\n<meaning>{}</meaning>",
+            source.name(),
+            target.name(),
+            row.entry.source,
+            row.entry.translated
+        )),
+        Step::Translation if !row.example.sentence.is_empty() => {
+            // Older examples were generated in the translation's language. Keep
+            // their direction until the user explicitly generates a new example.
+            let sentence_language = if row.example.sentence_lang.is_empty() {
+                target
+            } else {
+                SupportedLanguage::parse(&row.example.sentence_lang)?
+            };
+            let translation_language = if sentence_language == source {
+                target
+            } else if sentence_language == target {
+                source
+            } else {
+                return None;
+            };
+            Some(format!(
+                "Translate this {} sentence into {}. Output only the translation.\n\n{}",
+                sentence_language.name(),
+                translation_language.name(),
+                row.example.sentence
+            ))
+        }
+        Step::Translation => None,
     }
 }
 
@@ -163,9 +186,9 @@ fn valid_sentence(text: &str, entry: &Entry) -> bool {
     };
     let text = text.trim();
     let sentence = normalize(text);
-    let word = normalize(&entry.translated);
+    let word = normalize(&entry.source);
     let script =
-        SupportedLanguage::parse(&entry.target_lang).and_then(|language| language.script());
+        SupportedLanguage::parse(&entry.source_lang).and_then(|language| language.script());
     let separate_words = matches!(
         script,
         Some(Script::Latin | Script::Cyrillic | Script::Devanagari)
@@ -178,6 +201,8 @@ fn valid_sentence(text: &str, entry: &Entry) -> bool {
             "</word",
             "<source",
             "</source",
+            "<meaning",
+            "</meaning",
             "<think",
             "```",
             "output only the sentence",
@@ -200,4 +225,55 @@ fn valid_sentence(text: &str, entry: &Entry) -> bool {
         return false;
     }
     script.is_none_or(|script| xrtranslate_engine::observed_scripts(&rest).contains(&script))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn word() -> Translation {
+        Translation {
+            id: 1,
+            entry: Entry {
+                source: "resilient".into(),
+                translated: "有韧性的".into(),
+                source_lang: "en".into(),
+                target_lang: "zh".into(),
+            },
+            example: Default::default(),
+        }
+    }
+
+    #[test]
+    fn generated_example_uses_the_word_in_the_title() {
+        let row = word();
+        let request = prompt(&row, Step::Sentence).unwrap();
+        assert!(request.starts_with("Write one natural sentence in English"));
+        assert!(request.contains("<word>resilient</word>"));
+        assert!(request.contains("<meaning>有韧性的</meaning>"));
+        assert!(valid_sentence("This tree is resilient.", &row.entry));
+        assert!(!valid_sentence("这是一棵有韧性的树。", &row.entry));
+    }
+
+    #[test]
+    fn example_translation_respects_legacy_and_new_directions() {
+        let mut row = word();
+        row.example.sentence = "这是一棵有韧性的树。".into();
+        let old_request = prompt(&row, Step::Translation).unwrap();
+        assert!(old_request.starts_with("Translate this Chinese sentence into English."));
+
+        row.example.sentence = "This tree is resilient.".into();
+        row.example.sentence_lang = "en".into();
+        let new_request = prompt(&row, Step::Translation).unwrap();
+        assert!(new_request.starts_with("Translate this English sentence into Chinese."));
+
+        // Shared scripts must not cause guessing based on the sentence's text.
+        row.entry.target_lang = "fr".into();
+        row.example.sentence_lang.clear();
+        assert!(
+            prompt(&row, Step::Translation)
+                .unwrap()
+                .starts_with("Translate this French sentence into English.")
+        );
+    }
 }

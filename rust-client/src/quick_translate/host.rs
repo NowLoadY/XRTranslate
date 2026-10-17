@@ -27,6 +27,8 @@ impl XRTranslateApp {
         ctx: &egui::Context,
     ) {
         self.stop_quick_translation();
+        self.quick_translate.inline = None;
+        self.quick_translate.route = None;
         let text = match text {
             Ok(text) if !text.trim().is_empty() => text,
             Ok(_) => {
@@ -41,8 +43,43 @@ impl XRTranslateApp {
                 return;
             }
         };
-        let operation = self.quick_translate.begin(text.clone());
         self.quick_translate.route = Some((self.source_lang.clone(), self.target_lang.clone()));
+        self.submit_quick_translation(text, None, ctx);
+    }
+
+    pub(crate) fn begin_history_lookup(
+        &mut self,
+        text: String,
+        context: String,
+        context_offset: usize,
+        anchor: egui::Rect,
+        ctx: &egui::Context,
+    ) {
+        self.stop_quick_translation();
+        self.quick_translate.close();
+        self.quick_translate.inline =
+            Some(super::inline::Lookup::new(context, context_offset, anchor));
+        self.submit_quick_translation(text.trim().to_owned(), None, ctx);
+    }
+
+    fn submit_quick_translation(
+        &mut self,
+        text: String,
+        target: Option<String>,
+        ctx: &egui::Context,
+    ) {
+        let known_source = self
+            .quick_translate
+            .view
+            .as_ref()
+            .map(|view| view.source_lang.clone())
+            .unwrap_or_default();
+        let operation = self.quick_translate.begin(text.clone());
+        if self.quick_translate.inline.is_some() && !vocabulary::can_save(&text) {
+            self.quick_translate
+                .fail("Vocabulary is available for words and short phrases.".into());
+            return;
+        }
         if text.chars().count() > 64_000 {
             self.quick_translate
                 .fail("Select a shorter passage to translate.".into());
@@ -52,14 +89,29 @@ impl XRTranslateApp {
             .service_config
             .language_capabilities()
             .and_then(|capabilities| {
-                crate::text_translation::select_languages_with_options(
-                    &text,
-                    &self.source_lang,
-                    &self.target_lang,
-                    capabilities,
-                    None,
-                    false,
-                )
+                if let Some(target) = &target {
+                    let capabilities = capabilities.for_text();
+                    capabilities
+                        .select(&known_source, target)
+                        .or_else(|_| capabilities.select("auto", target))
+                } else if let Some(lookup) = &self.quick_translate.inline {
+                    super::inline::languages(
+                        &text,
+                        &lookup.context,
+                        self.ui_language,
+                        [&self.source_lang, &self.target_lang],
+                        capabilities,
+                    )
+                } else {
+                    crate::text_translation::select_languages_with_options(
+                        &text,
+                        &self.source_lang,
+                        &self.target_lang,
+                        capabilities,
+                        None,
+                        false,
+                    )
+                }
             });
         match languages {
             Ok(mut languages) => {
@@ -84,7 +136,7 @@ impl XRTranslateApp {
                         })
                         .map(|language| language.code().to_owned())
                         .collect();
-                    view.source_lang = source;
+                    view.source_lang = source.clone();
                     view.target_lang = target;
                 }
                 let owner = PluginSessionOwner::new(
@@ -94,6 +146,17 @@ impl XRTranslateApp {
                     "Quick translation",
                     "Translating…",
                 );
+                let context = self.quick_translate.inline.as_ref().map_or_else(
+                    xrtranslate_prompt::TaskContext::default,
+                    |lookup| {
+                        super::inline::task_context(
+                            &text,
+                            &lookup.context,
+                            lookup.context_offset,
+                            &source,
+                        )
+                    },
+                );
                 let task = TranslationTask::text(
                     text,
                     languages,
@@ -101,7 +164,8 @@ impl XRTranslateApp {
                         owner,
                         SessionOutputPolicy::PluginOnly,
                     )),
-                );
+                )
+                .with_context(context);
                 // Submission errors belong inside this small result window.
                 self.enable_translation_service();
                 if let Err(error) = self.text_translation.submit(task) {
@@ -113,6 +177,12 @@ impl XRTranslateApp {
         ctx.request_repaint();
     }
     pub(crate) fn poll_quick_translation(&mut self, ctx: &egui::Context) {
+        if !self.fullscreen_history
+            || self.navigation.page != crate::ui::Page::Translation
+            || self.history_archive.open
+        {
+            self.close_history_lookup();
+        }
         #[cfg(windows)]
         {
             self.quick_translate.register(ctx);
@@ -121,6 +191,9 @@ impl XRTranslateApp {
             }
         }
         for event in self.quick_translate.overlay.poll_events() {
+            if self.quick_translate.inline.is_some() {
+                continue;
+            }
             match event {
                 OverlayEvent::QuickTranslation { id, action }
                     if self
@@ -129,32 +202,7 @@ impl XRTranslateApp {
                         .as_ref()
                         .is_some_and(|view| view.id == id) =>
                 {
-                    match action {
-                        Action::Close => {
-                            self.stop_quick_translation();
-                            self.quick_translate.close();
-                        }
-                        Action::Target(target) => {
-                            self.change_quick_translation_target(&target, ctx)
-                        }
-                        Action::Folders => self.save_quick_vocabulary(None, ctx),
-                        Action::Save(folder) => self.save_quick_vocabulary(Some(folder), ctx),
-                        Action::Copy => {
-                            if let Some(view) = &mut self.quick_translate.view
-                                && !view.busy
-                                && view.error.is_none()
-                                && !view.translated.is_empty()
-                            {
-                                match self.quick_translate.clipboard.write(&view.translated) {
-                                    Ok(()) => {
-                                        view.copy_count += 1;
-                                        view.copy_error = None;
-                                    }
-                                    Err(error) => view.copy_error = Some(error),
-                                }
-                            }
-                        }
-                    }
+                    self.handle_quick_translation_action(action, ctx);
                 }
                 OverlayEvent::CloseRequested | OverlayEvent::Failed(_) => {
                     self.stop_quick_translation();
@@ -179,12 +227,89 @@ impl XRTranslateApp {
         if self.quick_translate.poll(ctx) {
             self.save_quick_vocabulary(None, ctx);
         }
-        if let Some(view) = &self.quick_translate.view {
+        if self.quick_translate.inline.is_none()
+            && let Some(view) = &self.quick_translate.view
+        {
             self.quick_translate.overlay.set_language(self.ui_language);
             self.quick_translate.overlay.send_quick_translation(view);
             self.quick_translate.overlay.start();
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
+    }
+
+    pub(crate) fn show_history_lookup(&mut self, ctx: &egui::Context) {
+        if self.quick_translate.inline.is_none() {
+            return;
+        }
+        if !self.fullscreen_history {
+            self.stop_quick_translation();
+            self.quick_translate.close();
+            return;
+        }
+        let presentation_dark = (self.history_display.mode
+            == crate::ui::pages::translation::history::DisplayMode::Bubbles)
+            .then_some(self.history_display.presentation_dark);
+        let action = match (
+            self.quick_translate.view.as_ref(),
+            self.quick_translate.inline.as_mut(),
+        ) {
+            (Some(view), Some(lookup)) => {
+                super::inline::show(view, lookup, self.ui_language, presentation_dark, ctx)
+            }
+            _ => None,
+        };
+        match action {
+            Some(super::inline::Interaction::Action(action)) => {
+                self.handle_quick_translation_action(action, ctx);
+            }
+            Some(super::inline::Interaction::Retry) => {
+                let target = self.quick_translate.view.as_ref().and_then(|view| {
+                    (!view.target_lang.is_empty()).then(|| view.target_lang.clone())
+                });
+                self.stop_quick_translation();
+                self.submit_quick_translation(self.quick_translate.source(), target, ctx);
+            }
+            None => {}
+        }
+    }
+
+    pub(crate) fn is_history_lookup_open(&self) -> bool {
+        self.quick_translate.inline.is_some()
+    }
+
+    pub(crate) fn close_history_lookup(&mut self) {
+        if self.is_history_lookup_open() {
+            self.stop_quick_translation();
+            self.quick_translate.close();
+        }
+    }
+
+    fn handle_quick_translation_action(&mut self, action: Action, ctx: &egui::Context) {
+        match action {
+            Action::Close => {
+                self.stop_quick_translation();
+                self.quick_translate.close();
+            }
+            Action::Target(target) => self.change_quick_translation_target(&target, ctx),
+            Action::Folders => self.save_quick_vocabulary(None, ctx),
+            Action::Save(folder) => self.save_quick_vocabulary(Some(folder), ctx),
+            Action::Copy => {
+                if let Some(view) = &mut self.quick_translate.view
+                    && !view.busy
+                    && view.error.is_none()
+                    && !view.translated.is_empty()
+                {
+                    match self.quick_translate.clipboard.write(&view.translated) {
+                        Ok(()) => {
+                            view.copy_count += 1;
+                            view.copy_error = None;
+                        }
+                        Err(error) => view.copy_error = Some(error),
+                    }
+                }
+            }
+        }
+        ctx.request_repaint();
     }
 
     fn save_quick_vocabulary(&mut self, folder: Option<i64>, ctx: &egui::Context) {
@@ -198,7 +323,10 @@ impl XRTranslateApp {
         view.saving = true;
         view.save_error = None;
         let action = match folder {
-            Some(folder) if view.folders.iter().any(|f| f.id == folder) => {
+            Some(folder)
+                if folder == vocabulary::DEFAULT_FOLDER
+                    || view.folders.iter().any(|f| f.id == folder) =>
+            {
                 vocabulary::Action::Add { folder, entry }
             }
             Some(_) => {
@@ -220,36 +348,8 @@ impl XRTranslateApp {
         if view.target_lang == target || !view.targets.iter().any(|code| code == target) {
             return;
         }
-        let capabilities = self.language_capabilities();
-        let pair = format!("{},{}", view.source_lang, target);
-        let (source, target) = if self.source_lang == "auto"
-            && self.target_lang.contains(',')
-            && capabilities.select("auto", &pair).is_ok()
-        {
-            ("auto".to_owned(), pair)
-        } else if capabilities.select(&view.source_lang, target).is_ok() {
-            (view.source_lang.clone(), target.to_owned())
-        } else {
-            ("auto".to_owned(), target.to_owned())
-        };
-        if capabilities.select(&source, &target).is_err() {
-            return;
-        }
-        if capabilities
-            .select_with_options(
-                &source,
-                &target,
-                self.additional_target_lang.as_deref(),
-                false,
-            )
-            .is_err()
-        {
-            self.additional_target_lang = None;
-        }
-        self.source_lang = source;
-        self.target_lang = target;
-        self.asr_only = false;
-        self.apply_language_route();
-        self.begin_quick_translation(Ok(self.quick_translate.source()), ctx);
+        let text = view.source.clone();
+        self.stop_quick_translation();
+        self.submit_quick_translation(text, Some(target.to_owned()), ctx);
     }
 }

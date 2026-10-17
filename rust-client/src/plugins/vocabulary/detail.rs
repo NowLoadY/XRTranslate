@@ -1,6 +1,7 @@
 use super::{
     Page,
     examples::{self, Step},
+    more_button,
 };
 use crate::{
     ask,
@@ -61,8 +62,8 @@ impl Page {
                                 ui.add_space(6.0);
                                 ui.horizontal(|ui| {
                                     let width = (ui.available_width()
-                                        - 96.0
-                                        - ui.spacing().item_spacing.x * 3.0)
+                                        - 64.0
+                                        - ui.spacing().item_spacing.x * 2.0)
                                         .max(0.0);
                                     ui.allocate_ui_with_layout(
                                         egui::vec2(width, 32.0),
@@ -79,23 +80,27 @@ impl Page {
                                             );
                                         },
                                     );
-                                    if components::copy_button(ui, tr(language, "Copy")).clicked() {
+                                    if components::copy_button(ui, tr(language, "Copy translation"))
+                                        .clicked()
+                                    {
                                         ui.ctx().copy_text(row.entry.translated.clone());
                                     }
                                     ui.add_enabled_ui(!busy, |ui| {
-                                        if components::edit_button(ui, tr(language, "Edit"))
-                                            .clicked()
-                                        {
-                                            self.word_edit = Some((row.clone(), self.folder));
-                                        }
-                                        if components::delete_button(
-                                            ui,
-                                            tr(language, "Remove from vocabulary"),
-                                        )
-                                        .clicked()
-                                        {
-                                            action = Some(Action::Remove(row.id));
-                                        }
+                                        let more = more_button(ui, language);
+                                        egui::Popup::menu(&more).show(|ui| {
+                                            if ui.button(tr(language, "Edit translation")).clicked()
+                                            {
+                                                self.word_edit = Some((row.clone(), self.folder));
+                                                ui.close();
+                                            }
+                                            if ui
+                                                .button(tr(language, "Remove this translation"))
+                                                .clicked()
+                                            {
+                                                action = Some(Action::Remove(row.id));
+                                                ui.close();
+                                            }
+                                        });
                                     });
                                 });
                                 if self
@@ -155,26 +160,37 @@ impl Page {
         let supported = examples::supported(&row.entry, capabilities);
         ui.add_space(18.0);
         ui.horizontal_wrapped(|ui| {
-            if components::secondary_button_enabled(
-                ui,
-                tr(language, "Generate example"),
-                !busy && !running && supported,
-            )
-            .clicked()
-            {
-                self.examples
-                    .start(row, Step::Sentence, capabilities, ask, ui.ctx());
-            }
-            if components::secondary_button_enabled(
-                ui,
-                tr(language, "Back-translate"),
-                !busy && !running && supported && !example.sentence.is_empty(),
-            )
-            .clicked()
-            {
-                self.examples
-                    .start(row, Step::BackTranslation, capabilities, ask, ui.ctx());
-            }
+            ui.add_enabled_ui(!busy && !running && supported, |ui| {
+                if components::icon_button(
+                    ui,
+                    tr(
+                        language,
+                        if example.sentence.is_empty() {
+                            "Generate example"
+                        } else {
+                            "Generate another example"
+                        },
+                    ),
+                    egui::include_image!("../../../resources/icons/example.svg"),
+                )
+                .clicked()
+                {
+                    self.examples
+                        .start(row, Step::Sentence, capabilities, ask, ui.ctx());
+                }
+                if !example.sentence.is_empty()
+                    && example.back_translation.is_empty()
+                    && components::icon_button(
+                        ui,
+                        tr(language, "View example translation"),
+                        egui::include_image!("../../../resources/icons/translation.svg"),
+                    )
+                    .clicked()
+                {
+                    self.examples
+                        .start(row, Step::Translation, capabilities, ask, ui.ctx());
+                }
+            });
             if running {
                 ui.spinner();
             }

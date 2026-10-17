@@ -278,22 +278,27 @@ impl Page {
                 if components::add_button(ui, tr(language, "New wordbook")).clicked() {
                     self.folder_edit = Some((None, String::new()));
                 }
-                if components::edit_button(ui, tr(language, "Rename wordbook")).clicked() {
-                    self.folder_edit = Some((
-                        Some(self.folder),
-                        self.folders
-                            .iter()
-                            .find(|f| f.id == self.folder)
-                            .map(|f| f.label(language).to_owned())
-                            .unwrap_or_default(),
-                    ));
-                }
-                ui.add_enabled_ui(self.folder != DEFAULT_FOLDER, |ui| {
-                    if components::delete_button(ui, tr(language, "Delete wordbook"))
-                        .on_hover_text(tr(language, "Words will move to the default wordbook."))
-                        .clicked()
+                let more = more_button(ui, language);
+                egui::Popup::menu(&more).show(|ui| {
+                    if ui.button(tr(language, "Rename wordbook")).clicked() {
+                        self.folder_edit = Some((
+                            Some(self.folder),
+                            self.folders
+                                .iter()
+                                .find(|f| f.id == self.folder)
+                                .map(|f| f.label(language).to_owned())
+                                .unwrap_or_default(),
+                        ));
+                        ui.close();
+                    }
+                    if self.folder != DEFAULT_FOLDER
+                        && ui
+                            .button(tr(language, "Delete wordbook"))
+                            .on_hover_text(tr(language, "Words will move to the default wordbook."))
+                            .clicked()
                     {
                         action = Some(Action::DeleteFolder(self.folder));
+                        ui.close();
                     }
                 });
             });
@@ -337,7 +342,10 @@ impl Page {
             if ui
                 .add(
                     egui::TextEdit::singleline(&mut self.query)
-                        .hint_text(tr(language, "Search"))
+                        .hint_text(tr(
+                            language,
+                            "Search words or translations in this wordbook",
+                        ))
                         .desired_width(ui.available_width().min(360.0)),
                 )
                 .changed()
@@ -357,7 +365,14 @@ impl Page {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 if self.records.is_empty() && !busy {
-                    ui.weak(tr(language, "No saved words in this wordbook."));
+                    ui.weak(tr(
+                        language,
+                        if self.query.trim().is_empty() {
+                            "No saved words in this wordbook."
+                        } else {
+                            "No matching words in this wordbook."
+                        },
+                    ));
                 }
                 for record in &self.records {
                     ui.push_id(record.id, |ui| {
@@ -369,8 +384,8 @@ impl Page {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal(|ui| {
                                     let text_width = (ui.available_width()
-                                        - 96.0
-                                        - ui.spacing().item_spacing.x * 3.0)
+                                        - 64.0
+                                        - ui.spacing().item_spacing.x * 2.0)
                                         .max(0.0);
                                     let words = ui.allocate_ui_with_layout(
                                         egui::vec2(text_width, 48.0),
@@ -421,27 +436,35 @@ impl Page {
                                     {
                                         open = Some((record.entry.clone(), None));
                                     }
-                                    if components::copy_button(ui, tr(language, "Copy")).clicked() {
+                                    if components::copy_button(ui, tr(language, "Copy translation"))
+                                        .clicked()
+                                    {
                                         ui.ctx().copy_text(record.entry.translated.clone());
                                     }
                                     ui.add_enabled_ui(!busy, |ui| {
-                                        if components::edit_button(ui, tr(language, "Edit"))
-                                            .clicked()
-                                        {
-                                            open = Some((record.entry.clone(), Some(record.id)));
-                                        }
-                                        if components::delete_button(
-                                            ui,
-                                            tr(language, "Remove from vocabulary"),
-                                        )
-                                        .clicked()
-                                        {
-                                            action = Some(Action::RemoveWord {
-                                                folder: self.folder,
-                                                source: record.entry.source.clone(),
-                                                source_lang: record.entry.source_lang.clone(),
-                                            });
-                                        }
+                                        let more = more_button(ui, language);
+                                        egui::Popup::menu(&more).show(|ui| {
+                                            if ui.button(tr(language, "Edit translation")).clicked()
+                                            {
+                                                open =
+                                                    Some((record.entry.clone(), Some(record.id)));
+                                                ui.close();
+                                            }
+                                            if ui
+                                                .button(tr(
+                                                    language,
+                                                    "Remove word and all its translations",
+                                                ))
+                                                .clicked()
+                                            {
+                                                action = Some(Action::RemoveWord {
+                                                    folder: self.folder,
+                                                    source: record.entry.source.clone(),
+                                                    source_lang: record.entry.source_lang.clone(),
+                                                });
+                                                ui.close();
+                                            }
+                                        });
                                     });
                                 });
                             });
@@ -481,4 +504,12 @@ impl Page {
             self.request(action, archive, ui.ctx());
         }
     }
+}
+
+fn more_button(ui: &mut egui::Ui, language: UiLanguage) -> egui::Response {
+    components::icon_button(
+        ui,
+        tr(language, "More actions"),
+        egui::include_image!("../../resources/icons/more.svg"),
+    )
 }

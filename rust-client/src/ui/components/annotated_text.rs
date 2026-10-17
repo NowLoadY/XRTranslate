@@ -6,11 +6,13 @@ use xrtranslate_protocol::CorpusTermMatch;
 pub struct AnnotatedText<'a> {
     job: LayoutJob,
     terms: Vec<(Range<usize>, &'a CorpusTermMatch)>,
+    segments: Vec<Range<usize>>,
 }
 
 pub struct TextLayout<'a> {
     galley: Arc<egui::Galley>,
     terms: Vec<(Range<usize>, &'a CorpusTermMatch)>,
+    segments: Vec<Range<usize>>,
 }
 
 impl<'a> AnnotatedText<'a> {
@@ -27,7 +29,9 @@ impl<'a> AnnotatedText<'a> {
         if crate::streaming::needs_separator(&self.job.text, text) {
             self.append(ui, RichText::new(" ").color(color).size(size));
         }
+        let start = self.job.text.len();
         self.append_terms(ui, text, primary, secondary, color, size);
+        self.segments.push(start..self.job.text.len());
     }
 
     pub fn append(&mut self, ui: &Ui, text: RichText) {
@@ -96,17 +100,42 @@ impl<'a> AnnotatedText<'a> {
         TextLayout {
             galley: ui.painter().layout_job(self.job),
             terms: self.terms,
+            segments: self.segments,
         }
     }
 }
 
 impl TextLayout<'_> {
+    pub(crate) fn freeze_selection(
+        &mut self,
+        selection: &super::selectable_text::SelectionState,
+        id: egui::Id,
+    ) {
+        self.galley = selection.galley(id, self.galley.clone());
+    }
+
+    pub(crate) fn show_selectable(
+        &self,
+        ui: &mut Ui,
+        selection: &mut super::selectable_text::SelectionState,
+        id: egui::Id,
+    ) {
+        let response = selection.show(ui, id, self.galley.clone(), &self.segments);
+        if !selection.is_active() {
+            self.term_tooltip(response);
+        }
+    }
+
     pub fn height(&self) -> f32 {
         self.galley.size().y
     }
 
     pub fn show(&self, ui: &mut Ui) -> egui::Response {
         let response = ui.add(egui::Label::new(self.galley.clone()).wrap());
+        self.term_tooltip(response)
+    }
+
+    fn term_tooltip(&self, response: egui::Response) -> egui::Response {
         if let Some(position) = response.hover_pos() {
             let cursor = self.galley.cursor_from_pos(position - response.rect.min);
             let byte = self

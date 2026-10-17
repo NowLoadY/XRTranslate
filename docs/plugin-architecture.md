@@ -125,6 +125,14 @@ affecting unrelated tasks.
 | `plugins::ocr` | Screen-text workflow; uses host capture, recognition, and translation capabilities |
 | `plugins::auto_input` | Automatic text output; consumes committed results through a platform input capability |
 
+Desktop fullscreen history exposes an explicit lookup action on selected words
+and short phrases. Its in-app card shares the quick-translation task lifecycle
+and vocabulary store. Selection keeps a snapshot of the chosen text and its
+sentence while the live feed continues; lookup language changes stay local to
+the card. The first bookmark goes directly to the default wordbook, with other
+wordbooks available from the saved star. Saved examples retain their own
+sentence language so older examples keep the correct translation direction.
+
 `audio_playback` owns local audio decoding, seeking, and output. Media and meeting
 plugins use it independently. Meetings retain each recording run's time offset
 and source file so transcript navigation resolves to the matching audio track;

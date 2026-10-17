@@ -1,6 +1,7 @@
 //! Private shortcut task, presented by the shared native floating renderer.
 mod clipboard;
 mod host;
+mod inline;
 use crate::{
     history::archive::vocabulary,
     overlay_ipc::QuickTranslationState,
@@ -27,6 +28,60 @@ impl SessionEventSubscriber for Sink {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replaced_lookup_ignores_late_translation_and_bookmark_results() {
+        let ctx = egui::Context::default();
+        let mut lookup = QuickTranslate::new(Default::default());
+        let old = lookup.begin("old".into());
+        let (save, saved) = crossbeam_channel::bounded(1);
+        lookup.bookmark = Some((old.clone(), saved));
+        let current = lookup.begin("current".into());
+        let _ = save.send(Err("stale save error".into()));
+        lookup
+            .sink
+            .0
+            .send((
+                old,
+                TranslationEvent::Finished {
+                    stream_id: 1,
+                    outcome: TranslationOutcome::Failed("stale translation error".into()),
+                },
+            ))
+            .unwrap();
+        lookup.poll(&ctx);
+        let view = lookup.view.as_ref().unwrap();
+        assert_eq!(view.source, "current");
+        assert!(view.busy && view.error.is_none() && view.save_error.is_none());
+        assert_eq!(lookup.operation.as_deref(), Some(current.as_str()));
+    }
+
+    #[test]
+    fn closing_lookup_discards_its_late_result() {
+        let ctx = egui::Context::default();
+        let mut lookup = QuickTranslate::new(Default::default());
+        let id = lookup.begin("word".into());
+        lookup.inline = Some(inline::Lookup::new("a word".into(), 2, egui::Rect::NOTHING));
+        lookup.close();
+        lookup
+            .sink
+            .0
+            .send((
+                id,
+                TranslationEvent::Finished {
+                    stream_id: 1,
+                    outcome: TranslationOutcome::Failed("late failure".into()),
+                },
+            ))
+            .unwrap();
+        lookup.poll(&ctx);
+        assert!(lookup.view.is_none() && lookup.inline.is_none());
+    }
+}
+
 pub(crate) struct QuickTranslate {
     pub settings: crate::desktop_shortcut::Settings,
     #[cfg(windows)]
@@ -46,6 +101,7 @@ pub(crate) struct QuickTranslate {
     segments: BTreeMap<(String, u32), String>,
     route: Option<(String, String)>,
     bookmark: Option<(String, vocabulary::Reply)>,
+    inline: Option<inline::Lookup>,
 }
 impl QuickTranslate {
     pub fn new(settings: crate::desktop_shortcut::Settings) -> Self {
@@ -69,6 +125,7 @@ impl QuickTranslate {
             segments: BTreeMap::new(),
             route: None,
             bookmark: None,
+            inline: None,
         }
     }
     #[cfg(windows)]
@@ -138,6 +195,7 @@ impl QuickTranslate {
         self.segments.clear();
         self.bookmark = None;
         self.route = None;
+        self.inline = None;
         self.overlay.stop();
     }
     fn entry(&self) -> Option<vocabulary::Entry> {
@@ -176,6 +234,8 @@ impl QuickTranslate {
                         *tag = language.code().into();
                     }
                 }
+                view.targets
+                    .retain(|target| !crate::languages_conflict(&view.source_lang, target));
             }
             match event {
                 TranslationEvent::Segment(segment) => {
@@ -209,6 +269,10 @@ impl QuickTranslate {
                             }
                             if text.trim().is_empty() {
                                 view.error = Some("No translation was returned. Try again.".into());
+                            } else if self.inline.is_some()
+                                && crate::languages_conflict(&view.source_lang, &view.target_lang)
+                            {
+                                view.error = Some("Choose a different target language.".into());
                             } else {
                                 view.translated = text;
                                 view.can_save = vocabulary::can_save(&view.source)

@@ -15,6 +15,50 @@ impl Presentation {
         self.first_frame = true;
         self.last_layout = None;
     }
+
+    pub(super) fn following(&self) -> bool {
+        self.following
+    }
+
+    pub(super) fn take_follow_request(&mut self) -> bool {
+        self.following && std::mem::take(&mut self.first_frame)
+    }
+
+    pub(super) fn pause(&mut self) {
+        self.following = false;
+    }
+
+    pub(super) fn observe_input(&mut self, ui: &egui::Ui) {
+        let viewport = ui.available_rect_before_wrap();
+        if ui.input(|input| {
+            input.pointer.hover_pos().is_some_and(|pos| viewport.contains(pos))
+                && (input.pointer.primary_down()
+                    || input.events.iter().any(|event| {
+                        matches!(event, egui::Event::MouseWheel { delta, .. } if delta.y != 0.0)
+                    }))
+        }) {
+            self.pause();
+        }
+    }
+
+    pub(super) fn follow_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        language: crate::i18n::UiLanguage,
+    ) -> bool {
+        if !self.following
+            && components::icon_button(
+                ui,
+                tr(language, "Follow latest"),
+                egui::include_image!("../../../../resources/icons/chevron-down.svg"),
+            )
+            .clicked()
+        {
+            self.enter();
+            return true;
+        }
+        false
+    }
 }
 
 pub fn background(dark: bool) -> Color32 {
@@ -36,8 +80,7 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     ui.visuals_mut().override_text_color = Some(foreground);
     ui.spacing_mut().scroll.fade.strength = 0.0;
 
-    let mut back =
-        ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    let mut back = super::history::exit_on_escape(app, ui.ctx());
     egui::Frame::new().inner_margin(16).show(ui, |ui| {
         ui.horizontal(|ui| {
             back |= components::icon_button(
@@ -64,11 +107,8 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                 app.save_settings();
                 ui.ctx().request_repaint();
             }
-            if !app.history_presentation.following
-                && ui.button(tr(language, "Follow latest")).clicked()
-            {
-                app.history_presentation.following = true;
-                app.history_presentation.last_layout = None;
+            if app.history_presentation.follow_button(ui, language) {
+                app.history_selection.clear();
             }
         });
     });
@@ -80,43 +120,63 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
 
     // The same turn/segment ordering and revision selection as the normal feed
     // keeps a streamed preview in place when its final translation arrives.
+    app.history_presentation.observe_input(ui);
     let lines = super::history::history_segments(app)
         .iter()
         .flat_map(|turn| &turn.translations)
-        .map(|entry| entry.output_text())
-        .filter(|text| !text.trim().is_empty())
+        .enumerate()
+        .map(|(index, entry)| {
+            let id = ui.make_persistent_id((
+                "presentation_line",
+                entry.stream_id,
+                &entry.turn_id,
+                entry.segment_index,
+                if entry.turn_id.is_empty() { index } else { 0 },
+            ));
+            let mut text = entry.translated.clone();
+            let mut ranges = Vec::new();
+            if !text.trim().is_empty() {
+                ranges.push(0..text.len());
+            }
+            for extra in &entry.additional_translations {
+                if extra.translated_text.trim().is_empty() {
+                    continue;
+                }
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&extra.target_lang);
+                text.push_str(" · ");
+                let start = text.len();
+                text.push_str(&extra.translated_text);
+                ranges.push(start..text.len());
+            }
+            (id, text, ranges)
+        })
+        .filter(|(_, text, _)| !text.trim().is_empty())
         .collect::<Vec<_>>();
     render_lines(
         &lines,
         &mut app.history_presentation,
+        &mut app.history_selection,
         language,
         backdrop,
         foreground,
         ui,
     );
+    super::history::show_lookup(app, ui.ctx());
 }
 
 fn render_lines(
-    lines: &[String],
+    lines: &[(egui::Id, String, Vec<std::ops::Range<usize>>)],
     state: &mut Presentation,
+    selection: &mut components::selectable_text::SelectionState,
     language: crate::i18n::UiLanguage,
     backdrop: Color32,
     foreground: Color32,
     ui: &mut egui::Ui,
 ) {
     let viewport = ui.available_rect_before_wrap();
-    let manual_scroll = ui.input(|input| {
-        input
-            .pointer
-            .hover_pos()
-            .is_some_and(|pos| viewport.contains(pos))
-            && (input.events.iter().any(
-                |event| matches!(event, egui::Event::MouseWheel { delta, .. } if delta.y != 0.0),
-            ) || (input.pointer.primary_down() && input.pointer.delta().y.abs() > 1.0))
-    });
-    if manual_scroll {
-        state.following = false;
-    }
     let size = (viewport.width() * 0.05).clamp(30.0, 64.0);
     let width = (viewport.width() * 0.84).min(1120.0).max(1.0);
     let breathing_room = (viewport.height() * 0.13).clamp(32.0, 100.0);
@@ -125,7 +185,12 @@ fn render_lines(
         .id_salt("translation_presentation")
         .auto_shrink([false, false])
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-        .scroll_source(egui::scroll_area::ScrollSource::ALL)
+        .scroll_source(if cfg!(any(windows, target_os = "linux")) {
+            egui::scroll_area::ScrollSource::SCROLL_BAR
+                | egui::scroll_area::ScrollSource::MOUSE_WHEEL
+        } else {
+            egui::scroll_area::ScrollSource::ALL
+        })
         .show(ui, |ui| {
             let origin = ui.cursor().top();
             ui.set_width(ui.available_width());
@@ -134,7 +199,7 @@ fn render_lines(
             // through a real scroll animation instead of jumping between layouts.
             ui.add_space((viewport.height() - breathing_room - size * 1.4).max(0.0));
             if lines.is_empty() {
-                lyric_line(
+                let galley = lyric_layout(
                     ui,
                     tr(language, "No results yet"),
                     width,
@@ -142,8 +207,9 @@ fn render_lines(
                     foreground.gamma_multiply(0.45),
                     false,
                 );
+                paint_lyric(ui, galley, foreground);
             }
-            for (index, text) in lines.iter().enumerate() {
+            for (index, (id, text, ranges)) in lines.iter().enumerate() {
                 let age = lines.len() - 1 - index;
                 let latest = age == 0;
                 let opacity = if latest {
@@ -151,7 +217,7 @@ fn render_lines(
                 } else {
                     (0.58 - (age - 1) as f32 * 0.10).max(0.24)
                 };
-                lyric_line(
+                let galley = lyric_layout(
                     ui,
                     text,
                     width,
@@ -159,12 +225,20 @@ fn render_lines(
                     foreground.gamma_multiply(opacity),
                     latest,
                 );
+                if cfg!(any(windows, target_os = "linux")) {
+                    selection.show(ui, *id, galley, ranges);
+                } else {
+                    paint_lyric(ui, galley, foreground);
+                }
                 if !latest {
                     ui.add_space(gap);
                 }
             }
             ui.add_space(breathing_room);
             let layout = egui::vec2(ui.cursor().top() - origin, viewport.width());
+            if selection.is_active() {
+                state.pause();
+            }
             if state.following && state.last_layout != Some(layout) {
                 ui.scroll_to_cursor_animation(
                     Some(egui::Align::Max),
@@ -181,7 +255,14 @@ fn render_lines(
     fade_top(ui, viewport, backdrop);
 }
 
-fn lyric_line(ui: &mut egui::Ui, text: &str, width: f32, size: f32, color: Color32, latest: bool) {
+fn lyric_layout(
+    ui: &egui::Ui,
+    text: &str,
+    width: f32,
+    size: f32,
+    color: Color32,
+    latest: bool,
+) -> std::sync::Arc<egui::Galley> {
     let font = egui::FontId::new(
         size,
         if latest {
@@ -193,15 +274,18 @@ fn lyric_line(ui: &mut egui::Ui, text: &str, width: f32, size: f32, color: Color
     let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, color, width);
     job.halign = egui::Align::Center;
     job.sections[0].format.line_height = Some(size * 1.4);
-    let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+    ui.fonts_mut(|fonts| fonts.layout_job(job))
+}
+
+fn paint_lyric(ui: &mut egui::Ui, galley: std::sync::Arc<egui::Galley>, color: Color32) {
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), galley.size().y),
         egui::Sense::hover(),
     );
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, galley.text()));
     if ui.is_rect_visible(rect) {
-        ui.painter()
-            .galley(egui::pos2(rect.center().x, rect.top()), galley, color);
+        ui.painter().galley(rect.center_top(), galley, color);
     }
 }
 

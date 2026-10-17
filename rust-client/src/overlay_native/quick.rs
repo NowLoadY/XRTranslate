@@ -317,7 +317,7 @@ impl Capsule {
                 }
                 let saved = self.state.folders.iter().any(|folder| folder.saved);
                 let saved_label = if saved {
-                    "Saved to vocabulary"
+                    "Save to another wordbook"
                 } else if self.state.saving {
                     "Saving…"
                 } else if !self.state.can_save {
@@ -341,7 +341,11 @@ impl Capsule {
                     crate::i18n::tr_dynamic(language, saved_label).as_ref(),
                 );
                 if save.clicked() {
-                    if self.menu == Some(Menu::Folders) {
+                    if !saved {
+                        action = Some(Action::Save(
+                            crate::history::archive::vocabulary::DEFAULT_FOLDER,
+                        ));
+                    } else if self.menu == Some(Menu::Folders) {
                         self.menu = None;
                     } else {
                         self.menu = Some(Menu::Folders);

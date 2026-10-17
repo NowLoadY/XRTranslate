@@ -26,8 +26,9 @@ Configure desired host outputs. For Big Walk, follow the [chat guide](bigwalk-ch
 Its audio source switches filter completed translations for chat.
 
 For avatar controls in VRChat and ChilloutVR, enable OSC in the game;
-for WebSocket connectors, copy the address and pairing token into the local
-component or bridge using its guide. Pairing credentials are runtime values and
+for WebSocket connectors, click **Copy connection info** and paste it into the
+game's local component using its installation guide. This includes the address and
+token for custom clients as well. Pairing credentials are runtime values and
 are not saved into shared game assets.
 
 Wait for synchronization and Off, then operate the game control. Starting means
@@ -36,7 +37,8 @@ pending startup and running work, with Stopping retained until cleanup finishes.
 Read connection diagnostics on the page and session failures in host
 notifications. Reconnection and connector changes start with the control Off.
 
-For caption objects, enable **Display content** in **Game Plugins**. Select Header,
+Caption objects show translations by default. **Display content** in **Game Plugins**
+shows or hides the entire display. Select Header,
 Messages or Footer in the preview to edit that region. Messages have their own
 source filter, language format and duration. Header and Footer
 can show custom text, system information or lyrics. Lyrics run when either Avatar

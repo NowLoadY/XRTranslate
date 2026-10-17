@@ -25,6 +25,8 @@ pub(crate) struct Record {
 pub(crate) struct Example {
     pub sentence: String,
     pub back_translation: String,
+    /// Empty in older records, whose examples used the entry's target language.
+    pub sentence_lang: String,
 }
 
 #[derive(Clone)]
@@ -178,24 +180,25 @@ pub(super) fn execute(db: &mut Connection, action: &Action) -> rusqlite::Result<
             source_lang,
         } => {
             let rows = db.prepare_cached("SELECT v.id,v.source,v.translated,v.source_lang,v.target_lang,
-                COALESCE(e.sentence,''),COALESCE(e.back_translation,'') FROM vocabulary v
+                COALESCE(e.sentence,''),COALESCE(e.back_translation,''),COALESCE(e.sentence_lang,'') FROM vocabulary v
                 LEFT JOIN vocabulary_examples e USING(source,source_lang,target_lang,translated)
                 WHERE folder_id=?1 AND v.source=?2 AND v.source_lang=?3 ORDER BY v.target_lang,v.id")?
                 .query_map(params![folder, source, source_lang], |row| Ok(Translation {
                     id: row.get(0)?, entry: Entry { source: row.get(1)?, translated: row.get(2)?, source_lang: row.get(3)?, target_lang: row.get(4)? },
-                    example: Example { sentence: row.get(5)?, back_translation: row.get(6)? },
+                    example: Example { sentence: row.get(5)?, back_translation: row.get(6)?, sentence_lang: row.get(7)? },
                 }))?.collect::<rusqlite::Result<Vec<_>>>()?;
             return Ok(Output::Detail(rows));
         }
         Action::SaveExample { entry, example } => {
             // A late result cannot reattach itself after its word or translation was edited/deleted.
-            db.execute("INSERT INTO vocabulary_examples(source,source_lang,target_lang,translated,sentence,back_translation)
-                SELECT ?1,?2,?3,?4,?5,?6 WHERE EXISTS(SELECT 1 FROM vocabulary
+            db.execute("INSERT INTO vocabulary_examples(source,source_lang,target_lang,translated,sentence,back_translation,sentence_lang)
+                SELECT ?1,?2,?3,?4,?5,?6,?7 WHERE EXISTS(SELECT 1 FROM vocabulary
                     WHERE source=?1 AND source_lang=?2 AND target_lang=?3 AND translated=?4)
                 ON CONFLICT(source,source_lang,target_lang,translated) DO UPDATE SET
                     sentence=excluded.sentence,
-                    back_translation=excluded.back_translation",
-                params![entry.source, entry.source_lang, entry.target_lang, entry.translated, example.sentence, example.back_translation])?;
+                    back_translation=excluded.back_translation,
+                    sentence_lang=excluded.sentence_lang",
+                params![entry.source, entry.source_lang, entry.target_lang, entry.translated, example.sentence, example.back_translation, example.sentence_lang])?;
         }
         Action::RemoveWord {
             folder,

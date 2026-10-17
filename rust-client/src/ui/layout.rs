@@ -420,7 +420,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let output = ctx.run_ui(input, |ui| {
+        let mut output = ctx.run_ui(input, |ui| {
             first = None;
             id = ui.make_persistent_id(egui::IdSalt::new("subtitles"));
             show_variable_virtual_rows(
@@ -442,6 +442,7 @@ mod tests {
                 },
             );
         });
+        output.textures_delta.clear();
         let (index, top) = first.expect("The final pass renders visible subtitles");
         (
             egui::scroll_area::State::load(ctx, id).unwrap().offset.y,

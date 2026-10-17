@@ -671,6 +671,7 @@ struct XRTranslateApp {
     translations: Vec<TranslationHistoryEntry>,
     fullscreen_history: bool,
     history_presentation: ui::pages::translation::presentation::Presentation,
+    history_selection: ui::components::selectable_text::SelectionState,
     history_timeline: history::FeedTimeline,
     history_display: ui::pages::translation::history::HistoryDisplay,
     last_error: Option<String>,
@@ -1934,6 +1935,7 @@ impl Default for XRTranslateApp {
             translations: Vec::new(),
             fullscreen_history: false,
             history_presentation: Default::default(),
+            history_selection: Default::default(),
             history_timeline: Default::default(),
             history_display: settings.history_display,
             last_error: None,
@@ -6213,6 +6215,12 @@ impl eframe::App for XRTranslateApp {
         let is_player_fullscreen = !self.first_run
             && self.navigation.page == Page::Plugin(PluginId::MEDIA)
             && self.media_plugin.controller.fullscreen_mode;
+        if !self.fullscreen_history
+            || self.navigation.page != Page::Translation
+            || self.history_archive.open
+        {
+            self.history_selection.clear();
+        }
         let is_history_presentation = !self.first_run
             && self.navigation.page == Page::Translation
             && self.fullscreen_history

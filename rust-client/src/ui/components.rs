@@ -19,6 +19,7 @@ pub(crate) use showcase::{ShowcaseSlide, showcase};
 pub mod faded_scroll_text;
 mod segmented_switch;
 pub mod selection_card;
+pub(crate) mod selectable_text;
 pub use segmented_switch::segmented_switch;
 mod expanded_text_edit;
 mod source_input;
