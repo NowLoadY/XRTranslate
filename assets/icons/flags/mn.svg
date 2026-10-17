@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+<defs><clipPath id="disc"><circle cx="32" cy="32" r="29"/></clipPath></defs>
+<g clip-path="url(#disc)"><rect x="0" y="0" width="21.3333" height="64" fill="#ef6570"/><rect x="21.3333" y="0" width="21.3333" height="64" fill="#5784d9"/><rect x="42.6667" y="0" width="21.3333" height="64" fill="#ef6570"/><path d="M12 23Q9 20 12 16Q11 20 14 19Q13 15 16 12Q15 17 18 20Q19 23 16 24Z" fill="#ffd166" /><circle cx="14" cy="27" r="3" fill="#ffd166"/><path d="M10 29Q14 34 18 29Q17 35 14 35Q11 35 10 29Z" fill="#ffd166" /><rect x="8" y="35" width="2.5" height="15" fill="#ffd166"/><rect x="17.5" y="35" width="2.5" height="15" fill="#ffd166"/><path d="M11 35H17L14 38ZM11 47H17L14 50Z" fill="#ffd166" /><rect x="11" y="38.5" width="6" height="1.3" fill="#ffd166"/><rect x="11" y="45" width="6" height="1.3" fill="#ffd166"/><circle cx="14" cy="42.4" r="2.6" fill="#ffd166"/><path d="M14 40Q17 41 14 42.5Q11 44 14 45" fill="none" stroke="#ef6570" stroke-width=".6"/><circle cx="14" cy="41.2" r="0.45" fill="#ef6570"/><circle cx="14" cy="43.6" r="0.45" fill="#ef6570"/></g>
+<circle cx="32" cy="32" r="29" fill="none" stroke="#344451" stroke-opacity=".12" stroke-width="1.5"/>
+<path d="M13 20a24 24 0 0 1 19-12" fill="none" stroke="#fff" stroke-opacity=".5" stroke-width="3" stroke-linecap="round"/>
+</svg>

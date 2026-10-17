@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+<defs><clipPath id="disc"><circle cx="32" cy="32" r="29"/></clipPath></defs>
+<g clip-path="url(#disc)"><rect x="0" y="0" width="64" height="16" fill="#ef6570"/><rect x="0" y="16" width="64" height="32" fill="#ffd166"/><rect x="0" y="48" width="64" height="16" fill="#ef6570"/><path d="M22 24 24 20 27 22 30 20 32 24Z" fill="#d3a640" /><path d="M22 26H32V35Q32 40 27 40Q22 40 22 35Z" fill="#ef6570" /><rect x="23" y="27" width="4" height="5" fill="#ffd166"/><rect x="28" y="32" width="3" height="5" fill="#ffd166"/><rect x="23" y="33" width="3" height="4" fill="#fffdf8"/><rect x="28" y="27" width="3" height="4" fill="#fffdf8"/><path d="M19 26V38M35 26V38" fill="none" stroke="#fffdf8" stroke-width="2.5"/><rect x="17" y="38" width="4" height="2" fill="#d3a640"/><rect x="33" y="38" width="4" height="2" fill="#d3a640"/></g>
+<circle cx="32" cy="32" r="29" fill="none" stroke="#344451" stroke-opacity=".12" stroke-width="1.5"/>
+<path d="M13 20a24 24 0 0 1 19-12" fill="none" stroke="#fff" stroke-opacity=".5" stroke-width="3" stroke-linecap="round"/>
+</svg>

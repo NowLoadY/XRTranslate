@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+<defs><clipPath id="disc"><circle cx="32" cy="32" r="29"/></clipPath></defs>
+<g clip-path="url(#disc)"><rect x="0" y="0" width="64" height="64" fill="#d9ecf7"/><circle cx="32" cy="32" r="20" fill="#7cb5d8"/><path d="M18 20 25 15 29 19 26 25 31 29 25 34 19 30 16 24ZM35 17 43 20 47 28 41 33 44 40 38 48 32 43 33 34 37 29 32 24Z" fill="#a1d9bc" /><path d="M13 32H51M32 12Q18 32 32 52M32 12Q46 32 32 52" fill="none" stroke="#fffdf8" stroke-opacity=".6" stroke-width="1.5"/></g>
+<circle cx="32" cy="32" r="29" fill="none" stroke="#344451" stroke-opacity=".12" stroke-width="1.5"/>
+<path d="M13 20a24 24 0 0 1 19-12" fill="none" stroke="#fff" stroke-opacity=".5" stroke-width="3" stroke-linecap="round"/>
+</svg>

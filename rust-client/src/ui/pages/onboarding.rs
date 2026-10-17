@@ -19,11 +19,7 @@ use crate::{
 const STEPS: [&str; 4] = [
     "Welcome",
     "Configure models",
-    if cfg!(target_os = "android") {
-        "Optional TTS"
-    } else {
-        "TTS and OCR"
-    },
+    "Optional features",
     "Download",
 ];
 const QQ_GROUP_NUMBER: &str = "1009732148";
@@ -1110,31 +1106,7 @@ fn onboarding_model_config_card(
                 if let Some(asset_id) = asset_id {
                     let manifest = xrtranslate_assets::manifest_for(asset_id);
                     ui.add_space(9.0);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-                        for code in manifest.languages {
-                            let (rect, response) = ui
-                                .allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
-                            ui.painter().circle_filled(
-                                rect.center(),
-                                15.0,
-                                Color32::from_rgb(227, 237, 255),
-                            );
-                            ui.painter().circle_stroke(
-                                rect.center(),
-                                15.0,
-                                Stroke::new(1.0, Color32::from_rgb(160, 190, 245)),
-                            );
-                            ui.painter().text(
-                                rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                *code,
-                                egui::FontId::proportional(if code.len() > 4 { 7.0 } else { 10.0 }),
-                                Color32::from_rgb(28, 72, 155),
-                            );
-                            response.on_hover_text(crate::language_label(language, code));
-                        }
-                    });
+                    components::language_flags(ui, language, manifest.languages);
                 }
             }
 
@@ -1167,12 +1139,25 @@ fn onboarding_model_config_card(
 // ---------------------------------------------------------------------------
 
 fn render_onboarding_optional(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
+    ui.heading(i18n::tr(app.ui_language, "Optional features"));
+    ui.add_space(16.0);
+    #[cfg(target_os = "android")]
     render_onboarding_tts(app, ui);
     #[cfg(not(target_os = "android"))]
-    {
-        ui.add_space(16.0);
-        render_onboarding_ocr(app, ui);
-    }
+    crate::ui::layout::responsive_columns(ui, 2, 340.0, |ui, index| match index {
+        0 => render_onboarding_tts(app, ui),
+        _ => render_onboarding_ocr(app, ui),
+    });
+}
+
+fn onboarding_surface(ui: &egui::Ui, color: Color32) -> Frame {
+    Frame::new()
+        .fill(theme::panel_fill(
+            ui.ctx(),
+            Color32::WHITE.lerp_to_gamma(color, 0.07),
+        ))
+        .corner_radius(CornerRadius::same(20))
+        .inner_margin(Margin::same(18))
 }
 
 fn remote_provider_fields(
@@ -1214,217 +1199,203 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     let mut voice_change = None;
     let mut remote_fields = None;
 
-    let tts_border_color = Color32::from_rgb(244, 63, 94);
-    let border_id = ui.make_persistent_id("onboarding_tts_border");
-    crate::ui::organic_border::show(
-        ui,
-        border_id,
-        Frame::new()
-            .fill(theme::surface_control())
-            .corner_radius(CornerRadius::same(16))
-            .inner_margin(Margin::same(18)),
-        16.0,
-        tts_border_color,
-        |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(
-                RichText::new(i18n::tr(language, "Voice Playback"))
-                    .size(16.0)
-                    .color(theme::text_strong())
-                    .strong(),
+    let color = Color32::from_rgb(244, 113, 136);
+    onboarding_surface(ui, color).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        onboarding_feature(
+            ui,
+            "Voice Playback",
+            "Read translations aloud.",
+            color,
+            egui::include_image!("../../../resources/icons/tts-center.svg"),
+            language,
+        );
+        ui.add_space(10.0);
+        let Some(mut provider) = provider else {
+            ui.label(i18n::tr(language, "No providers configured"));
+            return;
+        };
+        selected_provider = optional_provider_selector(
+            ui,
+            "tts",
+            &provider,
+            &project_root,
+            language,
+            &app.runtime_installer.local_model_availability(),
+        );
+        ui.add_space(10.0);
+        if provider.remote {
+            if let Some(url) = provider
+                .choices
+                .iter()
+                .find(|choice| choice.name == provider.selected)
+                .and_then(|choice| choice.guide_url.as_deref())
+            {
+                ui.hyperlink_to(format!("{} ↗", i18n::tr(language, "API Key Guide")), url);
+            }
+            remote_fields = remote_provider_fields(ui, "tts", &mut provider, language);
+        } else if provider.selected != "none" {
+            let selected_choice = provider
+                .choices
+                .iter()
+                .find(|choice| choice.name == provider.selected);
+            let packages = crate::model_install::model_packages_for_provider(
+                &provider.selected,
+                ModelCapability::Tts,
             );
-            ui.add_space(10.0);
-            let Some(mut provider) = provider else {
-                ui.label(i18n::tr(language, "No providers configured"));
-                return;
-            };
-            selected_provider = optional_provider_selector(
-                ui,
-                "tts",
-                &provider,
-                &project_root,
-                language,
-                &app.runtime_installer.local_model_availability(),
-            );
-            ui.add_space(10.0);
-            if provider.remote {
-                if let Some(url) = provider
-                    .choices
-                    .iter()
-                    .find(|choice| choice.name == provider.selected)
-                    .and_then(|choice| choice.guide_url.as_deref())
-                {
-                    ui.hyperlink_to(format!("{} ↗", i18n::tr(language, "API Key Guide")), url);
-                }
-                remote_fields = remote_provider_fields(ui, "tts", &mut provider, language);
-            } else if provider.selected != "none" {
-                let selected_choice = provider
-                    .choices
-                    .iter()
-                    .find(|choice| choice.name == provider.selected);
-                let packages = crate::model_install::model_packages_for_provider(
-                    &provider.selected,
-                    ModelCapability::Tts,
+            if !packages.is_empty() {
+                ui.add_space(5.0);
+                ui.label(
+                    RichText::new(i18n::tr(language, "Languages"))
+                        .size(12.5)
+                        .color(theme::text_weak()),
                 );
-                if !packages.is_empty() {
-                    ui.add_space(5.0);
-                    ui.label(
-                        RichText::new(i18n::tr(language, "Languages"))
-                            .size(12.5)
-                            .color(theme::text_weak()),
-                    );
-                    let selected_assets = selected_choice
-                        .map(|choice| choice.model_assets.as_slice())
-                        .unwrap_or_default();
-                    let availability = app.runtime_installer.local_model_availability();
-                    for package in packages {
-                        let checked = selected_assets
-                            .iter()
-                            .any(|asset| asset == package.id.as_str());
-                        let package_enabled = availability.supports(package.hardware);
-                        let may_toggle = package_enabled
-                            && (!checked || selected_assets.len() > 1)
-                            && !app.model_task_manager.is_busy();
-                        ui.horizontal_wrapped(|ui| {
-                            let mut next = checked;
-                            let language_pack = if package.languages.is_empty() {
-                                package.label.to_owned()
-                            } else {
-                                format!("{} — {}", package.languages.join(", "), package.label)
-                            };
-                            if ui
-                                .add_enabled(
-                                    may_toggle,
-                                    egui::Checkbox::new(&mut next, language_pack),
-                                )
-                                .changed()
-                            {
-                                model_change = Some((
-                                    provider.selected.clone(),
-                                    package.id.as_str().to_owned(),
-                                    next,
-                                ));
-                            }
-                            let present =
-                                model_asset_is_present(&project_root, package.id).unwrap_or(false);
-                            if present {
-                                ui.label(
-                                    RichText::new(i18n::tr(language, "Installed"))
-                                        .size(11.5)
-                                        .color(theme::text_weak()),
-                                );
-                                if components::resource_delete_button(ui, package.id, language)
-                                    .clicked()
-                                {
-                                    delete_tts = Some(package.id);
-                                }
-                            }
-                        });
-                    }
-                    if let Some(choice) = selected_choice {
-                        for asset in &choice.model_assets {
-                            let Some(id) = xrtranslate_assets::ModelAssetId::from_config_key(asset)
-                            else {
-                                continue;
-                            };
-                            let manifest = xrtranslate_assets::manifest_for(id);
-                            let mut voice_languages = manifest
-                                .voice_presets
-                                .iter()
-                                .map(|preset| preset.language)
-                                .collect::<Vec<_>>();
-                            voice_languages.sort_unstable();
-                            voice_languages.dedup();
-                            for voice_language in voice_languages {
-                                let choices = manifest
-                                    .voice_presets
-                                    .iter()
-                                    .filter(|preset| preset.language == voice_language)
-                                    .collect::<Vec<_>>();
-                                let Some(default) = choices
-                                    .iter()
-                                    .copied()
-                                    .find(|preset| preset.is_default)
-                                    .or_else(|| choices.first().copied())
-                                else {
-                                    continue;
-                                };
-                                let configured = choice
-                                    .voices
-                                    .get(voice_language)
-                                    .and_then(|key| {
-                                        choices.iter().copied().find(|preset| preset.key == key)
-                                    })
-                                    .unwrap_or(default);
-                                let mut selected_key = configured.key.to_owned();
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "{} ({voice_language}):",
-                                            i18n::tr(language, "Base voice / accent")
-                                        ))
-                                        .size(12.0)
-                                        .color(theme::text_weak()),
-                                    );
-                                    components::combobox_ui(
-                                        ui,
-                                        ("onboarding_tts_voice", &provider.selected, id),
-                                        configured.label,
-                                        |ui| {
-                                            for preset in &choices {
-                                                ui.selectable_value(
-                                                    &mut selected_key,
-                                                    preset.key.to_owned(),
-                                                    preset.label,
-                                                );
-                                            }
-                                        },
-                                    );
-                                });
-                                if selected_key != configured.key {
-                                    voice_change = Some((
-                                        provider.selected.clone(),
-                                        voice_language.to_owned(),
-                                        selected_key,
-                                    ));
-                                }
-                            }
+                let selected_assets = selected_choice
+                    .map(|choice| choice.model_assets.as_slice())
+                    .unwrap_or_default();
+                let availability = app.runtime_installer.local_model_availability();
+                for package in packages {
+                    let checked = selected_assets
+                        .iter()
+                        .any(|asset| asset == package.id.as_str());
+                    let package_enabled = availability.supports(package.hardware);
+                    let may_toggle = package_enabled
+                        && (!checked || selected_assets.len() > 1)
+                        && !app.model_task_manager.is_busy();
+                    ui.horizontal_wrapped(|ui| {
+                        let mut next = checked;
+                        let language_pack = if package.languages.is_empty() {
+                            package.label.to_owned()
+                        } else {
+                            format!("{} — {}", package.languages.join(", "), package.label)
+                        };
+                        if ui
+                            .add_enabled(may_toggle, egui::Checkbox::new(&mut next, language_pack))
+                            .changed()
+                        {
+                            model_change = Some((
+                                provider.selected.clone(),
+                                package.id.as_str().to_owned(),
+                                next,
+                            ));
                         }
-                    }
-                    match availability {
-                        crate::runtime_install::LocalModelAvailability::InsufficientVram {
-                            ..
-                        } => {}
-                        crate::runtime_install::LocalModelAvailability::Unavailable(_) => {}
-                        crate::runtime_install::LocalModelAvailability::Detecting => {
+                        let present =
+                            model_asset_is_present(&project_root, package.id).unwrap_or(false);
+                        if present {
                             ui.label(
-                                RichText::new(i18n::tr(language, "Detecting GPU…"))
+                                RichText::new(i18n::tr(language, "Installed"))
                                     .size(11.5)
                                     .color(theme::text_weak()),
                             );
+                            if components::resource_delete_button(ui, package.id, language)
+                                .clicked()
+                            {
+                                delete_tts = Some(package.id);
+                            }
                         }
-                        crate::runtime_install::LocalModelAvailability::Available { .. } => {}
-                        #[cfg(target_os = "android")]
-                        crate::runtime_install::LocalModelAvailability::Cpu { .. } => {}
-                    }
-                } else if let Some(languages) = selected_choice
-                    .map(|choice| choice.supported_languages.as_slice())
-                    .filter(|languages| !languages.is_empty())
-                {
-                    ui.add_space(5.0);
-                    ui.label(
-                        RichText::new(format!(
-                            "{} {}",
-                            i18n::tr(language, "Supported synthesis languages:"),
-                            languages.join(", ")
-                        ))
-                        .size(12.5)
-                        .color(theme::text_weak()),
-                    );
+                    });
                 }
+                if let Some(choice) = selected_choice {
+                    for asset in &choice.model_assets {
+                        let Some(id) = xrtranslate_assets::ModelAssetId::from_config_key(asset)
+                        else {
+                            continue;
+                        };
+                        let manifest = xrtranslate_assets::manifest_for(id);
+                        let mut voice_languages = manifest
+                            .voice_presets
+                            .iter()
+                            .map(|preset| preset.language)
+                            .collect::<Vec<_>>();
+                        voice_languages.sort_unstable();
+                        voice_languages.dedup();
+                        for voice_language in voice_languages {
+                            let choices = manifest
+                                .voice_presets
+                                .iter()
+                                .filter(|preset| preset.language == voice_language)
+                                .collect::<Vec<_>>();
+                            let Some(default) = choices
+                                .iter()
+                                .copied()
+                                .find(|preset| preset.is_default)
+                                .or_else(|| choices.first().copied())
+                            else {
+                                continue;
+                            };
+                            let configured = choice
+                                .voices
+                                .get(voice_language)
+                                .and_then(|key| {
+                                    choices.iter().copied().find(|preset| preset.key == key)
+                                })
+                                .unwrap_or(default);
+                            let mut selected_key = configured.key.to_owned();
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} ({voice_language}):",
+                                        i18n::tr(language, "Base voice / accent")
+                                    ))
+                                    .size(12.0)
+                                    .color(theme::text_weak()),
+                                );
+                                components::combobox_ui(
+                                    ui,
+                                    ("onboarding_tts_voice", &provider.selected, id),
+                                    configured.label,
+                                    |ui| {
+                                        for preset in &choices {
+                                            ui.selectable_value(
+                                                &mut selected_key,
+                                                preset.key.to_owned(),
+                                                preset.label,
+                                            );
+                                        }
+                                    },
+                                );
+                            });
+                            if selected_key != configured.key {
+                                voice_change = Some((
+                                    provider.selected.clone(),
+                                    voice_language.to_owned(),
+                                    selected_key,
+                                ));
+                            }
+                        }
+                    }
+                }
+                match availability {
+                    crate::runtime_install::LocalModelAvailability::InsufficientVram { .. } => {}
+                    crate::runtime_install::LocalModelAvailability::Unavailable(_) => {}
+                    crate::runtime_install::LocalModelAvailability::Detecting => {
+                        ui.label(
+                            RichText::new(i18n::tr(language, "Detecting GPU…"))
+                                .size(11.5)
+                                .color(theme::text_weak()),
+                        );
+                    }
+                    crate::runtime_install::LocalModelAvailability::Available { .. } => {}
+                    #[cfg(target_os = "android")]
+                    crate::runtime_install::LocalModelAvailability::Cpu { .. } => {}
+                }
+            } else if let Some(languages) = selected_choice
+                .map(|choice| choice.supported_languages.as_slice())
+                .filter(|languages| !languages.is_empty())
+            {
+                ui.add_space(5.0);
+                ui.label(
+                    RichText::new(format!(
+                        "{} {}",
+                        i18n::tr(language, "Supported synthesis languages:"),
+                        languages.join(", ")
+                    ))
+                    .size(12.5)
+                    .color(theme::text_weak()),
+                );
             }
-        },
-    );
+        }
+    });
 
     if let Some(asset_id) = delete_tts {
         app.request_model_resource_deletion(asset_id);
@@ -1538,59 +1509,51 @@ fn render_onboarding_ocr(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     let provider = app.service_config.onboarding_provider_state("ocr");
     let mut selected_provider = None;
     let mut delete_model = None;
-    crate::ui::organic_border::show(
-        ui,
-        ui.make_persistent_id("onboarding_ocr_border"),
-        Frame::new()
-            .fill(theme::surface_control())
-            .corner_radius(CornerRadius::same(16))
-            .inner_margin(Margin::same(18)),
-        16.0,
-        Color32::from_rgb(139, 92, 246),
-        |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(
-                RichText::new(i18n::tr(language, "OCR"))
-                    .size(16.0)
-                    .color(theme::text_strong())
-                    .strong(),
-            );
-            ui.add_space(10.0);
-            let Some(provider) = provider else { return };
-            selected_provider = optional_provider_selector(
-                ui,
-                "ocr",
-                &provider,
-                &project_root,
-                language,
-                &app.runtime_installer.local_model_availability(),
-            );
-            ui.add_space(10.0);
-            if let Some(choice) = provider
-                .choices
-                .iter()
-                .find(|choice| choice.name == provider.selected)
-            {
-                let (_, asset, installed) =
-                    provider_choice_resource(choice, &project_root, language);
-                if let Some(asset) = asset {
-                    let manifest = xrtranslate_assets::manifest_for(asset);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            RichText::new(components::format_file_size(manifest.download_bytes()))
-                                .size(12.0)
-                                .color(theme::text_weak()),
-                        );
-                        if installed
-                            && components::resource_delete_button(ui, asset, language).clicked()
-                        {
-                            delete_model = Some(asset);
-                        }
-                    });
-                }
+    let color = Color32::from_rgb(155, 125, 239);
+    onboarding_surface(ui, color).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        onboarding_feature(
+            ui,
+            "Screen text recognition",
+            "Translate text on your screen.",
+            color,
+            egui::include_image!("../../../resources/icons/image.svg"),
+            language,
+        );
+        ui.add_space(10.0);
+        let Some(provider) = provider else { return };
+        selected_provider = optional_provider_selector(
+            ui,
+            "ocr",
+            &provider,
+            &project_root,
+            language,
+            &app.runtime_installer.local_model_availability(),
+        );
+        ui.add_space(10.0);
+        if let Some(choice) = provider
+            .choices
+            .iter()
+            .find(|choice| choice.name == provider.selected)
+        {
+            let (_, asset, installed) = provider_choice_resource(choice, &project_root, language);
+            if let Some(asset) = asset {
+                let manifest = xrtranslate_assets::manifest_for(asset);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(components::format_file_size(manifest.download_bytes()))
+                            .size(12.0)
+                            .color(theme::text_weak()),
+                    );
+                    if installed
+                        && components::resource_delete_button(ui, asset, language).clicked()
+                    {
+                        delete_model = Some(asset);
+                    }
+                });
             }
-        },
-    );
+        }
+    });
     if let Some(asset) = delete_model {
         app.request_model_resource_deletion(asset);
     }
@@ -1664,6 +1627,8 @@ struct DownloadItem {
 fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     let language = app.ui_language;
     let project_root = app.project_root();
+    ui.heading(i18n::tr(language, "Download required resources"));
+    ui.add_space(16.0);
 
     if app.model_task_manager.needs_discovery()
         && let Err(error) = app
@@ -1690,7 +1655,9 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
     let mut installs = Vec::new();
     let mut delete_model = None;
 
-    let mut packages = match configured_model_packages(&project_root) {
+    let configured = configured_model_packages(&project_root);
+    let configuration_loaded = configured.is_ok();
+    let mut packages = match configured {
         Ok(packages) => packages,
         Err(error) => {
             app.last_error = Some(error);
@@ -1749,23 +1716,14 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
             .collect::<Vec<_>>();
         let missing_download_bytes = missing.iter().map(|item| item.download_bytes).sum::<u64>();
         let missing_installed_bytes = missing.iter().map(|item| item.installed_bytes).sum::<u64>();
-        egui::collapsing_header::CollapsingState::load_with_default_open(
-            ui.ctx(),
-            ui.make_persistent_id("onboarding_model_downloads"),
-            false,
-        )
-        .show_header(ui, |ui| {
-            if missing.is_empty() {
-                ui.label(
-                    RichText::new(format!(
-                        "{} · {}",
-                        i18n::tr(language, "Model Packages"),
-                        download_items.len()
-                    ))
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(i18n::tr(language, "Model Packages"))
+                    .size(15.0)
                     .color(theme::text_strong())
                     .strong(),
-                );
-            } else {
+            );
+            if !missing.is_empty() {
                 let label = format!(
                     "{} ({}) · {}",
                     i18n::tr(language, "Download"),
@@ -1782,89 +1740,75 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                     installs.extend(missing.iter().map(|item| item.id));
                 }
             }
-        })
-        .body(|ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(i18n::tr(language, "Model Packages"))
-                        .size(15.0)
-                        .color(theme::text_strong())
-                        .strong(),
-                );
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let previous_source = app.model_task_manager.use_mirror();
-                    let mut use_mirror = previous_source;
-                    components::download_mirror_toggle(ui, language, &mut use_mirror);
-                    if use_mirror != previous_source
-                        && let Err(error) = app
-                            .model_task_manager
-                            .switch_download_source(project_root.clone(), use_mirror)
-                    {
-                        app.last_error = Some(error);
-                    }
-                });
-            });
-            if !missing.is_empty() {
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new(format!(
-                        "{}: {}",
-                        i18n::tr(language, "Installed size"),
-                        components::format_file_size(missing_installed_bytes)
-                    ))
-                    .size(12.0)
-                    .color(theme::text_weak()),
-                );
-            }
-            ui.add_space(8.0);
-
-            for item in &download_items {
-                let batch = app.model_task_manager.batch_snapshot();
-                let is_active = batch.as_ref().and_then(|batch| batch.current_asset_id)
-                    == Some(item.id)
-                    && busy;
-                let queued_position = batch.as_ref().and_then(|batch| {
-                    batch
-                        .queued_packages
-                        .iter()
-                        .position(|id| *id == item.id)
-                        .map(|position| position + 1)
-                });
-                let failed =
-                    batch.as_ref().and_then(|batch| batch.failed_asset_id) == Some(item.id);
-                let action = if item.installed {
-                    "Installed"
-                } else if is_active {
-                    "Downloading"
-                } else if queued_position.is_some() {
-                    "Queued"
-                } else if failed {
-                    "Retry"
-                } else {
-                    "Download"
-                };
-                let (clicked, delete_clicked) = render_download_card(
-                    ui,
-                    language,
-                    item,
-                    action,
-                    !item.installed
-                        && !is_active
-                        && queued_position.is_none()
-                        && item.hardware_available
-                        && !app.runtime_installer.is_busy(),
-                    !busy,
-                    queued_position,
-                );
-                if clicked {
-                    installs.push(item.id);
-                }
-                if delete_clicked {
-                    delete_model = Some(item.id);
-                }
-                ui.add_space(8.0);
+            let previous_source = app.model_task_manager.use_mirror();
+            let mut use_mirror = previous_source;
+            components::download_mirror_toggle(ui, language, &mut use_mirror);
+            if use_mirror != previous_source
+                && let Err(error) = app
+                    .model_task_manager
+                    .switch_download_source(project_root.clone(), use_mirror)
+            {
+                app.last_error = Some(error);
             }
         });
+        if !missing.is_empty() {
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!(
+                    "{}: {}",
+                    i18n::tr(language, "Installed size"),
+                    components::format_file_size(missing_installed_bytes)
+                ))
+                .size(12.0)
+                .color(theme::text_weak()),
+            );
+        }
+        ui.add_space(8.0);
+
+        for item in &download_items {
+            let batch = app.model_task_manager.batch_snapshot();
+            let is_active =
+                batch.as_ref().and_then(|batch| batch.current_asset_id) == Some(item.id) && busy;
+            let queued_position = batch.as_ref().and_then(|batch| {
+                batch
+                    .queued_packages
+                    .iter()
+                    .position(|id| *id == item.id)
+                    .map(|position| position + 1)
+            });
+            let failed = batch.as_ref().and_then(|batch| batch.failed_asset_id) == Some(item.id);
+            let action = if item.installed {
+                "Installed"
+            } else if is_active {
+                "Downloading"
+            } else if queued_position.is_some() {
+                "Queued"
+            } else if failed {
+                "Retry"
+            } else {
+                "Download"
+            };
+            let (clicked, delete_clicked) = render_download_card(
+                ui,
+                language,
+                item,
+                action,
+                !item.installed
+                    && !is_active
+                    && queued_position.is_none()
+                    && item.hardware_available
+                    && !app.runtime_installer.is_busy(),
+                !busy,
+                queued_position,
+            );
+            if clicked {
+                installs.push(item.id);
+            }
+            if delete_clicked {
+                delete_model = Some(item.id);
+            }
+            ui.add_space(8.0);
+        }
     }
 
     if !installs.is_empty()
@@ -1890,6 +1834,15 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
     if requires_runtime {
         ui.add_space(16.0);
         render_runtime_installation_section(app, ui, language, &project_root);
+    } else if configuration_loaded && download_items.is_empty() && !requirements.missing_api_key {
+        onboarding_surface(ui, Color32::from_rgb(16, 185, 129)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::Image::new(egui::include_image!("../../../resources/icons/check.svg"))
+                    .fit_to_exact_size(egui::vec2(24.0, 24.0)));
+                ui.label(i18n::tr(language, "Your selected online providers are ready. No local model packages are required."));
+            });
+        });
     }
 }
 
@@ -1904,17 +1857,9 @@ fn render_download_card(
 ) -> (bool, bool) {
     let mut clicked = false;
     let mut delete_clicked = false;
-    let border_id = ui.make_persistent_id(("onboarding_download_border", item.id));
-    crate::ui::organic_border::show(
-        ui,
-        border_id,
-        Frame::new()
-            .fill(theme::surface_control())
-            .corner_radius(CornerRadius::same(12))
-            .inner_margin(Margin::symmetric(16, 10)),
-        12.0,
-        item.stroke_color,
-        |ui| {
+    onboarding_surface(ui, item.stroke_color)
+        .inner_margin(Margin::symmetric(18, 14))
+        .show(ui, |ui| {
             ui.set_width(ui.available_width());
             let compact = ui.available_width() < 680.0;
             let layout = if compact {
@@ -1970,10 +1915,6 @@ fn render_download_card(
                         }
                         Frame::new()
                             .fill(Color32::from_rgba_unmultiplied(16, 185, 129, 20))
-                            .stroke(Stroke::new(
-                                1.0,
-                                Color32::from_rgba_unmultiplied(16, 185, 129, 100),
-                            ))
                             .corner_radius(CornerRadius::same(8))
                             .inner_margin(Margin::symmetric(14, 5))
                             .show(ui, |ui| {
@@ -2011,8 +1952,7 @@ fn render_download_card(
                     }
                 });
             });
-        },
-    );
+        });
     (clicked, delete_clicked)
 }
 
@@ -2041,134 +1981,125 @@ fn render_runtime_installation_section(
         .runtime_installer
         .managed_resources_are_present(project_root);
 
-    Frame::new()
-        .fill(theme::surface_control())
-        .corner_radius(CornerRadius::same(12))
-        .inner_margin(Margin::same(16))
-        .stroke(Stroke::new(1.5, Color32::from_rgb(16, 185, 129)))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(
-                RichText::new(i18n::tr(language, "Runtime"))
-                    .size(14.5)
-                    .color(Color32::from_rgb(4, 120, 87))
-                    .strong(),
-            );
-            ui.add_space(8.0);
-            let ready = app.runtime_installer.plan_is_ready() && !app.runtime_installer.is_busy();
-            let mut use_mirror = app.runtime_installer.use_mirror();
-            let previous_source = use_mirror;
-            let mut delete_runtime = false;
-            ui.horizontal_wrapped(|ui| {
-                if ready {
-                    Frame::new()
-                        .fill(Color32::from_rgba_unmultiplied(16, 185, 129, 20))
-                        .stroke(Stroke::new(
-                            1.0,
-                            Color32::from_rgba_unmultiplied(16, 185, 129, 100),
-                        ))
-                        .corner_radius(CornerRadius::same(8))
-                        .inner_margin(Margin::symmetric(14, 5))
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} · {}",
-                                    i18n::tr(language, "Installed"),
-                                    backend
-                                ))
-                                .color(Color32::from_rgb(5, 150, 105))
-                                .size(12.5)
-                                .strong(),
-                            );
-                        });
-                } else {
-                    let button_text = match (&state, download_size) {
-                        (RuntimeInstallState::Downloading { .. }, _) => {
-                            i18n::tr(language, "Downloading").to_owned()
-                        }
-                        (RuntimeInstallState::Extracting, _) => {
-                            i18n::tr(language, "Preparing…").to_owned()
-                        }
-                        (_, None) => i18n::tr(language, "Preparing download…").to_owned(),
-                        (_, Some(0)) => i18n::tr(language, "Configure runtime").to_owned(),
-                        (_, Some(bytes)) => format!(
-                            "{} · {}",
-                            i18n::tr(language, "Download"),
-                            components::format_file_size(bytes)
-                        ),
-                    };
-                    let install_clicked = components::primary_button_enabled(
-                        ui,
-                        &button_text,
-                        download_size.is_some()
-                            && !app.runtime_installer.is_busy()
-                            && !app.model_task_manager.is_busy(),
-                    )
-                    .clicked();
-                    if install_clicked
-                        && let Err(error) = app
-                            .runtime_installer
-                            .install_recommended(project_root.to_path_buf())
-                    {
-                        app.last_error = Some(error);
+    onboarding_surface(ui, Color32::from_rgb(16, 185, 129)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(
+            RichText::new(i18n::tr(language, "Runtime"))
+                .size(14.5)
+                .color(Color32::from_rgb(4, 120, 87))
+                .strong(),
+        );
+        ui.add_space(8.0);
+        let ready = app.runtime_installer.plan_is_ready() && !app.runtime_installer.is_busy();
+        let mut use_mirror = app.runtime_installer.use_mirror();
+        let previous_source = use_mirror;
+        let mut delete_runtime = false;
+        ui.horizontal_wrapped(|ui| {
+            if ready {
+                Frame::new()
+                    .fill(Color32::from_rgba_unmultiplied(16, 185, 129, 20))
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(Margin::symmetric(14, 5))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} · {}",
+                                i18n::tr(language, "Installed"),
+                                backend
+                            ))
+                            .color(Color32::from_rgb(5, 150, 105))
+                            .size(12.5)
+                            .strong(),
+                        );
+                    });
+            } else {
+                let button_text = match (&state, download_size) {
+                    (RuntimeInstallState::Downloading { .. }, _) => {
+                        i18n::tr(language, "Downloading").to_owned()
                     }
-                }
-                if managed_runtime_present
-                    && components::resource_delete_button(ui, "managed_runtime", language).clicked()
+                    (RuntimeInstallState::Extracting, _) => {
+                        i18n::tr(language, "Preparing…").to_owned()
+                    }
+                    (_, None) => i18n::tr(language, "Preparing download…").to_owned(),
+                    (_, Some(0)) => i18n::tr(language, "Configure runtime").to_owned(),
+                    (_, Some(bytes)) => format!(
+                        "{} · {}",
+                        i18n::tr(language, "Download"),
+                        components::format_file_size(bytes)
+                    ),
+                };
+                let install_clicked = components::primary_button_enabled(
+                    ui,
+                    &button_text,
+                    download_size.is_some()
+                        && !app.runtime_installer.is_busy()
+                        && !app.model_task_manager.is_busy(),
+                )
+                .clicked();
+                if install_clicked
+                    && let Err(error) = app
+                        .runtime_installer
+                        .install_recommended(project_root.to_path_buf())
                 {
-                    delete_runtime = true;
+                    app.last_error = Some(error);
                 }
-                components::download_mirror_toggle(ui, language, &mut use_mirror);
-                if app.runtime_installer.is_busy() {
-                    ui.spinner();
-                }
-            });
-            if use_mirror != previous_source
-                && let Err(error) = app
-                    .runtime_installer
-                    .switch_download_source(project_root.to_path_buf(), use_mirror)
+            }
+            if managed_runtime_present
+                && components::resource_delete_button(ui, "managed_runtime", language).clicked()
             {
-                app.last_error = Some(error);
+                delete_runtime = true;
             }
-            if delete_runtime {
-                app.request_runtime_resource_deletion();
-            }
-
-            if !planned_downloads.is_empty() {
-                ui.add_space(8.0);
-                ui.collapsing(i18n::tr(language, "Details"), |ui| {
-                    render_runtime_download_plan(ui, &planned_downloads);
-                });
-            }
-
-            components::render_runtime_fallback_notice(ui, language, &app.runtime_installer);
-
-            match &state {
-                RuntimeInstallState::Downloading {
-                    asset,
-                    downloaded,
-                    total,
-                } if *total > 0 => {
-                    ui.add_space(6.0);
-                    ui.add(
-                        egui::ProgressBar::new(
-                            (*downloaded as f64 / *total as f64).clamp(0.0, 1.0) as f32,
-                        )
-                        .text(format!(
-                            "{} / {}",
-                            components::format_file_size(*downloaded),
-                            components::format_file_size(*total)
-                        )),
-                    )
-                    .on_hover_text(asset);
-                }
-                RuntimeInstallState::Failed(error) => {
-                    ui.add_space(6.0);
-                    components::error_notice(ui, language, error);
-                }
-                _ => {}
+            components::download_mirror_toggle(ui, language, &mut use_mirror);
+            if app.runtime_installer.is_busy() {
+                ui.spinner();
             }
         });
+        if use_mirror != previous_source
+            && let Err(error) = app
+                .runtime_installer
+                .switch_download_source(project_root.to_path_buf(), use_mirror)
+        {
+            app.last_error = Some(error);
+        }
+        if delete_runtime {
+            app.request_runtime_resource_deletion();
+        }
+
+        if !planned_downloads.is_empty() {
+            ui.add_space(8.0);
+            ui.collapsing(i18n::tr(language, "Details"), |ui| {
+                render_runtime_download_plan(ui, &planned_downloads);
+            });
+        }
+
+        components::render_runtime_fallback_notice(ui, language, &app.runtime_installer);
+
+        match &state {
+            RuntimeInstallState::Downloading {
+                asset,
+                downloaded,
+                total,
+            } if *total > 0 => {
+                ui.add_space(6.0);
+                ui.add(
+                    egui::ProgressBar::new(
+                        (*downloaded as f64 / *total as f64).clamp(0.0, 1.0) as f32
+                    )
+                    .text(format!(
+                        "{} / {}",
+                        components::format_file_size(*downloaded),
+                        components::format_file_size(*total)
+                    )),
+                )
+                .on_hover_text(asset);
+            }
+            RuntimeInstallState::Failed(error) => {
+                ui.add_space(6.0);
+                components::error_notice(ui, language, error);
+            }
+            _ => {}
+        }
+    });
 }
 
 fn render_runtime_download_plan(

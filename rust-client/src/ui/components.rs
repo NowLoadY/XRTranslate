@@ -4,6 +4,8 @@ use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Stroke, Ui, Vec2}
 mod action_button;
 mod library_start;
 pub(crate) use library_start::{library_navigation, library_start};
+mod language_flag;
+pub(crate) use language_flag::language_flags;
 pub mod annotated_text;
 pub use action_button::{
     add_button, back_button, copy_button, delete_button, edit_button, icon_button, next_button,
@@ -18,9 +20,9 @@ pub mod faded_scroll_text;
 mod segmented_switch;
 pub mod selection_card;
 pub use segmented_switch::segmented_switch;
+mod expanded_text_edit;
 mod source_input;
 pub mod text_composer;
-mod expanded_text_edit;
 pub(crate) use expanded_text_edit::expanded_text_edit;
 pub use source_input::source_input;
 
