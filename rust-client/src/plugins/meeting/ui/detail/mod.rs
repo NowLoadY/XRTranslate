@@ -2,6 +2,7 @@ mod highlights;
 mod minutes;
 mod organization;
 mod playback;
+mod rows;
 mod timeline;
 mod transcript;
 
@@ -205,50 +206,54 @@ pub(super) fn render_detail(
         controller.evidence_target = active.clone();
         controller.playback.last_followed = active;
     }
-    match controller.pane {
-        MeetingPane::Timeline => timeline::render_timeline(controller, language, &mut action, ui),
-        MeetingPane::Minutes => minutes::render_minutes(controller, language, &mut action, ui),
-        MeetingPane::Transcript => {
-            transcript::render_transcript(controller, language, &mut action, ui)
+    ui.push_id(&meeting.id, |ui| {
+        if controller.pane != MeetingPane::Minutes
+            && (active_capture_visible(controller)
+                || matches!(
+                    meeting.status,
+                    MeetingStatus::Live | MeetingStatus::Processing
+                )
+                || !controller.previews.entries().is_empty())
+        {
+            render_previews(&controller.previews, ui);
         }
-    }
+        match controller.pane {
+            MeetingPane::Timeline => {
+                timeline::render_timeline(controller, language, &mut action, ui)
+            }
+            MeetingPane::Minutes => minutes::render_minutes(controller, language, &mut action, ui),
+            MeetingPane::Transcript => {
+                transcript::render_transcript(controller, language, &mut action, ui)
+            }
+        }
+    });
     action
 }
 
-fn preview_matches(
-    preview: &crate::session_coordinator::TranslationPreview,
-    segment: &crate::plugins::meeting::store::Segment,
-) -> bool {
-    preview.segment_index != 0
-        && preview.source == segment.original_text
-        && segment
-            .external_key
-            .ends_with(&format!(":{}:{}", preview.turn_id, preview.segment_index))
+fn active_capture_visible(controller: &MeetingController) -> bool {
+    controller.bundle.as_ref().is_some_and(|bundle| {
+        controller.active_meeting_id().as_deref() == Some(bundle.meeting.id.as_str())
+    })
 }
 
-fn segment_preview<'a>(
-    previews: &'a crate::session_coordinator::LivePreviews,
-    segment: &crate::plugins::meeting::store::Segment,
-) -> Option<&'a crate::session_coordinator::TranslationPreview> {
-    previews
-        .entries()
-        .iter()
-        .find(|preview| preview_matches(preview, segment))
-}
-
-fn render_unstored_previews(
-    ui: &mut egui::Ui,
-    previews: &crate::session_coordinator::LivePreviews,
-    segments: &[crate::plugins::meeting::store::Segment],
-) {
-    for preview in previews.entries() {
-        if !segments
-            .iter()
-            .any(|segment| preview_matches(preview, segment))
-        {
-            crate::ui::components::live_preview(ui, preview);
-        }
-    }
+fn render_previews(previews: &crate::session_coordinator::LivePreviews, ui: &mut egui::Ui) {
+    let height = (ui.available_height() * 0.25).clamp(0.0, 120.0);
+    let preview = egui::ScrollArea::vertical()
+        .id_salt("meeting_live_preview")
+        .max_height(height)
+        .min_scrolled_height(0.0)
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for preview in previews.entries() {
+                components::live_preview(ui, preview);
+            }
+        });
+    crate::ui::automation::record_output(
+        ui,
+        "Meeting preview",
+        crate::ui::automation::ElementValue::Number(previews.entries().len() as f64),
+        preview.inner_rect,
+    );
 }
 
 fn timestamp(
@@ -259,14 +264,7 @@ fn timestamp(
     action: &mut UiAction,
     ui: &mut egui::Ui,
 ) {
-    let text = egui::RichText::new(super::presentation::format_duration(segment.start_ms))
-        .monospace()
-        .size(11.0)
-        .color(if active {
-            crate::ui::theme::primary()
-        } else {
-            crate::ui::theme::text_weak()
-        });
+    let text = timestamp_text(segment, active);
     if can_seek {
         select_sentence(ui.link(text), &segment.id, true, language, action);
     } else {
@@ -274,8 +272,22 @@ fn timestamp(
     }
 }
 
+fn timestamp_text(
+    segment: &crate::plugins::meeting::store::Segment,
+    active: bool,
+) -> egui::RichText {
+    egui::RichText::new(super::presentation::format_duration(segment.start_ms))
+        .monospace()
+        .size(11.0)
+        .color(if active {
+            crate::ui::theme::primary()
+        } else {
+            crate::ui::theme::text_weak()
+        })
+}
+
 fn sentence_text(
-    text: egui::RichText,
+    text: impl Into<egui::WidgetText>,
     segment_id: &str,
     can_seek: bool,
     language: crate::i18n::UiLanguage,

@@ -190,7 +190,8 @@ fn capture_context(
     active: &controller::ActiveMeetingCapture,
     bundle: Option<&store::MeetingBundle>,
 ) -> xrtranslate_prompt::TaskContext {
-    use xrtranslate_prompt::{ContextFacts, SurroundingSource, TaskContext};
+    use xrtranslate_engine::language::SupportedLanguage;
+    use xrtranslate_prompt::{ContextFacts, PromptTurn, SurroundingSource, TaskContext};
     let scope = format!(
         "meeting:{}:{}",
         active.meeting_id, active.recognition_run_id
@@ -200,29 +201,49 @@ fn capture_context(
     else {
         return TaskContext::conversation(scope);
     };
-    // Saved rows do not retain the actual bidirectional language route.
-    // Resume with source evidence rather than inventing bilingual pairs.
+    // Seed a new run from durable facts. The backend owns subsequent history.
     let mut segments: Vec<_> = bundle
         .segments
         .iter()
         .filter(|segment| segment.is_final && !segment.original_text.trim().is_empty())
         .collect();
     segments.sort_by_key(|segment| (segment.start_ms, segment.end_ms));
-    let before = segments[segments.len().saturating_sub(8)..]
-        .iter()
-        .map(|segment| segment.original_text.trim())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let mut recent_turns = Vec::new();
+    let mut source_before = Vec::new();
+    for segment in &segments[segments.len().saturating_sub(8)..] {
+        if let (Some(translated), Some(source), Some(target)) = (
+            segment
+                .translated_text
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty()),
+            SupportedLanguage::parse(&segment.source_language),
+            SupportedLanguage::parse(&segment.target_language),
+        ) && source != target
+        {
+            recent_turns.push(PromptTurn {
+                turn_id: Some(segment.id.clone()),
+                speaker_id: String::new(),
+                source_language: source.code().to_owned(),
+                target_language: target.code().to_owned(),
+                source_text: segment.original_text.trim().to_owned(),
+                translated_text: translated.to_owned(),
+            });
+        } else {
+            source_before.push(segment.original_text.trim());
+        }
+    }
+    let before = source_before.join("\n");
     TaskContext::Conversation {
         scope,
         seed: ContextFacts {
+            recent_turns,
             surrounding_source: (!before.is_empty()).then_some(SurroundingSource {
                 speaker_id: String::new(),
                 source_language: String::new(),
                 before,
                 after: String::new(),
             }),
-            ..Default::default()
         },
     }
 }
@@ -275,6 +296,8 @@ mod tests {
                     topic_id: bundle.topics[0].id.clone(),
                     original_text: text.into(),
                     translated_text: Some("Translation".into()),
+                    source_language: String::new(),
+                    target_language: String::new(),
                     start_ms,
                     end_ms: start_ms + 1_000,
                     source: store::SegmentSource::Microphone,
@@ -312,5 +335,67 @@ mod tests {
             capture_context(&capture, Some(&bundle)),
             TaskContext::conversation("meeting:another-meeting:resumed-run")
         );
+    }
+
+    #[test]
+    fn resumed_context_partitions_the_last_completed_records_without_guessing_routes() {
+        let store = store::MeetingStore::open_in_memory().unwrap();
+        let meeting = store
+            .create_meeting(store::NewMeeting::live("Meeting", None, "auto", "zh"))
+            .unwrap();
+        for index in (0..11).rev() {
+            let (source, target, translation) = match index {
+                3 => ("zh", "en", Some("Decision")),
+                4 => ("", "", Some("Legacy translation")),
+                5 => ("en", "unknown", Some("Unknown route")),
+                6 => ("en", "zh", None),
+                7 => ("en", "zh", Some(" ")),
+                8 => ("en", "en", Some("Source only")),
+                _ => ("en", "zh", Some("译文")),
+            };
+            store
+                .upsert_segment(store::NewSegment {
+                    meeting_id: meeting.meeting.id.clone(),
+                    external_key: index.to_string(),
+                    topic_id: meeting.topics[0].id.clone(),
+                    original_text: format!("Line {}", if index == 9 { 2 } else { index }),
+                    translated_text: translation.map(str::to_owned),
+                    source_language: source.into(),
+                    target_language: target.into(),
+                    start_ms: index * 1000,
+                    end_ms: index * 1000 + 500,
+                    source: store::SegmentSource::Microphone,
+                    recognition_run_id: "previous-run".into(),
+                    speaker_token: None,
+                    is_final: index != 10,
+                })
+                .unwrap();
+        }
+        let bundle = store.open_meeting(&meeting.meeting.id).unwrap();
+        let capture = controller::ActiveMeetingCapture {
+            meeting_id: meeting.meeting.id,
+            topic_id: meeting.topics[0].id.clone(),
+            recognition_run_id: "resumed-run".into(),
+            timeline_offset_ms: 10_000,
+            imported_audio: false,
+        };
+        let TaskContext::Conversation { seed, .. } = capture_context(&capture, Some(&bundle))
+        else {
+            panic!("A meeting run owns a conversation");
+        };
+        assert_eq!(
+            seed.recent_turns
+                .iter()
+                .map(|turn| turn.source_text.as_str())
+                .collect::<Vec<_>>(),
+            ["Line 2", "Line 3", "Line 2"],
+        );
+        assert_ne!(seed.recent_turns[0].turn_id, seed.recent_turns[2].turn_id);
+        assert_eq!(seed.recent_turns[1].source_language, "zh");
+        assert_eq!(seed.recent_turns[1].target_language, "en");
+        assert_eq!(seed.recent_turns[1].translated_text, "Decision");
+        let surrounding = seed.surrounding_source.unwrap();
+        assert_eq!(surrounding.before, "Line 4\nLine 5\nLine 6\nLine 7\nLine 8");
+        assert!(surrounding.after.is_empty());
     }
 }

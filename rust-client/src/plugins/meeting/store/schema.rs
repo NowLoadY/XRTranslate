@@ -2,7 +2,7 @@ use rusqlite::Connection;
 
 use super::model::{MeetingStoreError, Result};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 pub(super) fn migrate(connection: &Connection) -> Result<()> {
     let current: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -122,5 +122,55 @@ pub(super) fn migrate(connection: &Connection) -> Result<()> {
              COMMIT;",
         )?;
     }
+    if current < 3 {
+        connection.execute_batch(
+            "BEGIN IMMEDIATE;
+             ALTER TABLE meeting_segments ADD COLUMN source_language TEXT NOT NULL DEFAULT '';
+             ALTER TABLE meeting_segments ADD COLUMN target_language TEXT NOT NULL DEFAULT '';
+             PRAGMA user_version = 3;
+             COMMIT;",
+        )?;
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_two_migration_preserves_text_without_guessing_languages() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE meeting_segments (
+                     id TEXT PRIMARY KEY,
+                     original_text TEXT NOT NULL,
+                     translated_text TEXT
+                 );
+                 INSERT INTO meeting_segments VALUES ('saved', 'Hello.', '你好。');
+                 PRAGMA user_version = 2;",
+            )
+            .unwrap();
+
+        for _ in 0..2 {
+            migrate(&connection).unwrap();
+            let version: i64 = connection
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, 3);
+            let saved: (String, Option<String>, String, String) = connection
+                .query_row(
+                    "SELECT original_text, translated_text, source_language, target_language
+                     FROM meeting_segments WHERE id = 'saved'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!(saved.0, "Hello.");
+            assert_eq!(saved.1.as_deref(), Some("你好。"));
+            assert!(saved.2.is_empty());
+            assert!(saved.3.is_empty());
+        }
+    }
 }

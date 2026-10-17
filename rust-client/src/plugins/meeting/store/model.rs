@@ -190,6 +190,9 @@ pub struct Segment {
     pub sequence: i64,
     pub original_text: String,
     pub translated_text: Option<String>,
+    /// Actual language facts; unknown source or target fields remain empty.
+    pub source_language: String,
+    pub target_language: String,
     pub start_ms: i64,
     pub end_ms: i64,
     pub source: SegmentSource,
@@ -209,10 +212,12 @@ pub struct NewSegment {
     pub meeting_id: String,
     /// Stable across partial/final ASR revisions and unique inside a meeting.
     pub external_key: String,
-    /// Explicit topic ownership avoids racing with a user opening a new topic.
+    /// Topic for a new segment; revisions retain their stored topic.
     pub topic_id: String,
     pub original_text: String,
     pub translated_text: Option<String>,
+    pub source_language: String,
+    pub target_language: String,
     pub start_ms: i64,
     pub end_ms: i64,
     pub source: SegmentSource,

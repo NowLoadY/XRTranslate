@@ -1,11 +1,37 @@
-use super::super::actions::UiAction;
+use super::{super::actions::UiAction, rows};
 use crate::plugins::meeting::{
     controller::MeetingController,
     i18n::tr,
-    store::{Segment, SegmentMarker, Speaker},
+    store::{MeetingBundle, Segment, Speaker},
 };
-use crate::ui::components;
+use crate::ui::{components, layout};
 use eframe::egui;
+use std::{collections::HashMap, sync::Arc};
+
+#[derive(Clone, Copy)]
+enum Entry {
+    Topic(usize),
+    Waiting(usize),
+    Segment(usize),
+    Empty,
+}
+
+struct Note {
+    index: usize,
+    text: Option<Arc<egui::Galley>>,
+}
+
+struct Row {
+    id: egui::Id,
+    entry: Entry,
+    original: Arc<egui::Galley>,
+    translated: Option<Arc<egui::Galley>>,
+    updating: Option<Arc<egui::Galley>>,
+    speaker: String,
+    notes: Vec<Note>,
+    show_notes: bool,
+    header_height: f32,
+}
 
 pub(super) fn render_timeline(
     controller: &mut MeetingController,
@@ -13,263 +39,449 @@ pub(super) fn render_timeline(
     action: &mut UiAction,
     ui: &mut egui::Ui,
 ) {
-    if controller
-        .bundle
-        .as_ref()
-        .is_some_and(|bundle| !bundle.segments.is_empty())
-    {
-        components::search_bar(
-            ui,
-            &mut controller.search,
-            tr(language, "Search this meeting"),
+    // Keep the controls in place when the first committed sentence arrives.
+    components::search_bar(
+        ui,
+        &mut controller.search,
+        tr(language, "Search this meeting"),
+    );
+    ui.horizontal_wrapped(|ui| {
+        ui.selectable_value(
+            &mut controller.highlights_only,
+            false,
+            tr(language, "All messages"),
         );
-        ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(
-                &mut controller.highlights_only,
-                false,
-                tr(language, "All messages"),
-            );
-            ui.selectable_value(
-                &mut controller.highlights_only,
-                true,
-                tr(language, "Highlights"),
-            );
-        });
-        ui.add_space(8.0);
-    }
-
-    let live = controller.bundle.as_ref().is_some_and(|bundle| {
-        controller.active_meeting_id().as_deref() == Some(bundle.meeting.id.as_str())
+        ui.selectable_value(
+            &mut controller.highlights_only,
+            true,
+            tr(language, "Highlights"),
+        );
     });
+    ui.add_space(8.0);
+
+    let live = super::active_capture_visible(controller);
     let can_seek = controller.active_meeting_id().is_none();
-    let playback = &controller.playback;
-    let Some(bundle) = controller.bundle.as_mut() else {
+    let Some(bundle) = controller.bundle.as_ref() else {
         return;
     };
-    let active_id = playback
+    let query = controller.search.trim().to_lowercase();
+    let mut by_topic: HashMap<&str, Vec<usize>> = HashMap::new();
+    let mut by_segment: HashMap<&str, Vec<usize>> = HashMap::new();
+    let speakers = bundle
+        .speakers
+        .iter()
+        .map(|speaker| (speaker.id.as_str(), speaker))
+        .collect::<HashMap<_, _>>();
+    for (index, segment) in bundle.segments.iter().enumerate() {
+        by_topic.entry(&segment.topic_id).or_default().push(index);
+    }
+    for (index, marker) in bundle.markers.iter().enumerate() {
+        by_segment
+            .entry(&marker.segment_id)
+            .or_default()
+            .push(index);
+    }
+    let mut entries = Vec::new();
+    for (index, topic) in bundle.topics.iter().enumerate() {
+        let topic_matches = topic
+            .title
+            .as_deref()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains(&query);
+        let segments = by_topic
+            .get(topic.id.as_str())
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|index| {
+                let segment = &bundle.segments[*index];
+                let markers = by_segment.get(segment.id.as_str());
+                (!controller.highlights_only || markers.is_some())
+                    && (query.is_empty()
+                        || topic_matches
+                        || segment_matches(segment, &query)
+                        || markers.into_iter().flatten().any(|index| {
+                            bundle.markers[*index].text.to_lowercase().contains(&query)
+                        }))
+            })
+            .collect::<Vec<_>>();
+        if segments.is_empty() && (!query.is_empty() || controller.highlights_only) {
+            continue;
+        }
+        if topic.title.is_some() || bundle.topics.len() > 1 {
+            entries.push(Entry::Topic(index));
+        }
+        if segments.is_empty() {
+            entries.push(Entry::Waiting(index));
+        }
+        entries.extend(segments.into_iter().map(Entry::Segment));
+    }
+    if entries.is_empty() {
+        entries.push(Entry::Empty);
+    }
+    let evidence = entries.iter().position(|entry| matches!(entry, Entry::Segment(index) if controller.evidence_target.as_deref() == Some(bundle.segments[*index].id.as_str())));
+    let active_id = controller
+        .playback
         .current_segment(&bundle.segments)
         .map(|segment| segment.id.clone());
-    let evidence_target = controller.evidence_target.clone();
-    let mut evidence_reached = false;
-    let query = controller.search.trim().to_lowercase();
-    let highlights_only = controller.highlights_only;
-    let mut visible_count = 0;
-    egui::ScrollArea::vertical()
-        .id_salt("meeting_timeline_scroll")
-        .stick_to_bottom(live && query.is_empty() && !highlights_only && evidence_target.is_none())
-        .show(ui, |ui| {
-            for topic in &bundle.topics {
-                let topic_matches = topic
-                    .title
-                    .as_deref()
-                    .unwrap_or_default()
-                    .to_lowercase()
-                    .contains(&query);
-                let topic_segments = bundle
-                    .segments
+    let note_drafts = controller.marker_drafts.clone();
+    let follow = live && query.is_empty() && !controller.highlights_only;
+    let empty_text = tr(
+        language,
+        if controller.highlights_only && query.is_empty() {
+            "No highlights yet. Mark a message to find it here."
+        } else {
+            "No matching messages"
+        },
+    );
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        let scroll_id = ui.make_persistent_id(egui::IdSalt::new("meeting_timeline_scroll"));
+        let geometry_id = scroll_id.with("geometry");
+        let target = rows::scroll_target(ui, scroll_id, geometry_id, follow, evidence);
+        let viewport = ui.available_rect_before_wrap();
+        crate::ui::automation::record_output(
+            ui,
+            "Meeting transcript",
+            crate::ui::automation::ElementValue::Number(entries.len() as f64),
+            viewport,
+        );
+        layout::show_variable_virtual_rows(
+            ui,
+            "meeting_timeline_scroll",
+            6.0,
+            target,
+            Some(|row: &Row| row.id),
+            |ui| {
+                let prepared = entries
                     .iter()
-                    .filter(|segment| {
-                        let marked = bundle
-                            .markers
-                            .iter()
-                            .any(|marker| marker.segment_id == segment.id);
-                        let note_matches = bundle.markers.iter().any(|marker| {
-                            marker.segment_id == segment.id
-                                && marker.text.to_lowercase().contains(&query)
-                        });
-                        segment.topic_id == topic.id
-                            && (!highlights_only || marked)
-                            && (query.is_empty()
-                                || topic_matches
-                                || segment_matches(segment, &query)
-                                || note_matches)
+                    .map(|entry| {
+                        prepare_row(
+                            ui,
+                            *entry,
+                            bundle,
+                            &by_segment,
+                            &speakers,
+                            &note_drafts,
+                            empty_text,
+                            language,
+                        )
                     })
                     .collect::<Vec<_>>();
-                if topic_segments.is_empty() && (!query.is_empty() || highlights_only) {
-                    continue;
-                }
-                visible_count += topic_segments.len();
-                ui.push_id(("topic", &topic.id), |ui| {
-                    if let Some(title) = topic.title.as_deref() {
-                        components::section_heading(ui, title);
-                    } else if bundle.topics.len() > 1 {
-                        components::section_heading(ui, tr(language, "Untitled topic"));
-                    }
-                    if topic_segments.is_empty() {
-                        ui.label(
-                            egui::RichText::new(tr(language, "Waiting for conversation…"))
-                                .italics()
-                                .color(crate::ui::theme::text_weak()),
-                        );
-                    }
-                    for segment in topic_segments {
+                rows::remember_geometry(ui, geometry_id, &prepared, 6.0, viewport.height());
+                prepared
+            },
+            |ui, _, height, row| {
+                ui.push_id(row.id, |ui| {
+                    if let Entry::Segment(index) = row.entry {
+                        let segment = &bundle.segments[index];
                         render_segment(
-                            segment,
-                            super::segment_preview(&controller.previews, segment)
-                                .and_then(|preview| preview.translated.as_deref()),
-                            &bundle.speakers,
-                            &bundle.markers,
+                            row,
+                            height,
+                            bundle,
                             &mut controller.marker_drafts,
-                            evidence_target.as_deref(),
-                            &mut evidence_reached,
-                            can_seek && playback.can_seek_segment(segment),
-                            active_id.as_deref() == Some(&segment.id),
+                            can_seek && controller.playback.can_seek_segment(segment),
+                            active_id.as_deref() == Some(segment.id.as_str()),
                             language,
                             action,
                             ui,
                         );
-                        ui.add_space(6.0);
-                    }
-                    ui.add_space(6.0);
-                });
-            }
-            if visible_count == 0 && (highlights_only || !query.is_empty()) {
-                ui.weak(tr(
-                    language,
-                    if highlights_only && query.is_empty() {
-                        "No highlights yet. Mark a message to find it here."
                     } else {
-                        "No matching messages"
-                    },
-                ));
-            }
-            if query.is_empty() && !highlights_only {
-                super::render_unstored_previews(ui, &controller.previews, &bundle.segments);
-            }
-        });
-    if evidence_reached {
+                        ui.add(egui::Label::new(row.original.clone()).wrap());
+                    }
+                });
+            },
+        );
+    });
+    if evidence.is_some() {
         controller.evidence_target = None;
     }
 }
 
+fn prepare_row(
+    ui: &egui::Ui,
+    entry: Entry,
+    bundle: &MeetingBundle,
+    markers: &HashMap<&str, Vec<usize>>,
+    speakers: &HashMap<&str, &Speaker>,
+    drafts: &HashMap<String, String>,
+    empty_text: &str,
+    language: crate::i18n::UiLanguage,
+) -> (f32, Row) {
+    let row_id = |kind, id: &str| egui::Id::new(("meeting_row", &bundle.meeting.id, kind, id));
+    let Entry::Segment(index) = entry else {
+        let (id, text, extra) = match entry {
+            Entry::Topic(index) => {
+                let topic = &bundle.topics[index];
+                (
+                    row_id("topic", &topic.id),
+                    egui::RichText::new(
+                        topic
+                            .title
+                            .as_deref()
+                            .unwrap_or_else(|| tr(language, "Untitled topic")),
+                    )
+                    .size(15.0)
+                    .strong()
+                    .color(crate::ui::theme::text_strong()),
+                    8.0,
+                )
+            }
+            Entry::Waiting(index) => (
+                row_id("waiting", &bundle.topics[index].id),
+                egui::RichText::new(tr(language, "Waiting for conversation…"))
+                    .italics()
+                    .color(crate::ui::theme::text_weak()),
+                0.0,
+            ),
+            _ => (
+                row_id("empty", ""),
+                egui::RichText::new(empty_text).color(crate::ui::theme::text_weak()),
+                0.0,
+            ),
+        };
+        let original = rows::text(ui, text, ui.available_width());
+        return (
+            original.size().y + extra,
+            Row {
+                id,
+                entry,
+                original,
+                translated: None,
+                updating: None,
+                speaker: String::new(),
+                notes: Vec::new(),
+                show_notes: false,
+                header_height: 0.0,
+            },
+        );
+    };
+    let segment = &bundle.segments[index];
+    let id = row_id("segment", &segment.id);
+    let show_notes = ui
+        .data(|data| data.get_temp::<bool>(id.with("notes")))
+        .unwrap_or(false);
+    let margins = components::card_margins(ui.ctx());
+    let width = (ui.available_width() - margins.x).max(1.0);
+    let original = rows::text(
+        ui,
+        egui::RichText::new(&segment.original_text)
+            .size(13.0)
+            .color(crate::ui::theme::text_weak()),
+        width,
+    );
+    let translated = segment.translated_text.as_ref().map(|text| {
+        rows::text(
+            ui,
+            egui::RichText::new(text)
+                .size(14.0)
+                .color(crate::ui::theme::text_strong()),
+            width,
+        )
+    });
+    let updating = (!segment.is_final).then(|| {
+        rows::text(
+            ui,
+            egui::RichText::new(tr(language, "Updating…"))
+                .italics()
+                .size(11.0)
+                .color(crate::ui::theme::text_weak()),
+            width,
+        )
+    });
+    let header_height =
+        ui.spacing().interact_size.y.max(
+            ui.text_style_height(&egui::TextStyle::Body) + 2.0 * ui.spacing().button_padding.y,
+        );
+    let mut heights = vec![header_height, original.size().y];
+    heights.extend(
+        translated
+            .iter()
+            .chain(updating.iter())
+            .map(|galley| galley.size().y),
+    );
+    let notes = markers
+        .get(segment.id.as_str())
+        .into_iter()
+        .flatten()
+        .map(|index| {
+            let marker = &bundle.markers[*index];
+            let text = if show_notes {
+                heights.push(super::highlights::editor_height(
+                    ui,
+                    width,
+                    drafts
+                        .get(&marker.id)
+                        .map(String::as_str)
+                        .unwrap_or(&marker.text),
+                    language,
+                ));
+                None
+            } else if !marker.text.trim().is_empty() {
+                let text = rows::text(
+                    ui,
+                    egui::RichText::new(&marker.text)
+                        .size(12.0)
+                        .color(crate::ui::theme::text_normal()),
+                    width,
+                );
+                heights.push(text.size().y);
+                Some(text)
+            } else {
+                None
+            };
+            Note {
+                index: *index,
+                text,
+            }
+        })
+        .collect();
+    let speaker = segment
+        .canonical_speaker_id
+        .as_deref()
+        .and_then(|id| speakers.get(id))
+        .filter(|speaker| !speaker.is_provisional)
+        .map(|speaker| speaker.name.clone())
+        .or_else(|| {
+            segment
+                .speaker_token
+                .as_deref()
+                .and_then(|token| token.rsplit(':').next())
+                .and_then(crate::compact_speaker_label)
+        })
+        .unwrap_or_else(|| tr(language, "Unknown speaker").to_owned());
+    let height =
+        margins.y + heights.iter().sum::<f32>() + 4.0 * heights.len().saturating_sub(1) as f32;
+    (
+        height,
+        Row {
+            id,
+            entry,
+            original,
+            translated,
+            updating,
+            speaker,
+            notes,
+            show_notes,
+            header_height,
+        },
+    )
+}
+
 fn render_segment(
-    segment: &Segment,
-    preview_translation: Option<&str>,
-    speakers: &[Speaker],
-    markers: &[SegmentMarker],
-    drafts: &mut std::collections::HashMap<String, String>,
-    evidence_target: Option<&str>,
-    evidence_reached: &mut bool,
+    row: &Row,
+    height: f32,
+    bundle: &MeetingBundle,
+    drafts: &mut HashMap<String, String>,
     can_seek: bool,
     active: bool,
     language: crate::i18n::UiLanguage,
     action: &mut UiAction,
     ui: &mut egui::Ui,
 ) {
-    let marked = markers.iter().any(|marker| marker.segment_id == segment.id);
-    let notes_id = egui::Id::new(("meeting_highlight_notes", &segment.id));
-    let mut show_notes = ui
-        .data(|data| data.get_temp::<bool>(notes_id))
-        .unwrap_or(false);
-    let frame =
-        ui.push_id(&segment.id, |ui| {
-            components::card(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.spacing_mut().item_spacing.y = 4.0;
-                ui.horizontal_wrapped(|ui| {
-                    let speaker = segment
-                        .canonical_speaker_id
-                        .as_deref()
-                        .and_then(|id| speakers.iter().find(|speaker| speaker.id == id));
-                    let anonymous = segment
-                        .speaker_token
-                        .as_deref()
-                        .and_then(|token| token.rsplit(':').next())
-                        .and_then(crate::compact_speaker_label);
-                    let speaker_name = speaker
-                        .filter(|speaker| !speaker.is_provisional)
-                        .map(|speaker| speaker.name.as_str())
-                        .or(anonymous.as_deref())
-                        .unwrap_or_else(|| tr(language, "Unknown speaker"));
-                    ui.label(egui::RichText::new(speaker_name).strong().size(12.0).color(
-                        if active {
-                            crate::ui::theme::primary()
-                        } else {
-                            crate::ui::theme::text_strong()
-                        },
-                    ));
-                    super::timestamp(segment, can_seek, active, language, action, ui);
-                    if ui
-                        .selectable_label(
-                            marked,
-                            tr(
-                                language,
-                                if marked {
-                                    "★ Highlight"
+    let Entry::Segment(index) = row.entry else {
+        return;
+    };
+    let segment = &bundle.segments[index];
+    let rect = egui::Rect::from_min_size(
+        ui.next_widget_position(),
+        egui::vec2(ui.available_width(), height),
+    );
+    components::card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 4.0;
+        ui.horizontal(|ui| {
+            ui.set_min_height(row.header_height);
+            let marked = !row.notes.is_empty();
+            let highlight = tr(
+                language,
+                if marked {
+                    "★ Highlight"
+                } else {
+                    "☆ Highlight"
+                },
+            );
+            let timestamp_width =
+                rows::text(ui, super::timestamp_text(segment, active), f32::INFINITY)
+                    .size()
+                    .x;
+            let highlight_width = rows::text(ui, egui::RichText::new(highlight), f32::INFINITY)
+                .size()
+                .x
+                + 2.0 * ui.spacing().button_padding.x;
+            let speaker_width = (ui.available_width()
+                - timestamp_width
+                - highlight_width
+                - 2.0 * ui.spacing().item_spacing.x)
+                .max(1.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(speaker_width, row.header_height),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_width(speaker_width);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&row.speaker).strong().size(12.0).color(
+                                if active {
+                                    crate::ui::theme::primary()
                                 } else {
-                                    "☆ Highlight"
+                                    crate::ui::theme::text_strong()
                                 },
                             ),
                         )
-                        .on_hover_text(tr(
-                            language,
-                            "Mark this message; click again to edit its note.",
-                        ))
-                        .clicked()
-                    {
-                        if marked {
-                            show_notes = !show_notes;
-                            ui.data_mut(|data| data.insert_temp(notes_id, show_notes));
-                        } else {
-                            *action = UiAction::Highlight(segment.id.clone());
-                        }
-                    }
-                });
-                super::sentence_text(
-                    egui::RichText::new(&segment.original_text)
-                        .size(13.0)
-                        .color(crate::ui::theme::text_weak()),
-                    &segment.id,
-                    can_seek,
+                        .truncate(),
+                    )
+                    .on_hover_text(&row.speaker);
+                },
+            );
+            super::timestamp(segment, can_seek, active, language, action, ui);
+            if ui
+                .selectable_label(marked, highlight)
+                .on_hover_text(tr(
+                    language,
+                    "Mark this message; click again to edit its note.",
+                ))
+                .clicked()
+            {
+                if marked {
+                    ui.data_mut(|data| data.insert_temp(row.id.with("notes"), !row.show_notes));
+                    ui.ctx().request_discard("Remeasure expanded meeting notes");
+                } else {
+                    *action = UiAction::Highlight(segment.id.clone());
+                }
+            }
+        });
+        super::sentence_text(
+            row.original.clone(),
+            &segment.id,
+            can_seek,
+            language,
+            action,
+            ui,
+        );
+        if let Some(text) = &row.translated {
+            super::sentence_text(text.clone(), &segment.id, can_seek, language, action, ui);
+        }
+        if let Some(text) = &row.updating {
+            ui.add(egui::Label::new(text.clone()));
+        }
+        for note in &row.notes {
+            if row.show_notes {
+                super::highlights::note_editor(
+                    &bundle.markers[note.index],
+                    drafts,
                     language,
                     action,
                     ui,
                 );
-                if let Some(translated) = preview_translation.or(segment.translated_text.as_deref())
-                {
-                    super::sentence_text(
-                        egui::RichText::new(translated)
-                            .size(14.0)
-                            .color(crate::ui::theme::text_strong()),
-                        &segment.id,
-                        can_seek,
-                        language,
-                        action,
-                        ui,
-                    );
-                }
-                if !segment.is_final {
-                    ui.label(
-                        egui::RichText::new(tr(language, "Updating…"))
-                            .italics()
-                            .size(11.0)
-                            .color(crate::ui::theme::text_weak()),
-                    );
-                }
-                for marker in markers
-                    .iter()
-                    .filter(|marker| marker.segment_id == segment.id)
-                {
-                    if show_notes {
-                        super::highlights::note_editor(marker, drafts, language, action, ui);
-                    } else if !marker.text.trim().is_empty() {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&marker.text)
-                                    .size(12.0)
-                                    .color(crate::ui::theme::text_normal()),
-                            )
-                            .wrap(),
-                        );
-                    }
-                }
-            });
-        });
-    super::current_marker(ui, frame.response.rect, active);
-    if evidence_target == Some(segment.id.as_str()) {
-        ui.scroll_to_rect(frame.response.rect, Some(egui::Align::Center));
-        *evidence_reached = true;
-    }
+            } else if let Some(text) = &note.text {
+                ui.add(egui::Label::new(text.clone()).wrap());
+            }
+        }
+    });
+    super::current_marker(ui, rect, active);
+    rows::record(ui, &segment.id, rect);
 }
 
 fn segment_matches(segment: &Segment, query: &str) -> bool {

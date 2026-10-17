@@ -73,7 +73,7 @@ activation and its own reference facts.
 | Input owner | Context scope |
 |---|---|
 | Live translation | One conversation shared by its audio and text inputs |
-| Meeting | Both inputs of one recording run; resumed recording starts from recent source text in time order, while audio reprocessing starts fresh |
+| Meeting | Both inputs of one recording run; resumed recording starts from recent completed records with their actual language pairs, while audio reprocessing starts fresh |
 | Media audio | One translation run |
 | Authored subtitles | Current cue's timeline neighbors and completed translations with their actual language pairs, read when submitted |
 | Screen and quick translation | Current text snapshot |
@@ -84,7 +84,9 @@ bounded completed conversation turns directly in the inference path; it does not
 wait for UI events or interpret plugin IDs. Domain records remain owned by their
 plugins. Subtitle edits affect the next snapshot; seeking the player does not
 change translation context. Output subscribers do not maintain translation
-memory. Conversation startup source gives way to newly completed turns. Prompt
+memory. Meeting resume seeds use bilingual records where the actual route is known;
+legacy or untranslated records contribute source text without repeating those pairs.
+Conversation startup source gives way to newly completed turns. Prompt
 Studio shows the current request's runtime facts read-only while private results
 remain outside host presentation.
 

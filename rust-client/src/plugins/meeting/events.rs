@@ -40,6 +40,8 @@ pub struct MeetingSegmentEvent {
     pub segment_index: u32,
     pub source_text: String,
     pub translated_text: Option<String>,
+    pub source_language: String,
+    pub target_language: String,
     pub raw_speaker_id: String,
     pub source_start_ms: f64,
     pub source_end_ms: f64,
@@ -87,8 +89,7 @@ impl MeetingEventSink {
         let worker = std::thread::Builder::new()
             .name("meeting-event-store".into())
             .spawn(move || {
-                let mut batches =
-                    HashMap::<(String, String, u64, String, bool), Vec<String>>::new();
+                let mut batches = HashMap::<(String, u64, String, bool), Vec<String>>::new();
                 while let Ok(command) = rx.recv() {
                     match command {
                         Command::Results(capture, segments, replace) => {
@@ -97,10 +98,9 @@ impl MeetingEventSink {
                             };
                             let key = (
                                 capture.recognition_run_id.clone(),
-                                capture.topic_id.clone(),
                                 first.stream_id,
                                 first.turn_id.clone(),
-                                first.translated.is_some(),
+                                first.translated.is_some() && !first.asr_only,
                             );
                             let revisable = segments.iter().any(|segment| segment.revisable);
                             let events = segments
@@ -127,7 +127,7 @@ impl MeetingEventSink {
                             }
                         }
                         Command::SealStream(stream) => {
-                            batches.retain(|(_, _, id, _, _), _| *id != stream);
+                            batches.retain(|(_, id, _, _), _| *id != stream);
                         }
                         Command::FinishActive(capture) => {
                             finish_active(&store, &worker_active, &capture)
@@ -300,7 +300,13 @@ impl MeetingSegmentEvent {
             turn_id: segment.turn_id.clone(),
             segment_index: segment.segment_index,
             source_text: segment.source.clone(),
-            translated_text: segment.translated.clone(),
+            translated_text: segment.translated.clone().filter(|_| !segment.asr_only),
+            source_language: segment.source_lang.clone(),
+            target_language: if segment.asr_only {
+                String::new()
+            } else {
+                segment.target_lang.clone()
+            },
             raw_speaker_id: segment.speaker_id.clone(),
             source_start_ms: segment.source_start_ms,
             source_end_ms: segment.source_end_ms,
@@ -332,6 +338,8 @@ fn stored_segment(capture: &ActiveMeetingCapture, event: &MeetingSegmentEvent) -
         topic_id: capture.topic_id.clone(),
         original_text: event.source_text.clone(),
         translated_text: event.translated_text.clone(),
+        source_language: event.source_language.clone(),
+        target_language: event.target_language.clone(),
         start_ms: capture.timeline_offset_ms + event.source_start_ms.max(0.0).round() as i64,
         end_ms: capture.timeline_offset_ms
             + event.source_end_ms.max(event.source_start_ms).round() as i64,
@@ -444,4 +452,172 @@ fn speaker_label(speaker_id: &str) -> Option<String> {
         .next()
         .and_then(|value| value.parse::<u32>().ok());
     Some(numeric.map_or_else(|| "S?".into(), |number| format!("S{number}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::meeting::store::{MarkerKind, NewMeeting};
+
+    fn recognized(index: u32, count: u32) -> TranslationSegment {
+        TranslationSegment {
+            stream_id: 1,
+            audio_source: CaptureSource::Microphone,
+            turn_id: "turn-1".into(),
+            segment_index: index,
+            segment_count: count,
+            source: format!("Sentence {index}."),
+            translated: None,
+            source_lang: "en".into(),
+            target_lang: String::new(),
+            additional_translations: Vec::new(),
+            asr_only: true,
+            speaker_id: String::new(),
+            source_start_ms: f64::from(index - 1) * 1_000.0,
+            source_end_ms: f64::from(index) * 1_000.0,
+            timing: Default::default(),
+            boundary: Default::default(),
+            revisable: true,
+            live: true,
+        }
+    }
+
+    #[test]
+    fn revisions_across_topics_preserve_identity_and_marked_evidence() {
+        let store = Arc::new(MeetingStore::open_in_memory().unwrap());
+        let bundle = store
+            .create_meeting(NewMeeting::live("Meeting", None, "auto", "zh"))
+            .unwrap();
+        let capture = ActiveMeetingCapture {
+            meeting_id: bundle.meeting.id.clone(),
+            topic_id: bundle.topics[0].id.clone(),
+            recognition_run_id: "run-1".into(),
+            timeline_offset_ms: 0,
+            imported_audio: false,
+        };
+        let initial: Vec<_> = (1..=3).map(|index| recognized(index, 3)).collect();
+        let stored: Vec<_> = initial
+            .iter()
+            .map(|segment| {
+                store
+                    .upsert_segment(stored_segment(
+                        &capture,
+                        &MeetingSegmentEvent::from_translation(segment).unwrap(),
+                    ))
+                    .unwrap()
+            })
+            .collect();
+        let marker = store
+            .add_marker(&stored[2].id, MarkerKind::Note, "Keep this evidence")
+            .unwrap();
+        let topic_b = store
+            .create_topic(&capture.meeting_id, Some("Next topic"))
+            .unwrap();
+        let capture_b = ActiveMeetingCapture {
+            topic_id: topic_b.id.clone(),
+            ..capture.clone()
+        };
+        let sink = MeetingEventSink::start(
+            Arc::clone(&store),
+            Arc::new(std::sync::Mutex::new(Some(capture.clone()))),
+        );
+        // Replay the persisted preview to register its replaceable batch.
+        sink.send(Command::Results(capture.clone(), initial, true));
+        let mut revised = recognized(1, 1);
+        revised.source = "Revised sentence.".into();
+        revised.source_end_ms = 3_000.0;
+        revised.revisable = false;
+        sink.send(Command::Results(
+            capture_b.clone(),
+            vec![revised.clone()],
+            true,
+        ));
+        let mut translated = revised.clone();
+        translated.translated = Some("修订后的句子。".into());
+        translated.target_lang = "zh".into();
+        translated.asr_only = false;
+        sink.send(Command::Results(capture_b.clone(), vec![translated], false));
+        let mut next = revised;
+        next.turn_id = "turn-2".into();
+        next.source = "Next sentence.".into();
+        next.source_start_ms = 4_000.0;
+        next.source_end_ms = 5_000.0;
+        sink.send(Command::Results(capture_b, vec![next], false));
+        // Dropping the last sink closes its queue and joins the ordered worker.
+        drop(sink);
+
+        let saved = store.open_meeting(&capture.meeting_id).unwrap();
+        assert_eq!(saved.segments.len(), 3);
+        let revised = saved
+            .segments
+            .iter()
+            .find(|segment| segment.id == stored[0].id)
+            .unwrap();
+        assert_eq!(revised.topic_id, capture.topic_id);
+        assert_eq!(revised.sequence, stored[0].sequence);
+        assert_eq!(revised.original_text, "Revised sentence.");
+        assert_eq!(revised.translated_text.as_deref(), Some("修订后的句子。"));
+        assert_eq!(revised.source_language, "en");
+        assert_eq!(revised.target_language, "zh");
+        assert!(revised.is_final);
+        assert!(
+            saved
+                .segments
+                .iter()
+                .all(|segment| segment.id != stored[1].id)
+        );
+        let evidence = saved
+            .segments
+            .iter()
+            .find(|segment| segment.id == stored[2].id)
+            .unwrap();
+        assert_eq!(evidence.topic_id, capture.topic_id);
+        assert_eq!(evidence.original_text, stored[2].original_text);
+        assert_eq!(saved.markers, vec![marker]);
+        let next = saved
+            .segments
+            .iter()
+            .find(|segment| segment.external_key.ends_with(":turn-2:1"))
+            .unwrap();
+        assert_eq!(next.topic_id, topic_b.id);
+        assert_eq!(next.original_text, "Next sentence.");
+    }
+
+    #[test]
+    fn asr_only_results_replace_the_source_batch_without_storing_a_translation() {
+        let store = Arc::new(MeetingStore::open_in_memory().unwrap());
+        let bundle = store
+            .create_meeting(NewMeeting::live("Meeting", None, "auto", "zh"))
+            .unwrap();
+        let capture = ActiveMeetingCapture {
+            meeting_id: bundle.meeting.id.clone(),
+            topic_id: bundle.topics[0].id.clone(),
+            recognition_run_id: "run-1".into(),
+            timeline_offset_ms: 0,
+            imported_audio: false,
+        };
+        let sink = MeetingEventSink::start(
+            Arc::clone(&store),
+            Arc::new(std::sync::Mutex::new(Some(capture.clone()))),
+        );
+        sink.send(Command::Results(
+            capture.clone(),
+            vec![recognized(1, 2), recognized(2, 2)],
+            true,
+        ));
+        let mut finalized = recognized(1, 1);
+        finalized.translated = Some(finalized.source.clone());
+        finalized.target_lang = finalized.source_lang.clone();
+        finalized.revisable = false;
+        sink.send(Command::Results(capture.clone(), vec![finalized], true));
+        drop(sink);
+
+        let segments = store.list_segments(&capture.meeting_id).unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].original_text, "Sentence 1.");
+        assert_eq!(segments[0].source_language, "en");
+        assert!(segments[0].translated_text.is_none());
+        assert!(segments[0].target_language.is_empty());
+        assert!(segments[0].is_final);
+    }
 }

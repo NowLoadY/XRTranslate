@@ -384,48 +384,12 @@ impl MeetingStore {
         }
         for key in previous_keys.iter().filter(|key| !retained.contains(*key)) {
             transaction.execute(
-                "DELETE FROM meeting_segments WHERE meeting_id = ?1 AND topic_id = ?2
-                 AND recognition_run_id = ?3 AND external_key = ?4
+                "DELETE FROM meeting_segments WHERE meeting_id = ?1
+                 AND recognition_run_id = ?2 AND external_key = ?3
                  AND NOT EXISTS (SELECT 1 FROM segment_markers WHERE segment_id = meeting_segments.id)",
-                params![meeting, topic, run, key],
+                params![meeting, run, key],
             )?;
         }
-        transaction.commit()?;
-        Ok(())
-    }
-
-    /// Compatibility alias with upsert semantics; callers should prefer
-    /// `upsert_segment` to make streaming revision behavior explicit.
-    pub fn append_segment(&self, new_segment: NewSegment) -> Result<Segment> {
-        self.upsert_segment(new_segment)
-    }
-
-    pub fn update_segment_text(
-        &self,
-        segment_id: &str,
-        original_text: &str,
-        translated_text: Option<&str>,
-        is_final: bool,
-    ) -> Result<()> {
-        require_non_empty("segment original text", original_text)?;
-        let now = now_ms();
-        let mut connection = self.connection()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let meeting_id: Option<String> = transaction
-            .query_row(
-                "SELECT meeting_id FROM meeting_segments WHERE id = ?1",
-                params![segment_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let meeting_id = meeting_id.ok_or_else(|| not_found("segment", segment_id))?;
-        transaction.execute(
-            "UPDATE meeting_segments
-             SET original_text = ?1, translated_text = ?2, is_final = ?3, updated_at_ms = ?4
-             WHERE id = ?5",
-            params![original_text, translated_text, is_final, now, segment_id],
-        )?;
-        touch_meeting(&transaction, &meeting_id, now)?;
         transaction.commit()?;
         Ok(())
     }
@@ -641,45 +605,80 @@ fn upsert_segment_in(
     mut new_segment: NewSegment,
     now: i64,
 ) -> Result<Segment> {
+    struct ExistingSegment {
+        id: String,
+        topic_id: String,
+        sequence: i64,
+        created_at_ms: i64,
+        original_text: String,
+        translated_text: Option<String>,
+        is_final: bool,
+        source_language: String,
+        target_language: String,
+    }
+
     validate_segment(&new_segment)?;
     ensure_meeting_exists(&transaction, &new_segment.meeting_id)?;
     ensure_topic_belongs_to(&transaction, &new_segment.topic_id, &new_segment.meeting_id)?;
-    let existing: Option<(String, String, i64, i64, String, Option<String>, bool)> = transaction
+    let existing = transaction
         .query_row(
-            "SELECT id, topic_id, sequence, created_at_ms, original_text, translated_text, is_final FROM meeting_segments
+            "SELECT id, topic_id, sequence, created_at_ms, original_text, translated_text, is_final,
+                    source_language, target_language FROM meeting_segments
              WHERE meeting_id = ?1 AND external_key = ?2",
             params![new_segment.meeting_id, new_segment.external_key],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+            |row| Ok(ExistingSegment {
+                id: row.get(0)?,
+                topic_id: row.get(1)?,
+                sequence: row.get(2)?,
+                created_at_ms: row.get(3)?,
+                original_text: row.get(4)?,
+                translated_text: row.get(5)?,
+                is_final: row.get(6)?,
+                source_language: row.get(7)?,
+                target_language: row.get(8)?,
+            }),
         )
         .optional()?;
-    if let Some((_, existing_topic_id, ..)) = &existing {
-        if existing_topic_id != &new_segment.topic_id {
-            return Err(MeetingStoreError::InvalidData(format!(
-                "segment {} already belongs to topic {existing_topic_id}",
-                new_segment.external_key
-            )));
-        }
+    if let Some(previous) = &existing {
+        // Topic switches affect new sentences, not revisions or delayed translations.
+        new_segment.topic_id.clone_from(&previous.topic_id);
     }
     if new_segment.translated_text.is_none()
-        && let Some((_, _, _, _, source, translated, is_final)) = &existing
-        && *source == new_segment.original_text
+        && let Some(previous) = &existing
+        && previous.original_text == new_segment.original_text
     {
-        new_segment.translated_text = translated.clone();
-        new_segment.is_final |= *is_final;
+        new_segment
+            .translated_text
+            .clone_from(&previous.translated_text);
+        if previous
+            .translated_text
+            .as_ref()
+            .is_some_and(|text| !text.trim().is_empty())
+        {
+            new_segment
+                .source_language
+                .clone_from(&previous.source_language);
+            new_segment
+                .target_language
+                .clone_from(&previous.target_language);
+        }
+        new_segment.is_final |= previous.is_final;
     }
     let segment_id = existing
         .as_ref()
-        .map(|item| item.0.clone())
+        .map(|previous| previous.id.clone())
         .unwrap_or_else(new_id);
     let sequence: i64 = match existing.as_ref() {
-        Some(item) => item.2,
+        Some(previous) => previous.sequence,
         None => transaction.query_row(
             "SELECT COALESCE(MAX(sequence), -1) + 1 FROM meeting_segments WHERE topic_id = ?1",
             params![new_segment.topic_id],
             |row| row.get(0),
         )?,
     };
-    let created_at_ms = existing.as_ref().map(|item| item.3).unwrap_or(now);
+    let created_at_ms = existing
+        .as_ref()
+        .map_or(now, |previous| previous.created_at_ms);
     let canonical_speaker_id = match new_segment.speaker_token.as_deref() {
         Some(token) => transaction
             .query_row(
@@ -700,8 +699,9 @@ fn upsert_segment_in(
             "UPDATE meeting_segments
              SET original_text = ?1, translated_text = ?2, start_ms = ?3, end_ms = ?4,
                  source = ?5, recognition_run_id = ?6, speaker_token = ?7,
-                 canonical_speaker_id = ?8, is_final = ?9, updated_at_ms = ?10
-             WHERE id = ?11",
+                 canonical_speaker_id = ?8, is_final = ?9, updated_at_ms = ?10,
+                 source_language = ?11, target_language = ?12
+             WHERE id = ?13",
             params![
                 new_segment.original_text,
                 new_segment.translated_text,
@@ -713,6 +713,8 @@ fn upsert_segment_in(
                 canonical_speaker_id,
                 new_segment.is_final,
                 now,
+                new_segment.source_language,
+                new_segment.target_language,
                 segment_id,
             ],
         )?;
@@ -721,8 +723,8 @@ fn upsert_segment_in(
             "INSERT INTO meeting_segments (
                  id, external_key, meeting_id, topic_id, sequence, original_text, translated_text,
                  start_ms, end_ms, source, recognition_run_id, speaker_token, canonical_speaker_id,
-                 is_final, created_at_ms, updated_at_ms
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)",
+                 is_final, created_at_ms, updated_at_ms, source_language, target_language
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?16, ?17)",
             params![
                 segment_id,
                 new_segment.external_key,
@@ -739,6 +741,8 @@ fn upsert_segment_in(
                 canonical_speaker_id,
                 new_segment.is_final,
                 now,
+                new_segment.source_language,
+                new_segment.target_language,
             ],
         )?;
     }
@@ -751,6 +755,8 @@ fn upsert_segment_in(
         sequence,
         original_text: new_segment.original_text,
         translated_text: new_segment.translated_text,
+        source_language: new_segment.source_language,
+        target_language: new_segment.target_language,
         start_ms: new_segment.start_ms,
         end_ms: new_segment.end_ms,
         source: new_segment.source,
@@ -845,14 +851,16 @@ fn query_segments(
     let sql = if topic_id.is_some() {
         "SELECT s.id, s.external_key, s.meeting_id, s.topic_id, s.sequence, s.original_text,
                 s.translated_text, s.start_ms, s.end_ms, s.source, s.recognition_run_id, s.speaker_token,
-                s.canonical_speaker_id, s.is_final, s.created_at_ms, s.updated_at_ms
+                s.canonical_speaker_id, s.is_final, s.created_at_ms, s.updated_at_ms,
+                s.source_language, s.target_language
          FROM meeting_segments s
          WHERE s.meeting_id = ?1 AND s.topic_id = ?2
          ORDER BY s.sequence"
     } else {
         "SELECT s.id, s.external_key, s.meeting_id, s.topic_id, s.sequence, s.original_text,
                 s.translated_text, s.start_ms, s.end_ms, s.source, s.recognition_run_id, s.speaker_token,
-                s.canonical_speaker_id, s.is_final, s.created_at_ms, s.updated_at_ms
+                s.canonical_speaker_id, s.is_final, s.created_at_ms, s.updated_at_ms,
+                s.source_language, s.target_language
          FROM meeting_segments s
          JOIN meeting_topics t ON t.id = s.topic_id
          WHERE s.meeting_id = ?1
@@ -868,6 +876,8 @@ fn query_segments(
             sequence: row.get(4)?,
             original_text: row.get(5)?,
             translated_text: row.get(6)?,
+            source_language: row.get(16)?,
+            target_language: row.get(17)?,
             start_ms: row.get(7)?,
             end_ms: row.get(8)?,
             source: parse_db_enum(row.get::<_, String>(9)?, 9)?,
@@ -1132,4 +1142,59 @@ fn now_ms() -> i64 {
 
 fn usize_to_i64(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_replays_preserve_real_translations_without_erasing_new_language() {
+        let store = MeetingStore::open_in_memory().unwrap();
+        let meeting = store
+            .create_meeting(NewMeeting::live("Meeting", None, "auto", "zh"))
+            .unwrap();
+        let mut input = NewSegment {
+            meeting_id: meeting.meeting.id.clone(),
+            external_key: "run:turn:1".into(),
+            topic_id: meeting.topics[0].id.clone(),
+            original_text: "A decision.".into(),
+            translated_text: None,
+            source_language: String::new(),
+            target_language: String::new(),
+            start_ms: 0,
+            end_ms: 1000,
+            source: SegmentSource::Microphone,
+            recognition_run_id: "run".into(),
+            speaker_token: None,
+            is_final: true,
+        };
+        store.upsert_segment(input.clone()).unwrap();
+        input.source_language = "en".into();
+        let recognized = store.upsert_segment(input.clone()).unwrap();
+        assert_eq!(recognized.source_language, "en");
+        assert!(recognized.translated_text.is_none());
+        assert!(recognized.target_language.is_empty());
+
+        input.translated_text = Some("一项决定。".into());
+        input.target_language = "zh".into();
+        let saved = store.upsert_segment(input.clone()).unwrap();
+        assert_eq!(
+            store.list_segments(&meeting.meeting.id).unwrap(),
+            [saved.clone()]
+        );
+        input.translated_text = None;
+        input.source_language = "fr".into();
+        input.target_language.clear();
+        let replayed = store.upsert_segment(input.clone()).unwrap();
+        assert_eq!(replayed.translated_text, saved.translated_text);
+        assert_eq!(replayed.source_language, "en");
+        assert_eq!(replayed.target_language, "zh");
+
+        input.original_text = "Another decision.".into();
+        let revised = store.upsert_segment(input.clone()).unwrap();
+        assert!(revised.translated_text.is_none());
+        assert_eq!(revised.source_language, "fr");
+        assert!(revised.target_language.is_empty());
+    }
 }
