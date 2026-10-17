@@ -123,6 +123,7 @@ pub(super) fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
         "translation_archive",
         8.0,
         false,
+        None,
         |ui| {
             records
                 .iter()

@@ -13,6 +13,8 @@ pub struct PluginSessionOwner {
     display_name_key: &'static str,
     open_label_key: &'static str,
     active_message_key: &'static str,
+    record_history: bool,
+    audio_source: Option<CaptureSource>,
 }
 
 impl PluginSessionOwner {
@@ -29,7 +31,30 @@ impl PluginSessionOwner {
             display_name_key,
             open_label_key,
             active_message_key,
+            record_history: true,
+            audio_source: None,
         }
+    }
+
+    /// Intermediate recognition can feed its owner without becoming a second
+    /// history entry alongside the eventual translation.
+    pub fn with_history(mut self, enabled: bool) -> Self {
+        self.record_history = enabled;
+        self
+    }
+
+    pub const fn records_history(&self) -> bool {
+        self.record_history
+    }
+
+    /// Text inference can continue an audio sentence without becoming typed input.
+    pub fn with_audio_source(mut self, source: CaptureSource) -> Self {
+        self.audio_source = Some(source);
+        self
+    }
+
+    pub const fn audio_source(&self) -> Option<CaptureSource> {
+        self.audio_source
     }
 
     pub const fn plugin_id(&self) -> &'static str {

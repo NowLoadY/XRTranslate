@@ -27,6 +27,8 @@ pub(super) struct SubtitleEdit {
     pub(super) task_id: String,
     pub(super) cue: SubtitleCue,
     pub(super) focus: Option<SubtitleField>,
+    pub(super) retranslate_requested: bool,
+    pub(super) retranslation: Option<String>,
 }
 
 pub struct MediaController {
@@ -150,7 +152,10 @@ impl Default for MediaController {
 
 impl MediaController {
     #[cfg(target_os = "android")]
-    pub(crate) fn handle_back(&mut self, ctx: &eframe::egui::Context) -> Option<super::MediaAction> {
+    pub(crate) fn handle_back(
+        &mut self,
+        ctx: &eframe::egui::Context,
+    ) -> Option<super::MediaAction> {
         if self.fullscreen_mode {
             self.fullscreen_mode = false;
             ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Fullscreen(false));
@@ -415,6 +420,8 @@ impl MediaController {
             task_id: task.id.clone(),
             cue,
             focus: Some(field),
+            retranslate_requested: false,
+            retranslation: None,
         });
         if let Some(backend) = &mut self.backend
             && backend.get_status() == PlaybackStatus::Playing
@@ -427,6 +434,9 @@ impl MediaController {
         let Some(mut edit) = self.subtitle_edit.clone() else {
             return;
         };
+        if edit.retranslation.is_some() {
+            return;
+        }
         if self.active_task_id.as_deref() != Some(edit.task_id.as_str())
             || self
                 .store

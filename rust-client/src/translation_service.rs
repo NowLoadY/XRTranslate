@@ -16,6 +16,7 @@ use xrtranslate_engine::language::LanguageSelection;
 
 pub(crate) struct ChannelScope {
     pub owner: TranslationSessionOwner,
+    /// Transport/input kind; output classification uses `is_typing`.
     pub is_text: bool,
     pub publish_to_host_outputs: bool,
     pub asr_only: AtomicBool,
@@ -29,11 +30,23 @@ pub(crate) struct ChannelScope {
 
 impl ChannelScope {
     pub fn new(owner: TranslationSessionOwner) -> Arc<Self> {
-        Self::create(owner, false, true)
+        Self::audio(owner, true)
+    }
+
+    pub fn audio(owner: TranslationSessionOwner, publish_to_host_outputs: bool) -> Arc<Self> {
+        Self::create(owner, false, publish_to_host_outputs)
     }
 
     pub fn text(owner: TranslationSessionOwner, publish_to_host_outputs: bool) -> Arc<Self> {
         Self::create(owner, true, publish_to_host_outputs)
+    }
+
+    pub fn text_audio_source(&self) -> Option<CaptureSource> {
+        self.owner.plugin().and_then(|owner| owner.audio_source())
+    }
+
+    pub fn is_typing(&self) -> bool {
+        self.is_text && self.text_audio_source().is_none()
     }
 
     fn create(
@@ -204,4 +217,40 @@ pub(crate) fn host_conversation_id() -> String {
     static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     ID.get_or_init(|| format!("host-{}", uuid::Uuid::new_v4()))
         .clone()
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+    use crate::session_coordinator::{AudioSourceFilter, PluginSessionOwner};
+
+    #[test]
+    fn text_inference_preserves_audio_origin_without_reclassifying_typed_input() {
+        let owner = PluginSessionOwner::new("media", "sentence", "Media", "Media", "Media");
+        let audio = ChannelScope::text(
+            TranslationSessionOwner::Plugin(
+                owner.clone().with_audio_source(CaptureSource::SystemAudio),
+            ),
+            true,
+        );
+        assert!(audio.is_text);
+        assert!(!audio.is_typing());
+        assert_eq!(audio.text_audio_source(), Some(CaptureSource::SystemAudio));
+        let microphone_only = AudioSourceFilter {
+            microphone: true,
+            system_audio: false,
+        };
+        assert!(!microphone_only.allows(audio.text_audio_source().unwrap(), audio.is_typing()));
+        for owner in [
+            TranslationSessionOwner::Plugin(owner),
+            TranslationSessionOwner::Host {
+                capture_source: CaptureSource::Microphone,
+            },
+        ] {
+            let typed = ChannelScope::text(owner, true);
+            assert!(typed.is_typing());
+            assert_eq!(typed.text_audio_source(), None);
+            assert!(microphone_only.allows(CaptureSource::Microphone, typed.is_typing()));
+        }
+    }
 }

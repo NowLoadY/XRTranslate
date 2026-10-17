@@ -12,6 +12,7 @@ pub(super) enum EditAction {
     None,
     Save,
     Cancel,
+    Retranslate,
 }
 
 pub(super) fn render(
@@ -23,6 +24,7 @@ pub(super) fn render(
 ) -> EditAction {
     let id = egui::Id::new(("media_subtitle_edit", &draft.task_id, &draft.cue.id));
     let focus = draft.focus.take();
+    let translating = draft.retranslation.is_some();
     let body_height = (height
         - components::card_margins(ui.ctx()).y
         - ui.spacing().interact_size.y.max(32.0)
@@ -34,6 +36,9 @@ pub(super) fn render(
         .min_scrolled_height(body_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            if translating {
+                ui.disable();
+            }
             crate::ui::layout::flow_row(ui, |ui| {
                 ui.label(tr(language, "Start time"));
                 if time_input(
@@ -96,13 +101,16 @@ pub(super) fn render(
         });
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let save = ui
-            .add_enabled_ui(!draft.cue.original_text.trim().is_empty(), |ui| {
-                components::icon_button(
-                    ui,
-                    tr(language, "Save"),
-                    egui::include_image!("../../../../resources/icons/check.svg"),
-                )
-            })
+            .add_enabled_ui(
+                !translating && !draft.cue.original_text.trim().is_empty(),
+                |ui| {
+                    components::icon_button(
+                        ui,
+                        tr(language, "Save"),
+                        egui::include_image!("../../../../resources/icons/check.svg"),
+                    )
+                },
+            )
             .inner
             .clicked();
         let cancel = components::icon_button(
@@ -111,10 +119,28 @@ pub(super) fn render(
             egui::include_image!("../../../../resources/icons/x.svg"),
         )
         .clicked();
+        let retranslate = ui
+            .add_enabled_ui(
+                !translating && !draft.cue.original_text.trim().is_empty(),
+                |ui| {
+                    components::icon_button(
+                        ui,
+                        tr(language, "Retranslate original"),
+                        egui::include_image!("../../../../resources/icons/translation.svg"),
+                    )
+                },
+            )
+            .inner
+            .clicked();
+        if translating {
+            ui.spinner().on_hover_text(tr(language, "Translating"));
+        }
         if save {
             EditAction::Save
         } else if cancel {
             EditAction::Cancel
+        } else if retranslate {
+            EditAction::Retranslate
         } else {
             EditAction::None
         }
@@ -141,10 +167,12 @@ fn time_input(
         if focus {
             response.request_focus();
             let mut state = egui::TextEdit::load_state(ui.ctx(), response.id).unwrap_or_default();
-            state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
-                egui::text::CCursor::default(),
-                egui::text::CCursor::new(super::format_cue_time(*value).chars().count()),
-            )));
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::default(),
+                    egui::text::CCursor::new(super::format_cue_time(*value).chars().count()),
+                )));
             state.store(ui.ctx(), response.id);
             response.scroll_to_me(Some(egui::Align::Center));
         }

@@ -1256,7 +1256,7 @@ impl Default for XRTranslateApp {
                             &output_subscribers,
                             HostOutputEvent::Previews {
                                 stream_id: scoped_stream,
-                                is_typing: scope.is_text,
+                                is_typing: scope.is_typing(),
                                 entries: &previews,
                             },
                         );
@@ -1264,7 +1264,7 @@ impl Default for XRTranslateApp {
                     for result in &results {
                         state
                             .companion_reader
-                            .observe(&scope.owner, scope.is_text, result);
+                            .observe(&scope.owner, scope.is_typing(), result);
                         if let TranslationEvent::StreamEnded { stream_id }
                         | TranslationEvent::Finished { stream_id, .. } = result
                         {
@@ -1660,7 +1660,7 @@ impl Default for XRTranslateApp {
                                                 HostOutputEvent::Caption {
                                                     stream_id,
                                                     audio_source,
-                                                    is_typing: scope.is_text,
+                                                    is_typing: scope.is_typing(),
                                                     source: &entry.source,
                                                     translated: &entry.translated,
                                                     additional_translations: &entry
@@ -1679,7 +1679,7 @@ impl Default for XRTranslateApp {
                                                 HostOutputEvent::Caption {
                                                     stream_id,
                                                     audio_source,
-                                                    is_typing: scope.is_text,
+                                                    is_typing: scope.is_typing(),
                                                     source: &entry.source,
                                                     translated: &entry.translated,
                                                     additional_translations: &entry
@@ -1709,7 +1709,7 @@ impl Default for XRTranslateApp {
                                             HostOutputEvent::Caption {
                                                 stream_id,
                                                 audio_source,
-                                                is_typing: scope.is_text,
+                                                is_typing: scope.is_typing(),
                                                 source: &previous.source,
                                                 translated: &previous.translated,
                                                 additional_translations: &previous
@@ -1725,7 +1725,7 @@ impl Default for XRTranslateApp {
                                         HostOutputEvent::Caption {
                                             stream_id,
                                             audio_source,
-                                            is_typing: scope.is_text,
+                                            is_typing: scope.is_typing(),
                                             source: &merged.entry.source,
                                             translated: &merged.entry.translated,
                                             additional_translations: &merged
@@ -1742,7 +1742,7 @@ impl Default for XRTranslateApp {
                                         HostOutputEvent::Caption {
                                             stream_id,
                                             audio_source,
-                                            is_typing: scope.is_text,
+                                            is_typing: scope.is_typing(),
                                             source: &merged.entry.source,
                                             translated: &merged.entry.translated,
                                             additional_translations: &merged
@@ -1760,7 +1760,7 @@ impl Default for XRTranslateApp {
                                     HostOutputEvent::Caption {
                                         stream_id,
                                         audio_source,
-                                        is_typing: scope.is_text,
+                                        is_typing: scope.is_typing(),
                                         source: &fragment.source,
                                         translated: &fragment.translated,
                                         additional_translations: &fragment.additional_translations,
@@ -1869,7 +1869,7 @@ impl Default for XRTranslateApp {
                         && publish_committed_translations(
                             &output_subscribers,
                             &results,
-                            scope.is_text,
+                            scope.is_typing(),
                         )
                     {
                         state.record_recovery();
@@ -3404,7 +3404,7 @@ impl XRTranslateApp {
             vad_threshold_for_background_noise(recognition.background_noise),
             ctx,
         );
-        let scope = ChannelScope::new(owner.clone());
+        let scope = ChannelScope::audio(owner.clone(), plugin.publish_to_host_outputs());
         scope
             .asr_only
             .store(task.languages.asr_only(), Ordering::Release);
@@ -4340,7 +4340,9 @@ impl XRTranslateApp {
             let avatar = self.avatar_task_ended(&task.owner, failed);
             if task.owner.is_plugin(PluginId::MEDIA.as_str()) {
                 self.host_audio_import = None;
-                self.media_plugin.pause_task();
+                // The source's Finished event closes recognition. The media
+                // plugin may still be translating its remaining subtitles.
+                self.media_plugin.stop_import();
             }
             if task.owner.is_plugin(PluginId::MEETING.as_str()) {
                 self.meeting_plugin.clear_audio_import();
@@ -4546,7 +4548,7 @@ impl XRTranslateApp {
             self.meeting_plugin.fail_active_startup(error);
         }
         if owner.is_plugin(PluginId::MEDIA.as_str()) {
-            self.media_plugin.pause_task();
+            self.media_plugin.fail_subtitle_startup();
             self.media_plugin.set_error(error);
         }
     }
@@ -6050,10 +6052,7 @@ impl eframe::App for XRTranslateApp {
             if !self.first_run {
                 self.poll_backend_startup(Some(ctx.clone()));
                 self.poll_text_translation(ctx);
-                self.media_plugin.poll_translation_events();
-                if let Some(task) = self.media_plugin.next_subtitle_task() {
-                    self.start_translation_task(task, Some(ctx.clone()));
-                }
+                self.poll_media_translation(ctx);
                 self.poll_session_events();
                 self.media_plugin.poll_translation_events();
             }
@@ -6248,10 +6247,7 @@ impl eframe::App for XRTranslateApp {
 
         self.poll_backend_startup(Some(ui.ctx().clone()));
         self.poll_text_translation(ui.ctx());
-        self.media_plugin.poll_translation_events();
-        if let Some(task) = self.media_plugin.next_subtitle_task() {
-            self.start_translation_task(task, Some(ui.ctx().clone()));
-        }
+        self.poll_media_translation(ui.ctx());
         self.poll_session_events();
         self.media_plugin.poll_translation_events();
         if self.plugin_enabled(PluginId::MEETING) {

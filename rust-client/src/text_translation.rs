@@ -100,6 +100,7 @@ impl TextTask {
         same_languages
             && compatible_context
             && self.scope.publish_to_host_outputs == other.scope.publish_to_host_outputs
+            && self.scope.text_audio_source() == other.scope.text_audio_source()
     }
 
     fn same_conversation(&self, other: &Self) -> bool {
@@ -435,7 +436,10 @@ impl TextTranslation {
                                 vad_threshold: 0.0,
                                 vad_silence_ms: 0,
                                 continuous_recognition: false,
-                                audio_source: CaptureSource::Microphone,
+                                audio_source: task
+                                    .scope
+                                    .text_audio_source()
+                                    .unwrap_or(CaptureSource::Microphone),
                                 finish_when_audio_ends: false,
                                 prompt_graphs: Some(graphs.clone()),
                             },

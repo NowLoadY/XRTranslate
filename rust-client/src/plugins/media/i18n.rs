@@ -17,6 +17,13 @@ pub fn tr(language: UiLanguage, english: &'static str) -> &'static str {
 
 const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     (
+        "Retranslate original",
+        "重新翻译原文",
+        "原文を再翻訳",
+        "원문 다시 번역",
+        "Перевести исходный текст заново",
+    ),
+    (
         "Double-click to edit.",
         "双击编辑。",
         "ダブルクリックして編集。",

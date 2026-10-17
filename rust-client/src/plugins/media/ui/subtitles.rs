@@ -60,18 +60,20 @@ pub(super) fn render_subtitles_card(
         controller.last_auto_scrolled_cue_id = current.clone();
     }
     ui.label(egui::RichText::new(tr(language, "Subtitles")).strong());
-    if !controller.previews.entries().is_empty() {
-        let height = ui.available_height()
-            * if controller.subtitles.count() == 0 {
-                1.0
-            } else {
-                0.3
-            };
+    let running = controller
+        .active_task_id
+        .as_deref()
+        .and_then(|id| controller.store.get(id))
+        .is_some_and(|task| task.is_task_running);
+    if running || !controller.previews.entries().is_empty() {
+        // Reserve the same space between partials, including before the first cue.
+        // Longer previews scroll inside it instead of moving the timeline and list.
+        let height = (ui.available_height() * 0.25).clamp(0.0, 120.0);
         egui::ScrollArea::vertical()
             .id_salt("media_subtitle_preview")
             .max_height(height)
             .min_scrolled_height(0.0)
-            .auto_shrink([false, true])
+            .auto_shrink([false, false])
             .show(ui, |ui| {
                 for preview in controller.previews.entries() {
                     components::live_preview(ui, preview);
@@ -142,6 +144,7 @@ pub(super) fn render_subtitles_card(
         "media_subtitles",
         8.0,
         target,
+        Some(|text: &CueText| text.id),
         |ui| {
             let margins = components::card_margins(ui.ctx());
             let key = egui::Id::new((
@@ -193,6 +196,7 @@ pub(super) fn render_subtitles_card(
                                 + ui.spacing().item_spacing.y
                         },
                         CueText {
+                            id: egui::Id::new((task_id, &cue.id)),
                             original,
                             translated,
                         },
@@ -309,6 +313,11 @@ pub(super) fn render_subtitles_card(
         controller.begin_subtitle_edit(&id, field);
     }
     match edit_action {
+        super::subtitle_edit::EditAction::Retranslate => {
+            if let Some(draft) = &mut controller.subtitle_edit {
+                draft.retranslate_requested = true;
+            }
+        }
         super::subtitle_edit::EditAction::Save => controller.save_subtitle_edit(),
         super::subtitle_edit::EditAction::Cancel => controller.subtitle_edit = None,
         super::subtitle_edit::EditAction::None => {}
@@ -323,6 +332,7 @@ struct TextRows {
 
 #[derive(Clone)]
 struct CueText {
+    id: egui::Id,
     original: std::sync::Arc<egui::Galley>,
     translated: Option<std::sync::Arc<egui::Galley>>,
 }

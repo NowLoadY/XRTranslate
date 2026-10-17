@@ -435,6 +435,7 @@ fn render_feed(
         "history_scroll",
         if plain { 12.0 } else { scale.row_gap },
         changed,
+        None,
         |ui| {
             let mut rows = turns
                 .iter()

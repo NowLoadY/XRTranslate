@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod controller;
+mod edit_translation;
 pub mod events;
 pub mod i18n;
 pub mod installer;
@@ -66,10 +67,13 @@ pub enum MediaAction {
     TranslateSubtitles {
         restart: bool,
     },
+    RetranslateSubtitle,
 }
 
 pub struct MediaPlugin {
     subtitle_job: Option<subtitle_job::SubtitleJob>,
+    subtitle_retranslation: Option<edit_translation::SubtitleRetranslation>,
+    stop_requested: bool,
     pub controller: MediaController,
     pub event_sink: events::MediaTranslationSink,
 }
@@ -84,6 +88,8 @@ impl MediaPlugin {
     pub fn new() -> Self {
         Self {
             subtitle_job: None,
+            subtitle_retranslation: None,
+            stop_requested: false,
             controller: MediaController::default(),
             event_sink: events::MediaTranslationSink::default(),
         }
@@ -98,7 +104,14 @@ impl MediaPlugin {
         snapshot: &MediaUiSnapshot,
         ui: &mut eframe::egui::Ui,
     ) -> MediaAction {
-        ui::render(self, snapshot, ui)
+        let action = ui::render(self, snapshot, ui);
+        if let Some(draft) = &mut self.controller.subtitle_edit
+            && std::mem::take(&mut draft.retranslate_requested)
+        {
+            MediaAction::RetranslateSubtitle
+        } else {
+            action
+        }
     }
 
     pub fn on_visibility_changed(&mut self, is_visible: bool) {
@@ -124,6 +137,8 @@ impl MediaPlugin {
     }
     pub fn pause_task(&mut self) {
         self.subtitle_job = None;
+        self.stop_requested = false;
+        self.controller.previews = Default::default();
         self.controller.pause_task();
     }
     pub fn set_error(&mut self, error: impl Into<String>) {
@@ -191,8 +206,13 @@ impl TranslationSessionPlugin for MediaPlugin {
                 "Media",
                 "Media",
                 "Media Player owns the active translation session",
-            ),
-            output_policy: SessionOutputPolicy::Host,
+            )
+            .with_history(!is_file),
+            output_policy: if is_file {
+                SessionOutputPolicy::PluginOnly
+            } else {
+                SessionOutputPolicy::Host
+            },
             host_tts: !is_file,
             external_audio_gate: !is_file,
             finish_when_audio_ends: is_file,

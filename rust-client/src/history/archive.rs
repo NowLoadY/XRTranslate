@@ -106,9 +106,9 @@ pub(crate) struct Subscriber {
 impl SessionEventSubscriber for Subscriber {
     fn accepts_owner(&self, owner: &TranslationSessionOwner) -> bool {
         owner.is_host()
-            || owner
-                .plugin()
-                .is_some_and(|owner| self.included_plugins.contains(&owner.plugin_id()))
+            || owner.plugin().is_some_and(|owner| {
+                owner.records_history() && self.included_plugins.contains(&owner.plugin_id())
+            })
     }
     fn on_translation_event(&self, _: &TranslationSessionOwner, event: &TranslationEvent) {
         let epoch = self.epoch.load(Ordering::Acquire);
@@ -142,6 +142,73 @@ fn final_translation(segment: &TranslationSegment) -> bool {
             .translated
             .as_deref()
             .is_some_and(|s| !s.trim().is_empty())
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    use crate::session_coordinator::PluginSessionOwner;
+
+    #[test]
+    fn intermediate_recognition_does_not_duplicate_translation_history() {
+        let (tx, rx) = unbounded();
+        let subscribers: Vec<Box<dyn SessionEventSubscriber>> = vec![Box::new(Subscriber {
+            tx,
+            epoch: Arc::new(AtomicU64::new(0)),
+            overflow: Arc::new(AtomicBool::new(false)),
+            included_plugins: &["media"],
+        })];
+        let owner = PluginSessionOwner::new("media", "file", "Media", "Media", "Media");
+        let mut segment = TranslationSegment {
+            stream_id: 1,
+            audio_source: crate::CaptureSource::SystemAudio,
+            turn_id: "sentence".into(),
+            segment_index: 1,
+            segment_count: 1,
+            source: "Hello.".into(),
+            translated: Some("Hello.".into()),
+            source_lang: "en".into(),
+            target_lang: "en".into(),
+            additional_translations: Vec::new(),
+            asr_only: true,
+            speaker_id: String::new(),
+            source_start_ms: 0.0,
+            source_end_ms: 1000.0,
+            timing: xrtranslate_protocol::SegmentTiming::Authored,
+            boundary: xrtranslate_protocol::SegmentBoundary::InputBoundary,
+            revisable: false,
+            live: false,
+        };
+        crate::translation_service::publish_result(
+            &TranslationSessionOwner::Plugin(owner.clone().with_history(false)),
+            &TranslationEvent::Segment(segment.clone()),
+            &subscribers,
+        );
+        assert!(rx.try_recv().is_err());
+        // A user's actual recognition-only session still belongs in history.
+        crate::translation_service::publish_result(
+            &TranslationSessionOwner::Host {
+                capture_source: crate::CaptureSource::Microphone,
+            },
+            &TranslationEvent::Segment(segment.clone()),
+            &subscribers,
+        );
+        assert!(matches!(rx.try_recv(), Ok(Command::Save { .. })));
+        segment.asr_only = false;
+        segment.translated = Some("你好。".into());
+        segment.target_lang = "zh".into();
+        crate::translation_service::publish_result(
+            &TranslationSessionOwner::Plugin(owner),
+            &TranslationEvent::Segment(segment),
+            &subscribers,
+        );
+        let Ok(Command::Save { segments, .. }) = rx.try_recv() else {
+            panic!("Final translation must be archived")
+        };
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].translated.as_deref(), Some("你好。"));
+        assert!(rx.try_recv().is_err());
+    }
 }
 
 pub(crate) struct Archive {

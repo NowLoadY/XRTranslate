@@ -137,10 +137,15 @@ impl SubtitleTimeline {
 
     pub(crate) fn finalize_live_cues(&mut self, stream_id: u64) {
         let prefix = format!("stream_{stream_id}_");
+        let mut changed = false;
         for (id, metadata) in &mut self.metadata {
-            if id.starts_with(&prefix) {
+            if id.starts_with(&prefix) && !metadata.finalized {
                 metadata.finalized = true;
+                changed = true;
             }
+        }
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
         }
     }
 
