@@ -40,7 +40,7 @@ pub struct OutputDevice {
     pub is_virtual: bool,
 }
 
-pub(crate) fn default_host() -> cpal::Host {
+fn default_host() -> cpal::Host {
     // Preserve existing microphone/speaker selection and saved ALSA IDs.
     // Virtual outputs are resolved separately through the Linux adapter.
     #[cfg(target_os = "linux")]

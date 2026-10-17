@@ -287,20 +287,30 @@ impl AudioPlayer {
     }
 }
 fn create_output(state: Arc<Mutex<State>>) -> Result<cpal::Stream, String> {
-    let device = crate::audio::default_host()
+    // Playback follows the system audio service; it has no saved device IDs.
+    let device = cpal::default_host()
         .default_output_device()
         .ok_or("No audio output device is available.")?;
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
+    let mut config = supported.config();
+    if let cpal::SupportedBufferSize::Range { min, max } = *supported.buffer_size() {
+        // Keep the playback clock and controls responsive even when the server
+        // defaults to queuing several seconds of audio.
+        config.buffer_size =
+            cpal::BufferSize::Fixed((config.sample_rate / 100).max(1).clamp(min, max));
+    }
     macro_rules! stream {
         ($sample:ty) => {
-            build_output::<$sample>(&device, supported.config(), state)
+            build_output::<$sample>(&device, config, state)
         };
     }
     let output = match supported.sample_format() {
         cpal::SampleFormat::F32 => stream!(f32),
         cpal::SampleFormat::F64 => stream!(f64),
         cpal::SampleFormat::I16 => stream!(i16),
+        cpal::SampleFormat::I24 => stream!(cpal::I24),
         cpal::SampleFormat::I32 => stream!(i32),
+        cpal::SampleFormat::U8 => stream!(u8),
         cpal::SampleFormat::U16 => stream!(u16),
         _ => Err("Unsupported audio output format".into()),
     }?;
@@ -336,6 +346,15 @@ fn build_output<T: cpal::SizedSample + cpal::FromSample<f32>>(
                 }
             },
             move |error| {
+                // These notifications leave the stream usable; CPAL handles recovery.
+                if matches!(
+                    error.kind(),
+                    cpal::ErrorKind::DeviceChanged
+                        | cpal::ErrorKind::RealtimeDenied
+                        | cpal::ErrorKind::Xrun
+                ) {
+                    return;
+                }
                 let mut state = error_state.lock();
                 state.error = Some(error.to_string());
                 state.playing = false;
