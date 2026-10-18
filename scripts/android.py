@@ -16,6 +16,7 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 NDK_VERSION = '29.0.14206865'
+SHERPA_ARCHIVE = ROOT / 'third_party/sherpa-onnx/sherpa-onnx-v1.13.8-android.tar.bz2'
 TARGETS = {'arm64-v8a': ('aarch64-linux-android', 'aarch64-linux-android'), 'x86_64': ('x86_64-linux-android', 'x86_64-linux-android')}
 
 def release_metadata(abis):
@@ -72,10 +73,8 @@ def toolchain(sdk, abi):
     for variable in ['CFLAGS', 'CXXFLAGS']:
         variable += '_' + key
         environment[variable] = environment.get(variable, '') + ' ' + ' '.join(shlex.quote(flag) for flag in prefix_flags)
-    archive_directory = ROOT / 'target/android/sherpa'
-    archive = archive_directory / 'sherpa-onnx-v1.13.8-android.tar.bz2'
-    fetch('https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/' + archive.name, 46093321, archive)
-    environment['SHERPA_ONNX_ARCHIVE_DIR'] = str(archive_directory)
+    if not SHERPA_ARCHIVE.is_file(): raise SystemExit(f'Missing bundled Android library: {SHERPA_ARCHIVE}. Restore it from the repository.')
+    environment['SHERPA_ONNX_ARCHIVE_DIR'] = str(SHERPA_ARCHIVE.parent)
     return target, environment
 
 def fetch(url, size, destination):
@@ -162,8 +161,7 @@ def native(sdk, args):
         run('cargo', 'build', '--locked', '--manifest-path', 'XR-Corpus/Cargo.toml', '--target-dir', ROOT / 'target', '-p', 'xr-corpus-server', '--target', target, *cargo_profile, env=environment)
         shutil.copy2(ROOT / 'target' / target / output_profile / 'xr-corpus-server', destination / 'libxr-corpus-server.so')
         llama_server(sdk, abi, destination)
-        sherpa_cache = ROOT / 'target/android/sherpa'
-        with tarfile.open(sherpa_cache / 'sherpa-onnx-v1.13.8-android.tar.bz2') as archive:
+        with tarfile.open(SHERPA_ARCHIVE) as archive:
             for name in ['libsherpa-onnx-c-api.so', 'libonnxruntime.so']:
                 library = next(member for member in archive.getmembers() if member.isfile() and abi in Path(member.name).parts and Path(member.name).name == name)
                 with archive.extractfile(library) as source, (destination / name).open('wb') as output:
