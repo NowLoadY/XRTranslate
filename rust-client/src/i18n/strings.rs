@@ -1,5 +1,9 @@
 /// Consolidated single-source-of-truth dictionary: `(English Key, Chinese (zh), Japanese (ja), Korean (ko), Russian (ru))`
 pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
+    ("Merge subtitles", "合并字幕", "字幕を結合", "자막 병합", "Объединить субтитры"),
+    ("Join the original texts and translations in time order, keeping the destination subtitle's details?", "按时间顺序拼接原文和译文，并保留目标字幕的说话人等信息？", "元の文と訳文を時間順に結合し、結合先の話者などの情報を残しますか？", "원문과 번역을 시간순으로 합치고 대상 자막의 화자 등 정보를 유지할까요?", "Объединить оригиналы и переводы по времени, сохранив данные целевого субтитра, включая говорящего?"),
+    ("Finish the active meeting before merging subtitles", "请先结束当前会议，再合并字幕", "現在の会議を終了してから字幕を結合してください", "현재 회의를 종료한 후 자막을 병합하세요", "Завершите текущую встречу перед объединением субтитров"),
+    ("Only adjacent subtitles can be merged", "只能合并相邻字幕", "隣り合う字幕のみ結合できます", "인접한 자막만 병합할 수 있습니다", "Можно объединять только соседние субтитры"),
     (
         "Flags are visual aids for identifying languages; they do not imply exclusive ties to a country or region, or express a political position.",
         "国旗图标仅用于辅助辨认语言，不表示语言专属于某个国家或地区，也不表达政治立场。",

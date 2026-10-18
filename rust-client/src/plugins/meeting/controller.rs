@@ -500,6 +500,36 @@ impl MeetingController {
         }
     }
 
+    pub fn can_merge_segments(&self) -> bool {
+        self.storage_available()
+            && self.active_meeting_id().is_none()
+            && self.bundle.as_ref().is_some_and(|bundle| {
+                !matches!(
+                    bundle.meeting.status,
+                    MeetingStatus::Live | MeetingStatus::Processing
+                )
+            })
+    }
+
+    pub fn merge_segments(&mut self, source_id: &str, target_id: &str) {
+        if !self.can_merge_segments() {
+            self.error = Some("Finish the active meeting before merging subtitles".into());
+            return;
+        }
+        if !self.save_pending_edits() {
+            return;
+        }
+        match self.store.merge_segments(source_id, target_id) {
+            Ok(_) => {
+                if self.evidence_target.as_deref() == Some(source_id) {
+                    self.evidence_target = Some(target_id.to_owned());
+                }
+                self.reload_open_meeting();
+            }
+            Err(error) => self.set_error(error),
+        }
+    }
+
     pub fn reprocessable_audio_path(&self) -> Option<std::path::PathBuf> {
         self.playback
             .clips
@@ -791,6 +821,62 @@ pub fn can_continue(meeting: &Meeting) -> bool {
 mod tests {
     use super::*;
     use crate::plugins::meeting::store::{NewSegment, SegmentSource};
+
+    #[test]
+    fn subtitle_merge_waits_for_capture_to_finish_then_refreshes_the_document() {
+        let root = tempfile::tempdir().unwrap();
+        let mut controller = MeetingController::open(root.path());
+        let meeting = controller
+            .store
+            .create_meeting(NewMeeting::live("Meeting", None, "en", "zh"))
+            .unwrap();
+        let segments = (0..2)
+            .map(|index| {
+                controller
+                    .store
+                    .upsert_segment(NewSegment {
+                        meeting_id: meeting.meeting.id.clone(),
+                        external_key: format!("sentence-{index}"),
+                        topic_id: meeting.topics[0].id.clone(),
+                        original_text: format!("Sentence {index}."),
+                        translated_text: None,
+                        source_language: "en".into(),
+                        target_language: String::new(),
+                        start_ms: index * 1_000,
+                        end_ms: index * 1_000 + 800,
+                        source: SegmentSource::Microphone,
+                        recognition_run_id: "run".into(),
+                        speaker_token: None,
+                        is_final: true,
+                    })
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        controller.open_meeting(&meeting.meeting.id);
+        assert!(controller.can_merge_segments());
+        assert!(controller.begin_capture(&meeting.meeting.id));
+        assert!(!controller.can_merge_segments());
+        assert!(controller.pause_capture());
+        assert!(!controller.can_merge_segments());
+        controller.merge_segments(&segments[0].id, &segments[1].id);
+        assert_eq!(controller.bundle.as_ref().unwrap().segments.len(), 2);
+        controller.store.end_meeting(&meeting.meeting.id).unwrap();
+        controller.clear_active_capture();
+        controller.reload_open_meeting();
+        let revision = controller.bundle_revision();
+        controller.evidence_target = Some(segments[0].id.clone());
+        controller.merge_segments(&segments[0].id, &segments[1].id);
+        let bundle = controller.bundle.as_ref().unwrap();
+        assert_eq!(bundle.segments.len(), 1);
+        assert_eq!(bundle.segments[0].id, segments[1].id);
+        assert_eq!(bundle.segments[0].original_text, "Sentence 0. Sentence 1.");
+        assert_eq!(bundle.segments[0].translated_text, None);
+        assert_eq!(
+            controller.evidence_target.as_deref(),
+            Some(segments[1].id.as_str())
+        );
+        assert!(controller.bundle_revision() > revision);
+    }
 
     #[test]
     fn bundle_revision_tracks_data_changes_but_not_refreshes() {

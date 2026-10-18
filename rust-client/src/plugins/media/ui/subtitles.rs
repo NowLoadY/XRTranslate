@@ -6,7 +6,7 @@ use crate::{
     },
     ui::{
         components,
-        virtual_list::{self, MeasuredRow, Measurements, ScrollTarget},
+        virtual_list::{self, MeasuredRow, Measurements, ScrollTarget, SubtitleMerge},
     },
 };
 use eframe::egui;
@@ -156,12 +156,18 @@ pub(super) fn render_subtitles_card(
     let mut measurements = ui
         .data_mut(|data| data.remove_temp::<Measurements<usize>>(measurements_id))
         .unwrap_or_default();
-    virtual_list::show_variable_virtual_rows(
+    let merge = virtual_list::show_subtitle_rows(
         ui,
         "media_subtitles",
         8.0,
         target,
-        Some(|row: &MeasuredRow<usize>| row.id),
+        |row: &MeasuredRow<usize>| row.id,
+        SubtitleMerge {
+            enabled: can_edit,
+            language,
+            index: &|row: &MeasuredRow<usize>| Some(row.entry),
+            text: &|index| subtitles.cues()[index].original_text.as_str(),
+        },
         |ui| {
             measurements.prepare(
                 ui,
@@ -240,6 +246,7 @@ pub(super) fn render_subtitles_card(
                                 egui::Label::new(
                                     egui::RichText::new(super::format_cue_time(time)).color(color),
                                 )
+                                .selectable(!can_edit)
                                 .sense(egui::Sense::click()),
                             )
                             .on_hover_text(edit_hint);
@@ -277,7 +284,11 @@ pub(super) fn render_subtitles_card(
                             continue;
                         };
                         let response = ui
-                            .add(egui::Label::new(galley.clone()).selectable(true))
+                            .add(
+                                egui::Label::new(galley.clone())
+                                    .selectable(!can_edit)
+                                    .sense(egui::Sense::click()),
+                            )
                             .on_hover_text(edit_hint);
                         if can_edit && response.double_clicked() {
                             edit = Some((cue.id.clone(), field));
@@ -288,6 +299,15 @@ pub(super) fn render_subtitles_card(
         },
     );
     ui.data_mut(|data| data.insert_temp(measurements_id, measurements));
+    if let Some((source, target)) = merge
+        && let (Some(source), Some(target)) = (
+            controller.subtitles.cues().get(source),
+            controller.subtitles.cues().get(target),
+        )
+    {
+        let (source, target) = (source.id.clone(), target.id.clone());
+        controller.merge_subtitles(&source, &target);
+    }
     if let Some(time) = seek {
         controller.seek_to(time, true);
     }

@@ -65,6 +65,7 @@ pub(super) fn render_timeline(
 
     let live = super::active_capture_visible(controller);
     let can_seek = controller.active_meeting_id().is_none();
+    let can_merge = controller.can_merge_segments();
     let Some(bundle) = controller.bundle.as_ref() else {
         return;
     };
@@ -171,12 +172,21 @@ pub(super) fn render_timeline(
             crate::ui::automation::ElementValue::Number(entries.len() as f64),
             viewport,
         );
-        virtual_list::show_variable_virtual_rows(
+        let merged = virtual_list::show_subtitle_rows(
             ui,
             "meeting_timeline_scroll",
             6.0,
             target,
-            Some(|row: &virtual_list::MeasuredRow<Entry>| row.id),
+            |row: &virtual_list::MeasuredRow<Entry>| row.id,
+            virtual_list::SubtitleMerge {
+                enabled: can_merge,
+                language,
+                index: &|row: &virtual_list::MeasuredRow<Entry>| match row.entry {
+                    Entry::Segment(index) => Some(index),
+                    _ => None,
+                },
+                text: &|index| bundle.segments[index].original_text.as_str(),
+            },
             |ui| {
                 let prepared = measurements.prepare(
                     ui,
@@ -234,6 +244,7 @@ pub(super) fn render_timeline(
                             bundle,
                             &mut controller.marker_drafts,
                             can_seek && controller.playback.can_seek_segment(segment),
+                            can_merge,
                             active_id.as_deref() == Some(segment.id.as_str()),
                             language,
                             action,
@@ -245,6 +256,12 @@ pub(super) fn render_timeline(
                 });
             },
         );
+        if let Some((source, target)) = merged {
+            *action = UiAction::MergeSegments(
+                bundle.segments[source].id.clone(),
+                bundle.segments[target].id.clone(),
+            );
+        }
     });
     if notes_changed {
         measurements.invalidate();
@@ -494,6 +511,7 @@ fn render_segment(
     bundle: &MeetingBundle,
     drafts: &mut HashMap<String, String>,
     can_seek: bool,
+    can_merge: bool,
     active: bool,
     language: crate::i18n::UiLanguage,
     action: &mut UiAction,
@@ -577,12 +595,21 @@ fn render_segment(
             row.original.clone(),
             &segment.id,
             can_seek,
+            can_merge,
             language,
             action,
             ui,
         );
         if let Some(text) = &row.translated {
-            super::sentence_text(text.clone(), &segment.id, can_seek, language, action, ui);
+            super::sentence_text(
+                text.clone(),
+                &segment.id,
+                can_seek,
+                can_merge,
+                language,
+                action,
+                ui,
+            );
         }
         if let Some(text) = &row.updating {
             ui.add(egui::Label::new(text.clone()));

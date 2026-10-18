@@ -12,6 +12,7 @@ pub(super) fn render_transcript(
 ) {
     let live = super::active_capture_visible(controller);
     let can_seek = controller.active_meeting_id().is_none();
+    let can_merge = controller.can_merge_segments();
     let Some(bundle) = controller.bundle.as_ref() else {
         return;
     };
@@ -40,12 +41,18 @@ pub(super) fn render_transcript(
         crate::ui::automation::ElementValue::Number(bundle.segments.len() as f64),
         viewport,
     );
-    virtual_list::show_variable_virtual_rows(
+    let merged = virtual_list::show_subtitle_rows(
         ui,
         "meeting_full_transcript",
         8.0,
         target,
-        Some(|row: &virtual_list::MeasuredRow<usize>| row.id),
+        |row: &virtual_list::MeasuredRow<usize>| row.id,
+        virtual_list::SubtitleMerge {
+            enabled: can_merge,
+            language,
+            index: &|row: &virtual_list::MeasuredRow<usize>| Some(row.entry),
+            text: &|index| bundle.segments[index].original_text.as_str(),
+        },
         |ui| {
             let prepared = measurements.prepare(
                 ui,
@@ -100,6 +107,7 @@ pub(super) fn render_transcript(
                             text,
                             &segment.id,
                             can_seek && controller.playback.can_seek_segment(segment),
+                            can_merge,
                             language,
                             action,
                             ui,
@@ -114,6 +122,12 @@ pub(super) fn render_transcript(
             rows::record(ui, &segment.id, rect);
         },
     );
+    if let Some((source, target)) = merged {
+        *action = UiAction::MergeSegments(
+            bundle.segments[source].id.clone(),
+            bundle.segments[target].id.clone(),
+        );
+    }
     ui.data_mut(|data| data.insert_temp(measurements_id, measurements));
     if evidence.is_some() {
         controller.evidence_target = None;

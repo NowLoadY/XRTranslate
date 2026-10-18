@@ -492,6 +492,23 @@ impl MediaController {
         }
     }
 
+    pub(super) fn merge_subtitles(&mut self, source_id: &str, target_id: &str) -> bool {
+        if self.subtitle_edit.is_some()
+            || self
+                .active_task_id
+                .as_deref()
+                .and_then(|id| self.store.get(id))
+                .is_none_or(|task| task.is_task_running)
+            || !self.subtitles.merge_adjacent(source_id, target_id)
+        {
+            return false;
+        }
+        self.error = None;
+        self.dirty = true;
+        self.save_active();
+        true
+    }
+
     pub fn save_active(&mut self) {
         if let Some(task) = self
             .active_task_id
@@ -784,5 +801,56 @@ impl MediaController {
             .as_ref()
             .map(|b| b.get_diagnostics())
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    #[test]
+    fn merging_is_idle_only_and_immediately_replaces_persisted_subtitles() {
+        let storage = tempfile::tempdir().unwrap();
+        let mut controller = MediaController::default();
+        controller.backend = None;
+        controller.storage_dir = storage.path().to_owned();
+        controller.store.tasks.clear();
+        let mut task = MediaTask::new(
+            "Test subtitles".into(),
+            MediaSource::LocalFile("test.srt".into()),
+            "en".into(),
+            "zh".into(),
+            SubtitleMode::None,
+            Default::default(),
+        );
+        task.subtitles = SubtitleTimeline::parse(
+            "1\n00:00:00,000 --> 00:00:01,000\nFirst.\n\n2\n00:00:01,000 --> 00:00:02,000\nSecond.\n",
+        )
+        .unwrap();
+        task.is_task_running = true;
+        controller.active_task_id = Some(task.id.clone());
+        controller.subtitles = task.subtitles.clone();
+        controller.store.add_or_update(task);
+        controller.save_active();
+
+        assert!(!controller.merge_subtitles("srt_0", "srt_1"));
+        controller.store.tasks[0].is_task_running = false;
+        controller.begin_subtitle_edit("srt_0", SubtitleField::Original);
+        assert!(!controller.merge_subtitles("srt_0", "srt_1"));
+        controller.subtitle_edit = None;
+        assert!(controller.merge_subtitles("srt_0", "srt_1"));
+        assert!(controller.error.is_none());
+        assert!(!controller.dirty);
+
+        let saved = MediaTaskStore::load_from_dir(storage.path());
+        assert_eq!(saved.tasks[0].subtitles.cues(), controller.subtitles.cues());
+        assert_eq!(saved.tasks[0].subtitles.count(), 1);
+        let cue = &saved.tasks[0].subtitles.cues()[0];
+        assert_eq!(cue.id, "srt_1");
+        assert_eq!(cue.original_text, "First. Second.");
+        assert_eq!((cue.start_ms, cue.end_ms), (0, 2_000));
+        let serialized = std::fs::read_to_string(storage.path().join("video_tasks.json")).unwrap();
+        assert!(!serialized.contains("srt_0"));
+        assert_eq!(std::fs::read_dir(storage.path()).unwrap().count(), 1);
     }
 }

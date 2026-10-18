@@ -338,6 +338,51 @@ impl SubtitleTimeline {
         &self.cues
     }
 
+    /// Merge neighboring text in timeline order while retaining the drop target's identity.
+    pub(super) fn merge_adjacent(&mut self, source_id: &str, target_id: &str) -> bool {
+        let Some(source_index) = self.cues.iter().position(|cue| cue.id == source_id) else {
+            return false;
+        };
+        let Some(target_index) = self.cues.iter().position(|cue| cue.id == target_id) else {
+            return false;
+        };
+        if source_index.abs_diff(target_index) != 1 {
+            return false;
+        }
+
+        let first = &self.cues[source_index.min(target_index)];
+        let second = &self.cues[source_index.max(target_index)];
+        let join = |first: &str, second: &str| {
+            [first.trim(), second.trim()]
+                .into_iter()
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let original = join(&first.original_text, &second.original_text);
+        let translated = join(
+            first.translated_text.as_deref().unwrap_or_default(),
+            second.translated_text.as_deref().unwrap_or_default(),
+        );
+        let start_ms = first.start_ms.min(second.start_ms);
+        let end_ms = first.end_ms.max(second.end_ms).max(start_ms);
+        let target = &mut self.cues[target_index];
+        target.original_text = original;
+        target.translated_text = (!translated.is_empty()).then_some(translated);
+        target.start_ms = start_ms;
+        target.end_ms = end_ms;
+        self.metadata
+            .insert(target_id.to_owned(), SubtitleMetadata::authored());
+        self.cues.remove(source_index);
+        self.metadata.remove(source_id);
+        self.origins.remove(source_id);
+        for snapshot in self.snapshot_cues.values_mut() {
+            snapshot.remove(source_id);
+        }
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
     pub(super) fn edit_cue(
         &mut self,
         mut cue: SubtitleCue,
@@ -449,4 +494,104 @@ fn format_timestamp_lrc(ms: i64) -> String {
     let secs = (ms_max % 60000) / 1000;
     let hundredths = (ms_max % 1000) / 10;
     format!("[{:02}:{:02}.{:02}]", mins, secs, hundredths)
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    fn timeline() -> SubtitleTimeline {
+        let mut timeline = SubtitleTimeline::parse(
+            "WEBVTT\n\nfirst\n00:00.000 --> 00:02.500 align:start\nFirst.\n\nsecond\n00:02.000 --> 00:04.000 align:end\nSecond.\n\nthird\n00:05.000 --> 00:06.000\nThird.\n",
+        )
+        .unwrap();
+        for (index, cue) in timeline.cues.iter_mut().enumerate() {
+            cue.speaker_name = Some(format!("Speaker {index}"));
+            cue.translated_text = Some(format!("Translation {index}."));
+            cue.source_language = format!("source-{index}");
+            cue.target_language = format!("target-{index}");
+        }
+        timeline
+    }
+
+    #[test]
+    fn merging_either_direction_keeps_target_identity_and_timeline_order() {
+        for (source, target) in [("srt_0", "srt_1"), ("srt_1", "srt_0")] {
+            let mut timeline = timeline();
+            let previous_target = timeline
+                .cues
+                .iter()
+                .find(|cue| cue.id == target)
+                .unwrap()
+                .clone();
+            let untouched = timeline.cues[2].clone();
+            timeline
+                .snapshot_cues
+                .insert(7, [source.to_owned(), target.to_owned()].into());
+            let revision = timeline.revision();
+
+            assert!(timeline.merge_adjacent(source, target));
+            assert_eq!(timeline.count(), 2);
+            let merged = &timeline.cues()[0];
+            assert_eq!(merged.id, target);
+            assert_eq!(merged.speaker_name, previous_target.speaker_name);
+            assert_eq!(merged.source_language, previous_target.source_language);
+            assert_eq!(merged.target_language, previous_target.target_language);
+            assert_eq!((merged.start_ms, merged.end_ms), (0, 4_000));
+            assert_eq!(merged.original_text, "First. Second.");
+            assert_eq!(
+                merged.translated_text.as_deref(),
+                Some("Translation 0. Translation 1.")
+            );
+            assert_eq!(timeline.cues()[1], untouched);
+            assert_eq!(timeline.metadata_for(target), SubtitleMetadata::authored());
+            assert!(!timeline.metadata.contains_key(source));
+            assert!(!timeline.origins.contains_key(source));
+            assert!(timeline.origins.contains_key(target));
+            assert!(!timeline.snapshot_cues[&7].contains(source));
+            assert_eq!(timeline.revision(), revision + 1);
+            let exported = timeline.export_vtt();
+            let retained_settings = if target == "srt_0" {
+                "align:start"
+            } else {
+                "align:end"
+            };
+            assert!(exported.contains(retained_settings));
+            assert!(exported.contains("00:00:00.000 --> 00:00:04.000"));
+        }
+    }
+
+    #[test]
+    fn invalid_merges_leave_everything_unchanged() {
+        let mut timeline = timeline();
+        let before = serde_json::to_value(&timeline).unwrap();
+        let revision = timeline.revision();
+        for (source, target) in [
+            ("srt_0", "srt_0"),
+            ("srt_0", "srt_2"),
+            ("missing", "srt_0"),
+            ("srt_0", "missing"),
+        ] {
+            assert!(!timeline.merge_adjacent(source, target));
+            assert_eq!(serde_json::to_value(&timeline).unwrap(), before);
+            assert_eq!(timeline.revision(), revision);
+        }
+    }
+
+    #[test]
+    fn merging_preserves_available_translation_without_extra_spaces() {
+        for (first, second, expected) in [
+            (None, None, None),
+            (Some("  "), None, None),
+            (Some(" First. "), None, Some("First.")),
+            (None, Some(" Second. "), Some("Second.")),
+            (Some(" First. "), Some(" Second. "), Some("First. Second.")),
+        ] {
+            let mut timeline = timeline();
+            timeline.cues[0].translated_text = first.map(str::to_owned);
+            timeline.cues[1].translated_text = second.map(str::to_owned);
+            assert!(timeline.merge_adjacent("srt_0", "srt_1"));
+            assert_eq!(timeline.cues()[0].translated_text.as_deref(), expected);
+        }
+    }
 }

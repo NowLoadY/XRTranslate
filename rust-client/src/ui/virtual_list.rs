@@ -3,6 +3,9 @@
 use eframe::egui::{self, Vec2};
 use std::{collections::HashMap, sync::Arc};
 
+mod merge;
+use merge::MergeGesture;
+
 #[derive(Clone)]
 pub struct MeasuredRow<T> {
     /// Stable identity across insertion, filtering and reordering.
@@ -143,6 +146,37 @@ struct VisibleRowAnchor {
     scroll_offset: f32,
 }
 
+/// Optional subtitle interaction; ordinals refer to the complete document, not
+/// the filtered visual rows. Existing row keys remain the only identities.
+pub struct SubtitleMerge<'a, T> {
+    pub enabled: bool,
+    pub language: crate::i18n::UiLanguage,
+    pub index: &'a dyn Fn(&T) -> Option<usize>,
+    pub text: &'a dyn Fn(usize) -> &'a str,
+}
+
+pub fn show_subtitle_rows<T, R: AsRef<[(f32, T)]>>(
+    ui: &mut egui::Ui,
+    id_salt: &'static str,
+    row_gap: f32,
+    scroll_target: impl Into<ScrollTarget>,
+    row_key: fn(&T) -> egui::Id,
+    merge: SubtitleMerge<'_, T>,
+    prepare_rows: impl FnOnce(&egui::Ui) -> R,
+    render_row: impl FnMut(&mut egui::Ui, usize, f32, &T),
+) -> Option<(usize, usize)> {
+    show_rows(
+        ui,
+        id_salt,
+        row_gap,
+        scroll_target.into(),
+        Some(row_key),
+        Some(merge),
+        prepare_rows,
+        render_row,
+    )
+}
+
 /// Virtualizes a dynamic text list whose wrapped rows do not share one height.
 ///
 /// Prepare exact row heights after the scrollbar has reserved its width, then
@@ -155,92 +189,220 @@ pub fn show_variable_virtual_rows<T, R: AsRef<[(f32, T)]>>(
     scroll_target: impl Into<ScrollTarget>,
     row_key: Option<fn(&T) -> egui::Id>,
     prepare_rows: impl FnOnce(&egui::Ui) -> R,
-    mut render_row: impl FnMut(&mut egui::Ui, usize, f32, &T),
+    render_row: impl FnMut(&mut egui::Ui, usize, f32, &T),
 ) {
-    let scroll_target = scroll_target.into();
+    show_rows(
+        ui,
+        id_salt,
+        row_gap,
+        scroll_target.into(),
+        row_key,
+        None,
+        prepare_rows,
+        render_row,
+    );
+}
+
+fn show_rows<T, R: AsRef<[(f32, T)]>>(
+    ui: &mut egui::Ui,
+    id_salt: &'static str,
+    row_gap: f32,
+    scroll_target: ScrollTarget,
+    row_key: Option<fn(&T) -> egui::Id>,
+    merge: Option<SubtitleMerge<'_, T>>,
+    prepare_rows: impl FnOnce(&egui::Ui) -> R,
+    mut render_row: impl FnMut(&mut egui::Ui, usize, f32, &T),
+) -> Option<(usize, usize)> {
     let anchor_id = ui.make_persistent_id((id_salt, "visible_row_anchor"));
-    let mut output = egui::ScrollArea::vertical()
+    let gesture_id = ui.make_persistent_id((id_salt, "merge"));
+    let mut gesture = ui.data_mut(|data| {
+        let gesture = data.get_temp::<MergeGesture>(gesture_id);
+        data.remove::<MergeGesture>(gesture_id);
+        gesture
+    });
+    if !merge.as_ref().is_some_and(|merge| merge.enabled)
+        || ui.input(|input| input.key_pressed(egui::Key::Escape))
+    {
+        if gesture.is_some() {
+            ui.ctx().stop_dragging();
+        }
+        gesture = None;
+    }
+    let mut confirmed = None;
+    let mut scroll = egui::ScrollArea::vertical()
         .id_salt(id_salt)
-        .auto_shrink([false, false])
-        .show_viewport(ui, |ui, viewport| {
-            let prepared = prepare_rows(ui);
-            let rows = prepared.as_ref();
-            let row_heights = rows.iter().map(|(height, _)| *height).collect::<Vec<_>>();
-            let offsets = variable_row_offsets(&row_heights, row_gap);
-            let content_height = offsets.last().copied().unwrap_or_default();
-            let content_top = ui.max_rect().top();
-            let content_left = ui.max_rect().left();
-            let content_width = ui.available_width();
-            ui.set_height(content_height);
+        .auto_shrink([false, false]);
+    if let Some(gesture) = &gesture {
+        scroll = scroll
+            .scroll_source(egui::scroll_area::ScrollSource::NONE)
+            .vertical_scroll_offset(gesture.scroll_offset);
+    }
+    let mut output = scroll.show_viewport(ui, |ui, viewport| {
+        let prepared = prepare_rows(ui);
+        let rows = prepared.as_ref();
+        let row_heights = rows.iter().map(|(height, _)| *height).collect::<Vec<_>>();
+        let offsets = variable_row_offsets(&row_heights, row_gap);
+        let content_height = offsets.last().copied().unwrap_or_default();
+        let content_top = ui.max_rect().top();
+        let content_left = ui.max_rect().left();
+        let content_width = ui.available_width();
+        ui.set_height(content_height);
+        let row_rect = |index: usize| {
+            egui::Rect::from_min_size(
+                egui::pos2(content_left, content_top + offsets[index]),
+                egui::vec2(content_width, row_heights[index].max(0.0)),
+            )
+        };
+        if let (Some(merge), Some(key), Some(active)) = (&merge, row_key, &mut gesture)
+            && !active.update(
+                ui,
+                merge,
+                rows,
+                key,
+                visible_variable_row_range(viewport, &row_heights, &offsets),
+                row_rect,
+            )
+        {
+            gesture = None;
+        }
+        let scroll_target = if gesture.is_some() {
+            ScrollTarget::None
+        } else {
+            scroll_target
+        };
 
-            if let Some(key) = row_key {
-                let previous = ui.data(|data| data.get_temp::<VisibleRowAnchor>(anchor_id));
-                if matches!(scroll_target, ScrollTarget::None)
-                    && let Some(mut anchor) = previous
-                    // Let wheel input, dragging and the native scroll animation move freely.
-                    && (anchor.scroll_offset - viewport.min.y).abs() < 0.5
-                    && let Some(index) = rows.iter().position(|(_, row)| key(row) == anchor.key)
-                {
-                    let offset = (offsets[index] - anchor.row_top)
-                        .clamp(0.0, (content_height - viewport.height()).max(0.0));
-                    let correction = offset - viewport.min.y;
-                    if correction.abs() > 0.5 {
-                        anchor.scroll_offset = offset;
-                        ui.data_mut(|data| data.insert_temp(anchor_id, anchor));
-                        return Some(correction);
-                    }
+        if let Some(key) = row_key.filter(|_| gesture.is_none()) {
+            let previous = ui.data(|data| data.get_temp::<VisibleRowAnchor>(anchor_id));
+            // Let wheel input, dragging and the native scroll animation move freely.
+            if matches!(scroll_target, ScrollTarget::None)
+                && let Some(mut anchor) = previous
+                && (anchor.scroll_offset - viewport.min.y).abs() < 0.5
+                && let Some(index) = rows.iter().position(|(_, row)| key(row) == anchor.key)
+            {
+                let offset = (offsets[index] - anchor.row_top)
+                    .clamp(0.0, (content_height - viewport.height()).max(0.0));
+                let correction = offset - viewport.min.y;
+                if correction.abs() > 0.5 {
+                    anchor.scroll_offset = offset;
+                    ui.data_mut(|data| data.insert_temp(anchor_id, anchor));
+                    return Some(correction);
                 }
-                let index = offsets
-                    .partition_point(|offset| *offset <= viewport.min.y)
-                    .saturating_sub(1)
-                    .min(rows.len().saturating_sub(1));
-                if let Some((_, row)) = rows.get(index) {
-                    ui.data_mut(|data| {
-                        data.insert_temp(
-                            anchor_id,
-                            VisibleRowAnchor {
-                                key: key(row),
-                                row_top: offsets[index] - viewport.min.y,
-                                scroll_offset: viewport.min.y,
-                            },
-                        )
+            }
+            let index = offsets
+                .partition_point(|offset| *offset <= viewport.min.y)
+                .saturating_sub(1)
+                .min(rows.len().saturating_sub(1));
+            if let Some((_, row)) = rows.get(index) {
+                ui.data_mut(|data| {
+                    data.insert_temp(
+                        anchor_id,
+                        VisibleRowAnchor {
+                            key: key(row),
+                            row_top: offsets[index] - viewport.min.y,
+                            scroll_offset: viewport.min.y,
+                        },
+                    )
+                });
+            } else {
+                ui.data_mut(|data| data.remove::<VisibleRowAnchor>(anchor_id));
+            }
+        }
+
+        for index in visible_variable_row_range(viewport, &row_heights, &offsets) {
+            let row_height = row_heights[index].max(0.0);
+            let rect = row_rect(index);
+            let row = &rows[index].1;
+            let key = row_key.map(|key| key(row));
+            let merge_index = merge
+                .as_ref()
+                .filter(|merge| merge.enabled)
+                .and_then(|merge| (merge.index)(row));
+            // Register below child buttons, so play/copy/edit keep their clicks.
+            if merge_index.is_some() && !gesture.as_ref().is_some_and(|state| state.pending) {
+                let response = ui
+                    .interact(rect, key.unwrap(), egui::Sense::click_and_drag())
+                    .on_hover_cursor(egui::CursorIcon::Grab);
+                if response.drag_started() {
+                    let pointer = ui
+                        .input(|input| input.pointer.press_origin())
+                        .unwrap_or(rect.center());
+                    gesture = Some(MergeGesture {
+                        source: key.unwrap(),
+                        target: None,
+                        grab: pointer - rect.min,
+                        scroll_offset: viewport.min.y,
+                        pending: false,
                     });
-                } else {
-                    ui.data_mut(|data| data.remove::<VisibleRowAnchor>(anchor_id));
                 }
             }
-
-            for index in visible_variable_row_range(viewport, &row_heights, &offsets) {
-                let row_height = row_heights[index].max(0.0);
-                let row_rect = egui::Rect::from_min_size(
-                    egui::pos2(content_left, content_top + offsets[index]),
-                    egui::vec2(content_width, row_height),
-                );
-                ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .id_salt((id_salt, index))
-                        .max_rect(row_rect),
-                    |ui| render_row(ui, index, row_height, &rows[index].1),
+            let dragging = gesture
+                .as_ref()
+                .filter(|state| !state.pending && Some(state.source) == key);
+            let mut builder = egui::UiBuilder::new()
+                .id_salt((id_salt, index))
+                .max_rect(rect);
+            if let Some(drag) = dragging {
+                builder = builder.layer_id(egui::LayerId::new(egui::Order::Tooltip, drag.source));
+            }
+            ui.scope_builder(builder, |ui| {
+                if let Some(drag) = dragging {
+                    drag.paint(ui, rect, |ui| render_row(ui, index, row_height, row));
+                } else {
+                    render_row(ui, index, row_height, row);
+                }
+                if let Some(ordinal) = merge_index {
+                    crate::ui::automation::record_output(
+                        ui,
+                        "Mergeable subtitle",
+                        crate::ui::automation::ElementValue::Number(ordinal as f64),
+                        rect,
+                    );
+                }
+            });
+            if gesture
+                .as_ref()
+                .is_some_and(|drag| !drag.pending && drag.target == key)
+            {
+                ui.painter().rect_stroke(
+                    rect.shrink(2.0),
+                    12.0,
+                    egui::Stroke::new(2.0, crate::ui::theme::primary()),
+                    egui::StrokeKind::Inside,
                 );
             }
-            let target = match scroll_target {
-                ScrollTarget::None => None,
-                ScrollTarget::End => Some((content_height, 0.0, egui::Align::Max)),
-                ScrollTarget::Row(index) => row_heights
-                    .get(index)
-                    .map(|height| (offsets[index], *height, egui::Align::Center)),
-            };
-            if let Some((offset, height, align)) = target {
-                ui.scroll_to_rect(
-                    egui::Rect::from_min_size(
-                        egui::pos2(content_left, content_top + offset),
-                        Vec2::new(content_width, height),
-                    ),
-                    Some(align),
-                );
-            }
-            None
-        });
+        }
+        if let (Some(merge), Some(key)) = (&merge, row_key) {
+            confirmed = merge::confirm(ui.ctx(), gesture_id, &mut gesture, merge, rows, key);
+        }
+        let scroll_target = if gesture.is_some() {
+            ScrollTarget::None
+        } else {
+            scroll_target
+        };
+        let target = match scroll_target {
+            ScrollTarget::None => None,
+            ScrollTarget::End => Some((content_height, 0.0, egui::Align::Max)),
+            ScrollTarget::Row(index) => row_heights
+                .get(index)
+                .map(|height| (offsets[index], *height, egui::Align::Center)),
+        };
+        if let Some((offset, height, align)) = target {
+            ui.scroll_to_rect(
+                egui::Rect::from_min_size(
+                    egui::pos2(content_left, content_top + offset),
+                    Vec2::new(content_width, height),
+                ),
+                Some(align),
+            );
+        }
+        None
+    });
+    if let Some(gesture) = gesture {
+        // Existing native scroll animations also need their offset held in place.
+        output.state.offset.y = gesture.scroll_offset;
+        output.state.store(ui.ctx(), output.id);
+        ui.data_mut(|data| data.insert_temp(gesture_id, gesture));
+    }
     if let Some(correction) = output.inner {
         output.state.offset.y += correction;
         output.state.store(ui.ctx(), output.id);
@@ -248,7 +410,11 @@ pub fn show_variable_virtual_rows<T, R: AsRef<[(f32, T)]>>(
         ui.ctx()
             .request_discard("Preserve the visible row after its preceding rows changed height");
     }
+    confirmed
 }
+
+#[cfg(test)]
+mod merge_tests;
 
 #[cfg(test)]
 mod tests {

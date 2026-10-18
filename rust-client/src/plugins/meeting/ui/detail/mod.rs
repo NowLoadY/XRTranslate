@@ -290,11 +290,17 @@ fn sentence_text(
     text: impl Into<egui::WidgetText>,
     segment_id: &str,
     can_seek: bool,
+    can_merge: bool,
     language: crate::i18n::UiLanguage,
     action: &mut UiAction,
     ui: &mut egui::Ui,
 ) {
-    let response = ui.add(egui::Label::new(text).wrap().selectable(true));
+    let label = egui::Label::new(text).wrap().selectable(!can_merge);
+    let response = ui.add(if can_merge {
+        label.sense(egui::Sense::click())
+    } else {
+        label
+    });
     select_sentence(response, segment_id, can_seek, language, action);
 }
 

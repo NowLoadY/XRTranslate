@@ -404,6 +404,76 @@ impl MeetingStore {
         query_segments(&connection, meeting_id, Some(topic_id))
     }
 
+    /// Joins adjacent transcript rows in their displayed order. The drop target
+    /// keeps its identity and metadata; deleting the source also deletes its markers.
+    pub fn merge_segments(&self, source_id: &str, target_id: &str) -> Result<Segment> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let meeting_id: String = transaction
+            .query_row(
+                "SELECT meeting_id FROM meeting_segments WHERE id = ?1",
+                params![source_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| not_found("segment", source_id))?;
+        let meeting = query_meeting(&transaction, &meeting_id)?;
+        if matches!(
+            meeting.status,
+            MeetingStatus::Live | MeetingStatus::Processing
+        ) {
+            return Err(MeetingStoreError::InvalidData(
+                "Finish the active meeting before merging subtitles".into(),
+            ));
+        }
+        let segments = query_segments(&transaction, &meeting_id, None)?;
+        let source_index = segments
+            .iter()
+            .position(|segment| segment.id == source_id)
+            .ok_or_else(|| not_found("segment", source_id))?;
+        let target_index = segments
+            .iter()
+            .position(|segment| segment.id == target_id)
+            .ok_or_else(|| not_found("segment", target_id))?;
+        if source_index.abs_diff(target_index) != 1 {
+            return Err(MeetingStoreError::InvalidData(
+                "Only adjacent subtitles can be merged".into(),
+            ));
+        }
+        let first = &segments[source_index.min(target_index)];
+        let second = &segments[source_index.max(target_index)];
+        let mut merged = segments[target_index].clone();
+        merged.original_text = join_subtitle_text(&first.original_text, &second.original_text);
+        let translated = join_subtitle_text(
+            first.translated_text.as_deref().unwrap_or_default(),
+            second.translated_text.as_deref().unwrap_or_default(),
+        );
+        merged.translated_text = (!translated.is_empty()).then_some(translated);
+        merged.start_ms = first.start_ms.min(second.start_ms);
+        merged.end_ms = first.end_ms.max(second.end_ms);
+        merged.updated_at_ms = now_ms();
+        transaction.execute(
+            "UPDATE meeting_segments
+             SET original_text = ?1, translated_text = ?2, start_ms = ?3, end_ms = ?4,
+                 updated_at_ms = ?5 WHERE id = ?6",
+            params![
+                merged.original_text,
+                merged.translated_text,
+                merged.start_ms,
+                merged.end_ms,
+                merged.updated_at_ms,
+                target_id,
+            ],
+        )?;
+        transaction.execute(
+            "DELETE FROM meeting_segments WHERE id = ?1",
+            params![source_id],
+        )?;
+        touch_meeting(&transaction, &meeting_id, merged.updated_at_ms)?;
+        transaction.commit()?;
+        Ok(merged)
+    }
+
     /// Creates (or reuses) a provisional speaker and binds the diarization token.
     /// Existing segments carrying that immutable token are reconciled atomically.
     pub fn assign_speaker_token(
@@ -1140,6 +1210,14 @@ fn now_ms() -> i64 {
         .min(i64::MAX as u128) as i64
 }
 
+fn join_subtitle_text(first: &str, second: &str) -> String {
+    match (first.trim(), second.trim()) {
+        ("", second) => second.to_owned(),
+        (first, "") => first.to_owned(),
+        (first, second) => format!("{first} {second}"),
+    }
+}
+
 fn usize_to_i64(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
@@ -1147,6 +1225,145 @@ fn usize_to_i64(value: usize) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn merge_fixture() -> (MeetingStore, MeetingBundle, Vec<Segment>) {
+        let store = MeetingStore::open_in_memory().unwrap();
+        let meeting = store
+            .create_meeting(NewMeeting::live("Meeting", None, "en", "zh"))
+            .unwrap();
+        let segments = (0..3)
+            .map(|index| {
+                store
+                    .upsert_segment(NewSegment {
+                        meeting_id: meeting.meeting.id.clone(),
+                        external_key: format!("sentence-{index}"),
+                        topic_id: meeting.topics[0].id.clone(),
+                        original_text: format!("Sentence {index}."),
+                        translated_text: Some(format!("译文 {index}。")),
+                        source_language: "en".into(),
+                        target_language: "zh".into(),
+                        start_ms: index * 1_000,
+                        end_ms: index * 1_000 + 800,
+                        source: SegmentSource::Microphone,
+                        recognition_run_id: "run".into(),
+                        speaker_token: Some(format!("speaker-{index}")),
+                        is_final: true,
+                    })
+                    .unwrap()
+            })
+            .collect();
+        (store, meeting, segments)
+    }
+
+    #[test]
+    fn subtitle_merge_keeps_target_identity_and_removes_source_annotations_in_both_directions() {
+        for target_index in 0..2 {
+            let (store, meeting, segments) = merge_fixture();
+            let source_index = 1 - target_index;
+            for index in 0..2 {
+                store
+                    .assign_speaker_token(
+                        &meeting.meeting.id,
+                        "run",
+                        &format!("speaker-{index}"),
+                        &format!("Speaker {index}"),
+                    )
+                    .unwrap();
+            }
+            store
+                .add_marker(&segments[source_index].id, MarkerKind::Note, "Source note")
+                .unwrap();
+            let target_marker = store
+                .add_marker(
+                    &segments[target_index].id,
+                    MarkerKind::ActionItem,
+                    "Target note",
+                )
+                .unwrap();
+            let before = store.open_meeting(&meeting.meeting.id).unwrap();
+            let target = &before.segments[target_index];
+            let merged = store
+                .merge_segments(&segments[source_index].id, &target.id)
+                .unwrap();
+            let mut expected = target.clone();
+            expected.original_text = "Sentence 0. Sentence 1.".into();
+            expected.translated_text = Some("译文 0。 译文 1。".into());
+            expected.start_ms = 0;
+            expected.end_ms = 1_800;
+            expected.updated_at_ms = merged.updated_at_ms;
+            assert_eq!(merged, expected);
+            let after = store.open_meeting(&meeting.meeting.id).unwrap();
+            assert_eq!(after.segments, [merged, segments[2].clone()]);
+            assert_eq!(after.markers, [target_marker]);
+            assert_eq!(after.speakers, before.speakers);
+        }
+    }
+
+    #[test]
+    fn subtitle_merge_rejects_nonadjacent_foreign_and_active_rows_without_writing() {
+        let (store, meeting, segments) = merge_fixture();
+        let before = store.open_meeting(&meeting.meeting.id).unwrap();
+        assert!(
+            store
+                .merge_segments(&segments[0].id, &segments[0].id)
+                .is_err()
+        );
+        assert!(
+            store
+                .merge_segments(&segments[0].id, &segments[2].id)
+                .is_err()
+        );
+        let other = store
+            .create_meeting(NewMeeting::live("Other", None, "en", "zh"))
+            .unwrap();
+        let foreign = store
+            .upsert_segment(NewSegment {
+                meeting_id: other.meeting.id.clone(),
+                external_key: "foreign".into(),
+                topic_id: other.topics[0].id.clone(),
+                original_text: "Other sentence.".into(),
+                translated_text: None,
+                source_language: "en".into(),
+                target_language: String::new(),
+                start_ms: 0,
+                end_ms: 1_000,
+                source: SegmentSource::Microphone,
+                recognition_run_id: "other-run".into(),
+                speaker_token: None,
+                is_final: true,
+            })
+            .unwrap();
+        assert!(store.merge_segments(&segments[0].id, &foreign.id).is_err());
+        assert_eq!(store.open_meeting(&meeting.meeting.id).unwrap(), before);
+        store.start_meeting(&meeting.meeting.id).unwrap();
+        let active = store.open_meeting(&meeting.meeting.id).unwrap();
+        assert!(
+            store
+                .merge_segments(&segments[0].id, &segments[1].id)
+                .is_err()
+        );
+        assert_eq!(store.open_meeting(&meeting.meeting.id).unwrap(), active);
+    }
+
+    #[test]
+    fn subtitle_merge_rolls_back_target_if_source_cannot_be_removed() {
+        let (store, meeting, segments) = merge_fixture();
+        let before = store.open_meeting(&meeting.meeting.id).unwrap();
+        store
+            .connection()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_segment_delete BEFORE DELETE ON meeting_segments
+             BEGIN SELECT RAISE(ABORT, 'test failure'); END;",
+            )
+            .unwrap();
+        assert!(
+            store
+                .merge_segments(&segments[0].id, &segments[1].id)
+                .is_err()
+        );
+        assert_eq!(store.open_meeting(&meeting.meeting.id).unwrap(), before);
+    }
 
     #[test]
     fn source_replays_preserve_real_translations_without_erasing_new_language() {

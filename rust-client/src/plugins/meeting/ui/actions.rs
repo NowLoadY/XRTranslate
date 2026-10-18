@@ -31,6 +31,7 @@ pub(super) enum UiAction {
     CancelDelete,
     RenameSpeaker(String, String),
     MergeSpeaker(String, String),
+    MergeSegments(String, String),
 }
 
 pub(super) fn apply_action(
@@ -170,6 +171,7 @@ pub(super) fn apply_action(
         }
         UiAction::RenameSpeaker(id, name) => controller.rename_speaker(&id, &name),
         UiAction::MergeSpeaker(source, target) => controller.merge_speakers(&source, &target),
+        UiAction::MergeSegments(source, target) => controller.merge_segments(&source, &target),
     }
     MeetingAction::None
 }
