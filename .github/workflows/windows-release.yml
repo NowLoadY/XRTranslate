@@ -145,6 +145,10 @@ jobs:
           $corpus = Join-Path $directory 'bin\xr-corpus-server.exe'
           $corpusVersion = & $corpus --version
           if ($LASTEXITCODE -ne 0) { throw 'Packaged XR-Corpus failed to start.' }
+          $protocol = Get-Content (Join-Path $env:GITHUB_WORKSPACE 'XR-Corpus/crates/protocol/src/lib.rs') -Raw
+          $apiMatch = [regex]::Match($protocol, 'pub const API_VERSION:\s*u16\s*=\s*(\d+)\s*;')
+          if (-not $apiMatch.Success) { throw 'Cannot read the pinned corpus API version.' }
+          $apiVersion = [int]$apiMatch.Groups[1].Value
           $smoke = Join-Path $env:RUNNER_TEMP "xrtranslate-smoke-$([guid]::NewGuid())"
           New-Item -ItemType Directory $smoke | Out-Null
           $config = Get-Content (Join-Path $directory 'config.json') -Raw | ConvertFrom-Json
@@ -164,11 +168,11 @@ jobs:
               if ($health.status -eq 'ok') { break }
               Start-Sleep -Milliseconds 500
             }
-            if ($health.status -ne 'ok' -or $health.api_version -ne 2 -or
+            if ($health.status -ne 'ok' -or $health.api_version -ne $apiVersion -or
                 $health.server_version -cne ($corpusVersion.Trim() -split ' ')[-1]) {
               throw 'Packaged XR-Corpus did not report a healthy, compatible version.'
             }
-            $graph = Invoke-RestMethod http://127.0.0.1:17766/v2/graph -TimeoutSec 10
+            $graph = Invoke-RestMethod "http://127.0.0.1:17766/v$apiVersion/graph" -TimeoutSec 10
             if ($process.HasExited -or $graph.domains.Count -eq 0 -or $graph.nodes.Count -eq 0) {
               throw 'Packaged XR-Corpus did not load the default vocabulary graph.'
             }

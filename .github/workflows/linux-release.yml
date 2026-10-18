@@ -141,11 +141,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os, pathlib, sqlite3, subprocess, tempfile, time, tomllib, urllib.request
+          import json, os, pathlib, re, sqlite3, subprocess, tempfile, time, tomllib, urllib.request
           root = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
           package = root / 'dist' / os.environ['PACKAGE_NAME']
           app_version = os.environ['RELEASE_TAG'][1:]
           corpus_version = tomllib.loads((root / 'XR-Corpus/apps/server/Cargo.toml').read_text())['package']['version']
+          protocol = (root / 'XR-Corpus/crates/protocol/src/lib.rs').read_text()
+          api_version = int(re.search(r'pub const API_VERSION:\s*u16\s*=\s*(\d+)\s*;', protocol).group(1))
           manifest = json.loads((package / 'release-manifest.json').read_text())
           assert manifest['layout_version'] == 4 and manifest['python'] is False
           assert manifest['entrypoints']['client'] == f'XRTranslate-v{app_version}'
@@ -213,8 +215,8 @@ jobs:
                           except OSError:
                               pass
                           time.sleep(0.2)
-                      assert health and health['status'] == 'ok' and health['api_version'] == 2 and health['server_version'] == corpus_version
-                      with opener.open('http://127.0.0.1:17766/v2/graph', timeout=10) as response:
+                      assert health and health['status'] == 'ok' and health['api_version'] == api_version and health['server_version'] == corpus_version
+                      with opener.open(f'http://127.0.0.1:17766/v{api_version}/graph', timeout=10) as response:
                           graph = json.load(response)
                       assert graph['domains'] and graph['nodes'] and process.poll() is None
                       print(f"Corpus health passed: {len(graph['domains'])} domains, {len(graph['nodes'])} nodes")
