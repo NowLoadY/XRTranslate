@@ -312,12 +312,7 @@ impl NativeProviderPlan {
     }
 
     pub(crate) fn asr_streaming(&self) -> bool {
-        self.route
-            .asr
-            .connector
-            .is_some_and(|connector| connector.supports_audio_streaming())
-            && self.route.asr.capabilities.streaming
-                == xrtranslate_assets::remote::RemoteStreaming::Cumulative
+        self.route.asr.supports_audio_streaming()
     }
 
     pub(crate) fn asr_vocabulary_weight(&self) -> u8 {

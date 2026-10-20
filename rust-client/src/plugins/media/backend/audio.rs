@@ -55,7 +55,6 @@ impl MediaBackend for AudioBackend {
     fn supports_video(&self) -> bool {
         false
     }
-    fn attach_native_host(&mut self, _: *mut std::ffi::c_void) {}
     fn set_osd_subtitle(&mut self, _: &str) {}
     fn get_audio_channel_count(&self) -> Option<usize> {
         self.0.get_audio_channel_count()

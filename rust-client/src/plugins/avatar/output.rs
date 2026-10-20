@@ -93,7 +93,6 @@ impl DisplayOutput {
     }
     pub(super) fn configure(&self, settings: &Settings, enabled: bool) {
         let mut state = self.0.lock();
-        let enabled = enabled && settings.captions;
         if state.enabled && !enabled {
             state.display.clear();
             state.entries.clear();

@@ -1,5 +1,5 @@
 use super::{
-    backend::{MediaBackend, MediaSource, PlaybackStatus, window::NativeVideoHost},
+    backend::{MediaBackend, MediaSource, PlaybackStatus},
     subtitles::{SubtitleCue, SubtitleTimeline},
     task::{AudioChannelItem, MediaTask, MediaTaskStore, SubtitleMode},
 };
@@ -38,7 +38,8 @@ pub struct MediaController {
     pub active_task_id: Option<String>,
     pub current_source: Option<MediaSource>,
     pub backend: Option<Box<dyn MediaBackend>>,
-    pub native_host: Option<NativeVideoHost>,
+    pub render_state: Option<eframe::egui_wgpu::RenderState>,
+    pub render_context: Option<eframe::egui::Context>,
     pub subtitles: SubtitleTimeline,
     pub(super) subtitle_edit: Option<SubtitleEdit>,
     pub previews: crate::session_coordinator::LivePreviews,
@@ -58,7 +59,6 @@ pub struct MediaController {
     pub draft_subtitle_mode: SubtitleMode,
     pub draft_recognition: crate::client_settings::RecognitionSettings,
 
-    pub parent_window: usize,
     pub video_unavailable: bool,
     pub last_save_instant: Instant,
     pub last_manual_scroll: Option<Instant>,
@@ -109,7 +109,8 @@ impl Default for MediaController {
             active_task_id: None,
             current_source: None,
             backend,
-            native_host: None,
+            render_state: None,
+            render_context: None,
             subtitles: SubtitleTimeline::new(),
             subtitle_edit: None,
             previews: Default::default(),
@@ -131,7 +132,6 @@ impl Default for MediaController {
                 pause_tolerance: 1.0,
                 continuous_recognition: false,
             },
-            parent_window: 0,
             video_unavailable: false,
             last_save_instant: Instant::now(),
             last_manual_scroll: None,
@@ -171,14 +171,10 @@ impl MediaController {
         None
     }
 
-    pub fn release_native_host(&mut self) {
-        if self.native_host.is_none() {
-            return;
-        }
+    pub fn hide_video(&mut self) {
         if let Some(backend) = &mut self.backend {
-            backend.attach_native_host(std::ptr::null_mut());
+            backend.set_video_visible(false);
         }
-        self.native_host.take();
     }
 
     pub fn open_library(&mut self) {
@@ -192,7 +188,7 @@ impl MediaController {
         self.active_task_id = None;
         self.current_source = None;
         self.last_auto_scrolled_cue_id = None;
-        self.release_native_host();
+        self.hide_video();
     }
 
     pub fn open_create(&mut self) {
@@ -217,7 +213,7 @@ impl MediaController {
             continuous_recognition: false,
         };
         self.error = None;
-        self.release_native_host();
+        self.hide_video();
     }
 
     pub fn start_draft_task(&mut self) -> Result<String, String> {
@@ -305,7 +301,7 @@ impl MediaController {
         self.active_task_id = Some(task_id.to_string());
         self.current_source = Some(task.source.clone());
         self.subtitles = task.subtitles.clone();
-        self.release_native_host();
+        self.hide_video();
         if let Some(backend) = &mut self.backend {
             backend.stop();
         }
@@ -318,15 +314,26 @@ impl MediaController {
         self.playback_loaded = false;
         self.video_unavailable = false;
 
-        if task.media_type == super::task::MediaType::AudioOnly {
-            self.release_native_host();
-        }
-
         if task.media_type != super::task::MediaType::Subtitles
             && let Some(backend) = &mut self.backend
         {
+            if task.media_type == super::task::MediaType::Video
+                && cfg!(windows)
+                && backend.supports_video()
+            {
+                let initialized = match (&self.render_state, &self.render_context) {
+                    (Some(state), Some(ctx)) => backend.initialize_video(state, ctx),
+                    _ => Err("GPU video renderer is unavailable".into()),
+                };
+                if let Err(error) = initialized {
+                    self.error = Some(error);
+                    self.video_unavailable = true;
+                }
+            }
             backend.set_audio_only_mode(
-                task.media_type == super::task::MediaType::AudioOnly || !cfg!(windows),
+                task.media_type == super::task::MediaType::AudioOnly
+                    || !cfg!(windows)
+                    || self.video_unavailable,
             );
             let loaded = match &task.source {
                 MediaSource::LocalFile(path) => backend.load_local_file(path.clone()),
@@ -364,7 +371,7 @@ impl MediaController {
                 .as_ref()
                 .is_some_and(|backend| backend.supports_video())
             && !self.video_unavailable
-            && self.parent_window != 0
+            && self.render_state.is_some()
             && self.can_play()
             && !self.is_audio_only_task()
     }
@@ -583,7 +590,7 @@ impl MediaController {
             if let Some(backend) = &mut self.backend {
                 backend.stop();
             }
-            self.release_native_host();
+            self.hide_video();
             self.previews = Default::default();
             self.active_task_id = None;
             self.current_source = None;
@@ -646,7 +653,7 @@ impl MediaController {
         }
         match super::backend::mpv::MpvBackend::new() {
             Ok(b) => {
-                self.release_native_host();
+                self.hide_video();
                 self.backend = Some(Box::new(b));
                 if let Some(backend) = &mut self.backend {
                     backend.set_volume(self.volume);

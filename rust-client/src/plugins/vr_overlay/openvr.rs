@@ -613,10 +613,6 @@ impl Drop for OpenVrOverlay {
 }
 
 impl OpenVrOverlay {
-    pub(super) fn set_hmd_transform(&self, matrix: glam::Mat4) -> Result<(), OverlayError> {
-        self.set_transform_matrix(&HmdMatrix34::from_matrix(matrix))
-    }
-
     pub(super) fn set_world_transform(&self, matrix: glam::Mat4) -> Result<(), OverlayError> {
         let transform = HmdMatrix34::from_matrix(matrix);
         if transform.rigid_matrix().is_none() {

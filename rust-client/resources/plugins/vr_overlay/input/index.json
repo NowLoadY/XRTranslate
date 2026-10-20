@@ -1,6 +1,6 @@
 {
   "controller_type": "knuckles",
-  "description": "Left-controller proximity controls voice; right controller presses the arm buttons.",
+  "description": "Right controller presses the left-wrist review buttons.",
   "name": "XRTranslate spatial voice",
   "bindings": {
     "/actions/voice": {

@@ -1,8 +1,8 @@
-//! Shared playback controls; native video is an optional surface above them.
+//! Shared playback controls and GPU video composed by egui.
 use super::super::format_time_ms;
 use crate::{
     plugins::media::{backend::PlaybackStatus, controller::MediaController, i18n::tr},
-    ui::{components, layout::flow_row},
+    ui::components,
 };
 use eframe::egui;
 
@@ -95,29 +95,28 @@ fn render_fullscreen(
     }
     let visible = controller.get_status() != PlaybackStatus::Playing
         || controller.fullscreen_last_interaction.elapsed() < std::time::Duration::from_secs(3);
+    let video_rect = ui.available_rect_before_wrap();
+    video_surface(controller, video_rect.size().max(egui::vec2(1.0, 1.0)), ui);
     if visible {
-        // The native video surface sits above egui. Reserve only the actual
-        // control height while visible so neither surface can cover the other.
-        let panel = egui::Panel::bottom("media_fullscreen_controls")
-            .resizable(false)
-            .frame(
-                egui::Frame::new()
-                    .fill(crate::ui::theme::surface_subtle())
-                    .inner_margin(12),
-            )
-            .show(ui, |ui| playback_controls(controller, language, ui));
-        ui.data_mut(|data| data.insert_temp(controls_id, panel.response.rect));
+        let inset = 24.0_f32.min(video_rect.width() * 0.04);
+        let overlay = egui::Area::new(controls_id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(
+                video_rect.left() + inset,
+                video_rect.top() + 20.0,
+            ))
+            .show(ui.ctx(), |ui| {
+                ui.set_width((video_rect.width() - inset * 2.0).max(1.0));
+                ui.visuals_mut().override_text_color = Some(egui::Color32::WHITE);
+                playback_controls(controller, language, ui);
+            });
+        ui.data_mut(|data| data.insert_temp(controls_id, overlay.response.rect));
     } else {
         ui.data_mut(|data| data.remove::<egui::Rect>(controls_id));
-        if ui.rect_contains_pointer(ui.available_rect_before_wrap()) {
+        if ui.rect_contains_pointer(video_rect) {
             ui.ctx().set_cursor_icon(egui::CursorIcon::None);
         }
     }
-    video_surface(
-        controller,
-        ui.available_size().max(egui::vec2(1.0, 1.0)),
-        ui,
-    );
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_millis(100));
 }
@@ -128,34 +127,30 @@ fn video_surface(controller: &mut MediaController, size: egui::Vec2, ui: &mut eg
     if response.double_clicked() {
         fullscreen(controller, ui);
     }
-    if controller.native_host.is_none() {
-        match crate::plugins::media::backend::window::NativeVideoHost::new(controller.parent_window)
-        {
-            Ok(host) => {
-                if let Some(backend) = &mut controller.backend {
-                    backend.attach_native_host(host.hwnd.0);
-                }
-                controller.native_host = Some(host);
-            }
-            Err(error) => {
-                controller.error = Some(error);
-                controller.video_unavailable = true;
-            }
-        }
-    }
-    if let Some(host) = &controller.native_host {
-        let rect = rect.intersect(ui.clip_rect());
-        if rect.is_positive() {
+    if let Some(backend) = &mut controller.backend {
+        if ui.is_rect_visible(rect) {
             let scale = ui.ctx().pixels_per_point();
-            host.set_rect(
-                (rect.left() * scale).round() as i32,
-                (rect.top() * scale).round() as i32,
-                (rect.width() * scale).round() as i32,
-                (rect.height() * scale).round() as i32,
-            );
-            host.show();
+            match backend.video_frame([
+                (rect.width() * scale).round() as u32,
+                (rect.height() * scale).round() as u32,
+            ]) {
+                Ok(Some(texture)) => {
+                    ui.painter().image(
+                        texture,
+                        rect,
+                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    backend.set_video_visible(false);
+                    controller.error = Some(error);
+                    controller.video_unavailable = true;
+                }
+            }
         } else {
-            host.hide();
+            backend.set_video_visible(false);
         }
     }
 }
@@ -173,6 +168,7 @@ fn playback_controls(
         duration.max(1.0),
         ui.available_width(),
         duration > 0.0,
+        controller.fullscreen_mode,
     );
     let automated = crate::ui::automation::record_slider(
         ui,
@@ -191,53 +187,157 @@ fn playback_controls(
     // Native playback changes on an audio worker, including reaching EOF.
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_millis(100));
-    flow_row(ui, |ui| {
+    let overlay = controller.fullscreen_mode;
+    let width = ui.available_width();
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
         let playing = controller.get_status() == PlaybackStatus::Playing;
-        if components::secondary_button(ui, tr(language, if playing { "Pause" } else { "Play" }))
-            .clicked()
+        if media_button(
+            ui,
+            tr(language, if playing { "Pause" } else { "Play" }),
+            if playing {
+                egui::include_image!("../../../../../resources/icons/media-pause.svg")
+            } else {
+                egui::include_image!("../../../../../resources/icons/media-play.svg")
+            },
+            overlay,
+            false,
+        )
+        .clicked()
         {
             controller.toggle_play();
         }
-        ui.weak(format!(
-            "{} / {}",
-            format_time_ms(controller.get_time_ms()),
-            format_time_ms(controller.get_duration_ms())
-        ));
-        if components::secondary_button(
+        if media_button(
             ui,
             tr(language, if controller.muted { "Unmute" } else { "Mute" }),
+            if controller.muted {
+                egui::include_image!("../../../../../resources/icons/media-muted.svg")
+            } else {
+                egui::include_image!("../../../../../resources/icons/media-volume.svg")
+            },
+            overlay,
+            false,
         )
         .clicked()
         {
             controller.toggle_mute();
         }
         let mut volume = f64::from(controller.volume);
-        if playback_slider(ui, &mut volume, 1.0, 70.0, true)
+        let volume_width = (width * 0.15).clamp(32.0, 70.0);
+        if playback_slider(ui, &mut volume, 1.0, volume_width, true, overlay)
             .on_hover_text(tr(language, "Volume"))
             .changed()
         {
             controller.set_volume(volume as f32);
         }
+        // Keep essential controls on one row, including on narrow screens.
+        if width >= 360.0 {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} / {}",
+                    format_time_ms(controller.get_time_ms()),
+                    format_time_ms(controller.get_duration_ms())
+                ))
+                .size(12.0),
+            );
+        }
         if controller.can_show_video() {
-            ui.checkbox(&mut controller.show_subtitles, tr(language, "Subtitles"));
-            if components::secondary_button(
-                ui,
-                tr(
-                    language,
-                    if controller.fullscreen_mode {
-                        "Exit Fullscreen"
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if media_button(
+                    ui,
+                    tr(
+                        language,
+                        if overlay {
+                            "Exit Fullscreen"
+                        } else {
+                            "Fullscreen"
+                        },
+                    ),
+                    if overlay {
+                        egui::include_image!("../../../../../resources/icons/media-collapse.svg")
                     } else {
-                        "Fullscreen"
+                        egui::include_image!("../../../../../resources/icons/media-expand.svg")
                     },
-                ),
-            )
-            .on_hover_text(tr(language, "Double-click video or press Esc to leave fullscreen. Space to play/pause, arrows to seek."))
-            .clicked()
-            {
-                fullscreen(controller, ui);
-            }
+                    overlay,
+                    false,
+                )
+                .clicked()
+                {
+                    fullscreen(controller, ui);
+                }
+                let response = media_button(
+                    ui,
+                    tr(language, "Subtitles"),
+                    egui::include_image!("../../../../../resources/icons/media-subtitles.svg"),
+                    overlay,
+                    controller.show_subtitles,
+                );
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::Checkbox,
+                        ui.is_enabled(),
+                        controller.show_subtitles,
+                        tr(language, "Subtitles"),
+                    )
+                });
+                if response.clicked() {
+                    controller.show_subtitles = !controller.show_subtitles;
+                }
+            });
         }
     });
+}
+
+fn media_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    icon: egui::ImageSource<'static>,
+    overlay: bool,
+    selected: bool,
+) -> egui::Response {
+    let response = ui.add_sized([36.0, 36.0], egui::Button::new("").frame(false));
+    let response =
+        crate::ui::automation::button_response(ui, response.id, label, ui.is_enabled(), response);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    let active = response.hovered() || response.has_focus();
+    let tint = if selected || active {
+        if overlay {
+            egui::Color32::from_rgb(155, 220, 255)
+        } else {
+            crate::ui::theme::primary()
+        }
+    } else if overlay {
+        egui::Color32::WHITE
+    } else {
+        crate::ui::theme::text_strong()
+    };
+    let rect = response.rect.shrink(if active { 6.0 } else { 7.0 });
+    if overlay {
+        // A small icon outline stays legible on bright footage without a panel.
+        for offset in [
+            egui::vec2(-1.0, 0.0),
+            egui::vec2(1.0, 0.0),
+            egui::vec2(0.0, -1.0),
+            egui::vec2(0.0, 1.0),
+        ] {
+            egui::Image::new(icon.clone())
+                .tint(egui::Color32::from_black_alpha(160))
+                .paint_at(ui, rect.translate(offset));
+        }
+    }
+    egui::Image::new(icon).tint(tint).paint_at(ui, rect);
+    if selected {
+        ui.painter().circle_filled(
+            egui::pos2(rect.center().x, response.rect.bottom() - 3.0),
+            1.5,
+            tint,
+        );
+    }
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(label)
 }
 
 fn playback_slider(
@@ -246,6 +346,7 @@ fn playback_slider(
     maximum: f64,
     width: f32,
     enabled: bool,
+    overlay: bool,
 ) -> egui::Response {
     ui.allocate_ui_with_layout(
         egui::vec2(width, ui.spacing().interact_size.y),
@@ -254,7 +355,16 @@ fn playback_slider(
             ui.spacing_mut().slider_width = width;
             ui.spacing_mut().slider_rail_height = 4.0;
             // The page's transparent controls otherwise make the rail disappear.
-            ui.visuals_mut().widgets.inactive.bg_fill = crate::ui::theme::border();
+            if overlay {
+                let visuals = ui.visuals_mut();
+                visuals.widgets.inactive.bg_fill = egui::Color32::from_white_alpha(120);
+                visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+                visuals.widgets.hovered.bg_fill = egui::Color32::WHITE;
+                visuals.widgets.active.bg_fill = egui::Color32::WHITE;
+                visuals.selection.bg_fill = egui::Color32::WHITE;
+            } else {
+                ui.visuals_mut().widgets.inactive.bg_fill = crate::ui::theme::border();
+            }
             ui.add_enabled(
                 enabled,
                 egui::Slider::new(value, 0.0..=maximum)

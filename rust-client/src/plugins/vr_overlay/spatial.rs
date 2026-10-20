@@ -1,11 +1,9 @@
 //! Physical voice objects rendered through their own fitted stereo window.
 use super::{
     graphics,
-    indicator::VoiceIndicator,
     input::Input,
     interaction::{CONTROL_HAND, Interaction, controller_root},
     openvr::{AvatarTracking, OpenVrOverlay, OpenVrSession, OverlayError, VulkanTexture},
-    runtime::VrOverlaySettings,
     space::camera_through_plane,
 };
 use crate::{
@@ -17,7 +15,6 @@ use std::{cell::RefCell, path::Path, rc::Rc, time::Instant};
 
 pub(super) struct VoiceOverlay {
     overlay: OpenVrOverlay,
-    indicator: VoiceIndicator,
     input: Input,
     tracking: AvatarTracking,
     renderer: Rc<RefCell<StereoRenderer>>,
@@ -35,7 +32,6 @@ impl VoiceOverlay {
     ) -> Result<Self, String> {
         let input = Input::new(session, input_directory)?;
         let tracking = session.avatar_tracking()?;
-        let indicator = VoiceIndicator::new(session, &tracking, gpu.clone())?;
         let validation = gpu
             .device
             .push_error_scope(eframe::wgpu::ErrorFilter::Validation);
@@ -52,7 +48,6 @@ impl VoiceOverlay {
         overlay.configure_stereo().map_err(|e| e.to_string())?;
         Ok(Self {
             overlay,
-            indicator,
             input,
             tracking,
             renderer,
@@ -63,12 +58,7 @@ impl VoiceOverlay {
         })
     }
 
-    pub fn reset_voice_proximity(&mut self) {
-        self.interaction.reset_voice_proximity();
-    }
-
     pub fn suspend(&mut self) -> Vec<VoiceAction> {
-        let _ = self.indicator.hide();
         if self.visible {
             let _ = self.overlay.hide();
             self.visible = false;
@@ -77,11 +67,7 @@ impl VoiceOverlay {
         self.interaction.suspend()
     }
 
-    pub fn frame(
-        &mut self,
-        snapshot: &VoiceSnapshot,
-        settings: &VrOverlaySettings,
-    ) -> Result<Vec<VoiceAction>, OverlayError> {
+    pub fn frame(&mut self, snapshot: &VoiceSnapshot) -> Result<Vec<VoiceAction>, OverlayError> {
         if self.input.suspended_by_dashboard() {
             return Ok(self.suspend());
         }
@@ -99,18 +85,13 @@ impl VoiceOverlay {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
-        let (actions, pulses) = self
-            .interaction
-            .update(control_root, head, hands, snapshot, dt);
+        let (actions, pulses) = self.interaction.update(control_root, hands, snapshot, dt);
         for hand in pulses {
             self.input.pulse(hand);
         }
-        self.indicator
-            .frame(self.interaction.in_voice_range(), settings)?;
         let mut model = self.interaction.model(control_root, snapshot);
         let Some((plane, width, cameras)) = window(&model, head, eyes) else {
-            // Voice proximity and its HUD dot stay active without review buttons,
-            // or when the arm is outside the current view.
+            // No visible buttons, or the arm is outside the current view.
             if self.visible {
                 self.overlay.hide()?;
                 self.visible = false;
@@ -205,9 +186,7 @@ mod tests {
         };
         let mut rendered = false;
         for _ in 0..1200 {
-            objects
-                .frame(&snapshot, &VrOverlaySettings::default())
-                .unwrap();
+            objects.frame(&snapshot).unwrap();
             if objects.visible && !rendered {
                 println!("Left-controller overlay is rendering from live poses");
                 rendered = true;

@@ -3,7 +3,7 @@ use crate::{
     CaptureSource, XRTranslateApp, ask,
     plugins::PluginId,
     session_coordinator::{TranslationEvent, TranslationSegment},
-    voice_interaction::{VoiceAction, VoiceController, VoiceEffect},
+    voice_interaction::{VoiceController, VoiceEffect},
 };
 use crossbeam_channel::Receiver;
 use eframe::egui;
@@ -157,7 +157,6 @@ impl VoiceInbox {
 pub(crate) struct VoiceHost {
     controller: VoiceController,
     pub inbox: VoiceInbox,
-    active: bool,
     pub microphone_sync_active: Arc<AtomicBool>,
     ask: Option<(u64, ask::Reply)>,
     publication: Option<(u64, Receiver<Result<(), String>>)>,
@@ -190,7 +189,6 @@ impl XRTranslateApp {
         self.refresh_microphone_sync();
         if self.osc_transport.handle().take_microphone_mute() {
             self.set_microphone_input(false, Some(ctx.clone()), false, Self::start_task_capture);
-            self.vr_overlay_plugin.manager().reset_voice_proximity();
         }
         if self
             .voice_interaction
@@ -243,22 +241,10 @@ impl XRTranslateApp {
         let review = requested && settings.review_before_send;
         let runtime = self.vr_overlay_plugin.manager().status();
         let active = requested && runtime.steamvr_connected && runtime.interaction_available;
-        // Only entering/leaving spatial control or a real proximity event changes
-        // capture. Review, Send and Ask completion never call an audio control.
-        if active != self.voice_interaction.active {
-            // An idle surface may still have an old off event. It must not
-            // become a game-mute gesture when spatial control first starts.
-            self.vr_overlay_plugin.manager().take_voice_actions();
-            self.set_microphone_input(false, Some(ctx.clone()), false, Self::start_task_capture);
-            if self.voice_interaction.active {
-                self.sync_game_microphone(false);
-            }
-        }
-        self.voice_interaction.active = active;
         self.osc_plugin.set_microphone_review(review);
         self.voice_interaction
             .controller
-            .set_edit_available(self.service_config.supports_chat());
+            .set_edit_available(self.service_config.supports_ask());
         let effects = self
             .voice_interaction
             .controller
@@ -268,18 +254,10 @@ impl XRTranslateApp {
             if !active {
                 continue;
             }
-            if let VoiceAction::Microphone(near) = action {
-                self.set_microphone_input(near, Some(ctx.clone()), true, Self::start_task_capture);
-                self.sync_game_microphone(near);
-                if !near {
-                    let effects = self.voice_interaction.controller.apply(action);
-                    self.voice_effects(effects, ctx);
-                }
-            } else {
-                let effects = self.voice_interaction.controller.apply(action);
-                self.voice_effects(effects, ctx);
-            }
+            let effects = self.voice_interaction.controller.apply(action);
+            self.voice_effects(effects, ctx);
         }
+
         for phrase in self.voice_interaction.inbox.take() {
             if phrase.instruction == self.voice_interaction.controller.is_editing() {
                 let effects = self.voice_interaction.controller.observe_phrase(
@@ -343,7 +321,7 @@ impl XRTranslateApp {
         if !self.plugin_enabled(PluginId::OSC) {
             snapshot.can_send = false;
             if snapshot.review_enabled {
-                snapshot.status = "Enable VRChat OSC to send the review text".into();
+                snapshot.status = "Enable VRChat OSC".into();
             }
         }
         self.vr_overlay_plugin

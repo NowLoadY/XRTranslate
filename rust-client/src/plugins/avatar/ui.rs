@@ -58,7 +58,7 @@ impl AvatarPlugin {
 
     fn render_preview(&mut self, ui: &mut egui::Ui, language: UiLanguage, selected: &mut usize) {
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.settings.captions, tr(language, "Show captions"));
+            ui.label(tr(language, "Preview"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if components::delete_button(ui, tr(language, "Clear messages")).clicked() {
                     self.output.clear_messages();

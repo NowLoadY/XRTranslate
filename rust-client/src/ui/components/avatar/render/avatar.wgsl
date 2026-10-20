@@ -95,7 +95,7 @@ fn cel_step(threshold: f32, value: f32, softness: f32) -> f32 {
     }
     let shade = pow(vec3<f32>(max(tone * input.surface.x, 0.01)),
         mix(vec3<f32>(1.0), vec3<f32>(0.80, 1.05, 1.55), input.surface.y));
-    return vec4<f32>(color * shade, 1.0);
+    return vec4<f32>(color * shade, input.color.a);
 }
 
 // Back-facing expanded geometry provides a thin, material-colored cartoon contour.
@@ -107,5 +107,5 @@ fn cel_step(threshold: f32, value: f32, softness: f32) -> f32 {
 }
 @fragment fn outline_fragment(input: VertexOutput) -> @location(0) vec4<f32> {
     if input.material.y <= 0.0 { discard; }
-    return vec4<f32>(input.color.rgb * 0.42, 1.0);
+    return vec4<f32>(input.color.rgb * 0.42, input.color.a);
 }

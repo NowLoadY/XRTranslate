@@ -5728,6 +5728,7 @@ dependencies = [
  "uuid",
  "wasapi",
  "windows 0.60.0",
+ "windows 0.62.2",
  "windows-future 0.1.1",
  "windows-sys 0.61.2",
  "winit",

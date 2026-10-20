@@ -58,7 +58,7 @@ pub(super) fn render(
                         let name = controller
                             .speaker_name_drafts
                             .entry(speaker.id.clone())
-                            .or_insert_with(|| speaker.name.clone());
+                            .or_insert_with(|| crate::compact_speaker_label(&speaker.name).unwrap_or_default());
                         crate::ui::components::text_edit_ui(
                             ui,
                             ("speaker_name", &speaker.id),

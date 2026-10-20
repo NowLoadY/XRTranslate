@@ -10,7 +10,6 @@ pub use xrt_connector_core::{Connector, osc::Contract as OscContract};
 #[serde(default)]
 pub struct Settings {
     pub connector: Connector,
-    pub captions: bool,
     pub header: BannerConfig,
     pub footer: BannerConfig,
     pub messages: bool,
@@ -22,7 +21,6 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             connector: Connector::default(),
-            captions: true,
             header: BannerConfig::default(),
             footer: BannerConfig::default(),
             messages: true,
@@ -34,10 +32,9 @@ impl Default for Settings {
 }
 impl Settings {
     pub fn lyric_budget(&self) -> Option<usize> {
-        (self.captions
-            && [&self.header, &self.footer]
-                .iter()
-                .any(|banner| banner.content_type == BannerContentType::Lyrics))
+        [&self.header, &self.footer]
+            .iter()
+            .any(|banner| banner.content_type == BannerContentType::Lyrics)
         .then_some(24)
     }
 }

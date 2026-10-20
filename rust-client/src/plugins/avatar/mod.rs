@@ -75,7 +75,6 @@ impl AvatarPlugin {
         }
         if enabled
             && self.settings.connector.osc().is_some()
-            && self.settings.captions
             && matches!(
                 status_value,
                 Status::Off | Status::Starting | Status::Active

@@ -64,26 +64,6 @@ pub(super) fn render_subtitles_card(
         controller.last_auto_scrolled_cue_id = current.clone();
     }
     ui.label(egui::RichText::new(tr(language, "Subtitles")).strong());
-    let running = controller
-        .active_task_id
-        .as_deref()
-        .and_then(|id| controller.store.get(id))
-        .is_some_and(|task| task.is_task_running);
-    if running || !controller.previews.entries().is_empty() {
-        // Reserve the same space between partials, including before the first cue.
-        // Longer previews scroll inside it instead of moving the timeline and list.
-        let height = (ui.available_height() * 0.25).clamp(0.0, 120.0);
-        egui::ScrollArea::vertical()
-            .id_salt("media_subtitle_preview")
-            .max_height(height)
-            .min_scrolled_height(0.0)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                for preview in controller.previews.entries() {
-                    components::live_preview(ui, preview);
-                }
-            });
-    }
     let measurements_id = egui::Id::new("media_subtitle_measurements");
     if controller.subtitles.count() == 0 {
         ui.data_mut(|data| data.remove::<Measurements<usize>>(measurements_id));
@@ -91,9 +71,7 @@ pub(super) fn render_subtitles_card(
             ui.ctx(),
             ui.make_persistent_id(egui::IdSalt::new("media_subtitles")),
         );
-        if controller.previews.entries().is_empty() {
-            ui.weak(tr(language, "No subtitles yet"));
-        }
+        ui.weak(tr(language, "No subtitles yet"));
         return;
     }
     if let Some(index) = super::timeline::overview(controller, ui) {

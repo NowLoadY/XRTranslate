@@ -5,7 +5,8 @@ pub mod mpv;
 #[cfg(not(feature = "mpv"))]
 #[path = "mpv_stub.rs"]
 pub mod mpv;
-pub mod window;
+#[cfg(all(windows, feature = "mpv"))]
+mod gpu;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -52,8 +53,17 @@ pub trait MediaBackend: Send {
     fn get_diagnostics(&self) -> PlayerDiagnostics;
 
     fn tick(&mut self);
-    /// Attach to a native video host. A null handle detaches the current host.
-    fn attach_native_host(&mut self, host_handle: *mut std::ffi::c_void);
+    fn initialize_video(
+        &mut self,
+        _state: &eframe::egui_wgpu::RenderState,
+        _ctx: &eframe::egui::Context,
+    ) -> Result<(), String> {
+        Err("GPU video playback is unavailable on this platform".into())
+    }
+    fn video_frame(&mut self, _size: [u32; 2]) -> Result<Option<eframe::egui::TextureId>, String> {
+        Ok(None)
+    }
+    fn set_video_visible(&mut self, _visible: bool) {}
     fn set_osd_subtitle(&mut self, text: &str);
     fn get_audio_channel_count(&self) -> Option<usize>;
     #[allow(dead_code)]

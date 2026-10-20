@@ -31,6 +31,8 @@ impl MpvHandle {
         }
 
         let instance = Self { handle };
+        #[cfg(windows)]
+        instance.set_property_string("vo", "libmpv")?;
         instance.set_property_string("hwdec", "auto-safe")?;
         instance.set_property_string("keep-open", "always")?;
         instance.set_property_string("msg-level", "all=error")?;
@@ -221,6 +223,9 @@ impl MpvHandle {
 }
 
 pub struct MpvBackend {
+    // Render context must be freed (and its worker joined) before the mpv core.
+    #[cfg(windows)]
+    video: Option<super::gpu::VideoRenderer>,
     mpv: MpvHandle,
     status: PlaybackStatus,
     duration_ms: i64,
@@ -228,6 +233,7 @@ pub struct MpvBackend {
     last_diag_poll: Mutex<Instant>,
     active_channels: Vec<super::super::task::AudioChannelItem>,
     subtitle_font_size: i64,
+    subtitle_text: String,
 }
 
 fn reconcile_playback_status(
@@ -277,6 +283,8 @@ impl MpvBackend {
         let mpv = MpvHandle::new()?;
 
         Ok(Self {
+            #[cfg(windows)]
+            video: None,
             mpv,
             status: PlaybackStatus::Stopped,
             duration_ms: 0,
@@ -284,6 +292,7 @@ impl MpvBackend {
             last_diag_poll: Mutex::new(Instant::now() - Duration::from_secs(10)),
             active_channels: Vec::new(),
             subtitle_font_size: 18,
+            subtitle_text: String::new(),
         })
     }
 }
@@ -320,6 +329,8 @@ impl MediaBackend for MpvBackend {
 
     fn stop(&mut self) {
         let _ = self.mpv.command(&["stop"]);
+        let _ = self.mpv.command(&["show-text", "", "0", "1"]);
+        self.subtitle_text.clear();
         self.status = PlaybackStatus::Stopped;
     }
 
@@ -430,15 +441,32 @@ impl MediaBackend for MpvBackend {
         self.status = reconcile_playback_status(self.status, end_file_event, eof_reached, paused);
     }
 
-    fn attach_native_host(&mut self, host_handle: *mut std::ffi::c_void) {
-        let wid = host_handle as i64;
-        let _ = self.mpv.set_property_i64("wid", wid);
+    #[cfg(windows)]
+    fn initialize_video(
+        &mut self,
+        state: &eframe::egui_wgpu::RenderState,
+        ctx: &eframe::egui::Context,
+    ) -> Result<(), String> {
+        if self.video.is_none() {
+            self.video = Some(super::gpu::VideoRenderer::new(self.mpv.handle, state, ctx)?);
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn video_frame(&mut self, size: [u32; 2]) -> Result<Option<eframe::egui::TextureId>, String> {
+        self.video.as_mut().map(|video| video.frame(size)).transpose()
+    }
+
+    #[cfg(windows)]
+    fn set_video_visible(&mut self, visible: bool) {
+        if let Some(video) = &self.video {
+            video.set_visible(visible);
+        }
     }
 
     fn set_osd_subtitle(&mut self, text: &str) {
-        if text.is_empty() {
-            let _ = self.mpv.command(&["show-text", "", "0", "1"]);
-        } else {
+        if !text.is_empty() {
             if let Some(height) = self.mpv.get_property_i64("osd-height") {
                 let size = (height as f64 * 0.04).round().clamp(16.0, 48.0) as i64;
                 if size != self.subtitle_font_size
@@ -447,7 +475,12 @@ impl MediaBackend for MpvBackend {
                     self.subtitle_font_size = size;
                 }
             }
-            let _ = self.mpv.command(&["show-text", text, "1200", "1"]);
+        }
+        if self.subtitle_text != text {
+            let duration = if text.is_empty() { "0" } else { "2147483647" };
+            if self.mpv.command(&["show-text", text, duration, "1"]).is_ok() {
+                self.subtitle_text = text.to_owned();
+            }
         }
     }
 

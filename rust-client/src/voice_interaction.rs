@@ -5,10 +5,38 @@ use std::collections::VecDeque;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VoiceAction {
-    /// Routed directly by the host, independently of review actions.
-    Microphone(bool),
     Send,
     Revise,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sending_clears_only_the_successfully_published_buffer() {
+        let mut controller = VoiceController::default();
+        controller.set_enabled(true, true);
+        controller.observe_phrase("one", "first", "English");
+        let send = |controller: &mut VoiceController| {
+            let effects = controller.apply(VoiceAction::Send);
+            let VoiceEffect::Publish { operation, .. } = effects[0] else {
+                panic!("Expected publication");
+            };
+            operation
+        };
+        let operation = send(&mut controller);
+        controller.publish_done(operation, Err("offline".into()));
+        assert_eq!(controller.snapshot().text, "first");
+        let operation = send(&mut controller);
+        controller.observe_phrase("two", "new speech", "English");
+        controller.publish_done(operation, Ok(()));
+        assert_eq!(controller.snapshot().text, "new speech");
+        let operation = send(&mut controller);
+        controller.publish_done(operation, Ok(()));
+        assert!(controller.snapshot().text.is_empty());
+        assert!(!controller.snapshot().can_send);
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -53,7 +81,6 @@ pub(crate) struct VoiceController {
     // Each spoken instruction becomes one Ask, based on the previous result.
     instructions: VecDeque<String>,
     publication: Option<(u64, u64)>,
-    sent_version: Option<u64>,
     status: String,
 }
 
@@ -62,7 +89,7 @@ impl VoiceController {
         self.edit_available = available;
         if !available && self.editing {
             self.exit_editing();
-            self.status = "Selected model cannot edit; current text kept".into();
+            self.status = "Editing unavailable".into();
         }
     }
 
@@ -77,7 +104,6 @@ impl VoiceController {
         }
         if !review {
             self.slot = Slot::default();
-            self.sent_version = None;
         }
         self.ready();
         Vec::new()
@@ -88,20 +114,14 @@ impl VoiceController {
             return Vec::new();
         }
         match action {
-            VoiceAction::Microphone(false) if self.editing => {
-                self.exit_editing();
-                self.status = "Editing finished; changes kept".into();
-                Vec::new()
-            }
-            VoiceAction::Microphone(_) => Vec::new(),
             VoiceAction::Revise if self.editing => {
                 self.exit_editing();
-                self.status = "Editing finished; changes kept".into();
+                self.status = "Ready".into();
                 Vec::new()
             }
             VoiceAction::Revise if self.snapshot().can_revise => {
                 self.editing = true;
-                self.status = "Editing: speak a change; tap Edit again to finish".into();
+                self.status = "Describe modification…".into();
                 Vec::new()
             }
             VoiceAction::Send if self.snapshot().can_send => {
@@ -165,9 +185,9 @@ impl VoiceController {
                 if self.slot.text != text {
                     self.slot.text = text;
                     self.slot.version = self.operation();
-                    self.status = "Change applied; speak another change or finish editing".into();
+                    self.status = "Describe modification…".into();
                 } else {
-                    self.status = "Text unchanged; speak another change or finish editing".into();
+                    self.status = "Describe modification…".into();
                 }
             }
             Err(error) => self.status = format!("Edit failed; current text kept: {error}"),
@@ -185,9 +205,9 @@ impl VoiceController {
         self.publication = None;
         match result {
             Ok(()) => {
-                self.sent_version = Some(version);
                 if self.slot.version == version {
-                    self.status = "Message submitted; the next phrase replaces it".into();
+                    self.slot = Slot::default();
+                    self.status = "Sent".into();
                 }
             }
             Err(error) => self.status = format!("Not sent; review text kept: {error}"),
@@ -206,9 +226,7 @@ impl VoiceController {
             review_enabled: self.review_enabled,
             recording: false,
             instruction: self.editing,
-            can_send: available
-                && self.publication.is_none()
-                && self.sent_version != Some(self.slot.version),
+            can_send: available && self.publication.is_none(),
             can_revise: available && self.edit_available && self.publication.is_none(),
             busy: self.ask_operation.is_some() || self.publication.is_some(),
             text: if self.review_enabled {
@@ -219,7 +237,9 @@ impl VoiceController {
             status: if !self.enabled {
                 "Disabled".into()
             } else if !self.review_enabled {
-                "Microphone ready".into()
+                "Ready".into()
+            } else if available && !self.edit_available {
+                "Editing unavailable".into()
             } else {
                 self.status.clone()
             },
@@ -247,7 +267,7 @@ impl VoiceController {
         };
         let operation = self.operation();
         self.ask_operation = Some(operation);
-        self.status = "Applying spoken change; tap Edit to finish".into();
+        self.status = "Editing…".into();
         vec![VoiceEffect::Ask {
             operation,
             prompt: prompt::build(
@@ -260,11 +280,6 @@ impl VoiceController {
     }
 
     fn ready(&mut self) {
-        self.status = if self.slot.text.is_empty() {
-            "Speak to fill the review slot"
-        } else {
-            "Latest phrase: edit or send"
-        }
-        .into();
+        self.status = "Ready".into();
     }
 }

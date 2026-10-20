@@ -478,7 +478,7 @@ fn prepare_row(
         .as_deref()
         .and_then(|id| speakers.get(id))
         .filter(|speaker| !speaker.is_provisional)
-        .map(|speaker| speaker.name.clone())
+        .map(|speaker| crate::compact_speaker_label(&speaker.name).unwrap_or_default())
         .or_else(|| {
             segment
                 .speaker_token

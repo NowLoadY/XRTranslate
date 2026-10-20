@@ -63,6 +63,7 @@ pub struct ServiceConfigEditor {
     dirty: bool,
     message: Option<String>,
     onboarding_save_error: Option<String>,
+    asr_streaming: std::sync::OnceLock<Option<bool>>,
     translation_contract: std::sync::OnceLock<Option<(TranslationPromptProfile, bool)>>,
     language_capabilities:
         std::sync::OnceLock<Result<xrtranslate_engine::language::LanguageCapabilities, String>>,
@@ -80,6 +81,7 @@ impl ServiceConfigEditor {
             onboarding_save_error: None,
             language_capabilities: Default::default(),
             translation_contract: Default::default(),
+            asr_streaming: Default::default(),
         };
         if let Err(error) = editor.reload() {
             editor.message = Some(error);
@@ -90,6 +92,7 @@ impl ServiceConfigEditor {
     pub fn reload(&mut self) -> Result<(), String> {
         self.language_capabilities.take();
         self.translation_contract.take();
+        self.asr_streaming.take();
         self.document = xrtranslate_config::load_user_config_document(&self.path, &project_root())
             .map_err(|error| format!("Cannot read {}: {error}", self.path.display()))?;
         self.categories = [
@@ -114,9 +117,11 @@ impl ServiceConfigEditor {
             .unwrap_or_default()
     }
 
-    pub(crate) fn supports_chat(&self) -> bool {
-        self.translation_contract()
-            .is_some_and(|(_, supported)| supported)
+    pub(crate) fn asr_streaming(&self) -> Option<bool> {
+        *self.asr_streaming.get_or_init(|| {
+            let config = xrtranslate_config::AppConfig::from_value(self.document.clone()).ok()?;
+            Some(config.native_model_route().ok()?.asr.supports_audio_streaming())
+        })
     }
 
     pub(crate) fn supports_ask(&self) -> bool {
@@ -557,6 +562,7 @@ impl ServiceConfigEditor {
     fn save(&mut self) -> Result<(), String> {
         self.language_capabilities.take();
         self.translation_contract.take();
+        self.asr_streaming.take();
         Self::sync_categories(&mut self.document, &self.categories)?;
         let parsed = xrtranslate_config::AppConfig::from_value(self.document.clone())
             .map_err(|error| format!("Invalid configuration: {error}"))?;
@@ -578,6 +584,7 @@ impl ServiceConfigEditor {
     fn save_draft(&mut self) -> Result<(), String> {
         self.language_capabilities.take();
         self.translation_contract.take();
+        self.asr_streaming.take();
         Self::sync_categories(&mut self.document, &self.categories)?;
         xrtranslate_config::save_user_config_document(&self.path, &project_root(), &self.document)?;
         self.dirty = false;

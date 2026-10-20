@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -41,10 +41,16 @@ pub struct VrOverlaySettings {
     pub max_items: usize,
     #[serde(default = "default_true")]
     pub bilingual: bool,
+    #[serde(default = "default_true")]
+    pub show_speaker: bool,
     #[serde(default = "default_font_size")]
     pub font_size: f32,
     #[serde(default = "default_opacity")]
     pub opacity: f32,
+    #[serde(default = "default_background_color")]
+    pub background_color: [u8; 4],
+    #[serde(default = "default_border_color")]
+    pub border_color: [u8; 4],
     #[serde(default = "default_distance")]
     pub distance_meters: f32,
     #[serde(default = "default_vertical_offset")]
@@ -57,12 +63,19 @@ pub struct VrOverlaySettings {
     pub display_timeout_seconds: f32,
 }
 
+pub fn default_background_color() -> [u8; 4] {
+    [13, 19, 29, 200]
+}
+pub fn default_border_color() -> [u8; 4] {
+    [57, 77, 97, 255]
+}
+
 fn default_true() -> bool {
     true
 }
 
 pub fn default_max_items() -> usize {
-    3
+    1
 }
 
 pub fn default_font_size() -> f32 {
@@ -94,7 +107,7 @@ pub fn default_timeout() -> f32 {
 }
 
 impl VrOverlaySettings {
-    pub const DEFAULT_MAX_ITEMS: usize = 3;
+    pub const DEFAULT_MAX_ITEMS: usize = 1;
     pub const DEFAULT_FONT_SIZE: f32 = 20.0;
     pub const DEFAULT_OPACITY: f32 = 0.85;
     pub const DEFAULT_DISTANCE: f32 = 1.00;
@@ -147,8 +160,11 @@ impl Default for VrOverlaySettings {
             captions_enabled: true,
             max_items: default_max_items(),
             bilingual: true,
+            show_speaker: true,
             font_size: default_font_size(),
             opacity: default_opacity(),
+            background_color: default_background_color(),
+            border_color: default_border_color(),
             distance_meters: default_distance(),
             vertical_offset_meters: default_vertical_offset(),
             pitch_degrees: default_pitch(),
@@ -214,6 +230,7 @@ pub enum VrCommand {
 
 #[derive(Clone, Debug)]
 struct StreamEntry {
+    card_id: u64,
     stream_id: u64,
     audio_source: CaptureSource,
     is_typing: bool,
@@ -222,7 +239,13 @@ struct StreamEntry {
     additional_translations: Vec<String>,
     speaker: String,
     live: bool,
+    created_at: Instant,
     updated_at: Instant,
+}
+
+fn next_card_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 pub struct VrOverlayManager {
@@ -239,56 +262,17 @@ pub struct VrOverlayManager {
 struct VoiceBridge {
     snapshot: VoiceSnapshot,
     actions: VecDeque<VoiceAction>,
-    microphone: bool,
-    reset_proximity_requested: bool,
 }
 
 impl VoiceBridge {
     fn push(&mut self, action: VoiceAction) {
-        // A frame already in progress can return an obsolete near event after
-        // the host resets proximity input. Reject it until the worker consumes that request.
-        if self.reset_proximity_requested && action == VoiceAction::Microphone(true) {
-            return;
-        }
-        if !self.snapshot.enabled && action != VoiceAction::Microphone(false) {
-            return;
-        }
-        if let VoiceAction::Microphone(enabled) = action {
-            if enabled == self.microphone {
-                return;
-            }
-            self.microphone = enabled;
-        }
-        // A stalled UI must not turn a bounded queue into an unbounded command
-        // backlog. Overflow fails closed, retaining the mandatory microphone-off.
-        if self.actions.len() >= 16 {
-            self.actions.clear();
-            self.microphone = false;
-            self.actions.push_back(VoiceAction::Microphone(false));
-        } else {
+        if self.snapshot.enabled && self.actions.len() < 16 {
             self.actions.push_back(action);
         }
     }
 
-    fn reset_voice_proximity(&mut self) {
-        self.reset_proximity_requested = true;
-        self.microphone = false;
-        self.actions
-            .retain(|action| !matches!(action, VoiceAction::Microphone(_)));
-        // Keep other spatial actions, giving microphone-off priority at capacity.
-        if self.actions.len() >= 16 {
-            self.actions.pop_back();
-        }
-        self.actions.push_front(VoiceAction::Microphone(false));
-    }
-
     fn stop(&mut self) {
-        let active = self.microphone || (self.snapshot.enabled && self.snapshot.recording);
         self.actions.clear();
-        self.microphone = false;
-        if active {
-            self.actions.push_back(VoiceAction::Microphone(false));
-        }
     }
 }
 
@@ -363,10 +347,6 @@ impl VrOverlayManager {
 
     pub(crate) fn take_voice_actions(&self) -> Vec<VoiceAction> {
         self.voice.lock().actions.drain(..).collect()
-    }
-
-    pub(crate) fn reset_voice_proximity(&self) {
-        self.voice.lock().reset_voice_proximity();
     }
 
     pub(crate) fn set_voice_snapshot(&self, snapshot: VoiceSnapshot) {
@@ -543,6 +523,11 @@ fn run_vr_worker(
         } else {
             Duration::from_millis(100)
         };
+        let timeout = if is_overlay_visible && renderer.needs_frame() {
+            timeout.min(Duration::from_millis(16))
+        } else {
+            timeout
+        };
         let first = command_rx.recv_timeout(timeout);
         let mut commands = vec![first];
         commands.extend(command_rx.try_iter().take(127).map(Ok));
@@ -667,6 +652,11 @@ fn run_vr_worker(
                     st.last_error = None;
                 }
                 Ok(VrCommand::Previews(stream_id, is_typing, incoming)) => {
+                    let previous_ids: Vec<_> = previews
+                        .iter()
+                        .filter(|entry| entry.stream_id == stream_id)
+                        .map(|entry| entry.card_id)
+                        .collect();
                     previews.retain(|entry| entry.stream_id != stream_id);
                     previews.extend(
                         incoming
@@ -676,7 +666,12 @@ fn run_vr_worker(
                                     .audio_source_filter
                                     .allows(entry.audio_source, is_typing)
                             })
-                            .map(|entry| StreamEntry {
+                            .enumerate()
+                            .map(|(index, entry)| StreamEntry {
+                                card_id: previous_ids
+                                    .get(index)
+                                    .copied()
+                                    .unwrap_or_else(next_card_id),
                                 stream_id,
                                 audio_source: entry.audio_source,
                                 is_typing,
@@ -685,6 +680,7 @@ fn run_vr_worker(
                                 additional_translations: Vec::new(),
                                 speaker: String::new(),
                                 live: true,
+                                created_at: Instant::now(),
                                 updated_at: Instant::now(),
                             }),
                     );
@@ -701,6 +697,11 @@ fn run_vr_worker(
                     live,
                 }) => {
                     if !settings.audio_source_filter.allows(audio_source, is_typing) {
+                        continue;
+                    }
+                    if settings.max_items == 1
+                        && (source.trim().is_empty() || translated.trim().is_empty())
+                    {
                         continue;
                     }
                     upsert_caption(
@@ -728,6 +729,11 @@ fn run_vr_worker(
                     speaker,
                 }) => {
                     if !settings.audio_source_filter.allows(audio_source, is_typing) {
+                        continue;
+                    }
+                    if settings.max_items == 1
+                        && (source.trim().is_empty() || translated.trim().is_empty())
+                    {
                         continue;
                     }
                     upsert_caption(
@@ -863,30 +869,44 @@ fn run_vr_worker(
         needs_redraw |= previous_count != entries.len() + previews.len();
 
         // 2. Redraw and submit overlay frame
-        if needs_redraw {
+        if needs_redraw || (is_overlay_visible && renderer.needs_frame()) {
             needs_redraw = false;
 
-            let cards: Vec<VrSubtitleCard> = entries
-                .iter()
-                .chain(&previews)
-                .filter(|entry| {
-                    settings
-                        .audio_source_filter
-                        .allows(entry.audio_source, entry.is_typing)
-                })
-                .rev()
-                .take(settings.max_items.clamp(1, 5))
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .map(|e| VrSubtitleCard {
-                    source: e.source.clone(),
-                    translated: e.translated.clone(),
-                    additional_translations: e.additional_translations.clone(),
-                    speaker: e.speaker.clone(),
-                    live: e.live,
-                })
-                .collect();
+            let selected = if settings.max_items == 1 {
+                single_caption_entries(&entries, &settings)
+            } else {
+                Vec::new()
+            };
+            let cards: Vec<VrSubtitleCard> = (if settings.max_items == 1 {
+                &selected
+            } else {
+                &entries
+            })
+            .iter()
+            .chain(previews.iter().filter(|_| settings.max_items != 1))
+            .filter(|entry| {
+                settings
+                    .audio_source_filter
+                    .allows(entry.audio_source, entry.is_typing)
+            })
+            .rev()
+            .take(settings.max_items.clamp(1, 5))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|e| VrSubtitleCard {
+                id: e.card_id,
+                source: e.source.clone(),
+                translated: e.translated.clone(),
+                additional_translations: e.additional_translations.clone(),
+                speaker: if settings.show_speaker {
+                    crate::compact_speaker_label(&e.speaker).unwrap_or_default()
+                } else {
+                    String::new()
+                },
+                live: e.live,
+            })
+            .collect();
 
             // Update status preview
             {
@@ -938,7 +958,7 @@ fn run_vr_worker(
         drop(pending);
         // Create lazily once per session: OpenVR retains its GPU resources until
         // shutdown. Toggling only suspends the same companion, never the captions.
-        if settings.avatar_enabled || settings.interaction_enabled {
+        if settings.avatar_enabled {
             if !avatar_initialized
                 && let Some(session) = &vr_session
                 && let Some((gpu, _)) = &graphics
@@ -976,21 +996,14 @@ fn run_vr_worker(
         }
         {
             let mut st = status.lock();
-            st.interaction_available = settings.interaction_enabled
-                && voice.is_some()
-                && st.interaction_error.is_none();
+            st.interaction_available =
+                settings.interaction_enabled && voice.is_some() && st.interaction_error.is_none();
         }
         // Input and release cleanup keep ticking even when the companion has
         // faded out. Captions and host commands continue on this same worker.
         if Instant::now() >= next_avatar_frame {
             next_avatar_frame = Instant::now() + Duration::from_secs_f64(1.0 / 60.0);
-            let (mut snapshot, reset_voice_proximity) = {
-                let mut bridge = voice_bridge.lock();
-                (
-                    bridge.snapshot.clone(),
-                    std::mem::take(&mut bridge.reset_proximity_requested),
-                )
-            };
+            let mut snapshot = voice_bridge.lock().snapshot.clone();
             snapshot.review_enabled &= settings.review_before_send;
             let active = settings.interaction_enabled
                 && snapshot.enabled
@@ -1020,14 +1033,11 @@ fn run_vr_worker(
                 }
             }
             if let Some(objects) = voice.as_mut() {
-                if reset_voice_proximity {
-                    objects.reset_voice_proximity();
-                }
                 if !active {
                     objects.suspend();
                     voice_bridge.lock().stop();
                 } else {
-                    match objects.frame(&snapshot, &settings) {
+                    match objects.frame(&snapshot) {
                         Ok(actions) => {
                             let mut bridge = voice_bridge.lock();
                             for action in actions {
@@ -1075,7 +1085,13 @@ fn redraw_overlay(
         }
     } else {
         let buffer = renderer
-            .render(cards, settings.bilingual, settings.font_size)
+            .render(
+                cards,
+                settings.bilingual,
+                settings.max_items == 1,
+                settings.font_size,
+                [settings.background_color, settings.border_color],
+            )
             .map_err(OverlayError::InvalidFrame)?;
         configure_overlay(overlay, settings)?;
         upload(overlay, buffer)?;
@@ -1105,7 +1121,8 @@ fn upsert_caption(
     {
         return;
     }
-    let entry = StreamEntry {
+    let mut entry = StreamEntry {
+        card_id: next_card_id(),
         stream_id,
         audio_source,
         is_typing,
@@ -1114,12 +1131,17 @@ fn upsert_caption(
         additional_translations,
         speaker,
         live,
+        created_at: now,
         updated_at: now,
     };
     if let Some(current) = entries
         .iter_mut()
         .find(|e| e.stream_id == stream_id && e.live)
     {
+        entry.card_id = current.card_id;
+        if !current.source.trim().is_empty() && !current.translated.trim().is_empty() {
+            entry.created_at = current.created_at;
+        }
         *current = entry;
     } else {
         entries.push(entry);
@@ -1136,9 +1158,178 @@ fn expire_entries(entries: &mut Vec<StreamEntry>, now: Instant, timeout: f32) ->
 }
 
 fn clamp_entries(entries: &mut Vec<StreamEntry>, max_items: usize) {
-    let max = max_items.clamp(1, 5);
+    let max = if max_items == 1 {
+        8
+    } else {
+        max_items.clamp(1, 5)
+    };
     if entries.len() > max {
         let excess = entries.len() - max;
         entries.drain(0..excess);
+    }
+}
+
+fn single_caption_entries(
+    entries: &[StreamEntry],
+    settings: &VrOverlaySettings,
+) -> Vec<StreamEntry> {
+    let mut ready: Vec<_> = entries
+        .iter()
+        .filter(|entry| {
+            !entry.source.trim().is_empty()
+                && !entry.translated.trim().is_empty()
+                && settings
+                    .audio_source_filter
+                    .allows(entry.audio_source, entry.is_typing)
+        })
+        .collect();
+    ready.sort_by_key(|entry| entry.card_id);
+    let Some(latest) = ready.pop() else {
+        return Vec::new();
+    };
+    let mut merged = latest.clone();
+    let mut following = latest.created_at;
+    // Merge short adjacent phrases, never accumulate a conversation. Keep the
+    // newest pair intact when adding older text would crowd it out.
+    let limit = (180.0 * (20.0 / settings.font_size).powi(2)) as usize;
+    for previous in ready.into_iter().rev().take(2) {
+        if previous.audio_source != latest.audio_source
+            || previous.speaker != latest.speaker
+            || previous.is_typing != latest.is_typing
+            || following.saturating_duration_since(previous.created_at)
+                > Duration::from_millis(1200)
+            || latest
+                .created_at
+                .saturating_duration_since(previous.created_at)
+                > Duration::from_secs(3)
+            || merged.source.chars().count()
+                + merged.translated.chars().count()
+                + previous.source.chars().count()
+                + previous.translated.chars().count()
+                > limit
+            || previous.additional_translations.len() != merged.additional_translations.len()
+        {
+            break;
+        }
+        merged.source = format!("{} {}", previous.source.trim(), merged.source.trim());
+        merged.translated = format!(
+            "{} {}",
+            previous.translated.trim(),
+            merged.translated.trim()
+        );
+        for (current, older) in merged
+            .additional_translations
+            .iter_mut()
+            .zip(&previous.additional_translations)
+        {
+            *current = format!("{} {}", older.trim(), current.trim());
+        }
+        following = previous.created_at;
+    }
+    vec![merged]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_caption_waits_for_pairs_and_merges_only_nearby_phrases() {
+        let settings = VrOverlaySettings::default();
+        assert_eq!(settings.max_items, 1);
+        let mut entries = Vec::new();
+        let start = Instant::now();
+        let append = |entries: &mut Vec<StreamEntry>, source: &str, translated: &str, live, ms| {
+            upsert_caption(
+                entries,
+                42,
+                CaptureSource::Microphone,
+                false,
+                source.into(),
+                translated.into(),
+                vec![],
+                "1".into(),
+                live,
+                start + Duration::from_millis(ms),
+            );
+        };
+        append(&mut entries, "First", "一", false, 0);
+        append(&mut entries, "Second", "", true, 500);
+        assert_eq!(
+            single_caption_entries(&entries, &settings)[0].translated,
+            "一"
+        );
+        append(&mut entries, "Second", "二", true, 600);
+        assert_eq!(
+            single_caption_entries(&entries, &settings)[0].source,
+            "First Second"
+        );
+        let live_id = entries[1].card_id;
+        append(&mut entries, "Second revised", "二修订", true, 900);
+        let revised = single_caption_entries(&entries, &settings);
+        assert_eq!(revised.len(), 1);
+        assert_eq!(revised[0].card_id, live_id);
+        assert_eq!(revised[0].source, "First Second revised");
+        append(&mut entries, "Second revised", "二修订", false, 1000);
+        append(&mut entries, "Third", "三", true, 1100);
+        assert_eq!(
+            single_caption_entries(&entries, &settings)[0].source,
+            "First Second revised Third"
+        );
+        append(&mut entries, "Third", "三", false, 1200);
+        append(&mut entries, "After a pause", "稍后", false, 4000);
+        assert_eq!(
+            single_caption_entries(&entries, &settings)[0].source,
+            "After a pause"
+        );
+        // A late update to an old sentence must not become the latest caption.
+        entries[0].updated_at = start + Duration::from_secs(10);
+        assert_eq!(
+            single_caption_entries(&entries, &settings)[0].source,
+            "After a pause"
+        );
+        append(
+            &mut entries,
+            "A long new sentence ".repeat(40).as_str(),
+            "新长句",
+            false,
+            4500,
+        );
+        let latest = single_caption_entries(&entries, &settings);
+        assert!(!latest[0].source.contains("After a pause"));
+    }
+
+    #[test]
+    fn sentences_in_one_stream_keep_distinct_cards_while_live_edits_keep_identity() {
+        let mut entries = Vec::new();
+        let append = |entries: &mut Vec<StreamEntry>, text: &str, live| {
+            upsert_caption(
+                entries,
+                42,
+                CaptureSource::Microphone,
+                false,
+                text.into(),
+                String::new(),
+                vec![],
+                "1".into(),
+                live,
+                Instant::now(),
+            );
+        };
+        append(&mut entries, "First sentence", false);
+        append(&mut entries, "Second sentence", false);
+        append(&mut entries, "Third", true);
+        let ids: Vec<_> = entries.iter().map(|entry| entry.card_id).collect();
+        assert_eq!(ids.iter().copied().collect::<HashSet<_>>().len(), 3);
+        append(&mut entries, "Third sentence", true);
+        append(&mut entries, "Third sentence complete", false);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.card_id)
+                .collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(entries[2].source, "Third sentence complete");
     }
 }

@@ -1,4 +1,4 @@
-//! Small clay props using the companion's mesh, cel lighting and contour passes.
+//! Minimal wrist buttons: a thin ring and a translucent press surface.
 use super::interaction::ButtonId;
 use crate::ui::components::avatar::{Geometry, Material, Model, Part};
 use eframe::egui::Color32;
@@ -14,11 +14,7 @@ pub(super) struct ButtonVisual {
     pub feedback: f32,
 }
 
-// The classic companion's cream, mist-blue and rose accessories supply the
-// palette. Colored contours come from Material::CLAY, never a black outer shell.
-const CREAM: Color32 = Color32::from_rgb(231, 215, 184);
 const MIST: Color32 = Color32::from_rgb(170, 185, 212);
-const ROSE: Color32 = Color32::from_rgb(212, 173, 186);
 const PAPER: Color32 = Color32::from_rgb(252, 242, 225);
 const INK: Color32 = Color32::from_rgb(92, 79, 72);
 
@@ -31,60 +27,59 @@ pub(super) fn render(buttons: &[ButtonVisual], editing: bool) -> Model {
 }
 
 fn button_model(model: &mut Model, button: &ButtonVisual, editing: bool) {
-    let accent = match button.kind {
-        ButtonId::Send => MIST,
-        ButtonId::Revise => ROSE,
-    };
-    let feedback = (button.feedback / 0.22).clamp(0.0, 1.0);
-    let color = if button.enabled {
-        mix(
-            accent,
-            PAPER,
-            if feedback > 0.0 {
-                feedback * 0.36
-            } else if button.hover {
-                0.10
-            } else {
-                0.0
-            },
-        )
+    let editing = editing && matches!(button.kind, ButtonId::Revise);
+    let pressed = button.depth > 0.001 || button.feedback > 0.0;
+    let accent = if editing {
+        Color32::from_rgb(94, 225, 210)
     } else {
-        Color32::from_gray(if button.hover { 178 } else { 166 })
+        MIST
     };
-
-    // Two low, rounded cushions replace the old rectangular housing. The cap
-    // remains within the interaction dimensions and visibly yields under touch.
-    solid(
-        model,
-        button.pose * Mat4::from_translation(-Vec3::Z * button.half.z * 0.55),
-        Vec3::new(
-            button.half.x + 0.004,
-            button.half.y + 0.004,
-            button.half.z * 0.72,
-        ),
-        if button.enabled {
-            CREAM
-        } else {
-            Color32::from_gray(142)
-        },
-    );
+    let rim = if editing || pressed {
+        PAPER
+    } else if button.enabled {
+        accent
+    } else {
+        Color32::from_gray(140)
+    };
+    let radius = button.half.x;
+    for index in 0..48 {
+        let angle = |i: usize| i as f32 / 48.0 * std::f32::consts::TAU;
+        let point = |a: f32| Vec3::new(a.cos() * radius, a.sin() * radius, 0.0);
+        line(
+            model,
+            button.pose,
+            point(angle(index)),
+            point(angle(index + 1)),
+            0.0011,
+            rim,
+        );
+    }
+    let alpha = if pressed {
+        255
+    } else if editing {
+        220
+    } else if button.hover && button.enabled {
+        180
+    } else {
+        110
+    };
+    let rgb = if editing {
+        accent
+    } else if pressed {
+        PAPER
+    } else {
+        Color32::from_rgb(192, 210, 228)
+    };
+    let color = Color32::from_rgba_unmultiplied(rgb.r(), rgb.g(), rgb.b(), alpha);
     let depth = if button.enabled {
-        button.depth.clamp(0.0, 0.012)
+        button.depth.min(0.008)
     } else {
         0.0
     };
-    let cap = button.pose * Mat4::from_translation(-Vec3::Z * depth);
-    let half = Vec3::new(
-        button.half.x,
-        button.half.y,
-        button.half.z * (1.0 - depth * 8.0),
-    );
+    let cap = button.pose * Mat4::from_translation(Vec3::Z * (0.010 - depth));
+    let half = Vec3::new(radius * 0.85, radius * 0.85, 0.0015);
     solid(model, cap, half, color);
-    let ink = if button.enabled {
-        INK
-    } else {
-        Color32::from_gray(105)
-    };
+    let ink = if editing || pressed { INK } else { PAPER };
     let glyph = |model: &mut Model, a: [f32; 2], b: [f32; 2]| {
         let point = |t: f32| {
             let x = (a[0] + (b[0] - a[0]) * t) * half.x;
@@ -136,7 +131,7 @@ fn solid(model: &mut Model, pose: Mat4, half: Vec3, color: Color32) {
     model.add(Part {
         transform: pose * Mat4::from_scale(half),
         material: Material {
-            outline_width: 0.0009,
+            outline_width: 0.0,
             softness: 0.24,
             ..Material::CLAY
         },
@@ -163,15 +158,4 @@ fn line(model: &mut Model, root: Mat4, start: Vec3, end: Vec3, width: f32, color
         },
         ..Part::new(Geometry::SolidSphere, color)
     });
-}
-
-fn mix(a: Color32, b: Color32, amount: f32) -> Color32 {
-    let a = a.to_array();
-    let b = b.to_array();
-    let amount = amount.clamp(0.0, 1.0);
-    Color32::from_rgb(
-        (a[0] as f32 + (b[0] as f32 - a[0] as f32) * amount) as u8,
-        (a[1] as f32 + (b[1] as f32 - a[1] as f32) * amount) as u8,
-        (a[2] as f32 + (b[2] as f32 - a[2] as f32) * amount) as u8,
-    )
 }

@@ -1,4 +1,4 @@
-//! Left-controller voice proximity and ordinary press buttons along the forearm.
+//! Left-wrist review buttons, pressed with the right controller.
 use super::{
     input::Hand,
     voice_props::{self, ButtonVisual},
@@ -19,25 +19,26 @@ pub(super) struct ButtonSpec {
     pub position: Vec3,
     pub half: Vec3,
 }
-// Tray -Y follows grip +Z, from the wrist toward the forearm. +Z is the face.
+// Tray -Y runs toward the forearm in the button plane; +Z is its outward normal.
 pub(super) const BUTTONS: [ButtonSpec; 2] = [
     ButtonSpec {
         id: ButtonId::Send,
-        position: Vec3::new(0.0, -0.12, 0.0),
-        half: Vec3::new(0.065, 0.048, 0.018),
+        position: Vec3::new(0.075, -0.07, 0.0),
+        half: Vec3::new(0.032, 0.032, 0.018),
     },
     ButtonSpec {
         id: ButtonId::Revise,
-        position: Vec3::new(0.0, -0.24, 0.0),
-        half: Vec3::new(0.065, 0.048, 0.018),
+        position: Vec3::new(0.0, -0.07, 0.0),
+        half: Vec3::new(0.032, 0.032, 0.018),
     },
 ];
 pub(super) const CONTROL_HAND: usize = 0;
-const VOICE_ENTER: f32 = 0.30;
-const VOICE_EXIT: f32 = 0.38;
-
 pub(super) fn controller_root(grip: Mat4) -> Mat4 {
-    grip * Mat4::from_translation(Vec3::new(0.0, 0.10, -0.08))
+    // Touch Plus: native button travel is (0, -0.927, 0.375), while the
+    // OpenXR grip is pitched +20.6 degrees in the render-model frame.
+    let panel_pitch = -0.375_f32.atan2(0.927) - 20.6_f32.to_radians();
+    grip * Mat4::from_rotation_x(panel_pitch)
+        * Mat4::from_translation(Vec3::new(0.0, 0.04, -0.04))
         * Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2)
 }
 
@@ -57,78 +58,30 @@ struct ButtonState {
 #[derive(Default)]
 pub(super) struct Interaction {
     buttons: [ButtonState; BUTTONS.len()],
-    gate: bool,
-    gate_time: f32,
-    blocked_until_far: bool,
 }
 
 impl Interaction {
-    pub fn reset_voice_proximity(&mut self) {
-        self.gate = false;
-        self.gate_time = 0.0;
-        self.blocked_until_far = true;
-    }
-
-    pub fn in_voice_range(&self) -> bool {
-        self.gate
-    }
-
     pub fn suspend(&mut self) -> Vec<VoiceAction> {
-        let active = self.gate;
-        self.gate = false;
-        self.gate_time = 0.0;
         self.buttons = Default::default();
-        if active {
-            vec![VoiceAction::Microphone(false)]
-        } else {
-            Vec::new()
-        }
+        Vec::new()
     }
 
     pub fn update(
         &mut self,
         root: Mat4,
-        head: Mat4,
         hands: [Hand; 2],
         snapshot: &VoiceSnapshot,
         elapsed: f32,
     ) -> (Vec<VoiceAction>, Vec<usize>) {
         let mut actions = Vec::new();
         let mut pulses = Vec::new();
-        let mut microphone_change = None;
         let dt = if elapsed.is_finite() {
             elapsed.clamp(0.0, 0.05)
         } else {
             0.0
         };
-        let distance = hands[CONTROL_HAND]
-            .pose
-            .map(|pose| pose.w_axis.truncate().distance(head.w_axis.truncate()));
-        if distance.is_some_and(|distance| distance >= VOICE_EXIT) {
-            self.blocked_until_far = false;
-        }
-        let wants_gate = snapshot.enabled
-            && !self.blocked_until_far
-            && distance.is_some_and(|distance| {
-                distance < if self.gate { VOICE_EXIT } else { VOICE_ENTER }
-            });
-        if wants_gate != self.gate {
-            self.gate_time += dt;
-            if distance.is_none()
-                || !snapshot.enabled
-                || self.gate_time >= if wants_gate { 0.08 } else { 0.16 }
-            {
-                self.gate = wants_gate;
-                self.gate_time = 0.0;
-                microphone_change = Some(VoiceAction::Microphone(self.gate));
-            }
-        } else {
-            self.gate_time = 0.0;
-        }
-
         if !snapshot.review_enabled {
             self.buttons = Default::default();
-            actions.extend(microphone_change);
             return (actions, pulses);
         }
         // Only the right controller presses the left-arm buttons. Grip is not an action.
@@ -184,14 +137,13 @@ impl Interaction {
                 0.0
             };
         }
-        // A range exit wins over a simultaneous Edit press in the same frame.
-        actions.extend(microphone_change);
         (actions, pulses)
     }
 
     pub fn model(&self, root: Mat4, snapshot: &VoiceSnapshot) -> Model {
+        let mut model = Model::default();
         if !snapshot.review_enabled {
-            return Model::default();
+            return model;
         }
         let buttons = std::array::from_fn::<_, { BUTTONS.len() }, _>(|i| {
             let spec = &BUTTONS[i];
@@ -209,7 +161,10 @@ impl Interaction {
                 feedback: state.feedback,
             }
         });
-        voice_props::render(&buttons, snapshot.revise_cancels)
+        model
+            .parts
+            .extend(voice_props::render(&buttons, snapshot.revise_cancels).parts);
+        model
     }
 }
 
@@ -234,36 +189,25 @@ mod tests {
             },
         ]
     }
-    fn proximity(interaction: &mut Interaction, distance: Option<f32>) -> Vec<VoiceAction> {
-        let snapshot = VoiceSnapshot {
-            enabled: true,
-            ..Default::default()
-        };
-        let hands = [
-            Hand {
-                pose: distance.map(|z| Mat4::from_translation(Vec3::Z * z)),
-            },
-            Hand::default(),
-        ];
-        (0..4)
-            .flat_map(|_| {
-                interaction
-                    .update(Mat4::IDENTITY, Mat4::IDENTITY, hands, &snapshot, 0.05)
-                    .0
-            })
-            .collect()
-    }
     #[test]
-    fn buttons_follow_the_forearm_axis_without_scaling() {
-        let grip = Mat4::from_rotation_translation(
+    fn buttons_follow_native_touch_panel_when_the_arm_rotates() {
+        let native = Mat4::from_rotation_translation(
             Quat::from_euler(glam::EulerRot::XYZ, 0.4, -0.6, 0.8),
             Vec3::new(-0.3, 1.2, -0.5),
         );
+        let grip = native * Mat4::from_rotation_x(20.6_f32.to_radians());
         let root = controller_root(grip);
+        let normal = native.transform_vector3(Vec3::new(0.0, 0.927, -0.375).normalize());
+        assert!(root.transform_vector3(Vec3::Z).abs_diff_eq(normal, 1e-5));
         let direction = root
             .transform_vector3(BUTTONS[1].position - BUTTONS[0].position)
             .normalize();
-        assert!(direction.abs_diff_eq(grip.z_axis.truncate(), 1e-5));
+        let forearm = native.transform_vector3(Vec3::new(0.0, 0.375, 0.927).normalize());
+        assert!(direction.dot(forearm).abs() < 1e-5);
+        assert!(direction.abs_diff_eq(-native.x_axis.truncate(), 1e-5));
+        assert_eq!(BUTTONS[0].half.x, BUTTONS[0].half.y);
+        assert_eq!(BUTTONS[1].half.x, BUTTONS[1].half.y);
+        assert!(direction.dot(normal).abs() < 1e-5);
         assert!((root.determinant() - 1.0).abs() < 1e-5);
     }
     #[test]
@@ -276,8 +220,7 @@ mod tests {
         .enumerate()
         {
             let root = Mat4::from_translation(Vec3::X * i as f32 * 0.01);
-            let (actions, _) =
-                interaction.update(root, Mat4::IDENTITY, touch(root, z), &snapshot(), 0.05);
+            let (actions, _) = interaction.update(root, touch(root, z), &snapshot(), 0.05);
             assert_eq!(
                 actions,
                 if i == 3 || i == 8 {
@@ -294,56 +237,11 @@ mod tests {
         for z in [0.025, 0.020, 0.025] {
             assert!(
                 interaction
-                    .update(
-                        Mat4::IDENTITY,
-                        Mat4::IDENTITY,
-                        touch(Mat4::IDENTITY, z),
-                        &snapshot(),
-                        0.05
-                    )
+                    .update(Mat4::IDENTITY, touch(Mat4::IDENTITY, z), &snapshot(), 0.05)
                     .0
                     .is_empty()
             );
         }
-    }
-    #[test]
-    fn proximity_works_without_review_and_has_hysteresis() {
-        let mut interaction = Interaction::default();
-        assert_eq!(
-            proximity(&mut interaction, Some(0.25)),
-            vec![VoiceAction::Microphone(true)]
-        );
-        assert!(interaction.in_voice_range());
-        assert!(
-            interaction
-                .model(Mat4::IDENTITY, &VoiceSnapshot::default())
-                .parts
-                .is_empty()
-        );
-        assert!(proximity(&mut interaction, Some(0.34)).is_empty());
-        assert_eq!(
-            proximity(&mut interaction, Some(0.42)),
-            vec![VoiceAction::Microphone(false)]
-        );
-        assert!(proximity(&mut interaction, Some(0.34)).is_empty());
-    }
-    #[test]
-    fn manual_stop_requires_withdrawal_and_tracking_loss_stops_input() {
-        let mut interaction = Interaction::default();
-        proximity(&mut interaction, Some(0.25));
-        interaction.reset_voice_proximity();
-        assert!(proximity(&mut interaction, Some(0.25)).is_empty());
-        proximity(&mut interaction, Some(0.42));
-        assert_eq!(
-            proximity(&mut interaction, Some(0.25)),
-            vec![VoiceAction::Microphone(true)]
-        );
-        assert_eq!(
-            proximity(&mut interaction, None),
-            vec![VoiceAction::Microphone(false)]
-        );
-        proximity(&mut interaction, Some(0.25));
-        assert_eq!(interaction.suspend(), vec![VoiceAction::Microphone(false)]);
     }
     #[test]
     fn second_edit_press_finishes_editing_and_keeps_result() {
@@ -372,46 +270,12 @@ mod tests {
                 },
             ]
         };
-        interaction.update(root, root, edit(0.05), &controller.snapshot(), 0.05);
-        let (actions, _) =
-            interaction.update(root, root, edit(0.025), &controller.snapshot(), 0.05);
+        interaction.update(root, edit(0.05), &controller.snapshot(), 0.05);
+        let (actions, _) = interaction.update(root, edit(0.025), &controller.snapshot(), 0.05);
         assert_eq!(actions, vec![VoiceAction::Revise]);
         controller.apply(actions[0]);
         assert!(!controller.is_editing());
         controller.ask_done(operation, Ok("late result".into()));
         assert_eq!(controller.snapshot().text, "edited result");
-    }
-
-    #[test]
-    fn leaving_voice_range_finishes_editing_and_ignores_pending_result() {
-        use crate::voice_interaction::{VoiceController, VoiceEffect};
-        let mut controller = VoiceController::default();
-        controller.set_enabled(true, true);
-        controller.set_edit_available(true);
-        controller.observe_phrase("原句", "original", "English");
-        controller.apply(VoiceAction::Revise);
-        let effects = controller.observe_phrase("修改", "", "");
-        let VoiceEffect::Ask { operation, .. } = effects[0] else {
-            panic!("Expected edit request");
-        };
-        controller.ask_done(operation, Ok("edited result".into()));
-        let effects = controller.observe_phrase("再修改", "", "");
-        let VoiceEffect::Ask { operation, .. } = effects[0] else {
-            panic!("Expected pending edit");
-        };
-        let mut interaction = Interaction::default();
-        proximity(&mut interaction, Some(0.25));
-        let actions = proximity(&mut interaction, Some(0.42));
-        assert_eq!(actions, vec![VoiceAction::Microphone(false)]);
-        controller.apply(actions[0]);
-        assert!(!controller.is_editing());
-        controller.ask_done(operation, Ok("late result".into()));
-        assert_eq!(controller.snapshot().text, "edited result");
-        for action in proximity(&mut interaction, Some(0.25)) {
-            controller.apply(action);
-        }
-        assert!(!controller.is_editing());
-        controller.observe_phrase("新句", "new phrase", "English");
-        assert_eq!(controller.snapshot().text, "new phrase");
     }
 }

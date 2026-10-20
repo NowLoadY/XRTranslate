@@ -228,7 +228,7 @@ fn render_voice_previews(
             ..Default::default()
         };
         let mut interaction = Interaction::default();
-        interaction.update(root, head, [Hand::default(); 2], &snapshot, 1.0 / 60.0);
+        interaction.update(root, [Hand::default(); 2], &snapshot, 1.0 / 60.0);
         let mut model = interaction.model(root, &snapshot);
         let (plane, _, cameras) = window(&model, head, eyes).ok_or("Invalid prop window")?;
         for part in &mut model.parts {

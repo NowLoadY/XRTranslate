@@ -4062,9 +4062,6 @@ impl XRTranslateApp {
         }
         self.set_microphone_input(enabled, ctx, true, Self::start_task_capture);
         self.sync_game_microphone(enabled);
-        if !enabled {
-            self.vr_overlay_plugin.manager().reset_voice_proximity();
-        }
     }
 
     fn set_microphone_input(
@@ -5632,7 +5629,6 @@ impl XRTranslateApp {
 
     pub(crate) fn stop_translation(&mut self) {
         self.sync_game_microphone(false);
-        self.vr_overlay_plugin.manager().reset_voice_proximity();
         self.stop();
     }
 
@@ -6052,6 +6048,7 @@ impl eframe::App for XRTranslateApp {
         #[cfg(target_os = "android")]
         self.poll_android_text_actions(ctx);
         if !ctx.input(|input| input.viewport().visible().unwrap_or(true)) {
+            self.media_plugin.controller.hide_video();
             if !self.first_run {
                 self.poll_backend_startup(Some(ctx.clone()));
                 self.poll_text_translation(ctx);
@@ -6067,15 +6064,6 @@ impl eframe::App for XRTranslateApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        #[cfg(windows)]
-        if self.media_plugin.controller.parent_window == 0 {
-            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            if let Ok(handle) = _frame.window_handle()
-                && let RawWindowHandle::Win32(handle) = handle.as_raw()
-            {
-                self.media_plugin.controller.parent_window = handle.hwnd.get() as usize;
-            }
-        }
         ui::theme::install_context(ui.ctx(), self.ui_theme);
         self.notifications.install(ui.ctx());
         self.history_archive.poll(ui.ctx());
@@ -6393,7 +6381,7 @@ impl eframe::App for XRTranslateApp {
             .frame(central_frame)
             .show(ui, |ui| {
                 // Navigation can open onboarding without changing the selected page.
-                // Do not show its native video again before onboarding's next frame.
+                // Do not render the previous page before onboarding's next frame.
                 if self.first_run {
                     ui.ctx().request_repaint();
                     return;
@@ -6623,6 +6611,11 @@ pub fn run() -> eframe::Result<()> {
         }
     }
 
+    #[cfg(all(windows, feature = "mpv"))]
+    if let Err(error) = plugins::media::installer::prepare_bundled_runtime() {
+        log::warn!("Cannot prepare bundled player runtime: {error}");
+    }
+
     #[cfg(windows)]
     configure_dll_search_paths();
 
@@ -6710,6 +6703,8 @@ pub fn run() -> eframe::Result<()> {
             ui::automation::init(cc.egui_ctx.clone(), director_port);
 
             let mut app = XRTranslateApp::default();
+            app.media_plugin.controller.render_state = cc.wgpu_render_state.clone();
+            app.media_plugin.controller.render_context = Some(cc.egui_ctx.clone());
             #[cfg(target_os = "android")]
             android::prepare_resources(cc.egui_ctx.clone());
             app.window_backdrop = window_backdrop;
@@ -6723,6 +6718,10 @@ fn configure_transparent_wgpu(
     mut options: eframe::NativeOptions,
     backdrop: window_backdrop::WindowBackdrop,
 ) -> eframe::NativeOptions {
+    #[cfg(feature = "mpv")]
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup {
+        setup.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
+    }
     if backdrop.uses_transparent_surface()
         && let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup
     {

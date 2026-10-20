@@ -7,7 +7,7 @@ edition.workspace = true
 # Keep the core client independent from native player libraries. Enable this
 # capability for MPV playback and media-import fallback extraction.
 default = []
-mpv = ["dep:libmpv-sys"]
+mpv = ["dep:libmpv-sys", "dep:windows-gpu"]
 
 [dependencies]
 tempfile = "3.27"
@@ -61,6 +61,7 @@ serde_yaml_ng = "0.10"
 xrtranslate-supervisor = { path = "../crates/xrtranslate-supervisor" }
 
 [target.'cfg(windows)'.dependencies]
+windows-gpu = { package = "windows", version = "0.62", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common"] }
 # Enable Rust futures for the WinRT media-session operations.
 windows-future = "0.1.1"
 wasapi = "0.23.0"

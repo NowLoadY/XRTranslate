@@ -443,15 +443,7 @@ fn fail_active(
 }
 
 fn speaker_label(speaker_id: &str) -> Option<String> {
-    let speaker_id = speaker_id.trim();
-    if speaker_id.is_empty() {
-        return None;
-    }
-    let numeric = speaker_id
-        .rsplit(['-', '_'])
-        .next()
-        .and_then(|value| value.parse::<u32>().ok());
-    Some(numeric.map_or_else(|| "S?".into(), |number| format!("S{number}")))
+    crate::compact_speaker_label(speaker_id)
 }
 
 #[cfg(test)]

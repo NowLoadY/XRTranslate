@@ -213,6 +213,7 @@ fn render_display_card(
             if crate::ui::components::reset_button(ui, "vr_display_all_reset").clicked() {
                 settings.max_items = VrOverlaySettings::DEFAULT_MAX_ITEMS;
                 settings.bilingual = true;
+                settings.show_speaker = true;
                 settings.font_size = VrOverlaySettings::DEFAULT_FONT_SIZE;
                 settings.opacity = VrOverlaySettings::DEFAULT_OPACITY;
                 settings.display_timeout_seconds = VrOverlaySettings::DEFAULT_TIMEOUT;
@@ -224,8 +225,10 @@ fn render_display_card(
             for count in 1..=5 {
                 ui.selectable_value(&mut settings.max_items, count, count.to_string());
             }
-            ui.add_space(8.0);
+        });
+        ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut settings.bilingual, tr("Bilingual Subtitles"));
+            ui.checkbox(&mut settings.show_speaker, tr("Speaker numbers"));
         });
         ui.horizontal_wrapped(|ui| {
             ui.label(tr("Font Size"));
@@ -285,6 +288,7 @@ fn render_preview_card(
         });
         ui.add_space(8.0);
         let demo = [VrSubtitleCard {
+            id: 0,
             source: if lang == crate::i18n::UiLanguage::English {
                 "天气真好。"
             } else {
@@ -301,7 +305,7 @@ fn render_preview_card(
         } else {
             &context.status.cards
         };
-        spatial_preview(ui, settings, cards, preview_height);
+        spatial_preview(ui, settings, cards, preview_height, lang);
     });
 }
 
@@ -337,6 +341,7 @@ fn render_combined_preview_and_position_card(
         });
         ui.add_space(8.0);
         let demo = [VrSubtitleCard {
+            id: 0,
             source: if lang == crate::i18n::UiLanguage::English {
                 "天气真好。"
             } else {
@@ -353,7 +358,7 @@ fn render_combined_preview_and_position_card(
         } else {
             &context.status.cards
         };
-        spatial_preview(ui, settings, cards, preview_height);
+        spatial_preview(ui, settings, cards, preview_height, lang);
         ModernSlider::new(
             &tr("Distance in Front"),
             &mut settings.distance_meters,
@@ -506,7 +511,9 @@ fn spatial_preview(
     settings: &mut VrOverlaySettings,
     cards: &[VrSubtitleCard],
     preview_height: f32,
+    language: crate::i18n::UiLanguage,
 ) {
+    let tr = |text| crate::i18n::tr(language, text);
     let (view, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), preview_height),
         egui::Sense::hover(),
@@ -540,7 +547,7 @@ fn spatial_preview(
         .interact(
             visible,
             ui.id().with("vr_preview_move"),
-            egui::Sense::drag(),
+            egui::Sense::click_and_drag(),
         )
         .on_hover_cursor(egui::CursorIcon::ResizeVertical);
     let resize = ui
@@ -565,13 +572,66 @@ fn spatial_preview(
     let (surface, _) = preview_geometry(view, settings);
     let mut subtitle_painter = painter.clone();
     subtitle_painter.multiply_opacity(settings.opacity);
-    paint_cards(
+    let card_rects = paint_cards(
         &subtitle_painter,
         surface,
         &cards[cards.len().saturating_sub(settings.max_items.clamp(1, 5))..],
         settings.bilingual,
-        settings.font_size * (0.6 * 640.0 / surface.width()).max(1.0),
+        settings.max_items == 1,
+        settings.font_size,
+        [settings.background_color, settings.border_color],
     );
+
+    let edge_id = ui.id().with("vr_preview_color_edge");
+    let edge_at = |pos: egui::Pos2| {
+        let on_card_edge = card_rects
+            .iter()
+            .any(|rect| rect.expand(5.0).contains(pos) && !rect.shrink(5.0).contains(pos));
+        on_card_edge || (visible.contains(pos) && !visible.shrink(6.0).contains(pos))
+    };
+    if move_response.clicked() && !resize.dragged() {
+        if let Some(pos) = move_response.interact_pointer_pos() {
+            ui.data_mut(|data| data.insert_temp(edge_id, edge_at(pos)));
+        }
+    }
+    let move_response = move_response.on_hover_text(tr("Click to change color; drag to move."));
+    let border = ui
+        .data(|data| data.get_temp::<bool>(edge_id))
+        .unwrap_or(false);
+    egui::Popup::from_toggle_button_response(&move_response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            let color = if border {
+                &mut settings.border_color
+            } else {
+                &mut settings.background_color
+            };
+            ui.horizontal(|ui| {
+                ui.label(tr(if border {
+                    "Caption border color"
+                } else {
+                    "Caption background color"
+                }));
+                if crate::ui::components::reset_button(ui, "vr_caption_color_reset").clicked() {
+                    *color = if border {
+                        super::runtime::default_border_color()
+                    } else {
+                        super::runtime::default_background_color()
+                    };
+                }
+            });
+            let mut value = egui::ecolor::Hsva::from_srgba_unmultiplied(*color);
+            if egui::color_picker::color_picker_hsva_2d(
+                ui,
+                &mut value,
+                egui::color_picker::Alpha::OnlyBlend,
+            ) {
+                *color = value.to_srgba_unmultiplied();
+            }
+            if ui.button(tr("Transparent")).clicked() {
+                color[3] = 0;
+            }
+        });
     painter.rect_stroke(
         surface.intersect(view.shrink(8.0)),
         8.0,
@@ -604,6 +664,10 @@ pub fn render_settings_contribution(
         ui.checkbox(
             &mut settings.bilingual,
             crate::i18n::tr(language, "Bilingual"),
+        );
+        ui.checkbox(
+            &mut settings.show_speaker,
+            crate::i18n::tr(language, "Speaker numbers"),
         );
     });
     *settings != before

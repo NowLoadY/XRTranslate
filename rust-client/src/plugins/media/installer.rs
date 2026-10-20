@@ -9,7 +9,8 @@ use xrtranslate_download::{DownloadClient, DownloadProgress, DownloadSpec};
 
 pub const MPV_DOWNLOAD_URL: &str =
     "https://github.com/NowLoadY/XRTranslate/raw/main/rust-client/resources/bin/mpv-2.zip";
-pub const MPV_DOWNLOAD_BYTES: u64 = 46_816_131;
+// shinchiro/mpv-winbuild-cmake 20261020, with the D3D11 render API.
+pub const MPV_DOWNLOAD_BYTES: u64 = 46_866_127;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MpvInstallState {
@@ -131,6 +132,37 @@ impl MpvInstaller {
     }
 }
 
+/// A source checkout carries the runtime ZIP; refresh extracted DLLs before loading MPV.
+#[cfg(all(windows, feature = "mpv"))]
+pub(crate) fn prepare_bundled_runtime() -> Result<(), String> {
+    let directories = super::runtime_bin_directories();
+    let Some(archive) = directories
+        .iter()
+        .map(|directory| directory.join("mpv-2.zip"))
+        .find(|path| path.is_file())
+    else {
+        return Ok(());
+    };
+    let target = directories
+        .iter()
+        .find(|directory| directory.is_dir())
+        .unwrap_or(&directories[0]);
+    let file = fs::File::open(&archive).map_err(|error| error.to_string())?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|error| error.to_string())?;
+    let size = zip
+        .by_name("mpv-2.dll")
+        .map_err(|error| error.to_string())?
+        .size();
+    if ["mpv-2.dll", "libmpv-2.dll"].iter().all(|name| {
+        fs::metadata(target.join(name)).is_ok_and(|metadata| metadata.len() == size)
+    }) {
+        return Ok(());
+    }
+    drop(zip);
+    fs::create_dir_all(target).map_err(|error| error.to_string())?;
+    extract_mpv_zip(&archive, target)
+}
+
 async fn download_and_install_mpv(
     sender: crossbeam_channel::Sender<Event>,
     proxy_url: Option<&str>,
@@ -210,11 +242,12 @@ fn extract_mpv_zip(archive_path: &Path, target_dir: &Path) -> Result<(), String>
             fs::File::create(&out_path).map_err(|e| format!("Cannot create file: {e}"))?;
         io::copy(&mut entry, &mut out_file).map_err(|e| format!("Extraction copy failed: {e}"))?;
     }
-    // If mpv-2.dll exists but libmpv-2.dll does not, copy it
+    // Keep both library names on the same runtime version.
     let mpv_path = target_dir.join("mpv-2.dll");
     let libmpv_path = target_dir.join("libmpv-2.dll");
-    if mpv_path.is_file() && !libmpv_path.exists() {
-        let _ = fs::copy(&mpv_path, &libmpv_path);
+    if mpv_path.is_file() {
+        fs::copy(&mpv_path, &libmpv_path)
+            .map_err(|e| format!("Cannot update playback library: {e}"))?;
     }
     Ok(())
 }

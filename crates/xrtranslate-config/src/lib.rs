@@ -1815,6 +1815,13 @@ fn active_native_provider(
 }
 
 impl NativeProviderConfig {
+    pub fn supports_audio_streaming(&self) -> bool {
+        self.connector
+            .is_some_and(|connector| connector.supports_audio_streaming())
+            && self.capabilities.streaming
+                == xrtranslate_assets::remote::RemoteStreaming::Cumulative
+    }
+
     /// Text editing also works with instruction-based contextual translators.
     pub fn supports_ask(&self) -> Result<bool, String> {
         Ok(self.supports_chat()?

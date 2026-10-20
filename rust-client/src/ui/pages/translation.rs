@@ -377,6 +377,10 @@ fn render_input_adaptation(
     let language = app.ui_language;
     let recognition_mode = crate::i18n::tr(language, "Recognition mode:");
     let automatic = crate::i18n::tr(language, "Automatic");
+    let automatic_mode = app.service_config.asr_streaming().map(|streaming| {
+        format!("{} ({automatic})", crate::i18n::tr(language,
+            if streaming { "Native streaming" } else { "Whole utterance" }))
+    }).unwrap_or_else(|| automatic.to_owned());
     let pseudo_streaming = crate::i18n::tr(language, "Pseudo-streaming");
     let vad_sensitivity = crate::i18n::tr(language, "VAD Sensitivity");
     let pause_tolerance = crate::i18n::tr(language, "Pause tolerance");
@@ -393,10 +397,10 @@ fn render_input_adaptation(
                 let selected_mode = if recognition.continuous_recognition {
                     pseudo_streaming
                 } else {
-                    automatic
+                    &automatic_mode
                 };
                 components::combobox_ui(ui, ("recognition_mode", source), selected_mode, |ui| {
-                    ui.selectable_value(&mut recognition.continuous_recognition, false, automatic);
+                    ui.selectable_value(&mut recognition.continuous_recognition, false, &automatic_mode);
                     ui.selectable_value(
                         &mut recognition.continuous_recognition,
                         true,
