@@ -6178,8 +6178,9 @@ impl eframe::App for XRTranslateApp {
         self.discover_audio_sources_on_page_entry();
         self.reconcile_audio_studio_live_routing();
         self.poll_audio_import();
-        self.media_plugin
-            .on_visibility_changed(self.navigation.page == Page::Plugin(PluginId::MEDIA));
+        self.media_plugin.on_visibility_changed(
+            !self.first_run && self.navigation.page == Page::Plugin(PluginId::MEDIA),
+        );
         let idle_repaint_interval = if self.translation_enabled {
             std::time::Duration::from_millis(33)
         } else {
@@ -6349,9 +6350,10 @@ impl eframe::App for XRTranslateApp {
             }
             if self.navigation.collapsed != prev_collapsed || self.navigation.page != prev_page {
                 self.save_settings();
-                self.media_plugin
-                    .on_visibility_changed(self.navigation.page == Page::Plugin(PluginId::MEDIA));
             }
+            self.media_plugin.on_visibility_changed(
+                !self.first_run && self.navigation.page == Page::Plugin(PluginId::MEDIA),
+            );
         }
 
         self.audio_system.set_audio_studio_metering(
@@ -6390,6 +6392,12 @@ impl eframe::App for XRTranslateApp {
         let content = egui::CentralPanel::default()
             .frame(central_frame)
             .show(ui, |ui| {
+                // Navigation can open onboarding without changing the selected page.
+                // Do not show its native video again before onboarding's next frame.
+                if self.first_run {
+                    ui.ctx().request_repaint();
+                    return;
+                }
                 if is_history_presentation {
                     ui::pages::translation::presentation::render(self, ui);
                     return;
