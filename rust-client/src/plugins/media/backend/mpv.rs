@@ -42,6 +42,9 @@ impl MpvHandle {
         // render a second copy beneath its overlay.
         instance.set_property_string("sub-auto", "no")?;
         instance.set_property_string("sid", "no")?;
+        // Keep Chinese glyphs and punctuation in the same Simplified Chinese font.
+        #[cfg(windows)]
+        instance.set_property_string("osd-font", "Microsoft YaHei")?;
         instance.set_property_string("osd-scale-by-window", "no")?;
         instance.set_property_string("osd-font-size", "18")?;
         instance.set_property_string("osd-color", "#FFFFFF")?;

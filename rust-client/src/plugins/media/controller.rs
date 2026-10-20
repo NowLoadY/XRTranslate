@@ -696,16 +696,7 @@ impl MediaController {
             if show_subs && backend.get_status() != PlaybackStatus::Stopped {
                 let current_time_ms = backend.get_time_ms();
                 if let Some(cue) = self.subtitles.active_cue_at(current_time_ms) {
-                    let text = if let Some(trans) = &cue.translated_text {
-                        if trans != &cue.original_text && !trans.trim().is_empty() {
-                            format!("{}\n{}", cue.original_text, trans)
-                        } else {
-                            cue.original_text.clone()
-                        }
-                    } else {
-                        cue.original_text.clone()
-                    };
-                    backend.set_osd_subtitle(&text);
+                    backend.set_osd_subtitle(&cue.playback_text());
                 } else {
                     backend.set_osd_subtitle("");
                 }

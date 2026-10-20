@@ -19,6 +19,67 @@ pub struct SubtitleCue {
     pub target_language: String,
 }
 
+impl SubtitleCue {
+    pub fn playback_text(&self) -> String {
+        let original = playback_line(&self.original_text, &self.source_language);
+        match self.translated_text.as_deref() {
+            Some(translated)
+                if translated != self.original_text && !translated.trim().is_empty() =>
+            {
+                format!(
+                    "{original}\n{}",
+                    playback_line(translated, &self.target_language)
+                )
+            }
+            _ => original.to_owned(),
+        }
+    }
+}
+
+fn playback_line<'a>(text: &'a str, language: &str) -> &'a str {
+    let text = text.trim();
+    let chinese = language
+        .split(['-', '_'])
+        .next()
+        .is_some_and(|code| code.eq_ignore_ascii_case("zh"));
+    if chinese {
+        // Presentation only: retain sentence boundaries in the editable source.
+        if let Some(sentence) = text.strip_suffix('。') {
+            return sentence.trim_end();
+        }
+        if !text.ends_with("..")
+            && let Some(sentence) = text.strip_suffix('.')
+        {
+            return sentence.trim_end();
+        }
+    }
+    text
+}
+
+#[cfg(test)]
+mod playback_tests {
+    use super::playback_line;
+
+    #[test]
+    fn chinese_playback_omits_full_stops_but_preserves_other_punctuation() {
+        for (text, language, expected) in [
+            ("你好，世界。 ", "zh", "你好，世界"),
+            ("第一句。第二句。", "zh-CN", "第一句。第二句"),
+            ("完成了.", "zh_Hans", "完成了"),
+            ("完成了。", "ZH-TW", "完成了"),
+            ("真的吗？", "zh", "真的吗？"),
+            ("太好了！", "zh", "太好了！"),
+            ("稍等……", "zh", "稍等……"),
+            ("稍等...", "zh", "稍等..."),
+            ("版本 3.14", "zh", "版本 3.14"),
+            ("Hello.", "en", "Hello."),
+            ("こんにちは。", "ja", "こんにちは。"),
+        ] {
+            assert_eq!(playback_line(text, language), expected);
+        }
+    }
+}
+
 /// Neutral translation facts converted into a player-owned subtitle cue.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TranslationCueInput {
