@@ -229,6 +229,12 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
         gesture = None;
     }
     let mut confirmed = None;
+    let touch = cfg!(target_os = "android") || ui.input(|input| input.has_touch_screen());
+    let grip_width = if touch && merge.as_ref().is_some_and(|merge| merge.enabled) {
+        40.0
+    } else {
+        0.0
+    };
     let mut scroll = egui::ScrollArea::vertical()
         .id_salt(id_salt)
         .auto_shrink([false, false]);
@@ -238,14 +244,16 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
             .vertical_scroll_offset(gesture.scroll_offset);
     }
     let mut output = scroll.show_viewport(ui, |ui, viewport| {
+        let content_width = ui.available_width();
+        ui.set_max_width((content_width - grip_width).max(1.0));
         let prepared = prepare_rows(ui);
+        ui.set_max_width(content_width);
         let rows = prepared.as_ref();
         let row_heights = rows.iter().map(|(height, _)| *height).collect::<Vec<_>>();
         let offsets = variable_row_offsets(&row_heights, row_gap);
         let content_height = offsets.last().copied().unwrap_or_default();
         let content_top = ui.max_rect().top();
         let content_left = ui.max_rect().left();
-        let content_width = ui.available_width();
         ui.set_height(content_height);
         let row_rect = |index: usize| {
             egui::Rect::from_min_size(
@@ -318,10 +326,38 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
                 .filter(|merge| merge.enabled)
                 .and_then(|merge| (merge.index)(row));
             // Register below child buttons, so play/copy/edit keep their clicks.
+            let drag_rect = if touch {
+                egui::Rect::from_min_max(
+                    egui::pos2(rect.right() - grip_width, rect.top()),
+                    egui::pos2(rect.right(), (rect.top() + 44.0).min(rect.bottom())),
+                )
+            } else {
+                rect
+            };
             if merge_index.is_some() && !gesture.as_ref().is_some_and(|state| state.pending) {
                 let response = ui
-                    .interact(rect, key.unwrap(), egui::Sense::click_and_drag())
+                    .interact(
+                        drag_rect,
+                        if touch {
+                            key.unwrap().with("merge_grip")
+                        } else {
+                            key.unwrap()
+                        },
+                        egui::Sense::click_and_drag(),
+                    )
                     .on_hover_cursor(egui::CursorIcon::Grab);
+                if touch {
+                    let center = egui::pos2(drag_rect.center().x, rect.top() + 22.0);
+                    for x in [-3.0, 3.0] {
+                        for y in [-6.0, 0.0, 6.0] {
+                            ui.painter().circle_filled(
+                                center + egui::vec2(x, y),
+                                1.5,
+                                ui.visuals().weak_text_color(),
+                            );
+                        }
+                    }
+                }
                 if response.drag_started() {
                     let pointer = ui
                         .input(|input| input.pointer.press_origin())
@@ -338,9 +374,9 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
             let dragging = gesture
                 .as_ref()
                 .filter(|state| !state.pending && Some(state.source) == key);
-            let mut builder = egui::UiBuilder::new()
-                .id_salt((id_salt, index))
-                .max_rect(rect);
+            let mut builder = egui::UiBuilder::new().id_salt((id_salt, index)).max_rect(
+                egui::Rect::from_min_max(rect.min, rect.max - egui::vec2(grip_width, 0.0)),
+            );
             if let Some(drag) = dragging {
                 builder = builder.layer_id(egui::LayerId::new(egui::Order::Tooltip, drag.source));
             }
@@ -355,7 +391,7 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
                         ui,
                         "Mergeable subtitle",
                         crate::ui::automation::ElementValue::Number(ordinal as f64),
-                        rect,
+                        drag_rect,
                     );
                 }
             });

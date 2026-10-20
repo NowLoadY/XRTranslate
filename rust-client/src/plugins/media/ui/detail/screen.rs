@@ -60,7 +60,7 @@ pub(in crate::plugins::media::ui) fn render_detail(
             if column == 0 {
                 egui::ScrollArea::vertical()
                     .id_salt("media_detail_controls")
-                    .max_height(if stacked { height * 0.45 } else { height })
+                    .max_height(if stacked { height * 0.35 } else { height })
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         if controller.can_play() {

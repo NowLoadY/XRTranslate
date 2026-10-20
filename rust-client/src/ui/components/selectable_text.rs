@@ -423,6 +423,7 @@ impl SelectionState {
                     .movable(false)
                     .show(ctx, |ui| {
                         *ui.visuals_mut() = selected.visuals.clone();
+                        ui.visuals_mut().panel_fill = ui.visuals().widgets.inactive.bg_fill;
                         super::icon_button(
                             ui,
                             crate::i18n::tr(language, "Look up"),
