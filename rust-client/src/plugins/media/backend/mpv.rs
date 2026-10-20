@@ -31,7 +31,7 @@ impl MpvHandle {
         }
 
         let instance = Self { handle };
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         instance.set_property_string("vo", "libmpv")?;
         instance.set_property_string("hwdec", "auto-safe")?;
         instance.set_property_string("keep-open", "always")?;
@@ -224,7 +224,7 @@ impl MpvHandle {
 
 pub struct MpvBackend {
     // Render context must be freed (and its worker joined) before the mpv core.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     video: Option<super::gpu::VideoRenderer>,
     mpv: MpvHandle,
     status: PlaybackStatus,
@@ -283,7 +283,7 @@ impl MpvBackend {
         let mpv = MpvHandle::new()?;
 
         Ok(Self {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             video: None,
             mpv,
             status: PlaybackStatus::Stopped,
@@ -441,24 +441,33 @@ impl MediaBackend for MpvBackend {
         self.status = reconcile_playback_status(self.status, end_file_event, eof_reached, paused);
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn initialize_video(
         &mut self,
         state: &eframe::egui_wgpu::RenderState,
         ctx: &eframe::egui::Context,
+        display: Option<super::VideoDisplay>,
     ) -> Result<(), String> {
         if self.video.is_none() {
-            self.video = Some(super::gpu::VideoRenderer::new(self.mpv.handle, state, ctx)?);
+            self.video = Some(super::gpu::VideoRenderer::new(
+                self.mpv.handle,
+                state,
+                ctx,
+                display,
+            )?);
         }
         Ok(())
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn video_frame(&mut self, size: [u32; 2]) -> Result<Option<eframe::egui::TextureId>, String> {
-        self.video.as_mut().map(|video| video.frame(size)).transpose()
+        self.video
+            .as_mut()
+            .map(|video| video.frame(size))
+            .transpose()
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn set_video_visible(&mut self, visible: bool) {
         if let Some(video) = &self.video {
             video.set_visible(visible);
@@ -478,7 +487,11 @@ impl MediaBackend for MpvBackend {
         }
         if self.subtitle_text != text {
             let duration = if text.is_empty() { "0" } else { "2147483647" };
-            if self.mpv.command(&["show-text", text, duration, "1"]).is_ok() {
+            if self
+                .mpv
+                .command(&["show-text", text, duration, "1"])
+                .is_ok()
+            {
                 self.subtitle_text = text.to_owned();
             }
         }

@@ -100,6 +100,7 @@ impl VideoRenderer {
         handle: *mut mpv::mpv_handle,
         state: &RenderState,
         ctx: &egui::Context,
+        _display: Option<super::VideoDisplay>,
     ) -> Result<Self, String> {
         // Both APIs must use the same adapter. Never select a second GPU implicitly.
         let hal = unsafe { state.device.as_hal::<wgpu::hal::api::Dx12>() }

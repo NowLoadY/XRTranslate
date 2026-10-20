@@ -64,7 +64,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config curl bzip2 libx11-dev libxcursor-dev libxrandr-dev \
             libxi-dev libwayland-dev libxkbcommon-dev libasound2-dev \
-            libpipewire-0.3-dev libclang-dev libegl-mesa0 libglx-mesa0 \
+            libpipewire-0.3-dev libclang-dev libmpv-dev libegl-mesa0 libglx-mesa0 \
             libgl1-mesa-dri fontconfig fonts-noto-core fonts-noto-cjk \
             fonts-dejavu-core zip
           rustup toolchain install 1.95.0 --profile minimal --no-self-update

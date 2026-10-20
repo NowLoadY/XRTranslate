@@ -6652,6 +6652,15 @@ pub fn run() -> eframe::Result<()> {
     let options = android::native_options(options);
     #[cfg(windows)]
     let options = configure_transparent_wgpu(options, window_backdrop);
+    #[cfg(all(target_os = "linux", feature = "mpv"))]
+    let options = {
+        let mut options = options;
+        if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup {
+            // libmpv renders directly into the UI's OpenGL textures through EGL.
+            setup.instance_descriptor.backends = eframe::wgpu::Backends::GL;
+        }
+        options
+    };
     eframe::run_native(
         "XRTranslate",
         options,
@@ -6705,6 +6714,23 @@ pub fn run() -> eframe::Result<()> {
             let mut app = XRTranslateApp::default();
             app.media_plugin.controller.render_state = cc.wgpu_render_state.clone();
             app.media_plugin.controller.render_context = Some(cc.egui_ctx.clone());
+            #[cfg(all(target_os = "linux", feature = "mpv"))]
+            {
+                use plugins::media::backend::VideoDisplay;
+                use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+                app.media_plugin.controller.video_display = cc
+                    .display_handle()
+                    .ok()
+                    .and_then(|handle| match handle.as_raw() {
+                        RawDisplayHandle::Xlib(display) => display
+                            .display
+                            .map(|ptr| VideoDisplay::X11(ptr.as_ptr() as usize)),
+                        RawDisplayHandle::Wayland(display) => Some(VideoDisplay::Wayland(
+                            display.display.as_ptr() as usize,
+                        )),
+                        _ => None,
+                    });
+            }
             #[cfg(target_os = "android")]
             android::prepare_resources(cc.egui_ctx.clone());
             app.window_backdrop = window_backdrop;

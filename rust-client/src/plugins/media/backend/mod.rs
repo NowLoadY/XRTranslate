@@ -1,12 +1,15 @@
 #[cfg(any(windows, target_os = "linux"))]
 pub mod audio;
+#[cfg(all(windows, feature = "mpv"))]
+mod gpu;
+#[cfg(all(target_os = "linux", feature = "mpv"))]
+#[path = "gpu_linux.rs"]
+mod gpu;
 #[cfg(feature = "mpv")]
 pub mod mpv;
 #[cfg(not(feature = "mpv"))]
 #[path = "mpv_stub.rs"]
 pub mod mpv;
-#[cfg(all(windows, feature = "mpv"))]
-mod gpu;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -18,6 +21,13 @@ pub enum MediaSource {
 }
 
 pub use crate::audio_playback::PlaybackStatus;
+
+#[derive(Clone, Copy)]
+#[cfg_attr(not(all(target_os = "linux", feature = "mpv")), allow(dead_code))]
+pub enum VideoDisplay {
+    X11(usize),
+    Wayland(usize),
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct PlayerDiagnostics {
@@ -57,6 +67,7 @@ pub trait MediaBackend: Send {
         &mut self,
         _state: &eframe::egui_wgpu::RenderState,
         _ctx: &eframe::egui::Context,
+        _display: Option<VideoDisplay>,
     ) -> Result<(), String> {
         Err("GPU video playback is unavailable on this platform".into())
     }

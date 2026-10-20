@@ -40,6 +40,7 @@ pub struct MediaController {
     pub backend: Option<Box<dyn MediaBackend>>,
     pub render_state: Option<eframe::egui_wgpu::RenderState>,
     pub render_context: Option<eframe::egui::Context>,
+    pub video_display: Option<super::backend::VideoDisplay>,
     pub subtitles: SubtitleTimeline,
     pub(super) subtitle_edit: Option<SubtitleEdit>,
     pub previews: crate::session_coordinator::LivePreviews,
@@ -111,6 +112,7 @@ impl Default for MediaController {
             backend,
             render_state: None,
             render_context: None,
+            video_display: None,
             subtitles: SubtitleTimeline::new(),
             subtitle_edit: None,
             previews: Default::default(),
@@ -318,11 +320,13 @@ impl MediaController {
             && let Some(backend) = &mut self.backend
         {
             if task.media_type == super::task::MediaType::Video
-                && cfg!(windows)
+                && cfg!(any(windows, target_os = "linux"))
                 && backend.supports_video()
             {
                 let initialized = match (&self.render_state, &self.render_context) {
-                    (Some(state), Some(ctx)) => backend.initialize_video(state, ctx),
+                    (Some(state), Some(ctx)) => {
+                        backend.initialize_video(state, ctx, self.video_display)
+                    }
                     _ => Err("GPU video renderer is unavailable".into()),
                 };
                 if let Err(error) = initialized {
@@ -332,7 +336,7 @@ impl MediaController {
             }
             backend.set_audio_only_mode(
                 task.media_type == super::task::MediaType::AudioOnly
-                    || !cfg!(windows)
+                    || !cfg!(any(windows, target_os = "linux"))
                     || self.video_unavailable,
             );
             let loaded = match &task.source {
@@ -365,7 +369,7 @@ impl MediaController {
     }
 
     pub fn can_show_video(&self) -> bool {
-        cfg!(windows)
+        cfg!(any(windows, target_os = "linux"))
             && self
                 .backend
                 .as_ref()

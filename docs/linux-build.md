@@ -12,7 +12,7 @@ desktop dependencies:
 ```sh
 sudo apt install build-essential pkg-config curl bzip2 libx11-dev libxcursor-dev \
   libxrandr-dev libxi-dev libwayland-dev libxkbcommon-dev libasound2-dev \
-  libpipewire-0.3-dev libclang-dev \
+  libpipewire-0.3-dev libclang-dev libmpv-dev \
   libegl-mesa0 libglx-mesa0 libgl1-mesa-dri \
   fontconfig fonts-noto-core fonts-noto-cjk fonts-dejavu-core
 git submodule update --init XR-Corpus
@@ -51,8 +51,10 @@ Cargo's build output and the same `runtime/` data without creating a release
 directory. Set `WINIT_UNIX_BACKEND=x11` or `wayland` if the window backend
 needs to be selected explicitly.
 
-For optional MPV support, install `libmpv-dev` and run with
-`XRTRANSLATE_FEATURES=mpv ./scripts/run-linux.sh` while using the source tree.
+The Linux scripts include MPV playback by default. Media videos play inside the
+app, with the same subtitles and controls as Windows. X11 and Wayland are
+supported; hardware decoding depends on the installed graphics driver.
+Set `XRTRANSLATE_FEATURES=` to build without MPV when only audio is needed.
 
 ## Build a local release
 
@@ -70,7 +72,8 @@ resources, the application binaries, and the default XR Corpus seed. Locally
 downloaded models, managed GPU runtimes, settings, and editable databases are
 excluded. Additional models, including optional OCR, and compatible runtimes
 are downloaded from the welcome flow according to the selected configuration.
-The application does not require a Python interpreter,
+Install the system MPV runtime (`libmpv2` on Debian/Ubuntu) on machines using the
+release package. The application does not require a Python interpreter,
 virtual environment, or PyTorch.
 
 The release includes a default XR Corpus seed at `corpora/default.sqlite`.
@@ -137,12 +140,10 @@ to appear in the picker. Their streams are discovered again while capture is
 running, so a stream that is recreated can resume capture. PipeWire-native
 applications that bypass `pipewire-pulse` are not listed as individual capture
 targets; their output is still included in system audio capture. The default
-playback device is selected when no specific device is chosen. Local media audio
-playback is included in the default build through Symphonia and CPAL. The media
+playback device is selected when no specific device is chosen. The media
 playback bar supports seeking, and clicking a subtitle plays from its timestamp.
 Unavailable playback does not block task details or subtitle export.
-In-page video playback is currently Windows-only. Optional Linux MPV support
-uses the system library for additional playback formats and audio extraction.
+Builds without MPV retain local audio playback through Symphonia and CPAL.
 
 ## Virtual microphone output
 
