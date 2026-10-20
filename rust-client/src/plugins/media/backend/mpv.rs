@@ -38,14 +38,19 @@ impl MpvHandle {
         instance.set_property_string("input-vo-keyboard", "no")?;
         instance.set_property_string("audio-channels", "stereo")?;
         instance.set_property_string("audio-normalize-downmix", "yes")?;
-        instance.set_property_string("osd-font-size", "28")?;
-        instance.set_property_string("osd-color", "#FEF08A")?;
+        // The media timeline owns subtitles; sidecar/embedded tracks must not
+        // render a second copy beneath its overlay.
+        instance.set_property_string("sub-auto", "no")?;
+        instance.set_property_string("sid", "no")?;
+        instance.set_property_string("osd-scale-by-window", "no")?;
+        instance.set_property_string("osd-font-size", "18")?;
+        instance.set_property_string("osd-color", "#FFFFFF")?;
         instance.set_property_string("osd-border-color", "#000000")?;
-        instance.set_property_string("osd-border-size", "2.5")?;
-        instance.set_property_string("osd-shadow-offset", "1.5")?;
+        instance.set_property_string("osd-border-size", "1.5")?;
+        instance.set_property_string("osd-shadow-offset", "1")?;
         instance.set_property_string("osd-align-y", "bottom")?;
         instance.set_property_string("osd-align-x", "center")?;
-        instance.set_property_string("osd-margin-y", "32")?;
+        instance.set_property_string("osd-margin-y", "12")?;
 
         let err = unsafe { libmpv_sys::mpv_initialize(handle) };
         if err < 0 {
@@ -219,6 +224,7 @@ pub struct MpvBackend {
     cached_diagnostics: Mutex<super::PlayerDiagnostics>,
     last_diag_poll: Mutex<Instant>,
     active_channels: Vec<super::super::task::AudioChannelItem>,
+    subtitle_font_size: i64,
 }
 
 fn reconcile_playback_status(
@@ -274,6 +280,7 @@ impl MpvBackend {
             cached_diagnostics: Mutex::new(super::PlayerDiagnostics::default()),
             last_diag_poll: Mutex::new(Instant::now() - Duration::from_secs(10)),
             active_channels: Vec::new(),
+            subtitle_font_size: 18,
         })
     }
 }
@@ -429,6 +436,14 @@ impl MediaBackend for MpvBackend {
         if text.is_empty() {
             let _ = self.mpv.command(&["show-text", "", "0", "1"]);
         } else {
+            if let Some(height) = self.mpv.get_property_i64("osd-height") {
+                let size = (height as f64 * 0.04).round().clamp(16.0, 48.0) as i64;
+                if size != self.subtitle_font_size
+                    && self.mpv.set_property_i64("osd-font-size", size).is_ok()
+                {
+                    self.subtitle_font_size = size;
+                }
+            }
             let _ = self.mpv.command(&["show-text", text, "1200", "1"]);
         }
     }

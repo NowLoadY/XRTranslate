@@ -338,6 +338,27 @@ impl SubtitleTimeline {
         &self.cues
     }
 
+    pub(super) fn replace_refined(
+        &mut self,
+        range: std::ops::Range<usize>,
+        cues: Vec<SubtitleCue>,
+    ) {
+        if self.cues[range.clone()] == cues {
+            return;
+        }
+        for old in &self.cues[range.clone()] {
+            if !cues.iter().any(|cue| cue.id == old.id) {
+                self.metadata.remove(&old.id);
+                self.origins.remove(&old.id);
+                for snapshot in self.snapshot_cues.values_mut() {
+                    snapshot.remove(&old.id);
+                }
+            }
+        }
+        self.cues.splice(range, cues);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     /// Merge neighboring text in timeline order while retaining the drop target's identity.
     pub(super) fn merge_adjacent(&mut self, source_id: &str, target_id: &str) -> bool {
         let Some(source_index) = self.cues.iter().position(|cue| cue.id == source_id) else {

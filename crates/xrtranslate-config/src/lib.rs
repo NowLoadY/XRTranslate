@@ -1815,7 +1815,14 @@ fn active_native_provider(
 }
 
 impl NativeProviderConfig {
-    /// Whether the selected translation model supports freeform Ask instructions.
+    /// Text editing also works with instruction-based contextual translators.
+    pub fn supports_ask(&self) -> Result<bool, String> {
+        Ok(self.supports_chat()?
+            || self.translation_prompt_profile()?
+                == xrtranslate_assets::TranslationPromptProfile::Contextual)
+    }
+
+    /// Whether the selected translation model supports general chat.
     pub fn supports_chat(&self) -> Result<bool, String> {
         if !self.uses_local_runtime() {
             return Ok(self.capabilities.supports_chat);

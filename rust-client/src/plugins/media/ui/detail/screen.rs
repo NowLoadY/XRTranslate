@@ -57,9 +57,11 @@ pub(in crate::plugins::media::ui) fn render_detail(
     } else {
         let stacked = layout::should_stack(ui.available_width(), 2, 380.0);
         layout::responsive_columns(ui, 2, 380.0, |ui, column| {
+            ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
             if column == 0 {
                 egui::ScrollArea::vertical()
                     .id_salt("media_detail_controls")
+                    .max_width(ui.available_width())
                     .max_height(if stacked { height * 0.35 } else { height })
                     .auto_shrink([false, true])
                     .show(ui, |ui| {

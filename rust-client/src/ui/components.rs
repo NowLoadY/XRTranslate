@@ -921,26 +921,22 @@ pub fn secondary_button_enabled(ui: &mut Ui, text: &str, enabled: bool) -> egui:
         CornerRadius::same(8)
     };
 
-    let resp = ui
-        .add_enabled_ui(enabled, |ui| {
-            Frame::new()
-                .fill(fill)
-                .stroke(stroke)
-                .corner_radius(corner_radius)
-                .inner_margin(Margin::symmetric(14, 6))
-                .shadow(egui::Shadow::NONE)
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(text)
-                            .color(text_color)
-                            .size(13.0)
-                            .strong(),
-                    );
-                })
-                .response
-                .interact(egui::Sense::click())
-        })
-        .inner;
+    let padding = ui.spacing().button_padding;
+    ui.spacing_mut().button_padding = egui::vec2(14.0, 6.0);
+    let resp = ui.add_enabled(
+        enabled,
+        egui::Button::new(
+            egui::RichText::new(text)
+                .color(text_color)
+                .size(13.0)
+                .strong(),
+        )
+        .wrap_mode(egui::TextWrapMode::Extend)
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(corner_radius),
+    );
+    ui.spacing_mut().button_padding = padding;
 
     if is_hand_drawn && enabled && (hover_factor > 0.01 || active_factor > 0.01) {
         let stroke_color = crate::ui::animation::AnimationSystem::lerp_color(

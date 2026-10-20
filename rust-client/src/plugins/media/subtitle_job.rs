@@ -14,6 +14,7 @@ use xrtranslate_engine::language::{
 use xrtranslate_prompt::{ContextFacts, PromptTurn, SurroundingSource, TaskContext};
 
 const CONTEXT_CUES: usize = 2;
+const PREVIOUS_CUES: usize = 4;
 
 pub(super) struct SubtitleJob {
     task: String,
@@ -22,6 +23,7 @@ pub(super) struct SubtitleJob {
     source_open: bool,
     waiting_revision: Option<u64>,
     pending: Option<(SubtitleTranslation, String)>,
+    refinement: Option<super::subtitle_refinement::SubtitleRefinement>,
 }
 
 /// One sentence uses the same request and result handling in a batch or an editor.
@@ -169,6 +171,7 @@ impl MediaPlugin {
             source_open: false,
             waiting_revision: None,
             pending: None,
+            refinement: None,
         });
         self.stop_requested = false;
         if restart {
@@ -182,6 +185,7 @@ impl MediaPlugin {
     pub(crate) fn start_file_subtitles(
         &mut self,
         languages: LanguageSelection,
+        refine: bool,
     ) -> Result<(), String> {
         let task = self
             .controller
@@ -197,6 +201,7 @@ impl MediaPlugin {
             source_open: true,
             waiting_revision: None,
             pending: None,
+            refinement: refine.then(Default::default),
         });
         Ok(())
     }
@@ -217,7 +222,7 @@ impl MediaPlugin {
             self.stop_requested = true;
             return None;
         }
-        if job.pending.is_some() {
+        if job.pending.is_some() || job.refinement.is_some() {
             return None;
         }
         let revision = self.controller.subtitles.revision();
@@ -251,6 +256,27 @@ impl MediaPlugin {
         }
         self.subtitle_job.as_mut()?.pending = Some((translation, source));
         Some(task)
+    }
+
+    pub(crate) fn poll_subtitle_refinement(
+        &mut self,
+        ask: &mut crate::ask::Ask,
+        ctx: &eframe::egui::Context,
+    ) {
+        let Some(job) = &mut self.subtitle_job else {
+            return;
+        };
+        // Final ASR snapshots must settle before source edits can be committed.
+        if job.source_open || self.controller.active_task_id.as_deref() != Some(&job.task) {
+            return;
+        }
+        if let Some(refinement) = &mut job.refinement {
+            let revision = self.controller.subtitles.revision();
+            if refinement.poll(&mut self.controller.subtitles, ask, ctx) {
+                job.refinement = None;
+            }
+            self.controller.dirty |= self.controller.subtitles.revision() != revision;
+        }
     }
 
     pub(super) fn finish_subtitle_source(&mut self, outcome: &TranslationOutcome) -> bool {
@@ -351,7 +377,7 @@ fn cue_ready(timeline: &SubtitleTimeline, index: usize, source_open: bool) -> bo
 }
 
 pub(super) fn subtitle_context(cues: &[SubtitleCue], index: usize) -> TaskContext {
-    let before = &cues[index.saturating_sub(CONTEXT_CUES)..index];
+    let before = &cues[index.saturating_sub(PREVIOUS_CUES)..index];
     let after = &cues[index + 1..(index + 1 + CONTEXT_CUES).min(cues.len())];
     let mut recent_turns = Vec::new();
     let mut source_before = Vec::new();
@@ -519,7 +545,7 @@ mod tests {
         plugin.controller.active_task_id = Some(task.id.clone());
         plugin.controller.store.add_or_update(task);
         plugin
-            .start_file_subtitles(LanguageSelection::parse("en", "zh").unwrap())
+            .start_file_subtitles(LanguageSelection::parse("en", "zh").unwrap(), false)
             .unwrap();
         (plugin, storage)
     }

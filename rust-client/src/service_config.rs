@@ -119,6 +119,11 @@ impl ServiceConfigEditor {
             .is_some_and(|(_, supported)| supported)
     }
 
+    pub(crate) fn supports_ask(&self) -> bool {
+        self.translation_contract()
+            .is_some_and(|(profile, chat)| chat || profile == TranslationPromptProfile::Contextual)
+    }
+
     fn translation_contract(&self) -> Option<(TranslationPromptProfile, bool)> {
         *self.translation_contract.get_or_init(|| {
             xrtranslate_config::AppConfig::from_value(self.document.clone())

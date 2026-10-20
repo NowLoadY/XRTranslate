@@ -700,9 +700,10 @@ pub fn is_split_word_pair(left: &str, right: &str) -> bool {
     // 1. Non-standalone suffixes attaching to stems of length >= 2
     if l.len() >= 2 {
         match r.as_str() {
-            "ly" | "ing" | "ed" | "ment" | "tion" | "sion" | "ness" | "ible" | "able" | "ful"
-            | "less" | "ity" | "ive" | "ty" | "teen" | "th" | "eth" | "ward" | "wards" | "ship"
-            | "hood" | "ize" | "ise" | "ate" => return true,
+            // Standalone words such as "able", "less" and "ship" are not
+            // evidence of a tokenization error ("be able", "spend less").
+            "ly" | "ing" | "ed" | "ment" | "tion" | "sion" | "ness" | "ible" | "ful" | "ity"
+            | "ive" | "ty" | "th" | "eth" | "ize" | "ise" => return true,
             "es" | "s" => {
                 if !matches!(
                     l.as_str(),
@@ -1086,6 +1087,18 @@ fn merge_word_casing(w1: &str, w2: &str) -> String {
 #[cfg(test)]
 mod sentence_segmentation_tests {
     use super::translation_segment_pairs_for_text_with_lang;
+
+    #[test]
+    fn standalone_words_are_not_mistaken_for_suffix_fragments() {
+        for text in [
+            "We should be able to spend less.",
+            "They own a ship and she ate lunch.",
+            "The next ward has a quiet neighborhood.",
+        ] {
+            assert_eq!(super::collapse_asr_split_words(text), text);
+        }
+        assert_eq!(super::collapse_asr_split_words("walk ing"), "walking");
+    }
 
     #[test]
     fn long_sentences_keep_lists_and_dependent_clauses_together() {

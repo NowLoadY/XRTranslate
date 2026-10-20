@@ -39,8 +39,9 @@ default and reserves a larger output budget for models that include reasoning.
 
 Hunyuan-MT uses the existing single-user-message encoding. It is a
 [specialized translation model](https://huggingface.co/tencent/Hunyuan-MT-7B),
-so it declares `supports_chat: false`: Ask-based editing and vocabulary sentence
-generation are unavailable. This preset does not declare reference-context support.
+so it declares `supports_chat: false`: general voice editing and vocabulary sentence
+generation are unavailable. Contextual translation models can still use Ask for
+bounded subtitle editing. This preset does not declare reference-context support.
 
 ## Free-tier ASR presets
 

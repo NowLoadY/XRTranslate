@@ -8,6 +8,8 @@ use eframe::egui;
 impl XRTranslateApp {
     pub(crate) fn poll_media_translation(&mut self, ctx: &egui::Context) {
         self.media_plugin.poll_translation_events();
+        self.media_plugin
+            .poll_subtitle_refinement(&mut self.ask, ctx);
         if let Some(owner) = self.media_plugin.take_cancelled_retranslation() {
             self.cancel_text_tasks(Some(&owner));
             self.cancel_pending_tasks(Some(&owner));
@@ -81,7 +83,10 @@ impl XRTranslateApp {
                         audio_channels,
                         ..
                     } => {
-                        if let Err(error) = self.media_plugin.start_file_subtitles(languages) {
+                        if let Err(error) = self
+                            .media_plugin
+                            .start_file_subtitles(languages, self.service_config.supports_ask())
+                        {
                             self.media_plugin.set_error(error);
                             return;
                         }

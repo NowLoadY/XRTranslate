@@ -167,10 +167,12 @@ fn playback_controls(
 ) {
     let duration = controller.get_duration_ms().max(0) as f64 / 1000.0;
     let mut position = (controller.get_time_ms().max(0) as f64 / 1000.0).min(duration);
-    ui.spacing_mut().slider_width = ui.available_width();
-    let response = ui.add_enabled(
+    let response = playback_slider(
+        ui,
+        &mut position,
+        duration.max(1.0),
+        ui.available_width(),
         duration > 0.0,
-        egui::Slider::new(&mut position, 0.0..=duration.max(1.0)).show_value(false),
     );
     let automated = crate::ui::automation::record_slider(
         ui,
@@ -209,14 +211,12 @@ fn playback_controls(
         {
             controller.toggle_mute();
         }
-        let mut volume = controller.volume;
-        ui.spacing_mut().slider_width = 70.0;
-        if ui
-            .add(egui::Slider::new(&mut volume, 0.0..=1.0).show_value(false))
+        let mut volume = f64::from(controller.volume);
+        if playback_slider(ui, &mut volume, 1.0, 70.0, true)
             .on_hover_text(tr(language, "Volume"))
             .changed()
         {
-            controller.set_volume(volume);
+            controller.set_volume(volume as f32);
         }
         if controller.can_show_video() {
             ui.checkbox(&mut controller.show_subtitles, tr(language, "Subtitles"));
@@ -239,6 +239,33 @@ fn playback_controls(
         }
     });
 }
+
+fn playback_slider(
+    ui: &mut egui::Ui,
+    value: &mut f64,
+    maximum: f64,
+    width: f32,
+    enabled: bool,
+) -> egui::Response {
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().slider_width = width;
+            ui.spacing_mut().slider_rail_height = 4.0;
+            // The page's transparent controls otherwise make the rail disappear.
+            ui.visuals_mut().widgets.inactive.bg_fill = crate::ui::theme::border();
+            ui.add_enabled(
+                enabled,
+                egui::Slider::new(value, 0.0..=maximum)
+                    .show_value(false)
+                    .trailing_fill(true),
+            )
+        },
+    )
+    .inner
+}
+
 fn fullscreen(controller: &mut MediaController, ui: &egui::Ui) {
     controller.toggle_fullscreen();
     ui.ctx()

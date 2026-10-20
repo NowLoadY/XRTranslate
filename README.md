@@ -62,7 +62,7 @@ The welcome page walks through the initial setup and remains available from the 
   <img src="assets/preview-Welcome-1.png" alt="XRTranslate welcome page" width="760" />
 </p>
 
-Supports generating video subtitles and playing them directly at high performance.
+Generate, translate, and watch video subtitles.
 
 <p align="center">
   <img src="assets/preview-GenerateVideoSubtitle.png" alt="XRTranslate video subtitle generation" width="760" />

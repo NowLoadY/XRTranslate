@@ -68,8 +68,9 @@ Buttons retain the Avatar's stereo mesh renderer, oval cushions, raised symbols,
 clay material and cream/mist-blue/rose palette. Their existing geometry is kept.
 Unavailable buttons are neutral gray and cannot fire.
 Edit reads the selected model's `supports_chat` capability from the existing model
-metadata. The Ask endpoint uses the same value, independent of translation prompt
-format. Switching to an incapable model ends editing and keeps the current text;
+metadata. Ask also accepts contextual translation models for bounded text editing;
+this does not enable general voice instructions for those models.
+Switching to an incapable model ends editing and keeps the current text;
 sending it through OSC remains independent. No capability polling service is added.
 
 ## One latest-phrase slot

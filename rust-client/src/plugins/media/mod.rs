@@ -5,6 +5,7 @@ pub mod events;
 pub mod i18n;
 pub mod installer;
 mod subtitle_job;
+mod subtitle_refinement;
 pub mod subtitles;
 pub mod task;
 pub mod ui;
