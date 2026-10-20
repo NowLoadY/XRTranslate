@@ -88,6 +88,11 @@ impl VoiceController {
             return Vec::new();
         }
         match action {
+            VoiceAction::Microphone(false) if self.editing => {
+                self.exit_editing();
+                self.status = "Editing finished; changes kept".into();
+                Vec::new()
+            }
             VoiceAction::Microphone(_) => Vec::new(),
             VoiceAction::Revise if self.editing => {
                 self.exit_editing();

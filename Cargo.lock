@@ -8973,6 +8973,7 @@ name = "xrtranslate-supervisor"
 version = "0.3.4-beta.1"
 dependencies = [
  "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

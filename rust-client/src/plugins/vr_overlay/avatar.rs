@@ -32,7 +32,6 @@ pub(super) struct AvatarOverlay {
     bubble_texture: graphics::RgbaTexture,
     bubble_position: Option<Vec3>,
     texture: VulkanTexture,
-    control_root: Option<glam::Mat4>,
     voice: Option<crate::voice_interaction::VoiceSnapshot>,
 }
 
@@ -78,7 +77,6 @@ impl AvatarOverlay {
             bubble_texture,
             bubble_position: None,
             texture,
-            control_root: None,
             voice: None,
         })
     }
@@ -100,14 +98,6 @@ impl AvatarOverlay {
 
     pub fn visible(&self) -> bool {
         self.visible
-    }
-
-    pub fn control_root(&self) -> Option<glam::Mat4> {
-        self.control_root
-    }
-
-    pub fn freeze_controls(&mut self, frozen: bool) {
-        self.space.freeze_controls(frozen);
     }
 
     pub fn voice_snapshot(&mut self, snapshot: Option<crate::voice_interaction::VoiceSnapshot>) {
@@ -133,13 +123,9 @@ impl AvatarOverlay {
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
         let scene = self.space.update(head, eyes, dt);
-        // A hidden/fading body or an unusable avatar projection does not remove
-        // the independent controls; only missing tracking invalidates them.
-        self.control_root = self.space.control_root();
         let Some(scene) = scene else {
             return self.hide_body();
         };
-        self.control_root = Some(scene.control_root);
         if !presentation.visible {
             return self.hide_body();
         }
@@ -213,8 +199,6 @@ impl AvatarOverlay {
     }
 
     pub fn hide(&mut self) -> Result<(), OverlayError> {
-        self.control_root = None;
-        self.space.freeze_controls(false);
         self.hide_body()
     }
 

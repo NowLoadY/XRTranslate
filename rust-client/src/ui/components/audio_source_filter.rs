@@ -11,12 +11,7 @@ pub fn audio_source_filter(
 ) -> bool {
     let before = *filter;
     ui.push_id("audio_source_filter", |ui| {
-        ui.label(
-            egui::RichText::new(tr(language, "Show audio translations"))
-                .color(theme::text_strong())
-                .strong(),
-        )
-        .on_hover_text(tr(
+        ui.label(tr(language, "Audio sources")).on_hover_text(tr(
             language,
             "Only affects this plugin. Text translations are always shown.",
         ));

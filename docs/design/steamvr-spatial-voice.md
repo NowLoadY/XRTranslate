@@ -2,38 +2,38 @@
 
 ## Interaction
 
-The overlay adds a grabbable microphone and two optional spatial buttons in the
-companion's shared SteamVR tracking space. It is not another settings panel,
-editor or history browser.
-The microphone controls XRTranslate recognition. The optional OSC microphone
-sync also controls the game's microphone through its input API.
-Desktop settings configure the feature; spatial voice controls are off by default.
+The left controller carries two optional buttons along the wrist-to-forearm
+axis. Its grip center controls voice input directly by distance to the headset;
+there is no 3D microphone prop or grab action. Spatial controls are off by default.
+The optional OSC microphone sync also controls the game's microphone through its
+existing input API.
 
-Grip holds the microphone. Mouth distance hysteresis controls recognition;
-release returns the microphone to its dock, and tracking loss stops recognition.
-Send and Edit never toggle the microphone, close a capture batch or restart the
-pipeline. Holding the microphone near the mouth keeps recognition running.
+Entering within 30 cm of the head opens input after 80 ms. Moving beyond 38 cm
+closes it after 160 ms; the separate enter/exit distances avoid boundary chatter.
+Losing tracking or opening the SteamVR dashboard closes input. Manual Stop or
+game-side mute requires the left controller to leave the range before reentry can
+open it again. Review, Send and Edit never change this proximity gate.
+
+A small green dot at the subtitle HUD's top-left corner slowly pulses over a
+2.4-second cycle while proximity input is active. It remains available when no
+subtitles or review buttons are visible. Its texture is uploaded once; native
+alpha controls the pulse.
 
 Default bindings use the controller's official grip pose (Vive/Index `grip`,
-Touch `openxr_grip`). The grip center serves both grabbing and bare-hand strikes.
-Each free hand highlights its nearest grabbable prop, using the rendered handle
-or button ellipsoid and a shared 2.5 cm surface-gap tolerance. Radial projection
-is a conservative proximity approximation; overlapping candidates compare gap,
-then center distance. Grip takes that candidate with a short haptic pulse.
-The microphone centers in the palm and aligns its shaft with the grip axis;
-buttons retain their pickup offset so placement never jumps. Unavailable buttons
-remain gray when highlighted. All of this stays in the existing interaction and
-mesh code, without another SDK, physics engine or configuration panel.
+Touch `openxr_grip`). The right controller presses the left-arm buttons. Normal
+front contact triggers once; no speed threshold or grip press is required.
+Withdraw before pressing again. Tracking that resumes inside a button cannot
+activate it until withdrawal. Button-local samples keep pressing stable while
+the left arm moves. Buttons have fixed positions and cannot be grabbed.
 
-The optional **Review before sending** setting is off by default. When off,
-OSC keeps its existing behavior and the two review buttons are hidden. When on,
-microphone phrases enter one review slot and require an explicit Send action.
-The held microphone can strike a button, allowing operation with one controller.
-A front strike requires at least 0.40 m/s inward speed and a mainly inward
-direction; slow contact, side swipes and stale tracking frames do not activate it.
-Each contact is consumed once, then rearms after separation. Slow approach plus
-Grip grabs a button for placement; release keeps its position and orientation.
-Grabbing never activates a button. Icons, motion and haptics supplement color.
+The optional **Review before sending** setting is off by default. When off, OSC
+keeps its existing behavior and the two buttons are hidden. When on, microphone
+phrases enter one review slot and require an explicit Send action. Pressing Edit
+enters voice editing; pressing it again finishes editing and retains the current
+result, including when an edit request is still running. Late results are ignored.
+Leaving voice range also finishes editing and retains applied changes. Reentry
+starts ordinary speech input; press Edit explicitly to enter editing again.
+Icons, press motion and haptics supplement color.
 
 ## Game microphone sync
 
@@ -47,33 +47,26 @@ The existing OSC transport reads `MuteSelf` and sends `/input/Voice` press/relea
 only when a requested state differs from a known game state. It discovers the
 initial state through OSCQuery, serializes toggles, and treats its own feedback as
 confirmation. Unknown state waits for feedback; an unconfirmed toggle is not
-blindly retried. Game-side muting stops local microphone recognition and returns
-the prop to its dock once. Re-grabbing and bringing it to the mouth is a new open
-request. Game-side unmuting does not move the prop or start local recognition.
+blindly retried. Game-side muting stops local microphone recognition and resets
+the proximity gate. Moving the left controller out of range and back in is a new
+open request. Game-side unmuting does not start local recognition.
 
 The host connects these events. OSC owns game state and input delivery; SteamVR
-owns grabbing and docking. Neither plugin calls the other. Only microphone audio
+owns proximity and button contact. Neither plugin calls the other. Only microphone audio
 uses the mute gate; system audio remains independent. Send, Edit and review state
 do not control either microphone.
 
 ## Shared space and appearance
 
-The objects are peers of the Avatar, not children of its model or body transform.
-Their anchor starts 45 cm horizontally ahead and 35 cm below the headset, with
-Send, Edit and the microphone arranged in a compact row within reach. Avatar
-turns, visits, animation and scale do not move them. Head turns do not move them
-either. Walking more than 35 cm from the placement origin for 0.4 seconds recenters
-the group; contact or button manipulation holds the anchor still. Placed button
-offsets remain intact. The microphone follows the hand while held and returns to
-its dock on release.
+The buttons are independent of the Avatar model and follow the left controller's
+grip pose. The anchor is offset 10 cm along grip +Y and 8 cm toward the thumb
+(-Z), with the button fronts facing grip +Y. Send and Edit sit 12 cm apart along
+grip +Z toward the forearm. Avatar animation, scale and visits do not move them.
+Losing left-controller tracking hides the buttons and the HUD dot and stops input.
 
-Props use the Avatar's existing stereo mesh renderer and clay material: rounded
-forms, cream/mist-blue/rose accessories, soft colored contours and restrained
-cel shading. Buttons are oval cushions with raised symbols; the microphone has
-a rounded head, three shallow grille lines and a soft grip. There are no extra
-faces, screens or decorative controls.
-
-Unavailable buttons are neutral gray and cannot fire; they remain grabbable.
+Buttons retain the Avatar's stereo mesh renderer, oval cushions, raised symbols,
+clay material and cream/mist-blue/rose palette. Their existing geometry is kept.
+Unavailable buttons are neutral gray and cannot fire.
 Edit reads the selected model's `supports_chat` capability from the existing model
 metadata. The Ask endpoint uses the same value, independent of translation prompt
 format. Switching to an incapable model ends editing and keeps the current text;
@@ -123,7 +116,7 @@ A local submission receipt does not claim another player displayed the message.
   availability and Ask/Publish effects. It has no audio sessions or plugin calls.
 - `voice_interaction_host.rs` observes microphone results, routes editing ASR,
   invokes the existing Ask and OSC services, and returns their results.
-- SteamVR owns tracking, grabs, button contact, presentation and feedback. It sends
+- SteamVR owns tracking, proximity, button contact, presentation and feedback. It sends
   intents and receives a snapshot; it does not invoke OSC or Ask directly.
 - `interaction.rs` owns poses and gestures; `voice_props.rs` only builds meshes.
 - The existing capture and pipeline owners keep their lifecycles. The microphone's

@@ -3090,7 +3090,7 @@ impl XRTranslateApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let mut changed = false;
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(
                         egui::RichText::new(i18n::tr(self.ui_language, "Game Plugins"))
                             .size(22.0)
@@ -3098,19 +3098,18 @@ impl XRTranslateApp {
                             .strong(),
                     );
                     ui.add_space(8.0);
-                    changed = ui::components::toggle_with_label(
+                    changed |= self.game_plugins.selection.render(
+                        ui,
+                        &mut self.avatar_plugin.settings.connector,
+                        self.ui_language,
+                    );
+                    changed |= ui::components::toggle_with_label(
                         ui,
                         &mut self.game_plugins.enabled,
                         i18n::tr(self.ui_language, "Enable"),
                     )
                     .changed();
                 });
-                ui.add_space(12.0);
-                changed |= self.game_plugins.selection.render(
-                    ui,
-                    &mut self.avatar_plugin.settings.connector,
-                    self.ui_language,
-                );
                 if changed {
                     self.sync_game_plugins();
                     self.sync_lyrics();
@@ -3120,10 +3119,12 @@ impl XRTranslateApp {
                 match self.game_plugins.selection {
                     GamePluginSelection::Avatar => {
                         let lyrics = self.plugin_enabled(PluginId::LYRICS);
-                        if self
-                            .avatar_plugin
-                            .render_content(ui, self.ui_language, lyrics)
-                        {
+                        if self.avatar_plugin.render_content(
+                            ui,
+                            self.ui_language,
+                            lyrics,
+                            self.game_plugins.enabled,
+                        ) {
                             self.poll_avatar(None);
                             self.sync_lyrics();
                             self.save_settings();
@@ -4062,7 +4063,7 @@ impl XRTranslateApp {
         self.set_microphone_input(enabled, ctx, true, Self::start_task_capture);
         self.sync_game_microphone(enabled);
         if !enabled {
-            self.vr_overlay_plugin.manager().dock_microphone();
+            self.vr_overlay_plugin.manager().reset_voice_proximity();
         }
     }
 
@@ -5631,7 +5632,7 @@ impl XRTranslateApp {
 
     pub(crate) fn stop_translation(&mut self) {
         self.sync_game_microphone(false);
-        self.vr_overlay_plugin.manager().dock_microphone();
+        self.vr_overlay_plugin.manager().reset_voice_proximity();
         self.stop();
     }
 

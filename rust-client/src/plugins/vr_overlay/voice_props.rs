@@ -1,21 +1,14 @@
 //! Small clay props using the companion's mesh, cel lighting and contour passes.
 use super::interaction::ButtonId;
-use crate::{
-    ui::components::avatar::{Geometry, Material, Model, Part},
-    voice_interaction::VoiceSnapshot,
-};
+use crate::ui::components::avatar::{Geometry, Material, Model, Part};
 use eframe::egui::Color32;
 use glam::{Mat4, Quat, Vec3};
-
-pub(super) const MICROPHONE_HEAD: Vec3 = Vec3::new(0.0, 0.115, 0.0);
-pub(super) const MICROPHONE_GRIP_HALF: Vec3 = Vec3::new(0.023, 0.089, 0.022);
 
 pub(super) struct ButtonVisual {
     pub kind: ButtonId,
     pub pose: Mat4,
     pub half: Vec3,
     pub enabled: bool,
-    pub held: bool,
     pub hover: bool,
     pub depth: f32,
     pub feedback: f32,
@@ -25,81 +18,14 @@ pub(super) struct ButtonVisual {
 // palette. Colored contours come from Material::CLAY, never a black outer shell.
 const CREAM: Color32 = Color32::from_rgb(231, 215, 184);
 const MIST: Color32 = Color32::from_rgb(170, 185, 212);
-const BLUE: Color32 = Color32::from_rgb(143, 167, 198);
 const ROSE: Color32 = Color32::from_rgb(212, 173, 186);
 const PAPER: Color32 = Color32::from_rgb(252, 242, 225);
 const INK: Color32 = Color32::from_rgb(92, 79, 72);
 
-pub(super) fn render(
-    dock: Mat4,
-    microphone: Mat4,
-    held: bool,
-    hover: bool,
-    snapshot: &VoiceSnapshot,
-    buttons: &[ButtonVisual],
-) -> Model {
+pub(super) fn render(buttons: &[ButtonVisual], editing: bool) -> Model {
     let mut model = Model::default();
-    if !held {
-        let cushion = dock * Mat4::from_translation(-Vec3::Y * 0.105);
-        solid(&mut model, cushion, Vec3::new(0.049, 0.012, 0.041), CREAM);
-        solid(
-            &mut model,
-            cushion * Mat4::from_translation(Vec3::Y * 0.006),
-            Vec3::new(0.037, 0.009, 0.031),
-            MIST,
-        );
-    }
-
-    // A soft tapered grip and a slightly oversized head read as a microphone
-    // without adding a face, metal cage or tiny decorative controls.
-    solid(
-        &mut model,
-        microphone,
-        MICROPHONE_GRIP_HALF,
-        if hover {
-            mix(CREAM, PAPER, 0.28)
-        } else {
-            CREAM
-        },
-    );
-    let head = microphone * Mat4::from_translation(MICROPHONE_HEAD);
-    let head_half = Vec3::new(0.038, 0.048, 0.036);
-    solid(&mut model, head, head_half, MIST);
-    let seam = mix(BLUE, INK, 0.22);
-    for side in [-1.0, 1.0] {
-        for y in [-0.016, 0.0, 0.016] {
-            // Three broad shallow grille grooves follow the head's real curved
-            // surface; both faces stay legible when the held prop rotates.
-            for step in 0..8 {
-                let point = |step: usize| {
-                    let x = (-0.66 + step as f32 * 0.165) * head_half.x;
-                    let z = dome(head_half, x, y) + 0.0006;
-                    Vec3::new(x, y, z * side)
-                };
-                line(&mut model, head, point(step), point(step + 1), 0.0012, seam);
-            }
-        }
-    }
-    let collar = if snapshot.instruction {
-        ROSE
-    } else if snapshot.recording {
-        BLUE
-    } else if held {
-        MIST
-    } else {
-        mix(CREAM, PAPER, 0.35)
-    };
-    solid(
-        &mut model,
-        microphone * Mat4::from_translation(Vec3::Y * 0.059),
-        Vec3::new(0.025, if snapshot.recording { 0.007 } else { 0.005 }, 0.024),
-        collar,
-    );
-
-    if snapshot.review_enabled {
-        for button in buttons {
-            button_model(&mut model, button, snapshot.revise_cancels);
-        }
+    for button in buttons {
+        button_model(&mut model, button, editing);
     }
     model
 }
@@ -116,8 +42,6 @@ fn button_model(model: &mut Model, button: &ButtonVisual, editing: bool) {
             PAPER,
             if feedback > 0.0 {
                 feedback * 0.36
-            } else if button.held {
-                0.16
             } else if button.hover {
                 0.10
             } else {
@@ -125,13 +49,7 @@ fn button_model(model: &mut Model, button: &ButtonVisual, editing: bool) {
             },
         )
     } else {
-        Color32::from_gray(if button.held {
-            184
-        } else if button.hover {
-            178
-        } else {
-            166
-        })
+        Color32::from_gray(if button.hover { 178 } else { 166 })
     };
 
     // Two low, rounded cushions replace the old rectangular housing. The cap
@@ -206,7 +124,7 @@ fn button_model(model: &mut Model, button: &ButtonVisual, editing: bool) {
 }
 
 /// Height on an ellipsoid: raised ink follows the cap instead of floating above
-/// its curved edges. The same surface construction is used for grille grooves.
+/// its curved edges.
 fn dome(half: Vec3, x: f32, y: f32) -> f32 {
     half.z
         * (1.0 - (x / half.x).powi(2) - (y / half.y).powi(2))

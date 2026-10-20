@@ -2,13 +2,75 @@ use crate::{
     i18n::{UiLanguage, tr},
     ui::{automation, theme},
 };
-use eframe::egui;
+use eframe::egui::{self, load::SizedTexture};
+
+const SLIDE_INTERVAL: f64 = 3.0;
 
 #[derive(Clone, Default)]
 struct ShowcaseState {
     index: usize,
     paused: bool,
     next_at: Option<f64>,
+    images: ShowcaseImages,
+}
+
+#[derive(Clone, Default)]
+struct ShowcaseImages {
+    target: Option<usize>,
+    started: Option<f64>,
+    layers: Vec<ImageLayer>,
+}
+
+#[derive(Clone)]
+struct ImageLayer {
+    index: usize,
+    texture: SizedTexture,
+    from_opacity: f32,
+    opacity: f32,
+}
+
+impl ShowcaseImages {
+    fn update(&mut self, index: usize, ready: Option<SizedTexture>, now: f64, duration: f64) {
+        if let Some(started) = self.started {
+            let t = if duration > 0.0 {
+                ((now - started) / duration).clamp(0.0, 1.0) as f32
+            } else {
+                1.0
+            };
+            let eased = t * t * (3.0 - 2.0 * t);
+            for layer in &mut self.layers {
+                let target = if Some(layer.index) == self.target {
+                    1.0
+                } else {
+                    0.0
+                };
+                layer.opacity = layer.from_opacity + (target - layer.from_opacity) * eased;
+            }
+            if t >= 1.0 {
+                self.layers.retain(|layer| Some(layer.index) == self.target);
+                self.started = None;
+            }
+        }
+        // Loading never replaces the visible artwork. Retarget from the current
+        // blend so even rapid navigation keeps every layer's opacity continuous.
+        if let Some(texture) = ready
+            && self.target != Some(index)
+        {
+            for layer in &mut self.layers {
+                layer.from_opacity = layer.opacity;
+            }
+            if !self.layers.iter().any(|layer| layer.index == index) {
+                self.layers.push(ImageLayer {
+                    index,
+                    texture,
+                    from_opacity: 0.0,
+                    opacity: 0.0,
+                });
+            }
+            self.target = Some(index);
+            self.started = Some(now);
+        }
+    }
 }
 
 pub(crate) struct ShowcaseSlide {
@@ -28,7 +90,26 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
         .data(|data| data.get_temp::<ShowcaseState>(id))
         .unwrap_or_default();
     preview.index = preview.index.min(slides.len() - 1);
-    let slide = &slides[preview.index];
+    let now = ui.input(|input| input.time);
+    let height = (ui.ctx().content_rect().height() * 0.34).clamp(180.0, 320.0) + 40.0;
+    let image_size = egui::vec2((ui.available_width() - 32.0).max(1.0), height);
+    // Start decoding every slide on the existing asynchronous image loader and
+    // warm its texture cache before navigation needs it. No loading UI is drawn.
+    let images: Vec<_> = slides
+        .iter()
+        .map(|slide| egui::Image::new(slide.image.clone()).load_for_size(ui.ctx(), image_size))
+        .collect();
+    let ready = match images[preview.index] {
+        Ok(egui::load::TexturePoll::Ready { texture }) => Some(texture),
+        _ => None,
+    };
+    preview.images.update(
+        preview.index,
+        ready,
+        now,
+        f64::from(theme::animation_timings(ui.ctx()).page),
+    );
+    let slide = &slides[preview.images.target.unwrap_or(preview.index)];
     let title = tr(language, slide.title);
     let mut selected = None;
     let mut focused = false;
@@ -61,16 +142,33 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
             ui.add(egui::Label::new(tr(language, slide.description)).wrap());
             ui.add_space(4.0);
             let width = ui.available_width();
-            let height = (ui.ctx().content_rect().height() * 0.34).clamp(180.0, 320.0) + 40.0;
             let (image_area, _) =
                 ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-            ui.place(
-                image_area,
-                egui::Image::new(slide.image.clone())
-                    .fit_to_exact_size(image_area.size())
-                    .alt_text(tr(language, slide.detail.unwrap_or(slide.title)))
-                    .corner_radius(theme::container_radius(8)),
-            );
+            for layer in &preview.images.layers {
+                let slide = &slides[layer.index];
+                ui.place(
+                    image_area,
+                    egui::Image::from_texture(layer.texture)
+                        .fit_to_exact_size(image_area.size())
+                        .tint(egui::Color32::WHITE.gamma_multiply(layer.opacity))
+                        .show_loading_spinner(false)
+                        .alt_text(tr(language, slide.detail.unwrap_or(slide.title)))
+                        .corner_radius(theme::container_radius(8)),
+                );
+            }
+            if preview.images.layers.is_empty() && images[preview.index].is_err() {
+                // Preserve egui's error details and accessible fallback on failure.
+                ui.place(
+                    image_area,
+                    egui::Image::new(slide.image.clone())
+                        .fit_to_exact_size(image_area.size())
+                        .show_loading_spinner(false)
+                        .alt_text(tr(language, slide.detail.unwrap_or(slide.title))),
+                );
+            }
+            if preview.images.started.is_some() && ui.is_rect_visible(image_area) {
+                ui.ctx().request_repaint();
+            }
             // Leave the credits along the bottom edge of the artwork visible.
             let controls_rect = egui::Rect::from_min_max(
                 egui::pos2(image_area.left() + 8.0, image_area.bottom() - 60.0),
@@ -178,6 +276,8 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
         ui.ctx().request_repaint();
     }
     if slides.len() == 1
+        || preview.images.target != Some(preview.index)
+        || preview.images.started.is_some()
         || preview.paused
         || focused
         || ui.rect_contains_pointer(card.response.rect)
@@ -186,11 +286,10 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
     {
         preview.next_at = None;
     } else {
-        let now = ui.input(|input| input.time);
-        let next = preview.next_at.get_or_insert(now + 3.0);
+        let next = preview.next_at.get_or_insert(now + SLIDE_INTERVAL);
         if now >= *next {
             preview.index = (preview.index + 1) % slides.len();
-            *next = now + 3.0;
+            *next = now + SLIDE_INTERVAL;
             ui.ctx().request_repaint();
         }
         ui.ctx()

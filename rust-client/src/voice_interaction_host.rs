@@ -190,7 +190,7 @@ impl XRTranslateApp {
         self.refresh_microphone_sync();
         if self.osc_transport.handle().take_microphone_mute() {
             self.set_microphone_input(false, Some(ctx.clone()), false, Self::start_task_capture);
-            self.vr_overlay_plugin.manager().dock_microphone();
+            self.vr_overlay_plugin.manager().reset_voice_proximity();
         }
         if self
             .voice_interaction
@@ -271,6 +271,10 @@ impl XRTranslateApp {
             if let VoiceAction::Microphone(near) = action {
                 self.set_microphone_input(near, Some(ctx.clone()), true, Self::start_task_capture);
                 self.sync_game_microphone(near);
+                if !near {
+                    let effects = self.voice_interaction.controller.apply(action);
+                    self.voice_effects(effects, ctx);
+                }
             } else {
                 let effects = self.voice_interaction.controller.apply(action);
                 self.voice_effects(effects, ctx);

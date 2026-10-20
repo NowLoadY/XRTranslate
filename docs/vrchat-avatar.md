@@ -1,116 +1,55 @@
-# VRChat Avatar controls
+# VRChat avatar
 
-XRTranslate lets a prepared VRChat Avatar request translation through its
-Expressions Menu when the VRChat connection is enabled in **Game Plugins**. The [shared connector guide](avatar-connectors.md)
-defines connector selection and common session behavior. The companion
-[XRT-Avatar-Plugin](https://github.com/NowLoadY/XRT-Avatar-Plugin) repository owns
-its VRChat adapter's editor package, parameter manifest and shared connector core.
-XRTranslate owns the desktop adapter and runtime resources. Host source is implemented; Unity import,
-Avatar upload and end-to-end behavior with a real VRChat client remain unverified.
+Control XRTranslate from **Expressions → XRT → Translation** and show
+translations on your avatar. Each avatar needs its own installed controls.
 
 ## Setup
 
-1. Finish XRTranslate setup and select the languages, microphone/system audio
-   source and recognition settings. Configure the existing outputs you want to use.
-2. In an existing Avatar authoring project, follow the companion
-   [installation guide](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/vrchat/installation.md)
-   to add the `XRT → Translation` menu and upload with the official SDK. No Unity
-   installation is part of the desktop integration.
-3. Select that Avatar in VRChat and enable VRChat OSC. In XRTranslate, open
-   **Game Plugins** in the sidebar, select **VRChat**, and turn on **Enable**.
-4. Wait for synchronization to finish and the page to report Off.
-   Use `Expressions → XRT → Translation` to start or stop its session.
+1. Follow the [avatar installation guide](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/vrchat/installation.md)
+   to add captions or just the translation menu, then upload the avatar for PC.
+2. In XRTranslate, set your languages and audio input. Open **Game Plugins**,
+   choose **VRChat**, and turn on **Enable**.
+3. Wear the uploaded avatar and enable VRChat OSC. When XRTranslate shows
+   **Ready**, use **Expressions → XRT → Translation** to start or stop.
 
-The menu tick represents a request. Starting means startup is pending; Active
-requires capture and backend readiness. Off requests cancellation, with Stopping
-retained until cleanup finishes. Error and Unavailable include diagnostics in
-the Game Plugins page. A failed or interrupted operation resets the request and cannot
-restart merely because an old On value is still present.
+After changing avatars or reconnecting, wait for **Ready** and start again.
+If a request fails, read the page's diagnostic before retrying. Check game OSC,
+the uploaded avatar and whether another translation task is using your input.
 
-Each Avatar needs its own installed menu and caption objects. In XRTranslate's
-**Game Plugins** page, **Display content** selects output to those objects; Header,
-Messages and Footer control its composition. Chatbox, overlay and TTS retain
-their own output settings. A menu-only Avatar continues to work.
+For local testing without uploading, use **Tools → XRT-Avatar-Plugin → Local Test**
+in Unity with Gesture Manager installed. Click **Start test**, then operate its
+**XRT → Translation** menu and inspect the scene captions. Keep the real client's
+OSC off during the test; **Stop test** closes the temporary connection.
 
-The companion SDK lays out completed messages in a 128-glyph cache, with a first
-or last row reserved for each configured banner. Messages have independent
-lifetimes; expired or cancelled messages are removed while banners remain.
-Only changed chunks are sent. Horizontal and portrait presets use 32 or 8 columns;
-custom 16-column objects are also supported.
-The selected Avatar package supplies the font, mesh, shader and receiver.
-Other players see the Avatar's synchronized bus through VRChat's normal Avatar
-rendering and visibility settings.
+## Captions
 
-## Sessions and settings
+**Show captions** shows or hides the display. Click **Header**, **Messages** or
+**Footer** in the preview to edit content. Stopping clears that task's messages;
+independent header/footer content remains. Chatbox, overlay and TTS have their
+own settings. A menu-only avatar also works.
 
-Each accepted request creates an owned task through the existing translation
-pipeline. The selected languages, source and recognition profiles are captured
-at request time, including while the backend starts. Change these before the
-next Avatar session. Device and prompt configuration are resolved when the
-session is created. Shared output settings retain their existing runtime behavior;
-the companion [host integration contract](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/vrchat/host-integration.md)
-documents setting lifetimes.
+The display holds 128 glyphs. Horizontal and portrait presets use 32 or 8
+columns; custom 16-column objects are supported. Each configured header/footer
+uses one row. Only changed chunks are sent, at intervals of at least 200 ms.
+Other players see captions through normal avatar visibility and shader settings.
 
-The Avatar task holds an exclusive lease for its live inputs. A request overlapping
-an active, paused or pending live task is rejected and leaves that task intact.
-Other live tasks also cannot take over an Avatar-owned input. Selecting both
-inputs overlaps either one; separate inputs and file/text tasks remain independent.
+## Integration notes
 
-Menu Off cancels only the Avatar owner, including pending startup, capture and
-pending result/TTS delivery. Its lease remains until the network workers exit.
-Desktop input-off ends an Avatar session using that input; the desktop global
-Stop still stops application work. Mute-follow gates audio admission without
-releasing capture, so muting is not equivalent to stopping the session.
+- Controls and captions share the verified OSC transport and OSCQuery binding.
+  Discovery uses an available local port; do not add a competing fixed-port receiver.
+- Each new binding resets the game toggle and requires a fresh Off confirmation.
+  Old UDP values or snapshots cannot start a session. Failures require a new reset.
+- The task owns its inputs until cleanup finishes. Menu Off cancels that task;
+  global Stop stops application work. Muting gates audio without releasing capture.
+- Avatar changes, disconnects and disable end the task. A world change alone
+  keeps a valid binding. Reconnection starts Off in the game and **Ready** in XRTranslate.
 
-## Connection behavior
-
-Avatar control and existing OSC receive consumers share one transport owner.
-Control advertises an available local receive port through OSCQuery; it does not
-open a second fixed-port 9001 listener. Caption capability discovery and writes
-use that same verified binding. The installed receiver reserves 24, 40 or 72
-synced bits, independently of display length.
-Chunks are held for at least 200 ms after local transmission; game replication
-remains best effort. New content replaces queued obsolete chunks. Stop removes
-the cancelled task's messages. Avatar change and disconnect retire the writer
-and clear where the current binding remains reachable. Chatbox output retains its configured
-destination and can be disabled independently of Avatar control. Discovery,
-queries and socket work run off the UI thread.
-
-The adapter validates the local endpoint, Avatar identity, parameter types and
-protocol version through fresh OSCQuery snapshots. Every binding first resets
-the toggle and waits for a matching authoritative Off confirmation. Raw UDP
-values and old snapshot responses cannot open that gate. Subsequent failures,
-completion and rejected requests during cleanup require a new reset confirmation.
-Periodic reconciliation recovers lost updates without treating an unchanged
-toggle as a heartbeat.
-
-Avatar change, connection loss, plugin disable or shutdown cancels the owned
-operation. Reconnection requires a new binding and starts Off. A world change
-alone does not stop a valid unchanged binding. The initial target is XRTranslate
-and VRChat on the same Windows PC; local Linux source checks do not establish
+The initial target is VRChat and XRTranslate on the same Windows PC. Unity local
+communication/rendering was checked with patched preview.7; upload and real-game
+end-to-end behavior remain unverified. Linux source checks do not establish
 VRChat/Proton compatibility.
 
-If a menu request returns to Off, read the plugin diagnostic and normal host
-error notification. Check setup, input ownership and current connection before
-retrying. For an unavailable connection, check VRChat OSC, the installed Avatar,
-the parameter version and local discovery. Do not replace another OSC tool's
-configuration or launch a competing fixed-port receiver to resolve discovery.
-
-## Source map
-
-| Module | Responsibility |
-|---|---|
-| `plugins::avatar` | Settings, verified control intent, reset/binding state, structured display composition and host actions |
-| `plugins::avatar::display` | Structured display snapshots through the selected connector |
-| `plugins::avatar::osc_caption` | Paced, revocable delivery of companion SDK frames |
-| `xrt-connector-core` | Connector contracts, region layout, changed-chunk selection and glyph encoding |
-| `avatar_host` | Owner-scoped acquisition, readiness, cancellation and terminal outcomes |
-| `plugins::osc::transport` | Shared local discovery, queries, receiver and parameter writes |
-| `session_coordinator` | Neutral task, owner, exclusive-input and result contracts |
-| Companion control core | I/O-free lifecycle and stale-operation protection |
-
-The [plugin architecture](plugin-architecture.md) owns host dependency rules.
-The companion repository owns the
-[wire protocol](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/vrchat/control-protocol.md),
-[compatibility criteria](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/vrchat/compatibility.md)
-and [presentation boundary](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/vrchat/presentation.md).
+[Shared host behavior](avatar-connectors.md) ·
+[Control protocol](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/vrchat/control-protocol.md) ·
+[Presentation](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/vrchat/presentation.md) ·
+[Compatibility](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/vrchat/compatibility.md)

@@ -1,9 +1,11 @@
 //! Physical voice objects rendered through their own fitted stereo window.
 use super::{
     graphics,
+    indicator::VoiceIndicator,
     input::Input,
-    interaction::Interaction,
+    interaction::{CONTROL_HAND, Interaction, controller_root},
     openvr::{AvatarTracking, OpenVrOverlay, OpenVrSession, OverlayError, VulkanTexture},
+    runtime::VrOverlaySettings,
     space::camera_through_plane,
 };
 use crate::{
@@ -15,6 +17,7 @@ use std::{cell::RefCell, path::Path, rc::Rc, time::Instant};
 
 pub(super) struct VoiceOverlay {
     overlay: OpenVrOverlay,
+    indicator: VoiceIndicator,
     input: Input,
     tracking: AvatarTracking,
     renderer: Rc<RefCell<StereoRenderer>>,
@@ -32,6 +35,7 @@ impl VoiceOverlay {
     ) -> Result<Self, String> {
         let input = Input::new(session, input_directory)?;
         let tracking = session.avatar_tracking()?;
+        let indicator = VoiceIndicator::new(session, &tracking, gpu.clone())?;
         let validation = gpu
             .device
             .push_error_scope(eframe::wgpu::ErrorFilter::Validation);
@@ -48,6 +52,7 @@ impl VoiceOverlay {
         overlay.configure_stereo().map_err(|e| e.to_string())?;
         Ok(Self {
             overlay,
+            indicator,
             input,
             tracking,
             renderer,
@@ -58,16 +63,12 @@ impl VoiceOverlay {
         })
     }
 
-    pub fn freeze_controls(&self) -> bool {
-        self.visible && self.interaction.freeze_controls
-    }
-
-    pub fn dock_microphone(&mut self) {
-        self.interaction.dock_microphone();
+    pub fn reset_voice_proximity(&mut self) {
+        self.interaction.reset_voice_proximity();
     }
 
     pub fn suspend(&mut self) -> Vec<VoiceAction> {
-        self.input.suspend();
+        let _ = self.indicator.hide();
         if self.visible {
             let _ = self.overlay.hide();
             self.visible = false;
@@ -78,19 +79,23 @@ impl VoiceOverlay {
 
     pub fn frame(
         &mut self,
-        control_root: Option<Mat4>,
         snapshot: &VoiceSnapshot,
+        settings: &VrOverlaySettings,
     ) -> Result<Vec<VoiceAction>, OverlayError> {
         if self.input.suspended_by_dashboard() {
             return Ok(self.suspend());
         }
-        let Some(control_root) = control_root.filter(|_| snapshot.enabled) else {
+        if !snapshot.enabled {
             return Ok(self.suspend());
-        };
+        }
         let Some((eyes, head)) = self.tracking.eyes_and_head() else {
             return Ok(self.suspend());
         };
         let hands = self.input.sample().map_err(OverlayError::InvalidFrame)?;
+        let Some(left) = hands[CONTROL_HAND].pose else {
+            return Ok(self.suspend());
+        };
+        let control_root = controller_root(left);
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
@@ -100,9 +105,17 @@ impl VoiceOverlay {
         for hand in pulses {
             self.input.pulse(hand);
         }
+        self.indicator
+            .frame(self.interaction.in_voice_range(), settings)?;
         let mut model = self.interaction.model(control_root, snapshot);
         let Some((plane, width, cameras)) = window(&model, head, eyes) else {
-            return Ok(self.suspend());
+            // Voice proximity and its HUD dot stay active without review buttons,
+            // or when the arm is outside the current view.
+            if self.visible {
+                self.overlay.hide()?;
+                self.visible = false;
+            }
+            return Ok(actions);
         };
         let inverse = plane.inverse();
         for part in &mut model.parts {
@@ -127,10 +140,10 @@ impl VoiceOverlay {
 }
 
 // The window sits at a comfortable projection distance. The mesh and contact
-// points stay in tracking space, even when the mic is 10 cm from the user's face.
+// points stay in tracking space even when the controller is close to the head.
 // Fit both eyes' projected bounds so forward buttons aren't clipped by the
 // companion's much smaller native quad. This supplies colour, not game depth.
-fn window(model: &Model, head: Mat4, eyes: [Mat4; 2]) -> Option<(Mat4, f32, [Mat4; 2])> {
+pub(super) fn window(model: &Model, head: Mat4, eyes: [Mat4; 2]) -> Option<(Mat4, f32, [Mat4; 2])> {
     let distance = 0.65;
     let inverse_head = head.inverse();
     let eye_positions = eyes.map(|eye| inverse_head.transform_point3(eye.w_axis.truncate()));
@@ -165,4 +178,63 @@ fn window(model: &Model, head: Mat4, eyes: [Mat4; 2]) -> Option<(Mat4, f32, [Mat
     let cameras = eyes
         .map(|eye| camera_through_plane(inverse.transform_point3(eye.w_axis.truncate()), width));
     Some((plane, width, [cameras[0]?, cameras[1]?]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::components::avatar::{Geometry, Part};
+    use eframe::egui::Color32;
+
+    #[test]
+    #[ignore = "Requires SteamVR, valid left-controller tracking and a closed dashboard"]
+    fn live_left_controller_overlay() {
+        use super::super::openvr::OpenVrApi;
+        use std::time::Duration;
+        let session = OpenVrApi::try_load().unwrap().init_overlay().unwrap();
+        let tracking = session.avatar_tracking().unwrap();
+        let gpu = graphics::create(&tracking).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut objects = VoiceOverlay::new(&session, gpu, directory.path()).unwrap();
+        let snapshot = VoiceSnapshot {
+            enabled: true,
+            review_enabled: true,
+            can_send: true,
+            can_revise: true,
+            ..Default::default()
+        };
+        let mut rendered = false;
+        for _ in 0..1200 {
+            objects
+                .frame(&snapshot, &VrOverlaySettings::default())
+                .unwrap();
+            if objects.visible && !rendered {
+                println!("Left-controller overlay is rendering from live poses");
+                rendered = true;
+            }
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        assert!(rendered, "No valid left-controller frame was rendered");
+        objects.suspend();
+    }
+
+    #[test]
+    fn fitted_stereo_window_preserves_square_proportions() {
+        for position in [Vec3::new(0.0, -0.2, -0.7), Vec3::new(-0.3, -0.1, -0.25)] {
+            let mut model = Model::default();
+            let mut part = Part::new(Geometry::SolidSphere, Color32::WHITE);
+            part.transform = Mat4::from_translation(position) * Mat4::from_scale(Vec3::splat(0.05));
+            model.add(part);
+            let eyes = [-0.032, 0.032].map(|x| Mat4::from_translation(Vec3::X * x));
+            let (plane, _, cameras) = window(&model, Mat4::IDENTITY, eyes).unwrap();
+            for camera in cameras {
+                let project = |p| (camera * plane.inverse()).project_point3(p);
+                let center = project(position);
+                let horizontal = project(position + Vec3::X * 0.02) - center;
+                let vertical = project(position + Vec3::Y * 0.02) - center;
+                assert!((horizontal.length() - vertical.length()).abs() < 1e-5);
+                assert!(horizontal.y.abs() < 1e-5 && vertical.x.abs() < 1e-5);
+            }
+        }
+    }
 }

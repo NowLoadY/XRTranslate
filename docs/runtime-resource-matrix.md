@@ -198,6 +198,10 @@ Windows 运行时规划在后台优先修复缺失的 CPU 核心：若配置声�
 UI 只显示 `计划 CUDA 13/12`、下载/修复进度、以及后端确认后的
 `实际 CUDA 13/12`。无合格 NVIDIA、CUDA 闭包不完整和损坏文件都必须显示明确原因。
 
+模型启动失败会保留原始错误。Windows 内存分配失败还显示系统提交内存用量；
+即使显存充足，固定过小的分页文件也可能导致 CUDA 分配失败。
+可改用系统管理的分页文件；若当前提交上限未增长，重启 Windows 后再试。
+
 ### AMD llama.cpp runtime
 
 The same `config.json` runtime catalogue includes pinned Windows and Linux x64

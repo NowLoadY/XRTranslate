@@ -1,114 +1,72 @@
 # Game Plugins
 
-Open **Game Plugins** in the sidebar, choose your **Game**, and turn on
-**Enable** at the top of the page. Install its
-[XRT-Avatar-Plugin component](https://github.com/NowLoadY/XRT-Avatar-Plugin)
-using the game guide. The page is always available; **Enable** is off by default.
-Switching games changes the active connection and clears its pending output.
+1. Set your languages and audio input in XRTranslate.
+2. Open **Game Plugins**, choose your game, and turn on **Enable**.
+3. Open **Setup guide** to install the game component, then connect:
 
-| Connector | Game interaction | Host transport |
+| Game | Connection | Start translation |
 |---|---|---|
-| VRChat | Expressions menu | OSCQuery profile |
-| ChilloutVR | CCK Advanced Avatar Settings | OSCQuery profile |
-| Overte | Avatar script and Tablet button | Paired local WebSocket |
-| Resonite | Native controls through ResoniteLink | Paired local WebSocket bridge |
-| Second Life | LSL attachment | HTTPS relay and local WebSocket bridge |
-| Big Walk | Native chat | Local TCP bridge |
+| VRChat | Enable game OSC | **Expressions → XRT → Translation** |
+| ChilloutVR | Enable game OSC | **Advanced Avatar Settings → XRT Translation** |
+| Overte | Paste **Copy connection info** into the tablet | Tablet play button |
+| Resonite | Paste **Copy connection info** into the connector | Connector or native avatar control |
+| Second Life | Paste **Copy connection info** into the relay connector | Touch the attachment → **Start** |
+| Big Walk | Launch the modded game and join a room | XRTranslate microphone translation |
 
-These are development-preview integrations. Platform setup and game-client
-verification are maintained in the companion guides. ResoniteLink requires an
-eligible session hosted by the user. Second Life requires an HTTPS relay.
+Avatar connections show **Ready** before starting. After changing avatars or
+reconnecting, start again from the game. Big Walk shows **Connected** when chat
+is available; see the [chat guide](bigwalk-chat.md).
+OSCQuery connection loss appears on the plugin page while discovery retries.
 
-## Setup and use
+Game-client verification is recorded in each game's guide. ResoniteLink needs
+an eligible session you host; Second Life needs an HTTPS relay.
 
-Finish XRTranslate setup and select languages, input and recognition settings.
-Configure desired host outputs. For Big Walk, follow the [chat guide](bigwalk-chat.md).
-Its audio source switches filter completed translations for chat.
+## Captions
 
-For avatar controls in VRChat and ChilloutVR, enable OSC in the game;
-for WebSocket connectors, click **Copy connection info** and paste it into the
-game's local component using its installation guide. This includes the address and
-token for custom clients as well. Pairing credentials are runtime values and
-are not saved into shared game assets.
+Translations appear by default. **Show captions** shows or hides the whole
+display. Click **Header**, **Messages** or **Footer** in the preview to edit it.
 
-Wait for synchronization and Off, then operate the game control. Starting means
-startup is pending; Active requires capture and backend readiness. Off cancels
-pending startup and running work, with Stopping retained until cleanup finishes.
-Read connection diagnostics on the page and session failures in host
-notifications. Reconnection and connector changes start with the control Off.
+- **Messages:** audio sources, language format and display seconds.
+- **Header / Footer:** optional text, time, device status or lyrics.
+- **Trash icon:** clear messages now.
 
-Caption objects show translations by default. **Display content** in **Game Plugins**
-shows or hides the entire display. Select Header,
-Messages or Footer in the preview to edit that region. Messages have their own
-source filter, language format and duration. Header and Footer
-can show custom text, system information or lyrics. Lyrics run when either Avatar
-or OSC requests them.
+Stopping translation clears its messages. Header/footer content remains until
+its source is cleared, captions are hidden or the connection closes. Chatbox,
+overlay and TTS keep their own settings.
 
-Game controls start and stop their translation task. Stopping removes that task's
-messages while configured header/footer content remains. Disabling display or
-losing the connection clears the game objects. Existing OSC Chatbox, overlay
-and TTS outputs keep their own settings.
+## Host integration
 
-## Ownership and configuration
+`plugins::game_plugins` activates one selected game while **Enable** is on.
+Switching games retires the old connection and clears pending output.
+`plugins::avatar` owns game controls and caption composition;
+`plugins::bigwalk` sends completed translations to native chat.
 
-`plugins::game_plugins` supplies the shared game selector for this group page.
-The host activates its selected output while **Enable** is on and retires the
-previous one. `plugins::bigwalk` consumes committed results and sends bounded,
-one-shot chat messages; `plugins::avatar` manages structured
-caption displays and game-controlled translation sessions. Each retains its own
-settings and delivery lifecycle.
+`avatar_host` turns validated game requests into owned translation tasks.
+`session_coordinator` owns input leases and cancellation. Requests cannot take
+over an input used by an active, paused or pending task. Cancellation keeps the
+lease until workers finish. Disconnect, disable or a required input turning off
+ends the owned task; stale traffic cannot restart it.
 
-`plugins::avatar` owns connector selection, validated intent and feedback.
-`avatar_host` turns shared controller effects into owned translation tasks.
-`session_coordinator` owns input acquisition, task identity and cancellation.
-The companion `xrt-connector-core` supplies the connector catalogue, parameter
-contracts, text codecs and one pure lifecycle. The host pins that single SDK.
+Languages, source and recognition profiles are captured at request time. Device
+and prompt settings are resolved at session creation. Shared outputs follow
+their existing runtime settings.
 
-Each accepted request holds an exclusive lease on its selected live inputs.
-Overlapping active, paused or pending tasks are preserved and the request is
-rejected. Cancellation affects the requesting owner and retains its lease until
-workers finish. Switching connectors, losing the connection, turning off
-**Enable** or a required desktop input ends that operation.
+The pinned companion `xrt-connector-core` owns connector contracts and the pure
+control lifecycle. Existing OSC and WebSocket workers own discovery, sockets
+and delivery. OSC caption frames use the verified transport lease; Chatbox
+retains its own destination.
 
-Languages, source and recognition profiles are captured when requested; device
-and prompt settings are resolved when the session is created. TTS and existing
-output settings follow their owners' runtime rules. Display subscriptions use
-shared host output; cancellation identifies the affected stream. Old connection
-traffic and late worker callbacks
-cannot activate a later binding.
+`DisplaySnapshot` contains header, messages and footer. Messages expire
+independently; capacity-limited displays keep the newest content that fits.
+The eight-message wire bound limits candidates, not the visible message count.
+Native text accepts previews; buffered OSC displays use completed messages.
+Queue time reduces remaining lifetime, and a new snapshot replaces obsolete
+work. Header/footer updates do not restart the board.
 
-OSC and WebSocket are transport capabilities. Their workers own sockets,
-verification, bounded queues and cancellation. OSC peer discovery rules and
-parameter maps come from the companion SDK; `plugins::avatar::osc_caption`
-only schedules its encoded frames using the existing transport lease.
-Game-specific rendering and wire details are maintained in the companion repo.
-Chatbox retains its own destination.
+Shared formatting and system sampling belong to `TextOutputPlugin`. Lyrics
+uses one host worker, requested by either OSC or Avatar output. Existing
+`vrc_avatar` preferences remain an alias of `avatar`.
 
-`AvatarPlugin` consumes normalized `HostOutputEvent` values and composes one
-`DisplaySnapshot` containing `header`, `messages` and `footer`. Only messages
-carry remaining lifetimes. Source filtering, formatting and expiry stay in the
-host. It supplies recent, unexpired candidates rather than a user-selected message
-count. Capacity-limited connector layouts select the newest messages that fit
-their objects, retaining chronological order and clipping an oversized latest
-message when necessary. Native auto-sizing remains a presentation setting.
-The protocol's eight-entry bound limits the candidate snapshot, not the number
-of messages a surface must show.
-
-The internal `TextOutputPlugin` supplies shared formatting, banner controls and
-one owned system sampler through a handle injected by the host. OSC and Avatar
-retain separate preferences. Lyrics has one worker, requested by either output;
-the host distributes its text without introducing a new event bus.
-
-Native text accepts replaceable previews; buffered displays use completed
-captions. Stream cancellation removes only that stream's messages. Connection
-changes clear all pending presentation. WebSocket coalesces full snapshots and
-deducts queue time from message lifetimes. The companion SDK lays out OSC regions,
-prioritizes body updates and selects changed chunks; the host confirms its cache
-only after actual send. The Game Plugins page uses the same OSC layout for its preview.
-Header/footer updates never restart the whole board. Superseded snapshots do not
-form a playback queue, and hidden messages do not gain extra lifetime.
-
-The [plugin architecture](plugin-architecture.md) owns host dependency rules;
-the companion [connector protocol](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/connector-protocol.md)
-owns wire fields and client requirements. Existing `vrc_avatar` preferences are
-accepted as an alias for the canonical `avatar` plugin identity.
+[Host architecture](plugin-architecture.md) ·
+[VRChat integration](vrchat-avatar.md) ·
+[Companion protocol](https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/connector-protocol.md)

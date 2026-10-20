@@ -190,5 +190,98 @@ async fn render_async(directory: &Path) -> Result<(), Box<dyn Error + Send + Syn
         }
         .to_png_bytes()?,
     )?;
+    render_voice_previews(&mut renderer, &readback, directory)?;
+    Ok(())
+}
+
+// Exercise the production prop meshes, fitted window, eye cameras and GPU passes.
+fn render_voice_previews(
+    renderer: &mut StereoRenderer,
+    readback: &wgpu::Buffer,
+    directory: &Path,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    use super::{
+        input::Hand,
+        interaction::{Interaction, controller_root},
+        spatial::window,
+    };
+    use crate::voice_interaction::VoiceSnapshot;
+    let grip = Mat4::from_translation(Vec3::new(-0.20, 1.05, -0.37))
+        * Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2);
+    let root = controller_root(grip);
+    for (name, position, enabled, editing) in [
+        ("front", Vec3::new(-0.20, 1.15, 0.30), true, false),
+        ("oblique", Vec3::new(0.20, 1.30, 0.10), true, false),
+        ("close", Vec3::new(-0.20, 1.15, -0.10), true, false),
+        ("disabled", Vec3::new(-0.20, 1.15, 0.30), false, false),
+        ("editing", Vec3::new(-0.20, 1.15, 0.30), true, true),
+    ] {
+        let head = glam::camera::rh::view::look_at_mat4(position, root.w_axis.truncate(), Vec3::Y)
+            .inverse();
+        let eyes = [-0.032, 0.032].map(|x| head * Mat4::from_translation(Vec3::X * x));
+        let snapshot = VoiceSnapshot {
+            enabled: true,
+            review_enabled: true,
+            can_send: enabled,
+            can_revise: enabled,
+            revise_cancels: editing,
+            ..Default::default()
+        };
+        let mut interaction = Interaction::default();
+        interaction.update(root, head, [Hand::default(); 2], &snapshot, 1.0 / 60.0);
+        let mut model = interaction.model(root, &snapshot);
+        let (plane, _, cameras) = window(&model, head, eyes).ok_or("Invalid prop window")?;
+        for part in &mut model.parts {
+            part.transform = plane.inverse() * part.transform;
+        }
+        for _ in 0..4 {
+            if renderer.render_model(model.clone(), cameras)? {
+                break;
+            }
+            renderer.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(Duration::from_secs(10)),
+            })?;
+        }
+        let mut encoder = renderer.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            renderer.texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(1024 * 4),
+                    rows_per_image: Some(512),
+                },
+            },
+            wgpu::Extent3d {
+                width: 1024,
+                height: 512,
+                depth_or_array_layers: 1,
+            },
+        );
+        renderer.queue.submit([encoder.finish()]);
+        readback.map_async(wgpu::MapMode::Read, .., |_| {});
+        renderer.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(Duration::from_secs(10)),
+        })?;
+        let pixels = readback.get_mapped_range(..)?.to_vec();
+        readback.unmap();
+        let visible = pixels.chunks_exact(4).filter(|p| p[3] > 64).count();
+        if visible < 1000 {
+            return Err(format!("{name}: voice props did not render").into());
+        }
+        println!("voice-{name}: {visible} visible pixels");
+        std::fs::write(
+            directory.join(format!("voice-{name}-stereo.png")),
+            egui::IconData {
+                rgba: pixels,
+                width: 1024,
+                height: 512,
+            }
+            .to_png_bytes()?,
+        )?;
+    }
     Ok(())
 }

@@ -5,6 +5,7 @@
 
 mod avatar;
 mod graphics;
+mod indicator;
 mod input;
 mod interaction;
 mod openvr;

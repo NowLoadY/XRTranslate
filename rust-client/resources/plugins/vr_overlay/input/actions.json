@@ -12,11 +12,6 @@
       "requirement": "mandatory"
     },
     {
-      "name": "/actions/voice/in/grab",
-      "type": "boolean",
-      "requirement": "mandatory"
-    },
-    {
       "name": "/actions/voice/out/touch",
       "type": "vibration"
     }
@@ -40,14 +35,12 @@
       "language_tag": "en_us",
       "/actions/voice": "XRTranslate voice objects",
       "/actions/voice/in/hand": "Grip position",
-      "/actions/voice/in/grab": "Grab object",
       "/actions/voice/out/touch": "Touch feedback"
     },
     {
       "language_tag": "zh_cn",
       "/actions/voice": "XRTranslate 语音物件",
       "/actions/voice/in/hand": "手柄握持位置",
-      "/actions/voice/in/grab": "抓取物件",
       "/actions/voice/out/touch": "触碰反馈"
     }
   ]

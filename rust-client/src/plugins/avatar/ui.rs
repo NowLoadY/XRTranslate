@@ -12,6 +12,7 @@ impl AvatarPlugin {
         ui: &mut egui::Ui,
         language: UiLanguage,
         lyrics: bool,
+        enabled: bool,
     ) -> bool {
         let before = self.settings.clone();
         let selection_id = ui.id().with("avatar_region");
@@ -29,7 +30,7 @@ impl AvatarPlugin {
                     |ui| {
                         components::card(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            self.render_connection(ui, language);
+                            self.render_connection(ui, language, enabled);
                         });
                         ui.add_space(12.0);
                         self.render_region_settings(ui, language, lyrics, selected);
@@ -44,7 +45,7 @@ impl AvatarPlugin {
         } else {
             components::card(ui, |ui| {
                 ui.set_width(ui.available_width());
-                self.render_connection(ui, language);
+                self.render_connection(ui, language, enabled);
             });
             ui.add_space(12.0);
             self.render_preview(ui, language, &mut selected);
@@ -57,7 +58,7 @@ impl AvatarPlugin {
 
     fn render_preview(&mut self, ui: &mut egui::Ui, language: UiLanguage, selected: &mut usize) {
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.settings.captions, tr(language, "Display content"));
+            ui.checkbox(&mut self.settings.captions, tr(language, "Show captions"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if components::delete_button(ui, tr(language, "Clear messages")).clicked() {
                     self.output.clear_messages();
@@ -111,9 +112,9 @@ impl AvatarPlugin {
             ui.set_width(ui.available_width());
             if selected != 1 {
                 let (label, banner) = if selected == 0 {
-                    ("Header:", &mut self.settings.header)
+                    ("Header", &mut self.settings.header)
                 } else {
-                    ("Footer:", &mut self.settings.footer)
+                    ("Footer", &mut self.settings.footer)
                 };
                 render_banner_selector(
                     ui,
@@ -125,34 +126,40 @@ impl AvatarPlugin {
                 );
             } else {
                 ui.checkbox(&mut self.settings.messages, tr(language, "Messages"));
-                components::audio_source_filter(
-                    ui,
-                    &mut self.settings.audio_source_filter,
-                    language,
-                );
-                ui.label(tr(language, "Format:"));
-                egui::ComboBox::from_id_salt("avatar_message_format")
-                    .width(ui.available_width())
-                    .truncate()
-                    .selected_text(self.settings.format.label(language))
-                    .show_ui(ui, |ui| {
-                        for mode in [
-                            MessageFormat::TargetOnly,
-                            MessageFormat::BilingualSourceFirst,
-                            MessageFormat::BilingualTargetFirst,
-                            MessageFormat::Inline,
-                        ] {
-                            ui.selectable_value(
-                                &mut self.settings.format,
-                                mode,
-                                mode.label(language),
-                            );
-                        }
+                ui.add_enabled_ui(self.settings.messages, |ui| {
+                    components::audio_source_filter(
+                        ui,
+                        &mut self.settings.audio_source_filter,
+                        language,
+                    );
+                    ui.horizontal(|ui| {
+                        ui.label(tr(language, "Format:"));
+                        egui::ComboBox::from_id_salt("avatar_message_format")
+                            .width(ui.available_width())
+                            .truncate()
+                            .selected_text(self.settings.format.label(language))
+                            .show_ui(ui, |ui| {
+                                for mode in [
+                                    MessageFormat::TargetOnly,
+                                    MessageFormat::BilingualSourceFirst,
+                                    MessageFormat::BilingualTargetFirst,
+                                    MessageFormat::Inline,
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.settings.format,
+                                        mode,
+                                        mode.label(language),
+                                    );
+                                }
+                            });
                     });
-                ui.add(
-                    egui::Slider::new(&mut self.settings.message_seconds, 1..=15)
-                        .text(tr(language, "Display seconds")),
-                );
+                    ui.horizontal(|ui| {
+                        ui.label(tr(language, "Display seconds"));
+                        ui.add(
+                            egui::DragValue::new(&mut self.settings.message_seconds).range(1..=15),
+                        );
+                    });
+                });
             }
         });
     }

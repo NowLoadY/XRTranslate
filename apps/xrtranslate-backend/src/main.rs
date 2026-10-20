@@ -1559,9 +1559,7 @@ async fn wait_for_model_servers(
                 .try_wait()
                 .map_err(|error| format!("cannot inspect managed {role} process: {error}"))?
             {
-                return Err(format!(
-                    "managed {role} llama-server exited during startup ({status}); inspect the lines above this error"
-                ));
+                return Err(process.startup_error(status));
             }
         }
         let asr = match (&asr_health, &asr_models) {

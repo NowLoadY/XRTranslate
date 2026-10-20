@@ -717,6 +717,10 @@ impl Worker {
 
     fn error(&self, value: String) {
         self.handle.shared.lock().last_error = Some(value.clone());
+        self.diagnostic(value);
+    }
+
+    fn diagnostic(&self, value: String) {
         self.handle.shared.lock().state.diagnostic = Some(value);
     }
 
@@ -997,7 +1001,7 @@ impl Worker {
             if self.endpoint.is_some() {
                 self.invalidate("Multiple local clients found; close the unused client");
             } else {
-                self.error("Multiple local clients found; close the unused client".into());
+                self.diagnostic("Multiple local clients found; close the unused client".into());
             }
             return;
         }
@@ -1005,7 +1009,9 @@ impl Worker {
         let host = match self.fetch_peer(&client, port, "/?HOST_INFO").await {
             Ok(host) => host,
             Err(error) => {
-                self.error(error);
+                // Peers can close normally (including Unity's Stop test). Keep
+                // connection failures on the OSC page instead of opening a modal.
+                self.diagnostic(error);
                 return;
             }
         };
@@ -1081,7 +1087,7 @@ impl Worker {
                 }
             }
             Err(error) => {
-                self.error(error.clone());
+                self.diagnostic(error.clone());
                 // Malformed identity/data fails immediately; network timeouts have
                 // the bounded health grace period, without publishing stale data.
                 if error.starts_with("Invalid OSCQuery") {
@@ -1543,6 +1549,39 @@ mod tests {
         assert_eq!(avatar["ACCESS"], 2);
         assert!(avatar.get("TYPE").is_none());
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn closed_peer_reports_connection_status_without_application_error() {
+        // Cover a peer closing before HOST_INFO and between HOST_INFO and the tree.
+        for serve_host_info in [false, true] {
+            let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tokio::spawn(async move {
+                if serve_host_info {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let mut bytes = [0; 1024];
+                    stream.read(&mut bytes).await.unwrap();
+                    let body = json!({"NAME":"VRChat-test", "OSC_PORT":9000}).to_string();
+                    stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                }
+                drop(listener);
+            });
+            if !serve_host_info { server.await.unwrap(); }
+            let mut worker = worker(port, 9000);
+            worker.query(None).await;
+            assert!(worker.handle.shared.lock().last_error.is_none());
+            assert!(worker.handle.state().diagnostic.is_some());
+            assert!(worker.handle.events().is_empty());
+            // Losing the modal must not weaken the stale-binding deadline.
+            worker.last_query_success = Some(Instant::now() - HEALTH_TIMEOUT);
+            worker.command(Command::Write { epoch: 7, path: CONTROL.into(),
+                value: OscValue::Bool(true), query_id: None }).await;
+            assert!(worker.endpoint.is_none());
+            assert!(matches!(worker.handle.events().as_slice(),
+                [TransportEvent::Invalidated { .. }]));
+        }
     }
 
     #[tokio::test]

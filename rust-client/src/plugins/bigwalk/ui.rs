@@ -100,7 +100,7 @@ impl BigWalkPlugin {
                 );
             }
             ui.hyperlink_to(
-                tr(language, "Install game bridge"),
+                tr(language, "Setup guide"),
                 "https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/bigwalk/installation.md",
             );
             ui.add_space(12.0);

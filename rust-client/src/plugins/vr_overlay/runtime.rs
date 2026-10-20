@@ -240,14 +240,14 @@ struct VoiceBridge {
     snapshot: VoiceSnapshot,
     actions: VecDeque<VoiceAction>,
     microphone: bool,
-    dock_requested: bool,
+    reset_proximity_requested: bool,
 }
 
 impl VoiceBridge {
     fn push(&mut self, action: VoiceAction) {
         // A frame already in progress can return an obsolete near event after
-        // the host requests docking. Reject it until the worker consumes that request.
-        if self.dock_requested && action == VoiceAction::Microphone(true) {
+        // the host resets proximity input. Reject it until the worker consumes that request.
+        if self.reset_proximity_requested && action == VoiceAction::Microphone(true) {
             return;
         }
         if !self.snapshot.enabled && action != VoiceAction::Microphone(false) {
@@ -270,8 +270,8 @@ impl VoiceBridge {
         }
     }
 
-    fn dock_microphone(&mut self) {
-        self.dock_requested = true;
+    fn reset_voice_proximity(&mut self) {
+        self.reset_proximity_requested = true;
         self.microphone = false;
         self.actions
             .retain(|action| !matches!(action, VoiceAction::Microphone(_)));
@@ -365,8 +365,8 @@ impl VrOverlayManager {
         self.voice.lock().actions.drain(..).collect()
     }
 
-    pub(crate) fn dock_microphone(&self) {
-        self.voice.lock().dock_microphone();
+    pub(crate) fn reset_voice_proximity(&self) {
+        self.voice.lock().reset_voice_proximity();
     }
 
     pub(crate) fn set_voice_snapshot(&self, snapshot: VoiceSnapshot) {
@@ -978,18 +978,17 @@ fn run_vr_worker(
             let mut st = status.lock();
             st.interaction_available = settings.interaction_enabled
                 && voice.is_some()
-                && st.interaction_error.is_none()
-                && st.avatar_available;
+                && st.interaction_error.is_none();
         }
         // Input and release cleanup keep ticking even when the companion has
         // faded out. Captions and host commands continue on this same worker.
         if Instant::now() >= next_avatar_frame {
             next_avatar_frame = Instant::now() + Duration::from_secs_f64(1.0 / 60.0);
-            let (mut snapshot, dock_microphone) = {
+            let (mut snapshot, reset_voice_proximity) = {
                 let mut bridge = voice_bridge.lock();
                 (
                     bridge.snapshot.clone(),
-                    std::mem::take(&mut bridge.dock_requested),
+                    std::mem::take(&mut bridge.reset_proximity_requested),
                 )
             };
             snapshot.review_enabled &= settings.review_before_send;
@@ -1000,9 +999,6 @@ fn run_vr_worker(
             if status.lock().avatar_available
                 && let Some(current) = avatar.as_mut()
             {
-                current.freeze_controls(
-                    active && voice.as_ref().is_some_and(VoiceOverlay::freeze_controls),
-                );
                 current
                     .voice_snapshot((active && snapshot.review_enabled).then(|| snapshot.clone()));
                 let result = current.frame(&presentation);
@@ -1023,18 +1019,15 @@ fn run_vr_worker(
                     }
                 }
             }
-            let control_root = active
-                .then(|| avatar.as_ref().and_then(AvatarOverlay::control_root))
-                .flatten();
             if let Some(objects) = voice.as_mut() {
-                if dock_microphone {
-                    objects.dock_microphone();
+                if reset_voice_proximity {
+                    objects.reset_voice_proximity();
                 }
-                if control_root.is_none() {
+                if !active {
                     objects.suspend();
                     voice_bridge.lock().stop();
                 } else {
-                    match objects.frame(control_root, &snapshot) {
+                    match objects.frame(&snapshot, &settings) {
                         Ok(actions) => {
                             let mut bridge = voice_bridge.lock();
                             for action in actions {

@@ -46,24 +46,35 @@ impl AvatarPlugin {
         &self,
         ui: &mut eframe::egui::Ui,
         language: crate::i18n::UiLanguage,
+        enabled: bool,
     ) {
         use crate::i18n::{tr, tr_dynamic};
         use xrt_connector_core::Status;
         let status_value = self.snapshot().status;
         let status = match status_value {
-            Status::Unavailable if self.enabled_for_reset() => "Synchronizing Avatar controls",
-            Status::Unavailable => "Avatar control unavailable",
-            Status::Off => "Avatar translation is off",
-            Status::Starting => "Starting Avatar translation",
-            Status::Active => "Avatar translation is running",
-            Status::Stopping => "Stopping Avatar translation",
-            Status::Error => "Avatar translation could not continue",
+            _ if !enabled => "Disabled",
+            Status::Unavailable if self.enabled_for_reset() => "Syncing controls…",
+            Status::Unavailable => "Not connected",
+            Status::Off => "Ready",
+            Status::Starting => "Starting…",
+            Status::Active => "Translating",
+            Status::Stopping => "Stopping…",
+            Status::Error => "Translation failed",
         };
         ui.label(tr(language, status));
-        if let Some(message) = self.diagnostic() {
+        if enabled
+            && let Some(message) = self.diagnostic()
+        {
+            let message = match message {
+                "OSC receive configuration changed" => {
+                    "Enable OSC, then use your avatar's XRT control."
+                }
+                message => message,
+            };
             ui.label(tr_dynamic(language, message));
         }
-        if self.settings.connector.osc().is_some()
+        if enabled
+            && self.settings.connector.osc().is_some()
             && self.settings.captions
             && matches!(
                 status_value,
@@ -73,8 +84,11 @@ impl AvatarPlugin {
         {
             ui.weak(tr(language, "No caption object found on this Avatar."));
         }
-        if self.settings.connector.osc().is_none() {
-            if let Some(runtime) = &self.websocket {
+        ui.horizontal_wrapped(|ui| {
+            if enabled
+                && self.settings.connector.osc().is_none()
+                && let Some(runtime) = &self.websocket
+            {
                 if ui.button(tr(language, "Copy connection info")).clicked() {
                     ui.ctx().copy_text(
                         serde_json::json!({
@@ -87,23 +101,26 @@ impl AvatarPlugin {
                     );
                 }
             }
-        } else {
-            ui.label(tr(
-                language,
-                "Enable OSC in the game, then use the XRT control on your Avatar.",
-            ));
+            ui.hyperlink_to(
+                tr(language, "Setup guide"),
+                format!(
+                    "https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/{}/installation.md",
+                    self.settings.connector.id()
+                ),
+            );
+        });
+        if enabled && self.settings.connector.osc().is_some() && self.diagnostic().is_none() {
+            let hint = match status_value {
+                Status::Unavailable if !self.enabled_for_reset() => {
+                    Some("Enable OSC, then use your avatar's XRT control.")
+                }
+                Status::Off => Some("Start translation from your game controls."),
+                _ => None,
+            };
+            if let Some(hint) = hint {
+                ui.weak(tr(language, hint));
+            }
         }
-        if self.settings.connector.id() == "vrchat" {
-            ui.hyperlink_to(tr(language, "Add to VCC / ALCOM"),
-                "vcc://vpm/addRepo?url=https%3A%2F%2Fraw.githubusercontent.com%2FNowLoadY%2FXRT-Avatar-Plugin%2Fmain%2Fvpm%2Findex.json");
-        }
-        ui.hyperlink_to(
-            tr(language, "Avatar package and setup"),
-            format!(
-                "https://github.com/NowLoadY/XRT-Avatar-Plugin/blob/main/docs/adapters/{}/installation.md",
-                self.settings.connector.id()
-            ),
-        );
     }
     fn enabled_for_reset(&self) -> bool {
         self.snapshot().pending_reset.is_some() && self.diagnostic().is_none()

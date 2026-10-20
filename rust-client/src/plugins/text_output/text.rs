@@ -37,10 +37,10 @@ impl MessageFormat {
         crate::i18n::tr(
             language,
             match self {
-                Self::BilingualSourceFirst => "Bilingual (Source → Target)",
-                Self::BilingualTargetFirst => "Bilingual (Target → Source)",
-                Self::Inline => "Single Line (Source | Target)",
-                Self::TargetOnly => "Target Only",
+                Self::BilingualSourceFirst => "Bilingual: original first",
+                Self::BilingualTargetFirst => "Bilingual: translation first",
+                Self::Inline => "Bilingual: one line",
+                Self::TargetOnly => "Translation only",
             },
         )
     }
@@ -59,7 +59,7 @@ pub enum BannerContentType {
 impl BannerContentType {
     pub fn label(&self, language: crate::i18n::UiLanguage) -> &'static str {
         match self {
-            Self::None => crate::i18n::tr(language, "None (Disabled)"),
+            Self::None => crate::i18n::tr(language, "None"),
             Self::CustomText => crate::i18n::tr(language, "Custom Text"),
             Self::SystemTime => crate::i18n::tr(language, "System Time"),
             Self::CpuStatus => crate::i18n::tr(language, "CPU Usage"),
