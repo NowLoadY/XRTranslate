@@ -1,7 +1,7 @@
 use super::AvatarPlugin;
 use crate::{
     i18n::{UiLanguage, tr},
-    plugins::text_output::{MessageFormat, render_banner_selector},
+    plugins::text_output::MessageFormat,
     ui::{components, theme},
 };
 use eframe::egui;
@@ -11,7 +11,6 @@ impl AvatarPlugin {
         &mut self,
         ui: &mut egui::Ui,
         language: UiLanguage,
-        lyrics: bool,
         enabled: bool,
     ) -> bool {
         let before = self.settings.clone();
@@ -33,7 +32,7 @@ impl AvatarPlugin {
                             self.render_connection(ui, language, enabled);
                         });
                         ui.add_space(12.0);
-                        self.render_region_settings(ui, language, lyrics, selected);
+                        self.render_region_settings(ui, language, selected);
                     },
                 );
                 ui.allocate_ui_with_layout(
@@ -50,7 +49,7 @@ impl AvatarPlugin {
             ui.add_space(12.0);
             self.render_preview(ui, language, &mut selected);
             ui.add_space(12.0);
-            self.render_region_settings(ui, language, lyrics, selected);
+            self.render_region_settings(ui, language, selected);
         }
         ui.data_mut(|data| data.insert_temp(selection_id, selected));
         before != self.settings
@@ -101,13 +100,7 @@ impl AvatarPlugin {
         });
     }
 
-    fn render_region_settings(
-        &mut self,
-        ui: &mut egui::Ui,
-        language: UiLanguage,
-        lyrics: bool,
-        selected: usize,
-    ) {
+    fn render_region_settings(&mut self, ui: &mut egui::Ui, language: UiLanguage, selected: usize) {
         components::card(ui, |ui| {
             ui.set_width(ui.available_width());
             if selected != 1 {
@@ -116,13 +109,13 @@ impl AvatarPlugin {
                 } else {
                     ("Footer", &mut self.settings.footer)
                 };
-                render_banner_selector(
+                ui.label(tr(language, label));
+                components::text_edit_ui(
                     ui,
-                    tr(language, label),
-                    "avatar_banner",
-                    banner,
-                    language,
-                    lyrics,
+                    ("avatar_text", selected),
+                    egui::TextEdit::multiline(banner)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(3),
                 );
             } else {
                 ui.checkbox(&mut self.settings.messages, tr(language, "Messages"));

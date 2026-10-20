@@ -5,7 +5,7 @@ use super::{
 use crate::{
     client_settings::CaptureSource,
     plugins::osc::transport::OscTransportHandle,
-    plugins::text_output::{TextOutputHandle, format_message},
+    plugins::text_output::format_message,
     session_coordinator::{CaptionUpdate, HostOutputEvent, HostOutputSubscriber},
 };
 use parking_lot::Mutex;
@@ -31,15 +31,11 @@ struct Entry {
 }
 #[derive(Default)]
 struct State {
-    metrics: TextOutputHandle,
     display: TextDisplay,
     settings: Settings,
     enabled: bool,
     entries: VecDeque<Entry>,
     sequence: u64,
-    lyric: String,
-    header: Option<String>,
-    footer: Option<String>,
     dirty: bool,
     sent: Option<Instant>,
 }
@@ -75,9 +71,9 @@ impl State {
             Vec::new()
         };
         DisplaySnapshot {
-            header: self.header.clone(),
+            header: Some(self.settings.header.clone()),
             messages,
-            footer: self.footer.clone(),
+            footer: Some(self.settings.footer.clone()),
         }
         .normalized()
     }
@@ -85,12 +81,6 @@ impl State {
 #[derive(Clone, Default)]
 pub(crate) struct DisplayOutput(Arc<Mutex<State>>);
 impl DisplayOutput {
-    pub(crate) fn new(metrics: TextOutputHandle) -> Self {
-        Self(Arc::new(Mutex::new(State {
-            metrics,
-            ..State::default()
-        })))
-    }
     pub(super) fn configure(&self, settings: &Settings, enabled: bool) {
         let mut state = self.0.lock();
         if state.enabled && !enabled {
@@ -126,13 +116,6 @@ impl DisplayOutput {
         state.entries.clear();
         state.dirty = true;
     }
-    pub(crate) fn set_lyric(&self, text: String) {
-        let mut state = self.0.lock();
-        if state.lyric != text {
-            state.lyric = text;
-            state.dirty = true;
-        }
-    }
     pub(super) fn clear_messages(&self) {
         let mut state = self.0.lock();
         state.entries.clear();
@@ -145,15 +128,6 @@ impl DisplayOutput {
     pub(super) fn poll(&self) -> Result<(), String> {
         let mut state = self.0.lock();
         let now = Instant::now();
-        let metrics = state.metrics.snapshot();
-        let banner = |text: String| (!text.is_empty()).then_some(text);
-        let header = banner(state.settings.header.render_text(&metrics, &state.lyric));
-        let footer = banner(state.settings.footer.render_text(&metrics, &state.lyric));
-        if state.header != header || state.footer != footer {
-            state.header = header;
-            state.footer = footer;
-            state.dirty = true;
-        }
         let count = state.entries.len();
         state.entries.retain(|entry| entry.expires > now);
         state.dirty |= count != state.entries.len();
@@ -178,8 +152,8 @@ impl HostOutputSubscriber for DisplayOutput {
         if !state.enabled {
             return;
         }
-        let expires = Instant::now()
-            + Duration::from_secs(state.settings.message_seconds.clamp(1, 15));
+        let expires =
+            Instant::now() + Duration::from_secs(state.settings.message_seconds.clamp(1, 15));
         match event {
             HostOutputEvent::Caption {
                 stream_id,
@@ -418,5 +392,25 @@ mod tests {
         assert_eq!(output.preview().messages.last().unwrap().text, "Recognized");
         output.on_host_output(HostOutputEvent::Clear);
         assert!(output.preview().messages.is_empty());
+
+        settings = serde_json::from_value(serde_json::json!({
+            "header": {"content_type": "CustomText", "custom_text": "Hello", "show_device_name": false},
+            "footer": {"content_type": "GpuStatus", "custom_text": "old", "show_device_name": true}
+        })).unwrap();
+        assert_eq!(settings.header, "Hello");
+        assert!(settings.footer.is_empty());
+        settings.footer = "Welcome".into();
+        settings.messages = false;
+        settings.audio_source_filter.microphone = false;
+        settings.audio_source_filter.system_audio = false;
+        output.configure(&settings, true);
+        let preview = output.preview();
+        assert_eq!(preview.header.as_deref(), Some("Hello"));
+        assert_eq!(preview.footer.as_deref(), Some("Welcome"));
+        assert!(preview.messages.is_empty());
+        assert_eq!(
+            serde_json::from_value::<Settings>(serde_json::to_value(&settings).unwrap()).unwrap(),
+            settings
+        );
     }
 }

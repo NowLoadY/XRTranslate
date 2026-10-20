@@ -10,8 +10,10 @@ pub use xrt_connector_core::{Connector, osc::Contract as OscContract};
 #[serde(default)]
 pub struct Settings {
     pub connector: Connector,
-    pub header: BannerConfig,
-    pub footer: BannerConfig,
+    #[serde(deserialize_with = "static_text")]
+    pub header: String,
+    #[serde(deserialize_with = "static_text")]
+    pub footer: String,
     pub messages: bool,
     pub format: MessageFormat,
     pub audio_source_filter: AudioSourceFilter,
@@ -21,8 +23,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             connector: Connector::default(),
-            header: BannerConfig::default(),
-            footer: BannerConfig::default(),
+            header: String::new(),
+            footer: String::new(),
             messages: true,
             format: MessageFormat::TargetOnly,
             audio_source_filter: AudioSourceFilter::default(),
@@ -30,11 +32,19 @@ impl Default for Settings {
         }
     }
 }
-impl Settings {
-    pub fn lyric_budget(&self) -> Option<usize> {
-        [&self.header, &self.footer]
-            .iter()
-            .any(|banner| banner.content_type == BannerContentType::Lyrics)
-        .then_some(24)
+// Retain saved custom text without reviving old dynamic banner sources.
+fn static_text<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum SavedText {
+        Text(String),
+        Legacy(BannerConfig),
     }
+    Ok(match SavedText::deserialize(deserializer)? {
+        SavedText::Text(text) => text,
+        SavedText::Legacy(banner) if banner.content_type == BannerContentType::CustomText => {
+            banner.custom_text
+        }
+        SavedText::Legacy(_) => String::new(),
+    })
 }

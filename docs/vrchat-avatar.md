@@ -23,14 +23,14 @@ OSC off during the test; **Stop test** closes the temporary connection.
 
 ## Captions
 
-**Show captions** shows or hides the display. Click **Header**, **Messages** or
+**XRT → Caption panel** shows or hides the in-game panel. Click **Header**, **Messages** or
 **Footer** in the preview to edit content. Stopping clears that task's messages;
 independent header/footer content remains. Chatbox, overlay and TTS have their
 own settings. A menu-only avatar also works.
 
 The display holds 128 glyphs. Horizontal and portrait presets use 32 or 8
-columns; custom 16-column objects are supported. Each configured header/footer
-uses one row. Only changed chunks are sent, at intervals of at least 200 ms.
+columns; custom 16-column objects are supported. Static header/footer text shares
+the available space with translations. Board panels fit and naturally arrange the text.
 Other players see captions through normal avatar visibility and shader settings.
 
 ## Integration notes

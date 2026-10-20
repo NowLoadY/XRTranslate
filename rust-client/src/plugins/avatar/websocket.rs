@@ -274,6 +274,8 @@ fn handshake(
     secret: &str,
     running: Arc<AtomicBool>,
 ) -> Option<Peer> {
+    // Windows accepted sockets inherit the listener's nonblocking mode.
+    socket.set_nonblocking(false).ok()?;
     socket
         .set_read_timeout(Some(Duration::from_millis(200)))
         .ok()?;
@@ -479,20 +481,13 @@ mod tests {
     #[test]
     fn stopping_messages_preserves_independent_banners() {
         use crate::{
-            plugins::{
-                avatar::{connectors::Settings, output::DisplayOutput},
-                text_output::{BannerConfig, BannerContentType},
-            },
+            plugins::avatar::{connectors::Settings, output::DisplayOutput},
             session_coordinator::{CaptionUpdate, HostOutputEvent, HostOutputSubscriber},
         };
         let (sender, _, _) = output_queue();
         let output = DisplayOutput::default();
         let settings = Settings {
-            header: BannerConfig {
-                content_type: BannerContentType::CustomText,
-                custom_text: "Header".into(),
-                ..Default::default()
-            },
+            header: "Header".into(),
             ..Default::default()
         };
         output.configure(&settings, true);

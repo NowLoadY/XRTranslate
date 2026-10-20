@@ -47,7 +47,7 @@ xrtranslate-download = { path = "../crates/xrtranslate-download" }
 xrtranslate-engine = { path = "../crates/xrtranslate-engine" }
 xrtranslate-prompt = { path = "../crates/xrtranslate-prompt" }
 xrtranslate-protocol = { path = "../crates/xrtranslate-protocol" }
-xrt-connector-core = { git = "https://github.com/NowLoadY/XRT-Avatar-Plugin.git", rev = "901d6927374d725ffe50cd1677bdb457adf4530f" }
+xrt-connector-core = { git = "https://github.com/NowLoadY/XRT-Avatar-Plugin.git", rev = "a01af88f7d37263e50b2daa67ca742e353601a80" }
 libmpv-sys = { version = "3.1.0", optional = true }
 
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]

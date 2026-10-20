@@ -970,7 +970,6 @@ fn lyric_requests(
     preferences: &PluginPreferences,
     vrchat: &OscPlugin,
     chilloutvr: &OscPlugin,
-    avatar: Option<&AvatarPlugin>,
 ) -> Vec<plugins::lyrics::DisplayRequest> {
     use plugins::lyrics::DisplayRequest;
     if !preferences.is_enabled(PluginId::LYRICS) {
@@ -990,13 +989,6 @@ fn lyric_requests(
                 offset_ms: plugin.applied().lyric_offset_ms(),
             });
         }
-    }
-    if let Some(budget) = avatar.and_then(|plugin| plugin.settings.lyric_budget()) {
-        requests.push(DisplayRequest {
-            output: PluginId::AVATAR,
-            budget,
-            offset_ms: 0,
-        });
     }
     requests
 }
@@ -1050,15 +1042,11 @@ impl Default for XRTranslateApp {
             settings.bigwalk_settings.clone(),
             settings.game_plugins.active(GamePluginSelection::BigWalk),
         );
-        let avatar_plugin = AvatarPlugin::new(
-            settings.avatar_connector.clone(),
-            text_output_plugin.handle(),
-        );
+        let avatar_plugin = AvatarPlugin::new(settings.avatar_connector.clone());
         #[cfg(any(windows, target_os = "linux"))]
         let lyrics_plugin = {
             let output = osc_plugin.publisher();
             let chilloutvr_output = chilloutvr_osc_plugin.publisher();
-            let avatar_output = avatar_plugin.output.clone();
             let mut plugin = plugins::lyrics::LyricsPlugin::new(
                 backend_manager
                     .runtime_layout()
@@ -1067,7 +1055,6 @@ impl Default for XRTranslateApp {
                 move |destination, text| match destination {
                     PluginId::OSC => output.set_lyrics(text),
                     PluginId::CHILLOUTVR_OSC => chilloutvr_output.set_lyrics(text),
-                    PluginId::AVATAR => avatar_output.set_lyric(text.preferred().to_owned()),
                     _ => {}
                 },
             );
@@ -1075,10 +1062,6 @@ impl Default for XRTranslateApp {
                 &settings.plugin_preferences,
                 &osc_plugin,
                 &chilloutvr_osc_plugin,
-                settings
-                    .game_plugins
-                    .active(GamePluginSelection::Avatar)
-                    .then_some(&avatar_plugin),
             ));
             plugin
         };
@@ -3047,9 +3030,6 @@ impl XRTranslateApp {
             &self.plugin_preferences,
             &self.osc_plugin,
             &self.chilloutvr_osc_plugin,
-            self.game_plugins
-                .active(GamePluginSelection::Avatar)
-                .then_some(&self.avatar_plugin),
         ));
     }
 
@@ -3118,11 +3098,9 @@ impl XRTranslateApp {
                 ui.add_space(16.0);
                 match self.game_plugins.selection {
                     GamePluginSelection::Avatar => {
-                        let lyrics = self.plugin_enabled(PluginId::LYRICS);
                         if self.avatar_plugin.render_content(
                             ui,
                             self.ui_language,
-                            lyrics,
                             self.game_plugins.enabled,
                         ) {
                             self.poll_avatar(None);

@@ -39,10 +39,9 @@ pub(crate) struct AvatarPlugin {
     pub output: DisplayOutput,
 }
 impl AvatarPlugin {
-    pub fn new(settings: Settings, text: crate::plugins::text_output::TextOutputHandle) -> Self {
+    pub fn new(settings: Settings) -> Self {
         Self {
             settings,
-            output: DisplayOutput::new(text),
             ..Self::default()
         }
     }

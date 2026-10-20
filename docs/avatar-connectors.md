@@ -23,11 +23,12 @@ an eligible session you host; Second Life needs an HTTPS relay.
 
 ## Captions
 
-Translations appear by default. **Show captions** shows or hides the whole
-display. Click **Header**, **Messages** or **Footer** in the preview to edit it.
+Click **Header**, **Messages** or **Footer** in the preview to edit it.
+In VRChat, **XRT → Caption panel** shows or hides the panel; it starts off.
 
 - **Messages:** audio sources, language format and display seconds.
-- **Header / Footer:** optional text, time, device status or lyrics.
+- **Header / Footer:** static text; leave blank to hide. Both remain available
+  with messages or audio sources turned off and share the available panel space.
 - **Trash icon:** clear messages now.
 
 Stopping translation clears its messages. Header/footer content remains until
@@ -64,7 +65,7 @@ Queue time reduces remaining lifetime, and a new snapshot replaces obsolete
 work. Header/footer updates do not restart the board.
 
 Shared formatting and system sampling belong to `TextOutputPlugin`. Lyrics
-uses one host worker, requested by either OSC or Avatar output. Existing
+uses one host worker, requested by OSC chatbox outputs. Existing
 `vrc_avatar` preferences remain an alias of `avatar`.
 
 [Host architecture](plugin-architecture.md) ·
