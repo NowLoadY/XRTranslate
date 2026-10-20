@@ -141,8 +141,8 @@ playback device is selected when no specific device is chosen. Local media audio
 playback is included in the default build through Symphonia and CPAL. The media
 playback bar supports seeking, and clicking a subtitle plays from its timestamp.
 Unavailable playback does not block task details or subtitle export.
-MPV's embedded child window is Windows-only; optional Linux MPV support can
-handle additional playback formats and audio extraction.
+In-page video playback is currently Windows-only. Optional Linux MPV support
+uses the system library for additional playback formats and audio extraction.
 
 ## Virtual microphone output
 
