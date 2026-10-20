@@ -17,6 +17,20 @@ pub fn tr(language: UiLanguage, english: &'static str) -> &'static str {
 
 const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     (
+        "Delete subtitle",
+        "删除字幕",
+        "字幕を削除",
+        "자막 삭제",
+        "Удалить субтитр",
+    ),
+    (
+        "Delete this subtitle?",
+        "删除这条字幕？",
+        "この字幕を削除しますか？",
+        "이 자막을 삭제할까요?",
+        "Удалить этот субтитр?",
+    ),
+    (
         "Retranslate original",
         "重新翻译原文",
         "原文を再翻訳",

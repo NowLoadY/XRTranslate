@@ -11,6 +11,8 @@ use crate::{
 };
 use eframe::egui;
 
+const SINGLE_LINE_HEADER_WIDTH: f32 = 360.0;
+
 pub(super) fn render_subtitles_card(
     controller: &mut MediaController,
     language: crate::i18n::UiLanguage,
@@ -121,6 +123,7 @@ pub(super) fn render_subtitles_card(
     );
     let mut seek = None;
     let mut edit = None;
+    let mut delete = None;
     let mut edit_action = super::subtitle_edit::EditAction::None;
     let subtitles = &controller.subtitles;
     let task_id = controller.active_task_id.as_deref();
@@ -192,6 +195,7 @@ pub(super) fn render_subtitles_card(
                     );
                     return;
                 }
+                let wrap_actions = ui.available_width() < SINGLE_LINE_HEADER_WIDTH;
                 crate::ui::layout::flow_row(ui, |ui| {
                     if can_play
                         && components::icon_button(
@@ -232,6 +236,9 @@ pub(super) fn render_subtitles_card(
                             edit = Some((cue.id.clone(), field));
                         }
                     }
+                    if wrap_actions {
+                        ui.end_row();
+                    }
                     if components::copy_button(ui, crate::i18n::tr(language, "Copy")).clicked() {
                         ui.ctx().copy_text(
                             cue.translated_text
@@ -250,6 +257,24 @@ pub(super) fn render_subtitles_card(
                     if button.clicked() {
                         edit = Some((cue.id.clone(), SubtitleField::Original));
                     }
+                    let button = ui
+                        .add_enabled_ui(can_edit, |ui| {
+                            components::delete_button(ui, tr(language, "Delete subtitle"))
+                        })
+                        .inner
+                        .on_disabled_hover_text(edit_hint);
+                    egui::Popup::menu(&button).show(|ui| {
+                        ui.label(tr(language, "Delete this subtitle?"));
+                        ui.horizontal(|ui| {
+                            if components::secondary_button(ui, tr(language, "Delete")).clicked() {
+                                delete = Some(cue.id.clone());
+                                ui.close();
+                            }
+                            if components::secondary_button(ui, tr(language, "Cancel")).clicked() {
+                                ui.close();
+                            }
+                        });
+                    });
                 });
                 let text = text.as_ref().unwrap();
                 ui.scope(|ui| {
@@ -277,6 +302,10 @@ pub(super) fn render_subtitles_card(
         },
     );
     ui.data_mut(|data| data.insert_temp(measurements_id, measurements));
+    if let Some(id) = delete {
+        controller.delete_subtitle(&id);
+        return;
+    }
     if let Some((source, target)) = merge
         && let (Some(source), Some(target)) = (
             controller.subtitles.cues().get(source),
@@ -321,10 +350,17 @@ fn prepare_cue_text(ui: &egui::Ui, cue: &SubtitleCue) -> (f32, CueText) {
         .map(str::trim)
         .filter(|text| !text.is_empty() && *text != cue.original_text.trim())
         .map(layout);
+    let header_height = ui.spacing().interact_size.y.max(32.0);
+    let wrapped_actions = if ui.available_width() - margins.x < SINGLE_LINE_HEADER_WIDTH {
+        header_height + ui.spacing().item_spacing.y
+    } else {
+        0.0
+    };
     let height = original.size().y
         + translated.as_ref().map_or(0.0, |text| text.size().y + 2.0)
         + margins.y
-        + ui.spacing().interact_size.y.max(32.0)
+        + header_height
+        + wrapped_actions
         + ui.spacing().item_spacing.y;
     (
         height,

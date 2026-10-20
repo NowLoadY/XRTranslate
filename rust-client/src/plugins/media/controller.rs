@@ -520,6 +520,41 @@ impl MediaController {
         true
     }
 
+    pub(super) fn delete_subtitle(&mut self, cue_id: &str) -> bool {
+        if self.subtitle_edit.is_some()
+            || self
+                .active_task_id
+                .as_deref()
+                .and_then(|id| self.store.get(id))
+                .is_none_or(|task| task.is_task_running)
+        {
+            return false;
+        }
+        let previous = self.subtitles.clone();
+        if !self.subtitles.remove_cue(cue_id) {
+            return false;
+        }
+        let was_dirty = self.dirty;
+        self.error = None;
+        self.dirty = true;
+        self.save_active();
+        if self.dirty {
+            self.subtitles = previous;
+            if let Some(task) = self
+                .active_task_id
+                .as_deref()
+                .and_then(|id| self.store.get_mut(id))
+            {
+                task.subtitles = self.subtitles.clone();
+            }
+            self.dirty = was_dirty;
+            return false;
+        }
+        self.last_auto_scrolled_cue_id = None;
+        self.last_manual_scroll = Some(Instant::now());
+        true
+    }
+
     pub fn save_active(&mut self) {
         if let Some(task) = self
             .active_task_id
@@ -807,8 +842,77 @@ impl MediaController {
 }
 
 #[cfg(test)]
-mod merge_tests {
+mod subtitle_edit_tests {
     use super::*;
+
+    #[test]
+    fn deletion_is_idle_only_and_persists_or_restores_the_whole_timeline() {
+        let storage = tempfile::tempdir().unwrap();
+        let mut controller = MediaController::default();
+        controller.backend = None;
+        controller.storage_dir = storage.path().to_owned();
+        controller.store.tasks.clear();
+        let mut task = MediaTask::new(
+            "Test deletion".into(),
+            MediaSource::LocalFile("test.srt".into()),
+            "en".into(),
+            "zh".into(),
+            SubtitleMode::None,
+            Default::default(),
+        );
+        task.subtitles = SubtitleTimeline::parse(
+            "1\n00:00:00,000 --> 00:00:01,000\nFirst.\n\n2\n00:00:01,000 --> 00:00:02,000\nSecond.\n\n3\n00:00:02,000 --> 00:00:03,000\nThird.\n",
+        ).unwrap();
+        task.is_task_running = true;
+        controller.active_task_id = Some(task.id.clone());
+        controller.subtitles = task.subtitles.clone();
+        controller.store.add_or_update(task);
+        controller.save_active();
+        let before = serde_json::to_value(&controller.subtitles).unwrap();
+
+        assert!(!controller.delete_subtitle("srt_1"));
+        controller.store.tasks[0].is_task_running = false;
+        controller.begin_subtitle_edit("srt_0", SubtitleField::Original);
+        assert!(!controller.delete_subtitle("srt_1"));
+        controller.subtitle_edit = None;
+        let blocked = tempfile::NamedTempFile::new().unwrap();
+        controller.storage_dir = blocked.path().to_owned();
+        assert!(!controller.delete_subtitle("srt_1"));
+        assert!(controller.error.is_some());
+        assert_eq!(serde_json::to_value(&controller.subtitles).unwrap(), before);
+        assert_eq!(
+            serde_json::to_value(&controller.store.tasks[0].subtitles).unwrap(),
+            before
+        );
+
+        controller.storage_dir = storage.path().to_owned();
+        assert!(controller.delete_subtitle("srt_1"));
+        assert!(controller.error.is_none());
+        let saved = MediaTaskStore::load_from_dir(storage.path());
+        assert_eq!(saved.tasks[0].subtitles.cues(), controller.subtitles.cues());
+        assert_eq!(
+            controller
+                .subtitles
+                .cues()
+                .iter()
+                .map(|cue| cue.original_text.as_str())
+                .collect::<Vec<_>>(),
+            ["First.", "Third."]
+        );
+        assert!(
+            !std::fs::read_to_string(storage.path().join("video_tasks.json"))
+                .unwrap()
+                .contains("srt_1")
+        );
+        assert!(controller.delete_subtitle("srt_0"));
+        assert!(controller.delete_subtitle("srt_2"));
+        assert_eq!(
+            MediaTaskStore::load_from_dir(storage.path()).tasks[0]
+                .subtitles
+                .count(),
+            0
+        );
+    }
 
     #[test]
     fn merging_is_idle_only_and_immediately_replaces_persisted_subtitles() {

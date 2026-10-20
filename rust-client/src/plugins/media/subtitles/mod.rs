@@ -399,6 +399,20 @@ impl SubtitleTimeline {
         &self.cues
     }
 
+    pub(super) fn remove_cue(&mut self, id: &str) -> bool {
+        let Some(index) = self.cues.iter().position(|cue| cue.id == id) else {
+            return false;
+        };
+        self.cues.remove(index);
+        self.metadata.remove(id);
+        self.origins.remove(id);
+        for snapshot in self.snapshot_cues.values_mut() {
+            snapshot.remove(id);
+        }
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
     pub(super) fn replace_refined(
         &mut self,
         range: std::ops::Range<usize>,
