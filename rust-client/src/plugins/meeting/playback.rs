@@ -18,15 +18,32 @@ impl RecordingClip {
     }
 }
 
-#[derive(Default)]
 pub(super) struct MeetingPlayback {
     pub clips: Vec<RecordingClip>,
     pub selected: usize,
     pub follow: bool,
     pub last_followed: Option<String>,
+    pub volume: f32,
+    pub muted: bool,
     meeting_id: String,
     loaded_path: Option<PathBuf>,
     player: Option<AudioPlayer>,
+}
+
+impl Default for MeetingPlayback {
+    fn default() -> Self {
+        Self {
+            clips: Vec::new(),
+            selected: 0,
+            follow: false,
+            last_followed: None,
+            volume: 1.0,
+            muted: false,
+            meeting_id: String::new(),
+            loaded_path: None,
+            player: None,
+        }
+    }
 }
 
 impl MeetingPlayback {
@@ -35,6 +52,8 @@ impl MeetingPlayback {
             *self = Self {
                 meeting_id: bundle.meeting.id.clone(),
                 follow: true,
+                volume: self.volume,
+                muted: self.muted,
                 ..Default::default()
             };
         }
@@ -76,6 +95,8 @@ impl MeetingPlayback {
             self.unload();
             let mut player = AudioPlayer::new()?;
             player.load_local_file(path.clone())?;
+            player.set_volume(self.volume);
+            player.set_mute(self.muted);
             self.loaded_path = Some(path);
             self.player = Some(player);
         }
@@ -109,6 +130,15 @@ impl MeetingPlayback {
         }
         self.follow = true;
         self.last_followed = None;
+    }
+
+    pub fn set_volume(&mut self, volume: f32, muted: bool) {
+        self.volume = volume.clamp(0.0, 1.0);
+        self.muted = muted;
+        if let Some(player) = &mut self.player {
+            player.set_volume(self.volume);
+            player.set_mute(self.muted);
+        }
     }
 
     pub fn can_seek_segment(&self, segment: &Segment) -> bool {

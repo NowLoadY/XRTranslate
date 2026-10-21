@@ -2,6 +2,8 @@ use crate::ui::theme;
 use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, Stroke, Ui, Vec2};
 
 mod action_button;
+mod playback;
+pub(crate) use playback::{playback_button, playback_slider, playback_volume};
 mod library_start;
 pub(crate) use library_start::{LibraryHint, library_navigation, library_start};
 mod status_icon;
