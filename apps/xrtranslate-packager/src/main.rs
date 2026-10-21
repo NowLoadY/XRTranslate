@@ -437,6 +437,22 @@ fn package(plan: &ReleasePlan) -> Result<PathBuf, PackageError> {
         }
         copy_file_to(&plan.vad_model, &staging.join(VAD_RELATIVE_PATH))?;
         copy_file_to(&plan.speaker_model, &staging.join(SPEAKER_RELATIVE_PATH))?;
+        let denoise = staging.join("models/gtcrn");
+        fs::create_dir_all(&denoise)
+            .and_then(|()| {
+                fs::write(
+                    denoise.join("gtcrn_simple.onnx"),
+                    include_bytes!("../../../assets/gtcrn/gtcrn_simple.onnx"),
+                )?;
+                fs::write(
+                    denoise.join("LICENSE"),
+                    include_bytes!("../../../assets/gtcrn/LICENSE"),
+                )
+            })
+            .map_err(|source| PackageError::Io {
+                context: "cannot write bundled noise suppression model".into(),
+                source,
+            })?;
         copy_file_to(
             &plan.onnx_runtime_cpu,
             &staging.join(onnx_cpu_metadata(&plan.rust_client_bin).path),
@@ -529,7 +545,7 @@ fn rewrite_config(config_path: &Path) -> Result<String, PackageError> {
         .or_insert_with(|| Value::Object(Map::new()))
         .as_object_mut()
         .ok_or_else(|| PackageError::InvalidInput("config.denoise must be a JSON object".into()))?;
-    denoise.insert("enabled".into(), Value::Bool(false));
+    denoise.insert("enabled".into(), Value::Bool(true));
     denoise.insert(
         "model_path".into(),
         Value::String(DENOISE_RELATIVE_PATH.into()),
@@ -641,6 +657,11 @@ fn release_manifest(
             },
             "bytes": SPEAKER_MODEL_BYTES,
         },
+        "denoise_model": {
+            "path": DENOISE_RELATIVE_PATH,
+            "bytes": RuntimeLayout::DENOISE_MODEL_BYTES,
+            "license": "models/gtcrn/LICENSE",
+        },
         "resources": "resources",
         "corpora": {
             "database_path": CORPUS_DATABASE_PATH,
@@ -717,6 +738,16 @@ fn copy_model_packages(staging: &Path, assets: &ResolvedModelAssets) -> Result<(
 }
 
 fn verify_staged_release(staging: &Path) -> Result<(), PackageError> {
+    verify_file_size(
+        "bundled noise suppression model",
+        &staging.join(DENOISE_RELATIVE_PATH),
+        RuntimeLayout::DENOISE_MODEL_BYTES,
+    )?;
+    verify_file_size(
+        "noise suppression license",
+        &staging.join("models/gtcrn/LICENSE"),
+        1_069,
+    )?;
     for private in [
         "runtime/debug.md",
         "runtime/voice_clones",

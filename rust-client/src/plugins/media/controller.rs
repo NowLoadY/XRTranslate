@@ -1,7 +1,7 @@
 use super::{
     backend::{MediaBackend, MediaSource, PlaybackStatus},
     subtitles::{SubtitleCue, SubtitleTimeline},
-    task::{AudioChannelItem, MediaTask, MediaTaskStore, SubtitleMode},
+    task::{AudioChannelItem, MediaTask, MediaTaskStore, SubtitleMode, default_video_recognition},
 };
 use std::path::PathBuf;
 use std::time::Instant;
@@ -129,12 +129,7 @@ impl Default for MediaController {
             draft_source_lang: "auto".into(),
             draft_target_lang: "zh".into(),
             draft_subtitle_mode: SubtitleMode::RealtimeTranslation,
-            draft_recognition: crate::client_settings::RecognitionSettings {
-                preprocessing: None,
-                background_noise: 0.6,
-                pause_tolerance: 1.0,
-                continuous_recognition: false,
-            },
+            draft_recognition: default_video_recognition(),
             video_unavailable: false,
             last_save_instant: Instant::now(),
             last_manual_scroll: None,
@@ -210,12 +205,7 @@ impl MediaController {
         self.draft_source_lang = "auto".into();
         self.draft_target_lang = "zh".into();
         self.draft_subtitle_mode = SubtitleMode::RealtimeTranslation;
-        self.draft_recognition = crate::client_settings::RecognitionSettings {
-            preprocessing: None,
-            background_noise: 0.6,
-            pause_tolerance: 1.0,
-            continuous_recognition: false,
-        };
+        self.draft_recognition = default_video_recognition();
         self.error = None;
         self.hide_video();
     }

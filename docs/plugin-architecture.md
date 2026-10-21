@@ -73,7 +73,7 @@ activation and its own reference facts.
 | Input owner | Context scope |
 |---|---|
 | Live translation | One conversation shared by its audio and text inputs |
-| Meeting | Both inputs of one recording run; resumed recording starts from recent completed records with their actual language pairs, while audio reprocessing starts fresh |
+| Meeting | The plugin selects recent statements and nearby source from the meeting, preserving speaker boundaries; resumed recording keeps recent history, while audio reprocessing starts fresh |
 | Media files | The media plugin manages context within each translation task |
 | Live media streams | One translation run |
 | Authored subtitles | Current cue's timeline neighbors and completed translations with their actual language pairs, read when submitted |
@@ -85,7 +85,7 @@ bounded completed conversation turns directly in the inference path; it does not
 wait for UI events or interpret plugin IDs. Domain records remain owned by their
 plugins. Subtitle edits affect the next snapshot; seeking the player does not
 change translation context. Output subscribers do not maintain translation
-memory. Meeting resume seeds use bilingual records where the actual route is known;
+memory. Meeting references use bilingual records where the actual route is known;
 legacy or untranslated records contribute source text without repeating those pairs.
 Conversation startup source gives way to newly completed turns. Prompt
 Studio shows the current request's runtime facts read-only while private results
@@ -94,6 +94,11 @@ remain outside host presentation.
 Media files can produce translations while recognition continues. The media plugin
 owns subtitle context and preserves authored subtitle text and timing. Media work
 keeps its context separate from live translation.
+
+Meetings preserve recognized statements while translations catch up. Live meetings
+use a short, limited wait for nearby statements; imported recordings proceed at the
+available processing speed. Ending a meeting finishes accepted translations before
+marking it complete. Meeting context remains separate from live translation.
 
 ## Registration and lifecycle
 

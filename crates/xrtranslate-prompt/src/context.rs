@@ -128,6 +128,9 @@ impl TranslationPromptContext {
 /// Reference facts selected by the feature submitting a translation task.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextFacts {
+    /// Identity of the input speaker, independent of speakers in neighboring text.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub current_speaker_id: String,
     /// Completed bilingual facts selected by the context owner.
     #[serde(default)]
     pub recent_turns: Vec<PromptTurn>,

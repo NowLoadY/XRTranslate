@@ -75,7 +75,7 @@ impl ServiceConfigEditor {
             .document
             .pointer("/denoise/enabled")
             .and_then(Value::as_bool)
-            .unwrap_or(false)
+            .unwrap_or(true)
         {
             xrtranslate_protocol::AudioPreprocessing::Gtcrn
         } else {

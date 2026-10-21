@@ -21,6 +21,7 @@ impl ContextRegistry {
                 let ContextFacts {
                     recent_turns,
                     surrounding_source,
+                    ..
                 } = seed;
                 let mut scopes = self.0.lock().unwrap_or_else(|error| error.into_inner());
                 scopes.retain(|(_, memory)| memory.strong_count() > 0);
@@ -144,11 +145,19 @@ impl ContextBinding {
                 )
             }
         };
+        let explicit_speaker = match self {
+            Self::Snapshot(facts) => facts.current_speaker_id.trim(),
+            Self::Conversation(_) => "",
+        };
         let mut context = TranslationPromptContext {
-            current_speaker_id: surrounding_source
-                .as_ref()
-                .map(|source| source.speaker_id.trim())
-                .filter(|speaker| !speaker.is_empty())
+            current_speaker_id: (!explicit_speaker.is_empty())
+                .then_some(explicit_speaker)
+                .or_else(|| {
+                    surrounding_source
+                        .as_ref()
+                        .map(|source| source.speaker_id.trim())
+                        .filter(|speaker| !speaker.is_empty())
+                })
                 .unwrap_or(speaker)
                 .to_owned(),
             language_order: vec![source.to_owned(), target.to_owned()],
@@ -270,6 +279,29 @@ pub(crate) fn completed_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn snapshot_speaker_is_independent_of_neighboring_speakers() {
+        let registry = ContextRegistry::default();
+        let context = registry.bind(TaskContext::snapshot(ContextFacts {
+            current_speaker_id: "microphone/A".into(),
+            surrounding_source: Some(xrtranslate_prompt::SurroundingSource {
+                speaker_id: String::new(),
+                source_language: String::new(),
+                before: "[system/B en] Where is it?".into(),
+                after: String::new(),
+            }),
+            ..Default::default()
+        }));
+        let snapshot = context.snapshot("current", "text/", "en", "zh");
+        assert_eq!(snapshot.current_speaker_id, "microphone/A");
+        assert_eq!(snapshot.surrounding_source.unwrap().speaker_id, "");
+        let live = registry.bind(TaskContext::conversation("live"));
+        assert_eq!(
+            live.snapshot("current", "system/B", "en", "zh")
+                .current_speaker_id,
+            "system/B"
+        );
+    }
     fn turn(id: &str, text: &str, target: &str) -> PromptTurn {
         PromptTurn {
             turn_id: Some(id.into()),
@@ -354,6 +386,7 @@ mod tests {
                 before: "before".into(),
                 after: "after".into(),
             }),
+            ..Default::default()
         };
         let first = registry.bind(TaskContext::Conversation {
             scope: "meeting".into(),

@@ -57,6 +57,7 @@ dependencies {
         inputs.property 'abis', selectedAbis.join(',')
         inputs.property 'profile', profile
         inputs.files(fileTree('../../third_party/sherpa-onnx'))
+        inputs.files(fileTree('../../assets/gtcrn'))
         inputs.files(fileTree('../../rust-client/src'), fileTree('../../rust-client/resources'), file('../../rust-client/Cargo.toml'), file('../../rust-client/build.rs'), fileTree('../../crates'), fileTree('../../apps'), fileTree('../../third_party/winit'), file('../../Cargo.toml'), file('../../Cargo.lock'), file('../../config.json'), file('../../scripts/android.py'), file('../../XR-Corpus/Cargo.toml'), file('../../XR-Corpus/Cargo.lock'), fileTree('../../XR-Corpus/crates'), fileTree('../../XR-Corpus/apps'), file('../../XR-Corpus/corpora/default.sqlite'))
         outputs.dir layout.buildDirectory.dir("generated/rust/${profile}")
         outputs.file layout.buildDirectory.file('generated/rust/rustls-platform-verifier.aar')

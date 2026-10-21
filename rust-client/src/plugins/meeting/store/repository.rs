@@ -41,7 +41,7 @@ impl MeetingStore {
         })
     }
 
-    fn connection(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
+    pub(super) fn connection(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
         self.connection
             .lock()
             .map_err(|_| MeetingStoreError::LockPoisoned)
@@ -909,6 +909,29 @@ fn query_topics(connection: &Connection, meeting_id: &str) -> Result<Vec<Topic>>
     collect_rows(rows)
 }
 
+pub(super) fn map_segment(row: &rusqlite::Row<'_>) -> rusqlite::Result<Segment> {
+    Ok(Segment {
+        id: row.get(0)?,
+        external_key: row.get(1)?,
+        meeting_id: row.get(2)?,
+        topic_id: row.get(3)?,
+        sequence: row.get(4)?,
+        original_text: row.get(5)?,
+        translated_text: row.get(6)?,
+        source_language: row.get(16)?,
+        target_language: row.get(17)?,
+        start_ms: row.get(7)?,
+        end_ms: row.get(8)?,
+        source: parse_db_enum(row.get::<_, String>(9)?, 9)?,
+        recognition_run_id: row.get(10)?,
+        speaker_token: row.get(11)?,
+        canonical_speaker_id: row.get(12)?,
+        is_final: row.get(13)?,
+        created_at_ms: row.get(14)?,
+        updated_at_ms: row.get(15)?,
+    })
+}
+
 fn query_segments(
     connection: &Connection,
     meeting_id: &str,
@@ -937,32 +960,10 @@ fn query_segments(
          ORDER BY t.sequence, s.sequence"
     };
     let mut statement = connection.prepare(sql)?;
-    let map = |row: &rusqlite::Row<'_>| {
-        Ok(Segment {
-            id: row.get(0)?,
-            external_key: row.get(1)?,
-            meeting_id: row.get(2)?,
-            topic_id: row.get(3)?,
-            sequence: row.get(4)?,
-            original_text: row.get(5)?,
-            translated_text: row.get(6)?,
-            source_language: row.get(16)?,
-            target_language: row.get(17)?,
-            start_ms: row.get(7)?,
-            end_ms: row.get(8)?,
-            source: parse_db_enum(row.get::<_, String>(9)?, 9)?,
-            recognition_run_id: row.get(10)?,
-            speaker_token: row.get(11)?,
-            canonical_speaker_id: row.get(12)?,
-            is_final: row.get(13)?,
-            created_at_ms: row.get(14)?,
-            updated_at_ms: row.get(15)?,
-        })
-    };
     let rows = if let Some(topic_id) = topic_id {
-        statement.query_map(params![meeting_id, topic_id], map)?
+        statement.query_map(params![meeting_id, topic_id], map_segment)?
     } else {
-        statement.query_map(params![meeting_id], map)?
+        statement.query_map(params![meeting_id], map_segment)?
     };
     collect_rows(rows)
 }

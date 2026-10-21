@@ -11,6 +11,7 @@ mod preview;
 mod request;
 mod result;
 mod subscriber;
+mod text_result;
 
 pub use owner::{PluginSessionOwner, TranslationSessionOwner};
 pub use plugin_session::{PluginSessionBinding, SessionOutputPolicy, TranslationSessionPlugin};
@@ -21,3 +22,4 @@ pub use result::{TranslationEvent, TranslationOutcome, TranslationSegment};
 pub use subscriber::{
     AudioSourceFilter, CaptionUpdate, HostOutputEvent, HostOutputSubscriber, SessionEventSubscriber,
 };
+pub(crate) use text_result::{TextTranslationCollector, TextTranslationResult};

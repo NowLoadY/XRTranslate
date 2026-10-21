@@ -36,7 +36,7 @@
     "tts_sample_rate": 48000
   },
   "denoise": {
-    "enabled": false,
+    "enabled": true,
     "intra_threads": 1,
     "model_path": "models/gtcrn/gtcrn_simple.onnx"
   },

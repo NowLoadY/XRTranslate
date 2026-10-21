@@ -6,6 +6,17 @@ use std::path::Path;
 use xrtranslate_denoise::GtcrnDenoiser;
 use xrtranslate_engine::audio::{StreamingResampler, f32_to_pcm16le};
 use xrtranslate_separation::{SAMPLE_RATE_HZ as VOCAL_SAMPLE_RATE_HZ, VocalSeparator};
+use xrtranslate_vad::EndpointConfig;
+
+/// Keep the live pipeline's pause setting and adaptive curve. Only the vocal
+/// admission threshold and bounded audio window differ.
+pub(super) fn vocal_endpoint_config(mut config: EndpointConfig) -> EndpointConfig {
+    use super::frames_for_ms;
+    config.speech_threshold = 0.5;
+    config.max_active_frames = frames_for_ms(12_000);
+    config.max_active_overlap_frames = frames_for_ms(320);
+    config
+}
 
 #[derive(Default)]
 pub(super) enum AudioPreprocessor {
@@ -172,6 +183,82 @@ mod tests {
     }
 
     #[test]
+    fn vocal_pauses_follow_the_live_dynamic_endpointing() {
+        let finalize_after = |config: EndpointConfig, speech_ms| {
+            let mut endpoint = EndpointDetector::new(config).unwrap();
+            for _ in 0..super::super::frames_for_ms(speech_ms) {
+                assert!(!matches!(
+                    endpoint.push(&tone(0.02), 1.0).unwrap(),
+                    EndpointEvent::Finalized(_)
+                ));
+            }
+            for quiet_frames in 1..=config.silence_frames_to_finalize {
+                if matches!(
+                    endpoint.push(&[0; FRAME_SAMPLES], 0.0).unwrap(),
+                    EndpointEvent::Finalized(_)
+                ) {
+                    return quiet_frames;
+                }
+            }
+            panic!("configured pause did not close the phrase");
+        };
+        let mut initial_pauses = Vec::new();
+        for pause_ms in [240, 720, 1_200] {
+            let live = EndpointConfig {
+                silence_frames_to_finalize: super::super::frames_for_ms(pause_ms),
+                ..Default::default()
+            };
+            let mut pauses = Vec::new();
+            for speech_ms in [1_000, 3_000, 6_000] {
+                let vocal_pause = finalize_after(vocal_endpoint_config(live), speech_ms);
+                assert_eq!(vocal_pause, finalize_after(live, speech_ms));
+                pauses.push(vocal_pause);
+            }
+            assert!(pauses.windows(2).all(|pair| pair[0] > pair[1]));
+            initial_pauses.push(pauses[0]);
+        }
+        assert!(initial_pauses.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn continuous_vocals_stay_bounded_and_keep_boundary_overlap() {
+        let config = vocal_endpoint_config(EndpointConfig::default());
+        let mut endpoint = EndpointDetector::new(config).unwrap();
+        let mut activity = VocalActivity::default();
+        let samples = tone(0.02);
+        let mut previous: Option<Vec<i16>> = None;
+        let mut finalized = 0;
+        for _ in 0..super::super::frames_for_ms(40_000) {
+            if let EndpointEvent::Finalized(utterance) = endpoint
+                .push(&samples, activity.evidence(&samples, 0.0))
+                .unwrap()
+            {
+                assert_eq!(
+                    utterance.end_reason,
+                    xrtranslate_vad::UtteranceEndReason::MaxActiveFrames
+                );
+                assert!(
+                    utterance.frame_count()
+                        <= config.max_active_frames
+                            + config.pre_roll_frames.max(config.max_active_overlap_frames)
+                );
+                if let Some(previous) = previous {
+                    let overlap = utterance.overlap_frames * FRAME_SAMPLES;
+                    assert!(overlap > 0);
+                    assert_eq!(
+                        &utterance.samples[..overlap],
+                        &previous[previous.len() - overlap..]
+                    );
+                }
+                previous = Some(utterance.samples);
+                finalized += 1;
+            }
+        }
+        assert_eq!(finalized, 3);
+        assert!(endpoint.flush().is_some());
+    }
+
+    #[test]
     fn singing_activity_survives_zero_speech_probability_and_weak_tails() {
         let mut activity = VocalActivity::default();
         assert_eq!(activity.evidence(&tone(0.01), 0.0), 1.0);
@@ -187,7 +274,8 @@ mod tests {
     #[test]
     fn isolated_impulse_cannot_open_the_shared_endpoint() {
         let mut activity = VocalActivity::default();
-        let mut endpoint = EndpointDetector::new(EndpointConfig::default()).unwrap();
+        let mut endpoint =
+            EndpointDetector::new(vocal_endpoint_config(EndpointConfig::default())).unwrap();
         let mut impulse = [0; FRAME_SAMPLES];
         impulse[100] = i16::MAX;
         for samples in std::iter::once(impulse).chain(std::iter::repeat_n([0; FRAME_SAMPLES], 30)) {
@@ -204,7 +292,8 @@ mod tests {
     #[test]
     fn short_pause_and_eof_keep_one_complete_singing_segment() {
         let mut activity = VocalActivity::default();
-        let mut endpoint = EndpointDetector::new(EndpointConfig::default()).unwrap();
+        let mut endpoint =
+            EndpointDetector::new(vocal_endpoint_config(EndpointConfig::default())).unwrap();
         let mut gate = super::super::audio::SpeechGate::new(100);
         let mut started = 0;
         for samples in std::iter::repeat_n(tone(0.02), 20)

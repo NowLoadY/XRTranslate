@@ -576,6 +576,7 @@ mod tests {
                                 before: before.into(),
                                 after: String::new(),
                             }),
+                            ..Default::default()
                         }))
                         .with_text_workload(InferenceWorkload::Offline),
                 )

@@ -176,6 +176,8 @@ def native(sdk, args):
         'application/XR-Corpus/corpora/default.sqlite',
         'application/models/silero-vad/src/silero_vad/data/silero_vad.onnx',
         'application/models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx',
+        'application/models/gtcrn/gtcrn_simple.onnx',
+        'application/models/gtcrn/LICENSE',
     }
     for path in assets.parent.rglob('*'):
         if path.is_symlink() or (path.is_file() and path.relative_to(assets.parent).as_posix() not in packaged_assets):
@@ -186,6 +188,7 @@ def native(sdk, args):
     seed = assets / 'XR-Corpus/corpora/default.sqlite'
     seed.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / 'XR-Corpus/corpora/default.sqlite', seed)
+    shutil.copytree(ROOT / 'assets/gtcrn', assets / 'models/gtcrn', dirs_exist_ok=True)
 
 def java_environment(sdk):
     environment = dict(os.environ, ANDROID_HOME=str(sdk))

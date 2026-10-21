@@ -196,8 +196,9 @@ jobs:
                 -not $archive.GetEntry('bin/xrtranslate-backend.exe')) {
               throw 'ZIP must contain the standard executable, manifest, config and bin directory at its root.'
             }
-            if ($archive.GetEntry('models/gtcrn/gtcrn_simple.onnx')) {
-              throw 'GTCRN must remain an optional managed download.'
+            if ($archive.GetEntry('models/gtcrn/gtcrn_simple.onnx').Length -ne 535638 -or
+                $archive.GetEntry('models/gtcrn/LICENSE').Length -ne 1069) {
+              throw 'The noise suppression model and its license must be bundled.'
             }
           } finally {
             $archive.Dispose()

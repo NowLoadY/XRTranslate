@@ -5,7 +5,6 @@ use crate::{
     session_coordinator::{TranslationInput, TranslationSessionPlugin, TranslationTask},
 };
 use eframe::egui;
-use xrtranslate_protocol::AudioPreprocessing;
 
 impl XRTranslateApp {
     pub(crate) fn poll_media_translation(&mut self, ctx: &egui::Context) {
@@ -125,33 +124,12 @@ impl XRTranslateApp {
                             path,
                             recognition,
                             options: media_import::AudioImportOptions {
-                                chunk_frames: 1_600,
-                                pacing: media_import::AudioImportPacing::AsFastAsPossible,
-                                output_sample_rate: if preprocessing
-                                    == AudioPreprocessing::VocalSeparation
-                                {
-                                    44_100
-                                } else {
-                                    media_import::IMPORT_SAMPLE_RATE
-                                },
-                                output_channels: if preprocessing
-                                    == AudioPreprocessing::VocalSeparation
-                                {
-                                    2
-                                } else {
-                                    1
-                                },
-                                gate_threshold_db: if preprocessing == AudioPreprocessing::Gtcrn {
-                                    media_import::AudioImportOptions::default().gate_threshold_db
-                                } else {
-                                    None
-                                },
                                 recognition_channels: audio_channels
                                     .iter()
                                     .filter(|channel| channel.recognition)
                                     .map(|channel| channel.index)
                                     .collect(),
-                                ..media_import::AudioImportOptions::default()
+                                ..media_import::AudioImportOptions::for_recognition(preprocessing)
                             },
                         }
                     }

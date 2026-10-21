@@ -439,4 +439,41 @@ mod tests {
         assert_eq!(result[0].0.original_text, "We need more time.");
         assert_eq!(result[0].0.speaker_name, None);
     }
+
+    #[test]
+    fn unpunctuated_lyrics_cannot_merge_into_one_long_subtitle() {
+        let mut source = cues(&[
+            "春の風",
+            "夏の空",
+            "秋の月",
+            "冬の雪",
+            "明日の光",
+            "昨日の夢",
+        ]);
+        for (index, cue) in source.iter_mut().enumerate() {
+            cue.source_language = "ja".into();
+            cue.start_ms = index as i64 * 6_000;
+            cue.end_ms = cue.start_ms + 6_000;
+        }
+        let answer = source
+            .iter()
+            .map(|cue| cue.original_text.as_str())
+            .collect::<String>()
+            + "。";
+        let result = aligned_edits(&source, &answer);
+        assert!(
+            result
+                .iter()
+                .all(|(cue, _)| cue.end_ms - cue.start_ms <= 12_000)
+        );
+        assert_eq!(
+            result.iter().map(|(_, consumed)| consumed).sum::<usize>(),
+            source.len()
+        );
+        let text = result
+            .iter()
+            .map(|(cue, _)| cue.original_text.as_str())
+            .collect::<String>();
+        assert_eq!(normalized(&text).0, normalized(&answer).0);
+    }
 }

@@ -49,7 +49,7 @@ ASR、翻译与 TTS 模型切换入口只在欢迎流程；设置页保留 provi
 | 远程 OpenAI ASR/翻译 | 无本地模型 | HTTPS + API key | 不需要本地 GPU runtime | 缺 API key 时给出配置诊断，不触发模型下载 |
 | Silero VAD | release 内固定 ONNX，2,327,524 B | CPU ONNX core | CPU，实时小模型不加载 CUDA provider | release 预检失败则拒绝打包 |
 | ERes2NetV2 说话人识别 | release 内固定 ONNX，71,964,309 B | CPU ONNX core | CPU | 同上 |
-| GTCRN 降噪 | 可选 `gtcrn-onnx`，ONNX 535,638 B 与 MIT 许可；XRTranslate 仓库 `assets/gtcrn/` 的固定提交 | CPU ONNX core | CPU | 默认关闭、不随 release 打包；用户选择语音降噪时通过统一下载队列安装，显示进度并支持暂停、继续和删除；不作为启动必需资源 |
+| GTCRN 降噪 | Windows、Linux 和 Android 发布包自带模型及许可 | CPU | CPU | 翻译中枢默认启用；可关闭、删除或重新下载，下载支持进度显示、暂停、继续及镜像源 |
 | 媒体人声分离 | 可选 `uvr-mdxnet-9482-onnx`，模型文件 29,704,738 B；完整资源以 manifest 为准 | CPU ONNX core | CPU | 仅有限媒体任务可选；启用时按需下载，未就绪不启动该媒体任务；不作为实时翻译的启动依赖 |
 
 ## 设备到下载计划
@@ -167,7 +167,7 @@ Windows 运行时规划在后台优先修复缺失的 CPU 核心：若配置声�
 
 - 本机个人设置放在 `runtime/user-config.json`；根目录 `config.json` 是可发行的
   资源目录。Windows 发布脚本要求它与当前提交一致，避免工作区个人设置进入发布包。
-- Packager 校验 CPU ONNX 核心、VAD、说话人识别及 ONNX 许可文件的类型与大小，默认发布包无需用户另外下载 CPU 核心。GTCRN 与媒体人声分离属于可选模型包；旧配置将 GTCRN 列入必需资源时会忽略该条目。大模型和 GPU 加速依赖仍按配置下载。
+- 发布包自带基础音频资源和语音降噪，媒体人声分离按需下载。语音降噪仍可单独关闭、删除和重新下载。大模型和 GPU 加速资源按配置下载。
 - 发布脚本补齐 ONNX 许可时，也通过 `xrtranslate-download` 获取配置声明的同源归档，
   校验完整归档后只提取许可文件；不另建 HTTP 下载实现，也不依赖归档列表的排序。
 - Windows 客户端和 ONNX 核心依赖 MSVC CRT。发布脚本从 Visual Studio 的 x64

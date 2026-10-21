@@ -38,6 +38,29 @@ impl Default for AudioImportOptions {
     }
 }
 
+impl AudioImportOptions {
+    /// Finite recordings run at the receiver's pace, with the selected processor's format.
+    pub fn for_recognition(preprocessing: xrtranslate_protocol::AudioPreprocessing) -> Self {
+        use xrtranslate_protocol::AudioPreprocessing;
+        Self {
+            pacing: AudioImportPacing::AsFastAsPossible,
+            output_sample_rate: if preprocessing == AudioPreprocessing::VocalSeparation {
+                44_100
+            } else {
+                IMPORT_SAMPLE_RATE
+            },
+            output_channels: if preprocessing == AudioPreprocessing::VocalSeparation {
+                2
+            } else {
+                1
+            },
+            gate_threshold_db: (preprocessing == AudioPreprocessing::Gtcrn)
+                .then_some(crate::audio_processing::DEFAULT_GATE_THRESHOLD_DB),
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct AudioFileInfo {
@@ -124,5 +147,34 @@ impl std::error::Error for AudioImportError {
 impl From<io::Error> for AudioImportError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xrtranslate_protocol::AudioPreprocessing;
+    #[test]
+    fn finite_recognition_uses_processor_format_and_preserves_ungated_audio() {
+        for mode in [
+            AudioPreprocessing::None,
+            AudioPreprocessing::Gtcrn,
+            AudioPreprocessing::VocalSeparation,
+        ] {
+            let options = AudioImportOptions::for_recognition(mode);
+            assert_eq!(options.pacing, AudioImportPacing::AsFastAsPossible);
+            assert_eq!(
+                (options.output_sample_rate, options.output_channels),
+                if mode == AudioPreprocessing::VocalSeparation {
+                    (44_100, 2)
+                } else {
+                    (16_000, 1)
+                }
+            );
+            assert_eq!(
+                options.gate_threshold_db.is_some(),
+                mode == AudioPreprocessing::Gtcrn
+            );
+        }
     }
 }

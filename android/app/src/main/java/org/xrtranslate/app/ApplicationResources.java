@@ -16,6 +16,9 @@ public final class ApplicationResources {
     }
 
     private static void copy(Context context, String source, File destination) throws IOException {
+        boolean optionalDenoise = source.equals("application/models/gtcrn");
+        android.content.SharedPreferences resources = context.getSharedPreferences("bundled-resources", Context.MODE_PRIVATE);
+        if (optionalDenoise && resources.getBoolean("gtcrn-installed", false)) return;
         String[] children = context.getAssets().list(source);
         if (children != null && children.length > 0) {
             if (!destination.isDirectory() && !destination.mkdirs()) throw new IOException("Cannot create application storage");
@@ -33,6 +36,10 @@ public final class ApplicationResources {
                 }
                 if (!temporary.renameTo(destination)) throw new IOException("Cannot prepare application resource");
             } finally { temporary.delete(); }
+        }
+        // Install the bundled optional model once; preserve a later user deletion.
+        if (optionalDenoise && !resources.edit().putBoolean("gtcrn-installed", true).commit()) {
+            throw new IOException("Cannot save application resource state");
         }
     }
 }

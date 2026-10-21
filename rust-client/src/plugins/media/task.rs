@@ -134,12 +134,14 @@ pub struct MediaTask {
     pub subtitles: SubtitleTimeline,
 }
 
-fn default_video_recognition() -> RecognitionSettings {
+pub(super) const DEFAULT_PAUSE_TOLERANCE: f32 = 0.5;
+
+pub(super) fn default_video_recognition() -> RecognitionSettings {
     RecognitionSettings {
         background_noise: 0.6,
-        pause_tolerance: 1.0,
+        pause_tolerance: DEFAULT_PAUSE_TOLERANCE,
         continuous_recognition: false,
-        preprocessing: None,
+        preprocessing: Some(xrtranslate_protocol::AudioPreprocessing::None),
     }
 }
 
@@ -272,13 +274,23 @@ mod tests {
             SubtitleMode::None,
             default_video_recognition(),
         );
+        assert_eq!(
+            task.recognition.preprocessing,
+            Some(xrtranslate_protocol::AudioPreprocessing::None)
+        );
         let mut legacy = serde_json::to_value(&task).unwrap();
         legacy["recognition"]
             .as_object_mut()
             .unwrap()
             .remove("preprocessing");
         let mut restored: MediaTask = serde_json::from_value(legacy).unwrap();
-        assert_eq!(restored.recognition, task.recognition);
+        assert_eq!(
+            restored.recognition,
+            RecognitionSettings {
+                preprocessing: None,
+                ..task.recognition
+            }
+        );
         restored.recognition.preprocessing =
             Some(xrtranslate_protocol::AudioPreprocessing::VocalSeparation);
         let restored: MediaTask =

@@ -1,11 +1,11 @@
 use xrtranslate_config::{BundledModelAsset, DenoiseConfig, ModelManagerConfig, RuntimeLayout};
 
 #[test]
-fn noise_suppression_is_opt_in_for_missing_settings() {
-    assert!(!DenoiseConfig::default().enabled);
-    assert!(!serde_json::from_str::<DenoiseConfig>("{}").unwrap().enabled);
+fn noise_suppression_is_enabled_by_default_and_respects_explicit_opt_out() {
+    assert!(DenoiseConfig::default().enabled);
+    assert!(serde_json::from_str::<DenoiseConfig>("{}").unwrap().enabled);
     assert!(
-        serde_json::from_str::<DenoiseConfig>(r#"{"enabled":true}"#)
+        !serde_json::from_str::<DenoiseConfig>(r#"{"enabled":false}"#)
             .unwrap()
             .enabled
     );

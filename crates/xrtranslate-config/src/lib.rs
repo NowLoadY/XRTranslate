@@ -998,7 +998,7 @@ impl AsrConfig {
 /// Native GTCRN-Light v3 speech enhancement and background noise suppression settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DenoiseConfig {
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_denoise_model_path")]
     pub model_path: PathBuf,
@@ -1009,7 +1009,7 @@ pub struct DenoiseConfig {
 impl Default for DenoiseConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             model_path: default_denoise_model_path(),
             intra_threads: default_denoise_intra_threads(),
         }
@@ -1404,8 +1404,8 @@ impl ModelManagerConfig {
         if self.bundled_models.is_empty() {
             Self::default_bundled_models()
         } else {
-            // Older configurations listed GTCRN as a required resource. It is
-            // now installed only when the user enables noise suppression.
+            // GTCRN ships with releases, but remains individually managed so
+            // deleting it does not trigger an unrelated required-resource download.
             self.bundled_models
                 .iter()
                 .filter(|asset| {

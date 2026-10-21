@@ -131,6 +131,13 @@ pub(super) fn migrate(connection: &Connection) -> Result<()> {
              COMMIT;",
         )?;
     }
+    // An index only: existing readers remain compatible with these databases.
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS meeting_segments_translation_pending_idx
+         ON meeting_segments(meeting_id, recognition_run_id, start_ms, end_ms, id)
+         WHERE is_final = 1 AND length(trim(original_text)) > 0
+           AND length(trim(COALESCE(translated_text, ''))) = 0;",
+    )?;
     Ok(())
 }
 
@@ -146,9 +153,15 @@ mod tests {
                 "CREATE TABLE meeting_segments (
                      id TEXT PRIMARY KEY,
                      original_text TEXT NOT NULL,
-                     translated_text TEXT
+                     translated_text TEXT,
+                     meeting_id TEXT NOT NULL DEFAULT 'meeting',
+                     recognition_run_id TEXT NOT NULL DEFAULT 'run',
+                     start_ms INTEGER NOT NULL DEFAULT 0,
+                     end_ms INTEGER NOT NULL DEFAULT 0,
+                     is_final INTEGER NOT NULL DEFAULT 1
                  );
-                 INSERT INTO meeting_segments VALUES ('saved', 'Hello.', '你好。');
+                 INSERT INTO meeting_segments (id, original_text, translated_text)
+                     VALUES ('saved', 'Hello.', '你好。');
                  PRAGMA user_version = 2;",
             )
             .unwrap();

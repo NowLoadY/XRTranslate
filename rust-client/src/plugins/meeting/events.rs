@@ -8,6 +8,7 @@
 use super::{
     controller::{ActiveMeetingCapture, SharedMeetingCapture},
     store::{MeetingStore, NewSegment, SegmentSource},
+    translation::MeetingTranslation,
 };
 use crossbeam_channel::{Sender, unbounded};
 use std::{
@@ -17,13 +18,14 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
+    time::{Duration, Instant},
 };
 
 use crate::{
     CaptureSource,
     session_coordinator::{
         SessionEventSubscriber, TranslationEvent, TranslationOutcome, TranslationSegment,
-        TranslationSessionOwner,
+        TranslationSessionOwner, TranslationTask,
     },
 };
 
@@ -49,6 +51,14 @@ pub struct MeetingSegmentEvent {
 }
 
 enum Command {
+    Begin(
+        ActiveMeetingCapture,
+        xrtranslate_engine::language::LanguageSelection,
+    ),
+    Translation(String, TranslationEvent),
+    Paused(bool),
+    CancelTranslation,
+    Drain(ActiveMeetingCapture),
     Results(ActiveMeetingCapture, Vec<TranslationSegment>, bool),
     SealStream(u64),
     FinishActive(ActiveMeetingCapture),
@@ -61,6 +71,9 @@ pub struct MeetingEventSink {
 }
 
 struct MeetingEventSinkInner {
+    next_translation: Arc<std::sync::Mutex<Option<TranslationTask>>>,
+    translation_error: Arc<std::sync::Mutex<Option<String>>>,
+    dispatch_enabled: AtomicBool,
     previews: std::sync::Mutex<crate::session_coordinator::LivePreviews>,
     tx: std::sync::Mutex<Option<Sender<Command>>>,
     active: SharedMeetingCapture,
@@ -85,14 +98,60 @@ impl Drop for MeetingEventSinkInner {
 impl MeetingEventSink {
     pub fn start(store: Arc<MeetingStore>, active: SharedMeetingCapture) -> Self {
         let (tx, rx) = unbounded();
+        let next_translation = Arc::new(std::sync::Mutex::new(None));
+        let translation_error = Arc::new(std::sync::Mutex::new(None));
+        let worker_next = Arc::clone(&next_translation);
+        let worker_error = Arc::clone(&translation_error);
         let worker_active = Arc::clone(&active);
         let worker = std::thread::Builder::new()
             .name("meeting-event-store".into())
             .spawn(move || {
                 let mut batches = HashMap::<(String, u64, String, bool), Vec<String>>::new();
-                while let Ok(command) = rx.recv() {
+                let mut translation: Option<MeetingTranslation> = None;
+                loop {
+                    let command = match rx.recv_timeout(Duration::from_millis(100)) {
+                        Ok(command) => Some(command),
+                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => None,
+                        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                    };
                     match command {
-                        Command::Results(capture, segments, replace) => {
+                        Some(Command::Begin(capture, languages)) => {
+                            *worker_next.lock().unwrap() = None;
+                            *worker_error.lock().unwrap() = None;
+                            translation = (!languages.asr_only())
+                                .then(|| MeetingTranslation::new(capture, languages));
+                            *worker_next.lock().unwrap() = None;
+                            *worker_error.lock().unwrap() = None;
+                        }
+                        Some(Command::Translation(operation, event)) => {
+                            if let Some(job) = &mut translation {
+                                if let Err(error) = job.accept(&store, &operation, &event) {
+                                    *worker_error.lock().unwrap() = Some(error.clone());
+                                    job.error = Some(error);
+                                }
+                            }
+                        }
+                        Some(Command::Paused(paused)) => {
+                            if let Some(job) = &mut translation {
+                                job.paused = paused;
+                                job.changed();
+                            }
+                        }
+                        Some(Command::CancelTranslation) => {
+                            translation = None;
+                            *worker_next.lock().unwrap() = None;
+                        }
+                        Some(Command::Drain(capture)) => {
+                            if let Some(job) = translation.as_mut().filter(|job| {
+                                job.capture.recognition_run_id == capture.recognition_run_id
+                            }) {
+                                job.closed = true;
+                                job.changed();
+                            } else {
+                                finish_active(&store, &worker_active, &capture);
+                            }
+                        }
+                        Some(Command::Results(capture, segments, replace)) => {
                             let Some(first) = segments.first() else {
                                 continue;
                             };
@@ -125,15 +184,43 @@ impl MeetingEventSink {
                                     batch.retain(|key| !keys.contains(key));
                                 }
                             }
+                            if let Some(job) = translation.as_mut().filter(|job| {
+                                job.capture.recognition_run_id == capture.recognition_run_id
+                            }) {
+                                job.changed();
+                            }
                         }
-                        Command::SealStream(stream) => {
+                        Some(Command::SealStream(stream)) => {
                             batches.retain(|(_, id, _, _), _| *id != stream);
                         }
-                        Command::FinishActive(capture) => {
-                            finish_active(&store, &worker_active, &capture)
+                        Some(Command::FinishActive(capture)) => {
+                            translation = None;
+                            *worker_next.lock().unwrap() = None;
+                            finish_active(&store, &worker_active, &capture);
                         }
-                        Command::FailActive(capture, error) => {
-                            fail_active(&store, &worker_active, &capture, error)
+                        Some(Command::FailActive(capture, error)) => {
+                            translation = None;
+                            *worker_next.lock().unwrap() = None;
+                            fail_active(&store, &worker_active, &capture, error);
+                        }
+                        None => {}
+                    }
+                    if let Some(job) = &mut translation {
+                        match job.next(&store, Instant::now()) {
+                            Ok(Some(task)) => *worker_next.lock().unwrap() = Some(task),
+                            Ok(None) => {}
+                            Err(error) => {
+                                *worker_error.lock().unwrap() = Some(error.clone());
+                                job.error = Some(error);
+                            }
+                        }
+                        if job.finished() {
+                            if let Some(error) = &job.error {
+                                fail_active(&store, &worker_active, &job.capture, error.clone());
+                            } else {
+                                finish_active(&store, &worker_active, &job.capture);
+                            }
+                            translation = None;
                         }
                     }
                 }
@@ -141,6 +228,9 @@ impl MeetingEventSink {
             .expect("failed to start meeting event store");
         Self {
             inner: Arc::new(MeetingEventSinkInner {
+                next_translation,
+                translation_error,
+                dispatch_enabled: AtomicBool::new(false),
                 previews: Default::default(),
                 tx: std::sync::Mutex::new(Some(tx)),
                 active,
@@ -153,6 +243,49 @@ impl MeetingEventSink {
 
     fn capture_snapshot(&self) -> Option<ActiveMeetingCapture> {
         self.inner.active.lock().ok()?.clone()
+    }
+
+    pub(crate) fn owns_recognition(&self, owner: &TranslationSessionOwner) -> bool {
+        owner.is_plugin(super::super::PluginId::MEETING.as_str())
+            && self.capture_snapshot().is_some_and(|capture| {
+                owner.operation_id() == Some(capture.recognition_run_id.as_str())
+            })
+    }
+
+    pub(crate) fn begin_translation(
+        &self,
+        languages: xrtranslate_engine::language::LanguageSelection,
+    ) {
+        if let Some(capture) = self.capture_snapshot() {
+            self.inner
+                .dispatch_enabled
+                .store(!languages.asr_only(), Ordering::Release);
+            self.send(Command::Begin(capture, languages));
+        }
+    }
+
+    pub(crate) fn next_translation_task(&self) -> Option<TranslationTask> {
+        let task = self.inner.next_translation.lock().ok()?.take()?;
+        let capture = self.capture_snapshot()?;
+        (self.inner.dispatch_enabled.load(Ordering::Acquire)
+            && task.owner().operation_id().is_some_and(|id| {
+                id.starts_with(&format!("{}/translate/", capture.recognition_run_id))
+            }))
+        .then_some(task)
+    }
+
+    pub(crate) fn take_translation_error(&self) -> Option<String> {
+        self.inner.translation_error.lock().ok()?.take()
+    }
+
+    pub(crate) fn set_translation_paused(&self, paused: bool) {
+        self.send(Command::Paused(paused));
+    }
+
+    fn drain(&self) {
+        if let Some(capture) = self.capture_snapshot() {
+            self.send(Command::Drain(capture));
+        }
     }
 
     pub fn previews(&self) -> crate::session_coordinator::LivePreviews {
@@ -194,6 +327,8 @@ impl MeetingEventSink {
     }
 
     pub fn cancel_sessions(&self) {
+        self.inner.dispatch_enabled.store(false, Ordering::Release);
+        self.send(Command::CancelTranslation);
         if let Ok(mut previews) = self.inner.previews.lock() {
             *previews = Default::default();
         }
@@ -204,7 +339,7 @@ impl MeetingEventSink {
     pub fn request_finish(&self) {
         self.inner.finish_requested.store(true, Ordering::Release);
         if self.inner.active_sessions.load(Ordering::Acquire) == 0 {
-            self.finish_active();
+            self.drain();
         }
     }
 
@@ -222,12 +357,25 @@ impl MeetingEventSink {
 impl SessionEventSubscriber for MeetingEventSink {
     fn accepts_owner(&self, owner: &crate::session_coordinator::TranslationSessionOwner) -> bool {
         owner.is_plugin(super::super::PluginId::MEETING.as_str())
-            && self
-                .capture_snapshot()
-                .is_some_and(|capture| owner.operation_id() == Some(capture.meeting_id.as_str()))
+            && self.capture_snapshot().is_some_and(|capture| {
+                owner.operation_id().is_some_and(|id| {
+                    id == capture.recognition_run_id
+                        || id.starts_with(&format!("{}/translate/", capture.recognition_run_id))
+                })
+            })
     }
 
-    fn on_translation_event(&self, _owner: &TranslationSessionOwner, event: &TranslationEvent) {
+    fn on_translation_event(&self, owner: &TranslationSessionOwner, event: &TranslationEvent) {
+        if let Some(operation) = owner.operation_id()
+            && self
+                .capture_snapshot()
+                .is_some_and(|capture| operation != capture.recognition_run_id)
+        {
+            // Text completions update their original row and never participate in
+            // audio stream counting or create new transcript identities.
+            self.send(Command::Translation(operation.to_owned(), event.clone()));
+            return;
+        }
         if let Ok(mut previews) = self.inner.previews.lock() {
             previews.observe(event);
         }
@@ -264,7 +412,7 @@ impl SessionEventSubscriber for MeetingEventSink {
                     && (self.active_is_imported()
                         || self.inner.finish_requested.load(Ordering::Acquire))
                 {
-                    self.finish_active();
+                    self.drain();
                     self.inner.finish_requested.store(false, Ordering::Release);
                 }
             }
@@ -450,6 +598,226 @@ fn speaker_label(speaker_id: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::plugins::meeting::store::{MarkerKind, NewMeeting};
+
+    fn wait_for(mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !ready() {
+            assert!(Instant::now() < deadline, "meeting worker did not finish");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn both_audio_streams_drain_before_the_last_translation_ends_the_meeting() {
+        use crate::session_coordinator::PluginSessionOwner;
+        let store = Arc::new(MeetingStore::open_in_memory().unwrap());
+        let bundle = store
+            .create_meeting(NewMeeting::live("Meeting", None, "en", "zh"))
+            .unwrap();
+        store.start_meeting(&bundle.meeting.id).unwrap();
+        let capture = ActiveMeetingCapture {
+            meeting_id: bundle.meeting.id.clone(),
+            topic_id: bundle.topics[0].id.clone(),
+            recognition_run_id: "run".into(),
+            timeline_offset_ms: 0,
+            imported_audio: false,
+        };
+        let active = Arc::new(std::sync::Mutex::new(Some(capture.clone())));
+        let sink = MeetingEventSink::start(store.clone(), active.clone());
+        sink.begin_translation(
+            xrtranslate_engine::language::LanguageSelection::parse("en", "zh").unwrap(),
+        );
+        sink.begin_sessions(2);
+        let owner = TranslationSessionOwner::Plugin(PluginSessionOwner::new(
+            super::super::super::PluginId::MEETING.as_str(),
+            "run",
+            "Meeting Notes",
+            "Open meeting controls",
+            "Meeting",
+        ));
+        for (index, source) in [
+            (1, CaptureSource::Microphone),
+            (2, CaptureSource::SystemAudio),
+        ] {
+            let mut segment = recognized(index, 1);
+            segment.audio_source = source;
+            segment.stream_id = index as u64;
+            segment.revisable = false;
+            sink.on_translation_event(&owner, &TranslationEvent::Segment(segment));
+        }
+        sink.request_finish();
+        sink.on_translation_event(
+            &owner,
+            &TranslationEvent::Finished {
+                stream_id: 1,
+                outcome: TranslationOutcome::Completed,
+            },
+        );
+        assert!(active.lock().unwrap().is_some());
+        sink.on_translation_event(
+            &owner,
+            &TranslationEvent::Finished {
+                stream_id: 2,
+                outcome: TranslationOutcome::Completed,
+            },
+        );
+        for text in ["第一句。", "第二句。"] {
+            let mut task = None;
+            wait_for(|| {
+                task = sink.next_translation_task();
+                task.is_some()
+            });
+            let task = task.unwrap();
+            assert!(active.lock().unwrap().is_some());
+            assert!(sink.accepts_owner(&task.owner()));
+            let mut result = recognized(1, 1);
+            result.revisable = false;
+            result.asr_only = false;
+            result.translated = Some(text.into());
+            result.target_lang = "zh".into();
+            sink.on_translation_event(&task.owner(), &TranslationEvent::Segment(result));
+            sink.on_translation_event(
+                &task.owner(),
+                &TranslationEvent::Finished {
+                    stream_id: 90,
+                    outcome: TranslationOutcome::Completed,
+                },
+            );
+        }
+        wait_for(|| active.lock().unwrap().is_none());
+        let saved = store.open_meeting(&capture.meeting_id).unwrap();
+        assert_eq!(
+            saved.meeting.status,
+            super::super::store::MeetingStatus::Ended
+        );
+        assert_eq!(saved.segments.len(), 2);
+        assert!(saved.segments.iter().all(|s| s.translated_text.is_some()));
+        assert!(!sink.accepts_owner(&owner));
+    }
+
+    #[test]
+    fn cancellation_discards_a_late_translation_without_erasing_the_source() {
+        let store = Arc::new(MeetingStore::open_in_memory().unwrap());
+        let bundle = store
+            .create_meeting(NewMeeting::live("Meeting", None, "en", "zh"))
+            .unwrap();
+        let capture = ActiveMeetingCapture {
+            meeting_id: bundle.meeting.id.clone(),
+            topic_id: bundle.topics[0].id.clone(),
+            recognition_run_id: "run".into(),
+            timeline_offset_ms: 0,
+            imported_audio: false,
+        };
+        let active = Arc::new(std::sync::Mutex::new(Some(capture.clone())));
+        let sink = MeetingEventSink::start(store.clone(), active);
+        sink.begin_translation(
+            xrtranslate_engine::language::LanguageSelection::parse("en", "zh").unwrap(),
+        );
+        sink.set_translation_paused(true);
+        let mut segment = recognized(1, 1);
+        segment.revisable = false;
+        sink.send(Command::Results(
+            capture.clone(),
+            vec![segment.clone()],
+            false,
+        ));
+        let mut task = None;
+        wait_for(|| {
+            task = sink.next_translation_task();
+            task.is_some()
+        });
+        let task = task.unwrap();
+        sink.cancel_sessions();
+        segment.translated = Some("Discard me".into());
+        segment.asr_only = false;
+        segment.target_lang = "zh".into();
+        sink.on_translation_event(&task.owner(), &TranslationEvent::Segment(segment));
+        sink.on_translation_event(
+            &task.owner(),
+            &TranslationEvent::Finished {
+                stream_id: 1,
+                outcome: TranslationOutcome::Completed,
+            },
+        );
+        drop(sink);
+        let saved = store.list_segments(&capture.meeting_id).unwrap();
+        assert_eq!(saved.len(), 1);
+        assert!(saved[0].translated_text.is_none());
+    }
+
+    #[test]
+    fn translation_failure_keeps_accepting_recognition_and_reports_failure_after_drain() {
+        use crate::session_coordinator::PluginSessionOwner;
+        let store = Arc::new(MeetingStore::open_in_memory().unwrap());
+        let bundle = store
+            .create_meeting(NewMeeting::live("Meeting", None, "en", "zh"))
+            .unwrap();
+        store.start_meeting(&bundle.meeting.id).unwrap();
+        let capture = ActiveMeetingCapture {
+            meeting_id: bundle.meeting.id,
+            topic_id: bundle.topics[0].id.clone(),
+            recognition_run_id: "run".into(),
+            timeline_offset_ms: 0,
+            imported_audio: false,
+        };
+        let active = Arc::new(std::sync::Mutex::new(Some(capture.clone())));
+        let sink = MeetingEventSink::start(store.clone(), active.clone());
+        sink.begin_translation(
+            xrtranslate_engine::language::LanguageSelection::parse("en", "zh").unwrap(),
+        );
+        sink.begin_sessions(1);
+        sink.set_translation_paused(true);
+        let mut segment = recognized(1, 1);
+        segment.revisable = false;
+        sink.send(Command::Results(
+            capture.clone(),
+            vec![segment.clone()],
+            false,
+        ));
+        let mut task = None;
+        wait_for(|| {
+            task = sink.next_translation_task();
+            task.is_some()
+        });
+        sink.on_translation_event(
+            &task.unwrap().owner(),
+            &TranslationEvent::Finished {
+                stream_id: 99,
+                outcome: TranslationOutcome::Failed("Translation unavailable".into()),
+            },
+        );
+        wait_for(|| sink.take_translation_error().is_some());
+        assert!(active.lock().unwrap().is_some());
+        segment.turn_id = "later-turn".into();
+        segment.source = "Later source survives.".into();
+        sink.send(Command::Results(capture.clone(), vec![segment], false));
+        sink.request_finish();
+        let owner = TranslationSessionOwner::Plugin(PluginSessionOwner::new(
+            super::super::super::PluginId::MEETING.as_str(),
+            "run",
+            "Meeting Notes",
+            "Open meeting controls",
+            "Meeting",
+        ));
+        sink.on_translation_event(
+            &owner,
+            &TranslationEvent::Finished {
+                stream_id: 1,
+                outcome: TranslationOutcome::Completed,
+            },
+        );
+        wait_for(|| active.lock().unwrap().is_none());
+        let saved = store.open_meeting(&capture.meeting_id).unwrap();
+        assert_eq!(saved.segments.len(), 2);
+        assert_eq!(
+            saved.meeting.status,
+            super::super::store::MeetingStatus::Failed
+        );
+        assert_eq!(
+            saved.meeting.failure_message.as_deref(),
+            Some("Translation unavailable")
+        );
+    }
 
     fn recognized(index: u32, count: u32) -> TranslationSegment {
         TranslationSegment {

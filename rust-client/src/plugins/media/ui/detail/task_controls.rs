@@ -1,7 +1,7 @@
 use crate::{
     plugins::media::{
         MediaAction, MediaTranslationRequest, MediaUiSnapshot, backend::MediaSource,
-        controller::MediaController, i18n::tr,
+        controller::MediaController, i18n::tr, task::DEFAULT_PAUSE_TOLERANCE,
     },
     ui::components,
 };
@@ -178,14 +178,14 @@ pub(super) fn render_task_control_card(
                     bar.animate(true)
                 });
             }
-            if task
-                .recognition
-                .preprocessing
-                .unwrap_or(snapshot.default_preprocessing)
-                != AudioPreprocessing::VocalSeparation
-            {
-                egui::CollapsingHeader::new(tr(language, "Recognition Settings")).show(ui, |ui| {
-                    ui.add_enabled_ui(!task.is_task_running, |ui| {
+            egui::CollapsingHeader::new(tr(language, "Recognition Settings")).show(ui, |ui| {
+                ui.add_enabled_ui(!task.is_task_running, |ui| {
+                    if task
+                        .recognition
+                        .preprocessing
+                        .unwrap_or(snapshot.default_preprocessing)
+                        != AudioPreprocessing::VocalSeparation
+                    {
                         changed |= components::ModernSlider::new(
                             tr(language, "VAD Sensitivity"),
                             &mut task.recognition.background_noise,
@@ -194,25 +194,27 @@ pub(super) fn render_task_control_card(
                         )
                         .show(ui)
                         .changed();
-                        changed |= components::ModernSlider::new(
-                            tr(language, "Pause Tolerance & Sentence Continuity"),
-                            &mut task.recognition.pause_tolerance,
-                            0.0..=1.0,
-                            1.0,
-                        )
-                        .show(ui)
-                        .changed();
-                        if !local_file {
-                            changed |= ui
-                                .checkbox(
-                                    &mut task.recognition.continuous_recognition,
-                                    crate::i18n::tr(language, "Pseudo-streaming"),
-                                )
-                                .changed();
-                        }
-                    });
+                    }
+                    let pause_ms = crate::pause_tolerance_to_ms(task.recognition.pause_tolerance);
+                    changed |= components::ModernSlider::new(
+                        tr(language, "Pause tolerance"),
+                        &mut task.recognition.pause_tolerance,
+                        0.0..=1.0,
+                        DEFAULT_PAUSE_TOLERANCE,
+                    )
+                    .suffix(format!(" ({pause_ms} ms)"))
+                    .show(ui)
+                    .changed();
+                    if !local_file {
+                        changed |= ui
+                            .checkbox(
+                                &mut task.recognition.continuous_recognition,
+                                crate::i18n::tr(language, "Pseudo-streaming"),
+                            )
+                            .changed();
+                    }
                 });
-            }
+            });
             if !task.audio_channels.is_empty() {
                 egui::CollapsingHeader::new(tr(language, "Channel routing")).show(ui, |ui| {
                     crate::ui::layout::flow_row(ui, |ui| {

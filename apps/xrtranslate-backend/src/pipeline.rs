@@ -888,14 +888,7 @@ impl NativePipeline {
         }
         self.base_endpoint_config = config;
         if self.preprocessing.is_vocal() {
-            // Singing needs sustained phrases and breath-sized pauses, while the
-            // existing endpoint detector still owns boundaries and overlap.
-            config.speech_threshold = 0.5;
-            config.silence_frames_to_finalize = frames_for_ms(900);
-            config.adaptive_silence_after_frames = frames_for_ms(12_000);
-            config.adaptive_silence_frames_to_finalize = frames_for_ms(400);
-            config.max_active_frames = frames_for_ms(24_000);
-            config.max_active_overlap_frames = frames_for_ms(320);
+            config = preprocessing::vocal_endpoint_config(config);
         }
         self.endpoint = EndpointDetector::new(config).map_err(|error| error.to_string())?;
         self.endpoint_config = config;

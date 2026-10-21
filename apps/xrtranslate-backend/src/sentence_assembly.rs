@@ -63,6 +63,20 @@ impl SentenceAssembler {
         mut current: PreparedRecognition,
     ) -> Result<Vec<PreparedRecognition>, AssemblyOverflow> {
         let mut ready = Vec::new();
+        // File transcription is consumed by a plugin that owns subtitle editing
+        // and translation context. Preserve its audio boundaries even when the
+        // recognizer omits punctuation; live translation still assembles sentences.
+        if current.job.workload == xrtranslate_protocol::InferenceWorkload::Offline
+            && current.job.translation_options.asr_only
+        {
+            if let Some(previous) = self.take_pending()
+                && previous.job.generation == current.job.generation
+            {
+                ready.push(previous);
+            }
+            ready.push(current);
+            return Ok(ready);
+        }
         let next_tail_id = format!("{}:tail", current.job.turn_id);
         if let Some(previous) = self.pending.take() {
             if same_stream(&previous, &current) {
@@ -163,4 +177,111 @@ fn append_text(previous: &mut String, next: &str) {
 
 fn is_compact_script(character: char) -> bool {
     matches!(character, '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{9fff}' | '\u{f900}'..='\u{faff}')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xrtranslate_protocol::{InferenceWorkload, TranslationOptions};
+
+    fn recognized_chunk(
+        text: &str,
+        index: usize,
+        workload: InferenceWorkload,
+        asr_only: bool,
+    ) -> PreparedRecognition {
+        PreparedRecognition {
+            job: UtteranceJob {
+                utterance: xrtranslate_vad::Utterance {
+                    samples: Vec::new(),
+                    pre_roll_frames: 0,
+                    overlap_frames: 0,
+                    trailing_silence_frames: 0,
+                    end_reason: UtteranceEndReason::AdaptiveSilence,
+                },
+                source_start_ms: index as f64 * 6_000.0,
+                source_end_ms: (index + 1) as f64 * 6_000.0,
+                revisable: false,
+                generation: PipelineGeneration {
+                    route_epoch: crate::RouteEpoch::INITIAL,
+                    audio_epoch: crate::AudioEpoch::INITIAL,
+                },
+                turn_id: format!("turn-{index}"),
+                topic_turn_id: format!("turn-{index}"),
+                source_language: "en".into(),
+                target_language: "zh".into(),
+                translation_options: TranslationOptions {
+                    asr_only,
+                    ..Default::default()
+                },
+                speaker_id: None,
+                workload,
+                enqueued_at: tokio::time::Instant::now(),
+                revision: 0,
+            },
+            recognized: RecognizedOutput {
+                source_text: text.into(),
+                segments: xrtranslate_engine::translation_segment_pairs_for_text_with_lang(
+                    text, "en",
+                ),
+                source_language: "en".into(),
+                target_language: "zh".into(),
+                asr_elapsed: Duration::ZERO,
+                route_switched: None,
+                prompt_trace: None,
+            },
+            asr_context: xr_corpus_protocol::PrepareAsrResponse {
+                context_id: 0,
+                vocabulary: Vec::new(),
+                prompt: None,
+            },
+            prompt_graph: xrtranslate_prompt::PromptNodeGraph::builtin_default(),
+            queue_elapsed: Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn offline_transcription_preserves_unpunctuated_audio_boundaries() {
+        let mut assembler = SentenceAssembler::default();
+        for index in 0..8 {
+            let source = format!("Unpunctuated lyric line {index}");
+            let input = recognized_chunk(&source, index, InferenceWorkload::Offline, true);
+            let expected_start = input.job.source_start_ms;
+            let expected_end = input.job.source_end_ms;
+            let ready = assembler
+                .push(input)
+                .unwrap_or_else(|_| panic!("unexpected overflow"));
+            assert_eq!(ready.len(), 1);
+            assert_eq!(ready[0].recognized.source_text, source);
+            assert_eq!(ready[0].job.source_start_ms, expected_start);
+            assert_eq!(ready[0].job.source_end_ms, expected_end);
+            assert_eq!(
+                ready[0].job.utterance.end_reason,
+                UtteranceEndReason::AdaptiveSilence
+            );
+            assert!(assembler.pending().is_none());
+        }
+    }
+
+    #[test]
+    fn direct_translation_still_joins_an_unfinished_sentence() {
+        for (workload, asr_only) in [
+            (InferenceWorkload::Realtime, false),
+            (InferenceWorkload::Realtime, true),
+            (InferenceWorkload::Offline, false),
+        ] {
+            let mut assembler = SentenceAssembler::default();
+            let first = assembler
+                .push(recognized_chunk("We need", 0, workload, asr_only))
+                .unwrap_or_else(|_| panic!("unexpected overflow"));
+            assert!(first.is_empty());
+            assert!(assembler.pending().is_some());
+            let ready = assembler
+                .push(recognized_chunk("more time.", 1, workload, asr_only))
+                .unwrap_or_else(|_| panic!("unexpected overflow"));
+            assert_eq!(ready.len(), 1);
+            assert_eq!(ready[0].recognized.source_text, "We need more time.");
+            assert!(assembler.pending().is_none());
+        }
+    }
 }

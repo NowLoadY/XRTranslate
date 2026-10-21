@@ -7,7 +7,9 @@ mod export;
 mod model;
 mod repository;
 mod schema;
+mod translation;
 
 pub use export::render_markdown;
 pub use model::*;
 pub use repository::MeetingStore;
+pub(super) use translation::TranslationWindow;

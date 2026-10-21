@@ -3,11 +3,12 @@ use super::{
     MediaPlugin,
     subtitles::{SubtitleCue, SubtitleTimeline},
 };
+#[cfg(test)]
+use crate::session_coordinator::TranslationSegment;
 use crate::session_coordinator::{
-    PluginSessionBinding, PluginSessionOwner, SessionOutputPolicy, TranslationEvent,
-    TranslationOutcome, TranslationSegment, TranslationTask,
+    PluginSessionBinding, PluginSessionOwner, SessionOutputPolicy, TextTranslationCollector,
+    TextTranslationResult, TranslationEvent, TranslationOutcome, TranslationTask,
 };
-use std::collections::BTreeMap;
 use xrtranslate_engine::language::{
     LanguageCapabilities, LanguageMode, LanguageSelection, SupportedLanguage,
 };
@@ -39,21 +40,17 @@ struct PendingSubtitle {
 pub(super) struct SubtitleTranslation {
     pub(super) operation: String,
     pub(super) cue: String,
-    segments: BTreeMap<(String, u32), TranslationSegment>,
+    result: TextTranslationCollector,
 }
 
-pub(super) struct SubtitleTranslationResult {
-    pub(super) text: String,
-    pub(super) source_language: String,
-    pub(super) target_language: String,
-}
+pub(super) type SubtitleTranslationResult = TextTranslationResult;
 
 impl SubtitleTranslation {
     pub(super) fn new(cue: &str) -> Self {
         Self {
             operation: uuid::Uuid::new_v4().to_string(),
             cue: cue.to_owned(),
-            segments: BTreeMap::new(),
+            result: TextTranslationCollector::default(),
         }
     }
 
@@ -95,67 +92,7 @@ impl SubtitleTranslation {
         &mut self,
         event: &TranslationEvent,
     ) -> Option<Result<SubtitleTranslationResult, String>> {
-        match event {
-            TranslationEvent::Segment(segment) if segment.translated.is_some() => {
-                self.segments.insert(
-                    (segment.turn_id.clone(), segment.segment_index),
-                    segment.clone(),
-                );
-            }
-            TranslationEvent::ReplaceSegments(segments) => {
-                if let Some(first) = segments
-                    .first()
-                    .filter(|segment| segment.translated.is_some())
-                {
-                    self.segments.retain(|(turn, _), _| turn != &first.turn_id);
-                    for segment in segments
-                        .iter()
-                        .filter(|segment| segment.translated.is_some())
-                    {
-                        self.segments.insert(
-                            (segment.turn_id.clone(), segment.segment_index),
-                            segment.clone(),
-                        );
-                    }
-                }
-            }
-            TranslationEvent::Finished { outcome, .. } => {
-                return Some(match outcome {
-                    TranslationOutcome::Completed => {
-                        let mut text = String::new();
-                        for segment in self.segments.values() {
-                            crate::streaming::append_segment(
-                                &mut text,
-                                segment.translated.as_deref().unwrap_or_default(),
-                            );
-                        }
-                        if text.trim().is_empty() {
-                            Err("No translation was returned. Retry this task.".into())
-                        } else {
-                            let first = self.segments.values().next().unwrap();
-                            let (source_language, target_language) =
-                                if self.segments.values().all(|segment| {
-                                    segment.source_lang == first.source_lang
-                                        && segment.target_lang == first.target_lang
-                                }) {
-                                    (first.source_lang.clone(), first.target_lang.clone())
-                                } else {
-                                    (String::new(), String::new())
-                                };
-                            Ok(SubtitleTranslationResult {
-                                text,
-                                source_language,
-                                target_language,
-                            })
-                        }
-                    }
-                    TranslationOutcome::Failed(error) => Err(error.clone()),
-                    TranslationOutcome::Cancelled => Err("Cancelled".into()),
-                });
-            }
-            _ => {}
-        }
-        None
+        self.result.accept(event)
     }
 }
 
@@ -477,6 +414,7 @@ pub(super) fn subtitle_context(cues: &[SubtitleCue], index: usize) -> TaskContex
         after.push_str(&text);
     }
     TaskContext::snapshot(ContextFacts {
+        current_speaker_id: String::new(),
         recent_turns,
         surrounding_source: Some(SurroundingSource {
             speaker_id: cues[index].speaker_name.clone().unwrap_or_default(),
