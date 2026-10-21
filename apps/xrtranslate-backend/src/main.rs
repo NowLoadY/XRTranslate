@@ -1092,6 +1092,8 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                         }
                         Ok(ClientControl::Event(EventControl::ConfigAudio {
                             sample_rate,
+                            channels,
+                            preprocessing,
                             source_lang: source,
                             target_lang: target,
                             audio_source: configured_audio_source,
@@ -1101,17 +1103,19 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                             workload: configured_workload,
                             translation_options,
                         })) => {
-                            if let Err(error) = validate_input_sample_rate(sample_rate) {
-                                if send_error(&outbound_sender, error).await.is_err() {
-                                    break;
-                                }
-                                continue;
-                            }
                             let Some(pipeline) = &mut pipeline else {
                                 let _ = send_error(&outbound_sender, "Audio input is unavailable in a text session".into()).await;
                                 continue;
                             };
-                            input_format = PcmFormat::mono_s16le(sample_rate);
+                            if let Err(error) = audio_processing_work(preprocessing.is_some(), || pipeline.configure_preprocessing(
+                                preprocessing, sample_rate, channels, configured_workload,
+                                &state.config, &state.project_root, &state.model_plan,
+                            )) {
+                                pipeline.reset();
+                                let _ = send_error(&outbound_sender, error).await;
+                                break;
+                            }
+                            input_format = PcmFormat { channels: channels as u8, ..PcmFormat::mono_s16le(sample_rate) };
                             if let Err(error) = pipeline.configure_segmentation(
                                 vad_threshold,
                                 vad_silence_ms,
@@ -1178,7 +1182,8 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                                     DrainReason::Paused,
                                     &mut next_utterance_sequence,
                                 ) {
-                                    if send_error(&outbound_sender, error).await.is_err() {
+                                    if send_error(&outbound_sender, error).await.is_err()
+                                        || pipeline.as_ref().is_some_and(NativePipeline::is_vocal) {
                                         break;
                                     }
                                 }
@@ -1223,7 +1228,8 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                                 reason,
                                 &mut next_utterance_sequence,
                             ) {
-                                if send_error(&outbound_sender, error).await.is_err() {
+                                if send_error(&outbound_sender, error).await.is_err()
+                                    || pipeline.as_ref().is_some_and(NativePipeline::is_vocal) {
                                     break;
                                 }
                             }
@@ -1300,6 +1306,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                         }
                         Ok(ClientControl::Action(ActionControl::TranslateText {
                             text,
+                            workload: text_workload,
                             source_lang,
                             target_lang,
                             stream_id: _,
@@ -1345,7 +1352,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                                     target_language,
                                     translation_options,
                                     speaker_id: None,
-                                    workload,
+                                    workload: text_workload.unwrap_or(workload),
                                     enqueued_at: Instant::now(),
                                     revision,
                                 };
@@ -1376,7 +1383,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                             continue;
                         }
                         match PcmFrame::new(audio.to_vec(), input_format) {
-                            Ok(frame) => match pipeline.push_pcm(frame.as_bytes()) {
+                            Ok(frame) => match audio_processing_work(pipeline.is_vocal(), || pipeline.push_pcm(frame.as_bytes())) {
                                 Ok(utterances) => {
                                     let mut vad_send_failed = false;
                                     for active in pipeline.take_vad_transitions() {
@@ -1407,7 +1414,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                                     }
                                 }
                                 Err(error) => {
-                                    if send_error(&outbound_sender, error).await.is_err() {
+                                    if send_error(&outbound_sender, error).await.is_err() || pipeline.is_vocal() {
                                         break;
                                     }
                                 }
@@ -1811,6 +1818,20 @@ fn inference_jobs(
     Ok(jobs)
 }
 
+/// Long file preprocessing must not occupy an asynchronous runtime worker
+/// needed by live sessions. Outside a multithread runtime (unit tests), run inline.
+fn audio_processing_work<T>(heavy: bool, work: impl FnOnce() -> T) -> T {
+    if heavy
+        && tokio::runtime::Handle::try_current().is_ok_and(|handle| {
+            handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+        })
+    {
+        tokio::task::block_in_place(work)
+    } else {
+        work()
+    }
+}
+
 /// Flushes the current VAD turn and places an ordered fence behind all queued
 /// model work. The event pump sends this batch without blocking result delivery.
 fn queue_pipeline_drain(
@@ -1822,7 +1843,11 @@ fn queue_pipeline_drain(
     reason: DrainReason,
     next_utterance_sequence: &mut u64,
 ) -> Result<(), String> {
-    let flush_error = match pipeline.as_mut().map(NativePipeline::flush).transpose() {
+    let flush_error = match pipeline
+        .as_mut()
+        .map(|pipeline| audio_processing_work(pipeline.is_vocal(), || pipeline.flush()))
+        .transpose()
+    {
         Ok(Some(utterances)) => {
             enqueue_utterances(
                 pending,
@@ -1835,7 +1860,12 @@ fn queue_pipeline_drain(
             None
         }
         Ok(None) => None,
-        Err(error) => Some(error),
+        Err(error) => {
+            if let Some(pipeline) = pipeline.as_mut() {
+                pipeline.reset();
+            }
+            Some(error)
+        }
     };
     pending.push_back(InferenceJob::Drain { generation, reason });
     flush_error.map_or(Ok(()), Err)

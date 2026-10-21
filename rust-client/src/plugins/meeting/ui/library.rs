@@ -1,11 +1,12 @@
 use super::{
     actions::UiAction,
-    presentation::{format_timestamp, meeting_language_label, page_header, source_label},
+    presentation::{
+        format_timestamp, meeting_language_label, page_header, source_label, status_indicator,
+    },
 };
 use crate::plugins::meeting::{
-    controller::{MeetingController, can_continue, meeting_status_label},
+    controller::{MeetingController, can_continue},
     i18n::tr,
-    store::MeetingStatus,
 };
 use crate::ui::components;
 use eframe::egui;
@@ -17,23 +18,52 @@ pub(super) fn render_library(
 ) -> UiAction {
     let mut action = UiAction::None;
     page_header(ui, "Meeting notes", language, |_| {});
-    components::library_start(
-        ui,
-        egui::include_image!("../../../../resources/plugins/meeting/icon.svg"),
-        tr(language, "Capture a meeting"),
-        tr(
-            language,
-            "Create a live record or import an audio file. Records are stored locally.",
-        ),
-        |ui| {
-            if components::primary_button(ui, tr(language, "New meeting")).clicked() {
-                action = UiAction::NewLive;
+    components::card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(24.0, 8.0);
+            for (label, icon, next_action) in [
+                (
+                    "New meeting",
+                    egui::include_image!("../../../../resources/icons/record.svg"),
+                    UiAction::NewLive,
+                ),
+                (
+                    "Import audio",
+                    egui::include_image!("../../../../resources/icons/import.svg"),
+                    UiAction::NewImport,
+                ),
+            ] {
+                let label = tr(language, label);
+                let diameter = 40.0_f32.max(ui.spacing().interact_size.y);
+                let label_width = ui
+                    .painter()
+                    .layout_no_wrap(
+                        label.to_owned(),
+                        egui::FontId::proportional(12.0),
+                        crate::ui::theme::text_normal(),
+                    )
+                    .size()
+                    .x;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(diameter + 8.0 + label_width, diameter),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        if components::round_icon_button(ui, label, icon, diameter).clicked() {
+                            action = next_action;
+                        }
+                        ui.label(
+                            egui::RichText::new(label)
+                                .size(12.0)
+                                .color(crate::ui::theme::text_normal()),
+                        );
+                    },
+                );
             }
-            if components::secondary_button(ui, tr(language, "Import audio")).clicked() {
-                action = UiAction::NewImport;
-            }
-        },
-    );
+        });
+    });
+    ui.add_space(16.0);
 
     if let Some(error) = &controller.error {
         components::error_notice(ui, language, error);
@@ -75,12 +105,7 @@ pub(super) fn render_library(
                             .wrap(),
                         );
                         ui.horizontal_wrapped(|ui| {
-                            components::status_badge(
-                                ui,
-                                tr(language, meeting_status_label(meeting.status)),
-                                meeting.status == MeetingStatus::Live,
-                                meeting.status == MeetingStatus::Failed,
-                            );
+                            status_indicator(ui, language, meeting.status, false);
                             ui.label(
                                 egui::RichText::new(format!(
                                     "{} · {}",
@@ -101,33 +126,36 @@ pub(super) fn render_library(
                             .color(crate::ui::theme::text_weak()),
                         );
                         ui.horizontal_wrapped(|ui| {
-                            if components::primary_button(ui, tr(language, "Open")).clicked() {
+                            if components::open_button(ui, tr(language, "Open")).clicked() {
                                 action = UiAction::Open(meeting.id.clone());
                             }
-                            ui.menu_button("⋯", |ui| {
-                                if can_continue(meeting)
-                                    && ui.button(tr(language, "Continue recording")).clicked()
-                                {
-                                    action = UiAction::Continue(meeting.id.clone());
-                                    ui.close();
-                                }
-                                if ui.button(tr(language, "Export Markdown")).clicked() {
-                                    action = UiAction::ExportMeeting(meeting.id.clone());
-                                    ui.close();
-                                }
-                                if ui
-                                    .add_enabled(
-                                        !controller.is_recording(&meeting.id),
-                                        egui::Button::new(tr(language, "Delete")),
-                                    )
-                                    .clicked()
-                                {
-                                    action = UiAction::AskDelete(meeting.id.clone());
-                                    ui.close();
-                                }
-                            })
-                            .response
-                            .on_hover_text(tr(language, "More"));
+                            components::icon_menu(
+                                ui,
+                                tr(language, "More"),
+                                egui::include_image!("../../../../resources/icons/more.svg"),
+                                |ui| {
+                                    if can_continue(meeting)
+                                        && ui.button(tr(language, "Continue recording")).clicked()
+                                    {
+                                        action = UiAction::Continue(meeting.id.clone());
+                                        ui.close();
+                                    }
+                                    if ui.button(tr(language, "Export Markdown")).clicked() {
+                                        action = UiAction::ExportMeeting(meeting.id.clone());
+                                        ui.close();
+                                    }
+                                    if ui
+                                        .add_enabled(
+                                            !controller.is_recording(&meeting.id),
+                                            egui::Button::new(tr(language, "Delete")),
+                                        )
+                                        .clicked()
+                                    {
+                                        action = UiAction::AskDelete(meeting.id.clone());
+                                        ui.close();
+                                    }
+                                },
+                            );
                         });
                     });
                     ui.add_space(10.0);

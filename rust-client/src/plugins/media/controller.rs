@@ -130,6 +130,7 @@ impl Default for MediaController {
             draft_target_lang: "zh".into(),
             draft_subtitle_mode: SubtitleMode::RealtimeTranslation,
             draft_recognition: crate::client_settings::RecognitionSettings {
+                preprocessing: None,
                 background_noise: 0.6,
                 pause_tolerance: 1.0,
                 continuous_recognition: false,
@@ -210,6 +211,7 @@ impl MediaController {
         self.draft_target_lang = "zh".into();
         self.draft_subtitle_mode = SubtitleMode::RealtimeTranslation;
         self.draft_recognition = crate::client_settings::RecognitionSettings {
+            preprocessing: None,
             background_noise: 0.6,
             pause_tolerance: 1.0,
             continuous_recognition: false,

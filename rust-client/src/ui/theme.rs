@@ -201,6 +201,10 @@ pub fn surface_subtle() -> Color32 {
     Color32::from_rgba_unmultiplied(246, 246, 246, 64)
 }
 
+pub fn surface_tinted(color: Color32) -> Color32 {
+    Color32::WHITE.lerp_to_gamma(color, 0.18)
+}
+
 /// A readable white backing for bounded content over custom background images.
 pub fn surface_panel() -> Color32 {
     Color32::from_white_alpha(184)

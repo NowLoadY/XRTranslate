@@ -8849,6 +8849,7 @@ dependencies = [
  "xrtranslate-inference",
  "xrtranslate-prompt",
  "xrtranslate-protocol",
+ "xrtranslate-separation",
  "xrtranslate-speaker",
  "xrtranslate-supervisor",
  "xrtranslate-vad",
@@ -8890,6 +8891,10 @@ dependencies = [
 [[package]]
 name = "xrtranslate-engine"
 version = "0.3.4"
+dependencies = [
+ "audioadapter-buffers",
+ "rubato",
+]
 
 [[package]]
 name = "xrtranslate-inference"
@@ -8959,6 +8964,14 @@ dependencies = [
  "serde",
  "xr-corpus-protocol",
  "xrtranslate-prompt",
+]
+
+[[package]]
+name = "xrtranslate-separation"
+version = "0.3.4"
+dependencies = [
+ "ort",
+ "rustfft",
 ]
 
 [[package]]

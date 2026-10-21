@@ -24,31 +24,10 @@ impl Drop for TempFileGuard {
 }
 
 #[cfg(feature = "mpv")]
-fn build_recognition_pan_filter(recognition_channels: &[usize]) -> Option<String> {
-    if recognition_channels.is_empty() {
-        return None;
-    }
-    if recognition_channels == [0, 1] {
-        return Some("lavfi=[pan=stereo|c0=1.0*c0|c1=1.0*c1]".to_string());
-    }
-    if recognition_channels.len() == 1 {
-        let idx = recognition_channels[0];
-        return Some(format!("lavfi=[pan=stereo|c0=1.0*c{idx}|c1=1.0*c{idx}]"));
-    }
-    let scale = 1.0 / recognition_channels.len() as f32;
-    let terms: Vec<String> = recognition_channels
-        .iter()
-        .map(|&idx| format!("{scale:.4}*c{idx}"))
-        .collect();
-    let sum_expr = terms.join("+");
-    Some(format!("lavfi=[pan=stereo|c0={sum_expr}|c1={sum_expr}]"))
-}
-
-#[cfg(feature = "mpv")]
 pub(super) fn run_mpv_extract(
     source_path: &Path,
     target_wav: &Path,
-    recognition_channels: &[usize],
+    output_sample_rate: u32,
     stop_requested: &AtomicBool,
     event_tx: &Sender<AudioImportEvent>,
 ) -> Result<(), AudioImportError> {
@@ -68,10 +47,10 @@ pub(super) fn run_mpv_extract(
                 CString::new(k).map_err(|e| AudioImportError::InvalidOptions(e.to_string()))?;
             let cv =
                 CString::new(v).map_err(|e| AudioImportError::InvalidOptions(e.to_string()))?;
-            let res = libmpv_sys::mpv_set_property_string(mpv, ck.as_ptr(), cv.as_ptr());
+            let res = libmpv_sys::mpv_set_option_string(mpv, ck.as_ptr(), cv.as_ptr());
             if res < 0 {
                 return Err(AudioImportError::Decode(format!(
-                    "failed to set mpv property {k}={v}: {res}"
+                    "failed to set mpv option {k}={v}: {res}"
                 )));
             }
             Ok(())
@@ -81,13 +60,9 @@ pub(super) fn run_mpv_extract(
         set("of", "wav")?;
         set("ovc", "null")?;
         set("oac", "pcm_s16le")?;
-        set("audio-samplerate", "16000")?;
-        if let Some(filter) = build_recognition_pan_filter(recognition_channels) {
-            set("af", &filter)?;
-            set("audio-channels", "stereo")?;
-        } else {
-            set("audio-channels", "auto-safe")?;
-        }
+        set("audio-samplerate", &output_sample_rate.to_string())?;
+        // Keep the decoded layout; shared import applies channel selection once.
+        set("audio-channels", "auto")?;
         set("video", "no")?;
         set("vid", "no")?;
         set("vo", "null")?;
@@ -193,7 +168,7 @@ pub(super) fn run_mpv_extract(
 pub(super) fn run_mpv_extract(
     _source_path: &Path,
     _target_wav: &Path,
-    _recognition_channels: &[usize],
+    _output_sample_rate: u32,
     _stop_requested: &AtomicBool,
     _event_tx: &crossbeam_channel::Sender<AudioImportEvent>,
 ) -> Result<(), AudioImportError> {

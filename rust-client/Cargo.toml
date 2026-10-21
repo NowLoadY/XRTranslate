@@ -44,7 +44,7 @@ zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 xrtranslate-assets = { path = "../crates/xrtranslate-assets" }
 xrtranslate-config = { path = "../crates/xrtranslate-config" }
 xrtranslate-download = { path = "../crates/xrtranslate-download" }
-xrtranslate-engine = { path = "../crates/xrtranslate-engine" }
+xrtranslate-engine = { path = "../crates/xrtranslate-engine", features = ["resample"] }
 xrtranslate-prompt = { path = "../crates/xrtranslate-prompt" }
 xrtranslate-protocol = { path = "../crates/xrtranslate-protocol" }
 xrt-connector-core = { git = "https://github.com/NowLoadY/XRT-Avatar-Plugin.git", rev = "a01af88f7d37263e50b2daa67ca742e353601a80" }

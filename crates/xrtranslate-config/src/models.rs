@@ -87,6 +87,11 @@ impl AppConfig {
                 ModelCapability::Translation => "translation",
                 ModelCapability::Tts => "tts",
                 ModelCapability::Ocr => "ocr",
+                ModelCapability::SourceSeparation | ModelCapability::NoiseSuppression => {
+                    return Err(
+                        "Audio preprocessing is selected by each input or media task.".into(),
+                    );
+                }
             };
             raw[section]["provider"] = json!(model.provider);
             let provider = &mut raw[section]["providers"][model.provider];

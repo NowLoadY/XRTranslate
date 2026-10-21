@@ -71,6 +71,7 @@ struct TextTask {
     pending: Option<String>,
     languages: LanguageSelection,
     context: TaskContext,
+    workload: Option<xrtranslate_protocol::InferenceWorkload>,
     connection: TextConnection,
     started: Instant,
     segments: BTreeMap<u32, String>,
@@ -128,7 +129,13 @@ impl TextTask {
                 .session
                 .as_ref()
                 .ok_or("Text session is unavailable")?
-                .translate_text(text, Some(source), Some(destination), self.context.clone())?;
+                .translate_text(
+                    text,
+                    Some(source),
+                    Some(destination),
+                    self.context.clone(),
+                    self.workload,
+                )?;
             self.pending = None;
             self.connection.drained = false;
             self.started = Instant::now();
@@ -351,6 +358,7 @@ impl TextTranslation {
             pending: Some(text),
             languages: task.languages,
             context: task.context,
+            workload: task.text_workload,
             connection: TextConnection::default(),
             started: Instant::now(),
             segments: BTreeMap::new(),
@@ -426,6 +434,9 @@ impl TextTranslation {
                         let session = network::start_text_session(
                             task.connection.tx.clone(),
                             SessionConfig {
+                                input_sample_rate: 16_000,
+                                input_channels: 1,
+                                preprocessing: None,
                                 context: task.context.clone(),
                                 server_url: server_url.to_owned(),
                                 languages: task.languages,
@@ -534,5 +545,55 @@ impl TextTranslation {
 impl Drop for TextTranslation {
     fn drop(&mut self) {
         self.reset();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xrtranslate_prompt::{ContextFacts, SurroundingSource};
+    use xrtranslate_protocol::InferenceWorkload;
+
+    #[test]
+    fn offline_snapshots_do_not_change_live_conversation_or_each_others_facts() {
+        let mut translator = TextTranslation::default();
+        let languages = LanguageSelection::parse("en", "zh").unwrap();
+        let live = TaskContext::conversation("live-test");
+        translator
+            .submit(
+                TranslationTask::text("Hello.".into(), languages, None).with_context(live.clone()),
+            )
+            .unwrap();
+        for before in ["First document.", "Second document."] {
+            translator
+                .submit(
+                    TranslationTask::text("Next.".into(), languages, None)
+                        .with_context(TaskContext::snapshot(ContextFacts {
+                            recent_turns: Vec::new(),
+                            surrounding_source: Some(SurroundingSource {
+                                speaker_id: String::new(),
+                                source_language: "en".into(),
+                                before: before.into(),
+                                after: String::new(),
+                            }),
+                        }))
+                        .with_text_workload(InferenceWorkload::Offline),
+                )
+                .unwrap();
+        }
+        assert_eq!(translator.tasks[0].context, live);
+        assert_eq!(translator.tasks[0].workload, None);
+        assert_eq!(
+            translator.tasks[1].workload,
+            Some(InferenceWorkload::Offline)
+        );
+        assert!(!translator.tasks[0].compatible_connection(&translator.tasks[1]));
+        assert!(translator.tasks[1].compatible_connection(&translator.tasks[2]));
+        for (index, expected) in [(1, "First document."), (2, "Second document.")] {
+            let TaskContext::Snapshot { facts } = &translator.tasks[index].context else {
+                unreachable!()
+            };
+            assert_eq!(facts.surrounding_source.as_ref().unwrap().before, expected);
+        }
     }
 }

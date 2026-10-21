@@ -15,8 +15,10 @@
 
 mod asr_prompt;
 mod audio;
+mod preprocessing;
 mod streaming;
 use audio::{AudioBuffer, AudioFrames, SpeechGate};
+use preprocessing::{AudioPreprocessor, VocalActivity};
 use streaming::LiveCapture;
 pub(crate) use streaming::LiveUtterance;
 
@@ -29,7 +31,6 @@ use std::{
 use tracing::warn;
 
 use xrtranslate_config::AppConfig;
-use xrtranslate_denoise::GtcrnDenoiser;
 use xrtranslate_engine::{
     TranslationSegmentPair, remove_asr_stutters, remove_transcript_overlap,
     strip_filler_edges_for_lang, translation_segment_pairs_for_text_with_lang,
@@ -41,7 +42,7 @@ use xrtranslate_inference::{
 use xrtranslate_prompt::{
     AsrPromptContext, PromptExecutionTrace, PromptNodeGraph, TranslationPromptContext,
 };
-use xrtranslate_protocol::AudioSource;
+use xrtranslate_protocol::{AudioPreprocessing, AudioSource, InferenceWorkload};
 use xrtranslate_speaker::{
     OnlineSpeakerDiarizer, StreamingDiarizerConfig, StreamingSpeakerEvent,
     StreamingSpeakerSegmenter, TrackerConfig,
@@ -146,18 +147,14 @@ impl RecognizedOutput {
             return;
         }
         self.source_text = corrected;
-        self.segments = translation_segment_pairs_for_text_with_lang(
-            &self.source_text,
-            &self.source_language,
-        );
+        self.segments =
+            translation_segment_pairs_for_text_with_lang(&self.source_text, &self.source_language);
     }
 
     pub(crate) fn prepare_sentence_snapshot(&mut self) {
         let cleaned = strip_filler_edges_for_lang(&self.source_text, &self.source_language);
-        self.segments = translation_segment_pairs_for_text_with_lang(
-            &self.source_text,
-            &self.source_language,
-        );
+        self.segments =
+            translation_segment_pairs_for_text_with_lang(&self.source_text, &self.source_language);
         if self.segments.is_empty() {
             self.segments = vec![TranslationSegmentPair {
                 source_text: self.source_text.clone(),
@@ -174,10 +171,8 @@ impl RecognizedOutput {
     /// Returns false when the new result contained only duplicated context.
     pub(crate) fn remove_overlap_with(&mut self, previous: &str) -> bool {
         self.source_text = remove_transcript_overlap(previous, &self.source_text);
-        self.segments = translation_segment_pairs_for_text_with_lang(
-            &self.source_text,
-            &self.source_language,
-        );
+        self.segments =
+            translation_segment_pairs_for_text_with_lang(&self.source_text, &self.source_language);
         !self.source_text.is_empty()
     }
 }
@@ -202,7 +197,10 @@ pub(crate) struct NativePipeline {
     vad: SileroVad,
     endpoint: EndpointDetector,
     endpoint_config: EndpointConfig,
-    denoiser: Option<GtcrnDenoiser>,
+    base_endpoint_config: EndpointConfig,
+    preprocessing: AudioPreprocessor,
+    preprocessing_mode: AudioPreprocessing,
+    vocal_activity: VocalActivity,
     streaming_speaker: Option<StreamingSpeakerSegmenter>,
     speaker_recognition_enabled: bool,
     fixed_window: Option<FixedWindow>,
@@ -584,34 +582,17 @@ impl NativePipeline {
             None
         };
 
-        let denoiser = if config.denoise.enabled {
-            let model_path = if config.denoise.model_path.is_absolute() {
-                config.denoise.model_path.clone()
-            } else {
-                project_root.join(&config.denoise.model_path)
-            };
-            if model_path.is_file() {
-                match GtcrnDenoiser::from_file(&model_path, config.denoise.intra_threads) {
-                    Ok(denoiser) => Some(denoiser),
-                    Err(error) => {
-                        warn!(
-                            "failed to initialize GTCRN denoiser ({error}), continuing with bypass"
-                        );
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
+        // Optional preprocessing is loaded by ConfigAudio after the input choice is known.
+        let preprocessing = AudioPreprocessor::None;
+        let preprocessing_mode = AudioPreprocessing::None;
         Ok(Self {
             vad,
             endpoint,
             endpoint_config,
-            denoiser,
+            base_endpoint_config: endpoint_config,
+            preprocessing,
+            preprocessing_mode,
+            vocal_activity: VocalActivity::default(),
             streaming_speaker,
             speaker_recognition_enabled: false,
             fixed_window: None,
@@ -632,7 +613,8 @@ impl NativePipeline {
         })
     }
 
-    /// Accepts arbitrary-sized mono PCM16LE transport chunks at 16 kHz.
+    /// Accepts PCM16LE in the session's configured format; preparation feeds
+    /// the same mono 16 kHz recognition path for every input owner.
     ///
     /// The network protocol does not prescribe a binary frame size.  This
     /// method therefore retains incomplete samples until a complete 512-sample
@@ -642,24 +624,24 @@ impl NativePipeline {
         if !pcm.len().is_multiple_of(2) {
             return Err("PCM16LE audio must contain whole 16-bit samples".into());
         }
-        let denoised = self.denoise(pcm);
-        self.audio.push(pcm, denoised.as_deref());
+        let (source, detection) = self.prepare_audio(pcm)?;
+        self.audio.push(&source, detection.as_deref());
         let frames = self.audio.take_ready();
         self.process_frames(frames)
     }
 
-    fn denoise(&mut self, pcm: &[u8]) -> Option<Vec<u8>> {
-        let denoiser = self.denoiser.as_mut()?;
-        match denoiser.process_pcm16le(pcm) {
-            Ok(bytes) => Some(bytes),
-            Err(error) => {
+    fn prepare_audio(&mut self, pcm: &[u8]) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
+        match self.preprocessing.push(pcm) {
+            Ok(prepared) => Ok(prepared),
+            Err(error) if self.preprocessing_mode == AudioPreprocessing::Gtcrn => {
                 // A failed recurrent enhancer cannot safely resume mid-stream.
                 // Bypass for this session and realign all outstanding raw input.
                 warn!("denoiser failed ({error}); using raw audio for detection");
-                self.denoiser = None;
+                self.preprocessing = AudioPreprocessor::None;
                 self.vad.reset();
-                None
+                Ok((pcm.to_vec(), None))
             }
+            Err(error) => Err(error),
         }
     }
 
@@ -676,13 +658,18 @@ impl NativePipeline {
                 .saturating_sub(index * FRAME_SAMPLES)
                 .min(FRAME_SAMPLES);
             let padding = FRAME_SAMPLES - real_samples;
-            let probability = self
+            let mut probability = self
                 .vad
                 .infer_pcm16le(denoised_frame)
                 .map_err(|error| error.to_string())?;
+            let raw_samples = decode_pcm16le_frame(raw_frame).map_err(|error| error.to_string())?;
+            if self.preprocessing.is_vocal() {
+                probability = self
+                    .vocal_activity
+                    .evidence(&raw_samples[..real_samples], probability);
+            }
             let active = vad_is_active(probability, self.endpoint_config.speech_threshold);
             self.observe_vad_activity(active);
-            let raw_samples = decode_pcm16le_frame(raw_frame).map_err(|error| error.to_string())?;
 
             if self.fixed_window.is_some() {
                 self.speech_gate.observe(probability, real_samples);
@@ -710,6 +697,7 @@ impl NativePipeline {
             let denoised_samples =
                 decode_pcm16le_frame(denoised_frame).map_err(|error| error.to_string())?;
             if self.speaker_recognition_enabled
+                && !self.preprocessing.is_vocal()
                 && let Some(streaming) = &mut self.streaming_speaker
             {
                 if active {
@@ -743,6 +731,7 @@ impl NativePipeline {
             if let Some(capture) = &self.live_capture {
                 capture.push(&raw_samples[..real_samples])?;
             } else if self.inference.asr_streaming
+                && !self.preprocessing.is_vocal()
                 && self.speech_gate.allows_onset(
                     self.endpoint.active_frame_count() * FRAME_SAMPLES,
                     self.endpoint_config.speech_threshold,
@@ -797,9 +786,17 @@ impl NativePipeline {
 
     /// Drains delayed enhancement and every remaining raw sample before EOF.
     pub(crate) fn flush(&mut self) -> Result<Vec<PipelineEvent>, String> {
-        // GTCRN retains less than one FFT frame. Padding only its input drains
-        // that tail; synthetic samples never enter the recognition timeline.
-        let tail = self.denoise(&[0; xrtranslate_denoise::FFT_SIZE * 2]);
+        let (source, tail) = match self.preprocessing.finish() {
+            Ok(tail) => tail,
+            Err(error) if self.preprocessing_mode == AudioPreprocessing::Gtcrn => {
+                warn!("denoiser failed to drain ({error}); using pending raw audio");
+                self.preprocessing = AudioPreprocessor::None;
+                self.vad.reset();
+                (Vec::new(), None)
+            }
+            Err(error) => return Err(error),
+        };
+        self.audio.push(&source, Some(&[]));
         let frames = self.audio.finish(tail.as_deref());
         let padding = frames.padding_samples();
         let mut events = self.process_frames(frames)?;
@@ -825,9 +822,8 @@ impl NativePipeline {
                 events.push(event);
             }
         }
-        if let Some(denoiser) = &mut self.denoiser {
-            denoiser.reset();
-        }
+        self.preprocessing.reset();
+        self.vocal_activity.reset();
         self.vad.reset();
         self.speech_gate.reset();
         self.sentence_idle_frames = None;
@@ -841,9 +837,8 @@ impl NativePipeline {
         self.sentence_idle_frames = None;
         self.vad.reset();
         self.endpoint.reset();
-        if let Some(denoiser) = &mut self.denoiser {
-            denoiser.reset();
-        }
+        self.preprocessing.reset();
+        self.vocal_activity.reset();
         self.audio.reset();
         self.speech_gate.reset();
         self.observe_vad_activity(false);
@@ -884,19 +879,83 @@ impl NativePipeline {
         continuous_recognition: bool,
         audio_source: AudioSource,
     ) -> Result<(), String> {
-        let mut config = self.endpoint_config;
+        let mut config = self.base_endpoint_config;
         if let Some(threshold) = vad_threshold {
             config.speech_threshold = threshold;
         }
         if let Some(silence_ms) = vad_silence_ms {
             config.silence_frames_to_finalize = frames_for_ms(silence_ms);
         }
+        self.base_endpoint_config = config;
+        if self.preprocessing.is_vocal() {
+            // Singing needs sustained phrases and breath-sized pauses, while the
+            // existing endpoint detector still owns boundaries and overlap.
+            config.speech_threshold = 0.5;
+            config.silence_frames_to_finalize = frames_for_ms(900);
+            config.adaptive_silence_after_frames = frames_for_ms(12_000);
+            config.adaptive_silence_frames_to_finalize = frames_for_ms(400);
+            config.max_active_frames = frames_for_ms(24_000);
+            config.max_active_overlap_frames = frames_for_ms(320);
+        }
         self.endpoint = EndpointDetector::new(config).map_err(|error| error.to_string())?;
         self.endpoint_config = config;
+        self.speech_gate = SpeechGate::new(
+            (config.max_active_frames
+                + config.pre_roll_frames
+                + config.max_active_overlap_frames
+                + config.opening_window_frames)
+                .max(FixedWindow::EXPANDED_WINDOW_SAMPLES / FRAME_SAMPLES),
+        );
         // Pseudo-streaming is explicit; otherwise endpointing selects the model's
         // native stream or a complete utterance from its declared capabilities.
-        self.fixed_window = continuous_recognition.then(|| FixedWindow::new(audio_source));
+        self.fixed_window = (continuous_recognition && !self.preprocessing.is_vocal())
+            .then(|| FixedWindow::new(audio_source));
         self.reset();
+        Ok(())
+    }
+
+    pub(crate) fn configure_preprocessing(
+        &mut self,
+        selected: Option<AudioPreprocessing>,
+        sample_rate: u32,
+        channels: u16,
+        workload: InferenceWorkload,
+        config: &AppConfig,
+        project_root: &Path,
+        model_plan: &NativeProviderPlan,
+    ) -> Result<(), String> {
+        let mode = selected.unwrap_or(if config.denoise.enabled {
+            AudioPreprocessing::Gtcrn
+        } else {
+            AudioPreprocessing::None
+        });
+        validate_preprocessing_format(mode, sample_rate, channels, workload)?;
+        if mode == self.preprocessing_mode {
+            return Ok(());
+        }
+        let next = match mode {
+            AudioPreprocessing::None => AudioPreprocessor::None,
+            AudioPreprocessing::Gtcrn => {
+                let path = if config.denoise.model_path
+                    == Path::new(xrtranslate_config::RuntimeLayout::DENOISE_MODEL_PATH)
+                {
+                    model_plan.preprocessing_model(xrtranslate_assets::ModelAssetId::GtcrnOnnx)?
+                } else if config.denoise.model_path.is_absolute() {
+                    config.denoise.model_path.clone()
+                } else {
+                    project_root.join(&config.denoise.model_path)
+                };
+                AudioPreprocessor::gtcrn(&path, config.denoise.intra_threads)?
+            }
+            AudioPreprocessing::VocalSeparation => {
+                let path = model_plan
+                    .preprocessing_model(xrtranslate_assets::ModelAssetId::UvrMdxnet9482Onnx)?;
+                let cores = std::thread::available_parallelism().map_or(2, usize::from);
+                AudioPreprocessor::vocals(&path, (cores / 2).clamp(1, 4))?
+            }
+        };
+        self.preprocessing = next;
+        self.preprocessing_mode = mode;
         Ok(())
     }
 
@@ -909,6 +968,10 @@ impl NativePipeline {
     /// Makes a request-capable handle for the session's bounded worker.
     pub(crate) fn inference(&self) -> NativeInference {
         self.inference.clone()
+    }
+
+    pub(crate) fn is_vocal(&self) -> bool {
+        self.preprocessing.is_vocal()
     }
 
     fn finish_utterance(&mut self, timed: TimedUtterance) -> Option<PipelineEvent> {
@@ -1671,6 +1734,29 @@ pub(crate) fn validate_input_sample_rate(sample_rate: u32) -> Result<(), String>
     }
 }
 
+fn validate_preprocessing_format(
+    mode: AudioPreprocessing,
+    sample_rate: u32,
+    channels: u16,
+    workload: InferenceWorkload,
+) -> Result<(), String> {
+    if mode == AudioPreprocessing::VocalSeparation {
+        if workload != InferenceWorkload::Offline {
+            return Err("Vocal separation is available for finite audio tasks only.".into());
+        }
+        if sample_rate != xrtranslate_separation::SAMPLE_RATE_HZ || channels != 2 {
+            return Err("Vocal separation requires 44100 Hz stereo PCM.".into());
+        }
+        Ok(())
+    } else {
+        validate_input_sample_rate(sample_rate)?;
+        if channels != 1 {
+            return Err("Speech input requires mono PCM.".into());
+        }
+        Ok(())
+    }
+}
+
 /// Rejects an oversized WebSocket audio message before it reaches the VAD
 /// working buffers.  The transport remains free to send arbitrary frame sizes
 /// below this limit.
@@ -1681,5 +1767,46 @@ pub(crate) fn validate_input_chunk_size(bytes: usize) -> Result<(), String> {
         Err(format!(
             "PCM WebSocket message is {bytes} bytes; the native backend limit is {MAX_INPUT_PCM_BYTES} bytes"
         ))
+    }
+}
+
+#[cfg(test)]
+mod preprocessing_policy_tests {
+    use super::*;
+
+    #[test]
+    fn vocal_format_is_explicit_and_limited_to_finite_tasks() {
+        assert!(
+            validate_preprocessing_format(
+                AudioPreprocessing::VocalSeparation,
+                44_100,
+                2,
+                InferenceWorkload::Offline
+            )
+            .is_ok()
+        );
+        for (rate, channels, workload) in [
+            (44_100, 2, InferenceWorkload::Realtime),
+            (16_000, 1, InferenceWorkload::Offline),
+            (44_100, 1, InferenceWorkload::Offline),
+        ] {
+            assert!(
+                validate_preprocessing_format(
+                    AudioPreprocessing::VocalSeparation,
+                    rate,
+                    channels,
+                    workload
+                )
+                .is_err()
+            );
+        }
+        for mode in [AudioPreprocessing::None, AudioPreprocessing::Gtcrn] {
+            assert!(
+                validate_preprocessing_format(mode, 16_000, 1, InferenceWorkload::Realtime).is_ok()
+            );
+            assert!(
+                validate_preprocessing_format(mode, 44_100, 2, InferenceWorkload::Offline).is_err()
+            );
+        }
     }
 }

@@ -36,7 +36,7 @@
     "tts_sample_rate": 48000
   },
   "denoise": {
-    "enabled": true,
+    "enabled": false,
     "intra_threads": 1,
     "model_path": "models/gtcrn/gtcrn_simple.onnx"
   },
@@ -412,13 +412,6 @@
         "name": "silero_vad.onnx",
         "relative_path": "models/silero-vad/src/silero_vad/data/silero_vad.onnx",
         "url": "https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx"
-      },
-      {
-        "bytes": 535638,
-        "label": "GTCRN Speech Enhancement",
-        "name": "gtcrn_simple.onnx",
-        "relative_path": "models/gtcrn/gtcrn_simple.onnx",
-        "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx"
       },
       {
         "archive_format": "zip",

@@ -53,16 +53,36 @@ fn render_header(
                 .strong(),
         );
         ui.add_space(8.0);
-        if context.status.steamvr_connected {
-            crate::ui::components::status_badge(ui, &tr("SteamVR Connected"), true, false);
-            if header_button(ui, tr("Disconnect")).clicked() {
-                actions.push(VrOverlayUiAction::DisconnectSteamVr);
-            }
+        let connected = context.status.steamvr_connected;
+        let (state, label) = if connected {
+            (
+                crate::ui::components::StatusIcon::Connected,
+                tr("SteamVR Connected"),
+            )
         } else {
-            crate::ui::components::status_badge(ui, &tr("Not Connected"), false, false);
-            if crate::ui::components::animated_button(ui, tr("Connect SteamVR")).clicked() {
-                actions.push(VrOverlayUiAction::ConnectSteamVr);
-            }
+            (
+                crate::ui::components::StatusIcon::Disconnected,
+                tr("Not Connected"),
+            )
+        };
+        crate::ui::components::status_icon(ui, state, label);
+        if crate::ui::components::round_icon_button(
+            ui,
+            tr(if connected {
+                "Disconnect"
+            } else {
+                "Connect SteamVR"
+            }),
+            egui::include_image!("../../../resources/icons/power.svg"),
+            36.0,
+        )
+        .clicked()
+        {
+            actions.push(if connected {
+                VrOverlayUiAction::DisconnectSteamVr
+            } else {
+                VrOverlayUiAction::ConnectSteamVr
+            });
         }
     });
     ui.horizontal_wrapped(|ui| {

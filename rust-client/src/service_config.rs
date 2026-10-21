@@ -70,6 +70,19 @@ pub struct ServiceConfigEditor {
 }
 
 impl ServiceConfigEditor {
+    pub fn default_audio_preprocessing(&self) -> xrtranslate_protocol::AudioPreprocessing {
+        if self
+            .document
+            .pointer("/denoise/enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            xrtranslate_protocol::AudioPreprocessing::Gtcrn
+        } else {
+            xrtranslate_protocol::AudioPreprocessing::None
+        }
+    }
+
     pub fn load() -> Self {
         let path = project_config_path();
         let mut editor = Self {
@@ -120,7 +133,13 @@ impl ServiceConfigEditor {
     pub(crate) fn asr_streaming(&self) -> Option<bool> {
         *self.asr_streaming.get_or_init(|| {
             let config = xrtranslate_config::AppConfig::from_value(self.document.clone()).ok()?;
-            Some(config.native_model_route().ok()?.asr.supports_audio_streaming())
+            Some(
+                config
+                    .native_model_route()
+                    .ok()?
+                    .asr
+                    .supports_audio_streaming(),
+            )
         })
     }
 

@@ -12,6 +12,8 @@ pub(crate) struct TranslationTask {
     pub languages: LanguageSelection,
     pub plugin: Option<PluginSessionBinding>,
     pub context: TaskContext,
+    /// Optional priority for a finite text request; live/audio policy is unchanged.
+    pub text_workload: Option<xrtranslate_protocol::InferenceWorkload>,
     pub input: TranslationInput,
     pub profiles: Vec<(CaptureSource, RecognitionSettings)>,
 }
@@ -48,6 +50,7 @@ impl TranslationTask {
             languages,
             plugin,
             context: TaskContext::default(),
+            text_workload: None,
             input: TranslationInput::Text(text),
             profiles: Vec::new(),
         }
@@ -55,6 +58,11 @@ impl TranslationTask {
 
     pub fn with_context(mut self, context: TaskContext) -> Self {
         self.context = context;
+        self
+    }
+
+    pub fn with_text_workload(mut self, workload: xrtranslate_protocol::InferenceWorkload) -> Self {
+        self.text_workload = Some(workload);
         self
     }
 

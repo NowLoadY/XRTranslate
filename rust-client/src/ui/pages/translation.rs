@@ -1,5 +1,5 @@
 use crate::CaptureSource;
-use crate::ui::components::{self, danger_button, status_badge};
+use crate::ui::components::{self, StatusIcon, danger_button};
 use eframe::egui;
 
 mod archive;
@@ -52,13 +52,31 @@ fn render_content(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             if ui.max_rect().width() < 680.0 {
                 ui.add_space(56.0);
             }
-            let (is_active, is_error) = if app.connection_status.to_lowercase().contains("error") {
-                (false, true)
+            let raw_status = app.connection_status.to_lowercase();
+            let is_error = raw_status.contains("error")
+                || raw_status.contains("failed")
+                || raw_status.contains("timed out");
+            let icon = if is_error {
+                StatusIcon::Warning
+            } else if raw_status.contains("disconnected") || raw_status.contains("not connected") {
+                StatusIcon::Disconnected
+            } else if raw_status.contains("connected") {
+                StatusIcon::Connected
+            } else if raw_status.contains("connecting")
+                || raw_status.contains("starting")
+                || raw_status.contains("processing")
+                || raw_status.contains("translat")
+                || raw_status.contains("waiting")
+            {
+                StatusIcon::Working
             } else {
-                (true, false)
+                StatusIcon::Idle
             };
             let status = crate::i18n::tr_dynamic(app.ui_language, &app.connection_status);
-            status_badge(ui, status.as_ref(), is_active, is_error);
+            components::status_icon(ui, icon, status.as_ref());
+            if is_error {
+                ui.colored_label(crate::ui::theme::danger(), status.as_ref());
+            }
         });
     });
 
@@ -377,15 +395,42 @@ fn render_input_adaptation(
     let language = app.ui_language;
     let recognition_mode = crate::i18n::tr(language, "Recognition mode:");
     let automatic = crate::i18n::tr(language, "Automatic");
-    let automatic_mode = app.service_config.asr_streaming().map(|streaming| {
-        format!("{} ({automatic})", crate::i18n::tr(language,
-            if streaming { "Native streaming" } else { "Whole utterance" }))
-    }).unwrap_or_else(|| automatic.to_owned());
+    let automatic_mode = app
+        .service_config
+        .asr_streaming()
+        .map(|streaming| {
+            format!(
+                "{} ({automatic})",
+                crate::i18n::tr(
+                    language,
+                    if streaming {
+                        "Native streaming"
+                    } else {
+                        "Whole utterance"
+                    }
+                )
+            )
+        })
+        .unwrap_or_else(|| automatic.to_owned());
     let pseudo_streaming = crate::i18n::tr(language, "Pseudo-streaming");
     let vad_sensitivity = crate::i18n::tr(language, "VAD Sensitivity");
     let pause_tolerance = crate::i18n::tr(language, "Pause tolerance");
+    let default_preprocessing = app.service_config.default_audio_preprocessing();
+    let preprocessing_models = app.audio_preprocessing_models();
+    let preprocessing_action;
     let changed = {
         let recognition = app.recognition_settings_mut(source);
+        let preprocessing_response = components::audio_preprocessing_selector(
+            ui,
+            ("audio_preprocessing", source),
+            &mut recognition.preprocessing,
+            default_preprocessing,
+            false,
+            &preprocessing_models,
+            language,
+        );
+        let preprocessing_changed = preprocessing_response.response.changed();
+        preprocessing_action = preprocessing_response.action;
         let mode_changed = ui
             .horizontal(|ui| {
                 ui.label(
@@ -400,7 +445,11 @@ fn render_input_adaptation(
                     &automatic_mode
                 };
                 components::combobox_ui(ui, ("recognition_mode", source), selected_mode, |ui| {
-                    ui.selectable_value(&mut recognition.continuous_recognition, false, &automatic_mode);
+                    ui.selectable_value(
+                        &mut recognition.continuous_recognition,
+                        false,
+                        &automatic_mode,
+                    );
                     ui.selectable_value(
                         &mut recognition.continuous_recognition,
                         true,
@@ -433,10 +482,13 @@ fn render_input_adaptation(
             );
             response.drag_stopped() || (response.changed() && !response.dragged())
         };
-        mode_changed || background_changed || pause_changed
+        preprocessing_changed || mode_changed || background_changed || pause_changed
     };
     if changed {
         app.set_audio_adaptation(source);
+    }
+    if let Some(action) = preprocessing_action {
+        app.apply_audio_preprocessing_action(action);
     }
 }
 

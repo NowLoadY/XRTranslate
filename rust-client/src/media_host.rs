@@ -5,6 +5,8 @@ use crate::{
     session_coordinator::{TranslationInput, TranslationSessionPlugin, TranslationTask},
 };
 use eframe::egui;
+use xrtranslate_protocol::AudioPreprocessing;
+
 impl XRTranslateApp {
     pub(crate) fn poll_media_translation(&mut self, ctx: &egui::Context) {
         self.media_plugin.poll_translation_events();
@@ -23,9 +25,12 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn render_media_plugin_page(&mut self, ui: &mut egui::Ui) {
+        let preprocessing_models = self.audio_preprocessing_models();
         let snapshot = plugins::media::MediaUiSnapshot {
             language: self.ui_language,
             languages: self.language_capabilities(),
+            default_preprocessing: self.service_config.default_audio_preprocessing(),
+            preprocessing_models,
         };
         let action = self.media_plugin.render_page(&snapshot, ui);
         self.apply_media_action(action, ui.ctx().clone());
@@ -38,6 +43,9 @@ impl XRTranslateApp {
     ) {
         match action {
             plugins::media::MediaAction::None => {}
+            plugins::media::MediaAction::AudioPreprocessing(action) => {
+                self.apply_audio_preprocessing_action(action);
+            }
             plugins::media::MediaAction::StopTranslation => {
                 self.stop_plugin_task(PluginId::MEDIA);
             }
@@ -74,15 +82,29 @@ impl XRTranslateApp {
                 let Some(mut languages) = self.select_languages(source, target) else {
                     return;
                 };
+                let recognition = match &request {
+                    MediaTranslationRequest::ImportMediaFile { recognition, .. }
+                    | MediaTranslationRequest::LiveStream { recognition, .. } => recognition,
+                };
+                if !self.audio_preprocessing_ready(recognition.preprocessing) {
+                    self.media_plugin.set_error(crate::i18n::tr(
+                        self.ui_language,
+                        "Download every required model package to continue.",
+                    ));
+                    return;
+                }
                 self.stop_plugin_task(PluginId::MEDIA);
                 let previous_recognition = self.loopback_recognition.clone();
                 let input = match request {
                     MediaTranslationRequest::ImportMediaFile {
                         path,
-                        recognition,
+                        mut recognition,
                         audio_channels,
                         ..
                     } => {
+                        let preprocessing = recognition
+                            .preprocessing
+                            .unwrap_or(self.service_config.default_audio_preprocessing());
                         if let Err(error) = self
                             .media_plugin
                             .start_file_subtitles(languages, self.service_config.supports_ask())
@@ -96,12 +118,34 @@ impl XRTranslateApp {
                                 &source, &target, None, true,
                             )
                             .expect("validated recognition languages");
+                        // File quality uses native delivery: complete utterances for
+                        // non-streaming ASR, native streaming where supported.
+                        recognition.continuous_recognition = false;
                         TranslationInput::File {
                             path,
                             recognition,
                             options: media_import::AudioImportOptions {
                                 chunk_frames: 1_600,
                                 pacing: media_import::AudioImportPacing::AsFastAsPossible,
+                                output_sample_rate: if preprocessing
+                                    == AudioPreprocessing::VocalSeparation
+                                {
+                                    44_100
+                                } else {
+                                    media_import::IMPORT_SAMPLE_RATE
+                                },
+                                output_channels: if preprocessing
+                                    == AudioPreprocessing::VocalSeparation
+                                {
+                                    2
+                                } else {
+                                    1
+                                },
+                                gate_threshold_db: if preprocessing == AudioPreprocessing::Gtcrn {
+                                    media_import::AudioImportOptions::default().gate_threshold_db
+                                } else {
+                                    None
+                                },
                                 recognition_channels: audio_channels
                                     .iter()
                                     .filter(|channel| channel.recognition)
@@ -122,6 +166,7 @@ impl XRTranslateApp {
                         languages,
                         plugin: self.media_plugin.translation_session_binding(),
                         context: self.media_plugin.translation_context(),
+                        text_workload: None,
                         input,
                         profiles: Vec::new(),
                     },

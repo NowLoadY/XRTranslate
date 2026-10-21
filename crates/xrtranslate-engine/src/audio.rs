@@ -1,5 +1,10 @@
 //! Shared PCM encoding for transport, inference and stored reference audio.
 
+#[cfg(feature = "resample")]
+mod resample;
+#[cfg(feature = "resample")]
+pub use resample::StreamingResampler;
+
 /// PCM audio format accepted by Qwen3-ASR in the initial native route.
 pub const PCM16_MONO_16KHZ_FORMAT: &str = "PCM16LE mono 16000 Hz";
 

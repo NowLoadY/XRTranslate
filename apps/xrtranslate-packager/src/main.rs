@@ -27,7 +27,6 @@ const VAD_MODEL_BYTES: u64 = RuntimeLayout::VAD_MODEL_BYTES;
 const SPEAKER_RELATIVE_PATH: &str = RuntimeLayout::SPEAKER_MODEL_PATH;
 const SPEAKER_MODEL_BYTES: u64 = RuntimeLayout::SPEAKER_MODEL_BYTES;
 const DENOISE_RELATIVE_PATH: &str = RuntimeLayout::DENOISE_MODEL_PATH;
-const DENOISE_MODEL_BYTES: u64 = RuntimeLayout::DENOISE_MODEL_BYTES;
 const INTERNAL_BIN_DIRECTORY: &str = "bin";
 const ONNX_LICENSE_RELATIVE_PATH: &str = "licenses/onnxruntime/LICENSE";
 const ONNX_NOTICES_RELATIVE_PATH: &str = "licenses/onnxruntime/ThirdPartyNotices.txt";
@@ -110,9 +109,6 @@ struct Arguments {
     /// 3D-Speaker ERes2NetV2 speaker-embedding ONNX file bundled in every release.
     #[arg(long)]
     speaker_model: Option<PathBuf>,
-    /// GTCRN-Light v3 speech enhancement ONNX file bundled in every release.
-    #[arg(long)]
-    denoise_model: Option<PathBuf>,
     /// Verified ONNX Runtime 1.28 core used by CPU-only hosts and as the
     /// universal fallback. GPU providers remain managed downloads.
     #[arg(long)]
@@ -199,7 +195,6 @@ struct ReleasePlan {
     license: PathBuf,
     vad_model: PathBuf,
     speaker_model: PathBuf,
-    denoise_model: PathBuf,
     onnx_runtime_cpu: PathBuf,
     onnx_runtime_license: PathBuf,
     onnx_runtime_notices: PathBuf,
@@ -218,7 +213,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let onnx = onnx_cpu_metadata(&plan.rust_client_bin);
     verify_file_size("--vad-model", &plan.vad_model, VAD_MODEL_BYTES)?;
     verify_file_size("--speaker-model", &plan.speaker_model, SPEAKER_MODEL_BYTES)?;
-    verify_file_size("--denoise-model", &plan.denoise_model, DENOISE_MODEL_BYTES)?;
     verify_file_size("--onnx-runtime-cpu", &plan.onnx_runtime_cpu, onnx.bytes)?;
     verify_file_size(
         "--onnx-runtime-license",
@@ -300,10 +294,6 @@ impl ReleasePlan {
             .speaker_model
             .unwrap_or_else(|| project_root.join(SPEAKER_RELATIVE_PATH));
         require_regular_file("--speaker-model", &speaker_model)?;
-        let denoise_model = arguments
-            .denoise_model
-            .unwrap_or_else(|| project_root.join(DENOISE_RELATIVE_PATH));
-        require_regular_file("--denoise-model", &denoise_model)?;
 
         ensure_directory_is_native("--resources-dir", &arguments.resources_dir)?;
         ensure_native_file("--seed-database", &arguments.seed_database)?;
@@ -312,7 +302,6 @@ impl ReleasePlan {
         })?;
         ensure_native_file("--vad-model", &vad_model)?;
         ensure_native_file("--speaker-model", &speaker_model)?;
-        ensure_native_file("--denoise-model", &denoise_model)?;
 
         let config = AppConfig::from_path(&arguments.config)?;
         let mut asset_config = ModelAssetsConfig::with_directory_overrides(
@@ -350,7 +339,6 @@ impl ReleasePlan {
             license: arguments.license,
             vad_model,
             speaker_model,
-            denoise_model,
             onnx_runtime_cpu: arguments.onnx_runtime_cpu,
             onnx_runtime_license: arguments.onnx_runtime_license,
             onnx_runtime_notices: arguments.onnx_runtime_notices,
@@ -449,7 +437,6 @@ fn package(plan: &ReleasePlan) -> Result<PathBuf, PackageError> {
         }
         copy_file_to(&plan.vad_model, &staging.join(VAD_RELATIVE_PATH))?;
         copy_file_to(&plan.speaker_model, &staging.join(SPEAKER_RELATIVE_PATH))?;
-        copy_file_to(&plan.denoise_model, &staging.join(DENOISE_RELATIVE_PATH))?;
         copy_file_to(
             &plan.onnx_runtime_cpu,
             &staging.join(onnx_cpu_metadata(&plan.rust_client_bin).path),
@@ -542,7 +529,7 @@ fn rewrite_config(config_path: &Path) -> Result<String, PackageError> {
         .or_insert_with(|| Value::Object(Map::new()))
         .as_object_mut()
         .ok_or_else(|| PackageError::InvalidInput("config.denoise must be a JSON object".into()))?;
-    denoise.insert("enabled".into(), Value::Bool(true));
+    denoise.insert("enabled".into(), Value::Bool(false));
     denoise.insert(
         "model_path".into(),
         Value::String(DENOISE_RELATIVE_PATH.into()),
@@ -653,15 +640,6 @@ fn release_manifest(
                 "revision": "v1.0.1",
             },
             "bytes": SPEAKER_MODEL_BYTES,
-        },
-        "denoise_model": {
-            "path": DENOISE_RELATIVE_PATH,
-            "architecture": "GTCRN-Light-v3",
-            "source": {
-                "repository": "k2-fsa/sherpa-onnx",
-                "release": "speech-enhancement-models",
-            },
-            "bytes": DENOISE_MODEL_BYTES,
         },
         "resources": "resources",
         "corpora": {

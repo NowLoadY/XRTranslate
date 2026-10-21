@@ -6,14 +6,14 @@
 
 use crossbeam_channel::{Receiver, TryRecvError, unbounded};
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
     thread,
 };
 use xrtranslate_assets::{
     DownloadProgress, ModelAssetId, ModelAssetsConfig, ModelCapability, ModelHardwareRequirements,
-    ModelLevel, NativeModelInstaller, ResolvedModelAssets, clear_model_staging, manifest_for,
-    manifests_for_capability, remove_model_asset, tier_default_manifest,
+    ModelLevel, NativeModelInstaller, ResolvedModelAssets, manifest_for, manifests_for_capability,
+    remove_model_asset, tier_default_manifest,
 };
 use xrtranslate_config::AppConfig;
 use xrtranslate_download::{DownloadCancellation, DownloadSource};
@@ -57,6 +57,7 @@ pub struct NativeModelBatchSnapshot {
     pub completed_packages: usize,
     pub total_packages: usize,
     pub queued_packages: Vec<ModelAssetId>,
+    pub paused_packages: Vec<ModelAssetId>,
     pub downloaded_bytes: u64,
     pub total_bytes: u64,
     pub failed_asset_id: Option<ModelAssetId>,
@@ -86,6 +87,7 @@ enum NativeModelTaskResult {
     Detected(Vec<ModelAssetId>),
     Installed { asset_id: ModelAssetId },
     Cancelled,
+    SourceFailed(String),
     Failed(String),
 }
 
@@ -112,7 +114,8 @@ pub struct NativeModelTaskManager {
     cancellation: Option<DownloadCancellation>,
     active_task: Option<(PathBuf, NativeModelTask)>,
     restart_after_source_switch: bool,
-    source_switch_cleanup: Vec<ModelAssetId>,
+    paused: HashSet<ModelAssetId>,
+    download_progress: HashMap<ModelAssetId, (u64, u64)>,
     install_batch: Option<ModelInstallBatch>,
     known_ready: HashSet<ModelAssetId>,
 }
@@ -128,7 +131,8 @@ impl Default for NativeModelTaskManager {
             cancellation: None,
             active_task: None,
             restart_after_source_switch: false,
-            source_switch_cleanup: Vec::new(),
+            paused: HashSet::new(),
+            download_progress: HashMap::new(),
             install_batch: None,
             known_ready: HashSet::new(),
         }
@@ -141,41 +145,28 @@ impl NativeModelTaskManager {
     }
 
     /// Switches the global model source. An active transfer is cooperatively
-    /// stopped, its package staging is removed after the worker releases it,
-    /// and the same package is restarted through the newly selected source.
+    /// stopped and resumed through the newly selected source. Both routes
+    /// address the same immutable package, so downloaded bytes are retained.
     pub fn switch_download_source(
         &mut self,
-        project_root: PathBuf,
+        _project_root: PathBuf,
         use_mirror: bool,
     ) -> Result<(), String> {
         if self.use_mirror == use_mirror {
             return Ok(());
         }
         self.use_mirror = use_mirror;
-        if matches!(self.active_task, Some((_, NativeModelTask::Install(_)))) && self.is_busy() {
+        if let Some((_, NativeModelTask::Install(id))) = self.active_task.as_ref()
+            && self.is_busy()
+            && !self.is_model_paused(*id)
+        {
             self.restart_after_source_switch = true;
-            self.source_switch_cleanup = self.install_batch.as_ref().map_or_else(
-                || {
-                    self.active_task
-                        .iter()
-                        .filter_map(|(_, task)| match task {
-                            NativeModelTask::Install(id) => Some(*id),
-                            NativeModelTask::Discover => None,
-                        })
-                        .collect()
-                },
-                |batch| batch.package_ids.clone(),
-            );
             if let Some(cancellation) = &self.cancellation {
                 cancellation.cancel();
             }
             return Ok(());
         }
-        let ids = catalog_model_packages(&project_root)?
-            .into_iter()
-            .map(|package| package.id)
-            .collect::<Vec<_>>();
-        clear_model_staging_for(&project_root, &ids)
+        Ok(())
     }
 
     #[must_use]
@@ -192,6 +183,63 @@ impl NativeModelTaskManager {
         self.state.is_busy()
     }
 
+    #[must_use]
+    pub fn is_model_paused(&self, asset_id: ModelAssetId) -> bool {
+        self.paused.contains(&asset_id)
+    }
+
+    #[must_use]
+    pub fn is_model_queued(&self, asset_id: ModelAssetId) -> bool {
+        self.install_batch
+            .as_ref()
+            .is_some_and(|batch| batch.queued.contains(&asset_id))
+    }
+
+    #[must_use]
+    pub fn model_download_progress(&self, asset_id: ModelAssetId) -> Option<(u64, u64)> {
+        if let NativeModelTaskState::Installing {
+            asset_id: current,
+            downloaded_bytes,
+            total_bytes,
+            ..
+        } = &self.state
+            && *current == asset_id
+        {
+            return Some((*downloaded_bytes, *total_bytes));
+        }
+        self.download_progress.get(&asset_id).copied()
+    }
+
+    /// Pauses just this package, preserving its partial download. Other
+    /// queued packages continue after the current worker releases its files.
+    pub fn pause(&mut self, asset_id: ModelAssetId) -> Result<(), String> {
+        if self.is_model_paused(asset_id) || self.known_ready.contains(&asset_id) {
+            return Ok(());
+        }
+        let active = matches!(
+            self.active_task,
+            Some((_, NativeModelTask::Install(current))) if current == asset_id
+        );
+        if !active && !self.is_model_queued(asset_id) {
+            return Err("The model is not downloading or queued.".into());
+        }
+        let progress = self
+            .model_download_progress(asset_id)
+            .unwrap_or((0, model_download_bytes(asset_id)));
+        self.download_progress.insert(asset_id, progress);
+        self.paused.insert(asset_id);
+        if let Some(batch) = &mut self.install_batch {
+            batch.queued.retain(|id| *id != asset_id);
+        }
+        if active {
+            self.restart_after_source_switch = false;
+            if let Some(cancellation) = &self.cancellation {
+                cancellation.cancel();
+            }
+        }
+        Ok(())
+    }
+
     /// Adds packages to the current serial batch without losing rapid clicks.
     /// Duplicate, active, completed, and already-present package ids are
     /// ignored. A failed batch is rebuilt in caller order so retrying "all"
@@ -201,10 +249,7 @@ impl NativeModelTaskManager {
         project_root: PathBuf,
         asset_ids: impl IntoIterator<Item = ModelAssetId>,
     ) -> Result<(), String> {
-        if matches!(self.active_task, Some((_, NativeModelTask::Discover))) && self.is_busy() {
-            return Err("Wait for model discovery before starting downloads.".into());
-        }
-        if let Some((active_root, NativeModelTask::Install(_))) = &self.active_task
+        if let Some((active_root, _)) = &self.active_task
             && *active_root != project_root
         {
             return Err("The active model batch belongs to a different project root.".into());
@@ -236,7 +281,11 @@ impl NativeModelTaskManager {
             return Err("The queued model batch belongs to a different project root.".into());
         }
         for id in requested {
+            let resuming = self.paused.remove(&id);
             if batch.package_ids.contains(&id) {
+                if resuming && !batch.queued.contains(&id) {
+                    batch.queued.push_back(id);
+                }
                 continue;
             }
             batch.package_ids.push(id);
@@ -265,6 +314,8 @@ impl NativeModelTaskManager {
         self.events = None;
         self.active_task = None;
         self.known_ready.remove(&asset_id);
+        self.paused.remove(&asset_id);
+        self.download_progress.remove(&asset_id);
         self.install_batch = None;
         Ok(())
     }
@@ -316,7 +367,25 @@ impl NativeModelTaskManager {
             completed_packages: batch.completed.len(),
             total_packages: batch.package_ids.len(),
             queued_packages: batch.queued.iter().copied().collect(),
-            downloaded_bytes: batch.completed_bytes.saturating_add(current_downloaded),
+            paused_packages: batch
+                .package_ids
+                .iter()
+                .copied()
+                .filter(|id| self.is_model_paused(*id))
+                .collect(),
+            downloaded_bytes: batch
+                .completed_bytes
+                .saturating_add(current_downloaded)
+                .saturating_add(
+                    batch
+                        .package_ids
+                        .iter()
+                        .filter(|id| Some(**id) != current_asset_id)
+                        .filter(|id| !batch.completed.contains(id))
+                        .filter_map(|id| self.download_progress.get(id))
+                        .map(|(downloaded, _)| *downloaded)
+                        .sum::<u64>(),
+                ),
             total_bytes: batch.total_bytes,
             failed_asset_id: batch.failed_asset_id,
         })
@@ -332,6 +401,10 @@ impl NativeModelTaskManager {
         loop {
             match events.try_recv() {
                 Ok(NativeModelTaskEvent::Progress(progress)) => {
+                    self.download_progress.insert(
+                        progress.asset_id,
+                        (progress.downloaded_bytes, progress.total_bytes),
+                    );
                     self.state = NativeModelTaskState::Installing {
                         asset_id: progress.asset_id,
                         relative_path: Some(progress.relative_path.to_owned()),
@@ -367,13 +440,34 @@ impl NativeModelTaskManager {
         self.events = None;
         self.cancellation = None;
         let active_task = self.active_task.take();
+        // A failure may already be queued when the user pauses or switches
+        // source. Its delayed delivery must not override that newer intent.
+        let result = if matches!(
+            result,
+            NativeModelTaskResult::Failed(_) | NativeModelTaskResult::SourceFailed(_)
+        ) && (self.restart_after_source_switch
+            || matches!(active_task, Some((_, NativeModelTask::Install(id))) if self.is_model_paused(id)))
+        {
+            NativeModelTaskResult::Cancelled
+        } else {
+            result
+        };
         match result {
             NativeModelTaskResult::Detected(ready) => {
                 self.known_ready = ready.into_iter().collect();
+                self.paused.retain(|id| !self.known_ready.contains(id));
+                self.download_progress
+                    .retain(|id, _| !self.known_ready.contains(id));
                 self.state = NativeModelTaskState::Detected;
+                if let Err(error) = self.start_next_queued() {
+                    self.state = NativeModelTaskState::Failed(error);
+                }
             }
             NativeModelTaskResult::Installed { asset_id } => {
+                self.restart_after_source_switch = false;
                 self.known_ready.insert(asset_id);
+                self.paused.remove(&asset_id);
+                self.download_progress.remove(&asset_id);
                 if let Some(batch) = &mut self.install_batch {
                     if !batch.completed.contains(&asset_id) {
                         batch.completed.push(asset_id);
@@ -390,19 +484,7 @@ impl NativeModelTaskManager {
             }
             NativeModelTaskResult::Cancelled if self.restart_after_source_switch => {
                 self.restart_after_source_switch = false;
-                let Some((active_root, _)) = active_task.as_ref() else {
-                    self.state = NativeModelTaskState::Failed(
-                        "The cancelled model source switch lost its project root.".into(),
-                    );
-                    return;
-                };
-                if let Err(error) = clear_model_staging_for(
-                    active_root,
-                    &std::mem::take(&mut self.source_switch_cleanup),
-                ) {
-                    self.state = NativeModelTaskState::Failed(error);
-                    return;
-                }
+                self.state = NativeModelTaskState::Detected;
                 if let Some((project_root, task)) = active_task
                     && let Err(error) = self.start(project_root, task)
                 {
@@ -411,9 +493,23 @@ impl NativeModelTaskManager {
                 return;
             }
             NativeModelTaskResult::Cancelled => {
-                self.state = NativeModelTaskState::Idle;
+                self.state = NativeModelTaskState::Detected;
+                if let Err(error) = self.start_next_queued() {
+                    self.state = NativeModelTaskState::Failed(error);
+                }
             }
-            NativeModelTaskResult::Failed(error) => {
+            NativeModelTaskResult::SourceFailed(_) if !self.use_mirror => {
+                self.state = NativeModelTaskState::Detected;
+                if let Some((project_root, task)) = active_task {
+                    let result = self
+                        .switch_download_source(project_root.clone(), true)
+                        .and_then(|()| self.start(project_root, task));
+                    if let Err(error) = result {
+                        self.state = NativeModelTaskState::Failed(error);
+                    }
+                }
+            }
+            NativeModelTaskResult::Failed(error) | NativeModelTaskResult::SourceFailed(error) => {
                 if let Some((_, NativeModelTask::Install(id))) = active_task
                     && let Some(batch) = &mut self.install_batch
                 {
@@ -429,20 +525,23 @@ impl NativeModelTaskManager {
     }
 
     fn start_next_queued(&mut self) -> Result<(), String> {
-        let next = self
-            .install_batch
-            .as_mut()
-            .and_then(|batch| batch.queued.pop_front());
-        let Some(asset_id) = next else {
+        let Some(batch) = self.install_batch.as_mut() else {
             return Ok(());
         };
-        let project_root = self
-            .install_batch
-            .as_ref()
-            .expect("queued package has a batch")
-            .project_root
-            .clone();
-        self.start(project_root, NativeModelTask::Install(asset_id))
+        while let Some(asset_id) = batch.queued.pop_front() {
+            if self.known_ready.contains(&asset_id) {
+                if !batch.completed.contains(&asset_id) {
+                    batch.completed.push(asset_id);
+                    batch.completed_bytes = batch
+                        .completed_bytes
+                        .saturating_add(model_download_bytes(asset_id));
+                }
+                continue;
+            }
+            let project_root = batch.project_root.clone();
+            return self.start(project_root, NativeModelTask::Install(asset_id));
+        }
+        Ok(())
     }
 
     fn start(&mut self, project_root: PathBuf, task: NativeModelTask) -> Result<(), String> {
@@ -472,12 +571,19 @@ impl NativeModelTaskManager {
             .map_err(|error| format!("Cannot start native model worker: {error}"))?;
         self.state = match task {
             NativeModelTask::Discover => NativeModelTaskState::Discovering,
-            NativeModelTask::Install(asset_id) => NativeModelTaskState::Installing {
-                asset_id,
-                relative_path: None,
-                downloaded_bytes: 0,
-                total_bytes: 0,
-            },
+            NativeModelTask::Install(asset_id) => {
+                let (downloaded_bytes, total_bytes) = self
+                    .download_progress
+                    .get(&asset_id)
+                    .copied()
+                    .unwrap_or((0, model_download_bytes(asset_id)));
+                NativeModelTaskState::Installing {
+                    asset_id,
+                    relative_path: None,
+                    downloaded_bytes,
+                    total_bytes,
+                }
+            }
         };
         self.events = Some(event_rx);
         self.cancellation = cancellation;
@@ -562,13 +668,10 @@ fn install_model(
     match result {
         Ok(_) => NativeModelTaskResult::Installed { asset_id },
         Err(error) if error.is_cancelled() || cancellation_observer.is_cancelled() => {
-            let cleanup = load_assets(&project_root).and_then(|assets| {
-                clear_model_staging(&assets, asset_id).map_err(|error| error.to_string())
-            });
-            match cleanup {
-                Ok(()) => NativeModelTaskResult::Cancelled,
-                Err(error) => NativeModelTaskResult::Failed(error),
-            }
+            NativeModelTaskResult::Cancelled
+        }
+        Err(error) if error.allows_source_fallback() => {
+            NativeModelTaskResult::SourceFailed(error.to_string())
         }
         Err(error) => NativeModelTaskResult::Failed(error.to_string()),
     }
@@ -636,17 +739,6 @@ fn model_download_bytes(id: ModelAssetId) -> u64 {
     manifest_for(id).download_bytes()
 }
 
-fn clear_model_staging_for(
-    project_root: &std::path::Path,
-    ids: &[ModelAssetId],
-) -> Result<(), String> {
-    let assets = load_assets(project_root)?;
-    for id in ids.iter().copied() {
-        clear_model_staging(&assets, id).map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
 pub fn model_packages_for_provider(
     provider: &str,
     capability: ModelCapability,
@@ -697,6 +789,9 @@ pub fn set_model_asset(
         ModelCapability::Translation => "translation",
         ModelCapability::Tts => "tts",
         ModelCapability::Ocr => "ocr",
+        ModelCapability::SourceSeparation | ModelCapability::NoiseSuppression => {
+            return Err("Source separation is selected by the media task.".into());
+        }
     };
     let section = document
         .get_mut(section_name)
@@ -763,4 +858,199 @@ fn load_config(project_root: &std::path::Path) -> Result<AppConfig, String> {
     let config_path = project_root.join("config.json");
     AppConfig::from_path_with_user_config(&config_path, project_root)
         .map_err(|error| format!("Cannot read {}: {error}", config_path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn discovering() -> (
+        NativeModelTaskManager,
+        crossbeam_channel::Sender<NativeModelTaskEvent>,
+        PathBuf,
+    ) {
+        let root = PathBuf::from("test-model-root");
+        let (tx, rx) = unbounded();
+        let manager = NativeModelTaskManager {
+            state: NativeModelTaskState::Discovering,
+            active_task: Some((root.clone(), NativeModelTask::Discover)),
+            events: Some(rx),
+            ..NativeModelTaskManager::default()
+        };
+        (manager, tx, root)
+    }
+
+    #[test]
+    fn discovery_accepts_download_intent_and_skips_already_installed_models() {
+        let (mut manager, tx, root) = discovering();
+        let id = ModelAssetId::UvrMdxnet9482Onnx;
+        manager.enqueue_many(root, [id, id]).unwrap();
+        assert!(manager.is_model_queued(id));
+        tx.send(NativeModelTaskEvent::Finished(
+            NativeModelTaskResult::Detected(vec![id]),
+        ))
+        .unwrap();
+        manager.poll();
+        assert!(manager.is_model_ready(id));
+        assert!(!manager.is_model_queued(id));
+        assert!(!manager.is_busy());
+        let batch = manager.batch_snapshot().unwrap();
+        assert_eq!(batch.completed_packages, 1);
+        assert_eq!(batch.total_packages, 1);
+        assert_eq!(batch.downloaded_bytes, batch.total_bytes);
+    }
+
+    #[test]
+    fn queued_model_can_pause_and_resume_during_discovery() {
+        let (mut manager, _tx, root) = discovering();
+        let id = ModelAssetId::UvrMdxnet9482Onnx;
+        manager.enqueue_many(root.clone(), [id]).unwrap();
+        manager.pause(id).unwrap();
+        assert!(manager.is_model_paused(id));
+        assert!(!manager.is_model_queued(id));
+        assert_eq!(
+            manager.model_download_progress(id),
+            Some((0, model_download_bytes(id)))
+        );
+        manager.enqueue_many(root, [id]).unwrap();
+        assert!(!manager.is_model_paused(id));
+        assert!(manager.is_model_queued(id));
+        assert_eq!(manager.batch_snapshot().unwrap().total_packages, 1);
+    }
+
+    #[test]
+    fn paused_worker_retains_final_progress_without_requeueing() {
+        let (mut manager, tx, root) = discovering();
+        let id = ModelAssetId::UvrMdxnet9482Onnx;
+        manager.enqueue_many(root.clone(), [id]).unwrap();
+        manager.install_batch.as_mut().unwrap().queued.clear();
+        manager.active_task = Some((root, NativeModelTask::Install(id)));
+        manager.state = NativeModelTaskState::Installing {
+            asset_id: id,
+            relative_path: None,
+            downloaded_bytes: 10,
+            total_bytes: 100,
+        };
+        let cancellation = DownloadCancellation::default();
+        manager.cancellation = Some(cancellation.clone());
+        manager.pause(id).unwrap();
+        assert!(cancellation.is_cancelled());
+        tx.send(NativeModelTaskEvent::Progress(DownloadProgress {
+            asset_id: id,
+            relative_path: "model.onnx",
+            downloaded_bytes: 20,
+            total_bytes: 100,
+        }))
+        .unwrap();
+        tx.send(NativeModelTaskEvent::Finished(
+            NativeModelTaskResult::Cancelled,
+        ))
+        .unwrap();
+        manager.poll();
+        assert!(manager.is_model_paused(id));
+        assert!(!manager.is_model_queued(id));
+        assert!(!manager.is_busy());
+        assert_eq!(manager.model_download_progress(id), Some((20, 100)));
+        assert_eq!(manager.batch_snapshot().unwrap().downloaded_bytes, 20);
+        manager
+            .switch_download_source(PathBuf::from("test-model-root"), true)
+            .unwrap();
+        assert_eq!(manager.model_download_progress(id), Some((20, 100)));
+    }
+
+    #[test]
+    fn source_failure_selects_the_visible_mirror_only_once() {
+        let (mut manager, tx, _) = discovering();
+        // A fresh directory has no config, so restarting the worker below
+        // exercises source selection without performing a network request.
+        let root = tempfile::tempdir().unwrap();
+        let id = ModelAssetId::UvrMdxnet9482Onnx;
+        manager.active_task = Some((root.path().to_path_buf(), NativeModelTask::Install(id)));
+        manager.state = NativeModelTaskState::Installing {
+            asset_id: id,
+            relative_path: None,
+            downloaded_bytes: 10,
+            total_bytes: 100,
+        };
+        manager.download_progress.insert(id, (10, 100));
+        tx.send(NativeModelTaskEvent::Finished(
+            NativeModelTaskResult::SourceFailed("official unavailable".into()),
+        ))
+        .unwrap();
+        manager.poll();
+        assert!(manager.use_mirror());
+        assert_eq!(manager.model_download_progress(id), Some((10, 100)));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while manager.is_busy() && std::time::Instant::now() < deadline {
+            thread::sleep(std::time::Duration::from_millis(5));
+            manager.poll();
+        }
+        assert!(!manager.is_busy());
+        let (tx, rx) = unbounded();
+        manager.events = Some(rx);
+        manager.active_task = Some((root.path().to_path_buf(), NativeModelTask::Install(id)));
+        tx.send(NativeModelTaskEvent::Finished(
+            NativeModelTaskResult::SourceFailed("mirror unavailable".into()),
+        ))
+        .unwrap();
+        manager.poll();
+        assert!(
+            matches!(manager.state(), NativeModelTaskState::Failed(error) if error == "mirror unavailable")
+        );
+        assert!(manager.use_mirror());
+        manager.paused.insert(id);
+        manager
+            .switch_download_source(root.path().to_path_buf(), false)
+            .unwrap();
+        assert!(!manager.use_mirror());
+        assert!(manager.is_model_paused(id));
+        assert_eq!(manager.model_download_progress(id), Some((10, 100)));
+    }
+
+    #[test]
+    fn a_failure_already_in_flight_cannot_restart_a_paused_download() {
+        let (mut manager, tx, root) = discovering();
+        let id = ModelAssetId::UvrMdxnet9482Onnx;
+        manager.active_task = Some((root, NativeModelTask::Install(id)));
+        manager.paused.insert(id);
+        tx.send(NativeModelTaskEvent::Finished(
+            NativeModelTaskResult::SourceFailed("official unavailable".into()),
+        ))
+        .unwrap();
+        manager.poll();
+        assert!(manager.is_model_paused(id));
+        assert!(!manager.is_busy());
+        assert!(!manager.use_mirror());
+    }
+
+    #[test]
+    fn a_late_mirror_failure_cannot_override_a_manual_switch_to_official() {
+        let (mut manager, tx, _) = discovering();
+        let root = tempfile::tempdir().unwrap();
+        let id = ModelAssetId::UvrMdxnet9482Onnx;
+        manager.use_mirror = true;
+        manager.active_task = Some((root.path().to_path_buf(), NativeModelTask::Install(id)));
+        manager.state = NativeModelTaskState::Installing {
+            asset_id: id,
+            relative_path: None,
+            downloaded_bytes: 10,
+            total_bytes: 100,
+        };
+        tx.send(NativeModelTaskEvent::Finished(
+            NativeModelTaskResult::SourceFailed("old mirror failure".into()),
+        ))
+        .unwrap();
+        manager
+            .switch_download_source(root.path().to_path_buf(), false)
+            .unwrap();
+        manager.poll();
+        assert!(!manager.use_mirror());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while manager.is_busy() && std::time::Instant::now() < deadline {
+            thread::sleep(std::time::Duration::from_millis(5));
+            manager.poll();
+        }
+        assert!(!manager.is_busy());
+        assert!(!manager.use_mirror());
+    }
 }

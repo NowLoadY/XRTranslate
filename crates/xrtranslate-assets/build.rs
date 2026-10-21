@@ -221,6 +221,16 @@ fn runtime(card: &Value) -> String {
             );
             "ModelRuntime::PaddleOcrOnnx".into()
         }
+        "uvr-mdx-onnx" => {
+            assert_eq!(capability, "source-separation");
+            assert!(has_role("Weights"));
+            "ModelRuntime::UvrMdxOnnx".into()
+        }
+        "gtcrn-onnx" => {
+            assert_eq!(capability, "noise-suppression");
+            assert!(has_role("Weights"));
+            "ModelRuntime::GtcrnOnnx".into()
+        }
         "llama-vision-chat" => {
             assert_eq!(capability, "ocr");
             assert!(has_role("Weights") && has_role("MultimodalProjection"));
@@ -246,6 +256,8 @@ fn manifest(value: &Value, variant: &str) -> String {
         "translation" => "ModelCapability::Translation",
         "tts" => "ModelCapability::Tts",
         "ocr" => "ModelCapability::Ocr",
+        "source-separation" => "ModelCapability::SourceSeparation",
+        "noise-suppression" => "ModelCapability::NoiseSuppression",
         capability => panic!("unknown model capability {capability}"),
     };
     let hardware = field(value, "hardware");

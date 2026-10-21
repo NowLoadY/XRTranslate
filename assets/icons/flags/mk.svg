@@ -2,5 +2,4 @@
 <defs><clipPath id="disc"><circle cx="32" cy="32" r="29"/></clipPath></defs>
 <g clip-path="url(#disc)"><rect x="0" y="0" width="64" height="64" fill="#ef6570"/><path d="M32 32L111.40 22.25L111.40 41.75Z" fill="#ffd166" /><path d="M32 32L95.04 81.25L81.25 95.04Z" fill="#ffd166" /><path d="M32 32L41.75 111.40L22.25 111.40Z" fill="#ffd166" /><path d="M32 32L-17.25 95.04L-31.04 81.25Z" fill="#ffd166" /><path d="M32 32L-47.40 41.75L-47.40 22.25Z" fill="#ffd166" /><path d="M32 32L-31.04 -17.25L-17.25 -31.04Z" fill="#ffd166" /><path d="M32 32L22.25 -47.40L41.75 -47.40Z" fill="#ffd166" /><path d="M32 32L81.25 -31.04L95.04 -17.25Z" fill="#ffd166" /><circle cx="32" cy="32" r="11" fill="#ef6570"/><circle cx="32" cy="32" r="8.5" fill="#ffd166"/></g>
 <circle cx="32" cy="32" r="29" fill="none" stroke="#344451" stroke-opacity=".12" stroke-width="1.5"/>
-<path d="M13 20a24 24 0 0 1 19-12" fill="none" stroke="#fff" stroke-opacity=".5" stroke-width="3" stroke-linecap="round"/>
 </svg>

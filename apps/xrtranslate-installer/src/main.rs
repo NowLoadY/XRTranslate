@@ -192,7 +192,6 @@ async fn prepare_resources(
         let destination = output.join(relative);
         let bytes = match asset.relative_path.as_str() {
             RuntimeLayout::VAD_MODEL_PATH => RuntimeLayout::VAD_MODEL_BYTES,
-            RuntimeLayout::DENOISE_MODEL_PATH => RuntimeLayout::DENOISE_MODEL_BYTES,
             RuntimeLayout::SPEAKER_MODEL_PATH => RuntimeLayout::SPEAKER_MODEL_BYTES,
             _ => return Err("Unknown bundled resource".into()),
         };

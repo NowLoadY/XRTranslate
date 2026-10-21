@@ -139,6 +139,7 @@ fn default_video_recognition() -> RecognitionSettings {
         background_noise: 0.6,
         pause_tolerance: 1.0,
         continuous_recognition: false,
+        preprocessing: None,
     }
 }
 
@@ -260,6 +261,34 @@ impl MediaTaskStore {
 mod tests {
     use super::*;
     use crate::plugins::media::subtitles::{SubtitleCue, SubtitleMetadata};
+
+    #[test]
+    fn audio_processing_choice_roundtrips_without_changing_legacy_tasks() {
+        let task = MediaTask::new(
+            "Concert".into(),
+            MediaSource::LocalFile("concert.mp4".into()),
+            "ja".into(),
+            "zh".into(),
+            SubtitleMode::None,
+            default_video_recognition(),
+        );
+        let mut legacy = serde_json::to_value(&task).unwrap();
+        legacy["recognition"]
+            .as_object_mut()
+            .unwrap()
+            .remove("preprocessing");
+        let mut restored: MediaTask = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.recognition, task.recognition);
+        restored.recognition.preprocessing =
+            Some(xrtranslate_protocol::AudioPreprocessing::VocalSeparation);
+        let restored: MediaTask =
+            serde_json::from_slice(&serde_json::to_vec(&restored).unwrap()).unwrap();
+        assert_eq!(
+            restored.recognition.preprocessing,
+            Some(xrtranslate_protocol::AudioPreprocessing::VocalSeparation)
+        );
+        assert!(!restored.is_task_running);
+    }
 
     #[test]
     fn saving_replaces_the_store_and_roundtrips_a_large_subtitle_document() {

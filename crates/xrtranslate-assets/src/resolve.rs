@@ -251,10 +251,12 @@ impl ResolvedModelAssets {
             ModelCapability::Asr => &self.qwen3_asr,
             ModelCapability::Translation => &self.hunyuan_mt,
             ModelCapability::Tts => &self.audio8_tts,
-            ModelCapability::Ocr => self
+            ModelCapability::Ocr
+            | ModelCapability::SourceSeparation
+            | ModelCapability::NoiseSuppression => self
                 .active_assets_for(capability)
                 .next()
-                .expect("OCR model must be selected before resolving its active asset"),
+                .expect("optional model must be selected before resolving its active asset"),
         }
     }
 

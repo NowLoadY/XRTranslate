@@ -23,6 +23,8 @@ const STEPS: [&str; 4] = [
     "Download",
 ];
 const QQ_GROUP_NUMBER: &str = "1009732148";
+const WELCOME_SHOWCASE_DELAY: f32 = 10.0;
+const WELCOME_SHOWCASE_FADE: f32 = 0.55;
 
 pub fn render_onboarding_fullscreen(
     app: &mut crate::XRTranslateApp,
@@ -512,7 +514,22 @@ fn render_onboarding_welcome(
     });
 
     ui.add_space(20.0);
-    AnimationSystem::render_staggered(ui, id.with("showcase"), elapsed, 4, |ui| {
+    let showcase_elapsed = elapsed - WELCOME_SHOWCASE_DELAY;
+    ui.scope(|ui| {
+        if showcase_elapsed <= 0.0 {
+            // Keep the layout and image loading ready while hiding all controls.
+            ui.set_invisible();
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f32(
+                    (-showcase_elapsed).max(0.0),
+                ));
+        } else {
+            let progress = (showcase_elapsed / WELCOME_SHOWCASE_FADE).clamp(0.0, 1.0);
+            ui.multiply_opacity(AnimationSystem::ease_out_cubic(progress));
+            if progress < 1.0 {
+                ui.ctx().request_repaint();
+            }
+        }
         components::showcase(ui, language, &crate::ui::previews::welcome());
     });
     bounds
@@ -1152,10 +1169,7 @@ fn render_onboarding_optional(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
 
 fn onboarding_surface(ui: &egui::Ui, color: Color32) -> Frame {
     Frame::new()
-        .fill(theme::panel_fill(
-            ui.ctx(),
-            Color32::WHITE.lerp_to_gamma(color, 0.07),
-        ))
+        .fill(theme::panel_fill(ui.ctx(), theme::surface_tinted(color)))
         .corner_radius(CornerRadius::same(20))
         .inner_margin(Margin::same(18))
 }
@@ -1653,6 +1667,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
 
     let busy = app.model_task_manager.is_busy();
     let mut installs = Vec::new();
+    let mut pauses = Vec::new();
     let mut delete_model = None;
 
     let configured = configured_model_packages(&project_root);
@@ -1691,6 +1706,12 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                     ("Voice Cloning & TTS Model", Color32::from_rgb(244, 63, 94))
                 }
                 ModelCapability::Ocr => ("OCR Model", Color32::from_rgb(139, 92, 246)),
+                ModelCapability::SourceSeparation => {
+                    ("Vocal Separation Model", Color32::from_rgb(16, 185, 129))
+                }
+                ModelCapability::NoiseSuppression => {
+                    ("Speech Denoising Model", Color32::from_rgb(59, 130, 246))
+                }
             };
             DownloadItem {
                 id: package.id,
@@ -1724,20 +1745,46 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                     .strong(),
             );
             if !missing.is_empty() {
+                let active_downloads = missing.iter().filter(|item| {
+                    !app.model_task_manager.is_model_paused(item.id)
+                        && (app.model_task_manager.is_model_queued(item.id)
+                            || matches!(app.model_task_manager.state(),
+                                NativeModelTaskState::Installing { asset_id, .. } if *asset_id == item.id))
+                }).map(|item| item.id).collect::<Vec<_>>();
+                let action = if !active_downloads.is_empty() {
+                    "Pause"
+                } else if missing.iter().any(|item| app.model_task_manager.is_model_paused(item.id)) {
+                    "Resume"
+                } else {
+                    "Download"
+                };
                 let label = format!(
                     "{} ({}) · {}",
-                    i18n::tr(language, "Download"),
+                    i18n::tr(language, action),
                     missing.len(),
                     components::format_file_size(missing_download_bytes),
                 );
-                if components::primary_button_enabled(
-                    ui,
-                    &label,
-                    !busy && !app.runtime_installer.is_busy(),
-                )
-                .clicked()
-                {
-                    installs.extend(missing.iter().map(|item| item.id));
+                let downloaded = missing.iter().filter_map(|item| {
+                    app.model_task_manager.model_download_progress(item.id).map(|(bytes, _)| bytes)
+                }).sum::<u64>();
+                let progress = (missing_download_bytes > 0 && downloaded > 0)
+                    .then(|| downloaded as f32 / missing_download_bytes as f32);
+                let clicked = ui.scope(|ui| {
+                    ui.set_max_width(220.0);
+                    components::download_progress_button(
+                        ui,
+                        &label,
+                        false,
+                        !app.runtime_installer.is_busy(),
+                        progress,
+                    ).clicked()
+                }).inner;
+                if clicked {
+                    if active_downloads.is_empty() {
+                        installs.extend(missing.iter().map(|item| item.id));
+                    } else {
+                        pauses.extend(active_downloads);
+                    }
                 }
             }
             let previous_source = app.model_task_manager.use_mirror();
@@ -1777,8 +1824,11 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                     .map(|position| position + 1)
             });
             let failed = batch.as_ref().and_then(|batch| batch.failed_asset_id) == Some(item.id);
+            let paused = app.model_task_manager.is_model_paused(item.id);
             let action = if item.installed {
                 "Installed"
+            } else if paused {
+                "Resume"
             } else if is_active {
                 "Downloading"
             } else if queued_position.is_some() {
@@ -1793,16 +1843,17 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                 language,
                 item,
                 action,
-                !item.installed
-                    && !is_active
-                    && queued_position.is_none()
-                    && item.hardware_available
-                    && !app.runtime_installer.is_busy(),
+                !item.installed && item.hardware_available && !app.runtime_installer.is_busy(),
                 !busy,
-                queued_position,
+                if paused { None } else { queued_position },
+                app.model_task_manager.model_download_progress(item.id),
             );
             if clicked {
-                installs.push(item.id);
+                if !paused && (is_active || queued_position.is_some()) {
+                    pauses.push(item.id);
+                } else {
+                    installs.push(item.id);
+                }
             }
             if delete_clicked {
                 delete_model = Some(item.id);
@@ -1811,6 +1862,11 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
         }
     }
 
+    for asset_id in pauses {
+        if let Err(error) = app.model_task_manager.pause(asset_id) {
+            app.last_error = Some(error);
+        }
+    }
     if !installs.is_empty()
         && let Err(error) = app
             .model_task_manager
@@ -1822,13 +1878,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
         app.request_model_resource_deletion(asset_id);
     }
 
-    render_model_task_state(
-        ui,
-        language,
-        app.model_task_manager.state(),
-        app.model_task_manager.batch_snapshot().as_ref(),
-        &download_items,
-    );
+    render_model_task_state(ui, language, app.model_task_manager.state());
 
     let requires_runtime = requirements.llama_cpp || requirements.onnx_tts || requirements.onnx_cpu;
     if requires_runtime {
@@ -1854,6 +1904,7 @@ fn render_download_card(
     enabled: bool,
     delete_enabled: bool,
     queued_position: Option<usize>,
+    progress: Option<(u64, u64)>,
 ) -> (bool, bool) {
     let mut clicked = false;
     let mut delete_clicked = false;
@@ -1939,14 +1990,30 @@ fn render_download_card(
                             },
                             |position| format!("{} #{}", i18n::tr(language, action), position),
                         );
-                        if components::primary_button_enabled_with_id(
-                            ui,
-                            ("download_card", item.id),
-                            &action_label,
-                            enabled,
-                        )
-                        .clicked()
-                        {
+                        let response = ui
+                            .push_id(("download_card", item.id), |ui| {
+                                ui.set_max_width(200.0);
+                                components::download_progress_button(
+                                    ui,
+                                    &action_label,
+                                    false,
+                                    enabled,
+                                    progress.map(|(bytes, total)| {
+                                        if total > 0 {
+                                            bytes as f32 / total as f32
+                                        } else {
+                                            0.0
+                                        }
+                                    }),
+                                )
+                            })
+                            .inner;
+                        let response = if matches!(action, "Downloading" | "Queued") {
+                            response.on_hover_text(i18n::tr(language, "Pause"))
+                        } else {
+                            response
+                        };
+                        if response.clicked() {
                             clicked = true;
                         }
                     }
@@ -1965,6 +2032,10 @@ fn render_runtime_installation_section(
     use crate::runtime_install::RuntimeInstallState;
 
     let state = app.runtime_installer.state().clone();
+    let paused = app.runtime_installer.is_paused();
+    let downloading = matches!(state, RuntimeInstallState::Downloading { .. }) && !paused;
+    let runtime_busy = app.runtime_installer.is_busy();
+    let download_progress = app.runtime_installer.download_progress();
     let download_size = app.runtime_installer.download_size_bytes();
     let planned_downloads = app.runtime_installer.planned_downloads().to_vec();
     let backend_name = app
@@ -1990,7 +2061,7 @@ fn render_runtime_installation_section(
                 .strong(),
         );
         ui.add_space(8.0);
-        let ready = app.runtime_installer.plan_is_ready() && !app.runtime_installer.is_busy();
+        let ready = app.runtime_installer.plan_is_ready() && !runtime_busy && !paused;
         let mut use_mirror = app.runtime_installer.use_mirror();
         let previous_source = use_mirror;
         let mut delete_runtime = false;
@@ -2014,6 +2085,7 @@ fn render_runtime_installation_section(
                     });
             } else {
                 let button_text = match (&state, download_size) {
+                    _ if paused => i18n::tr(language, "Resume").to_owned(),
                     (RuntimeInstallState::Downloading { .. }, _) => {
                         i18n::tr(language, "Downloading").to_owned()
                     }
@@ -2028,29 +2100,60 @@ fn render_runtime_installation_section(
                         components::format_file_size(bytes)
                     ),
                 };
-                let install_clicked = components::primary_button_enabled(
-                    ui,
-                    &button_text,
-                    download_size.is_some()
-                        && !app.runtime_installer.is_busy()
-                        && !app.model_task_manager.is_busy(),
-                )
-                .clicked();
-                if install_clicked
-                    && let Err(error) = app
-                        .runtime_installer
-                        .install_recommended(project_root.to_path_buf())
-                {
-                    app.last_error = Some(error);
+                let response = ui
+                    .scope(|ui| {
+                        ui.set_max_width(200.0);
+                        components::download_progress_button(
+                            ui,
+                            &button_text,
+                            false,
+                            downloading
+                                || (download_size.is_some()
+                                    && !runtime_busy
+                                    && !app.model_task_manager.is_busy()),
+                            download_progress.map(|(bytes, total)| {
+                                if total > 0 {
+                                    bytes as f32 / total as f32
+                                } else {
+                                    0.0
+                                }
+                            }),
+                        )
+                    })
+                    .inner;
+                let response =
+                    if downloading && let RuntimeInstallState::Downloading { asset, .. } = &state {
+                        response.on_hover_text(format!("{}\n{asset}", i18n::tr(language, "Pause")))
+                    } else {
+                        response
+                    };
+                if response.clicked() {
+                    let result = if downloading {
+                        app.runtime_installer.pause()
+                    } else {
+                        app.runtime_installer
+                            .install_recommended(project_root.to_path_buf())
+                    };
+                    if let Err(error) = result {
+                        app.last_error = Some(error);
+                    }
                 }
             }
             if managed_runtime_present
-                && components::resource_delete_button(ui, "managed_runtime", language).clicked()
+                && ui
+                    .add_enabled_ui(!runtime_busy && !app.model_task_manager.is_busy(), |ui| {
+                        components::resource_delete_button(ui, "managed_runtime", language)
+                    })
+                    .inner
+                    .clicked()
             {
                 delete_runtime = true;
             }
             components::download_mirror_toggle(ui, language, &mut use_mirror);
-            if app.runtime_installer.is_busy() {
+            if matches!(
+                state,
+                RuntimeInstallState::Detecting | RuntimeInstallState::Extracting
+            ) {
                 ui.spinner();
             }
         });
@@ -2074,30 +2177,9 @@ fn render_runtime_installation_section(
 
         components::render_runtime_fallback_notice(ui, language, &app.runtime_installer);
 
-        match &state {
-            RuntimeInstallState::Downloading {
-                asset,
-                downloaded,
-                total,
-            } if *total > 0 => {
-                ui.add_space(6.0);
-                ui.add(
-                    egui::ProgressBar::new(
-                        (*downloaded as f64 / *total as f64).clamp(0.0, 1.0) as f32
-                    )
-                    .text(format!(
-                        "{} / {}",
-                        components::format_file_size(*downloaded),
-                        components::format_file_size(*total)
-                    )),
-                )
-                .on_hover_text(asset);
-            }
-            RuntimeInstallState::Failed(error) => {
-                ui.add_space(6.0);
-                components::error_notice(ui, language, error);
-            }
-            _ => {}
+        if let RuntimeInstallState::Failed(error) = &state {
+            ui.add_space(6.0);
+            components::error_notice(ui, language, error);
         }
     });
 }
@@ -2123,54 +2205,9 @@ fn render_model_task_state(
     ui: &mut egui::Ui,
     language: i18n::UiLanguage,
     state: &NativeModelTaskState,
-    batch: Option<&crate::model_install::NativeModelBatchSnapshot>,
-    items: &[DownloadItem],
 ) {
-    match state {
-        NativeModelTaskState::Idle
-        | NativeModelTaskState::Discovering
-        | NativeModelTaskState::Detected
-        | NativeModelTaskState::Installed => {}
-        NativeModelTaskState::Installing {
-            downloaded_bytes,
-            total_bytes,
-            ..
-        } => {
-            ui.add_space(6.0);
-            if let Some(batch) = batch
-                && batch.total_bytes > 0
-            {
-                let current_label = batch
-                    .current_asset_id
-                    .and_then(|id| items.iter().find(|item| item.id == id))
-                    .map_or("model package", |item| item.detail.as_str());
-                let current_number = (batch.completed_packages + 1).min(batch.total_packages);
-                ui.add(
-                    egui::ProgressBar::new(
-                        (batch.downloaded_bytes as f64 / batch.total_bytes as f64).clamp(0.0, 1.0)
-                            as f32,
-                    )
-                    .text(
-                        if *total_bytes > 0 && downloaded_bytes >= total_bytes {
-                            i18n::tr(language, "Preparing…").to_owned()
-                        } else {
-                            format!(
-                                "{} {}/{} · {} / {}",
-                                i18n::tr(language, "Model"),
-                                current_number,
-                                batch.total_packages,
-                                components::format_file_size(batch.downloaded_bytes),
-                                components::format_file_size(batch.total_bytes),
-                            )
-                        },
-                    ),
-                )
-                .on_hover_text(current_label);
-            }
-        }
-        NativeModelTaskState::Failed(error) => {
-            ui.add_space(6.0);
-            components::error_notice(ui, language, error);
-        }
+    if let NativeModelTaskState::Failed(error) = state {
+        ui.add_space(6.0);
+        components::error_notice(ui, language, error);
     }
 }

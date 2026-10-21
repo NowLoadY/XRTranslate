@@ -1,7 +1,7 @@
 //! Streaming media-audio decoding for meeting and media player imports.
 //!
-//! Files are decoded a packet at a time, downmixed to mono, continuously
-//! resampled to 16 kHz, and emitted in small `Vec<f32>` chunks. The worker
+//! Files are decoded a packet at a time, routed to the requested channels,
+//! continuously resampled, and emitted in small `Vec<f32>` chunks. The worker
 //! never keeps the complete recording in memory.
 
 mod api;

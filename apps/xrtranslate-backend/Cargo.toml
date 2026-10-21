@@ -13,6 +13,7 @@ managed-ort = [
     "xrtranslate-denoise/managed-ort",
     "xrtranslate-speaker/managed-ort",
     "xrtranslate-vad/managed-ort",
+    "xrtranslate-separation/managed-ort",
 ]
 
 [dependencies]
@@ -29,11 +30,12 @@ xrtranslate-assets = { path = "../../crates/xrtranslate-assets" }
 xr-corpus-client = { path = "../../XR-Corpus/crates/client" }
 xr-corpus-protocol = { path = "../../XR-Corpus/crates/protocol" }
 xrtranslate-config = { path = "../../crates/xrtranslate-config" }
-xrtranslate-engine = { path = "../../crates/xrtranslate-engine" }
+xrtranslate-engine = { path = "../../crates/xrtranslate-engine", features = ["resample"] }
 xrtranslate-inference = { path = "../../crates/xrtranslate-inference", features = ["sensevoice"] }
 xrtranslate-prompt = { path = "../../crates/xrtranslate-prompt" }
 xrtranslate-protocol = { path = "../../crates/xrtranslate-protocol" }
 xrtranslate-denoise = { path = "../../crates/xrtranslate-denoise" }
+xrtranslate-separation = { path = "../../crates/xrtranslate-separation" }
 xrtranslate-speaker = { path = "../../crates/xrtranslate-speaker" }
 xrtranslate-supervisor = { path = "../../crates/xrtranslate-supervisor" }
 xrtranslate-vad = { path = "../../crates/xrtranslate-vad" }

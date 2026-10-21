@@ -176,7 +176,6 @@ def native(sdk, args):
         'application/XR-Corpus/corpora/default.sqlite',
         'application/models/silero-vad/src/silero_vad/data/silero_vad.onnx',
         'application/models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx',
-        'application/models/gtcrn/gtcrn_simple.onnx',
     }
     for path in assets.parent.rglob('*'):
         if path.is_symlink() or (path.is_file() and path.relative_to(assets.parent).as_posix() not in packaged_assets):

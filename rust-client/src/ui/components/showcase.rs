@@ -115,7 +115,7 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
     let mut focused = false;
     let radius = theme::container_radius(16);
     let card = egui::Frame::new()
-        .fill(egui::Color32::from_rgb(235, 245, 241))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::BLACK))
         .corner_radius(radius)
         .inner_margin(16)
         .show(ui, |ui| {
@@ -280,6 +280,7 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
         || preview.images.started.is_some()
         || preview.paused
         || focused
+        || !ui.is_visible()
         || ui.rect_contains_pointer(card.response.rect)
         || !ui.is_rect_visible(card.response.rect)
         || !ui.input(|input| input.focused)

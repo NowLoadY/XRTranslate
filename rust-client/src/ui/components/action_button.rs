@@ -65,11 +65,51 @@ pub fn refresh_button(ui: &mut Ui, label: &str) -> egui::Response {
     )
 }
 
+pub fn open_button(ui: &mut Ui, label: &str) -> egui::Response {
+    action_button(
+        ui,
+        label,
+        egui::include_image!("../../../resources/icons/folder-open.svg"),
+    )
+}
+
+pub fn icon_menu(
+    ui: &mut Ui,
+    label: &str,
+    icon: egui::ImageSource<'_>,
+    contents: impl FnOnce(&mut Ui),
+) {
+    let response = action_button(ui, label, icon);
+    egui::Popup::menu(&response).show(contents);
+}
+
+/// A circular action in the same monochrome style as the smaller action buttons.
+pub fn round_icon_button(
+    ui: &mut Ui,
+    label: &str,
+    icon: egui::ImageSource<'_>,
+    diameter: f32,
+) -> egui::Response {
+    icon_button_with_colors(
+        ui,
+        label,
+        icon,
+        diameter,
+        [
+            theme::surface_subtle(),
+            theme::primary(),
+            theme::border().gamma_multiply(0.6),
+            theme::text_normal(),
+        ],
+    )
+}
+
 fn action_button(ui: &mut Ui, label: &str, icon: egui::ImageSource<'_>) -> egui::Response {
     icon_button_with_colors(
         ui,
         label,
         icon,
+        32.0,
         [
             theme::surface_subtle(),
             theme::primary(),
@@ -85,6 +125,7 @@ pub fn icon_button(ui: &mut Ui, label: &str, icon: egui::ImageSource<'_>) -> egu
         ui,
         label,
         icon,
+        32.0,
         [
             ui.visuals().panel_fill,
             ui.visuals().text_color(),
@@ -98,9 +139,11 @@ fn icon_button_with_colors(
     ui: &mut Ui,
     label: &str,
     icon: egui::ImageSource<'_>,
+    diameter: f32,
     [background, accent, border, foreground]: [egui::Color32; 4],
 ) -> egui::Response {
-    let response = ui.add_sized(Vec2::splat(32.0), egui::Button::new("").frame(false));
+    let diameter = diameter.max(ui.spacing().interact_size.y);
+    let response = ui.add_sized(Vec2::splat(diameter), egui::Button::new("").frame(false));
     let response =
         crate::ui::automation::button_response(ui, response.id, label, ui.is_enabled(), response);
     response.widget_info(|| {
@@ -123,13 +166,13 @@ fn icon_button_with_colors(
     );
     ui.painter().circle(
         response.rect.center(),
-        16.0,
+        response.rect.width().min(response.rect.height()) * 0.5,
         fill,
-        egui::Stroke::new(1.0, border),
+        egui::Stroke::new(if response.has_focus() { 1.5 } else { 0.85 }, border),
     );
     egui::Image::new(icon).tint(foreground).paint_at(
         ui,
-        egui::Rect::from_center_size(response.rect.center(), Vec2::splat(17.0)),
+        egui::Rect::from_center_size(response.rect.center(), Vec2::splat(diameter * 0.54)),
     );
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)

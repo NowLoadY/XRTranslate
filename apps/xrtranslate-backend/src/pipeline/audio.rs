@@ -1,4 +1,5 @@
-//! Provider-independent buffering and speech admission. Recognition keeps raw PCM.
+//! Provider-independent buffering and speech admission. Recognition and delayed
+//! detection audio stay aligned after the selected input preprocessing.
 
 use std::{collections::VecDeque, mem};
 use xrtranslate_vad::{FRAME_BYTES, FRAME_SAMPLES, Utterance};

@@ -43,7 +43,10 @@ impl ChartSpec {
                 display_metric: "XCOMET-XXL",
                 score: |value| value,
             }),
-            ModelCapability::Tts | ModelCapability::Ocr => None,
+            ModelCapability::Tts
+            | ModelCapability::Ocr
+            | ModelCapability::SourceSeparation
+            | ModelCapability::NoiseSuppression => None,
         }
     }
 

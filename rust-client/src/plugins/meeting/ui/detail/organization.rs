@@ -11,11 +11,11 @@ pub(super) fn render(
 ) {
     let can_create_topic = controller.bundle.as_ref().is_some_and(|bundle| {
         bundle.meeting.status != crate::plugins::meeting::store::MeetingStatus::Processing
-        && controller.active_capture.lock().ok().is_some_and(|active| {
-            active.as_ref().is_some_and(|capture| {
-                capture.meeting_id == bundle.meeting.id && !capture.imported_audio
+            && controller.active_capture.lock().ok().is_some_and(|active| {
+                active.as_ref().is_some_and(|capture| {
+                    capture.meeting_id == bundle.meeting.id && !capture.imported_audio
+                })
             })
-        })
     });
     let speakers = controller
         .bundle
@@ -58,14 +58,16 @@ pub(super) fn render(
                         let name = controller
                             .speaker_name_drafts
                             .entry(speaker.id.clone())
-                            .or_insert_with(|| crate::compact_speaker_label(&speaker.name).unwrap_or_default());
+                            .or_insert_with(|| {
+                                crate::compact_speaker_label(&speaker.name).unwrap_or_default()
+                            });
                         crate::ui::components::text_edit_ui(
                             ui,
                             ("speaker_name", &speaker.id),
                             egui::TextEdit::singleline(name)
                                 .desired_width(180.0_f32.min(ui.available_width())),
                         );
-                        if components::animated_button(ui, tr(language, "Rename")).clicked() {
+                        if components::edit_button(ui, tr(language, "Rename")).clicked() {
                             *action = UiAction::RenameSpeaker(speaker.id.clone(), name.clone());
                         }
                         if speakers.len() > 1 {

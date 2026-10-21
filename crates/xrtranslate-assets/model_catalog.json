@@ -1467,5 +1467,122 @@
       "kind": "llama-vision-chat",
       "model_alias": "ocr"
     }
+  },
+  {
+    "id": "gtcrn-onnx",
+    "rust_variant": "GtcrnOnnx",
+    "const_name": "GTCRN_ONNX",
+    "label": "GTCRN",
+    "capability": "noise-suppression",
+    "level": "small",
+    "tier_default": true,
+    "estimated_vram_bytes": 0,
+    "parameters_millions": null,
+    "benchmark": null,
+    "provider": "gtcrn",
+    "languages": [],
+    "voice_presets": [],
+    "hardware": {
+      "accelerator": "Cpu",
+      "minimum_memory_bytes": 0
+    },
+    "audio_output": null,
+    "relative_directory": "gtcrn",
+    "required_files": [
+      {
+        "role": "Weights",
+        "relative_path": "gtcrn_simple.onnx",
+        "purpose": "GTCRN speech denoising model",
+        "bytes": 535638
+      },
+      {
+        "role": "License",
+        "relative_path": "LICENSE",
+        "purpose": "GTCRN MIT license and attribution",
+        "bytes": 1069
+      }
+    ],
+    "source": {
+      "repository": "NowLoadY/XRTranslate",
+      "revision": "v0.3.4",
+      "remote_directory": "assets/gtcrn",
+      "include_patterns": [
+        "gtcrn_simple.onnx",
+        "LICENSE"
+      ],
+      "file_overrides": [
+        {
+          "DirectUrl": {
+            "relative_path": "gtcrn_simple.onnx",
+            "url": "https://github.com/NowLoadY/XRTranslate/releases/download/v0.3.4/gtcrn_simple.onnx"
+          }
+        },
+        {
+          "DirectUrl": {
+            "relative_path": "LICENSE",
+            "url": "https://github.com/NowLoadY/XRTranslate/releases/download/v0.3.4/GTCRN-LICENSE.txt"
+          }
+        }
+      ],
+      "archive": null
+    },
+    "runtime": {
+      "kind": "gtcrn-onnx"
+    }
+  },
+  {
+    "id": "uvr-mdxnet-9482-onnx",
+    "rust_variant": "UvrMdxnet9482Onnx",
+    "const_name": "UVR_MDXNET_9482_ONNX",
+    "label": "UVR-MDXNET 9482",
+    "capability": "source-separation",
+    "level": "small",
+    "tier_default": true,
+    "estimated_vram_bytes": 0,
+    "parameters_millions": null,
+    "benchmark": null,
+    "provider": "uvr-mdx",
+    "languages": [],
+    "voice_presets": [],
+    "hardware": {
+      "accelerator": "Cpu",
+      "minimum_memory_bytes": 0
+    },
+    "audio_output": null,
+    "relative_directory": "UVR-MDXNET-9482",
+    "required_files": [
+      {
+        "role": "Weights",
+        "relative_path": "UVR_MDXNET_9482.onnx",
+        "purpose": "UVR vocal separation model",
+        "bytes": 29704738
+      },
+      {
+        "role": "License",
+        "relative_path": "NOTICE-UVR.md",
+        "purpose": "UVR model license statement and developer attribution",
+        "bytes": 13922
+      }
+    ],
+    "source": {
+      "repository": "k2-fsa/sherpa-onnx-models",
+      "revision": "bee11a0c31f3054fa7e73752e59f50d1e05340af",
+      "remote_directory": "source-separation-models",
+      "include_patterns": [
+        "UVR_MDXNET_9482.onnx"
+      ],
+      "file_overrides": [
+        {
+          "DirectUrl": {
+            "relative_path": "NOTICE-UVR.md",
+            "url": "https://raw.githubusercontent.com/Anjok07/ultimatevocalremovergui/a5f88453bfb2b38b05a965bcf67727243e0cbf19/README.md"
+          }
+        }
+      ],
+      "archive": null
+    },
+    "runtime": {
+      "kind": "uvr-mdx-onnx"
+    }
   }
 ]

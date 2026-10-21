@@ -8,8 +8,8 @@
 
 | 类型 | 所有者 | 存储位置 | 交付方式 | 更新与校验 |
 | --- | --- | --- | --- | --- |
-| 模型包 | `xrtranslate-assets` | `models/<package>` | Windows 默认发布包按需下载；Linux 本地打包复制已安装的 `models/` | 每文件固定 revision、大小；支持 `models_directory` 自定义 |
-| 推理引擎核心 | `xrtranslate-config` / release packager | `<runtime_root>/<engine>` | Windows 发布包内置 CPU ONNX 核心；Linux 本地打包复制已安装核心；llama.cpp 与 CUDA ONNX provider 按需下载 | 固定版本、归档大小、必需文件集合；旧 `runtime_directory` 配置保留读取兼容 |
+| 模型包 | `xrtranslate-assets` | `models/<package>` | Windows/Linux 标准发布包按需下载；可选离线打包只复制所选的已校验模型包 | 每文件固定 revision、大小；支持 `models_directory` 自定义 |
+| 推理引擎核心 | `xrtranslate-config` / release packager | `<runtime_root>/<engine>` | Windows/Linux 标准发布包内置 CPU ONNX 核心；llama.cpp 与 CUDA ONNX provider 按需下载 | 固定版本、归档大小、必需文件集合；旧 `runtime_directory` 配置保留读取兼容 |
 | 设备加速包 | `xrtranslate-config` | `<runtime_root>/cuda/<version>` 与 `<runtime_root>/cudnn/<major>` | 仅兼容 NVIDIA 设备按需下载 | CUDA ABI 与驱动能力匹配；llama.cpp 与 ONNX 复用 CUDA，ONNX 另消费匹配 major 的 cuDNN |
 | 应用启动依赖 | `xrtranslate-config` / release packager | 应用根目录与 `bin/` | Windows 随包携带 VS 正式可分发 MSVC CRT，不能等应用启动后下载 | 共享必需/可选文件声明、PE x64 校验，发布清单记录每项大小；更新器随应用文件替换 |
 
@@ -17,9 +17,9 @@
 代理、重试、进度、大小与 HTTP Range 校验。模型与 runtime installer 只传递中立的
 `DownloadSource`；GitHub/Hugging Face 官方地址到镜像地址的转换由下载 crate 的
 单一镜像路由负责。后端不下载资源，也不需要 Python 解释器。欢迎页统一自动配置运行环境，
-不再提供手动选择目录的方案；设置页仅显示当前路径。Windows 默认发布包
+不再提供手动选择目录的方案；设置页仅显示当前路径。Windows/Linux 默认发布包
 不包含 TTS、ASR 或翻译大模型；其离线打包选项可显式加入已校验的 ASR/翻译
-GGUF。Linux 本地打包则复制已有的 `models/`，缺少的模型仍由客户端按需下载。
+GGUF。标准打包流程不复制开发机的整个 `models/` 目录，缺少的模型由客户端按需下载。
 
 模型包的传输上方只有一个桌面任务管理器。用户快速点击多个下载按钮或选择
 “下载全部”时，请求按 `ModelAssetId` 去重并串行排队；同一时刻只有一个模型包或
@@ -32,7 +32,8 @@ runtime installer 持有传输任务。任务快照同时保存当前包/文件�
 manifest 的稳定 `ModelAssetId`，不写档位；同一档位可列出多个模型。每个 provider、
 功能、档位的默认候选由 manifest 的 `tier_default` 明确标记，新增候选不会因为
 清单排序改变默认值。首次硬件推荐只应用一次，用户之后的手动选择会保留。
-模型切换入口只在欢迎流程；设置页保留 provider 参数和 TTS 声线选择，不切换模型包。
+ASR、翻译与 TTS 模型切换入口只在欢迎流程；设置页保留 provider 参数和 TTS 声线选择。
+可选音频处理资源由实时输入和媒体任务内的选择器按需安装，复用同一模型任务管理器。
 
 ## Provider 需求
 
@@ -48,7 +49,8 @@ manifest 的稳定 `ModelAssetId`，不写档位；同一档位可列出多个�
 | 远程 OpenAI ASR/翻译 | 无本地模型 | HTTPS + API key | 不需要本地 GPU runtime | 缺 API key 时给出配置诊断，不触发模型下载 |
 | Silero VAD | release 内固定 ONNX，2,327,524 B | CPU ONNX core | CPU，实时小模型不加载 CUDA provider | release 预检失败则拒绝打包 |
 | ERes2NetV2 说话人识别 | release 内固定 ONNX，71,964,309 B | CPU ONNX core | CPU | 同上 |
-| GTCRN 降噪 | release 内固定 ONNX，535,638 B | CPU ONNX core | CPU | 同上 |
+| GTCRN 降噪 | 可选 `gtcrn-onnx`，ONNX 535,638 B 与 MIT 许可；XRTranslate 仓库 `assets/gtcrn/` 的固定提交 | CPU ONNX core | CPU | 默认关闭、不随 release 打包；用户选择语音降噪时通过统一下载队列安装，显示进度并支持暂停、继续和删除；不作为启动必需资源 |
+| 媒体人声分离 | 可选 `uvr-mdxnet-9482-onnx`，模型文件 29,704,738 B；完整资源以 manifest 为准 | CPU ONNX core | CPU | 仅有限媒体任务可选；启用时按需下载，未就绪不启动该媒体任务；不作为实时翻译的启动依赖 |
 
 ## 设备到下载计划
 
@@ -165,7 +167,7 @@ Windows 运行时规划在后台优先修复缺失的 CPU 核心：若配置声�
 
 - 本机个人设置放在 `runtime/user-config.json`；根目录 `config.json` 是可发行的
   资源目录。Windows 发布脚本要求它与当前提交一致，避免工作区个人设置进入发布包。
-- Packager 校验 CPU ONNX 核心、VAD、说话人识别、降噪及 ONNX 许可文件的类型与大小，默认发布包无需用户另外下载 CPU 核心。大模型和 GPU 加速依赖仍按配置下载。
+- Packager 校验 CPU ONNX 核心、VAD、说话人识别及 ONNX 许可文件的类型与大小，默认发布包无需用户另外下载 CPU 核心。GTCRN 与媒体人声分离属于可选模型包；旧配置将 GTCRN 列入必需资源时会忽略该条目。大模型和 GPU 加速依赖仍按配置下载。
 - 发布脚本补齐 ONNX 许可时，也通过 `xrtranslate-download` 获取配置声明的同源归档，
   校验完整归档后只提取许可文件；不另建 HTTP 下载实现，也不依赖归档列表的排序。
 - Windows 客户端和 ONNX 核心依赖 MSVC CRT。发布脚本从 Visual Studio 的 x64

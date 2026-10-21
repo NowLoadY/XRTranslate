@@ -196,6 +196,7 @@ impl DownloadClient {
         mut on_progress: impl FnMut(DownloadProgress),
     ) -> Result<(), DownloadError> {
         validate_spec(spec)?;
+        self.ensure_not_cancelled(spec.label)?;
         if complete.is_file() {
             match verify_file(complete, spec) {
                 Ok(()) => {
@@ -223,10 +224,30 @@ impl DownloadClient {
                 })?;
         }
 
-        for attempt in 1..=self.policy.max_attempts {
+        let primary_url = self.source.resolve(spec.url);
+        self.transfer_with_retries(spec, partial, primary_url.as_ref(), &mut on_progress)
+            .await?;
+        self.ensure_not_cancelled(spec.label)?;
+        tokio::fs::rename(partial, complete)
+            .await
+            .map_err(|source| DownloadError::FileIo {
+                path: complete.to_path_buf(),
+                source,
+            })
+    }
+
+    async fn transfer_with_retries(
+        &self,
+        spec: DownloadSpec<'_>,
+        partial: &Path,
+        primary_url: &str,
+        on_progress: &mut impl FnMut(DownloadProgress),
+    ) -> Result<(), DownloadError> {
+        let mut attempt = 1;
+        loop {
             self.ensure_not_cancelled(spec.label)?;
             let result = self
-                .transfer_once(spec, partial, &mut on_progress)
+                .transfer_once(spec, primary_url, partial, on_progress)
                 .await
                 .and_then(|()| verify_file(partial, spec));
             if matches!(&result, Err(DownloadError::Size { .. })) {
@@ -236,25 +257,27 @@ impl DownloadClient {
                 })?;
             }
             match result {
-                Ok(()) => {
-                    tokio::fs::rename(partial, complete)
-                        .await
-                        .map_err(|source| DownloadError::FileIo {
-                            path: complete.to_path_buf(),
-                            source,
-                        })?;
-                    return Ok(());
+                Ok(()) => return Ok(()),
+                // Source selection belongs to the owner and its visible UI.
+                // Report official failures promptly so it can select Mirror
+                // through the same path as the user's source checkbox.
+                Err(error)
+                    if self.source == DownloadSource::Official
+                        && DownloadSource::Mirror.resolve(spec.url) != spec.url
+                        && error.allows_source_fallback() =>
+                {
+                    return Err(error.with_attempts(attempt));
                 }
                 Err(error) if error.is_retryable() && attempt < self.policy.max_attempts => {
                     let Some(delay) = self.retry_delay(&error, attempt) else {
                         return Err(error.with_attempts(attempt));
                     };
                     self.sleep_or_cancel(delay, spec.label).await?;
+                    attempt += 1;
                 }
                 Err(error) => return Err(error.with_attempts(attempt)),
             }
         }
-        unreachable!("a non-zero retry policy always returns from the loop")
     }
 
     fn retry_delay(&self, error: &DownloadError, attempt: u32) -> Option<Duration> {
@@ -265,7 +288,9 @@ impl DownloadClient {
         (delay <= self.policy.max_automatic_retry_delay).then_some(delay)
     }
 
-    fn ensure_not_cancelled(&self, label: &str) -> Result<(), DownloadError> {
+    /// Check before publishing or extracting a downloaded artifact, so a
+    /// caller can retain staging when Pause arrives after the final chunk.
+    pub fn ensure_not_cancelled(&self, label: &str) -> Result<(), DownloadError> {
         if self
             .cancellation
             .as_ref()
@@ -291,9 +316,28 @@ impl DownloadClient {
         self.ensure_not_cancelled(label)
     }
 
+    async fn await_or_cancel<T>(
+        &self,
+        future: impl std::future::Future<Output = T>,
+        label: &str,
+    ) -> Result<T, DownloadError> {
+        let mut future = std::pin::pin!(future);
+        loop {
+            self.ensure_not_cancelled(label)?;
+            // Borrowing the pinned future preserves a pending request between
+            // checks, while allowing Pause to stop stalled headers or bodies.
+            if let Ok(result) =
+                tokio::time::timeout(Duration::from_millis(100), future.as_mut()).await
+            {
+                return Ok(result);
+            }
+        }
+    }
+
     async fn transfer_once(
         &self,
         spec: DownloadSpec<'_>,
+        url: &str,
         partial: &Path,
         on_progress: &mut impl FnMut(DownloadProgress),
     ) -> Result<(), DownloadError> {
@@ -322,17 +366,13 @@ impl DownloadClient {
             return Ok(());
         }
 
-        let resolved_url = self.source.resolve(spec.url);
-        let mut request = self
-            .client
-            .get(resolved_url.as_ref())
-            .header(ACCEPT_ENCODING, "identity");
+        let mut request = self.client.get(url).header(ACCEPT_ENCODING, "identity");
         if existing > 0 {
             request = request.header(RANGE, format!("bytes={existing}-"));
         }
-        let mut response = request
-            .send()
-            .await
+        let mut response = self
+            .await_or_cancel(request.send(), spec.label)
+            .await?
             .map_err(|error| DownloadError::Transfer {
                 label: spec.label.to_owned(),
                 message: error.to_string(),
@@ -386,10 +426,11 @@ impl DownloadClient {
             if let Err(error) = self.ensure_not_cancelled(spec.label) {
                 break Err(error);
             }
-            let chunk = match response.chunk().await {
-                Ok(Some(chunk)) => chunk,
-                Ok(None) => break Ok(()),
-                Err(error) => {
+            let chunk = match self.await_or_cancel(response.chunk(), spec.label).await {
+                Err(error) => break Err(error),
+                Ok(Ok(Some(chunk))) => chunk,
+                Ok(Ok(None)) => break Ok(()),
+                Ok(Err(error)) => {
                     break Err(DownloadError::Transfer {
                         label: spec.label.to_owned(),
                         message: error.to_string(),
@@ -493,6 +534,19 @@ impl DownloadError {
     #[must_use]
     pub const fn is_cancelled(&self) -> bool {
         matches!(self, Self::Cancelled { .. })
+    }
+
+    #[must_use]
+    pub fn allows_source_fallback(&self) -> bool {
+        matches!(
+            self,
+            Self::HttpStatus { .. }
+                | Self::Transfer { .. }
+                | Self::Incomplete { .. }
+                | Self::RemoteSize { .. }
+                | Self::Range { .. }
+                | Self::Size { .. }
+        )
     }
 
     fn is_retryable(&self) -> bool {
@@ -703,4 +757,172 @@ fn parse_retry_after(response: &reqwest::Response) -> Option<Duration> {
         .ok()?
         .duration_since(std::time::SystemTime::now())
         .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::mpsc,
+        thread,
+        time::{Instant, SystemTime, UNIX_EPOCH},
+    };
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn partial_path() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "xrtranslate-download-{}-{}.part",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    fn read_request(stream: &mut std::net::TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        String::from_utf8(request).unwrap()
+    }
+
+    fn response_once(response: &'static [u8]) -> (String, thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_request(&mut stream);
+            stream.write_all(response).unwrap();
+            request
+        });
+        (url, worker)
+    }
+
+    #[test]
+    fn official_failure_is_reported_and_selected_mirror_resumes_the_partial() {
+        let partial = partial_path();
+        fs::write(&partial, b"abc").unwrap();
+        let (official, official_worker) = response_once(
+            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        let (mirror, mirror_worker) = response_once(
+            b"HTTP/1.1 206 Partial Content\r\nContent-Length: 3\r\nContent-Range: bytes 3-5/6\r\nConnection: close\r\n\r\ndef",
+        );
+        let client = DownloadClient::new("download-test").unwrap();
+        let mut progress = Vec::new();
+        let error = runtime()
+            .block_on(client.transfer_with_retries(
+                DownloadSpec::new("test", "https://github.com/example/pinned/model", 6),
+                &partial,
+                &official,
+                &mut |value| progress.push(value),
+            ))
+            .unwrap_err();
+        assert!(error.allows_source_fallback());
+        assert_eq!(fs::read(&partial).unwrap(), b"abc");
+        let mut mirror_client = client.clone();
+        mirror_client.source = DownloadSource::Mirror;
+        runtime()
+            .block_on(mirror_client.transfer_with_retries(
+                DownloadSpec::new("test", "https://github.com/example/pinned/model", 6),
+                &partial,
+                &mirror,
+                &mut |value| progress.push(value),
+            ))
+            .unwrap();
+        official_worker.join().unwrap();
+        assert!(
+            mirror_worker
+                .join()
+                .unwrap()
+                .to_ascii_lowercase()
+                .contains("range: bytes=3-")
+        );
+        assert_eq!(fs::read(&partial).unwrap(), b"abcdef");
+        assert_eq!(progress.first().unwrap().downloaded_bytes, 3);
+        assert_eq!(progress.last().unwrap().downloaded_bytes, 6);
+        fs::remove_file(partial).unwrap();
+    }
+
+    #[test]
+    fn pause_keeps_received_bytes_and_does_not_try_the_mirror() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let mirror = TcpListener::bind("127.0.0.1:0").unwrap();
+        mirror.set_nonblocking(true).unwrap();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            read_request(&mut stream);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabc")
+                .unwrap();
+            let _ = release_rx.recv_timeout(Duration::from_secs(3));
+        });
+        let cancellation = DownloadCancellation::default();
+        let client = DownloadClient::with_proxy_source_and_cancellation(
+            "download-test",
+            None,
+            DownloadSource::Official,
+            cancellation.clone(),
+        )
+        .unwrap();
+        let partial = partial_path();
+        let result = runtime().block_on(client.transfer_with_retries(
+            DownloadSpec::new("test", "https://github.com/example/pinned/model", 6),
+            &partial,
+            &url,
+            &mut |progress| {
+                if progress.downloaded_bytes == 3 {
+                    cancellation.cancel();
+                }
+            },
+        ));
+        release_tx.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(result.unwrap_err().is_cancelled());
+        assert_eq!(fs::read(&partial).unwrap(), b"abc");
+        assert_eq!(
+            mirror.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        fs::remove_file(partial).unwrap();
+    }
+
+    #[test]
+    fn pause_interrupts_a_stalled_network_wait() {
+        let cancellation = DownloadCancellation::default();
+        let client = DownloadClient::with_proxy_source_and_cancellation(
+            "download-test",
+            None,
+            DownloadSource::Official,
+            cancellation.clone(),
+        )
+        .unwrap();
+        let cancel = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            cancellation.cancel();
+        });
+        let started = Instant::now();
+        let result =
+            runtime().block_on(client.await_or_cancel(std::future::pending::<()>(), "test"));
+        cancel.join().unwrap();
+        assert!(result.unwrap_err().is_cancelled());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 }

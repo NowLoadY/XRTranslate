@@ -42,9 +42,12 @@ pub(in crate::plugins::media::ui) fn render_detail(
                 action = MediaAction::StopTranslation;
             }
             if controller.subtitles.count() > 0 {
-                ui.menu_button(tr(language, "Export Subtitles"), |ui| {
-                    super::super::export_controls(ui, language, &title, &controller.subtitles)
-                });
+                components::icon_menu(
+                    ui,
+                    tr(language, "Export Subtitles"),
+                    egui::include_image!("../../../../../resources/icons/export.svg"),
+                    |ui| super::super::export_controls(ui, language, &title, &controller.subtitles),
+                );
             }
         });
     }

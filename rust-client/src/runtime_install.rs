@@ -134,6 +134,7 @@ enum Event {
         total: u64,
     },
     Extracting,
+    SourceFallbackAvailable,
     Cancelled,
     // Only a real llama executable is returned to host coordination. An ONNX
     // marker is an installation side effect, never an executable candidate.
@@ -150,6 +151,9 @@ pub struct RuntimeInstaller {
     cancellation: Option<DownloadCancellation>,
     active_project_root: Option<PathBuf>,
     restart_after_source_switch: bool,
+    paused: bool,
+    download_progress: Option<(u64, u64)>,
+    source_fallback_available: bool,
 }
 
 impl Default for RuntimeInstaller {
@@ -163,6 +167,9 @@ impl Default for RuntimeInstaller {
             cancellation: None,
             active_project_root: None,
             restart_after_source_switch: false,
+            paused: false,
+            download_progress: None,
+            source_fallback_available: false,
         }
     }
 }
@@ -172,26 +179,25 @@ impl RuntimeInstaller {
         self.proxy_url = (!proxy_url.trim().is_empty()).then(|| proxy_url.trim().to_owned());
     }
 
-    /// Switches the runtime transfer source without mixing partial archives
-    /// from two channels. In-flight downloads stop cooperatively, staging is
-    /// cleared after file handles close, then the selected plan restarts.
+    /// Switches the source of the same pinned archives. In-flight downloads
+    /// stop cooperatively before resuming their verified partial files.
     pub fn switch_download_source(
         &mut self,
-        project_root: PathBuf,
+        _project_root: PathBuf,
         use_mirror: bool,
     ) -> Result<(), String> {
         if self.use_mirror == use_mirror {
             return Ok(());
         }
         self.use_mirror = use_mirror;
-        if self.cancellation.is_some() && self.is_busy() {
+        if self.cancellation.is_some() && self.is_busy() && !self.paused {
             self.restart_after_source_switch = true;
             if let Some(cancellation) = &self.cancellation {
                 cancellation.cancel();
             }
             return Ok(());
         }
-        clear_runtime_staging(&project_root)
+        Ok(())
     }
 
     #[must_use]
@@ -206,6 +212,37 @@ impl RuntimeInstaller {
     #[must_use]
     pub fn is_busy(&self) -> bool {
         self.state.is_busy()
+    }
+
+    /// Pause takes effect cooperatively; the worker remains busy until its
+    /// file handles close. Its plan, chosen source and partial bytes survive.
+    pub fn pause(&mut self) -> Result<(), String> {
+        if self.paused {
+            return Ok(());
+        }
+        let cancellation = self
+            .cancellation
+            .as_ref()
+            .ok_or_else(|| "The runtime is not downloading.".to_owned())?;
+        self.paused = true;
+        self.restart_after_source_switch = false;
+        cancellation.cancel();
+        Ok(())
+    }
+
+    #[must_use]
+    pub const fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    #[must_use]
+    pub fn download_progress(&self) -> Option<(u64, u64)> {
+        match &self.state {
+            RuntimeInstallState::Downloading {
+                downloaded, total, ..
+            } => Some((*downloaded, *total)),
+            _ => self.download_progress,
+        }
     }
 
     #[must_use]
@@ -316,6 +353,7 @@ impl RuntimeInstaller {
             })
             .map_err(|error| format!("Cannot start native runtime planner: {error}"))?;
         self.selection = None;
+        self.download_progress = None;
         self.state = RuntimeInstallState::Detecting;
         self.events = Some(receiver);
         self.active_project_root = Some(project_root);
@@ -359,21 +397,24 @@ impl RuntimeInstaller {
                             .await
                         })
                     });
-                if worker_cancellation.is_cancelled() {
-                    let cleanup = clear_runtime_staging(&worker_root);
-                    let _ = match cleanup {
-                        Ok(()) => sender.send(Event::Cancelled),
-                        Err(error) => sender.send(Event::Finished(Err(error))),
-                    };
+                if result.is_err() && worker_cancellation.is_cancelled() {
+                    let _ = sender.send(Event::Cancelled);
                 } else {
                     let _ = sender.send(Event::Finished(result));
                 }
             })
             .map_err(|error| format!("Cannot start llama.cpp installer: {error}"))?;
+        let (downloaded, total) = self
+            .download_progress
+            .unwrap_or((0, self.download_size_bytes().unwrap_or(0)));
+        self.download_progress = Some((downloaded, total));
+        self.paused = false;
+        self.restart_after_source_switch = false;
+        self.source_fallback_available = false;
         self.state = RuntimeInstallState::Downloading {
             asset: String::new(),
-            downloaded: 0,
-            total: self.download_size_bytes().unwrap_or(0),
+            downloaded,
+            total,
         };
         self.events = Some(receiver);
         self.cancellation = Some(cancellation);
@@ -474,6 +515,10 @@ impl RuntimeInstaller {
         self.selection = None;
         self.cancellation = None;
         self.active_project_root = None;
+        self.paused = false;
+        self.download_progress = None;
+        self.restart_after_source_switch = false;
+        self.source_fallback_available = false;
         Ok(())
     }
 
@@ -482,8 +527,8 @@ impl RuntimeInstaller {
             return None;
         };
         let mut finished = false;
-        let mut cancelled = false;
         let mut repair_prepared_marker = false;
+        let mut retry_from_mirror = false;
         let mut installed_executable = None;
         loop {
             match events.try_recv() {
@@ -509,6 +554,7 @@ impl RuntimeInstaller {
                     downloaded,
                     total,
                 }) => {
+                    self.download_progress = Some((downloaded, total));
                     self.state = RuntimeInstallState::Downloading {
                         asset,
                         downloaded,
@@ -516,9 +562,9 @@ impl RuntimeInstaller {
                     };
                 }
                 Ok(Event::Extracting) => self.state = RuntimeInstallState::Extracting,
+                Ok(Event::SourceFallbackAvailable) => self.source_fallback_available = true,
                 Ok(Event::Cancelled) => {
-                    self.state = RuntimeInstallState::Idle;
-                    cancelled = true;
+                    self.state = RuntimeInstallState::Ready;
                     finished = true;
                     break;
                 }
@@ -531,10 +577,21 @@ impl RuntimeInstaller {
                     }
                     self.state = match result {
                         Ok(executable) => {
+                            self.paused = false;
+                            self.restart_after_source_switch = false;
+                            if let Some((_, total)) = self.download_progress {
+                                self.download_progress = Some((total, total));
+                            }
                             installed_executable = executable;
                             RuntimeInstallState::Installed
                         }
-                        Err(error) => RuntimeInstallState::Failed(error),
+                        Err(error) => {
+                            retry_from_mirror = self.source_fallback_available
+                                && !self.use_mirror
+                                && !self.paused
+                                && !self.restart_after_source_switch;
+                            RuntimeInstallState::Failed(error)
+                        }
                     };
                     finished = true;
                     break;
@@ -553,18 +610,27 @@ impl RuntimeInstaller {
             self.events = None;
             self.cancellation = None;
             let project_root = self.active_project_root.take();
-            if repair_prepared_marker {
+            if repair_prepared_marker && !self.paused {
                 if let Some(project_root) = project_root
                     && let Err(error) = self.install_recommended(project_root)
                 {
                     self.state = RuntimeInstallState::Failed(error);
                 }
-            } else if cancelled && self.restart_after_source_switch {
+            } else if self.restart_after_source_switch && !self.paused {
                 self.restart_after_source_switch = false;
                 if let Some(project_root) = project_root
                     && let Err(error) = self.install_recommended(project_root)
                 {
                     self.state = RuntimeInstallState::Failed(error);
+                }
+            } else if retry_from_mirror {
+                if let Some(project_root) = project_root {
+                    let result = self
+                        .switch_download_source(project_root.clone(), true)
+                        .and_then(|()| self.install_recommended(project_root));
+                    if let Err(error) = result {
+                        self.state = RuntimeInstallState::Failed(error);
+                    }
                 }
             }
         }
@@ -809,6 +875,9 @@ async fn install_onnx_runtime(
         }
         validate_required_prefixes(&staged_cuda, &cuda_runtime.required_file_prefixes)?;
         validate_required_files(&staged_cuda, &cuda_dependency.required_files)?;
+        client
+            .ensure_not_cancelled("CUDA runtime")
+            .map_err(|error| error.to_string())?;
         activate_runtime_directory(&staged_cuda, &cuda_directory)?;
     }
 
@@ -837,6 +906,9 @@ async fn install_onnx_runtime(
             &staged_cudnn,
         )?;
         validate_required_files(&staged_cudnn, &cudnn.required_files)?;
+        client
+            .ensure_not_cancelled(&cudnn.name)
+            .map_err(|error| error.to_string())?;
         activate_runtime_directory(&staged_cudnn, &cudnn_directory)?;
     }
 
@@ -864,6 +936,9 @@ async fn install_onnx_runtime(
             &staged_provider,
         )?;
         validate_required_files(&staged_provider, &provider.required_files)?;
+        client
+            .ensure_not_cancelled(&provider.name)
+            .map_err(|error| error.to_string())?;
         activate_runtime_directory(&staged_provider, &provider_directory)?;
     }
 
@@ -898,6 +973,9 @@ async fn install_onnx_runtime(
             .collect(),
         fallback_reason: None,
     };
+    client
+        .ensure_not_cancelled("ONNX runtime")
+        .map_err(|error| error.to_string())?;
     persist_native_runtime_selection(&layout, &marker)?;
     let _ = fs::remove_dir_all(&staging);
     Ok(layout.native_runtime_selection_file())
@@ -924,7 +1002,14 @@ async fn download_file(
             });
         })
         .await
-        .map_err(|error| error.to_string())
+        .and_then(|()| client.ensure_not_cancelled(label))
+        .map_err(|error| {
+            if error.allows_source_fallback() && DownloadSource::Mirror.resolve(url).as_ref() != url
+            {
+                let _ = sender.send(Event::SourceFallbackAvailable);
+            }
+            error.to_string()
+        })
 }
 
 fn file_has_expected_size(path: &Path, expected: Option<u64>) -> bool {
@@ -953,7 +1038,6 @@ fn expected_cpu_core_bytes(config: &AppConfig) -> Option<u64> {
 fn expected_bundled_model_bytes(asset: &xrtranslate_config::BundledModelAsset) -> Option<u64> {
     match asset.relative_path.as_str() {
         RuntimeLayout::VAD_MODEL_PATH => Some(RuntimeLayout::VAD_MODEL_BYTES),
-        RuntimeLayout::DENOISE_MODEL_PATH => Some(RuntimeLayout::DENOISE_MODEL_BYTES),
         RuntimeLayout::SPEAKER_MODEL_PATH => Some(RuntimeLayout::SPEAKER_MODEL_BYTES),
         _ if asset.archive_format.is_none() => Some(asset.bytes),
         _ => None,
@@ -1062,6 +1146,9 @@ async fn install_base_bundled_resources(
                     }
                 }
 
+                client
+                    .ensure_not_cancelled("ONNX Runtime (CPU)")
+                    .map_err(|error| error.to_string())?;
                 activate_runtime_directory(&payload, &layout.onnx_cpu_runtime_directory())?;
                 let _ = fs::remove_dir_all(&staging);
             }
@@ -1143,6 +1230,9 @@ async fn install_base_bundled_resources(
                 &extracted,
                 expected_bundled_model_bytes(&bundled),
             )?;
+            client
+                .ensure_not_cancelled(&bundled.label)
+                .map_err(|error| error.to_string())?;
             atomic_replace_file(&extracted, &destination)?;
             let _ = fs::remove_dir_all(&payload);
             let _ = fs::remove_dir_all(&staging);
@@ -1176,6 +1266,7 @@ async fn install_runtime_plan(
     let config = load_app_config(&project_root)?;
     let layout = config.runtime_layout(&project_root);
     let progress_total = plan.total_bytes();
+    #[cfg(target_os = "android")]
     let mut completed = 0_u64;
     #[cfg(not(target_os = "android"))]
     let restore_cpu_from_provider = bundled_cpu::provider_download_supplies_cpu_core(
@@ -1183,6 +1274,28 @@ async fn install_runtime_plan(
         plan.onnx.as_ref(),
         &plan.downloads,
     );
+
+    // A resumed plan may already have activated earlier components. Count
+    // them once so progress continues across archive boundaries without reset.
+    #[cfg(not(target_os = "android"))]
+    let mut completed = {
+        let mut remaining =
+            missing_runtime_downloads(&project_root, plan.llama_cpp.as_ref(), plan.onnx.as_ref());
+        remaining.extend(missing_base_bundled_downloads(
+            &project_root,
+            &config,
+            restore_cpu_from_provider,
+        ));
+        plan.downloads
+            .iter()
+            .filter(|download| {
+                !remaining
+                    .iter()
+                    .any(|item| item.archive_name == download.archive_name)
+            })
+            .map(|download| download.bytes)
+            .sum::<u64>()
+    };
 
     if progress_total > 0 && !plan.downloads.is_empty() {
         let client = DownloadClient::with_proxy_source_and_cancellation(
@@ -1361,6 +1474,9 @@ async fn install(
         completed = completed.saturating_add(asset.size);
     }
     let _ = sender.send(Event::Extracting);
+    client
+        .ensure_not_cancelled("llama.cpp runtime")
+        .map_err(|error| error.to_string())?;
     if payload.exists() {
         fs::remove_dir_all(&payload)
             .map_err(|error| format!("Cannot reset runtime extraction folder: {error}"))?;
@@ -1396,6 +1512,9 @@ async fn install(
             &server_required_files,
             &server_required_prefixes,
         )?;
+        client
+            .ensure_not_cancelled("llama.cpp runtime")
+            .map_err(|error| error.to_string())?;
         activate_runtime_directory(&staged_server, &target)?;
     }
     if !cuda_ready {
@@ -1413,8 +1532,14 @@ async fn install(
         )?;
         let staged_cuda = safe_archive_path(&extracted_cuda, Path::new(&asset.archive_directory))?;
         validate_required_prefixes(&staged_cuda, &asset.required_file_prefixes)?;
+        client
+            .ensure_not_cancelled("CUDA runtime")
+            .map_err(|error| error.to_string())?;
         activate_runtime_directory(&staged_cuda, directory)?;
     }
+    client
+        .ensure_not_cancelled("llama.cpp runtime")
+        .map_err(|error| error.to_string())?;
     persist_llama_runtime_marker(
         &layout,
         selection.backend,
@@ -3248,4 +3373,152 @@ fn directory_contains_file_prefix(directory: &Path, prefix: &str) -> Result<bool
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod download_lifecycle_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn plan() -> RuntimePlan {
+        RuntimePlan {
+            llama_cpp: None,
+            onnx: None,
+            downloads: Vec::new(),
+            marker_ready: false,
+            requirements: RuntimeRequirements::default(),
+            model_assets: Vec::new(),
+            local_models: LocalModelAvailability::Detecting,
+            blocking_error: None,
+        }
+    }
+
+    fn worker(root: &Path) -> (RuntimeInstaller, crossbeam_channel::Sender<Event>) {
+        let (sender, events) = unbounded();
+        (
+            RuntimeInstaller {
+                state: RuntimeInstallState::Downloading {
+                    asset: "runtime.zip".into(),
+                    downloaded: 40,
+                    total: 100,
+                },
+                events: Some(events),
+                selection: Some(plan()),
+                cancellation: Some(DownloadCancellation::default()),
+                active_project_root: Some(root.to_path_buf()),
+                download_progress: Some((40, 100)),
+                ..Default::default()
+            },
+            sender,
+        )
+    }
+
+    fn finish_worker(installer: &mut RuntimeInstaller) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while installer.is_busy() {
+            installer.poll();
+            assert!(Instant::now() < deadline, "runtime worker did not stop");
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn pause_retains_final_progress_source_and_partial_archive() {
+        let root = tempfile::tempdir().unwrap();
+        let partial = root.path().join("runtime.zip.part");
+        fs::write(&partial, b"retained prefix").unwrap();
+        let (mut installer, sender) = worker(root.path());
+        installer.use_mirror = true;
+        let cancellation = installer.cancellation.clone().unwrap();
+        installer.pause().unwrap();
+        assert!(installer.is_paused() && installer.is_busy());
+        assert!(cancellation.is_cancelled());
+        sender
+            .send(Event::Downloading {
+                asset: "runtime.zip".into(),
+                downloaded: 45,
+                total: 100,
+            })
+            .unwrap();
+        sender.send(Event::Cancelled).unwrap();
+        installer.poll();
+        assert!(installer.is_paused() && !installer.is_busy());
+        assert!(installer.use_mirror());
+        assert_eq!(installer.download_progress(), Some((45, 100)));
+        assert_eq!(fs::read(partial).unwrap(), b"retained prefix");
+        assert!(installer.selection.is_some());
+    }
+
+    #[test]
+    fn prepared_marker_does_not_automatically_resume_a_paused_install() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut installer, sender) = worker(root.path());
+        installer.pause().unwrap();
+        sender.send(Event::Prepared(Ok(plan()))).unwrap();
+        installer.poll();
+        assert!(installer.is_paused());
+        assert!(matches!(installer.state(), RuntimeInstallState::Ready));
+        assert!(installer.events.is_none());
+        assert!(installer.cancellation.is_none());
+    }
+
+    #[test]
+    fn official_failure_pause_resume_and_manual_return_preserve_source_choice() {
+        let root = tempfile::tempdir().unwrap();
+        // No providers or downloads: resumed workers terminate locally, so
+        // this state-machine regression never contacts an external server.
+        fs::write(root.path().join("config.json"), "{}").unwrap();
+        let (mut installer, sender) = worker(root.path());
+        sender.send(Event::SourceFallbackAvailable).unwrap();
+        sender
+            .send(Event::Finished(Err("official transport failed".into())))
+            .unwrap();
+        installer.poll();
+        assert!(installer.use_mirror());
+        assert!(installer.is_busy());
+        installer.pause().unwrap();
+        finish_worker(&mut installer);
+        assert!(installer.is_paused() && installer.use_mirror());
+        installer
+            .install_recommended(root.path().to_path_buf())
+            .unwrap();
+        assert!(!installer.is_paused() && installer.use_mirror());
+        installer
+            .switch_download_source(root.path().to_path_buf(), false)
+            .unwrap();
+        finish_worker(&mut installer);
+        assert!(!installer.use_mirror());
+    }
+
+    #[test]
+    fn manual_source_selection_wins_over_a_queued_worker_failure() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("config.json"), "{}").unwrap();
+        let (mut installer, sender) = worker(root.path());
+        installer.use_mirror = true;
+        sender.send(Event::SourceFallbackAvailable).unwrap();
+        sender
+            .send(Event::Finished(Err("previous source failed".into())))
+            .unwrap();
+        installer
+            .switch_download_source(root.path().to_path_buf(), false)
+            .unwrap();
+        installer.poll();
+        assert!(!installer.use_mirror());
+        finish_worker(&mut installer);
+        assert!(!installer.use_mirror());
+    }
+
+    #[test]
+    fn local_failure_does_not_change_the_download_source() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut installer, sender) = worker(root.path());
+        sender
+            .send(Event::Finished(Err("cannot write destination".into())))
+            .unwrap();
+        installer.poll();
+        assert!(!installer.use_mirror());
+        assert!(matches!(installer.state(), RuntimeInstallState::Failed(_)));
+        assert!(!installer.is_busy());
+    }
 }

@@ -1,0 +1,15 @@
+[package]
+name = "xrtranslate-separation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded stereo vocal extraction for media recognition."
+
+[features]
+default = []
+managed-ort = ["ort/load-dynamic"]
+
+[dependencies]
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "tracing", "download-binaries", "tls-rustls", "api-27"] }
+rustfft = "6.4.1"

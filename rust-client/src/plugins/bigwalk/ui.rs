@@ -91,7 +91,21 @@ impl BigWalkPlugin {
                 ConnectionStatus::WaitingForPlayer => "Join a game to send messages.",
                 ConnectionStatus::Ready => "Connected",
             };
-            ui.label(tr(language, status));
+            let icon = match snapshot.status {
+                ConnectionStatus::Disabled => components::StatusIcon::Idle,
+                ConnectionStatus::Connecting => components::StatusIcon::Disconnected,
+                ConnectionStatus::WaitingForPlayer => components::StatusIcon::Working,
+                ConnectionStatus::Ready => components::StatusIcon::Connected,
+            };
+            ui.horizontal_wrapped(|ui| {
+                components::status_icon(ui, icon, tr(language, status));
+                if matches!(
+                    snapshot.status,
+                    ConnectionStatus::Connecting | ConnectionStatus::WaitingForPlayer
+                ) {
+                    ui.label(tr(language, status));
+                }
+            });
             if let Some(error) = &snapshot.error {
                 ui.label(
                     egui::RichText::new(tr_dynamic(language, error))

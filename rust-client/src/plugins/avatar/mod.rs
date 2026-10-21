@@ -49,6 +49,7 @@ impl AvatarPlugin {
         enabled: bool,
     ) {
         use crate::i18n::{tr, tr_dynamic};
+        use crate::ui::components::{self, StatusIcon};
         use xrt_connector_core::Status;
         let status_value = self.snapshot().status;
         let status = match status_value {
@@ -61,10 +62,16 @@ impl AvatarPlugin {
             Status::Stopping => "Stopping…",
             Status::Error => "Translation failed",
         };
-        ui.label(tr(language, status));
-        if enabled
-            && let Some(message) = self.diagnostic()
-        {
+        let icon = match status_value {
+            _ if !enabled => StatusIcon::Idle,
+            Status::Unavailable if self.enabled_for_reset() => StatusIcon::Working,
+            Status::Unavailable => StatusIcon::Disconnected,
+            Status::Off => StatusIcon::Connected,
+            Status::Starting | Status::Active | Status::Stopping => StatusIcon::Working,
+            Status::Error => StatusIcon::Warning,
+        };
+        components::status_icon(ui, icon, tr(language, status));
+        if enabled && let Some(message) = self.diagnostic() {
             let message = match message {
                 "OSC receive configuration changed" => {
                     "Enable OSC, then use your avatar's XRT control."
@@ -88,7 +95,7 @@ impl AvatarPlugin {
                 && self.settings.connector.osc().is_none()
                 && let Some(runtime) = &self.websocket
             {
-                if ui.button(tr(language, "Copy connection info")).clicked() {
+                if components::copy_button(ui, tr(language, "Copy connection info")).clicked() {
                     ui.ctx().copy_text(
                         serde_json::json!({
                             "protocol": 1,

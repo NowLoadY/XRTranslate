@@ -1,5 +1,5 @@
 use crate::{
-    plugins::media::{MediaAction, controller::MediaController, i18n::tr, task::MediaType},
+    plugins::media::{MediaAction, controller::MediaController, i18n::tr},
     ui::components,
 };
 use eframe::egui;
@@ -13,14 +13,44 @@ pub(super) fn render_library(
     components::page_header(ui, tr(language, "Media"), |_| {});
     components::library_start(
         ui,
-        egui::include_image!("../../../../resources/plugins/media/icon.svg"),
-        tr(language, "Translate your media"),
-        tr(
-            language,
-            "Choose or drop audio, video or subtitles, or paste a stream URL.",
-        ),
+        &[
+            components::LibraryHint {
+                icon: egui::include_image!("../../../../resources/icons/file-audio.svg"),
+                caption: "MP3 · WAV · FLAC",
+                tooltip: &format!(
+                    "{} · {}",
+                    tr(language, "Audio"),
+                    super::super::task::AUDIO_EXTENSIONS.join(" · ")
+                ),
+            },
+            components::LibraryHint {
+                icon: egui::include_image!("../../../../resources/icons/file-video.svg"),
+                caption: "MP4 · MKV · WEBM",
+                tooltip: &format!(
+                    "{} · MP4 · MKV · WEBM · AVI · MOV · FLV · TS · M4V · MPEG · MPG · WMV",
+                    tr(language, "Video")
+                ),
+            },
+            components::LibraryHint {
+                icon: egui::include_image!("../../../../resources/icons/file-subtitles.svg"),
+                caption: "SRT · VTT",
+                tooltip: tr(language, "Subtitles"),
+            },
+            components::LibraryHint {
+                icon: egui::include_image!("../../../../resources/icons/stream.svg"),
+                caption: "URL",
+                tooltip: tr(language, "File path or stream URL"),
+            },
+        ],
         |ui| {
-            if components::primary_button(ui, tr(language, "Import media")).clicked() {
+            if components::round_icon_button(
+                ui,
+                tr(language, "Import media"),
+                egui::include_image!("../../../../resources/icons/import.svg"),
+                40.0,
+            )
+            .clicked()
+            {
                 controller.open_create();
                 action = MediaAction::StopTranslation;
             }
@@ -67,42 +97,65 @@ pub(super) fn render_library(
                 ui.push_id(&task.id, |ui| {
                     components::card(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        crate::ui::layout::flow_row(ui, |ui| {
-                            ui.label(egui::RichText::new(&task.title).strong());
-                            ui.weak(tr(
-                                language,
-                                match task.media_type {
-                                    MediaType::Video => "Video",
-                                    MediaType::AudioOnly => "Audio",
-                                    MediaType::Subtitles => "Subtitles",
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    components::icon_menu(
+                                        ui,
+                                        tr(language, "Task actions"),
+                                        egui::include_image!(
+                                            "../../../../resources/icons/more.svg"
+                                        ),
+                                        |ui| {
+                                            super::export_controls(
+                                                ui,
+                                                language,
+                                                &task.title,
+                                                &task.subtitles,
+                                            );
+                                            if ui.button(tr(language, "Delete")).clicked() {
+                                                delete = Some(task.id.clone());
+                                                ui.close();
+                                            }
+                                        },
+                                    );
+                                    if components::open_button(ui, tr(language, "Open task"))
+                                        .clicked()
+                                    {
+                                        open = Some(task.id.clone());
+                                    }
+                                    ui.with_layout(
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(&task.title).strong(),
+                                                )
+                                                .truncate(),
+                                            )
+                                            .on_hover_text(&task.title);
+                                        },
+                                    );
                                 },
-                            ));
-                            if components::secondary_button(ui, tr(language, "Open task")).clicked()
-                            {
-                                open = Some(task.id.clone());
-                            }
-                            ui.menu_button("…", |ui| {
-                                super::export_controls(ui, language, &task.title, &task.subtitles);
-                                if ui.button(tr(language, "Delete")).clicked() {
-                                    delete = Some(task.id.clone());
-                                    ui.close();
-                                }
-                            });
+                            );
                         });
-                        ui.weak(format!(
-                            "{} · {}",
-                            components::format_timestamp(
-                                task.created_at_sec
-                                    .saturating_mul(1000)
-                                    .min(i64::MAX as u64) as i64
-                            ),
-                            super::format_time_ms(task.duration_ms)
-                        ));
-                        ui.label(format!(
-                            "{} · {}",
-                            task.subtitles.count(),
-                            tr(language, "Subtitles Count")
-                        ));
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} · {} · {}: {}",
+                                components::format_timestamp(
+                                    task.created_at_sec
+                                        .saturating_mul(1000)
+                                        .min(i64::MAX as u64)
+                                        as i64
+                                ),
+                                super::format_time_ms(task.duration_ms),
+                                tr(language, "Subtitles Count"),
+                                task.subtitles.count()
+                            ))
+                            .size(12.0)
+                            .color(crate::ui::theme::text_weak()),
+                        );
                     })
                 });
                 ui.add_space(8.0);

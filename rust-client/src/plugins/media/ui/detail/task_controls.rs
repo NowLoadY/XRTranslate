@@ -6,6 +6,7 @@ use crate::{
     ui::components,
 };
 use eframe::egui;
+use xrtranslate_protocol::AudioPreprocessing;
 
 pub(super) fn render_task_control_card(
     controller: &mut MediaController,
@@ -43,12 +44,19 @@ pub(super) fn render_task_control_card(
             .audio_channels
             .iter()
             .any(|channel| channel.recognition);
+    let local_file = matches!(task.source, MediaSource::LocalFile(_));
+    let preprocessing = task
+        .recognition
+        .preprocessing
+        .unwrap_or(snapshot.default_preprocessing);
+    let model_ready = subtitles || snapshot.preprocessing_models.is_ready(preprocessing);
     let mut start = false;
     let mut restart = false;
     let mut pause = false;
     let mut changed = false;
     let mut language_changed = false;
     let mut routing = false;
+    let mut preprocessing_action = None;
     components::card(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.add_enabled_ui(!task.is_task_running, |ui| {
@@ -81,6 +89,7 @@ pub(super) fn render_task_control_card(
                     ),
                     (!subtitles || translated < count)
                         && has_audio
+                        && model_ready
                         && capabilities
                             .select(&task.source_language, &task.target_language)
                             .is_ok(),
@@ -130,6 +139,19 @@ pub(super) fn render_task_control_card(
                 .show_percentage(),
             );
         } else {
+            ui.add_enabled_ui(!task.is_task_running, |ui| {
+                let response = components::audio_preprocessing_selector(
+                    ui,
+                    "media_audio_preprocessing",
+                    &mut task.recognition.preprocessing,
+                    snapshot.default_preprocessing,
+                    local_file,
+                    &snapshot.preprocessing_models,
+                    language,
+                );
+                changed |= response.response.changed();
+                preprocessing_action = response.action;
+            });
             if task.is_task_running {
                 let progress = if controller.is_extracting {
                     controller.extraction_progress
@@ -156,94 +178,98 @@ pub(super) fn render_task_control_card(
                     bar.animate(true)
                 });
             }
-            egui::CollapsingHeader::new(tr(language, "Recognition Settings")).show(ui, |ui| {
-                ui.add_enabled_ui(!task.is_task_running, |ui| {
-                    changed |= components::ModernSlider::new(
-                        tr(language, "VAD Sensitivity"),
-                        &mut task.recognition.background_noise,
-                        0.02..=0.95,
-                        0.6,
-                    )
-                    .show(ui)
-                    .changed();
-                    changed |= components::ModernSlider::new(
-                        tr(language, "Pause Tolerance & Sentence Continuity"),
-                        &mut task.recognition.pause_tolerance,
-                        0.0..=1.0,
-                        1.0,
-                    )
-                    .show(ui)
-                    .changed();
-                    changed |= ui
-                        .checkbox(
-                            &mut task.recognition.continuous_recognition,
-                            crate::i18n::tr(language, "Pseudo-streaming"),
+            if task
+                .recognition
+                .preprocessing
+                .unwrap_or(snapshot.default_preprocessing)
+                != AudioPreprocessing::VocalSeparation
+            {
+                egui::CollapsingHeader::new(tr(language, "Recognition Settings")).show(ui, |ui| {
+                    ui.add_enabled_ui(!task.is_task_running, |ui| {
+                        changed |= components::ModernSlider::new(
+                            tr(language, "VAD Sensitivity"),
+                            &mut task.recognition.background_noise,
+                            0.02..=0.95,
+                            0.6,
                         )
+                        .show(ui)
                         .changed();
+                        changed |= components::ModernSlider::new(
+                            tr(language, "Pause Tolerance & Sentence Continuity"),
+                            &mut task.recognition.pause_tolerance,
+                            0.0..=1.0,
+                            1.0,
+                        )
+                        .show(ui)
+                        .changed();
+                        if !local_file {
+                            changed |= ui
+                                .checkbox(
+                                    &mut task.recognition.continuous_recognition,
+                                    crate::i18n::tr(language, "Pseudo-streaming"),
+                                )
+                                .changed();
+                        }
+                    });
                 });
-            });
+            }
             if !task.audio_channels.is_empty() {
-                egui::CollapsingHeader::new(tr(language, "Channel Routing & Separation")).show(
-                    ui,
-                    |ui| {
-                        crate::ui::layout::flow_row(ui, |ui| {
-                            for (label, mode) in [
-                                ("Movie Dialogue Preset (5.1/7.1)", 0),
-                                ("Stereo Default", 1),
-                                ("Enable All", 2),
-                            ] {
-                                if mode == 0
-                                    && !task.audio_channels.iter().any(|channel| channel.id == "fc")
-                                {
-                                    continue;
-                                }
-                                if ui
-                                    .add_enabled(
-                                        !task.is_task_running,
-                                        egui::Button::new(tr(language, label)),
-                                    )
-                                    .clicked()
-                                {
-                                    for channel in &mut task.audio_channels {
-                                        channel.recognition = match mode {
-                                            0 => channel.id == "fc",
-                                            1 => {
-                                                channel.is_left
-                                                    || channel.is_right
-                                                    || channel.is_center
-                                            }
-                                            _ => true,
-                                        };
-                                        channel.playback = mode != 1 || channel.recognition;
-                                    }
-                                    changed = true;
-                                    routing = true;
-                                }
+                egui::CollapsingHeader::new(tr(language, "Channel routing")).show(ui, |ui| {
+                    crate::ui::layout::flow_row(ui, |ui| {
+                        for (label, mode) in [
+                            ("Movie Dialogue Preset (5.1/7.1)", 0),
+                            ("Stereo Default", 1),
+                            ("Enable All", 2),
+                        ] {
+                            if mode == 0
+                                && !task.audio_channels.iter().any(|channel| channel.id == "fc")
+                            {
+                                continue;
                             }
-                        });
-                        egui::Grid::new("media_channels").show(ui, |ui| {
-                            ui.label(tr(language, "Channel"));
+                            if ui
+                                .add_enabled(
+                                    !task.is_task_running,
+                                    egui::Button::new(tr(language, label)),
+                                )
+                                .clicked()
+                            {
+                                for channel in &mut task.audio_channels {
+                                    channel.recognition = match mode {
+                                        0 => channel.id == "fc",
+                                        1 => {
+                                            channel.is_left || channel.is_right || channel.is_center
+                                        }
+                                        _ => true,
+                                    };
+                                    channel.playback = mode != 1 || channel.recognition;
+                                }
+                                changed = true;
+                                routing = true;
+                            }
+                        }
+                    });
+                    egui::Grid::new("media_channels").show(ui, |ui| {
+                        ui.label(tr(language, "Channel"));
+                        if can_play {
+                            ui.label(tr(language, "Playback (Hear Audio)"));
+                        }
+                        ui.label(tr(language, "Recognition (Send to ASR)"));
+                        ui.end_row();
+                        for channel in &mut task.audio_channels {
+                            ui.label(&channel.name);
                             if can_play {
-                                ui.label(tr(language, "Playback (Hear Audio)"));
+                                routing |= ui.checkbox(&mut channel.playback, "").changed();
                             }
-                            ui.label(tr(language, "Recognition (Send to ASR)"));
+                            changed |= ui
+                                .add_enabled(
+                                    !task.is_task_running,
+                                    egui::Checkbox::without_text(&mut channel.recognition),
+                                )
+                                .changed();
                             ui.end_row();
-                            for channel in &mut task.audio_channels {
-                                ui.label(&channel.name);
-                                if can_play {
-                                    routing |= ui.checkbox(&mut channel.playback, "").changed();
-                                }
-                                changed |= ui
-                                    .add_enabled(
-                                        !task.is_task_running,
-                                        egui::Checkbox::without_text(&mut channel.recognition),
-                                    )
-                                    .changed();
-                                ui.end_row();
-                            }
-                        });
-                    },
-                );
+                        }
+                    });
+                });
             }
         }
     });
@@ -277,6 +303,8 @@ pub(super) fn render_task_control_card(
     }
     if pause {
         MediaAction::StopTranslation
+    } else if let Some(action) = preprocessing_action {
+        MediaAction::AudioPreprocessing(action)
     } else if start || restart {
         if subtitles {
             MediaAction::TranslateSubtitles { restart }

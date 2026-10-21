@@ -22,9 +22,7 @@ use xrtranslate_config::{
     AppConfig, AsrPromptMode, LocalModelRuntimeConfig, NativeModelRouteConfig,
     NativeRuntimeBackend, NativeRuntimeSelection, ResolvedNativeRuntimeSelection, RuntimeLayout,
 };
-use xrtranslate_inference::{
-    InferenceError, ReqwestClient, TranslationAdapter,
-};
+use xrtranslate_inference::{InferenceError, ReqwestClient, TranslationAdapter};
 use xrtranslate_supervisor::{
     FlashAttention, LlamaServerEndpoint, LlamaServerRole, LlamaServerSpec,
 };
@@ -50,6 +48,24 @@ pub(crate) struct NativeProviderPlan {
 }
 
 impl NativeProviderPlan {
+    /// Optional preprocessing assets are resolved on demand, outside startup preflight.
+    pub(crate) fn preprocessing_model(
+        &self,
+        id: ModelAssetId,
+    ) -> Result<std::path::PathBuf, String> {
+        let asset = self.assets.asset(id);
+        let problems = asset.check();
+        if !problems.is_empty() {
+            return Err(format!(
+                "{} is missing or incomplete. Download it from Audio processing first.",
+                asset.manifest().label
+            ));
+        }
+        asset
+            .file_path(ModelFileRole::Weights)
+            .ok_or_else(|| "The audio processing model has no weights.".into())
+    }
+
     pub(crate) fn resolve(config: &AppConfig, project_root: &Path) -> Result<Self, String> {
         let mut route = config
             .native_model_route()
@@ -371,12 +387,14 @@ impl NativeProviderPlan {
         http: ReqwestClient,
     ) -> Result<TranslationAdapter<ReqwestClient>, InferenceError> {
         if self.route.translation.uses_local_runtime() {
-            let profile = self.route.translation.translation_prompt_profile().map_err(|message| {
-                InferenceError::InvalidConfiguration {
+            let profile = self
+                .route
+                .translation
+                .translation_prompt_profile()
+                .map_err(|message| InferenceError::InvalidConfiguration {
                     field: "translation.model_asset.runtime",
                     message,
-                }
-            })?;
+                })?;
             return TranslationAdapter::new(
                 http,
                 self.translation_url(),

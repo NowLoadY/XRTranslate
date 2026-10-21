@@ -5,4 +5,9 @@ edition = "2024"
 license.workspace = true
 repository.workspace = true
 
+[features]
+resample = ["dep:rubato", "dep:audioadapter-buffers"]
+
 [dependencies]
+rubato = { version = "4.0.0", optional = true }
+audioadapter-buffers = { version = "4.0.0", optional = true }

@@ -24,6 +24,8 @@ pub use task::MediaType;
 pub struct MediaUiSnapshot {
     pub language: UiLanguage,
     pub languages: xrtranslate_engine::language::LanguageCapabilities,
+    pub default_preprocessing: xrtranslate_protocol::AudioPreprocessing,
+    pub preprocessing_models: crate::ui::components::AudioPreprocessingModels,
 }
 
 pub(crate) fn runtime_bin_directories() -> Vec<PathBuf> {
@@ -69,6 +71,7 @@ pub enum MediaAction {
         restart: bool,
     },
     RetranslateSubtitle,
+    AudioPreprocessing(crate::ui::components::AudioPreprocessingAction),
 }
 
 pub struct MediaPlugin {
@@ -97,7 +100,13 @@ impl MediaPlugin {
     }
 
     pub(crate) fn translation_context(&self) -> xrtranslate_prompt::TaskContext {
-        xrtranslate_prompt::TaskContext::conversation(format!("media:{}", uuid::Uuid::new_v4()))
+        if self.subtitle_job.is_some() {
+            // File recognition has no translation history; subtitle requests
+            // supply their own current timeline snapshots.
+            xrtranslate_prompt::TaskContext::default()
+        } else {
+            xrtranslate_prompt::TaskContext::conversation(format!("media:{}", uuid::Uuid::new_v4()))
+        }
     }
 
     pub fn render_page(

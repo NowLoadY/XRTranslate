@@ -120,7 +120,6 @@ jobs:
           path: |
             models/silero-vad/src/silero_vad/data/silero_vad.onnx
             models/3D-Speaker-ERes2NetV2/speaker_embedding.onnx
-            models/gtcrn/gtcrn_simple.onnx
             .temp/runtime-assets/onnxruntime/cpu/onnxruntime.dll
             .temp/runtime-assets/licenses/onnxruntime/LICENSE
             .temp/runtime-assets/licenses/onnxruntime/ThirdPartyNotices.txt
@@ -196,6 +195,9 @@ jobs:
                 -not $archive.GetEntry('config.json') -or
                 -not $archive.GetEntry('bin/xrtranslate-backend.exe')) {
               throw 'ZIP must contain the standard executable, manifest, config and bin directory at its root.'
+            }
+            if ($archive.GetEntry('models/gtcrn/gtcrn_simple.onnx')) {
+              throw 'GTCRN must remain an optional managed download.'
             }
           } finally {
             $archive.Dispose()

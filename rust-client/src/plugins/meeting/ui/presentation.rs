@@ -63,3 +63,29 @@ pub(super) fn format_duration(ms: i64) -> String {
 }
 
 pub(super) use crate::ui::components::format_timestamp;
+
+pub(super) fn status_indicator(
+    ui: &mut egui::Ui,
+    language: crate::i18n::UiLanguage,
+    status: crate::plugins::meeting::store::MeetingStatus,
+    waiting_for_microphone: bool,
+) {
+    use crate::plugins::meeting::{controller::meeting_status_label, store::MeetingStatus};
+    use crate::ui::components::{StatusIcon, status_icon};
+    let icon = match status {
+        MeetingStatus::Live if waiting_for_microphone => StatusIcon::Working,
+        MeetingStatus::Live => StatusIcon::Recording,
+        MeetingStatus::Paused => StatusIcon::Paused,
+        MeetingStatus::Ended => StatusIcon::Complete,
+        MeetingStatus::Imported => StatusIcon::Imported,
+        MeetingStatus::Processing => StatusIcon::Working,
+        MeetingStatus::Failed | MeetingStatus::Interrupted => StatusIcon::Warning,
+        MeetingStatus::Draft => StatusIcon::Idle,
+    };
+    let label = if waiting_for_microphone && status == MeetingStatus::Live {
+        crate::i18n::tr(language, "Waiting for microphone")
+    } else {
+        tr(language, meeting_status_label(status))
+    };
+    status_icon(ui, icon, label);
+}

@@ -38,6 +38,9 @@ impl CaptureSource {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct RecognitionSettings {
+    /// Missing in older settings: inherit the application's existing default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preprocessing: Option<xrtranslate_protocol::AudioPreprocessing>,
     #[serde(default = "default_background_noise")]
     pub background_noise: f32,
     #[serde(default = "default_pause_tolerance")]
@@ -50,6 +53,7 @@ pub struct RecognitionSettings {
 impl Default for RecognitionSettings {
     fn default() -> Self {
         Self {
+            preprocessing: None,
             background_noise: default_background_noise(),
             pause_tolerance: default_pause_tolerance(),
             continuous_recognition: false,
@@ -295,6 +299,7 @@ impl ClientSettings {
         let defaults = RecognitionSettings::default();
         if self.microphone_recognition == defaults && self.loopback_recognition == defaults {
             let legacy = RecognitionSettings {
+                preprocessing: None,
                 background_noise: self.background_noise,
                 pause_tolerance: self.pause_tolerance,
                 continuous_recognition: self.continuous_recognition,

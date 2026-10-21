@@ -67,10 +67,11 @@ Each translation task supplies exactly one `TaskContext` mode:
 
 Completed bilingual turns contain their source text already. Source-only neighbors
 contain additional facts, not another copy of those turns. File subtitles and
-single-cue retranslation read the same timeline snapshot: up to two preceding
-turns and two following source cues. Preceding cues without a valid translation
-remain source-only. Distinct cues with identical text remain distinct; the runtime
-does not deduplicate sentences by their wording.
+single-cue retranslation use nearby source text and completed translations from
+the same media task. The media plugin keeps this context concise and current.
+Preceding cues without a valid translation remain source-only. Distinct cues with
+identical text remain distinct; the runtime does not deduplicate sentences by their
+wording.
 The two reference blocks are complementary; a custom graph that needs both kinds
 of reference connects both. Language filtering and budget limits can omit a
 bilingual turn; the backend does not reconstruct a second source-only copy.

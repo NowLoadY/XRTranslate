@@ -998,7 +998,7 @@ impl AsrConfig {
 /// Native GTCRN-Light v3 speech enhancement and background noise suppression settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DenoiseConfig {
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_denoise_model_path")]
     pub model_path: PathBuf,
@@ -1009,7 +1009,7 @@ pub struct DenoiseConfig {
 impl Default for DenoiseConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             model_path: default_denoise_model_path(),
             intra_threads: default_denoise_intra_threads(),
         }
@@ -1245,7 +1245,7 @@ pub struct ModelManagerConfig {
     /// Optional user preference for local inference GPU device name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_gpu: Option<String>,
-    /// Base bundled models (Silero VAD, GTCRN denoiser, 3D-Speaker diarization).
+    /// Base bundled models (Silero VAD and 3D-Speaker diarization).
     #[serde(default)]
     pub bundled_models: Vec<BundledModelAsset>,
 }
@@ -1404,7 +1404,15 @@ impl ModelManagerConfig {
         if self.bundled_models.is_empty() {
             Self::default_bundled_models()
         } else {
-            self.bundled_models.clone()
+            // Older configurations listed GTCRN as a required resource. It is
+            // now installed only when the user enables noise suppression.
+            self.bundled_models
+                .iter()
+                .filter(|asset| {
+                    asset.relative_path.replace('\\', "/") != RuntimeLayout::DENOISE_MODEL_PATH
+                })
+                .cloned()
+                .collect()
         }
     }
 
@@ -1417,16 +1425,6 @@ impl ModelManagerConfig {
                 relative_path: RuntimeLayout::VAD_MODEL_PATH.into(),
                 bytes: RuntimeLayout::VAD_MODEL_BYTES,
                 url: "https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx".into(),
-                target: None,
-                archive_format: None,
-                archive_path: None,
-            },
-            BundledModelAsset {
-                name: "gtcrn_simple.onnx".into(),
-                label: "GTCRN Speech Enhancement".into(),
-                relative_path: RuntimeLayout::DENOISE_MODEL_PATH.into(),
-                bytes: RuntimeLayout::DENOISE_MODEL_BYTES,
-                url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speech-enhancement-models/gtcrn_simple.onnx".into(),
                 target: None,
                 archive_format: None,
                 archive_path: None,

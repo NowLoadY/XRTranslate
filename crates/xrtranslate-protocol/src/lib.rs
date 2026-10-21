@@ -52,9 +52,10 @@ pub enum AudioSource {
 /// Metadata negotiated out-of-band for a stream of raw PCM frames.
 ///
 /// Client-to-server frames use the sample rate in [`EventControl::ConfigAudio`]
-/// (normally 16 kHz). Server-to-client TTS frames use `audio.tts_sample_rate`
-/// (normally 48 kHz). Both directions are mono signed 16-bit little-endian
-/// PCM. No binary frame has a custom header or length prefix: one WebSocket
+/// (normally 16 kHz mono; vocal extraction uses 44.1 kHz stereo).
+/// Server-to-client TTS frames use `audio.tts_sample_rate` (normally 48 kHz mono).
+/// Both directions use signed 16-bit little-endian PCM. No binary frame has
+/// a custom header or length prefix: one WebSocket
 /// binary message is exactly one [`PcmFrame`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PcmFormat {
@@ -281,6 +282,9 @@ pub enum ActionControl {
     /// translation model inference, terminology post-rewriting, and history commit).
     TranslateText {
         text: String,
+        /// Request-local priority; omission retains the session's existing policy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workload: Option<InferenceWorkload>,
         #[serde(default)]
         context: TaskContext,
         #[serde(default, skip_serializing_if = "TranslationOptions::is_default")]
@@ -304,6 +308,11 @@ pub enum EventControl {
     /// binary audio is sent.
     ConfigAudio {
         sample_rate: u32,
+        #[serde(default = "mono_channels", skip_serializing_if = "is_mono_channels")]
+        channels: u16,
+        /// Per-session preprocessing; omission preserves the configured default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preprocessing: Option<AudioPreprocessing>,
         source_lang: String,
         target_lang: String,
         #[serde(default, skip_serializing_if = "TranslationOptions::is_default")]
@@ -344,6 +353,22 @@ pub enum InferenceWorkload {
     #[default]
     Realtime,
     Offline,
+}
+
+/// Audio preparation before the shared recognition pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioPreprocessing {
+    None,
+    Gtcrn,
+    VocalSeparation,
+}
+
+const fn mono_channels() -> u16 {
+    1
+}
+const fn is_mono_channels(channels: &u16) -> bool {
+    *channels == 1
 }
 
 /// Session features that can be changed while connected.

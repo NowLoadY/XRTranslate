@@ -74,7 +74,8 @@ activation and its own reference facts.
 |---|---|
 | Live translation | One conversation shared by its audio and text inputs |
 | Meeting | Both inputs of one recording run; resumed recording starts from recent completed records with their actual language pairs, while audio reprocessing starts fresh |
-| Media audio | One translation run |
+| Media files | The media plugin manages context within each translation task |
+| Live media streams | One translation run |
 | Authored subtitles | Current cue's timeline neighbors and completed translations with their actual language pairs, read when submitted |
 | Screen and quick translation | Current text snapshot |
 | Avatar control | Its owned live operation |
@@ -89,6 +90,10 @@ legacy or untranslated records contribute source text without repeating those pa
 Conversation startup source gives way to newly completed turns. Prompt
 Studio shows the current request's runtime facts read-only while private results
 remain outside host presentation.
+
+Media files can produce translations while recognition continues. The media plugin
+owns subtitle context and preserves authored subtitle text and timing. Media work
+keeps its context separate from live translation.
 
 ## Registration and lifecycle
 

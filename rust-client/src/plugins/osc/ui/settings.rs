@@ -26,9 +26,22 @@ pub fn render(
                                 .strong(),
                         );
                         if let Some(status) = &receiver_status {
-                            let is_active =
-                                status.contains("Listening") || status.contains("Active");
-                            components::status_badge(ui, status, is_active, false);
+                            let normalized = status.to_ascii_lowercase();
+                            let icon =
+                                if normalized.contains("error") || normalized.contains("failed") {
+                                    components::StatusIcon::Warning
+                                } else if normalized.contains("listening")
+                                    || normalized.starts_with("active")
+                                {
+                                    components::StatusIcon::Connected
+                                } else {
+                                    components::StatusIcon::Disconnected
+                                };
+                            components::status_icon(
+                                ui,
+                                icon,
+                                &crate::i18n::tr_dynamic(language, status),
+                            );
                         }
                     });
 

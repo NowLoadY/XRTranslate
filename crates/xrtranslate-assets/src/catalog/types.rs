@@ -12,6 +12,8 @@ pub enum ModelCapability {
     Translation,
     Tts,
     Ocr,
+    SourceSeparation,
+    NoiseSuppression,
 }
 
 impl ModelCapability {
@@ -25,7 +27,7 @@ impl ModelCapability {
 }
 
 /// Hardware contract for a downloadable native model package. Small ONNX
-/// components bundled with the application (VAD, denoise and speaker helpers)
+/// components bundled with the application (VAD and speaker helpers)
 /// are intentionally outside this catalogue and therefore outside this gate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct ModelHardwareRequirements {
@@ -126,6 +128,8 @@ pub enum ModelRuntime {
         delivery: AsrDelivery,
     },
     PaddleOcrOnnx,
+    UvrMdxOnnx,
+    GtcrnOnnx,
     LlamaVisionChat {
         model_alias: &'static str,
         extra_args: &'static [&'static str],
@@ -148,7 +152,10 @@ impl ModelRuntime {
             Self::LlamaAudioChat { extra_args, .. }
             | Self::LlamaTextChat { extra_args, .. }
             | Self::LlamaVisionChat { extra_args, .. } => extra_args,
-            Self::SherpaOfflineAsr { .. } | Self::PaddleOcrOnnx => &[],
+            Self::SherpaOfflineAsr { .. }
+            | Self::PaddleOcrOnnx
+            | Self::UvrMdxOnnx
+            | Self::GtcrnOnnx => &[],
         }
     }
     #[must_use]
@@ -165,7 +172,10 @@ impl ModelRuntime {
             Self::LlamaAudioChat { .. }
             | Self::LlamaTextChat { .. }
             | Self::LlamaVisionChat { .. } => "local",
-            Self::SherpaOfflineAsr { .. } | Self::PaddleOcrOnnx => "onnx-cpu",
+            Self::SherpaOfflineAsr { .. }
+            | Self::PaddleOcrOnnx
+            | Self::UvrMdxOnnx
+            | Self::GtcrnOnnx => "onnx-cpu",
         }
     }
 
@@ -175,7 +185,10 @@ impl ModelRuntime {
             Self::LlamaAudioChat { model_alias, .. }
             | Self::LlamaTextChat { model_alias, .. }
             | Self::LlamaVisionChat { model_alias, .. } => Some(model_alias),
-            Self::SherpaOfflineAsr { .. } | Self::PaddleOcrOnnx => None,
+            Self::SherpaOfflineAsr { .. }
+            | Self::PaddleOcrOnnx
+            | Self::UvrMdxOnnx
+            | Self::GtcrnOnnx => None,
         }
     }
 }

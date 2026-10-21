@@ -177,6 +177,7 @@ enum SessionCommand {
     },
     #[allow(dead_code)]
     ResetAudioPipeline {
+        preprocessing: Option<xrtranslate_protocol::AudioPreprocessing>,
         source_lang: String,
         target_lang: String,
         audio_source: CaptureSource,
@@ -185,6 +186,7 @@ enum SessionCommand {
         continuous_recognition: bool,
     },
     UpdateAudioSegmentation {
+        preprocessing: Option<xrtranslate_protocol::AudioPreprocessing>,
         vad_threshold: f32,
         vad_silence_ms: u32,
         continuous_recognition: bool,
@@ -201,6 +203,7 @@ enum SessionCommand {
         source_lang: Option<String>,
         target_lang: Option<String>,
         context: TaskContext,
+        workload: Option<InferenceWorkload>,
     },
     Pause,
     Resume,
@@ -339,6 +342,7 @@ impl SessionHandle {
         source_lang: Option<String>,
         target_lang: Option<String>,
         context: TaskContext,
+        workload: Option<InferenceWorkload>,
     ) -> Result<(), String> {
         if self.stop_requested.load(Ordering::Acquire) {
             return Err("Translation session has stopped".into());
@@ -349,6 +353,7 @@ impl SessionHandle {
                 source_lang,
                 target_lang,
                 context,
+                workload,
             })
             .map_err(|error| match error {
                 mpsc::error::TrySendError::Full(_) => {
@@ -363,6 +368,7 @@ impl SessionHandle {
     #[allow(dead_code)]
     pub fn reset_audio_pipeline(
         &self,
+        preprocessing: Option<xrtranslate_protocol::AudioPreprocessing>,
         source_lang: String,
         target_lang: String,
         audio_source: CaptureSource,
@@ -373,6 +379,7 @@ impl SessionHandle {
         let _ = self
             .command_tx
             .try_send(SessionCommand::ResetAudioPipeline {
+                preprocessing,
                 source_lang,
                 target_lang,
                 audio_source,
@@ -384,6 +391,7 @@ impl SessionHandle {
 
     pub fn update_audio_segmentation(
         &self,
+        preprocessing: Option<xrtranslate_protocol::AudioPreprocessing>,
         vad_threshold: f32,
         vad_silence_ms: u32,
         continuous_recognition: bool,
@@ -393,6 +401,7 @@ impl SessionHandle {
         let _ = self
             .command_tx
             .try_send(SessionCommand::UpdateAudioSegmentation {
+                preprocessing,
                 vad_threshold,
                 vad_silence_ms,
                 continuous_recognition,
@@ -403,6 +412,9 @@ impl SessionHandle {
 }
 
 pub struct SessionConfig {
+    pub input_sample_rate: u32,
+    pub input_channels: u16,
+    pub preprocessing: Option<xrtranslate_protocol::AudioPreprocessing>,
     pub context: TaskContext,
     pub server_url: String,
     pub languages: xrtranslate_engine::language::LanguageSelection,
@@ -515,6 +527,9 @@ async fn run_session(
     stream_id: u64,
 ) {
     let SessionConfig {
+        input_sample_rate,
+        input_channels,
+        preprocessing,
         context,
         server_url,
         languages,
@@ -623,7 +638,9 @@ async fn run_session(
             &mut write,
             json!({
                 "event": "config_audio",
-                "sample_rate": 16_000,
+                "sample_rate": input_sample_rate,
+                "channels": input_channels,
+                "preprocessing": preprocessing,
                 "source_lang": source_lang,
                 "target_lang": target_lang,
                 "translation_options": translation_options,
@@ -889,6 +906,7 @@ where
             source_lang,
             target_lang,
             context,
+            workload,
         } => {
             send_json(
                 write,
@@ -899,11 +917,13 @@ where
                     "target_lang": target_lang,
                     "translation_options": translation_options,
                     "context": context,
+                    "workload": workload,
                 }),
             )
             .await
         }
         SessionCommand::ResetAudioPipeline {
+            preprocessing,
             source_lang,
             target_lang,
             audio_source,
@@ -917,6 +937,7 @@ where
                 json!({
                     "event": "config_audio",
                     "sample_rate": 16_000,
+                    "preprocessing": preprocessing,
                     "source_lang": source_lang,
                     "target_lang": target_lang,
                     "translation_options": translation_options,
@@ -929,6 +950,7 @@ where
             .await
         }
         SessionCommand::UpdateAudioSegmentation {
+            preprocessing,
             vad_threshold,
             vad_silence_ms,
             continuous_recognition,
@@ -939,6 +961,7 @@ where
                 write,
                 json!({
                     "event": "config_audio", "sample_rate": 16_000,
+                    "preprocessing": preprocessing,
                     "source_lang": source_lang, "target_lang": target_lang,
                     "translation_options": translation_options,
                     "vad_threshold": vad_threshold, "vad_silence_ms": vad_silence_ms,
@@ -970,6 +993,111 @@ fn audio_source_name(source: CaptureSource) -> &'static str {
         CaptureSource::Microphone => "microphone",
         CaptureSource::SystemAudio => "system_audio",
         CaptureSource::Both => unreachable!("Both expands into individual audio sessions"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xrtranslate_protocol::{ActionControl, ClientControl};
+
+    #[test]
+    fn legacy_audio_controls_keep_mono_and_configured_preprocessing() {
+        let message =
+            r#"{"event":"config_audio","sample_rate":16000,"source_lang":"ja","target_lang":"zh"}"#;
+        let ClientControl::Event(xrtranslate_protocol::EventControl::ConfigAudio {
+            channels,
+            preprocessing,
+            workload,
+            ..
+        }) = serde_json::from_str(message).unwrap()
+        else {
+            panic!("audio control required")
+        };
+        assert_eq!(channels, 1);
+        assert_eq!(preprocessing, None);
+        assert_eq!(workload, InferenceWorkload::Realtime);
+    }
+
+    #[tokio::test]
+    async fn live_reconfiguration_preserves_explicit_preprocessing() {
+        use xrtranslate_protocol::{AudioPreprocessing, EventControl};
+        for selected in [AudioPreprocessing::None, AudioPreprocessing::Gtcrn] {
+            let messages = Arc::new(std::sync::Mutex::new(Vec::<Message>::new()));
+            let mut sink = Box::pin(futures::sink::unfold(
+                messages.clone(),
+                |messages, message| async move {
+                    messages.lock().unwrap().push(message);
+                    Ok::<_, tungstenite::Error>(messages)
+                },
+            ));
+            let commands = [
+                SessionCommand::UpdateAudioSegmentation {
+                    preprocessing: Some(selected),
+                    vad_threshold: 0.5,
+                    vad_silence_ms: 600,
+                    continuous_recognition: false,
+                    source_lang: "ja".into(),
+                    target_lang: "zh".into(),
+                },
+                SessionCommand::ResetAudioPipeline {
+                    preprocessing: Some(selected),
+                    vad_threshold: 0.5,
+                    vad_silence_ms: 600,
+                    continuous_recognition: false,
+                    source_lang: "ja".into(),
+                    target_lang: "zh".into(),
+                    audio_source: CaptureSource::Microphone,
+                },
+            ];
+            for command in commands {
+                send_session_command(
+                    &mut sink,
+                    command,
+                    CaptureSource::Microphone,
+                    &mut xrtranslate_protocol::TranslationOptions::default(),
+                    &TaskContext::default(),
+                )
+                .await
+                .unwrap();
+            }
+            for message in messages.lock().unwrap().iter() {
+                let ClientControl::Event(EventControl::ConfigAudio {
+                    preprocessing,
+                    channels,
+                    sample_rate,
+                    workload,
+                    ..
+                }) = serde_json::from_str(message.to_text().unwrap()).unwrap()
+                else {
+                    panic!("audio control required")
+                };
+                assert_eq!(preprocessing, Some(selected));
+                assert_eq!((sample_rate, channels), (16_000, 1));
+                assert_eq!(workload, InferenceWorkload::Realtime);
+            }
+        }
+    }
+
+    #[test]
+    fn text_workload_is_optional_and_request_local() {
+        for (extra, expected) in [
+            ("", None),
+            (
+                ",\"workload\":\"offline\"",
+                Some(InferenceWorkload::Offline),
+            ),
+        ] {
+            let request = format!("{{\"action\":\"translate_text\",\"text\":\"Hello\"{extra}}}");
+            let ClientControl::Action(ActionControl::TranslateText {
+                workload, context, ..
+            }) = serde_json::from_str(&request).unwrap()
+            else {
+                panic!("text request required")
+            };
+            assert_eq!(workload, expected);
+            assert!(matches!(context, TaskContext::Snapshot { .. }));
+        }
     }
 }
 

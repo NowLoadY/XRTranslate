@@ -8,12 +8,10 @@ mod transcript;
 
 use super::{
     actions::UiAction,
-    presentation::{meeting_language_label, page_header},
+    presentation::{meeting_language_label, page_header, status_indicator},
 };
 use crate::plugins::meeting::{
-    controller::{
-        MeetingController, MeetingPane, MeetingRoute, can_continue, meeting_status_label,
-    },
+    controller::{MeetingController, MeetingPane, MeetingRoute, can_continue},
     i18n::tr,
     store::MeetingStatus,
 };
@@ -57,19 +55,23 @@ pub(super) fn render_detail(
                         .any(|marker| marker.segment_id == segment.id)
                 })
             });
-            if components::primary_button_enabled(
-                ui,
-                tr(
-                    language,
-                    if marked {
-                        "★ Highlight"
-                    } else {
-                        "Mark latest highlight"
-                    },
-                ),
-                latest.is_some() && !marked,
-            )
-            .clicked()
+            if ui
+                .add_enabled_ui(latest.is_some() && !marked, |ui| {
+                    components::icon_button(
+                        ui,
+                        tr(
+                            language,
+                            if marked {
+                                "★ Highlight"
+                            } else {
+                                "Mark latest highlight"
+                            },
+                        ),
+                        egui::include_image!("../../../../../resources/icons/star.svg"),
+                    )
+                })
+                .inner
+                .clicked()
                 && let Some(segment) = latest
             {
                 action = UiAction::Highlight(segment.id.clone());
@@ -78,7 +80,7 @@ pub(super) fn render_detail(
         if active.is_some() {
             if ui
                 .add_enabled_ui(!finishing, |ui| {
-                    components::danger_button(
+                    components::round_icon_button(
                         ui,
                         tr(
                             language,
@@ -88,6 +90,8 @@ pub(super) fn render_detail(
                                 "Finish recording"
                             },
                         ),
+                        egui::include_image!("../../../../../resources/icons/stop.svg"),
+                        36.0,
                     )
                 })
                 .inner
@@ -97,36 +101,38 @@ pub(super) fn render_detail(
             }
         }
         if meeting.status == MeetingStatus::Live && active.is_some() && !processing_audio {
-            if components::animated_button(ui, tr(language, "Pause")).clicked() {
+            if components::icon_button(
+                ui,
+                tr(language, "Pause"),
+                egui::include_image!("../../../../../resources/icons/pause.svg"),
+            )
+            .clicked()
+            {
                 action = UiAction::Pause;
             }
         } else if !processing_audio
             && can_continue(&meeting)
-            && components::primary_button_enabled(
-                ui,
-                tr(language, "Continue recording"),
-                capture.is_none() || active.is_some(),
-            )
-            .clicked()
+            && ui
+                .add_enabled_ui(capture.is_none() || active.is_some(), |ui| {
+                    components::round_icon_button(
+                        ui,
+                        tr(language, "Continue recording"),
+                        egui::include_image!("../../../../../resources/icons/record.svg"),
+                        36.0,
+                    )
+                })
+                .inner
+                .clicked()
         {
             action = UiAction::Continue(meeting.id.clone());
         }
-        if components::animated_button(ui, tr(language, "Meetings")).clicked() {
+        if components::back_button(ui, tr(language, "Meetings")).clicked() {
             action = UiAction::Back;
         }
     });
 
     ui.horizontal_wrapped(|ui| {
-        components::status_badge(
-            ui,
-            if waiting_for_microphone && meeting.status == MeetingStatus::Live {
-                crate::i18n::tr(language, "Waiting for microphone")
-            } else {
-                tr(language, meeting_status_label(meeting.status))
-            },
-            meeting.status == MeetingStatus::Live && !waiting_for_microphone,
-            meeting.status == MeetingStatus::Failed,
-        );
+        status_indicator(ui, language, meeting.status, waiting_for_microphone);
         ui.label(
             egui::RichText::new(format!(
                 "{} → {}",
@@ -157,29 +163,32 @@ pub(super) fn render_detail(
             MeetingPane::Minutes,
             tr(language, "Organize"),
         );
-        ui.menu_button("⋯", |ui| {
-            if ui.button(tr(language, "Export Markdown")).clicked() {
-                action = UiAction::Export;
-                ui.close();
-            }
-            if ui.button(tr(language, "Full transcript")).clicked() {
-                controller.pane = MeetingPane::Transcript;
-                ui.close();
-            }
-            if meeting.can_reprocess
-                && ui
-                    .add_enabled(
-                        controller.active_meeting_id().is_none(),
-                        egui::Button::new(tr(language, "Reprocess audio")),
-                    )
-                    .clicked()
-            {
-                action = UiAction::Reprocess;
-                ui.close();
-            }
-        })
-        .response
-        .on_hover_text(tr(language, "More"));
+        components::icon_menu(
+            ui,
+            tr(language, "More"),
+            egui::include_image!("../../../../../resources/icons/more.svg"),
+            |ui| {
+                if ui.button(tr(language, "Export Markdown")).clicked() {
+                    action = UiAction::Export;
+                    ui.close();
+                }
+                if ui.button(tr(language, "Full transcript")).clicked() {
+                    controller.pane = MeetingPane::Transcript;
+                    ui.close();
+                }
+                if meeting.can_reprocess
+                    && ui
+                        .add_enabled(
+                            controller.active_meeting_id().is_none(),
+                            egui::Button::new(tr(language, "Reprocess audio")),
+                        )
+                        .clicked()
+                {
+                    action = UiAction::Reprocess;
+                    ui.close();
+                }
+            },
+        );
     });
     ui.add_space(8.0);
 

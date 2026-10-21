@@ -1,4 +1,4 @@
-use super::{input_field, secondary_button};
+use super::{input_field, open_button};
 use eframe::egui;
 
 /// One source field for typed paths, file selection and drag-and-drop.
@@ -12,7 +12,7 @@ pub fn source_input(
 ) -> bool {
     ui.push_id(id, |ui| {
         let mut changed = input_field(ui, value, hint).changed();
-        let browse = secondary_button(ui, browse_label).clicked();
+        let browse = open_button(ui, browse_label).clicked();
         let mut dialog = crate::file_dialog::FileDialog::new();
         for (label, extensions) in filters {
             dialog = dialog.add_filter(label, extensions);

@@ -102,6 +102,11 @@ fn validate_options(
     audio_tx: &Sender<Vec<f32>>,
     options: &AudioImportOptions,
 ) -> Result<(), AudioImportError> {
+    if !(1..=2).contains(&options.output_channels) {
+        return Err(AudioImportError::InvalidOptions(
+            "output must be mono or stereo".into(),
+        ));
+    }
     if options.output_sample_rate == 0 {
         return Err(AudioImportError::InvalidOptions(
             "output sample rate must be greater than zero".into(),

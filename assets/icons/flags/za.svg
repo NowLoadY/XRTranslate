@@ -2,5 +2,4 @@
 <defs><clipPath id="disc"><circle cx="32" cy="32" r="29"/></clipPath></defs>
 <g clip-path="url(#disc)"><rect x="0" y="0" width="64" height="32" fill="#ef6570"/><rect x="0" y="32" width="64" height="32" fill="#5784d9"/><path d="M0 0 34 22H64V42H34L0 64Z" fill="#fffdf8" /><path d="M0 0 35 26H64V38H35L0 64Z" fill="#54ac83" /><path d="M0 10 29 32 0 54Z" fill="#ffd166" /><path d="M0 16 21 32 0 48Z" fill="#37424e" /></g>
 <circle cx="32" cy="32" r="29" fill="none" stroke="#344451" stroke-opacity=".12" stroke-width="1.5"/>
-<path d="M13 20a24 24 0 0 1 19-12" fill="none" stroke="#fff" stroke-opacity=".5" stroke-width="3" stroke-linecap="round"/>
 </svg>

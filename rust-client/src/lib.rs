@@ -22,6 +22,7 @@ mod audio;
 #[cfg(target_os = "linux")]
 mod audio_linux;
 mod audio_playback;
+mod audio_preprocessing_host;
 mod audio_processing;
 mod audio_studio;
 mod avatar_host;
@@ -2055,6 +2056,15 @@ impl XRTranslateApp {
     }
 
     fn delete_resource(&mut self, resource: PendingResourceDeletion) {
+        let busy = match resource {
+            PendingResourceDeletion::Model(_) => self.model_task_manager.is_busy(),
+            PendingResourceDeletion::Runtime => self.runtime_installer.is_busy(),
+        };
+        if busy {
+            self.last_error =
+                Some("Wait for the current resource task before deleting a resource.".into());
+            return;
+        }
         let project_root = self.project_root();
         self.cancel_text_tasks(None);
         self.backend_manager.invalidate_runtime();
@@ -2067,7 +2077,12 @@ impl XRTranslateApp {
                 .delete_managed_resources(&project_root),
         };
         match result {
-            Ok(()) => self.last_error = None,
+            Ok(()) => {
+                if let PendingResourceDeletion::Model(id) = resource {
+                    self.forget_audio_preprocessing_resource(id);
+                }
+                self.last_error = None;
+            }
             Err(error) => self.last_error = Some(error),
         }
     }
@@ -2140,6 +2155,9 @@ impl XRTranslateApp {
         };
 
         SessionConfig {
+            input_sample_rate: 16_000,
+            input_channels: 1,
+            preprocessing: self.effective_audio_preprocessing(recognition.preprocessing),
             context,
             server_url: self.server_url.clone(),
             languages,
@@ -3376,7 +3394,7 @@ impl XRTranslateApp {
             self.meeting_plugin.event_sink.begin_sessions(1);
         }
         let (audio_tx, audio_rx) = bounded(64);
-        let config = self.session_config(
+        let mut config = self.session_config(
             task.languages,
             Some(&plugin),
             task.context,
@@ -3385,6 +3403,8 @@ impl XRTranslateApp {
             vad_threshold_for_background_noise(recognition.background_noise),
             ctx,
         );
+        config.input_sample_rate = options.output_sample_rate;
+        config.input_channels = options.output_channels as u16;
         let scope = ChannelScope::audio(owner.clone(), plugin.publish_to_host_outputs());
         scope
             .asr_only
@@ -4018,6 +4038,7 @@ impl XRTranslateApp {
                 languages,
                 plugin: None,
                 context: TaskContext::conversation(translation_service::host_conversation_id()),
+                text_workload: None,
                 input: TranslationInput::Live(source),
                 profiles: Vec::new(),
             },
@@ -4592,6 +4613,7 @@ impl XRTranslateApp {
                 languages,
                 plugin: self.meeting_plugin.translation_session_binding(),
                 context: self.meeting_plugin.translation_context(),
+                text_workload: None,
                 input,
                 profiles: Vec::new(),
             },
@@ -5353,6 +5375,7 @@ impl XRTranslateApp {
         recognition.background_noise = recognition.background_noise.clamp(0.2, 0.8);
         recognition.pause_tolerance = recognition.pause_tolerance.clamp(0.0, 1.0);
         let recognition = recognition.clone();
+        let preprocessing = self.effective_audio_preprocessing(recognition.preprocessing);
         self.save_settings();
         for task in self
             .audio_tasks
@@ -5367,6 +5390,7 @@ impl XRTranslateApp {
             {
                 channel.recognition = recognition.clone();
                 channel.session.update_audio_segmentation(
+                    preprocessing,
                     vad_threshold_for_background_noise(recognition.background_noise),
                     pause_tolerance_to_ms(recognition.pause_tolerance),
                     recognition.continuous_recognition,
@@ -5475,9 +5499,10 @@ impl XRTranslateApp {
             return;
         }
         if capture.imported_audio
-            || !self.audio_tasks.iter().any(|task| {
-                task.owner.is_plugin(PluginId::MEETING.as_str()) && task.is_live()
-            })
+            || !self
+                .audio_tasks
+                .iter()
+                .any(|task| task.owner.is_plugin(PluginId::MEETING.as_str()) && task.is_live())
         {
             self.stop_plugin_task(PluginId::MEETING);
             return;
@@ -5596,7 +5621,8 @@ impl XRTranslateApp {
     }
 
     fn export_meeting_markdown(&mut self, meeting_id: &str) {
-        let Some((name, markdown)) = self.meeting_plugin.controller.export_markdown(meeting_id) else {
+        let Some((name, markdown)) = self.meeting_plugin.controller.export_markdown(meeting_id)
+        else {
             return;
         };
         if let Err(error) = export::save(&name, export::Format::Markdown, markdown) {
@@ -6113,7 +6139,33 @@ impl eframe::App for XRTranslateApp {
             self.apply_prompt_studio_actions(actions);
         }
 
+        let gtcrn_ready = self
+            .model_task_manager
+            .is_model_ready(xrtranslate_assets::ModelAssetId::GtcrnOnnx);
         self.model_task_manager.poll();
+        if self.model_task_manager.needs_discovery()
+            && let Err(error) = self
+                .model_task_manager
+                .discover_existing(self.project_root())
+        {
+            self.last_error = Some(error);
+        }
+        if gtcrn_ready
+            != self
+                .model_task_manager
+                .is_model_ready(xrtranslate_assets::ModelAssetId::GtcrnOnnx)
+        {
+            for source in [CaptureSource::Microphone, CaptureSource::SystemAudio] {
+                if self
+                    .recognition_settings(source)
+                    .preprocessing
+                    .unwrap_or(self.service_config.default_audio_preprocessing())
+                    == xrtranslate_protocol::AudioPreprocessing::Gtcrn
+                {
+                    self.set_audio_adaptation(source);
+                }
+            }
+        }
         if let Some(path) = self.runtime_installer.poll() {
             self.backend_manager.use_installed_llama_server(&path);
         }
@@ -6633,7 +6685,8 @@ pub fn run() -> eframe::Result<()> {
     #[cfg(all(target_os = "linux", feature = "mpv"))]
     let options = {
         let mut options = options;
-        if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup {
+        if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup
+        {
             // libmpv renders directly into the UI's OpenGL textures through EGL.
             setup.instance_descriptor.backends = eframe::wgpu::Backends::GL;
         }
@@ -6696,18 +6749,18 @@ pub fn run() -> eframe::Result<()> {
             {
                 use plugins::media::backend::VideoDisplay;
                 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
-                app.media_plugin.controller.video_display = cc
-                    .display_handle()
-                    .ok()
-                    .and_then(|handle| match handle.as_raw() {
-                        RawDisplayHandle::Xlib(display) => display
-                            .display
-                            .map(|ptr| VideoDisplay::X11(ptr.as_ptr() as usize)),
-                        RawDisplayHandle::Wayland(display) => Some(VideoDisplay::Wayland(
-                            display.display.as_ptr() as usize,
-                        )),
-                        _ => None,
-                    });
+                app.media_plugin.controller.video_display =
+                    cc.display_handle()
+                        .ok()
+                        .and_then(|handle| match handle.as_raw() {
+                            RawDisplayHandle::Xlib(display) => display
+                                .display
+                                .map(|ptr| VideoDisplay::X11(ptr.as_ptr() as usize)),
+                            RawDisplayHandle::Wayland(display) => {
+                                Some(VideoDisplay::Wayland(display.display.as_ptr() as usize))
+                            }
+                            _ => None,
+                        });
             }
             #[cfg(target_os = "android")]
             android::prepare_resources(cc.egui_ctx.clone());

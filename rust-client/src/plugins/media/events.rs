@@ -54,6 +54,9 @@ impl MediaPlugin {
             match event {
                 TranslationEvent::Preview(_) => {}
                 TranslationEvent::Segment(segment) => {
+                    if self.subtitle_source_open() && (segment.revisable || segment.live) {
+                        continue;
+                    }
                     let stream_id = segment.stream_id;
                     if let Some((cue, metadata)) =
                         translation_cue(segment, &self.controller.subtitles)
@@ -63,6 +66,15 @@ impl MediaPlugin {
                     }
                 }
                 TranslationEvent::ReplaceSegments(segments) => {
+                    // A complete turn is the atomic source boundary. Never edit
+                    // a cumulative provisional snapshot that ASR can replay.
+                    if self.subtitle_source_open()
+                        && segments
+                            .iter()
+                            .any(|segment| segment.revisable || segment.live)
+                    {
+                        continue;
+                    }
                     if let Some(segment) = segments.first() {
                         if segment.asr_only {
                             apply_recognition_snapshot(&mut self.controller.subtitles, segments);

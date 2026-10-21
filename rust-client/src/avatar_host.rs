@@ -144,6 +144,7 @@ impl XRTranslateApp {
                         TranslationTask {
                             languages,
                             context: plugins::avatar::translation_context(operation),
+                            text_workload: None,
                             plugin: Some(binding),
                             input: TranslationInput::ExclusiveLive(self.capture_source),
                             profiles,

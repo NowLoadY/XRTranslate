@@ -154,7 +154,9 @@ jobs:
           assert manifest['models']['included'] is False
           assert manifest['runtime']['onnx_cpu']['included'] is True
           assert manifest['runtime']['onnx_cuda']['included'] is False
-          for item in [manifest[k] for k in ('vad_model', 'speaker_model', 'denoise_model')] + [manifest['runtime']['onnx_cpu']]:
+          assert 'denoise_model' not in manifest
+          assert not (package / 'models/gtcrn/gtcrn_simple.onnx').exists()
+          for item in [manifest[k] for k in ('vad_model', 'speaker_model')] + [manifest['runtime']['onnx_cpu']]:
               path = package / item['path']
               assert path.stat().st_size == item['bytes'], item['path']
           assert (package / 'corpora/default.sqlite').read_bytes() == (root / 'XR-Corpus/corpora/default.sqlite').read_bytes()

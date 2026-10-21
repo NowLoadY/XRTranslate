@@ -9,8 +9,8 @@ use std::{
 use xrtranslate_download::{DownloadClient, DownloadSource, DownloadSpec};
 
 use crate::{
-    ModelAssetId, ModelAssetsPreflight, ModelAssetsPreflightError, ModelSource, RequiredModelFile,
-    ResolvedModelAsset, ResolvedModelAssets,
+    ModelAssetId, ModelAssetProblem, ModelAssetsPreflight, ModelAssetsPreflightError, ModelSource,
+    RequiredModelFile, ResolvedModelAsset, ResolvedModelAssets,
 };
 
 impl ResolvedModelAssets {
@@ -145,6 +145,7 @@ pub enum ModelDownloadError {
     Locked(PathBuf),
     Lock { path: PathBuf, source: io::Error },
     AtomicInstall(AtomicInstallError),
+    ExistingInvalid(ModelAssetsPreflightError),
     Archive { path: PathBuf, message: String },
 }
 
@@ -152,6 +153,11 @@ impl ModelDownloadError {
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         matches!(self, Self::Download(error) if error.is_cancelled())
+    }
+
+    #[must_use]
+    pub fn allows_source_fallback(&self) -> bool {
+        matches!(self, Self::Download(error) if error.allows_source_fallback())
     }
 }
 
@@ -186,6 +192,13 @@ impl fmt::Display for ModelDownloadError {
                 )
             }
             Self::AtomicInstall(error) => error.fmt(formatter),
+            Self::ExistingInvalid(error) => {
+                formatter.write_str("existing model files cannot be reused:")?;
+                for diagnostic in error.diagnostics() {
+                    write!(formatter, "\n- {diagnostic}")?;
+                }
+                Ok(())
+            }
             Self::Archive { path, message } => {
                 write!(
                     formatter,
@@ -205,6 +218,7 @@ impl Error for ModelDownloadError {
             | Self::Removal { source, .. }
             | Self::Lock { source, .. } => Some(source),
             Self::AtomicInstall(error) => Some(error),
+            Self::ExistingInvalid(error) => Some(error),
             Self::Locked(_) | Self::Archive { .. } => None,
         }
     }
@@ -267,14 +281,30 @@ impl NativeModelInstaller {
         mut on_progress: impl FnMut(DownloadProgress),
     ) -> Result<PathBuf, ModelDownloadError> {
         let target = self.asset(id);
-        if target.directory().exists() {
-            if target.check().is_empty() {
+        let missing_files = if target.directory().exists() {
+            let diagnostics = target.check();
+            if diagnostics.is_empty() {
                 return Ok(target.directory().to_path_buf());
             }
-            return Err(ModelDownloadError::AtomicInstall(
-                AtomicInstallError::DestinationExists(target.directory().to_path_buf()),
-            ));
-        }
+            if diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.problem != ModelAssetProblem::Missing)
+            {
+                return Err(ModelDownloadError::ExistingInvalid(
+                    ModelAssetsPreflight { diagnostics }
+                        .into_result()
+                        .expect_err("existing model has invalid files"),
+                ));
+            }
+            Some(
+                diagnostics
+                    .into_iter()
+                    .map(|diagnostic| diagnostic.required_file.relative_path)
+                    .collect::<HashSet<_>>(),
+            )
+        } else {
+            None
+        };
         let staging = staging_directory(target);
         let staging_parent = staging.parent().expect("staging directory has parent");
         fs::create_dir_all(staging_parent).map_err(|source| {
@@ -291,11 +321,27 @@ impl NativeModelInstaller {
         })?;
 
         let archive = target.manifest().source.archive;
+        let archive_needed = archive.is_some_and(|archive| {
+            missing_files.as_ref().is_none_or(|missing| {
+                archive
+                    .entries
+                    .iter()
+                    .any(|entry| missing.contains(entry.relative_path))
+            })
+        });
         let total_bytes = target.manifest().download_bytes();
         let mut completed_bytes = 0_u64;
         if let Some(archive) = archive {
-            self.download_and_extract_archive(id, archive, &staging, total_bytes, &mut on_progress)
+            if archive_needed {
+                self.download_and_extract_archive(
+                    id,
+                    archive,
+                    &staging,
+                    total_bytes,
+                    &mut on_progress,
+                )
                 .await?;
+            }
             completed_bytes = archive.bytes;
         }
         for file in target.manifest().required_files {
@@ -307,22 +353,80 @@ impl NativeModelInstaller {
             }) {
                 continue;
             }
-            self.download_file(
-                *file,
-                AssetDownloadContext {
-                    id,
-                    source: target.manifest().source,
-                    staging: &staging,
-                    completed_bytes,
+            if missing_files
+                .as_ref()
+                .is_none_or(|missing| missing.contains(file.relative_path))
+            {
+                self.download_file(
+                    *file,
+                    AssetDownloadContext {
+                        id,
+                        source: target.manifest().source,
+                        staging: &staging,
+                        completed_bytes,
+                        total_bytes,
+                    },
+                    &mut on_progress,
+                )
+                .await?;
+            } else {
+                on_progress(DownloadProgress {
+                    asset_id: id,
+                    relative_path: file.relative_path,
+                    downloaded_bytes: completed_bytes.saturating_add(file.bytes),
                     total_bytes,
-                },
-                &mut on_progress,
-            )
-            .await?;
+                });
+            }
             completed_bytes = completed_bytes.saturating_add(file.bytes);
         }
-        if let Some(archive) = archive {
+        self.client
+            .ensure_not_cancelled("model package")
+            .map_err(ModelDownloadError::Download)?;
+        if let Some(archive) = archive.filter(|_| archive_needed) {
             remove_downloaded_archive(&staging, archive.filename)?;
+        }
+        if let Some(missing) = missing_files {
+            let staged = ResolvedModelAsset::new(target.manifest(), staging.clone());
+            ModelAssetsPreflight {
+                diagnostics: staged
+                    .check()
+                    .into_iter()
+                    .filter(|diagnostic| missing.contains(diagnostic.required_file.relative_path))
+                    .collect(),
+            }
+            .into_result()
+            .map_err(|source| {
+                ModelDownloadError::AtomicInstall(AtomicInstallError::StagingInvalid {
+                    directory: staging.clone(),
+                    source,
+                })
+            })?;
+            // Legacy packages may predate a required notice. Publish only
+            // missing files; a hard link is atomic and never replaces a file
+            // another process created after the presence scan.
+            for relative_path in missing {
+                let destination = target.directory().join(relative_path);
+                let parent = destination.parent().expect("model file has a parent");
+                fs::create_dir_all(parent).map_err(|source| {
+                    ModelDownloadError::StagingDirectory {
+                        path: parent.to_path_buf(),
+                        source,
+                    }
+                })?;
+                fs::hard_link(staging.join(relative_path), &destination).map_err(|source| {
+                    ModelDownloadError::Download(xrtranslate_download::DownloadError::FileIo {
+                        path: destination,
+                        source,
+                    })
+                })?;
+            }
+            ModelAssetsPreflight {
+                diagnostics: target.check(),
+            }
+            .into_result()
+            .map_err(ModelDownloadError::ExistingInvalid)?;
+            clear_model_staging(&self.assets, id)?;
+            return Ok(target.directory().to_path_buf());
         }
         self.assets
             .install_from_staging(id, staging)
