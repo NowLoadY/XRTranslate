@@ -257,6 +257,7 @@ fn playback_controls(
                 {
                     fullscreen(controller, ui);
                 }
+                super::subtitle_style::render(controller, language, ui);
                 let response = playback_button(
                     ui,
                     tr(language, "Subtitles"),

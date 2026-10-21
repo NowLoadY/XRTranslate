@@ -76,6 +76,7 @@ pub trait MediaBackend: Send {
     }
     fn set_video_visible(&mut self, _visible: bool) {}
     fn set_osd_subtitle(&mut self, text: &str);
+    fn set_subtitle_style(&mut self, _style: &super::subtitles::SubtitleStyle) {}
     fn get_audio_channel_count(&self) -> Option<usize>;
     #[allow(dead_code)]
     fn get_audio_layout(&self) -> Option<String>;

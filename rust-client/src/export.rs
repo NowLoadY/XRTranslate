@@ -8,6 +8,8 @@ pub(crate) enum Format {
     Srt,
     Vtt,
     Lrc,
+    #[cfg(all(feature = "mpv", any(windows, target_os = "linux")))]
+    Mp4,
 }
 
 impl Format {
@@ -18,8 +20,19 @@ impl Format {
             Self::Srt => "srt",
             Self::Vtt => "vtt",
             Self::Lrc => "lrc",
+            #[cfg(all(feature = "mpv", any(windows, target_os = "linux")))]
+            Self::Mp4 => "mp4",
         }
     }
+}
+
+#[cfg(all(feature = "mpv", any(windows, target_os = "linux")))]
+pub(crate) fn choose_path(name: &str, format: Format) -> Option<std::path::PathBuf> {
+    let extension = format.extension();
+    crate::file_dialog::FileDialog::new()
+        .set_file_name(file_name(name, extension))
+        .add_filter(extension, &[extension])
+        .save_path()
 }
 
 pub(crate) fn save(name: &str, format: Format, content: impl AsRef<[u8]>) -> Result<(), String> {

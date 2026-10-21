@@ -5,6 +5,8 @@ use std::ffi::{CStr, CString};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+mod encoding;
+pub(crate) use encoding::encode_video;
 
 struct MpvHandle {
     handle: *mut libmpv_sys::mpv_handle,
@@ -24,13 +26,26 @@ impl Drop for MpvHandle {
 }
 
 impl MpvHandle {
-    fn new() -> Result<Self, String> {
+    fn create() -> Result<Self, String> {
         let handle = unsafe { libmpv_sys::mpv_create() };
         if handle.is_null() {
             return Err("Failed to create MPV handle".into());
         }
 
-        let instance = Self { handle };
+        Ok(Self { handle })
+    }
+
+    fn initialize(&self) -> Result<(), String> {
+        let error = unsafe { libmpv_sys::mpv_initialize(self.handle) };
+        if error < 0 {
+            Err(format!("mpv_initialize failed: {error}"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn new() -> Result<Self, String> {
+        let instance = Self::create()?;
         #[cfg(any(windows, target_os = "linux"))]
         instance.set_property_string("vo", "libmpv")?;
         instance.set_property_string("hwdec", "auto-safe")?;
@@ -44,23 +59,20 @@ impl MpvHandle {
         // render a second copy beneath its overlay.
         instance.set_property_string("sub-auto", "no")?;
         instance.set_property_string("sid", "no")?;
-        // Keep Chinese glyphs and punctuation in the same Simplified Chinese font.
-        #[cfg(windows)]
-        instance.set_property_string("osd-font", "Microsoft YaHei")?;
-        instance.set_property_string("osd-scale-by-window", "no")?;
-        instance.set_property_string("osd-font-size", "18")?;
-        instance.set_property_string("osd-color", "#FFFFFF")?;
+        let subtitle_style = super::super::subtitles::SubtitleStyle::default();
+        instance.set_property_string("osd-font", &subtitle_style.font)?;
+        instance.set_property_string("osd-scale-by-window", "yes")?;
+        instance.set_property_string("osd-font-size", &subtitle_style.size.to_string())?;
+        instance.set_property_string("osd-color", &subtitle_style.rgb())?;
         instance.set_property_string("osd-border-color", "#000000")?;
         instance.set_property_string("osd-border-size", "1.5")?;
         instance.set_property_string("osd-shadow-offset", "1")?;
         instance.set_property_string("osd-align-y", "bottom")?;
         instance.set_property_string("osd-align-x", "center")?;
-        instance.set_property_string("osd-margin-y", "12")?;
+        instance.set_property_string("osd-margin-y", "24")?;
+        instance.set_property_string("osd-margin-x", "24")?;
 
-        let err = unsafe { libmpv_sys::mpv_initialize(handle) };
-        if err < 0 {
-            return Err(format!("mpv_initialize failed with error code {}", err));
-        }
+        instance.initialize()?;
 
         Ok(instance)
     }
@@ -109,24 +121,6 @@ impl MpvHandle {
                 c_name.as_ptr(),
                 libmpv_sys::mpv_format_MPV_FORMAT_FLAG,
                 &mut flag as *mut _ as *mut std::ffi::c_void,
-            )
-        };
-        if err < 0 {
-            Err(format!("Failed to set property {}", name))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn set_property_i64(&self, name: &str, val: i64) -> Result<(), String> {
-        let c_name = CString::new(name).map_err(|e| e.to_string())?;
-        let mut v = val;
-        let err = unsafe {
-            libmpv_sys::mpv_set_property(
-                self.handle,
-                c_name.as_ptr(),
-                libmpv_sys::mpv_format_MPV_FORMAT_INT64,
-                &mut v as *mut _ as *mut std::ffi::c_void,
             )
         };
         if err < 0 {
@@ -232,7 +226,7 @@ pub struct MpvBackend {
     cached_diagnostics: Mutex<super::PlayerDiagnostics>,
     last_diag_poll: Mutex<Instant>,
     active_channels: Vec<super::super::task::AudioChannelItem>,
-    subtitle_font_size: i64,
+    subtitle_style: super::super::subtitles::SubtitleStyle,
     subtitle_text: String,
 }
 
@@ -291,7 +285,7 @@ impl MpvBackend {
             cached_diagnostics: Mutex::new(super::PlayerDiagnostics::default()),
             last_diag_poll: Mutex::new(Instant::now() - Duration::from_secs(10)),
             active_channels: Vec::new(),
-            subtitle_font_size: 18,
+            subtitle_style: Default::default(),
             subtitle_text: String::new(),
         })
     }
@@ -475,16 +469,6 @@ impl MediaBackend for MpvBackend {
     }
 
     fn set_osd_subtitle(&mut self, text: &str) {
-        if !text.is_empty() {
-            if let Some(height) = self.mpv.get_property_i64("osd-height") {
-                let size = (height as f64 * 0.04).round().clamp(16.0, 48.0) as i64;
-                if size != self.subtitle_font_size
-                    && self.mpv.set_property_i64("osd-font-size", size).is_ok()
-                {
-                    self.subtitle_font_size = size;
-                }
-            }
-        }
         if self.subtitle_text != text {
             let duration = if text.is_empty() { "0" } else { "2147483647" };
             if self
@@ -494,6 +478,17 @@ impl MediaBackend for MpvBackend {
             {
                 self.subtitle_text = text.to_owned();
             }
+        }
+    }
+
+    fn set_subtitle_style(&mut self, style: &super::super::subtitles::SubtitleStyle) {
+        if &self.subtitle_style != style {
+            let _ = self.mpv.set_property_string("osd-font", &style.font);
+            let _ = self
+                .mpv
+                .set_property_f64("osd-font-size", style.size as f64);
+            let _ = self.mpv.set_property_string("osd-color", &style.rgb());
+            self.subtitle_style = style.clone();
         }
     }
 

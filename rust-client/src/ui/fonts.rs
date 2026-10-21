@@ -10,6 +10,59 @@ use std::sync::Arc;
 
 use eframe::egui;
 
+/// Installed family names for renderers that resolve fonts through the system.
+pub(crate) fn family_options() -> &'static [(String, String)] {
+    static FAMILIES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    FAMILIES.get_or_init(|| {
+        let mut names = installed_families();
+        names.sort_by_key(|name| name.to_lowercase());
+        names.dedup();
+        names.into_iter().map(|name| (name.clone(), name)).collect()
+    })
+}
+
+#[cfg(windows)]
+fn installed_families() -> Vec<String> {
+    use windows::Win32::Graphics::DirectWrite::*;
+    let mut result = Vec::new();
+    let _ = (|| -> windows::core::Result<()> {
+        unsafe {
+            let factory: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+            let mut collection = None;
+            factory.GetSystemFontCollection(&mut collection, false)?;
+            if let Some(collection) = collection {
+                for index in 0..collection.GetFontFamilyCount() {
+                    let names = collection.GetFontFamily(index)?.GetFamilyNames()?;
+                    let mut buffer = vec![0u16; names.GetStringLength(0)? as usize + 1];
+                    names.GetString(0, &mut buffer)?;
+                    result.push(String::from_utf16_lossy(&buffer[..buffer.len() - 1]));
+                }
+            }
+            Ok(())
+        }
+    })();
+    result
+}
+
+#[cfg(not(windows))]
+fn installed_families() -> Vec<String> {
+    std::process::Command::new("fc-list")
+        .arg("--format=%{family}\\n")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .flat_map(|line| line.split(','))
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_else(|| vec!["sans-serif".into(), "serif".into(), "monospace".into()])
+}
+
 #[cfg(windows)]
 struct SystemFont {
     name: &'static str,

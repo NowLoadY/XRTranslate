@@ -19,6 +19,31 @@ pub(super) fn render(
     ui: &mut egui::Ui,
 ) -> MediaAction {
     let language = snapshot.language;
+    if let Some(job) = &plugin.controller.video_export {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::ProgressBar::new(job.progress())
+                    .desired_width(180.0)
+                    .show_percentage(),
+            );
+            ui.label(tr(language, "Exporting video"));
+            if ui.button(tr(language, "Cancel")).clicked() {
+                job.cancel();
+            }
+        });
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(100));
+    } else if let Some(path) = &plugin.controller.exported_video {
+        let mut dismiss = false;
+        ui.horizontal(|ui| {
+            ui.label(tr(language, "Video exported"))
+                .on_hover_text(path.display().to_string());
+            dismiss = ui.small_button("×").clicked();
+        });
+        if dismiss {
+            plugin.controller.exported_video = None;
+        }
+    }
 
     let action = match plugin.controller.route {
         MediaRoute::Library => library::render_library(&mut plugin.controller, language, ui),
@@ -93,9 +118,10 @@ fn export_controls(
     language: crate::i18n::UiLanguage,
     title: &str,
     subtitles: &super::subtitles::SubtitleTimeline,
-) {
+    video_available: bool,
+) -> bool {
     if subtitles.count() == 0 {
-        return;
+        return false;
     }
     let stem = std::path::Path::new(title)
         .file_stem()
@@ -124,6 +150,15 @@ fn export_controls(
             ui.close();
         }
     }
+    if video_available
+        && ui
+            .button(tr(language, "Export video with subtitles"))
+            .clicked()
+    {
+        ui.close();
+        return true;
+    }
+    false
 }
 
 fn format_time_ms(ms: i64) -> String {

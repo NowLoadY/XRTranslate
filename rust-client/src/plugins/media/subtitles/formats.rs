@@ -79,13 +79,18 @@ impl SubtitleTimeline {
     }
 
     pub fn export_srt(&self) -> String {
-        self.export_timed(false)
+        self.export_timed(false, false)
     }
     pub fn export_vtt(&self) -> String {
-        self.export_timed(true)
+        self.export_timed(true, false)
     }
 
-    fn export_timed(&self, vtt: bool) -> String {
+    #[cfg(all(feature = "mpv", any(windows, target_os = "linux")))]
+    pub(crate) fn export_playback_srt(&self) -> String {
+        self.export_timed(false, true)
+    }
+
+    fn export_timed(&self, vtt: bool, playback: bool) -> String {
         let mut output = if vtt {
             if self.vtt_prelude.is_empty() {
                 "WEBVTT\n\n".into()
@@ -126,14 +131,18 @@ impl SubtitleTimeline {
                 if settings.is_empty() { "" } else { " " },
                 settings
             );
-            let _ = writeln!(output, "{}", cue.original_text.trim());
-            if let Some(translated) = cue
-                .translated_text
-                .as_deref()
-                .map(str::trim)
-                .filter(|text| !text.is_empty() && *text != cue.original_text.trim())
-            {
-                let _ = writeln!(output, "{translated}");
+            if playback {
+                let _ = writeln!(output, "{}", cue.playback_text());
+            } else {
+                let _ = writeln!(output, "{}", cue.original_text.trim());
+                if let Some(translated) = cue
+                    .translated_text
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty() && *text != cue.original_text.trim())
+                {
+                    let _ = writeln!(output, "{translated}");
+                }
             }
             output.push('\n');
         }

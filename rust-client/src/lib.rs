@@ -5422,11 +5422,15 @@ impl XRTranslateApp {
         let recognition = recognition.clone();
         let preprocessing = self.effective_audio_preprocessing(recognition.preprocessing);
         self.save_settings();
-        for task in self
-            .audio_tasks
-            .iter_mut()
-            .filter(|task| task.owner.is_host())
-        {
+        for task in self.audio_tasks.iter_mut().filter(|task| {
+            task.owner.is_host()
+                || (task.is_live() && task.owner.is_plugin(PluginId::MEETING.as_str()))
+        }) {
+            let mut recognition = recognition.clone();
+            if task.owner.is_plugin(PluginId::MEETING.as_str()) {
+                // Meetings follow the input controls while retaining native ASR delivery.
+                recognition.continuous_recognition = false;
+            }
             let (source_language, target_language) = task.languages.wire();
             for channel in task
                 .channels

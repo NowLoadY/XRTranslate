@@ -144,6 +144,10 @@ impl FileDialog {
         }
         Ok(())
     }
+    #[cfg(all(feature = "mpv", any(windows, target_os = "linux")))]
+    pub fn save_path(self) -> Option<PathBuf> {
+        self.native.save_file()
+    }
 }
 
 #[derive(Clone)]

@@ -23,6 +23,13 @@ pub(in crate::plugins::media::ui) fn render_detail(
             .send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
     }
     if !controller.fullscreen_mode {
+        let mut export_video = false;
+        let video_available = controller.video_export.is_none()
+            && controller
+                .active_task_id
+                .as_deref()
+                .and_then(|id| controller.store.get(id))
+                .is_some_and(super::super::super::video_export::VideoExport::supported);
         let title = controller
             .active_task_id
             .as_deref()
@@ -44,12 +51,23 @@ pub(in crate::plugins::media::ui) fn render_detail(
             if controller.subtitles.count() > 0 {
                 components::icon_menu(
                     ui,
-                    tr(language, "Export Subtitles"),
+                    tr(language, "Export"),
                     egui::include_image!("../../../../../resources/icons/export.svg"),
-                    |ui| super::super::export_controls(ui, language, &title, &controller.subtitles),
+                    |ui| {
+                        export_video = super::super::export_controls(
+                            ui,
+                            language,
+                            &title,
+                            &controller.subtitles,
+                            video_available,
+                        );
+                    },
                 );
             }
         });
+        if export_video && let Some(id) = controller.active_task_id.clone() {
+            controller.start_video_export(&id, ui.ctx());
+        }
     }
     if action == MediaAction::StopTranslation {
         return action;

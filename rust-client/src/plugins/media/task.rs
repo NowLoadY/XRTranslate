@@ -122,6 +122,8 @@ pub struct MediaTask {
     pub source_language: String,
     pub target_language: String,
     pub subtitle_mode: SubtitleMode,
+    #[serde(default)]
+    pub subtitle_style: super::subtitles::SubtitleStyle,
     #[serde(default = "default_video_recognition")]
     pub recognition: RecognitionSettings,
     #[serde(default)]
@@ -194,6 +196,7 @@ impl MediaTask {
             subtitle_mode,
             recognition,
             // Until probed, an empty selection lets the shared decoder mix every channel.
+            subtitle_style: Default::default(),
             audio_channels: Vec::new(),
             is_task_running: false,
             created_at_sec: now,
@@ -216,6 +219,7 @@ impl MediaTaskStore {
             && let Ok(mut store) = serde_json::from_str::<Self>(&content)
         {
             for task in &mut store.tasks {
+                task.subtitle_style.normalize();
                 task.is_task_running = false;
             }
             return store;

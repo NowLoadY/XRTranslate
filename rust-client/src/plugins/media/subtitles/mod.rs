@@ -1,4 +1,6 @@
 mod formats;
+mod style;
+pub use style::SubtitleStyle;
 
 use std::collections::{BTreeMap, BTreeSet};
 

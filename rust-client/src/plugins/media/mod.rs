@@ -9,6 +9,7 @@ mod subtitle_refinement;
 pub mod subtitles;
 pub mod task;
 pub mod ui;
+mod video_export;
 
 use crate::i18n::UiLanguage;
 use crate::session_coordinator::{
@@ -143,7 +144,7 @@ impl MediaPlugin {
     }
 
     pub fn has_active_task(&self) -> bool {
-        self.controller.active_task_id.is_some()
+        self.controller.active_task_id.is_some() || self.controller.video_export.is_some()
     }
     pub fn pause_task(&mut self) {
         self.subtitle_job = None;

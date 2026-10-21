@@ -1075,6 +1075,69 @@ pub fn combobox_ui_with_width<R>(
     resp
 }
 
+/// Searchable choices shared by dropdowns and nested menus.
+pub fn searchable_options<T: PartialEq + Clone>(
+    ui: &mut Ui,
+    search_id: egui::Id,
+    selected: &mut T,
+    options: &[(T, String)],
+) -> bool {
+    let mut changed = false;
+    let is_more_than_3 = options.len() > 3;
+
+    let mut search_query = if is_more_than_3 {
+        ui.memory(|m| m.data.get_temp::<String>(search_id).unwrap_or_default())
+    } else {
+        String::new()
+    };
+
+    if is_more_than_3 {
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.add_space(2.0);
+            let te = egui::TextEdit::singleline(&mut search_query)
+                .hint_text("Search...")
+                .desired_width(130.0)
+                .margin(Margin::symmetric(6, 4));
+            text_edit_ui(ui, search_id.with("inner_search_edit"), te);
+            ui.add_space(2.0);
+        });
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(2.0);
+
+        ui.memory_mut(|m| m.data.insert_temp(search_id, search_query.clone()));
+    }
+
+    let query_lower = search_query.trim().to_lowercase();
+    let mut match_count = 0;
+
+    for (val, label) in options {
+        if !query_lower.is_empty() && !label.to_lowercase().contains(&query_lower) {
+            continue;
+        }
+        match_count += 1;
+        if ui.selectable_value(selected, val.clone(), label).clicked() {
+            changed = true;
+            ui.close();
+            if is_more_than_3 {
+                ui.memory_mut(|m| m.data.insert_temp(search_id, String::new()));
+            }
+        }
+    }
+
+    if is_more_than_3 && match_count == 0 {
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new("No matching items")
+                .size(12.0)
+                .color(crate::ui::theme::text_weak()),
+        );
+        ui.add_space(4.0);
+    }
+    changed
+}
+
 pub fn searchable_combobox<T: PartialEq + Clone>(
     ui: &mut Ui,
     id: impl std::hash::Hash + std::fmt::Debug,
@@ -1168,58 +1231,7 @@ pub fn searchable_combobox_with_options<T: PartialEq + Clone>(
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
 
             combo.show_ui(ui, |ui| {
-                let is_more_than_3 = options.len() > 3;
-
-                let mut search_query = if is_more_than_3 {
-                    ui.memory(|m| m.data.get_temp::<String>(search_id).unwrap_or_default())
-                } else {
-                    String::new()
-                };
-
-                if is_more_than_3 {
-                    ui.add_space(2.0);
-                    ui.horizontal(|ui| {
-                        ui.add_space(2.0);
-                        let te = egui::TextEdit::singleline(&mut search_query)
-                            .hint_text("Search...")
-                            .desired_width(130.0)
-                            .margin(Margin::symmetric(6, 4));
-                        text_edit_ui(ui, search_id.with("inner_search_edit"), te);
-                        ui.add_space(2.0);
-                    });
-                    ui.add_space(4.0);
-                    ui.separator();
-                    ui.add_space(2.0);
-
-                    ui.memory_mut(|m| m.data.insert_temp(search_id, search_query.clone()));
-                }
-
-                let query_lower = search_query.trim().to_lowercase();
-                let mut match_count = 0;
-
-                for (val, label) in options {
-                    if !query_lower.is_empty() && !label.to_lowercase().contains(&query_lower) {
-                        continue;
-                    }
-                    match_count += 1;
-                    if ui.selectable_value(selected, val.clone(), label).clicked() {
-                        changed = true;
-                        ui.close();
-                        if is_more_than_3 {
-                            ui.memory_mut(|m| m.data.insert_temp(search_id, String::new()));
-                        }
-                    }
-                }
-
-                if is_more_than_3 && match_count == 0 {
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new("No matching items")
-                            .size(12.0)
-                            .color(crate::ui::theme::text_weak()),
-                    );
-                    ui.add_space(4.0);
-                }
+                changed |= searchable_options(ui, search_id, selected, options);
             })
         },
     );

@@ -50,6 +50,8 @@ pub struct MediaController {
     pub error: Option<String>,
     pub muted: bool,
     pub volume: f32,
+    pub(super) video_export: Option<super::video_export::VideoExport>,
+    pub(super) exported_video: Option<PathBuf>,
 
     pub search_query: String,
     pub browse_all: bool,
@@ -122,6 +124,8 @@ impl Default for MediaController {
             error: None,
             muted: false,
             volume: 1.0,
+            video_export: None,
+            exported_video: None,
             search_query: String::new(),
             browse_all: false,
             draft_title: String::new(),
@@ -705,15 +709,30 @@ impl MediaController {
     }
 
     pub fn tick(&mut self) {
+        if let Some(result) = self.video_export.as_ref().and_then(|job| job.poll()) {
+            self.video_export = None;
+            match result {
+                Ok(path) => self.exported_video = Some(path),
+                Err(error) if !error.is_empty() => self.error = Some(error),
+                _ => {}
+            }
+        }
         if let Some(Ok(())) = self.mpv_installer.poll() {
             self.try_init_backend();
         }
 
         let is_audio_only = self.is_audio_only_task();
         let show_subs = self.show_subtitles && !is_audio_only && self.playback_loaded;
+        let style = self
+            .active_task_id
+            .as_deref()
+            .and_then(|id| self.store.get(id))
+            .map(|task| task.subtitle_style.clone())
+            .unwrap_or_default();
 
         if let Some(backend) = &mut self.backend {
             backend.tick();
+            backend.set_subtitle_style(&style);
             if let Some(error) = backend.take_error() {
                 self.error = Some(error);
             }

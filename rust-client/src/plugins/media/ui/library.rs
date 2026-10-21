@@ -82,6 +82,7 @@ pub(super) fn render_library(
     let query = controller.search_query.trim().to_lowercase();
     let mut open = None;
     let mut delete = None;
+    let mut export_video = None;
     let mut visible = 0;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -108,12 +109,13 @@ pub(super) fn render_library(
                                             "../../../../resources/icons/more.svg"
                                         ),
                                         |ui| {
-                                            super::export_controls(
+                                            if super::export_controls(
                                                 ui,
                                                 language,
                                                 &task.title,
                                                 &task.subtitles,
-                                            );
+                                                controller.video_export.is_none() && super::super::video_export::VideoExport::supported(task),
+                                            ) { export_video = Some(task.id.clone()); }
                                             if ui.button(tr(language, "Delete")).clicked() {
                                                 delete = Some(task.id.clone());
                                                 ui.close();
@@ -173,6 +175,9 @@ pub(super) fn render_library(
     }
     if let Some(id) = delete {
         controller.delete_task(&id);
+    }
+    if let Some(id) = export_video {
+        controller.start_video_export(&id, ui.ctx());
     }
     action
 }
