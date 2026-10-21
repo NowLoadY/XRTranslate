@@ -92,13 +92,13 @@ impl Requests {
                             Step::Sentence => {
                                 if job.translation.example.sentence != text
                                     || job.translation.example.sentence_lang
-                                        != job.translation.entry.source_lang
+                                        != job.translation.entry.target_lang
                                 {
                                     job.translation.example.back_translation.clear();
                                 }
                                 job.translation.example.sentence = text;
                                 job.translation.example.sentence_lang =
-                                    job.translation.entry.source_lang.clone();
+                                    job.translation.entry.target_lang.clone();
                             }
                             Step::Translation => job.translation.example.back_translation = text,
                         }
@@ -144,14 +144,14 @@ fn prompt(row: &Translation, step: Step) -> Option<String> {
     match step {
         Step::Sentence => Some(format!(
             "Write one natural sentence in {} using <word> exactly, with the meaning of <meaning> ({}). Output only the sentence.\n\n<word>{}</word>\n<meaning>{}</meaning>",
-            source.name(),
             target.name(),
-            row.entry.source,
-            row.entry.translated
+            source.name(),
+            row.entry.translated,
+            row.entry.source
         )),
         Step::Translation if !row.example.sentence.is_empty() => {
-            // Older examples were generated in the translation's language. Keep
-            // their direction until the user explicitly generates a new example.
+            // Examples saved by previous versions can use either language.
+            // Records without a language tag used the card's target language.
             let sentence_language = if row.example.sentence_lang.is_empty() {
                 target
             } else {
@@ -186,9 +186,9 @@ fn valid_sentence(text: &str, entry: &Entry) -> bool {
     };
     let text = text.trim();
     let sentence = normalize(text);
-    let word = normalize(&entry.source);
+    let word = normalize(&entry.translated);
     let script =
-        SupportedLanguage::parse(&entry.source_lang).and_then(|language| language.script());
+        SupportedLanguage::parse(&entry.target_lang).and_then(|language| language.script());
     let separate_words = matches!(
         script,
         Some(Script::Latin | Script::Cyrillic | Script::Devanagari)
@@ -245,14 +245,62 @@ mod tests {
     }
 
     #[test]
-    fn generated_example_uses_the_word_in_the_title() {
+    fn generated_example_uses_the_card_word_and_language() {
         let row = word();
         let request = prompt(&row, Step::Sentence).unwrap();
-        assert!(request.starts_with("Write one natural sentence in English"));
-        assert!(request.contains("<word>resilient</word>"));
-        assert!(request.contains("<meaning>有韧性的</meaning>"));
-        assert!(valid_sentence("This tree is resilient.", &row.entry));
-        assert!(!valid_sentence("这是一棵有韧性的树。", &row.entry));
+        assert!(request.starts_with("Write one natural sentence in Chinese"));
+        assert!(request.contains("<word>有韧性的</word>"));
+        assert!(request.contains("<meaning>resilient</meaning>"));
+        assert!(valid_sentence("这是一棵有韧性的树。", &row.entry));
+        assert!(!valid_sentence("This tree is resilient.", &row.entry));
+    }
+
+    #[test]
+    fn chinese_source_produces_english_and_japanese_card_examples() {
+        for (tag, language, translated, sentence) in [
+            (
+                "en",
+                "English",
+                "electrical equipment",
+                "The factory regularly maintains its electrical equipment.",
+            ),
+            (
+                "ja",
+                "Japanese",
+                "電気機器",
+                "工場の電気機器を定期的に点検します。",
+            ),
+        ] {
+            let mut row = word();
+            row.entry = Entry {
+                source: "电气设备".into(),
+                translated: translated.into(),
+                source_lang: "zh".into(),
+                target_lang: tag.into(),
+            };
+            let request = prompt(&row, Step::Sentence).unwrap();
+            assert!(request.starts_with(&format!("Write one natural sentence in {language}")));
+            assert!(request.contains(&format!("<word>{translated}</word>")));
+            assert!(request.contains("<meaning>电气设备</meaning>"));
+            assert!(valid_sentence(sentence, &row.entry));
+            assert!(!valid_sentence(
+                "工厂需要定期维护所有的电气设备。",
+                &row.entry
+            ));
+            assert!(!valid_sentence(
+                &format!("工厂需要维护{translated}。"),
+                &row.entry
+            ));
+            assert!(!valid_sentence(translated, &row.entry));
+
+            row.example.sentence = sentence.into();
+            row.example.sentence_lang = tag.into();
+            assert!(
+                prompt(&row, Step::Translation)
+                    .unwrap()
+                    .starts_with(&format!("Translate this {language} sentence into Chinese."))
+            );
+        }
     }
 
     #[test]
