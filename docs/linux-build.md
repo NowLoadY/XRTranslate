@@ -73,7 +73,9 @@ downloaded models, managed GPU runtimes, settings, and editable databases are
 excluded. Additional models, including optional OCR, and compatible runtimes
 are downloaded from the welcome flow according to the selected configuration.
 Install the system MPV runtime (`libmpv2` on Debian/Ubuntu) on machines using the
-release package. The application does not require a Python interpreter,
+release package. The packaged launcher shows installation instructions only
+when a required shared library is missing; otherwise it opens the application
+directly. The application does not require a Python interpreter,
 virtual environment, or PyTorch.
 
 The release includes a default XR Corpus seed at `corpora/default.sqlite`.

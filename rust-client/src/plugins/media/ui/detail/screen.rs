@@ -77,13 +77,19 @@ pub(in crate::plugins::media::ui) fn render_detail(
         render_viewport_card(controller, language, ui, height);
     } else {
         let stacked = layout::should_stack(ui.available_width(), 2, 380.0);
+        if stacked && controller.subtitle_edit.is_some() {
+            ui.push_id(controller.active_task_id.clone(), |ui| {
+                super::super::subtitles::render_subtitles_card(controller, language, ui);
+            });
+            return action;
+        }
         layout::responsive_columns(ui, 2, 380.0, |ui, column| {
             ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
             if column == 0 {
                 egui::ScrollArea::vertical()
                     .id_salt("media_detail_controls")
                     .max_width(ui.available_width())
-                    .max_height(if stacked { height * 0.35 } else { height })
+                    .max_height(if stacked { height * 0.5 } else { height })
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         if controller.can_play() {

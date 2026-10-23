@@ -709,6 +709,8 @@ struct XRTranslateApp {
     voicemeeter_route: Option<voicemeeter::VoiceMeeterStripRouteGuard>,
     audio_studio_started_voicemeeter: bool,
     meeting_plugin: MeetingPlugin,
+    #[cfg(target_os = "android")]
+    pending_microphone_meeting: Option<MeetingAction>,
     media_plugin: plugins::media::MediaPlugin,
     #[cfg(any(windows, target_os = "linux"))]
     ocr: ocr_host::OcrHost,
@@ -1956,6 +1958,8 @@ impl Default for XRTranslateApp {
             voicemeeter_route: None,
             audio_studio_started_voicemeeter: false,
             meeting_plugin,
+            #[cfg(target_os = "android")]
+            pending_microphone_meeting: None,
             media_plugin,
             #[cfg(any(windows, target_os = "linux"))]
             ocr,
@@ -3504,6 +3508,23 @@ impl XRTranslateApp {
     }
 
     fn apply_meeting_action(&mut self, action: MeetingAction, ctx: egui::Context) {
+        #[cfg(target_os = "android")]
+        {
+            let needs_microphone = match &action {
+                MeetingAction::CreateAndStart(request) => {
+                    matches!(request.input, MeetingInputRequest::Live { .. })
+                }
+                MeetingAction::Continue(_) => true,
+                _ => false,
+            };
+            if needs_microphone && !android::microphone_allowed() {
+                match android::request_microphone(true) {
+                    Ok(()) => self.pending_microphone_meeting = Some(action),
+                    Err(error) => self.last_error = Some(error),
+                }
+                return;
+            }
+        }
         match action {
             MeetingAction::None => {}
             MeetingAction::CreateAndStart(request) => {
@@ -6155,8 +6176,13 @@ impl eframe::App for XRTranslateApp {
         }
         #[cfg(target_os = "android")]
         if let Some(granted) = android::take_microphone_result() {
+            let meeting = self.pending_microphone_meeting.take();
             if granted {
-                self.set_microphone_enabled(true, Some(ui.ctx().clone()));
+                if let Some(action) = meeting {
+                    self.apply_meeting_action(action, ui.ctx().clone());
+                } else {
+                    self.set_microphone_enabled(true, Some(ui.ctx().clone()));
+                }
             } else {
                 self.last_error = Some("Allow microphone access before recording.".into());
             }

@@ -363,10 +363,21 @@ fn package(plan: &ReleasePlan) -> Result<PathBuf, PackageError> {
     })?;
 
     let result = (|| {
-        copy_file_to(
-            &plan.rust_client_bin,
-            &staging.join(release_client_name(&plan.rust_client_bin)?),
-        )?;
+        let client_entry = staging.join(release_client_name(&plan.rust_client_bin)?);
+        copy_file_to(&plan.rust_client_bin, &client_entry)?;
+        #[cfg(target_os = "linux")]
+        {
+            copy_file_to(
+                &plan.rust_client_bin,
+                &staging.join(INTERNAL_BIN_DIRECTORY).join("rust-client"),
+            )?;
+            // Preserve the executable mode and the public entrypoint used by updates.
+            fs::write(&client_entry, include_str!("../../../scripts/linux-launcher.sh"))
+                .map_err(|source| PackageError::Io {
+                    context: "cannot write Linux launcher".into(),
+                    source,
+                })?;
+        }
         copy_file_to(
             &plan.backend_bin,
             &staging

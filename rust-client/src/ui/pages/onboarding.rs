@@ -186,12 +186,17 @@ pub fn render_onboarding_fullscreen(
         )
         .show(ui, |ui| {
             ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    render_onboarding_brand(ui, app.ui_language);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        render_onboarding_preferences(app, ui);
+                if narrow {
+                    ui.horizontal(|ui| render_onboarding_brand(ui, app.ui_language));
+                    ui.horizontal(|ui| render_onboarding_preferences(app, ui));
+                } else {
+                    ui.horizontal(|ui| {
+                        render_onboarding_brand(ui, app.ui_language);
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            render_onboarding_preferences(app, ui);
+                        });
                     });
-                });
+                }
                 ui.add_space(if compact_height { 4.0 } else { 8.0 });
                 let header_top = ui.cursor().top();
                 let steps =

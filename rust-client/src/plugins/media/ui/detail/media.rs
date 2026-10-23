@@ -162,6 +162,16 @@ fn playback_controls(
 ) {
     let duration = controller.get_duration_ms().max(0) as f64 / 1000.0;
     let mut position = (controller.get_time_ms().max(0) as f64 / 1000.0).min(duration);
+    let time = egui::RichText::new(format!(
+        "{} / {}",
+        format_time_ms(controller.get_time_ms()),
+        format_time_ms(controller.get_duration_ms())
+    ))
+    .size(12.0);
+    let width = ui.available_width();
+    if width < 360.0 {
+        ui.label(time.clone());
+    }
     let response = playback_slider(
         ui,
         &mut position,
@@ -188,7 +198,6 @@ fn playback_controls(
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_millis(100));
     let overlay = controller.fullscreen_mode;
-    let width = ui.available_width();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         let playing = controller.get_status() == PlaybackStatus::Playing;
@@ -224,14 +233,7 @@ fn playback_controls(
         }
         // Keep essential controls on one row, including on narrow screens.
         if width >= 360.0 {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} / {}",
-                    format_time_ms(controller.get_time_ms()),
-                    format_time_ms(controller.get_duration_ms())
-                ))
-                .size(12.0),
-            );
+            ui.label(time);
         }
         if controller.can_show_video() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

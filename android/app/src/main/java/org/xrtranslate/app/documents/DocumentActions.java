@@ -87,6 +87,8 @@ public final class DocumentActions {
                 Uri uri = FileProvider.getUriForFile(activity, activity.getPackageName() + ".exports", file);
                 String extension = file.getName().substring(file.getName().lastIndexOf('.') + 1).toLowerCase(java.util.Locale.ROOT);
                 String mime = mimeType(extension);
+                // DocumentsUI adds .txt to LRC filenames when saving as text/plain.
+                String saveMime = extension.equals("lrc") ? "application/octet-stream" : mime;
                 Intent intent = new Intent(Intent.ACTION_SEND)
                     .setType(mime)
                     .putExtra(Intent.EXTRA_STREAM, uri)
@@ -96,7 +98,7 @@ public final class DocumentActions {
                 Intent chooser = Intent.createChooser(intent, null);
                 chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new android.os.Parcelable[]{
                     exportAction(uri, mime, file.getName(), Intent.ACTION_VIEW, org.xrtranslate.app.R.string.export_open),
-                    exportAction(uri, mime, file.getName(), Intent.ACTION_CREATE_DOCUMENT, org.xrtranslate.app.R.string.export_save)
+                    exportAction(uri, saveMime, file.getName(), Intent.ACTION_CREATE_DOCUMENT, org.xrtranslate.app.R.string.export_save)
                 });
                 activity.startActivity(chooser);
             } catch (RuntimeException error) {

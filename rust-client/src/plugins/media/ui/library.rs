@@ -43,14 +43,16 @@ pub(super) fn render_library(
             },
         ],
         |ui| {
-            if components::round_icon_button(
+            #[cfg(target_os = "android")]
+            let import = components::primary_button(ui, tr(language, "Import media"));
+            #[cfg(not(target_os = "android"))]
+            let import = components::round_icon_button(
                 ui,
                 tr(language, "Import media"),
                 egui::include_image!("../../../../resources/icons/import.svg"),
                 40.0,
-            )
-            .clicked()
-            {
+            );
+            if import.clicked() {
                 controller.open_create();
                 action = MediaAction::StopTranslation;
             }

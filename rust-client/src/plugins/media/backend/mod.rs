@@ -1,4 +1,4 @@
-#[cfg(any(windows, target_os = "linux"))]
+#[cfg(any(windows, target_os = "linux", target_os = "android"))]
 pub mod audio;
 #[cfg(all(windows, feature = "mpv"))]
 mod gpu;

@@ -91,13 +91,13 @@ impl Default for MediaController {
                     Ok(b) => Some(Box::new(b)),
                     Err(e) => {
                         log::warn!("MPV backend not initialized on startup: {}", e);
-                        #[cfg(any(windows, target_os = "linux"))]
+                        #[cfg(any(windows, target_os = "linux", target_os = "android"))]
                         {
                             super::backend::audio::AudioBackend::new()
                                 .ok()
                                 .map(|backend| Box::new(backend) as Box<dyn MediaBackend>)
                         }
-                        #[cfg(not(any(windows, target_os = "linux")))]
+                        #[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
                         {
                             None
                         }

@@ -45,21 +45,27 @@ pub(super) fn render_library(
                     )
                     .size()
                     .x;
-                ui.allocate_ui_with_layout(
+                let entry = ui.allocate_ui_with_layout(
                     egui::vec2(diameter + 8.0 + label_width, diameter),
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
-                        if components::round_icon_button(ui, label, icon, diameter).clicked() {
-                            action = next_action;
-                        }
-                        ui.label(
-                            egui::RichText::new(label)
-                                .size(12.0)
-                                .color(crate::ui::theme::text_normal()),
+                        let clicked =
+                            components::round_icon_button(ui, label, icon, diameter).clicked();
+                        let caption = ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(label)
+                                    .size(12.0)
+                                    .color(crate::ui::theme::text_normal()),
+                            )
+                            .sense(egui::Sense::click()),
                         );
+                        clicked || caption.clicked()
                     },
                 );
+                if entry.inner {
+                    action = next_action;
+                }
             }
         });
     });
