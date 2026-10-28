@@ -93,7 +93,7 @@ pub(super) fn render(
     let valid = std::cell::Cell::new(true);
     let close = crate::ui::modal::dialog(
         ctx,
-        egui::Id::new("domain_rules"),
+        egui::Id::unique("domain_rules"),
         language,
         &format!(
             "{} · {}",

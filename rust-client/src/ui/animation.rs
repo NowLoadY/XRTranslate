@@ -124,14 +124,14 @@ impl AnimationSystem {
         add_contents: impl FnOnce(&mut egui::Ui) -> R,
     ) -> R
     where
-        P: std::hash::Hash + std::fmt::Debug,
+        P: egui::AsIdSalt,
     {
-        let id = Id::new("page_transition").with(std::any::type_name::<P>());
+        let id = ui.make_persistent_id(("page_transition", std::any::type_name::<P>()));
         let duration = crate::ui::theme::animation_timings(ui.ctx()).page;
         Self::render_transition(
             ui,
             id,
-            Id::new(page_id).value(),
+            egui::IdSalt::new(page_id).value(),
             duration,
             false,
             add_contents,
@@ -147,7 +147,7 @@ impl AnimationSystem {
         let duration = crate::ui::theme::animation_timings(ui.ctx()).page_flip;
         Self::render_transition(
             ui,
-            Id::new("onboarding_transition"),
+            ui.make_persistent_id("onboarding_transition"),
             page_index as u64,
             duration,
             true,

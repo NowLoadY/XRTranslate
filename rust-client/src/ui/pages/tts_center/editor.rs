@@ -41,7 +41,7 @@ pub fn show(
     let mut save = false;
     let mut cancel = false;
     egui::Window::new(tr(language, "Add voice"))
-        .id(egui::Id::new("new_voice_card"))
+        .id(egui::Id::unique("new_voice_card"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)

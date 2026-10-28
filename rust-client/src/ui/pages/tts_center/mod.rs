@@ -103,7 +103,7 @@ pub fn render(
                 if selection_card::show(
                     ui,
                     SelectionCard {
-                        id: egui::Id::new(("tts_preset", voice)),
+                        id: egui::Id::unique(("tts_preset", voice)),
                         title: voice,
                         avatar: voice,
                         width,
@@ -154,7 +154,7 @@ pub fn render(
                 if selection_card::show(
                     ui,
                     SelectionCard {
-                        id: egui::Id::new(("tts_voice", &card.id)),
+                        id: egui::Id::unique(("tts_voice", &card.id)),
                         title: reference
                             .map_or(card.name.as_str(), |voice| tr(language, voice.name)),
                         avatar: &card.id,
@@ -201,7 +201,7 @@ pub fn render(
                                 .on_hover_text(label);
                             preview.widget_info(|| {
                                 egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
+                                    egui::Role::Button,
                                     preview.enabled(),
                                     label,
                                 )

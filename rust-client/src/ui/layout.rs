@@ -5,11 +5,11 @@ const MONITOR_MARGIN: Vec2 = egui::vec2(48.0, 80.0);
 const SIZE_EPSILON: f32 = 0.75;
 
 fn requirements_id() -> Id {
-    Id::new("xrtranslate_layout_requirements")
+    Id::unique("xrtranslate_layout_requirements")
 }
 
 fn resize_state_id() -> Id {
-    Id::new("xrtranslate_window_resize_state")
+    Id::unique("xrtranslate_window_resize_state")
 }
 
 #[derive(Clone, Copy, Debug)]

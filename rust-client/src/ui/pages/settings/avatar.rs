@@ -223,9 +223,7 @@ fn accessory_card(
     );
     let response = automation::button_response(ui, id, &label, true, response)
         .on_hover_cursor(egui::CursorIcon::PointingHand);
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &label)
-    });
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, &label));
     let hover = AnimationSystem::hover(ui.ctx(), id.with("hover"), response.hovered());
     let chosen = AnimationSystem::selection(ui.ctx(), id.with("chosen"), selected);
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));

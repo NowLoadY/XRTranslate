@@ -70,7 +70,7 @@ mod tests {
                         job.halign = self.align;
                         fonts.layout_job(job)
                     });
-                    let id = Id::new("test-history-line");
+                    let id = Id::unique("test-history-line");
                     let galley = self.state.galley(id, galley);
                     let response = self.state.show(ui, id, Arc::clone(&galley), ranges);
                     self.origin = response.rect.min - galley.rect.min.to_vec2();
@@ -249,9 +249,7 @@ impl SelectionState {
         };
         let text_rect = galley.rect.translate(origin.to_vec2());
         let response = ui.interact(text_rect, id, egui::Sense::click_and_drag());
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Label, true, galley.text())
-        });
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, galley.text()));
         if response.hovered() {
             ui.set_cursor_icon(egui::CursorIcon::Text);
         }

@@ -6,8 +6,8 @@
 mod providers;
 mod types;
 
-#[cfg(feature = "sensevoice")]
-pub use providers::SenseVoiceAdapter;
+#[cfg(feature = "sherpa")]
+pub use providers::SherpaOfflineAsrAdapter;
 pub use providers::{
     OpenAiAsrAdapter, Qwen3AsrAdapter, QwenAudioFlashAdapter, QwenAudioStreamingAdapter,
     is_probable_asr_hallucination,

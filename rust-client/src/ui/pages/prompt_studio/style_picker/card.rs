@@ -19,7 +19,7 @@ pub(super) fn render(
     selection_card::show(
         ui,
         SelectionCard {
-            id: egui::Id::new((&style.selection, "style_card")),
+            id: egui::Id::unique((&style.selection, "style_card")),
             title: &tr_dynamic(language, &style.name),
             avatar: &style.name,
             width,

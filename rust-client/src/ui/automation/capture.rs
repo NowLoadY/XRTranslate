@@ -11,24 +11,10 @@ struct TimedFrame {
 }
 
 fn clock_id() -> egui::Id {
-    egui::Id::new("director_capture_clock")
+    egui::Id::unique("director_capture_clock")
 }
 
 pub(super) fn receive(ctx: &egui::Context, input: &mut egui::RawInput) {
-    input.events.retain(|event| {
-        if let egui::Event::Screenshot {
-            user_data, image, ..
-        } = event
-            && let Some(sender) = user_data
-                .data
-                .as_ref()
-                .and_then(|data| data.downcast_ref::<Sender<Arc<egui::ColorImage>>>())
-        {
-            let _ = sender.try_send(image.clone());
-            return false;
-        }
-        true
-    });
     let request = ctx.data_mut(|data| {
         let request = data.get_temp::<TimedFrame>(clock_id().with("request"));
         data.remove::<TimedFrame>(clock_id().with("request"));
@@ -63,9 +49,9 @@ pub(super) fn receive(ctx: &egui::Context, input: &mut egui::RawInput) {
     }
     if let Some(request) = request {
         // Queue the screenshot only after this input frame has adopted its requested time.
-        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
-            request.sender,
-        )));
+        ctx.request_screenshot(move |image| {
+            let _ = request.sender.try_send(image);
+        });
     }
 }
 
@@ -114,9 +100,9 @@ pub(super) fn resume_clock(ctx: &egui::Context) {
 
 pub(super) fn respond(stream: &mut TcpStream, ctx: &egui::Context) {
     let (sender, receiver) = bounded::<Arc<egui::ColorImage>>(1);
-    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
-        sender,
-    )));
+    ctx.request_screenshot(move |image| {
+        let _ = sender.try_send(image);
+    });
     ctx.request_repaint();
     match receiver.recv_timeout(Duration::from_secs(5)) {
         Ok(image) => {

@@ -13,7 +13,7 @@ pub fn install(ctx: &Context) {
     ctx.on_end_pass(
         "android_ime",
         Arc::new(|ui| {
-            let key = Id::new("android_ime_output");
+            let key = Id::unique("android_ime_output");
             let focused = ui.memory(|memory| memory.focused());
             let previous = ui.data(|data| data.get_temp::<(Id, IMEOutput)>(key));
             let current = ui.ctx().output(|output| output.ime);

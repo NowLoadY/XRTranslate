@@ -864,7 +864,7 @@ fn render_plugins_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                                 })
                                 .inner;
                             response.widget_info(|| {
-                                egui::WidgetInfo::labeled(egui::WidgetType::Button, !clearing, hint)
+                                egui::WidgetInfo::labeled(egui::Role::Button, !clearing, hint)
                             });
                             if response.on_hover_text(hint).clicked() {
                                 app.lyrics_plugin.clear_cache();

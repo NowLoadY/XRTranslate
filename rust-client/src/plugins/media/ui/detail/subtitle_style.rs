@@ -105,7 +105,7 @@ pub(super) fn render(
                     .show(ui, |ui| {
                         changed |= components::searchable_options(
                             ui,
-                            ui.id().with("subtitle_fonts"),
+                            ui.make_persistent_id("subtitle_fonts"),
                             &mut style.font,
                             crate::ui::fonts::family_options(),
                         );

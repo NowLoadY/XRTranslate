@@ -136,7 +136,7 @@ impl Notifications {
 
     /// Install before rendering pages so plugins can post without host access.
     pub fn install(&self, ctx: &egui::Context) {
-        ctx.data_mut(|data| data.insert_temp(Id::new("notifications"), self.clone()));
+        ctx.data_mut(|data| data.insert_temp(Id::unique("notifications"), self.clone()));
     }
 
     pub fn show(&self, ctx: &egui::Context, language: crate::i18n::UiLanguage) {
@@ -162,7 +162,7 @@ impl Notifications {
         let text = error_text(notice.text(), language);
         let available = ctx.content_rect();
         let max_width = (available.width() - 48.0).clamp(48.0, 720.0);
-        let response = egui::Area::new(Id::new("notification_pill"))
+        let response = egui::Area::new(Id::unique("notification_pill"))
             .order(egui::Order::Tooltip)
             .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -24.0])
             .movable(false)
@@ -259,7 +259,7 @@ pub fn observe_error(ctx: &egui::Context, id: Id, message: &str, error: Option<&
     });
     if changed && let Some(error) = error {
         let notifications = ctx.data_mut(|data| {
-            data.get_temp_mut_or_default::<Notifications>(Id::new("notifications"))
+            data.get_temp_mut_or_default::<Notifications>(Id::unique("notifications"))
                 .clone()
         });
         notifications.error(message, error);

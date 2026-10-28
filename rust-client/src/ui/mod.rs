@@ -676,7 +676,7 @@ pub fn render_top_navigation(
 ) {
     let previous = ui
         .ctx()
-        .data(|data| data.get_temp::<Page>(egui::Id::new("top_navigation_selected")));
+        .data(|data| data.get_temp::<Page>(egui::Id::unique("top_navigation_selected")));
     let selected_before = navigation.page;
     let icons_only = ui.available_width() < 600.0;
     ui.horizontal(|ui| {
@@ -780,6 +780,6 @@ pub fn render_top_navigation(
             });
     });
     ui.ctx().data_mut(|data| {
-        data.insert_temp(egui::Id::new("top_navigation_selected"), selected_before)
+        data.insert_temp(egui::Id::unique("top_navigation_selected"), selected_before)
     });
 }

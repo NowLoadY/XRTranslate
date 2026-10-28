@@ -184,7 +184,7 @@ impl ModalDialog {
     }
 
     pub fn render(&mut self, ctx: &egui::Context, language: crate::i18n::UiLanguage) {
-        self.render_with_id(ctx, language, egui::Id::new("modal_dialog"));
+        self.render_with_id(ctx, language, egui::Id::unique("modal_dialog"));
     }
 
     pub(super) fn render_with_id(

@@ -25,8 +25,8 @@ pub(super) fn scroll_target(
                 || input.pointer.is_decidedly_dragging()
         });
     let geometry = ui.data(|data| data.get_temp::<(f32, f32)>(geometry_id));
-    let offset =
-        egui::scroll_area::State::load(ui.ctx(), scroll_id).map_or(0.0, |state| state.offset.y);
+    let offset = egui::scroll_area::State::load(ui.ctx(), scroll_id)
+        .map_or(0.0, |state| state.clamped_offset().y);
     let at_bottom =
         geometry.is_none_or(|(content, viewport)| offset >= (content - viewport).max(0.0) - 1.0);
     let follow_id = scroll_id.with("follow_latest");
@@ -95,6 +95,7 @@ mod tests {
                 vec![
                     egui::Event::PointerMoved(egui::pos2(300.0, 150.0)),
                     egui::Event::MouseWheel {
+                        source: egui::MouseWheelSource::Wheel,
                         unit: egui::MouseWheelUnit::Point,
                         delta: egui::vec2(0.0, wheel),
                         modifiers: egui::Modifiers::NONE,
@@ -117,7 +118,7 @@ mod tests {
                 "meeting_follow_test",
                 6.0,
                 target,
-                Some(|index: &usize| egui::Id::new(index)),
+                Some(|index: &usize| egui::Id::unique(index)),
                 |ui| {
                     let rows = (0..count).map(|index| (80.0, index)).collect::<Vec<_>>();
                     remember_geometry(ui, geometry, &rows, 6.0, height);
@@ -129,7 +130,10 @@ mod tests {
             );
         });
         output.textures_delta.clear();
-        egui::scroll_area::State::load(ctx, id).unwrap().offset.y
+        egui::scroll_area::State::load(ctx, id)
+            .unwrap()
+            .clamped_offset()
+            .y
     }
 
     #[test]

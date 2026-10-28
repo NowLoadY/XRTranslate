@@ -5,9 +5,9 @@ mod style_picker;
 
 pub(crate) use editor::PromptStudioController;
 pub(crate) use editor::access::editor_enabled;
-pub(crate) use runtime_trace::{clear_runtime_traces, record_runtime_trace, runtime_trace};
 #[cfg(target_os = "android")]
 pub(crate) use editor::access::unlock_editor;
+pub(crate) use runtime_trace::{clear_runtime_traces, record_runtime_trace, runtime_trace};
 pub(crate) use style_picker::apply as selected_style_profile;
 
 use crate::i18n::{UiLanguage, tr};
@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 use xrtranslate_prompt::{
-    PromptGraphDomain, TranslationPromptProfile, PromptTemplateLibrary, PromptTemplateProfile,
+    PromptGraphDomain, PromptTemplateLibrary, PromptTemplateProfile, TranslationPromptProfile,
 };
 
 #[derive(Clone, Debug)]
@@ -43,7 +43,7 @@ struct PageState {
 }
 
 fn state_id() -> Id {
-    Id::new("prompt_studio_page")
+    Id::unique("prompt_studio_page")
 }
 
 #[cfg(target_os = "android")]

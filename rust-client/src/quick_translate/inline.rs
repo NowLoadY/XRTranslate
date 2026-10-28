@@ -119,7 +119,7 @@ pub(super) fn show(
     };
     let mut interaction = None;
     let had_popup = egui::Popup::is_any_open(ctx);
-    let area = egui::Area::new(egui::Id::new("history_lookup"))
+    let area = egui::Area::new(egui::Id::unique("history_lookup"))
         .order(egui::Order::Foreground)
         .pivot(if above {
             egui::Align2::LEFT_BOTTOM
@@ -354,7 +354,7 @@ mod tests {
             );
             frame(&ctx, &mut lookup, Vec::new());
             frame(&ctx, &mut lookup, Vec::new());
-            let card = egui::containers::AreaState::load(&ctx, egui::Id::new("history_lookup"))
+            let card = egui::containers::AreaState::load(&ctx, egui::Id::unique("history_lookup"))
                 .unwrap()
                 .rect();
             assert!(
@@ -362,7 +362,7 @@ mod tests {
                     .contains_rect(card)
             );
             if popup_open {
-                egui::Popup::open_id(&ctx, egui::Id::new("language_menu"));
+                egui::Popup::open_id(&ctx, egui::Id::unique("language_menu"));
             }
             let position = if outside {
                 egui::pos2(30.0, 30.0)

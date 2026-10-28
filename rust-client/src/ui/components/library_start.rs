@@ -64,9 +64,7 @@ fn library_hint(ui: &mut Ui, hint: &LibraryHint<'_>) {
         caption,
         theme::text_weak(),
     );
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Image, true, hint.tooltip)
-    });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, hint.tooltip));
     response.on_hover_text(hint.tooltip);
 }
 

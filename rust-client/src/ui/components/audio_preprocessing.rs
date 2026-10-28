@@ -101,7 +101,7 @@ fn download_progress_button_with_loading(
 ) -> egui::Response {
     let background = ui.painter().add(egui::Shape::Noop);
     let fill = ui.painter().add(egui::Shape::Noop);
-    let spinner_id = ui.make_persistent_id("download_spinner");
+    let spinner_id = egui::IdSalt::new("download_spinner");
     let mut atoms = egui::Atoms::new(label);
     if loading {
         atoms.push_left(egui::Atom::custom(spinner_id, egui::vec2(14.0, 14.0)));
@@ -151,7 +151,7 @@ fn download_progress_button_with_loading(
 /// Per-input selection and resource actions; the host owns download lifecycle.
 pub(crate) fn audio_preprocessing_selector(
     ui: &mut egui::Ui,
-    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    id_salt: impl egui::AsIdSalt,
     selection: &mut Option<AudioPreprocessing>,
     default: AudioPreprocessing,
     allow_vocal_separation: bool,

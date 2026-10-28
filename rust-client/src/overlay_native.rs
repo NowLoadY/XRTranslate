@@ -292,9 +292,8 @@ impl OverlayWindow {
                 egui::Sense::click_and_drag(),
             );
             let response = response.on_hover_cursor(egui::CursorIcon::Grab);
-            response.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "XRTranslate")
-            });
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "XRTranslate"));
             if !self.companion.visible() {
                 let logo = rect.shrink(4.0);
                 ui.painter().circle_filled(
@@ -333,7 +332,7 @@ impl OverlayWindow {
                 let drag = ui
                     .interact(
                         Rect::from_min_size(bar.min, egui::vec2(26.0, bar.height())),
-                        ui.id().with("drag"),
+                        ui.make_persistent_id("drag"),
                         egui::Sense::drag(),
                     )
                     .on_hover_cursor(egui::CursorIcon::Grab);
@@ -625,7 +624,11 @@ impl OverlayWindow {
                             egui::Sense::hover(),
                         );
                         let drag = ui
-                            .interact(handle, ui.id().with("drag_results"), egui::Sense::drag())
+                            .interact(
+                                handle,
+                                ui.make_persistent_id("drag_results"),
+                                egui::Sense::drag(),
+                            )
                             .on_hover_cursor(egui::CursorIcon::Grab);
                         if drag.hovered() || drag.dragged() {
                             ui.painter().rect_filled(
@@ -1098,7 +1101,7 @@ fn resize(ui: &mut egui::Ui, rect: Rect, direction: egui::viewport::ResizeDirect
     let response = ui
         .interact(
             rect,
-            ui.id().with(("resize", direction as u8)),
+            ui.make_persistent_id(("resize", direction as u8)),
             egui::Sense::drag(),
         )
         .on_hover_cursor(cursor);

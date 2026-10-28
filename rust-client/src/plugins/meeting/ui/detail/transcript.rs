@@ -26,8 +26,8 @@ pub(super) fn render_transcript(
             .iter()
             .position(|segment| segment.id == target)
     });
-    let revision = egui::Id::new((&bundle.meeting.id, controller.bundle_revision()));
-    let measurements_id = egui::Id::new("meeting_full_transcript_measurements");
+    let revision = egui::IdSalt::new((&bundle.meeting.id, controller.bundle_revision()));
+    let measurements_id = egui::Id::unique("meeting_full_transcript_measurements");
     let mut measurements = ui
         .data_mut(|data| data.remove_temp::<virtual_list::Measurements<usize>>(measurements_id))
         .unwrap_or_default();
@@ -64,12 +64,12 @@ pub(super) fn render_transcript(
                         .iter()
                         .enumerate()
                         .map(|(index, segment)| virtual_list::MeasuredRow {
-                            id: egui::Id::new((
+                            id: egui::Id::unique((
                                 "meeting_transcript",
                                 &bundle.meeting.id,
                                 &segment.id,
                             )),
-                            signature: egui::Id::new((
+                            signature: egui::IdSalt::new((
                                 &segment.original_text,
                                 &segment.translated_text,
                                 segment.start_ms,

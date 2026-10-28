@@ -11,7 +11,7 @@ struct UnlockGesture {
 
 pub(super) fn observe(response: &Response, beta_enabled: bool, project_root: &Path) {
     let ctx = &response.ctx;
-    let id = Id::new("android_prompt_editor_unlock");
+    let id = Id::unique("android_prompt_editor_unlock");
     let frame = ctx.cumulative_frame_nr();
     let mut state = ctx.data_mut(|data| data.get_temp::<UnlockGesture>(id).unwrap_or_default());
     if frame > state.last_frame + 1

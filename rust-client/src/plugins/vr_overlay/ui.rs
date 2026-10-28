@@ -139,19 +139,19 @@ fn render_header(
     }
     crate::ui::notifications::observe_error(
         ui.ctx(),
-        egui::Id::new("steamvr_subtitles"),
+        egui::Id::unique("steamvr_subtitles"),
         tr("SteamVR subtitles are unavailable."),
         context.status.last_error.as_deref(),
     );
     crate::ui::notifications::observe_error(
         ui.ctx(),
-        egui::Id::new("steamvr_avatar"),
+        egui::Id::unique("steamvr_avatar"),
         tr("VR avatar is unavailable."),
         context.status.avatar_error.as_deref(),
     );
     crate::ui::notifications::observe_error(
         ui.ctx(),
-        egui::Id::new("steamvr_voice_objects"),
+        egui::Id::unique("steamvr_voice_objects"),
         if english {
             "Spatial voice controls are unavailable."
         } else {
@@ -566,14 +566,14 @@ fn spatial_preview(
     let move_response = ui
         .interact(
             visible,
-            ui.id().with("vr_preview_move"),
+            ui.make_persistent_id("vr_preview_move"),
             egui::Sense::click_and_drag(),
         )
         .on_hover_cursor(egui::CursorIcon::ResizeVertical);
     let resize = ui
         .interact(
             handle,
-            ui.id().with("vr_preview_resize"),
+            ui.make_persistent_id("vr_preview_resize"),
             egui::Sense::drag(),
         )
         .on_hover_cursor(egui::CursorIcon::ResizeNwSe);
@@ -602,7 +602,7 @@ fn spatial_preview(
         [settings.background_color, settings.border_color],
     );
 
-    let edge_id = ui.id().with("vr_preview_color_edge");
+    let edge_id = ui.make_persistent_id("vr_preview_color_edge");
     let edge_at = |pos: egui::Pos2| {
         let on_card_edge = card_rects
             .iter()

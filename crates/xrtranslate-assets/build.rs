@@ -188,9 +188,27 @@ fn runtime(card: &Value) -> String {
         }
         "sherpa-offline-asr" => {
             assert_eq!(capability, "asr");
-            assert!(has_role("Weights") && has_role("Tokenizer"));
+            assert!(has_role("Tokenizer"));
+            let model = match field(value, "model").as_str().expect("Sherpa model") {
+                "sense-voice" => {
+                    assert!(has_role("Weights"));
+                    "SherpaOfflineModel::SenseVoice"
+                }
+                "nemo-transducer" => {
+                    assert!(
+                        has_role("EncoderGraph")
+                            && has_role("DecoderGraph")
+                            && has_role("JoinerGraph")
+                    );
+                    "SherpaOfflineModel::NemoTransducer"
+                }
+                other => panic!("unknown Sherpa model {other}"),
+            };
             assert_eq!(delivery(), "AsrDelivery::Utterance");
-            "ModelRuntime::SherpaOfflineAsr { delivery: AsrDelivery::Utterance }".into()
+            format!(
+                "ModelRuntime::SherpaOfflineAsr {{ delivery: AsrDelivery::Utterance, model: {model}, leading_silence_ms: {} }}",
+                number(field(value, "leading_silence_ms"))
+            )
         }
         "llama-text-chat" => {
             assert_eq!(capability, "translation");

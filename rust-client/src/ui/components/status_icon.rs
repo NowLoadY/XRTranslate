@@ -38,7 +38,7 @@ pub(crate) fn status_icon(ui: &mut egui::Ui, state: StatusIcon, label: &str) -> 
     egui::Image::new(state.artwork())
         .tint(theme::text_normal())
         .paint_at(ui, rect.shrink(6.0));
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, label));
     crate::ui::automation::record_output(
         ui,
         label,

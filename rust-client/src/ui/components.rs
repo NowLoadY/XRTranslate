@@ -106,7 +106,7 @@ fn card_frame(ctx: &egui::Context) -> Frame {
 
 pub fn responsive_settings_button(
     ui: &mut Ui,
-    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    id_salt: impl egui::AsIdSalt,
     compact: bool,
     language: crate::i18n::UiLanguage,
 ) -> egui::collapsing_header::CollapsingState {
@@ -518,7 +518,7 @@ pub fn animated_button_enabled(ui: &mut Ui, text: &str, enabled: bool) -> egui::
 
 pub fn animated_button_enabled_with_id(
     ui: &mut Ui,
-    id_source: impl std::hash::Hash + std::fmt::Debug,
+    id_source: impl egui::AsIdSalt,
     text: &str,
     enabled: bool,
 ) -> egui::Response {
@@ -701,7 +701,7 @@ pub fn primary_button_enabled(ui: &mut Ui, text: &str, enabled: bool) -> egui::R
 
 pub fn primary_button_enabled_with_id(
     ui: &mut Ui,
-    id_source: impl std::hash::Hash + std::fmt::Debug,
+    id_source: impl egui::AsIdSalt,
     text: &str,
     enabled: bool,
 ) -> egui::Response {
@@ -974,7 +974,7 @@ pub fn secondary_button_enabled(ui: &mut Ui, text: &str, enabled: bool) -> egui:
 
 pub fn combobox_ui<R>(
     ui: &mut Ui,
-    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    id_salt: impl egui::AsIdSalt,
     selected_text: impl Into<String>,
     add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> egui::InnerResponse<Option<R>> {
@@ -983,7 +983,7 @@ pub fn combobox_ui<R>(
 
 pub fn combobox_ui_with_width<R>(
     ui: &mut Ui,
-    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    id_salt: impl egui::AsIdSalt,
     selected_text: impl Into<String>,
     width: Option<f32>,
     add_contents: impl FnOnce(&mut Ui) -> R,
@@ -1140,7 +1140,7 @@ pub fn searchable_options<T: PartialEq + Clone>(
 
 pub fn searchable_combobox<T: PartialEq + Clone>(
     ui: &mut Ui,
-    id: impl std::hash::Hash + std::fmt::Debug,
+    id: impl egui::AsIdSalt,
     selected_text: impl Into<String>,
     selected: &mut T,
     options: &[(T, String)],
@@ -1150,7 +1150,7 @@ pub fn searchable_combobox<T: PartialEq + Clone>(
 
 pub fn searchable_combobox_with_width<T: PartialEq + Clone>(
     ui: &mut Ui,
-    id: impl std::hash::Hash + std::fmt::Debug,
+    id: impl egui::AsIdSalt,
     selected_text: impl Into<String>,
     selected: &mut T,
     options: &[(T, String)],
@@ -1161,7 +1161,7 @@ pub fn searchable_combobox_with_width<T: PartialEq + Clone>(
 
 pub fn searchable_combobox_with_options<T: PartialEq + Clone>(
     ui: &mut Ui,
-    id: impl std::hash::Hash + std::fmt::Debug,
+    id: impl egui::AsIdSalt,
     selected_text: impl Into<String>,
     selected: &mut T,
     options: &[(T, String)],
@@ -1444,7 +1444,7 @@ pub(crate) fn error_dialog(
     if previous != details || frame > last_frame + 1 {
         dismissed = false;
     }
-    let acknowledged_id = egui::Id::new("acknowledged_error");
+    let acknowledged_id = egui::Id::unique("acknowledged_error");
     if ctx
         .data(|data| data.get_temp::<(String, u64)>(acknowledged_id))
         .is_some_and(|(message, seen)| message == details && frame <= seen + 1)
@@ -1452,7 +1452,7 @@ pub(crate) fn error_dialog(
         dismissed = true;
     }
     let pass = ctx.cumulative_pass_nr();
-    let presented_id = egui::Id::new("error_presented_pass");
+    let presented_id = egui::Id::unique("error_presented_pass");
     if !dismissed && ctx.data(|data| data.get_temp::<u64>(presented_id)) != Some(pass) {
         ctx.data_mut(|data| data.insert_temp(presented_id, pass));
         let mut modal = crate::ui::modal::ModalDialog::error(language, details, None);
@@ -1498,7 +1498,7 @@ pub fn validation_notice(ui: &mut Ui, language: crate::i18n::UiLanguage, details
 /// Shared source-language picker; only translation exposes bidirectional routing.
 pub fn source_language_selector(
     ui: &mut Ui,
-    id: impl std::hash::Hash + std::fmt::Debug,
+    id: impl egui::AsIdSalt,
     source: &mut String,
     available: xrtranslate_engine::language::LanguageSet,
     bidirectional: bool,
@@ -1509,7 +1509,7 @@ pub fn source_language_selector(
 
 fn source_language_selector_inner(
     ui: &mut Ui,
-    id: impl std::hash::Hash + std::fmt::Debug,
+    id: impl egui::AsIdSalt,
     source: &mut String,
     available: xrtranslate_engine::language::LanguageSet,
     bidirectional: bool,
@@ -1851,7 +1851,7 @@ fn translation_language_selector_inner(
 
 pub fn language_selector(
     ui: &mut Ui,
-    id: impl std::hash::Hash + std::fmt::Debug,
+    id: impl egui::AsIdSalt,
     language: &mut crate::i18n::UiLanguage,
 ) -> bool {
     let options: Vec<_> = crate::i18n::UiLanguage::ALL
@@ -1872,7 +1872,7 @@ pub fn danger_button_enabled(ui: &mut Ui, text: &str, enabled: bool) -> egui::Re
 
 pub fn danger_button_enabled_with_id(
     ui: &mut Ui,
-    id_source: impl std::hash::Hash + std::fmt::Debug,
+    id_source: impl egui::AsIdSalt,
     text: &str,
     enabled: bool,
 ) -> egui::Response {
@@ -2312,7 +2312,7 @@ pub fn download_mirror_toggle(
 
 pub fn resource_delete_button(
     ui: &mut Ui,
-    id_source: impl std::hash::Hash + std::fmt::Debug,
+    id_source: impl egui::AsIdSalt,
     language: crate::i18n::UiLanguage,
 ) -> egui::Response {
     delete_icon_button(ui, id_source, crate::i18n::tr(language, "Delete"))
@@ -2321,7 +2321,7 @@ pub fn resource_delete_button(
 /// Shared trash button; callers explain what is removed in the tooltip.
 pub fn delete_icon_button(
     ui: &mut Ui,
-    id_source: impl std::hash::Hash + std::fmt::Debug,
+    id_source: impl egui::AsIdSalt,
     tooltip: &str,
 ) -> egui::Response {
     ui.push_id(id_source, |ui| delete_button(ui, tooltip)).inner
@@ -2387,7 +2387,7 @@ fn decorate_unavailable(
 
 pub fn text_edit_ui(
     ui: &mut Ui,
-    id_source: impl std::hash::Hash + std::fmt::Debug,
+    id_source: impl egui::AsIdSalt,
     text_edit: egui::TextEdit<'_>,
 ) -> egui::Response {
     let is_hand_drawn = crate::ui::theme::is_hand_drawn(ui.ctx());
@@ -3150,7 +3150,7 @@ pub fn compact_icon_button(
             response,
         );
         response.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), active, label)
+            egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), active, label)
         });
         let accent = accent.unwrap_or_else(theme::primary);
         let hover = AnimationSystem::hover(

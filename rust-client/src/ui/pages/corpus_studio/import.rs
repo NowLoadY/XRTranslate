@@ -111,7 +111,7 @@ pub(super) fn render(
     let ready = std::cell::Cell::new(false);
     let close = crate::ui::modal::dialog(
         ctx,
-        egui::Id::new("import_terms"),
+        egui::Id::unique("import_terms"),
         language,
         tr(language, "Paste terms"),
         |ui| {

@@ -14,7 +14,7 @@ impl AvatarPlugin {
         enabled: bool,
     ) -> bool {
         let before = self.settings.clone();
-        let selection_id = ui.id().with("avatar_region");
+        let selection_id = ui.make_persistent_id("avatar_region");
         let mut selected = ui
             .data(|data| data.get_temp::<usize>(selection_id))
             .unwrap_or(1);

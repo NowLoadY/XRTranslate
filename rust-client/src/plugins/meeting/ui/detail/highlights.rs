@@ -24,7 +24,7 @@ pub(super) fn note_editor(
             ui,
             "highlight_note",
             egui::TextEdit::multiline(draft)
-                .id(egui::Id::new(("meeting_note", &marker.id)))
+                .id(egui::Id::unique(("meeting_note", &marker.id)))
                 .hint_text(tr(language, "Add a note (optional)"))
                 .desired_rows(2)
                 .desired_width(f32::INFINITY),

@@ -15,8 +15,8 @@ mod translation;
 mod tts;
 mod wav;
 
-#[cfg(feature = "sensevoice")]
-pub use asr::SenseVoiceAdapter;
+#[cfg(feature = "sherpa")]
+pub use asr::SherpaOfflineAsrAdapter;
 pub use asr::{
     AsrOptions, AsrTranscript, AsrVocabularyBias, OpenAiAsrAdapter, Qwen3AsrAdapter,
     QwenAudioFlashAdapter, QwenAudioStreamingAdapter, is_probable_asr_hallucination,
@@ -26,10 +26,10 @@ pub use http::{AsyncHttpClient, HttpRequest, HttpResponse, MultipartBody, Reqwes
 pub use openai::{ChatCompletion, OpenAiCompatibleClient};
 pub use translation::{
     PromptCondition, PromptGraphError, PromptLink, PromptMessage, PromptMessageRole, PromptNode,
-    PromptNodeGraph, PromptNodeKind, PromptTarget, PromptTemplateLibrary,
-    PromptTemplateProfile, PromptTurn, PromptVariable, SurroundingSource, TranslationAdapter,
-    TranslationOptions, TranslationPromptBlock, TranslationPromptContext, TranslationPromptProfile,
-    TranslationResult, build_translation_messages, is_probable_translation_context_leak,
+    PromptNodeGraph, PromptNodeKind, PromptTarget, PromptTemplateLibrary, PromptTemplateProfile,
+    PromptTurn, PromptVariable, SurroundingSource, TranslationAdapter, TranslationOptions,
+    TranslationPromptBlock, TranslationPromptContext, TranslationPromptProfile, TranslationResult,
+    build_translation_messages, is_probable_translation_context_leak,
 };
 pub use tts::{
     Audio8ExecutionDevice, Audio8OnnxAdapter, Audio8SynthesisOptions, OnnxExecutionDevice,

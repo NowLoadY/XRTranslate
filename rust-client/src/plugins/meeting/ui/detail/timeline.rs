@@ -139,14 +139,14 @@ pub(super) fn render_timeline(
     for draft in &note_drafts {
         draft.hash(&mut drafts_hash);
     }
-    let revision = egui::Id::new((
+    let revision = egui::IdSalt::new((
         &bundle.meeting.id,
         controller.bundle_revision(),
         &query,
         controller.highlights_only,
         drafts_hash.finish(),
     ));
-    let measurements_id = egui::Id::new("meeting_timeline_measurements");
+    let measurements_id = egui::Id::unique("meeting_timeline_measurements");
     let mut measurements = ui
         .data_mut(|data| data.remove_temp::<virtual_list::Measurements<Entry>>(measurements_id))
         .unwrap_or_default();
@@ -273,7 +273,7 @@ pub(super) fn render_timeline(
 }
 
 fn row_id(bundle: &MeetingBundle, kind: &str, id: &str) -> egui::Id {
-    egui::Id::new(("meeting_row", &bundle.meeting.id, kind, id))
+    egui::Id::unique(("meeting_row", &bundle.meeting.id, kind, id))
 }
 
 fn row_geometry(
@@ -289,14 +289,14 @@ fn row_geometry(
             let topic = &bundle.topics[index];
             (
                 row_id(bundle, "topic", &topic.id),
-                egui::Id::new(&topic.title),
+                egui::IdSalt::new(&topic.title),
             )
         }
         Entry::Waiting(index) => (
             row_id(bundle, "waiting", &bundle.topics[index].id),
-            egui::Id::NULL,
+            egui::IdSalt::new(()),
         ),
-        Entry::Empty => (row_id(bundle, "empty", ""), egui::Id::new(empty_text)),
+        Entry::Empty => (row_id(bundle, "empty", ""), egui::IdSalt::new(empty_text)),
         Entry::Segment(index) => {
             let segment = &bundle.segments[index];
             let id = row_id(bundle, "segment", &segment.id);
@@ -318,7 +318,7 @@ fn row_geometry(
                 .collect::<Vec<_>>();
             (
                 id,
-                egui::Id::new((
+                egui::IdSalt::new((
                     &segment.original_text,
                     &segment.translated_text,
                     segment.is_final,

@@ -111,6 +111,13 @@ pub enum AsrPromptStyle {
     QwenAsr,
 }
 
+/// Model graphs understood by the shared sherpa-onnx offline recognizer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum SherpaOfflineModel {
+    SenseVoice,
+    NemoTransducer,
+}
+
 pub use xrtranslate_prompt::TranslationPromptProfile;
 
 /// Executable interface selected by the model card, independent of its name.
@@ -126,6 +133,8 @@ pub enum ModelRuntime {
     },
     SherpaOfflineAsr {
         delivery: AsrDelivery,
+        model: SherpaOfflineModel,
+        leading_silence_ms: u32,
     },
     PaddleOcrOnnx,
     UvrMdxOnnx,
@@ -198,6 +207,9 @@ impl ModelRuntime {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize)]
 pub enum ModelFileRole {
     Weights,
+    EncoderGraph,
+    DecoderGraph,
+    JoinerGraph,
     MultimodalProjection,
     RuntimeManifest,
     Tokenizer,

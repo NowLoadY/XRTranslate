@@ -421,7 +421,7 @@ impl Page {
                                     let response = ui
                                         .interact(
                                             words.response.rect,
-                                            ui.id().with("open_word"),
+                                            ui.make_persistent_id("open_word"),
                                             egui::Sense::click(),
                                         )
                                         .on_hover_cursor(egui::CursorIcon::PointingHand);

@@ -326,7 +326,97 @@
     },
     "runtime": {
       "kind": "sherpa-offline-asr",
-      "delivery": "utterance"
+      "delivery": "utterance",
+      "model": "sense-voice",
+      "leading_silence_ms": 0
+    }
+  },
+  {
+    "id": "bark3-int8-onnx",
+    "rust_variant": "Bark3Int8Onnx",
+    "const_name": "BARK3_INT8_ONNX",
+    "label": "Bark 3.0 · INT8 ONNX",
+    "capability": "asr",
+    "level": "small",
+    "tier_default": false,
+    "estimated_vram_bytes": 0,
+    "parameters_millions": 600,
+    "benchmark": {
+      "benchmark": "AMI",
+      "metric": "WER",
+      "score_centipercent": 782,
+      "source_url": "https://huggingface.co/ConwayResearch/Underdog-Bark-3.0#benchmarks",
+      "note": "Official original Bark 3.0 result; this INT8 ONNX export was not evaluated on AMI."
+    },
+    "provider": "qwen3-gguf",
+    "languages": [
+      "en"
+    ],
+    "voice_presets": [],
+    "hardware": {
+      "accelerator": "Cpu",
+      "minimum_memory_bytes": 0
+    },
+    "audio_output": null,
+    "relative_directory": "Bark-3.0-INT8-ONNX",
+    "required_files": [
+      {
+        "role": "EncoderGraph",
+        "relative_path": "encoder.int8.onnx",
+        "purpose": "Bark 3.0 INT8 ONNX encoder",
+        "bytes": 630748293
+      },
+      {
+        "role": "DecoderGraph",
+        "relative_path": "decoder.int8.onnx",
+        "purpose": "Bark 3.0 INT8 ONNX prediction network",
+        "bytes": 47658545
+      },
+      {
+        "role": "JoinerGraph",
+        "relative_path": "joiner.int8.onnx",
+        "purpose": "Bark 3.0 INT8 ONNX TDT joiner",
+        "bytes": 6123465
+      },
+      {
+        "role": "Tokenizer",
+        "relative_path": "tokens.txt",
+        "purpose": "Bark 3.0 token vocabulary",
+        "bytes": 93939
+      },
+      {
+        "role": "License",
+        "relative_path": "LICENSE",
+        "purpose": "CC BY 4.0 license",
+        "bytes": 18657
+      },
+      {
+        "role": "License",
+        "relative_path": "NOTICE",
+        "purpose": "Bark 3.0 upstream attribution",
+        "bytes": 603
+      }
+    ],
+    "source": {
+      "repository": "velddev/Underdog-Bark-3.0-sherpa-onnx",
+      "revision": "3ae3af1a7ae2cb3a47f23498f83bb67ecb30a198",
+      "remote_directory": "",
+      "include_patterns": [
+        "encoder.int8.onnx",
+        "decoder.int8.onnx",
+        "joiner.int8.onnx",
+        "tokens.txt",
+        "LICENSE",
+        "NOTICE"
+      ],
+      "file_overrides": [],
+      "archive": null
+    },
+    "runtime": {
+      "kind": "sherpa-offline-asr",
+      "delivery": "utterance",
+      "model": "nemo-transducer",
+      "leading_silence_ms": 250
     }
   },
   {

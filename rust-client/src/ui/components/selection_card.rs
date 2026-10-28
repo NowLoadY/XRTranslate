@@ -173,9 +173,8 @@ pub fn show(
             Sense::hover()
         },
     );
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, &name)
-    });
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, selected, &name));
     painter.text(
         Pos2::new(rect.left() + 22.0, footer.center().y),
         Align2::LEFT_CENTER,

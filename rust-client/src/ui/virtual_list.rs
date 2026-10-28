@@ -11,7 +11,7 @@ pub struct MeasuredRow<T> {
     /// Stable identity across insertion, filtering and reordering.
     pub id: egui::Id,
     /// Content and local view state that affect this row's height.
-    pub signature: egui::Id,
+    pub signature: egui::IdSalt,
     pub entry: T,
 }
 
@@ -30,7 +30,7 @@ struct Metrics {
 #[derive(Clone)]
 pub struct Measurements<T> {
     metrics: Option<Metrics>,
-    revision: Option<egui::Id>,
+    revision: Option<egui::IdSalt>,
     rows: Arc<[(f32, MeasuredRow<T>)]>,
 }
 
@@ -54,7 +54,7 @@ impl<T: Clone> Measurements<T> {
     pub fn prepare(
         &mut self,
         ui: &egui::Ui,
-        revision: egui::Id,
+        revision: egui::IdSalt,
         language: crate::i18n::UiLanguage,
         entries: impl FnOnce() -> Vec<MeasuredRow<T>>,
         measure: impl Fn(&MeasuredRow<T>) -> f32,
@@ -214,6 +214,7 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
     mut render_row: impl FnMut(&mut egui::Ui, usize, f32, &T),
 ) -> Option<(usize, usize)> {
     let anchor_id = ui.make_persistent_id((id_salt, "visible_row_anchor"));
+    let offset_id = anchor_id.with("pending_offset");
     let gesture_id = ui.make_persistent_id((id_salt, "merge"));
     let mut gesture = ui.data_mut(|data| {
         let gesture = data.get_temp::<MergeGesture>(gesture_id);
@@ -229,6 +230,7 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
         gesture = None;
     }
     let mut confirmed = None;
+    let was_merging = gesture.is_some();
     let touch = cfg!(target_os = "android") || ui.input(|input| input.has_touch_screen());
     let grip_width = if touch && merge.as_ref().is_some_and(|merge| merge.enabled) {
         40.0
@@ -238,12 +240,15 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
     let mut scroll = egui::ScrollArea::vertical()
         .id_salt(id_salt)
         .auto_shrink([false, false]);
+    if let Some(offset) = ui.data_mut(|data| data.remove_temp::<f32>(offset_id)) {
+        scroll = scroll.vertical_scroll_offset(offset);
+    }
     if let Some(gesture) = &gesture {
         scroll = scroll
             .scroll_source(egui::scroll_area::ScrollSource::NONE)
             .vertical_scroll_offset(gesture.scroll_offset);
     }
-    let mut output = scroll.show_viewport(ui, |ui, viewport| {
+    let output = scroll.show_viewport(ui, |ui, viewport| {
         let content_width = ui.available_width();
         ui.set_max_width((content_width - grip_width).max(1.0));
         let prepared = prepare_rows(ui);
@@ -293,7 +298,7 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
                 if correction.abs() > 0.5 {
                     anchor.scroll_offset = offset;
                     ui.data_mut(|data| data.insert_temp(anchor_id, anchor));
-                    return Some(correction);
+                    return Some(offset);
                 }
             }
             let index = offsets
@@ -434,14 +439,17 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
         None
     });
     if let Some(gesture) = gesture {
-        // Existing native scroll animations also need their offset held in place.
-        output.state.offset.y = gesture.scroll_offset;
-        output.state.store(ui.ctx(), output.id);
+        if !was_merging {
+            // Cancel native kinetic/target animations once when a merge starts.
+            // The builder restores the captured offset on the replacement pass.
+            egui::scroll_area::State::default().store(ui.ctx(), output.id);
+            ui.ctx()
+                .request_discard("Hold subtitle scroll position while merging");
+        }
         ui.data_mut(|data| data.insert_temp(gesture_id, gesture));
     }
-    if let Some(correction) = output.inner {
-        output.state.offset.y += correction;
-        output.state.store(ui.ctx(), output.id);
+    if let Some(offset) = output.inner {
+        ui.data_mut(|data| data.insert_temp(offset_id, offset));
         // Remeasure with the corrected native offset before presenting this frame.
         ui.ctx()
             .request_discard("Preserve the visible row after its preceding rows changed height");
@@ -481,7 +489,7 @@ mod tests {
             |ui| {
                 result = measurements.prepare(
                     ui,
-                    egui::Id::new(revision),
+                    egui::IdSalt::new(revision),
                     language,
                     || {
                         built.set(built.get() + 1);
@@ -489,8 +497,8 @@ mod tests {
                             .iter()
                             .enumerate()
                             .map(|(index, (id, content))| MeasuredRow {
-                                id: egui::Id::new(id),
-                                signature: egui::Id::new(content),
+                                id: egui::Id::unique(id),
+                                signature: egui::IdSalt::new(content),
                                 entry: index,
                             })
                             .collect()
@@ -698,6 +706,7 @@ mod tests {
                 vec![
                     egui::Event::PointerMoved(egui::pos2(250.0, 200.0)),
                     egui::Event::MouseWheel {
+                        source: egui::MouseWheelSource::Wheel,
                         unit: egui::MouseWheelUnit::Point,
                         delta: egui::vec2(0.0, -120.0),
                         modifiers: Default::default(),
@@ -717,7 +726,7 @@ mod tests {
                 "subtitles",
                 8.0,
                 target,
-                Some(|index: &usize| egui::Id::new(index)),
+                Some(|index: &usize| egui::Id::unique(index)),
                 |_| {
                     (0..50)
                         .map(|index| (if translated && index < 20 { 80.0 } else { 40.0 }, index))
@@ -734,7 +743,10 @@ mod tests {
         output.textures_delta.clear();
         let (index, top) = first.expect("The final pass renders visible subtitles");
         (
-            egui::scroll_area::State::load(ctx, id).unwrap().offset.y,
+            egui::scroll_area::State::load(ctx, id)
+                .unwrap()
+                .clamped_offset()
+                .y,
             index,
             top,
             output.platform_output.num_completed_passes,

@@ -53,7 +53,7 @@ fn render_fullscreen(
     language: crate::i18n::UiLanguage,
     ui: &mut egui::Ui,
 ) {
-    let controls_id = ui.id().with("fullscreen_controls_rect");
+    let controls_id = ui.make_persistent_id("fullscreen_controls_rect");
     let controls_rect = ui.data(|data| data.get_temp::<egui::Rect>(controls_id));
     let interaction = ui.input(|input| {
         input.pointer.delta() != egui::Vec2::ZERO
@@ -269,7 +269,7 @@ fn playback_controls(
                 );
                 response.widget_info(|| {
                     egui::WidgetInfo::selected(
-                        egui::WidgetType::Checkbox,
+                        egui::Role::CheckBox,
                         ui.is_enabled(),
                         controller.show_subtitles,
                         tr(language, "Subtitles"),

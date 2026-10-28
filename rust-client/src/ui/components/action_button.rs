@@ -146,9 +146,7 @@ fn icon_button_with_colors(
     let response = ui.add_sized(Vec2::splat(diameter), egui::Button::new("").frame(false));
     let response =
         crate::ui::automation::button_response(ui, response.id, label, ui.is_enabled(), response);
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
-    });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
     let hover = AnimationSystem::hover(
         ui.ctx(),
         response.id.with("hover"),

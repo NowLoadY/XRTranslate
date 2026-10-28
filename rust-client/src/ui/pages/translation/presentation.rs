@@ -282,8 +282,7 @@ fn paint_lyric(ui: &mut egui::Ui, galley: std::sync::Arc<egui::Galley>, color: C
         egui::vec2(ui.available_width(), galley.size().y),
         egui::Sense::hover(),
     );
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, galley.text()));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, galley.text()));
     if ui.is_rect_visible(rect) {
         ui.painter().galley(rect.center_top(), galley, color);
     }

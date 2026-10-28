@@ -390,7 +390,7 @@ impl Guide {
 }
 
 fn state_id() -> Id {
-    Id::new("application_companion")
+    Id::unique("application_companion")
 }
 
 pub(crate) fn process_commands(app: &mut crate::XRTranslateApp) {
@@ -546,8 +546,8 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         app.background_image.texture_id(),
     );
     let small = dock.map_or(small, |spot| spot.radius);
-    let available = !hidden
-        && (state.stage != Stage::Ready || dock.is_some() || state.clock < state.resume_at);
+    let available =
+        !hidden && (state.stage != Stage::Ready || dock.is_some() || state.clock < state.resume_at);
     if (available || (vr_active && !hidden)) && !paused && !ctx.text_edit_focused() {
         state.announce_pending();
         state.read_mail(&mut app.companion_inbox);

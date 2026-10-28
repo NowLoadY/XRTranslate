@@ -152,7 +152,7 @@ impl Capsule {
             self.expansion_ready = false;
         }
         let expansion = ctx.animate_bool_with_time(
-            egui::Id::new("quick_capsule_expanded"),
+            egui::Id::unique("quick_capsule_expanded"),
             self.expansion_ready,
             0.38,
         );
@@ -267,7 +267,11 @@ impl Capsule {
                 body.center(),
                 self.started.elapsed().as_secs_f32(),
             );
-            let drag = ui.interact(body, ui.id().with("quick_loading"), Sense::click_and_drag());
+            let drag = ui.interact(
+                body,
+                ui.make_persistent_id("quick_loading"),
+                Sense::click_and_drag(),
+            );
             if drag.drag_started() {
                 self.dragging = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
@@ -354,11 +358,15 @@ impl Capsule {
                     ctx.request_repaint();
                 }
                 let result = ui
-                    .interact(middle, ui.id().with("quick_text"), Sense::click_and_drag())
+                    .interact(
+                        middle,
+                        ui.make_persistent_id("quick_text"),
+                        Sense::click_and_drag(),
+                    )
                     .on_hover_cursor(egui::CursorIcon::Grab);
                 result.widget_info(|| {
                     egui::WidgetInfo::labeled(
-                        egui::WidgetType::Button,
+                        egui::Role::Button,
                         self.state.error.is_none(),
                         self.state
                             .copy_error
@@ -512,7 +520,7 @@ fn option(ui: &mut egui::Ui, label: &str, selected: bool, enabled: bool) -> egui
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), Sense::click())
         })
         .inner;
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
     let hover = ui.ctx().animate_bool_with_time(
         response.id.with("hover"),
         enabled && response.hovered(),
@@ -549,10 +557,10 @@ fn icon(
 ) -> egui::Response {
     let response = ui
         .add_enabled_ui(enabled, |ui| {
-            ui.interact(rect, ui.id().with(id), Sense::click())
+            ui.interact(rect, ui.make_persistent_id(id), Sense::click())
         })
         .inner;
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
     let circle = Rect::from_center_size(rect.center(), Vec2::splat(34.0));
     if active || response.hovered() {
         ui.painter()

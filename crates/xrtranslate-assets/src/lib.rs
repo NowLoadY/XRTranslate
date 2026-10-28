@@ -14,9 +14,9 @@ mod resolve;
 pub mod voices;
 
 pub use catalog::{
-    AUDIO8_TTS_ONNX_FP16, AsrDelivery, AsrPromptStyle, CONFUCIUS4_R2T2_Q8_GGUF, CPU_MODEL_HARDWARE,
-    DEFAULT_GGUF_MANIFEST, GTCRN_ONNX, HAIDASS_TRANSLATE_143M_Q8_GGUF, HUNYUAN_MT_7B_GGUF,
-    HUNYUAN_MT_GGUF, HUNYUAN_MT_Q2K_GGUF, MANAGED_LOCAL_MODEL_HARDWARE,
+    AUDIO8_TTS_ONNX_FP16, AsrDelivery, AsrPromptStyle, BARK3_INT8_ONNX, CONFUCIUS4_R2T2_Q8_GGUF,
+    CPU_MODEL_HARDWARE, DEFAULT_GGUF_MANIFEST, GTCRN_ONNX, HAIDASS_TRANSLATE_143M_Q8_GGUF,
+    HUNYUAN_MT_7B_GGUF, HUNYUAN_MT_GGUF, HUNYUAN_MT_Q2K_GGUF, MANAGED_LOCAL_MODEL_HARDWARE,
     MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES, MANAGED_SMALL_MODEL_HARDWARE,
     MANAGED_SMALL_MODEL_MINIMUM_VRAM_BYTES, MODEL_ASSET_CATALOG, ModelAccelerator,
     ModelArchiveEntry, ModelArchiveSource, ModelAssetId, ModelAssetManifest, ModelAudioOutput,
@@ -24,8 +24,8 @@ pub use catalog::{
     ModelHardwareRequirements, ModelLevel, ModelRuntime, ModelSource, ModelVoicePreset,
     OPENVOICE_V2_ONNX_FP16, OPENVOICE_V2_ZH_ONNX_FP16, OPENVOICE_V3_ONNX_FP16,
     PADDLE_OCR_VL_16_GGUF, PP_OCRV6_SMALL_ONNX, QWEN3_ASR_06B_Q8_GGUF, QWEN3_ASR_GGUF,
-    RequiredModelFile, SENSEVOICE_SMALL_INT8_ONNX, TranslationPromptProfile, UVR_MDXNET_9482_ONNX,
-    manifest_for, manifests_for_capability, tier_default_manifest,
+    RequiredModelFile, SENSEVOICE_SMALL_INT8_ONNX, SherpaOfflineModel, TranslationPromptProfile,
+    UVR_MDXNET_9482_ONNX, manifest_for, manifests_for_capability, tier_default_manifest,
 };
 pub use install::{
     AtomicInstallError, DownloadProgress, ModelDownloadError, NativeModelInstaller,

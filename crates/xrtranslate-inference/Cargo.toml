@@ -9,7 +9,7 @@ description = "llama.cpp and OpenAI-compatible inference adapters for XRTranslat
 [features]
 default = []
 managed-ort = ["ort/load-dynamic"]
-sensevoice = ["dep:sherpa-onnx"]
+sherpa = ["dep:sherpa-onnx"]
 
 [dependencies]
 base64 = "0.22.1"

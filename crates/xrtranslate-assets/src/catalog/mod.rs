@@ -7,7 +7,7 @@ pub use types::{
     MANAGED_SMALL_MODEL_MINIMUM_VRAM_BYTES, ModelAccelerator, ModelArchiveEntry,
     ModelArchiveSource, ModelAssetManifest, ModelAudioOutput, ModelAudioSampleFormat,
     ModelBenchmark, ModelCapability, ModelFileRole, ModelFileSource, ModelHardwareRequirements,
-    ModelLevel, ModelRuntime, ModelSource, ModelVoicePreset, RequiredModelFile,
+    ModelLevel, ModelRuntime, ModelSource, ModelVoicePreset, RequiredModelFile, SherpaOfflineModel,
     TranslationPromptProfile,
 };
 

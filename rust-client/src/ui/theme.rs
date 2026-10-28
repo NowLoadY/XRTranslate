@@ -2,7 +2,7 @@ use eframe::egui::{self, Color32, CornerRadius, Id, Margin, Stroke, Visuals};
 use serde::{Deserialize, Serialize};
 
 fn ui_theme_id() -> Id {
-    Id::new("xrtranslate_ui_theme")
+    Id::unique("xrtranslate_ui_theme")
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,12 +211,12 @@ pub fn surface_panel() -> Color32 {
 }
 
 pub fn set_custom_background(ctx: &egui::Context, visible: bool) {
-    ctx.data_mut(|data| data.insert_temp(Id::new("custom_background_visible"), visible));
+    ctx.data_mut(|data| data.insert_temp(Id::unique("custom_background_visible"), visible));
 }
 
 pub fn panel_fill(ctx: &egui::Context, default: Color32) -> Color32 {
     if ctx.data(|data| {
-        data.get_temp::<bool>(Id::new("custom_background_visible"))
+        data.get_temp::<bool>(Id::unique("custom_background_visible"))
             .unwrap_or(false)
     }) {
         surface_panel()

@@ -52,7 +52,7 @@ pub(super) fn render(
     };
     crate::ui::notifications::observe_error(
         ui.ctx(),
-        egui::Id::new("media_task_error"),
+        egui::Id::unique("media_task_error"),
         tr(language, "Could not complete the media task."),
         plugin.controller.error.take().as_deref(),
     );
@@ -70,7 +70,7 @@ fn render_runtime_install_banner(
     };
     crate::ui::notifications::observe_error(
         ui.ctx(),
-        egui::Id::new("player_runtime_download"),
+        egui::Id::unique("player_runtime_download"),
         crate::i18n::tr(
             language,
             "Could not download the player runtime. Please retry.",
@@ -133,7 +133,12 @@ fn export_controls(
         ("Export LRC", crate::export::Format::Lrc),
     ] {
         if ui.button(tr(language, label)).clicked() {
-            crate::ui::notifications::observe_error(ui.ctx(), ui.id().with("export"), "", None);
+            crate::ui::notifications::observe_error(
+                ui.ctx(),
+                ui.make_persistent_id("export"),
+                "",
+                None,
+            );
             let content = match format {
                 crate::export::Format::Vtt => subtitles.export_vtt(),
                 crate::export::Format::Lrc => subtitles.export_lrc(Some(stem)),
@@ -142,7 +147,7 @@ fn export_controls(
             if let Err(error) = crate::export::save(stem, format, content) {
                 crate::ui::notifications::observe_error(
                     ui.ctx(),
-                    ui.id().with("export"),
+                    ui.make_persistent_id("export"),
                     crate::i18n::tr(language, "Could not complete the file operation."),
                     Some(&error),
                 );

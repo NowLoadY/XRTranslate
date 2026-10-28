@@ -77,7 +77,7 @@ impl FileDialog {
         }
     }
     pub fn pick_file(self, context: &egui::Context, key: &str, requested: bool) -> Option<PathBuf> {
-        let id = egui::Id::new(key);
+        let id = egui::Id::unique(key);
         let mut pending = context.data(|data| data.get_temp::<FileRequest>(id));
         if requested && pending.is_none() {
             pending = Some(self.start_pick());

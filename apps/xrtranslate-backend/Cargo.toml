@@ -31,7 +31,7 @@ xr-corpus-client = { path = "../../XR-Corpus/crates/client" }
 xr-corpus-protocol = { path = "../../XR-Corpus/crates/protocol" }
 xrtranslate-config = { path = "../../crates/xrtranslate-config" }
 xrtranslate-engine = { path = "../../crates/xrtranslate-engine", features = ["resample"] }
-xrtranslate-inference = { path = "../../crates/xrtranslate-inference", features = ["sensevoice"] }
+xrtranslate-inference = { path = "../../crates/xrtranslate-inference", features = ["sherpa"] }
 xrtranslate-prompt = { path = "../../crates/xrtranslate-prompt" }
 xrtranslate-protocol = { path = "../../crates/xrtranslate-protocol" }
 xrtranslate-denoise = { path = "../../crates/xrtranslate-denoise" }

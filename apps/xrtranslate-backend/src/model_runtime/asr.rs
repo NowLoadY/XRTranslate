@@ -2,13 +2,13 @@
 
 use xrtranslate_assets::remote::{RemoteCapabilities, RemoteConnector};
 use xrtranslate_assets::{
-    AsrDelivery, AsrPromptStyle, ModelCapability, ModelFileRole, ModelRuntime, ResolvedModelAsset,
+    AsrDelivery, AsrPromptStyle, ModelCapability, ModelRuntime, ResolvedModelAsset,
     manifests_for_capability,
 };
 use xrtranslate_config::NativeProviderConfig;
 use xrtranslate_inference::{
     AsrOptions, AsrTranscript, InferenceError, OpenAiAsrAdapter, Qwen3AsrAdapter,
-    QwenAudioFlashAdapter, QwenAudioStreamingAdapter, ReqwestClient, SenseVoiceAdapter,
+    QwenAudioFlashAdapter, QwenAudioStreamingAdapter, ReqwestClient, SherpaOfflineAsrAdapter,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,7 +26,7 @@ pub(crate) enum NativeAsrAdapter {
     OpenAi(OpenAiAsrAdapter<ReqwestClient>),
     QwenAudioFlash(QwenAudioFlashAdapter<ReqwestClient>),
     QwenAudioStreaming(QwenAudioStreamingAdapter),
-    SenseVoice(SenseVoiceAdapter),
+    SherpaOffline(SherpaOfflineAsrAdapter),
 }
 
 impl AsrProfile {
@@ -85,12 +85,6 @@ pub(super) fn local_adapter(
     http: ReqwestClient,
     endpoint: &str,
 ) -> Result<NativeAsrAdapter, InferenceError> {
-    let path = |role| {
-        super::model_file(asset, role).map_err(|message| InferenceError::InvalidConfiguration {
-            field: "asr.model_asset",
-            message,
-        })
-    };
     match runtime {
         ModelRuntime::LlamaAudioChat {
             model_alias,
@@ -100,10 +94,8 @@ pub(super) fn local_adapter(
         } => Qwen3AsrAdapter::new(http, endpoint, model_alias).map(NativeAsrAdapter::AudioChat),
         ModelRuntime::SherpaOfflineAsr {
             delivery: AsrDelivery::Utterance,
-        } => Ok(NativeAsrAdapter::SenseVoice(SenseVoiceAdapter::new(
-            path(ModelFileRole::Weights)?,
-            path(ModelFileRole::Tokenizer)?,
-        ))),
+            ..
+        } => SherpaOfflineAsrAdapter::new(asset).map(NativeAsrAdapter::SherpaOffline),
         _ => Err(InferenceError::InvalidConfiguration {
             field: "asr.model_asset.runtime",
             message: "this ASR execution mode is not supported by the current pipeline".into(),
@@ -151,7 +143,7 @@ impl NativeAsrAdapter {
             Self::OpenAi(adapter) => adapter.transcribe_pcm16(pcm, options).await,
             Self::QwenAudioFlash(adapter) => adapter.transcribe_pcm16(pcm, options).await,
             Self::QwenAudioStreaming(adapter) => adapter.transcribe_pcm16(pcm, options).await,
-            Self::SenseVoice(adapter) => {
+            Self::SherpaOffline(adapter) => {
                 adapter
                     .transcribe_pcm16(pcm, options.language.as_deref())
                     .await
@@ -180,7 +172,16 @@ mod tests {
             .iter()
             .flat_map(|sample| ((*sample * 32767.0) as i16).to_le_bytes())
             .collect::<Vec<_>>();
-        let adapter = SenseVoiceAdapter::new(root.join("model.int8.onnx"), root.join("tokens.txt"));
+        let assets = xrtranslate_assets::ModelAssetsConfig::with_directory_overrides(
+            Some(root.clone()),
+            None,
+            None,
+        )
+        .resolve_selected(".");
+        let adapter = SherpaOfflineAsrAdapter::new(
+            assets.asset(xrtranslate_assets::ModelAssetId::SenseVoiceSmallInt8Onnx),
+        )
+        .unwrap();
         let automatic = adapter.transcribe_pcm16(&pcm, None).await.unwrap();
         assert!(!automatic.text.trim().is_empty());
 

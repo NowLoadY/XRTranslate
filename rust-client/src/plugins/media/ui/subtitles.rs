@@ -40,7 +40,7 @@ pub(super) fn render_subtitles_card(
         ui.ctx().pixels_per_point().to_bits(),
     );
     let resized = ui.ctx().data_mut(|data| {
-        let id = ui.id().with("subtitle_viewport");
+        let id = ui.make_persistent_id("subtitle_viewport");
         let previous = data.get_temp::<(u32, u32, u32)>(id);
         data.insert_temp(id, viewport);
         previous != Some(viewport)
@@ -66,7 +66,7 @@ pub(super) fn render_subtitles_card(
         controller.last_auto_scrolled_cue_id = current.clone();
     }
     ui.label(egui::RichText::new(tr(language, "Subtitles")).strong());
-    let measurements_id = egui::Id::new("media_subtitle_measurements");
+    let measurements_id = egui::Id::unique("media_subtitle_measurements");
     if controller.subtitles.count() == 0 {
         ui.data_mut(|data| data.remove::<Measurements<usize>>(measurements_id));
         egui::scroll_area::State::default().store(
@@ -128,7 +128,7 @@ pub(super) fn render_subtitles_card(
     let subtitles = &controller.subtitles;
     let task_id = controller.active_task_id.as_deref();
     let draft = &mut controller.subtitle_edit;
-    let revision = egui::Id::new((
+    let revision = egui::IdSalt::new((
         task_id,
         subtitles.revision(),
         editing_index,
@@ -160,8 +160,8 @@ pub(super) fn render_subtitles_card(
                         .iter()
                         .enumerate()
                         .map(|(index, cue)| MeasuredRow {
-                            id: egui::Id::new((task_id, &cue.id)),
-                            signature: egui::Id::new((
+                            id: measurements_id.with((task_id, &cue.id)),
+                            signature: egui::IdSalt::new((
                                 &cue.original_text,
                                 &cue.translated_text,
                                 (editing_index == Some(index)).then_some(edit_height.to_bits()),

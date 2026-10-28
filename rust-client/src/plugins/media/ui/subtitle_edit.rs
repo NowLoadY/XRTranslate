@@ -22,7 +22,7 @@ pub(super) fn render(
     height: f32,
     ui: &mut egui::Ui,
 ) -> EditAction {
-    let id = egui::Id::new(("media_subtitle_edit", &draft.task_id, &draft.cue.id));
+    let id = egui::Id::unique(("media_subtitle_edit", &draft.task_id, &draft.cue.id));
     let focus = draft.focus.take();
     let translating = draft.retranslation.is_some();
     let mut original_changed = false;

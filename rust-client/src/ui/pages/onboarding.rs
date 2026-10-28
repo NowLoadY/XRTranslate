@@ -59,7 +59,7 @@ pub fn render_onboarding_fullscreen(
         ..Default::default()
     };
 
-    let footer = egui::Area::new(egui::Id::new(("onboarding_bottom_nav", welcome)))
+    let footer = egui::Area::new(egui::Id::unique(("onboarding_bottom_nav", welcome)))
         .order(egui::Order::Middle)
         .constrain_to(page_rect)
         .anchor(
@@ -266,7 +266,7 @@ fn render_onboarding_social_icons(ui: &mut egui::Ui, language: i18n::UiLanguage)
         &i18n::tr(language, "QQ group"),
     ) {
         ui.ctx()
-            .data_mut(|data| data.insert_temp(egui::Id::new("onboarding_qq_group"), true));
+            .data_mut(|data| data.insert_temp(egui::Id::unique("onboarding_qq_group"), true));
     }
 }
 
@@ -323,7 +323,7 @@ fn onboarding_icon_button(ui: &mut egui::Ui, icon: egui::Image<'_>, tooltip: &st
 }
 
 fn render_qq_group_dialog(ctx: &egui::Context, language: i18n::UiLanguage) {
-    let id = egui::Id::new("onboarding_qq_group");
+    let id = egui::Id::unique("onboarding_qq_group");
     if !ctx.data(|data| data.get_temp::<bool>(id).unwrap_or(false)) {
         return;
     }

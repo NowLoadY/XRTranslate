@@ -308,6 +308,7 @@ impl AutomationDriver {
                 state.pending_input.extend([
                     egui::Event::PointerMoved(egui::pos2(x, y)),
                     egui::Event::MouseWheel {
+                        source: egui::MouseWheelSource::Wheel,
                         unit: egui::MouseWheelUnit::Point,
                         delta: egui::vec2(0.0, delta),
                         phase: egui::TouchPhase::Move,

@@ -85,7 +85,7 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
     if slides.is_empty() {
         return;
     }
-    let id = ui.id().with("showcase");
+    let id = ui.make_persistent_id("showcase");
     let mut preview = ui
         .data(|data| data.get_temp::<ShowcaseState>(id))
         .unwrap_or_default();
@@ -250,7 +250,7 @@ pub(crate) fn showcase(ui: &mut egui::Ui, language: UiLanguage, slides: &[Showca
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
                 response.widget_info(|| {
                     egui::WidgetInfo::selected(
-                        egui::WidgetType::RadioButton,
+                        egui::Role::RadioButton,
                         enabled,
                         preview.index == index,
                         label,
@@ -306,9 +306,7 @@ fn flat_control(
 ) -> egui::Response {
     let response = ui.add_sized([32.0, 32.0], egui::Button::new("").frame(false));
     let response = automation::button_response(ui, response.id, label, ui.is_enabled(), response);
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
-    });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
     ui.painter().circle_filled(
         response.rect.center(),
         16.0,

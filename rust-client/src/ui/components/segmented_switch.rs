@@ -50,7 +50,7 @@ pub fn segmented_switch(ui: &mut Ui, second: &mut bool, labels: [&str; 2]) -> Re
     }
     response.widget_info(|| {
         egui::WidgetInfo::selected(
-            egui::WidgetType::SelectableLabel,
+            egui::Role::Button,
             ui.is_enabled(),
             *second,
             labels[usize::from(*second)],

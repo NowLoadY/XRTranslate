@@ -33,7 +33,7 @@ impl Surface {
         }
         let frame = self.sampler.sample(&self.presentation);
         self.speech = frame.speech.on_surface(&self.speech);
-        let id = Id::new("desktop_companion");
+        let id = Id::unique("desktop_companion");
         let dt = ui.ctx().input(|input| input.stable_dt.min(0.05));
         let center = body.center() + egui::vec2(0.0, 3.0);
         // Keep the existing toolbar hit target while reducing the visible model.

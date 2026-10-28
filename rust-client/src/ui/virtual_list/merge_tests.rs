@@ -10,7 +10,7 @@ struct Row {
 }
 
 fn key(row: &Row) -> egui::Id {
-    egui::Id::new((LIST, row.id))
+    egui::Id::unique((LIST, row.id))
 }
 
 #[derive(Default)]
@@ -132,7 +132,7 @@ impl Harness {
         frame.gesture = self.ctx.data(|data| data.get_temp(gesture_id));
         frame.offset = egui::scroll_area::State::load(&self.ctx, scroll_id)
             .unwrap()
-            .offset
+            .clamped_offset()
             .y;
         fn inspect(shape: &egui::Shape, frame: &mut Frame) {
             match shape {
@@ -293,6 +293,7 @@ fn drag_holds_position_during_wheel_input_following_and_an_existing_scroll_anima
     for _ in 0..40 {
         let frame = harness.frame(
             vec![egui::Event::MouseWheel {
+                source: egui::MouseWheelSource::Wheel,
                 unit: egui::MouseWheelUnit::Point,
                 delta: egui::vec2(0.0, -100.0),
                 phase: egui::TouchPhase::Move,

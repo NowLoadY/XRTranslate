@@ -30,7 +30,7 @@ pub(super) fn render_expanded(
     let before = draft.clone();
     let closed = crate::ui::components::expanded_text_edit(
         ui.ctx(),
-        egui::Id::new("translation_style_text"),
+        egui::Id::unique("translation_style_text"),
         tr(language, "Translation style"),
         &mut text,
         &mut controller.style_panel.focus_pending,
@@ -69,7 +69,7 @@ pub(super) fn render(
     let compact = ui.ctx().content_rect().width() < 600.0;
     let mut apply = false;
     let mut save = false;
-    let area_id = egui::Id::new("translation_style_panel");
+    let area_id = egui::Id::unique("translation_style_panel");
     let previous_size =
         egui::containers::AreaState::load(ui.ctx(), area_id).and_then(|state| state.size);
     let area = egui::Area::new(area_id)
@@ -118,7 +118,7 @@ pub(super) fn render(
                         ui.weak(tr(language, "Style text"));
                         egui::ScrollArea::vertical().id_salt("style_prompt_scroll").max_height(text_height).min_scrolled_height(0.0).show(ui, |ui| {
                             let mut output = egui::TextEdit::multiline(&mut text)
-                                .id(egui::Id::new("translation_style_text"))
+                                .id(egui::Id::unique("translation_style_text"))
                                 .interactive(!compact)
                                 .desired_width(f32::INFINITY).desired_rows(8).show(ui);
                             if compact {

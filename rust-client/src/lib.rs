@@ -2096,7 +2096,7 @@ impl XRTranslateApp {
             && let Some(error) = self.last_error.as_deref()
             && ui::components::error_dialog(
                 ctx,
-                egui::Id::new("app_error"),
+                egui::Id::unique("app_error"),
                 self.ui_language,
                 error,
             )
@@ -6367,7 +6367,7 @@ impl eframe::App for XRTranslateApp {
             let expand_target = if self.navigation.collapsed { 0.0 } else { 1.0 };
             let expand_factor = ui::animation::AnimationSystem::animate_value(
                 ui.ctx(),
-                egui::Id::new("sidebar_expand_anim"),
+                egui::Id::unique("sidebar_expand_anim"),
                 expand_target,
                 ui::theme::animation_timings(ui.ctx()).sidebar,
             );
