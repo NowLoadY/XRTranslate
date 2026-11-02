@@ -6865,6 +6865,7 @@ dependencies = [
  "eframe",
  "egui_extras",
  "env_logger",
+ "find-msvc-tools",
  "flate2",
  "futures",
  "glam 0.33.10",
