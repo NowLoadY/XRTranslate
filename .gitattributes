@@ -1,0 +1,4 @@
+# Keep bundled resource text identical on Windows and Unix; preserve binary files.
+assets/** text=auto eol=lf
+crates/xrtranslate-assets/resources/** text=auto eol=lf
+rust-client/resources/** text=auto eol=lf
