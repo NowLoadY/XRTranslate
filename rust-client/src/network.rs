@@ -53,6 +53,7 @@ impl Default for ExternalAudioGate {
 #[derive(Debug, Clone)]
 pub enum SessionEvent {
     Connected,
+    SeparatedAudio(xrtranslate_protocol::SeparatedAudio),
     Disconnected(String),
     Status(String),
     PromptTrace(PromptExecutionTrace),
@@ -414,6 +415,7 @@ impl SessionHandle {
 pub struct SessionConfig {
     pub input_sample_rate: u32,
     pub input_channels: u16,
+    pub save_separated_audio: bool,
     pub preprocessing: Option<xrtranslate_protocol::AudioPreprocessing>,
     pub context: TaskContext,
     pub server_url: String,
@@ -529,6 +531,7 @@ async fn run_session(
     let SessionConfig {
         input_sample_rate,
         input_channels,
+        save_separated_audio,
         preprocessing,
         context,
         server_url,
@@ -640,6 +643,7 @@ async fn run_session(
                 "event": "config_audio",
                 "sample_rate": input_sample_rate,
                 "channels": input_channels,
+                "save_separated_audio": save_separated_audio,
                 "preprocessing": preprocessing,
                 "source_lang": source_lang,
                 "target_lang": target_lang,
@@ -1138,6 +1142,14 @@ fn forward_server_event(
     };
     let data = payload.get("data").and_then(Value::as_object);
     match payload.get("action").and_then(Value::as_str) {
+        Some("separated_audio") => {
+            if let Some(stems) = payload
+                .get("data")
+                .and_then(|data| serde_json::from_value(data.clone()).ok())
+            {
+                let _ = event_tx.send(SessionEvent::SeparatedAudio(stems));
+            }
+        }
         Some("prompt_trace") => {
             if let Some(trace) = payload
                 .get("data")

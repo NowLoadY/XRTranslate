@@ -52,6 +52,9 @@ impl MediaPlugin {
             self.controller.previews.observe(&event);
             self.controller.dirty = true;
             match event {
+                TranslationEvent::SeparatedAudio(stems) => {
+                    self.controller.set_separated_audio(stems);
+                }
                 TranslationEvent::Preview(_) => {}
                 TranslationEvent::Segment(segment) => {
                     if self.subtitle_source_open() && (segment.revisable || segment.live) {

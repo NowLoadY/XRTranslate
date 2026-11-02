@@ -343,6 +343,7 @@ impl MediaController {
                 Ok(()) => self.playback_loaded = true,
                 Err(error) => self.error = Some(error),
             }
+            backend.select_audio(task.selected_audio())?;
             backend.set_channel_routing(&task.audio_channels);
         }
 
@@ -608,6 +609,74 @@ impl MediaController {
         }
     }
 
+    pub(super) fn apply_audio_selection(&mut self) {
+        let Some(task) = self
+            .active_task_id
+            .as_deref()
+            .and_then(|id| self.store.get_mut(id))
+        else {
+            return;
+        };
+        task.audio_channels.clear();
+        if task.audio_track != super::task::AudioTrackSelection::Original
+            && task.recognition.preprocessing
+                == Some(xrtranslate_protocol::AudioPreprocessing::VocalSeparation)
+        {
+            task.recognition.preprocessing = Some(xrtranslate_protocol::AudioPreprocessing::None);
+        }
+        if let Some(backend) = &mut self.backend {
+            backend.set_channel_routing(&[]);
+            if let Err(error) = backend.select_audio(task.selected_audio()) {
+                self.error = Some(error);
+            }
+        }
+        self.save_active();
+    }
+
+    pub(super) fn set_separated_audio(&mut self, stems: xrtranslate_protocol::SeparatedAudio) {
+        if !stems.vocals.is_file() || !stems.background.is_file() {
+            self.error = Some("Separated audio files are unavailable".into());
+            return;
+        }
+        let Some(task) = self
+            .active_task_id
+            .as_deref()
+            .and_then(|id| self.store.get_mut(id))
+        else {
+            return;
+        };
+        let old = task.separated_audio.replace(stems);
+        // Keep the selected track when refreshing its saved outputs.
+        if let Some(backend) = &mut self.backend {
+            if let Err(error) = backend.select_audio(task.selected_audio()) {
+                self.error = Some(error);
+            }
+        }
+        self.save_active();
+        if let Some(old) = old {
+            self.remove_stems(&old);
+        }
+    }
+
+    fn remove_stems(&self, stems: &xrtranslate_protocol::SeparatedAudio) {
+        let Ok(root) = self.storage_dir.join("media-audio").canonicalize() else {
+            return;
+        };
+        let Some(directory) = stems
+            .vocals
+            .parent()
+            .filter(|dir| Some(*dir) == stems.background.parent())
+        else {
+            return;
+        };
+        if directory
+            .canonicalize()
+            .is_ok_and(|dir| dir.parent() == Some(root.as_path()))
+        {
+            let _ = std::fs::remove_dir_all(directory);
+        }
+    }
+
     pub fn apply_channel_routing(&mut self) {
         if let Some(task_id) = &self.active_task_id {
             if let Some(task) = self.store.get(task_id) {
@@ -630,6 +699,13 @@ impl MediaController {
             self.active_task_id = None;
             self.current_source = None;
             self.route = MediaRoute::Library;
+        }
+        if let Some(stems) = self
+            .store
+            .get(task_id)
+            .and_then(|task| task.separated_audio.as_ref())
+        {
+            self.remove_stems(stems);
         }
         self.store.delete(task_id);
         self.save_active();
@@ -735,6 +811,21 @@ impl MediaController {
             backend.set_subtitle_style(&style);
             if let Some(error) = backend.take_error() {
                 self.error = Some(error);
+            }
+
+            if self.playback_loaded
+                && let Some(task) = self
+                    .active_task_id
+                    .as_deref()
+                    .and_then(|id| self.store.get_mut(id))
+                && task.original_audio_track.is_none()
+                && let Some(track) = backend
+                    .audio_tracks()
+                    .iter()
+                    .find(|track| track.selected && track.external.is_none())
+            {
+                task.original_audio_track = Some(track.id);
+                self.dirty = true;
             }
 
             // Synchronize detected audio channels from backend stream

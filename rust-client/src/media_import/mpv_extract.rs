@@ -28,6 +28,7 @@ pub(super) fn run_mpv_extract(
     source_path: &Path,
     target_wav: &Path,
     output_sample_rate: u32,
+    audio_track: Option<i64>,
     stop_requested: &AtomicBool,
     event_tx: &Sender<AudioImportEvent>,
 ) -> Result<(), AudioImportError> {
@@ -56,6 +57,9 @@ pub(super) fn run_mpv_extract(
             Ok(())
         };
         let wav_path_str = target_wav.to_string_lossy().replace('\\', "/");
+        if let Some(track) = audio_track {
+            set("aid", &track.to_string())?;
+        }
         set("o", &wav_path_str)?;
         set("of", "wav")?;
         set("ovc", "null")?;
@@ -63,6 +67,9 @@ pub(super) fn run_mpv_extract(
         set("audio-samplerate", &output_sample_rate.to_string())?;
         // Keep the decoded layout; shared import applies channel selection once.
         set("audio-channels", "auto")?;
+        // Preserve timestamp gaps as silence, keeping recognition and retained
+        // stems on the same timeline as video and embedded audio tracks.
+        set("af", "lavfi=[aresample=async=1:first_pts=0]")?;
         set("video", "no")?;
         set("vid", "no")?;
         set("vo", "null")?;
@@ -169,6 +176,7 @@ pub(super) fn run_mpv_extract(
     _source_path: &Path,
     _target_wav: &Path,
     _output_sample_rate: u32,
+    _audio_track: Option<i64>,
     _stop_requested: &AtomicBool,
     _event_tx: &crossbeam_channel::Sender<AudioImportEvent>,
 ) -> Result<(), AudioImportError> {

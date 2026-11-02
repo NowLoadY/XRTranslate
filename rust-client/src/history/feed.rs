@@ -11,6 +11,7 @@ impl FeedTimeline {
     pub(crate) fn observe(&mut self, event: &TranslationEvent) {
         self.revision = self.revision.wrapping_add(1);
         match event {
+            TranslationEvent::SeparatedAudio(_) => {}
             TranslationEvent::Preview(preview) => {
                 self.remember(preview.stream_id, &preview.turn_id);
             }

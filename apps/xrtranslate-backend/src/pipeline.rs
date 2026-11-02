@@ -849,6 +849,7 @@ impl NativePipeline {
 
     /// Drops buffered audio and recurrent VAD state after a route change.
     pub(crate) fn reset(&mut self) {
+        self.preprocessing.discard_stems();
         self.live_capture = None;
         self.sentence_idle_frames = None;
         self.vad.reset();
@@ -966,6 +967,16 @@ impl NativePipeline {
         self.preprocessing = next;
         self.preprocessing_mode = mode;
         Ok(())
+    }
+
+    pub(crate) fn save_separated_audio(&mut self, directory: &Path) -> Result<(), String> {
+        self.preprocessing.save_stems(directory)
+    }
+
+    pub(crate) fn finish_separated_audio(
+        &mut self,
+    ) -> Result<Option<xrtranslate_protocol::SeparatedAudio>, String> {
+        self.preprocessing.finish_stems()
     }
 
     pub(crate) fn observe_text_density(&mut self, units: usize) {

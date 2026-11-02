@@ -47,6 +47,7 @@ pub(crate) fn runtime_bin_directories() -> Vec<PathBuf> {
 pub enum MediaTranslationRequest {
     ImportMediaFile {
         path: PathBuf,
+        audio_track: Option<i64>,
         source_language: String,
         target_language: String,
         recognition: crate::client_settings::RecognitionSettings,

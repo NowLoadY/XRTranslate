@@ -1036,8 +1036,8 @@ fn onboarding_model_config_card(
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 for (value, label) in [
                     (ConnectionChannel::Local, "Local model"),
-                    (ConnectionChannel::Api, "Online API"),
                     (ConnectionChannel::Account, "Account login"),
+                    (ConnectionChannel::Api, "Online API"),
                 ] {
                     let available = if value == ConnectionChannel::Local {
                         local_choice.is_some()

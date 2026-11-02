@@ -1,7 +1,9 @@
 //! Optional input preprocessing for the shared recognition pipeline. Each
 //! adapter emits sample-aligned mono 16 kHz PCM before ordinary endpointing.
 
+mod stems;
 use std::path::Path;
+use stems::StemWriter;
 
 use xrtranslate_denoise::GtcrnDenoiser;
 use xrtranslate_engine::audio::{StreamingResampler, f32_to_pcm16le};
@@ -35,6 +37,7 @@ impl AudioPreprocessor {
         Ok(Self::Vocals(VocalPreprocessor {
             separator: VocalSeparator::load(path, threads).map_err(|error| error.to_string())?,
             resampler: StreamingResampler::new(VOCAL_SAMPLE_RATE_HZ, 16_000, 1)?,
+            stems: None,
         }))
     }
 
@@ -62,10 +65,16 @@ impl AudioPreprocessor {
                     .chunks_exact(2)
                     .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]) as f32 / 32768.0)
                     .collect::<Vec<_>>();
+                if let Some(stems) = &mut vocals.stems {
+                    stems.push_source(&stereo);
+                }
                 let separated = vocals
                     .separator
                     .push(&stereo)
                     .map_err(|error| error.to_string())?;
+                if let Some(stems) = &mut vocals.stems {
+                    stems.write(&separated)?;
+                }
                 Ok((vocals.resample(&separated)?, None))
             }
         }
@@ -87,6 +96,9 @@ impl AudioPreprocessor {
                     .separator
                     .finish()
                     .map_err(|error| error.to_string())?;
+                if let Some(stems) = &mut vocals.stems {
+                    stems.write(&tail)?;
+                }
                 let mut pcm = vocals.resample(&tail)?;
                 pcm.extend(f32_to_pcm16le(vocals.resampler.finish()?));
                 Ok((pcm, None))
@@ -105,6 +117,29 @@ impl AudioPreprocessor {
         }
     }
 
+    pub(super) fn save_stems(&mut self, directory: &Path) -> Result<(), String> {
+        let Self::Vocals(vocals) = self else {
+            return Err("Audio stems require vocal separation".into());
+        };
+        vocals.stems = Some(StemWriter::new(directory)?);
+        Ok(())
+    }
+
+    pub(super) fn discard_stems(&mut self) {
+        if let Self::Vocals(vocals) = self {
+            vocals.stems = None;
+        }
+    }
+
+    pub(super) fn finish_stems(
+        &mut self,
+    ) -> Result<Option<xrtranslate_protocol::SeparatedAudio>, String> {
+        match self {
+            Self::Vocals(vocals) => vocals.stems.take().map(StemWriter::finish).transpose(),
+            _ => Ok(None),
+        }
+    }
+
     pub(super) fn is_vocal(&self) -> bool {
         matches!(self, Self::Vocals(_))
     }
@@ -113,6 +148,7 @@ impl AudioPreprocessor {
 pub(super) struct VocalPreprocessor {
     separator: VocalSeparator,
     resampler: StreamingResampler,
+    stems: Option<StemWriter>,
 }
 
 impl VocalPreprocessor {

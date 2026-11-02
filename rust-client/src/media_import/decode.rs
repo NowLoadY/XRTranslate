@@ -35,43 +35,47 @@ pub(super) fn run_import(
     sent_frames: &AtomicU64,
     event_tx: &Sender<AudioImportEvent>,
 ) -> Result<u64, AudioImportError> {
-    match run_symphonia_import(
+    if options.audio_track.is_none() {
+        match run_symphonia_import(
+            path,
+            path,
+            &audio_tx,
+            &options,
+            stop_requested,
+            sent_frames,
+            event_tx,
+        ) {
+            Ok(frames) => return Ok(frames),
+            Err(err @ (AudioImportError::Unsupported(_) | AudioImportError::Decode(_))) => {
+                log::info!("Using MPV to decode {path:?}: {err}");
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    // Explicit stream ids belong to MPV's track list. Use the same demuxer as
+    // playback instead of guessing an equivalent id in another decoder.
+    let temp_wav = std::path::PathBuf::from(format!(
+        "runtime/cache/mpv_decode_{}.wav",
+        uuid::Uuid::new_v4(),
+    ));
+    let _guard = TempFileGuard(temp_wav.clone());
+    run_mpv_extract(
         path,
+        &temp_wav,
+        options.output_sample_rate,
+        options.audio_track,
+        stop_requested,
+        event_tx,
+    )?;
+    run_symphonia_import(
         path,
+        &temp_wav,
         &audio_tx,
         &options,
         stop_requested,
         sent_frames,
         event_tx,
-    ) {
-        Ok(frames) => Ok(frames),
-        Err(err @ AudioImportError::Unsupported(_)) | Err(err @ AudioImportError::Decode(_)) => {
-            log::info!(
-                "Symphonia cannot decode media file ({err}), falling back to MPV audio decoder for {path:?}"
-            );
-            let temp_id = uuid::Uuid::new_v4();
-            let temp_wav =
-                std::path::PathBuf::from(format!("runtime/cache/mpv_decode_{temp_id}.wav"));
-            let _guard = TempFileGuard(temp_wav.clone());
-            run_mpv_extract(
-                path,
-                &temp_wav,
-                options.output_sample_rate,
-                stop_requested,
-                event_tx,
-            )?;
-            run_symphonia_import(
-                path,
-                &temp_wav,
-                &audio_tx,
-                &options,
-                stop_requested,
-                sent_frames,
-                event_tx,
-            )
-        }
-        Err(err) => Err(err),
-    }
+    )
 }
 
 fn run_symphonia_import(
@@ -169,6 +173,16 @@ fn run_symphonia_import(
         if channels == 0 || source_rate == 0 {
             return Err(AudioImportError::Decode(
                 "invalid decoded audio format".into(),
+            ));
+        }
+
+        if options
+            .recognition_channels
+            .iter()
+            .any(|&index| index >= channels)
+        {
+            return Err(AudioImportError::InvalidOptions(
+                "Selected audio channel is unavailable".into(),
             ));
         }
 
@@ -521,6 +535,7 @@ mod tests {
                 output_sample_rate: 44_100,
                 output_channels: 2,
                 pacing: AudioImportPacing::AsFastAsPossible,
+                audio_track: None,
                 recognition_channels: Vec::new(),
                 gate_threshold_db: None,
             },
@@ -605,7 +620,7 @@ mod tests {
                 }
             });
             let reader = scope.spawn(move || audio_rx.iter().flatten().collect::<Vec<_>>());
-            let result = run_mpv_extract(&source, &extracted, 44_100, &cancelled, &event_tx)
+            let result = run_mpv_extract(&source, &extracted, 44_100, None, &cancelled, &event_tx)
                 .and_then(|()| {
                     run_symphonia_import(
                         &source,
@@ -616,6 +631,7 @@ mod tests {
                             output_sample_rate: 44_100,
                             output_channels: 2,
                             pacing: AudioImportPacing::AsFastAsPossible,
+                            audio_track: None,
                             recognition_channels: Vec::new(),
                             gate_threshold_db: None,
                         },

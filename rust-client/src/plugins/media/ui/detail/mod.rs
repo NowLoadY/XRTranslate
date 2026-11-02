@@ -1,3 +1,4 @@
+mod audio_tracks;
 mod media;
 mod screen;
 mod subtitle_style;

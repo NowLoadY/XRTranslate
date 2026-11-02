@@ -313,6 +313,9 @@ pub enum EventControl {
         /// Per-session preprocessing; omission preserves the configured default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         preprocessing: Option<AudioPreprocessing>,
+        /// Retain completed offline separation as stereo playback tracks.
+        #[serde(default, skip_serializing_if = "is_false")]
+        save_separated_audio: bool,
         source_lang: String,
         target_lang: String,
         #[serde(default, skip_serializing_if = "TranslationOptions::is_default")]
@@ -401,10 +404,18 @@ pub enum ServerEvent {
     TranslationReady(TranslationReady),
     RecognitionStreamEnded(RecognitionStreamEnded),
     PipelineDrained(PipelineDrained),
+    SeparatedAudio(SeparatedAudio),
     TtsFinished(TtsFinished),
     VoiceCloneState(VoiceCloneState),
     RouteChanged(RouteChanged),
     Error(ErrorEvent),
+}
+
+/// Completed, sample-aligned stereo stems on the local inference host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeparatedAudio {
+    pub vocals: std::path::PathBuf,
+    pub background: std::path::PathBuf,
 }
 
 /// Actual translation inference, excluding recognition, queued work and cached results.

@@ -21,6 +21,8 @@ pub struct AudioImportOptions {
     /// Interleaved channel count delivered to the recognition session.
     pub output_channels: usize,
     pub pacing: AudioImportPacing,
+    /// Explicit libmpv audio track id; select before decoding or preprocessing.
+    pub audio_track: Option<i64>,
     pub recognition_channels: Vec<usize>,
     pub gate_threshold_db: Option<f32>,
 }
@@ -32,6 +34,7 @@ impl Default for AudioImportOptions {
             output_sample_rate: IMPORT_SAMPLE_RATE,
             output_channels: 1,
             pacing: AudioImportPacing::Realtime,
+            audio_track: None,
             recognition_channels: Vec::new(),
             gate_threshold_db: Some(crate::audio_processing::DEFAULT_GATE_THRESHOLD_DB),
         }

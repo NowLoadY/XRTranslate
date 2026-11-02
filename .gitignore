@@ -4,6 +4,8 @@
 *.env
 !.env.example
 !.env.sample
+# Local user options, account credentials/browser sessions, and generated media.
+# Shared defaults in config.json remain tracked; personal overrides live here.
 runtime/
 # Manually created local editor access marker; never ship or track it.
 **/runtime/debug.md

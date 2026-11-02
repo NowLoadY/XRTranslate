@@ -28,6 +28,7 @@ impl LivePreviews {
 
     pub fn observe(&mut self, event: &TranslationEvent) {
         match event {
+            TranslationEvent::SeparatedAudio(_) => {}
             TranslationEvent::Preview(preview) => self.upsert(preview.clone()),
             TranslationEvent::Segment(segment) => self.segment(segment),
             TranslationEvent::ReplaceSegments(segments) => {

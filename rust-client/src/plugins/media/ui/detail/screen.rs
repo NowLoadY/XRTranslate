@@ -83,39 +83,57 @@ pub(in crate::plugins::media::ui) fn render_detail(
             });
             return action;
         }
-        layout::responsive_columns(ui, 2, 380.0, |ui, column| {
-            ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
-            if column == 0 {
-                egui::ScrollArea::vertical()
-                    .id_salt("media_detail_controls")
-                    .max_width(ui.available_width())
-                    .max_height(if stacked { height * 0.5 } else { height })
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        if controller.can_play() {
-                            if controller.can_show_video() {
-                                let video_height = height * if stacked { 0.25 } else { 0.5 };
-                                render_viewport_card(controller, language, ui, video_height);
-                            } else {
-                                render_audio_card(controller, language, ui);
-                            }
-                            ui.add_space(8.0);
-                        }
-                        let next = ui
-                            .add_enabled_ui(controller.subtitle_edit.is_none(), |ui| {
-                                render_task_control_card(controller, snapshot, ui)
-                            })
-                            .inner;
-                        if next != MediaAction::None {
-                            action = next;
-                        }
+        if stacked {
+            action = egui::ScrollArea::vertical()
+                .id_salt("media_detail_stacked")
+                .show(ui, |ui| {
+                    let action = render_controls(controller, snapshot, ui, height * 0.35);
+                    ui.add_space(12.0);
+                    ui.allocate_ui(egui::vec2(ui.available_width(), height * 0.65), |ui| {
+                        ui.push_id(controller.active_task_id.clone(), |ui| {
+                            super::super::subtitles::render_subtitles_card(
+                                controller, language, ui,
+                            );
+                        });
                     });
-            } else {
-                ui.push_id(controller.active_task_id.clone(), |ui| {
+                    action
+                })
+                .inner;
+        } else {
+            ui.columns(2, |columns| {
+                action = egui::ScrollArea::vertical()
+                    .id_salt("media_detail_controls")
+                    .max_height(height)
+                    .auto_shrink([false, true])
+                    .show(&mut columns[0], |ui| {
+                        render_controls(controller, snapshot, ui, height * 0.5)
+                    })
+                    .inner;
+                columns[1].push_id(controller.active_task_id.clone(), |ui| {
                     super::super::subtitles::render_subtitles_card(controller, language, ui);
                 });
-            }
-        });
+            });
+        }
     }
     action
+}
+
+fn render_controls(
+    controller: &mut MediaController,
+    snapshot: &MediaUiSnapshot,
+    ui: &mut egui::Ui,
+    video_height: f32,
+) -> MediaAction {
+    if controller.can_play() {
+        if controller.can_show_video() {
+            render_viewport_card(controller, snapshot.language, ui, video_height);
+        } else {
+            render_audio_card(controller, snapshot.language, ui);
+        }
+        ui.add_space(8.0);
+    }
+    ui.add_enabled_ui(controller.subtitle_edit.is_none(), |ui| {
+        render_task_control_card(controller, snapshot, ui)
+    })
+    .inner
 }

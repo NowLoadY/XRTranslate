@@ -4,6 +4,7 @@ use super::{MediaBackend, PlaybackStatus};
 use std::ffi::{CStr, CString};
 use std::path::PathBuf;
 mod encoding;
+mod tracks;
 pub(crate) use encoding::encode_video;
 #[cfg(test)]
 mod tests;
@@ -208,9 +209,10 @@ impl MpvHandle {
         (error >= 0).then_some(value)
     }
 
-    fn observed_properties() -> [(&'static CStr, libmpv_sys::mpv_format); 13] {
+    fn observed_properties() -> [(&'static CStr, libmpv_sys::mpv_format); 14] {
         use libmpv_sys::*;
         [
+            (c"track-list", mpv_format_MPV_FORMAT_NODE),
             (c"time-pos", mpv_format_MPV_FORMAT_DOUBLE),
             (c"duration", mpv_format_MPV_FORMAT_DOUBLE),
             (c"eof-reached", mpv_format_MPV_FORMAT_FLAG),
@@ -260,6 +262,7 @@ impl MpvHandle {
 // scrolling never synchronously wait for the player core or video renderer.
 #[derive(Default)]
 struct PlaybackSnapshot {
+    audio_tracks: Vec<super::AudioTrack>,
     time_ms: i64,
     duration_ms: i64,
     eof: bool,
@@ -298,6 +301,11 @@ impl PlaybackSnapshot {
             })
         };
         match name {
+            b"track-list"
+                if !property.data.is_null() && property.format == mpv_format_MPV_FORMAT_NODE =>
+            {
+                self.audio_tracks = unsafe { tracks::read(&*(property.data as *const mpv_node)) };
+            }
             b"time-pos" => {
                 self.time_ms = number.map(|seconds| (seconds * 1000.0) as i64).unwrap_or(0)
             }
@@ -336,6 +344,8 @@ pub struct MpvBackend {
     snapshot: PlaybackSnapshot,
     error: Option<String>,
     active_channels: Vec<super::super::task::AudioChannelItem>,
+    audio_selection: super::PlaybackAudio,
+    loading: bool,
     subtitle_style: super::super::subtitles::SubtitleStyle,
     subtitle_text: String,
 }
@@ -394,6 +404,8 @@ impl MpvBackend {
             snapshot: PlaybackSnapshot::default(),
             error: None,
             active_channels: Vec::new(),
+            audio_selection: Default::default(),
+            loading: false,
             subtitle_style: Default::default(),
             subtitle_text: String::new(),
         })
@@ -401,6 +413,9 @@ impl MpvBackend {
 
     fn load(&mut self, source: &str) -> Result<(), String> {
         self.mpv.command_async(&["loadfile", source])?;
+        self.loading = true;
+        self.snapshot.audio_tracks.clear();
+        self.snapshot.channels = None;
         // Observations only report changed values. Keep metadata and pause state
         // across loads, or an unchanged duration/channel count/pause value would
         // be lost when reopening the same file. New values arrive via events.
@@ -417,6 +432,49 @@ impl MpvBackend {
 }
 
 impl MediaBackend for MpvBackend {
+    fn audio_tracks(&self) -> &[super::AudioTrack] {
+        &self.snapshot.audio_tracks
+    }
+
+    fn select_audio(&mut self, selection: super::PlaybackAudio) -> Result<(), String> {
+        if self.audio_selection != selection {
+            self.snapshot.channels = None;
+        }
+        self.audio_selection = selection;
+        if self.loading {
+            return Ok(());
+        }
+        match &self.audio_selection {
+            super::PlaybackAudio::Original(id) => self.mpv.set_property_string(
+                "aid",
+                &id.map(|id| id.to_string()).unwrap_or_else(|| "auto".into()),
+            ),
+            super::PlaybackAudio::External(path) => {
+                if let Some(track) = self
+                    .snapshot
+                    .audio_tracks
+                    .iter()
+                    .find(|t| t.external.as_ref() == Some(path))
+                {
+                    self.mpv.set_property_string("aid", &track.id.to_string())
+                } else {
+                    self.mpv
+                        .command_async(&["audio-add", &path.to_string_lossy(), "select"])?;
+                    for track in self
+                        .snapshot
+                        .audio_tracks
+                        .iter()
+                        .filter(|track| track.external.is_some())
+                    {
+                        self.mpv
+                            .command_async(&["audio-remove", &track.id.to_string()])?;
+                    }
+                    Ok(())
+                }
+            }
+        }
+    }
+
     fn take_error(&mut self) -> Option<String> {
         self.error.take()
     }
@@ -531,6 +589,10 @@ impl MediaBackend for MpvBackend {
                     }
                 }
                 FILE_LOADED => {
+                    self.loading = false;
+                    if let Err(error) = self.select_audio(self.audio_selection.clone()) {
+                        self.error = Some(error);
+                    }
                     end_file_event = false;
                     refresh = true;
                     self.snapshot.eof = false;
@@ -550,7 +612,7 @@ impl MediaBackend for MpvBackend {
                     refresh = true;
                 }
                 AUDIO_RECONFIG | VIDEO_RECONFIG => refresh = true,
-                COMMAND_REPLY if event.reply_userdata == 1 && event.error < 0 => {
+                COMMAND_REPLY if event.error < 0 => {
                     self.error = Some(
                         unsafe { CStr::from_ptr(mpv_error_string(event.error)) }
                             .to_string_lossy()

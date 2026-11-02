@@ -295,7 +295,9 @@ impl QuickTranslate {
                     self.operation = None;
                     self.segments.clear();
                 }
-                TranslationEvent::Preview(_) | TranslationEvent::StreamEnded { .. } => {}
+                TranslationEvent::SeparatedAudio(_)
+                | TranslationEvent::Preview(_)
+                | TranslationEvent::StreamEnded { .. } => {}
             }
             ctx.request_repaint();
         }

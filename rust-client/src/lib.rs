@@ -1261,7 +1261,7 @@ impl Default for XRTranslateApp {
                         }
                     }
                     match event {
-                        SessionEvent::PromptTrace(_) => {}
+                        SessionEvent::PromptTrace(_) | SessionEvent::SeparatedAudio(_) => {}
                         SessionEvent::TranslationActivity {
                             stream_id,
                             request_id,
@@ -2164,6 +2164,7 @@ impl XRTranslateApp {
         SessionConfig {
             input_sample_rate: 16_000,
             input_channels: 1,
+            save_separated_audio: false,
             preprocessing: self.effective_audio_preprocessing(recognition.preprocessing),
             context,
             server_url: self.server_url.clone(),
@@ -3412,6 +3413,9 @@ impl XRTranslateApp {
         );
         config.input_sample_rate = options.output_sample_rate;
         config.input_channels = options.output_channels as u16;
+        config.save_separated_audio = owner.is_plugin(PluginId::MEDIA.as_str())
+            && config.preprocessing
+                == Some(xrtranslate_protocol::AudioPreprocessing::VocalSeparation);
         let scope = ChannelScope::audio(owner.clone(), plugin.publish_to_host_outputs());
         scope
             .asr_only

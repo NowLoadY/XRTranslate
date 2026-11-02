@@ -25,6 +25,8 @@ fn player() -> MpvBackend {
         snapshot: PlaybackSnapshot::default(),
         error: None,
         active_channels: Vec::new(),
+        audio_selection: Default::default(),
+        loading: false,
         subtitle_style: Default::default(),
         subtitle_text: String::new(),
     }

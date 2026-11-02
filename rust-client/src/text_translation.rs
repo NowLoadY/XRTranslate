@@ -436,6 +436,7 @@ impl TextTranslation {
                             SessionConfig {
                                 input_sample_rate: 16_000,
                                 input_channels: 1,
+                                save_separated_audio: false,
                                 preprocessing: None,
                                 context: task.context.clone(),
                                 server_url: server_url.to_owned(),

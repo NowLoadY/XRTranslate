@@ -35,6 +35,11 @@ pub(super) fn render_task_control_card(
                 .is_some_and(|text| !text.trim().is_empty())
         })
         .count();
+    let audio_tracks = controller
+        .backend
+        .as_ref()
+        .map(|backend| backend.audio_tracks().to_vec())
+        .unwrap_or_default();
     let Some(task) = controller.store.get_mut(&id) else {
         return MediaAction::None;
     };
@@ -55,6 +60,7 @@ pub(super) fn render_task_control_card(
     let mut changed = false;
     let mut language_changed = false;
     let mut routing = false;
+    let mut track_changed = false;
     let mut preprocessing_action = None;
     components::card(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -68,6 +74,27 @@ pub(super) fn render_task_control_card(
                 language,
             );
         });
+        if !subtitles && local_file {
+            ui.add_space(10.0);
+            ui.add_enabled_ui(!task.is_task_running, |ui| {
+                track_changed = super::audio_tracks::selector(ui, task, &audio_tracks, language);
+            });
+        }
+        if !subtitles {
+            ui.add_enabled_ui(!task.is_task_running, |ui| {
+                let response = components::audio_preprocessing_selector(
+                    ui,
+                    "media_audio_preprocessing",
+                    &mut task.recognition.preprocessing,
+                    snapshot.default_preprocessing,
+                    local_file,
+                    &snapshot.preprocessing_models,
+                    language,
+                );
+                changed |= response.response.changed();
+                preprocessing_action = response.action;
+            });
+        }
         ui.add_space(10.0);
         crate::ui::layout::flow_row(ui, |ui| {
             if task.is_task_running {
@@ -138,19 +165,6 @@ pub(super) fn render_task_control_card(
                 .show_percentage(),
             );
         } else {
-            ui.add_enabled_ui(!task.is_task_running, |ui| {
-                let response = components::audio_preprocessing_selector(
-                    ui,
-                    "media_audio_preprocessing",
-                    &mut task.recognition.preprocessing,
-                    snapshot.default_preprocessing,
-                    local_file,
-                    &snapshot.preprocessing_models,
-                    language,
-                );
-                changed |= response.response.changed();
-                preprocessing_action = response.action;
-            });
             if task.is_task_running {
                 let progress = if controller.is_extracting {
                     controller.extraction_progress
@@ -210,11 +224,7 @@ pub(super) fn render_task_control_card(
             if !task.audio_channels.is_empty() {
                 egui::CollapsingHeader::new(tr(language, "Channel routing")).show(ui, |ui| {
                     crate::ui::layout::flow_row(ui, |ui| {
-                        for (label, mode) in [
-                            ("Movie Dialogue Preset (5.1/7.1)", 0),
-                            ("Stereo Default", 1),
-                            ("Enable All", 2),
-                        ] {
+                        for (label, mode) in [("Dialogue", 0), ("Stereo", 1), ("All channels", 2)] {
                             if mode == 0
                                 && !task.audio_channels.iter().any(|channel| channel.id == "fc")
                             {
@@ -245,12 +255,12 @@ pub(super) fn render_task_control_card(
                     egui::Grid::new("media_channels").show(ui, |ui| {
                         ui.label(tr(language, "Channel"));
                         if can_play {
-                            ui.label(tr(language, "Playback (Hear Audio)"));
+                            ui.label(tr(language, "Playback"));
                         }
-                        ui.label(tr(language, "Recognition (Send to ASR)"));
+                        ui.label(tr(language, "Recognition"));
                         ui.end_row();
                         for channel in &mut task.audio_channels {
-                            ui.label(&channel.name);
+                            ui.label(tr(language, channel.label()));
                             if can_play {
                                 routing |= ui.checkbox(&mut channel.playback, "").changed();
                             }
@@ -270,7 +280,14 @@ pub(super) fn render_task_control_card(
     let request = if (start || restart) && !subtitles {
         Some(match &task.source {
             MediaSource::LocalFile(path) => MediaTranslationRequest::ImportMediaFile {
-                path: path.clone(),
+                path: match task.selected_audio() {
+                    super::super::super::backend::PlaybackAudio::External(path) => path,
+                    _ => path.clone(),
+                },
+                audio_track: (task.audio_track
+                    == super::super::super::task::AudioTrackSelection::Original)
+                    .then_some(task.original_audio_track)
+                    .flatten(),
                 source_language: task.source_language.clone(),
                 target_language: task.target_language.clone(),
                 recognition: task.recognition.clone(),
@@ -286,6 +303,9 @@ pub(super) fn render_task_control_card(
     } else {
         None
     };
+    if track_changed {
+        controller.apply_audio_selection();
+    }
     if routing {
         controller.apply_channel_routing();
     }

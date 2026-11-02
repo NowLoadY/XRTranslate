@@ -1095,6 +1095,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                             sample_rate,
                             channels,
                             preprocessing,
+                            save_separated_audio,
                             source_lang: source,
                             target_lang: target,
                             audio_source: configured_audio_source,
@@ -1145,6 +1146,17 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                             session.set_translation_options(translation_options);
                             audio_route_valid = true;
                             pipeline.reset();
+                            if save_separated_audio {
+                                let result = if configured_workload == InferenceWorkload::Offline {
+                                    pipeline.save_separated_audio(&state.project_root.join("runtime/media-audio"))
+                                } else {
+                                    Err("Audio stems require a finite recording".into())
+                                };
+                                if let Err(error) = result {
+                                    let _ = send_error(&outbound_sender, error).await;
+                                    break;
+                                }
+                            }
                             workload = configured_workload;
                             audio_source = configured_audio_source;
                             clone_capture.ready = voices.map_or((String::new(), false), |voices| voices.active_voice()).1;
@@ -1250,6 +1262,22 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                             }
                             if send_failed {
                                 break;
+                            }
+                            if matches!(reason, DrainReason::Finished | DrainReason::InputEnded)
+                                && let Some(pipeline) = &mut pipeline
+                            {
+                                match pipeline.finish_separated_audio() {
+                                    Ok(Some(stems)) => {
+                                        if send_event(&outbound_sender, Some(generation), ServerEvent::SeparatedAudio(stems)).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(error) => {
+                                        let _ = send_error(&outbound_sender, error).await;
+                                        break;
+                                    }
+                                    _ => {}
+                                }
                             }
                             input_state = SessionInputState::Draining;
                         }

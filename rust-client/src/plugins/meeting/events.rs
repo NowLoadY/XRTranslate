@@ -383,6 +383,7 @@ impl SessionEventSubscriber for MeetingEventSink {
             self.send(Command::SealStream(*stream_id));
         }
         match event {
+            TranslationEvent::SeparatedAudio(_) => {}
             TranslationEvent::Preview(_) => {}
             TranslationEvent::Segment(segment) => {
                 if let Some(capture) = self.capture_snapshot() {

@@ -59,6 +59,21 @@ pub struct AudioChannelItem {
 }
 
 impl AudioChannelItem {
+    pub(super) fn label(&self) -> &'static str {
+        match self.id.as_str() {
+            "mono" => "Mono",
+            "fl" => "Front left",
+            "fr" => "Front right",
+            "fc" => "Center",
+            "lfe" => "Bass",
+            "bl" => "Back left",
+            "br" => "Back right",
+            "sl" => "Side left",
+            "sr" => "Side right",
+            _ => "Channel",
+        }
+    }
+
     pub fn default_for_count(count: usize) -> Vec<AudioChannelItem> {
         let layout: &[&str] = match count {
             1 => &["mono"],
@@ -112,6 +127,15 @@ impl AudioChannelItem {
     }
 }
 
+/// A single input shared by playback, decoding and preprocessing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AudioTrackSelection {
+    #[default]
+    Original,
+    Vocals,
+    Background,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MediaTask {
     pub id: String,
@@ -128,6 +152,12 @@ pub struct MediaTask {
     pub recognition: RecognitionSettings,
     #[serde(default)]
     pub audio_channels: Vec<AudioChannelItem>,
+    #[serde(default)]
+    pub audio_track: AudioTrackSelection,
+    #[serde(default)]
+    pub original_audio_track: Option<i64>,
+    #[serde(default)]
+    pub separated_audio: Option<xrtranslate_protocol::SeparatedAudio>,
     #[serde(default)]
     pub is_task_running: bool,
     pub created_at_sec: u64,
@@ -148,6 +178,19 @@ pub(super) fn default_video_recognition() -> RecognitionSettings {
 }
 
 impl MediaTask {
+    pub(super) fn selected_audio(&self) -> super::backend::PlaybackAudio {
+        use super::backend::PlaybackAudio;
+        match (self.audio_track, &self.separated_audio) {
+            (AudioTrackSelection::Vocals, Some(stems)) => {
+                PlaybackAudio::External(stems.vocals.clone())
+            }
+            (AudioTrackSelection::Background, Some(stems)) => {
+                PlaybackAudio::External(stems.background.clone())
+            }
+            _ => PlaybackAudio::Original(self.original_audio_track),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn new(
         title: String,
@@ -198,6 +241,9 @@ impl MediaTask {
             // Until probed, an empty selection lets the shared decoder mix every channel.
             subtitle_style: Default::default(),
             audio_channels: Vec::new(),
+            audio_track: AudioTrackSelection::Original,
+            original_audio_track: None,
+            separated_audio: None,
             is_task_running: false,
             created_at_sec: now,
             last_played_sec: now,

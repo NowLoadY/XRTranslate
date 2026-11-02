@@ -215,6 +215,7 @@ pub(crate) fn audio_preprocessing_selector(
         .horizontal_wrapped(|ui| {
             ui.label(labels[0]);
             egui::ComboBox::from_id_salt(id_salt)
+                .width(160.0_f32.min(ui.available_width()))
                 .selected_text(selected_label)
                 .truncate()
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)

@@ -39,7 +39,37 @@ pub struct PlayerDiagnostics {
     pub dropped_frames: i64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlaybackAudio {
+    Original(Option<i64>),
+    External(PathBuf),
+}
+
+impl Default for PlaybackAudio {
+    fn default() -> Self {
+        Self::Original(None)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AudioTrack {
+    pub id: i64,
+    pub title: String,
+    pub selected: bool,
+    pub external: Option<PathBuf>,
+}
+
 pub trait MediaBackend: Send {
+    fn audio_tracks(&self) -> &[AudioTrack] {
+        &[]
+    }
+    fn select_audio(&mut self, selection: PlaybackAudio) -> Result<(), String> {
+        match selection {
+            PlaybackAudio::Original(_) => Ok(()),
+            PlaybackAudio::External(_) => Err("Audio track switching is unavailable".into()),
+        }
+    }
+
     fn supports_video(&self) -> bool {
         true
     }

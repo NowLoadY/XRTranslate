@@ -97,6 +97,7 @@ impl XRTranslateApp {
                 let input = match request {
                     MediaTranslationRequest::ImportMediaFile {
                         path,
+                        audio_track,
                         mut recognition,
                         audio_channels,
                         ..
@@ -124,6 +125,7 @@ impl XRTranslateApp {
                             path,
                             recognition,
                             options: media_import::AudioImportOptions {
+                                audio_track,
                                 recognition_channels: audio_channels
                                     .iter()
                                     .filter(|channel| channel.recognition)

@@ -35,6 +35,7 @@ pub enum TranslationOutcome {
 
 #[derive(Clone, Debug)]
 pub enum TranslationEvent {
+    SeparatedAudio(xrtranslate_protocol::SeparatedAudio),
     /// Replaceable presentation only; never a durable result or TTS input.
     Preview(super::preview::TranslationPreview),
     Segment(TranslationSegment),
@@ -70,6 +71,9 @@ impl TranslationEventAdapter {
     pub fn push(&mut self, event: &SessionEvent, stream_id: u64) -> Vec<TranslationEvent> {
         if self.finished.contains(&stream_id) {
             return Vec::new();
+        }
+        if let SessionEvent::SeparatedAudio(stems) = event {
+            return vec![TranslationEvent::SeparatedAudio(stems.clone())];
         }
         let outcome = match event {
             SessionEvent::Disconnected(reason) => Some(match reason.as_str() {
