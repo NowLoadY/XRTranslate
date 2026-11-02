@@ -60,6 +60,7 @@ mod runtime_install;
 #[cfg(any(windows, target_os = "linux"))]
 mod screen_capture;
 mod service_config;
+mod account_connections;
 pub mod session_coordinator;
 mod streaming;
 mod text_translation;
@@ -719,6 +720,7 @@ struct XRTranslateApp {
     active_languages: Option<LanguageSelection>,
     plugin_preferences: PluginPreferences,
     service_config: service_config::ServiceConfigEditor,
+    account_connections: account_connections::AccountConnections,
     pub preferred_gpu: Option<String>,
     backend_manager: backend::BackendManager,
     model_task_manager: model_install::NativeModelTaskManager,
@@ -1972,6 +1974,7 @@ impl Default for XRTranslateApp {
                 .clone()
                 .or_else(|| service_config.preferred_gpu()),
             service_config,
+            account_connections: Default::default(),
             backend_manager,
             model_task_manager,
             runtime_installer,
@@ -5072,6 +5075,10 @@ impl XRTranslateApp {
                 media_import::AudioImportEvent::Stopped { .. } => {
                     terminal_error = Some("Audio import stopped".to_owned())
                 }
+                media_import::AudioImportEvent::OutputClosed => {
+                    // Keep the session alive long enough to publish its original error.
+                    self.meeting_plugin.clear_audio_import();
+                }
                 media_import::AudioImportEvent::Error(error) => terminal_error = Some(error),
             }
         }
@@ -5154,7 +5161,9 @@ impl XRTranslateApp {
                     self.media_plugin.complete_import();
                     host_completed = true;
                 }
-                media_import::AudioImportEvent::Stopped { .. } => {
+                media_import::AudioImportEvent::Stopped { .. }
+                | media_import::AudioImportEvent::OutputClosed => {
+                    // Session events report downstream failures; do not replace or cancel them.
                     self.media_plugin.stop_import();
                     self.host_audio_import = None;
                 }
@@ -5317,6 +5326,60 @@ impl XRTranslateApp {
         }
         self.refresh_selected_input_config();
         self.save_settings();
+    }
+
+    fn adapt_model_languages(&mut self) {
+        if !self.service_config.take_language_change() {
+            return;
+        }
+        let result = LanguageSelection::parse_with_options(
+            &self.source_lang,
+            &self.target_lang,
+            self.additional_target_lang.as_deref(),
+            self.asr_only,
+        )
+        .and_then(|current| {
+            let caps = self.service_config.language_capabilities()?;
+            let previous_error = caps
+                .select_with_options(
+                    &self.source_lang,
+                    &self.target_lang,
+                    self.additional_target_lang.as_deref(),
+                    self.asr_only,
+                )
+                .err();
+            caps.adapt_selection(current)
+                .map(|next| (current, next, previous_error))
+        });
+        match result {
+            Ok((current, next, previous_error)) => {
+                if previous_error.is_some() && self.last_error == previous_error {
+                    self.last_error = None;
+                }
+                if current != next {
+                    (self.source_lang, self.target_lang) = next.wire();
+                    self.additional_target_lang = next
+                        .additional_target()
+                        .map(|language| language.code().to_owned());
+                    self.notifications.info(format!(
+                        "{}: {} → {}",
+                        i18n::tr(self.ui_language, "Languages adjusted to selected models"),
+                        if self.source_lang == "auto" {
+                            i18n::tr(self.ui_language, "Auto")
+                        } else {
+                            language_label(self.ui_language, &self.source_lang)
+                        },
+                        self.target_lang
+                            .split(',')
+                            .map(|code| language_label(self.ui_language, code))
+                            .collect::<Vec<_>>()
+                            .join(" ↔ "),
+                    ));
+                }
+                self.apply_language_route();
+            }
+            Err(error) => self.last_error = Some(error),
+        }
     }
 
     fn apply_language_route(&mut self) {
@@ -6097,6 +6160,33 @@ impl eframe::App for XRTranslateApp {
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(provider) = self.account_connections.poll(&self.project_root(), ctx) {
+            self.backend_manager.invalidate_runtime();
+            // Return from this app's explicit login flow, including a minimized
+            // main window. Compositors that reject focus still get an attention hint.
+            #[cfg(not(target_os = "android"))]
+            for command in [
+                egui::ViewportCommand::Visible(true),
+                egui::ViewportCommand::Minimized(false),
+                egui::ViewportCommand::Focus,
+                egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational),
+            ] {
+                ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, command);
+            }
+            self.notifications.info(format!(
+                "{} · {}",
+                i18n::tr_dynamic(
+                    self.ui_language,
+                    provider.label()
+                ),
+                i18n::tr(self.ui_language, "Signed in. Account connected."),
+            ));
+        }
+        if let Some(error) = self.account_connections.error.take() {
+            self.notifications.error("", error);
+        }
+
+        self.adapt_model_languages();
         self.poll_avatar(Some(ctx.clone()));
         self.poll_microphone_sync(ctx);
         self.poll_voice_interaction(ctx);

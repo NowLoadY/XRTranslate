@@ -1,5 +1,6 @@
 //! Model-independent task intent and language availability. The legacy wire
-//! format is parsed once at the boundary; selection never changes user intent.
+//! format is parsed once at the boundary. Validation preserves intent; explicit
+//! model changes may adapt it through `adapt_selection`.
 
 use super::{LANGUAGES, SupportedLanguage};
 
@@ -130,6 +131,111 @@ impl LanguageCapabilities {
             })
             .ok_or("No translation target is available")?;
         self.select(source, target.code())
+    }
+
+    /// Follow a committed model change, keeping valid intent and preferred targets.
+    /// Pure and idempotent: callers persist and announce changes at the boundary.
+    pub fn adapt_selection(self, current: LanguageSelection) -> Result<LanguageSelection, String> {
+        let (source, target) = current.wire();
+        if self
+            .select_with_options(
+                &source,
+                &target,
+                current.additional_target.map(SupportedLanguage::code),
+                current.asr_only(),
+            )
+            .is_ok()
+        {
+            return Ok(current);
+        }
+        let mut next = current;
+        // An incompatible extra target must not force a change of the main route.
+        if self
+            .select_with_options(&source, &target, None, current.asr_only())
+            .is_err()
+        {
+            next.mode = match current.mode {
+                LanguageMode::AsrOnly { source } => LanguageMode::AsrOnly {
+                    source: match source {
+                        None => None,
+                        Some(_) => Some(
+                            self.recognition_sources()
+                                .iter()
+                                .next()
+                                .ok_or("No recognition language is available")?,
+                        ),
+                    },
+                },
+                mode => {
+                    let sources = self.sources();
+                    let preferred_sources: Vec<_> = match mode {
+                        LanguageMode::Fixed { source, .. } => vec![source],
+                        LanguageMode::Bidirectional(pair) => pair.to_vec(),
+                        _ => vec![],
+                    };
+                    let preferred_target = target
+                        .split(',')
+                        .filter_map(SupportedLanguage::parse)
+                        .find(|language| self.targets().contains(*language));
+                    let input = preferred_sources
+                        .iter()
+                        .copied()
+                        .chain(sources.iter().filter(|language| {
+                            preferred_target
+                                .is_none_or(|target| target.base_code() != language.base_code())
+                        }))
+                        .chain(sources.iter())
+                        .find(|language| sources.contains(*language))
+                        .ok_or("The selected services have no common input language")?;
+                    let second = preferred_sources
+                        .iter()
+                        .copied()
+                        .chain(sources.iter())
+                        .find(|language| {
+                            sources.contains(*language) && language.base_code() != input.base_code()
+                        });
+                    if let (LanguageMode::Bidirectional(_), Some(second)) = (mode, second) {
+                        LanguageMode::Bidirectional([input, second])
+                    } else {
+                        let output = target
+                            .split(',')
+                            .filter_map(SupportedLanguage::parse)
+                            .chain(self.targets().iter())
+                            .find(|language| {
+                                self.targets().contains(*language)
+                                    && language.base_code() != input.base_code()
+                            })
+                            .ok_or("No distinct translation target is available")?;
+                        if matches!(mode, LanguageMode::Detect { .. }) && second.is_some() {
+                            LanguageMode::Detect { target: output }
+                        } else {
+                            LanguageMode::Fixed {
+                                source: input,
+                                target: output,
+                            }
+                        }
+                    }
+                }
+            };
+        }
+        let (source, target) = next.wire();
+        if self
+            .select_with_options(
+                &source,
+                &target,
+                next.additional_target.map(SupportedLanguage::code),
+                next.asr_only(),
+            )
+            .is_err()
+        {
+            next.additional_target = None;
+        }
+        self.select_with_options(
+            &source,
+            &target,
+            next.additional_target.map(SupportedLanguage::code),
+            next.asr_only(),
+        )
     }
 
     pub fn select(self, source: &str, target: &str) -> Result<LanguageSelection, String> {
@@ -305,5 +411,114 @@ impl LanguageSelection {
     }
     pub fn additional_target(self) -> Option<SupportedLanguage> {
         self.additional_target
+    }
+}
+
+#[cfg(test)]
+mod adaptation_tests {
+    use super::*;
+
+    fn caps(asr: &[&str], translation: &[&str]) -> LanguageCapabilities {
+        LanguageCapabilities {
+            recognition: Some(LanguageSet::from_codes(asr, true)),
+            translation: Some(LanguageSet::from_codes(translation, false)),
+        }
+    }
+
+    #[test]
+    fn follows_models_and_preserves_valid_routes() {
+        for (asr, translation, source, target, expected_source, expected_target) in [
+            (vec!["en"], vec!["en", "zh"], "auto", "zh,en", "en", "zh"),
+            (vec!["en"], vec!["en", "zh"], "auto", "en,zh", "en", "zh"),
+            (
+                vec!["en", "ja"],
+                vec!["en", "zh", "ja"],
+                "zh",
+                "en",
+                "ja",
+                "en",
+            ),
+            (
+                vec!["en", "ja"],
+                vec!["en", "zh", "ja"],
+                "auto",
+                "zh,en",
+                "auto",
+                "en,ja",
+            ),
+            (vec!["en"], vec!["en", "ja"], "en", "zh", "en", "ja"),
+            (vec!["en"], vec!["en", "zh"], "auto", "zh", "auto", "zh"),
+            (
+                vec!["en", "zh"],
+                vec!["en", "zh"],
+                "auto",
+                "en,zh",
+                "auto",
+                "en,zh",
+            ),
+        ] {
+            let caps = caps(&asr, &translation);
+            let next = caps
+                .adapt_selection(LanguageSelection::parse(source, target).unwrap())
+                .unwrap();
+            assert_eq!(
+                next.wire(),
+                (expected_source.into(), expected_target.into())
+            );
+            assert_eq!(caps.adapt_selection(next).unwrap(), next);
+            assert!(caps.select(expected_source, expected_target).is_ok());
+        }
+    }
+
+    #[test]
+    fn keeps_supported_extra_targets_and_removes_only_invalid_ones() {
+        let caps = caps(&["en"], &["en", "zh", "ja"]);
+        let current =
+            LanguageSelection::parse_with_options("auto", "en,zh", Some("ja"), false).unwrap();
+        let next = caps.adapt_selection(current).unwrap();
+        assert_eq!(next.wire(), ("en".into(), "zh".into()));
+        assert_eq!(next.additional_target, current.additional_target);
+        let restricted = super::LanguageCapabilities {
+            translation: Some(LanguageSet::from_codes(&["en", "zh"], false)),
+            ..caps
+        };
+        let next = restricted.adapt_selection(next).unwrap();
+        assert_eq!(next.additional_target, None);
+        assert_eq!(next.wire(), ("en".into(), "zh".into()));
+    }
+
+    #[test]
+    fn recognition_only_does_not_require_translation() {
+        let caps = caps(&["en"], &[]);
+        let current = LanguageSelection::parse_with_options("zh", "zh", None, true).unwrap();
+        let next = caps.adapt_selection(current).unwrap();
+        assert!(next.asr_only());
+        assert_eq!(next.wire(), ("en".into(), "en".into()));
+        let auto = LanguageSelection::parse_with_options("auto", "auto", None, true).unwrap();
+        assert_eq!(caps.adapt_selection(auto).unwrap(), auto);
+    }
+
+    #[test]
+    fn impossible_routes_fail_and_unknown_providers_preserve_intent() {
+        let current = LanguageSelection::parse("auto", "en,zh").unwrap();
+        for caps in [
+            caps(&[], &["en", "zh"]),
+            caps(&["en"], &["zh"]),
+            caps(&["en"], &["en"]),
+        ] {
+            assert!(caps.adapt_selection(current).is_err());
+        }
+        assert_eq!(
+            LanguageCapabilities::default()
+                .adapt_selection(current)
+                .unwrap(),
+            current
+        );
+        // Strict validation never silently adapts a task.
+        assert!(
+            caps(&["en"], &["en", "zh"])
+                .select("auto", "en,zh")
+                .is_err()
+        );
     }
 }

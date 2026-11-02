@@ -8,11 +8,9 @@ use xrtranslate_engine::audio::{StreamingResampler, f32_to_pcm16le};
 use xrtranslate_separation::{SAMPLE_RATE_HZ as VOCAL_SAMPLE_RATE_HZ, VocalSeparator};
 use xrtranslate_vad::EndpointConfig;
 
-/// Keep the live pipeline's pause setting and adaptive curve. Only the vocal
-/// admission threshold and bounded audio window differ.
+/// Keep the user's VAD and pause settings; only bound sustained vocal windows.
 pub(super) fn vocal_endpoint_config(mut config: EndpointConfig) -> EndpointConfig {
     use super::frames_for_ms;
-    config.speech_threshold = 0.5;
     config.max_active_frames = frames_for_ms(12_000);
     config.max_active_overlap_frames = frames_for_ms(320);
     config

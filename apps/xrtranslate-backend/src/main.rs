@@ -24,7 +24,7 @@ use axum::{
     routing::get,
 };
 use clap::Parser;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::time::{Instant, sleep};
 use tokio::{
@@ -200,11 +200,12 @@ struct CachedSentenceTranslation {
     result: Arc<tokio::sync::Mutex<Option<TranslationOutput>>>,
 }
 
-async fn drain_translations(
+async fn wait_for_translations(
     pending: &mut futures_util::stream::FuturesUnordered<tokio::task::JoinHandle<()>>,
+    remaining: usize,
 ) -> bool {
-    while let Some(result) = pending.next().await {
-        if result.is_err() {
+    while pending.len() > remaining {
+        if pending.next().await.is_some_and(|result| result.is_err()) {
             return false;
         }
     }
@@ -1987,6 +1988,7 @@ async fn run_inference_worker(
     let mut additional_scope = translation_outputs::AdditionalOutputScope::default();
     let mut pending_translations =
         futures_util::stream::FuturesUnordered::<tokio::task::JoinHandle<()>>::new();
+    let mut publication_tail: Option<tokio::sync::oneshot::Receiver<()>> = None;
     let mut active_sentence_gate: Option<(
         PipelineGeneration,
         String,
@@ -2026,7 +2028,7 @@ async fn run_inference_worker(
             if let Some((_, _, gate)) = &active_sentence_gate {
                 gate.finish();
             }
-            let _ = drain_translations(&mut pending_translations).await;
+            let _ = wait_for_translations(&mut pending_translations, 0).await;
             break;
         };
         let work = flush_sentence_before_boundary(
@@ -2040,16 +2042,19 @@ async fn run_inference_worker(
             InferenceWork::Queued(InferenceJob::LiveUtterance { job, input }) => {
                 (job, None, Some(input))
             }
-            InferenceWork::Prepared(prepared) => (
-                prepared.job,
-                Some((
-                    prepared.recognized,
-                    prepared.asr_context,
-                    prepared.prompt_graph,
-                    prepared.queue_elapsed,
-                )),
-                None,
-            ),
+            InferenceWork::Prepared(mut prepared) => {
+                prepared.recognized.coalesce_final_segments();
+                (
+                    prepared.job,
+                    Some((
+                        prepared.recognized,
+                        prepared.asr_context,
+                        prepared.prompt_graph,
+                        prepared.queue_elapsed,
+                    )),
+                    None,
+                )
+            }
             InferenceWork::Unfinished(pending) => {
                 if pending.job.generation == *generation.borrow()
                     && !emit_unfinished_recognition(&events, &pending).await
@@ -2069,7 +2074,7 @@ async fn run_inference_worker(
                 if let Some((_, _, gate)) = &active_sentence_gate {
                     gate.finish();
                 }
-                let _ = drain_translations(&mut pending_translations).await;
+                let _ = wait_for_translations(&mut pending_translations, 0).await;
                 if event_generation != *generation.borrow() {
                     continue;
                 }
@@ -2090,7 +2095,7 @@ async fn run_inference_worker(
                 if let Some((_, _, gate)) = &active_sentence_gate {
                     gate.finish();
                 }
-                let _ = drain_translations(&mut pending_translations).await;
+                let _ = wait_for_translations(&mut pending_translations, 0).await;
                 let _ = events.send(InferenceEvent::Error {
                     generation: visible.job.generation,
                     message: format!(
@@ -2105,7 +2110,7 @@ async fn run_inference_worker(
                 if let Some((_, _, gate)) = &active_sentence_gate {
                     gate.finish();
                 }
-                if !drain_translations(&mut pending_translations).await {
+                if !wait_for_translations(&mut pending_translations, 0).await {
                     break;
                 }
                 if *generation.borrow() != job.generation {
@@ -2498,7 +2503,7 @@ async fn run_inference_worker(
                 if let Some((_, _, gate)) = &active_sentence_gate {
                     gate.finish();
                 }
-                if !drain_translations(&mut pending_translations).await {
+                if !wait_for_translations(&mut pending_translations, 0).await {
                     break;
                 }
                 if *generation.borrow() == event_generation
@@ -2528,7 +2533,7 @@ async fn run_inference_worker(
                 if let Some((_, _, gate)) = &active_sentence_gate {
                     gate.finish();
                 }
-                if !drain_translations(&mut pending_translations).await {
+                if !wait_for_translations(&mut pending_translations, 0).await {
                     break;
                 }
                 if *generation.borrow() == event_generation
@@ -3029,9 +3034,15 @@ async fn run_inference_worker(
         } else {
             recognition_bias.clear();
         }
-        // Continuous ASR never waits for an unchanged sentence's translation.
-        // Ordinary turns still select context after the preceding turn commits.
-        if !job.revisable && !drain_translations(&mut pending_translations).await {
+        // Bound ordinary turns without serializing recognition behind MT.
+        // Source-only history supplies context while preceding translations run.
+        if !job.revisable
+            && !wait_for_translations(
+                &mut pending_translations,
+                TRANSLATION_CONCURRENCY_PER_SESSION - 1,
+            )
+            .await
+        {
             break;
         }
         if *generation.borrow() != job.generation {
@@ -3063,6 +3074,19 @@ async fn run_inference_worker(
         let memory_turn_id = format!("{namespace}/{}", job.topic_turn_id);
         context_binding.observe(&memory_turn_id);
         let history_speaker = format!("{input_source}/{speaker_id}");
+        if !job.revisable {
+            context_binding.record(
+                xrtranslate_prompt::PromptTurn {
+                    turn_id: Some(memory_turn_id.clone()),
+                    speaker_id: history_speaker.clone(),
+                    source_language: recognized.source_language.clone(),
+                    target_language: recognized.target_language.clone(),
+                    source_text: recognized.source_text.clone(),
+                    translated_text: String::new(),
+                },
+                job.revision,
+            );
+        }
         let task_reference = context_binding.snapshot(
             &memory_turn_id,
             &history_speaker,
@@ -3246,6 +3270,19 @@ async fn run_inference_worker(
         let translation_events = events.clone();
         let prompt_traces = prompt_traces.clone();
         let asr_revision = job.revision;
+        let (published, preceding) = if job.revisable {
+            (None, None)
+        } else {
+            let (published, next) = tokio::sync::oneshot::channel();
+            (Some(published), publication_tail.replace(next))
+        };
+        let publication = async move {
+            if let Some(preceding) = preceding {
+                let _ = preceding.await;
+            }
+        }
+        .boxed()
+        .shared();
         pending_translations.push(tokio::spawn(async move {
             let translations = futures_util::stream::iter(
                 segments
@@ -3272,6 +3309,7 @@ async fn run_inference_worker(
                 let cache_turn_id = cache_turn_id.clone();
                 let prompt_graph_fingerprint = prompt_graph_fingerprint.clone();
                 let readiness = sentence_readiness.clone();
+                let preview_publication = publication.clone();
                 let mut gate_generation = translation_generation.clone();
                 async move {
                     if *gate_generation.borrow_and_update() != event_generation { return None; }
@@ -3348,8 +3386,11 @@ async fn run_inference_worker(
                                     let mut context = preview_context.clone();
                                     let source_text = preview_source.clone();
                                     let readiness = preview_readiness.clone();
+                                    // Never hold an inference slot while waiting for an older
+                                    // subtitle. Its successor's final result is still retained.
+                                    let publish = preview_publication.clone().now_or_never().is_some();
                                     async move {
-                                        if *generation.borrow() == event_generation
+                                        if publish && *generation.borrow() == event_generation
                                             && readiness.contains(sentence_index, &source_text) {
                                             context.revision = readiness.revision();
                                             let _ = events.send(InferenceEvent::TranslationPreview {
@@ -3396,6 +3437,7 @@ async fn run_inference_worker(
                 else {
                     continue;
                 };
+                publication.clone().await;
                 if *translation_generation.borrow() != event_generation {
                     cancelled = true;
                     break;
@@ -3505,6 +3547,7 @@ async fn run_inference_worker(
                 );
                 context_binding.record(turn, asr_revision);
             }
+            drop(published); // Release the next turn even after failure or cancellation.
         }));
     }
     additional_scope.close().await;

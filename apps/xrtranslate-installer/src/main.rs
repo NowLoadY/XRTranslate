@@ -175,6 +175,9 @@ async fn prepare_resources(
     cache: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use xrtranslate_download::{DownloadClient, DownloadSpec};
+    xrtranslate_assets::ensure_bundled_gtcrn(
+        &ModelAssetsConfig::default().resolve_selected(output),
+    )?;
     let client = DownloadClient::new("XRTranslate-build")?;
     let mut included = std::collections::HashSet::new();
     for asset in config.model_manager.resolved_bundled_models() {

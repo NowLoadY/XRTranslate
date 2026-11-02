@@ -413,7 +413,7 @@ fn render_input_adaptation(
         })
         .unwrap_or_else(|| automatic.to_owned());
     let pseudo_streaming = crate::i18n::tr(language, "Pseudo-streaming");
-    let vad_sensitivity = crate::i18n::tr(language, "VAD Sensitivity");
+    let filter_strength = crate::i18n::tr(language, "Filter strength");
     let pause_tolerance = crate::i18n::tr(language, "Pause tolerance");
     let default_preprocessing = app.service_config.default_audio_preprocessing();
     let preprocessing_models = app.audio_preprocessing_models();
@@ -464,7 +464,7 @@ fn render_input_adaptation(
             &mut recognition.background_noise,
             0.05..=0.8,
             0.30,
-            vad_sensitivity,
+            filter_strength,
             &[],
         );
         let background_changed = background_response.drag_stopped()

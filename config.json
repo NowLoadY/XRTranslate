@@ -2,6 +2,7 @@
   "asr": {
     "provider": "qwen3-gguf",
     "providers": {
+      "Doubao Account": {},
       "groq": {},
       "google": {},
       "siliconflow": {},
@@ -475,6 +476,7 @@
     "emit_min_chars": 6,
     "provider": "hunyuan",
     "providers": {
+      "ChatGPT Account": {},
       "hunyuan": {
         "context_window_tokens": 2048,
         "max_tokens": 256,

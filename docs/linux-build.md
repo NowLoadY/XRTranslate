@@ -7,16 +7,29 @@ selected at the host boundary.
 ## Prerequisites
 
 Install Rust 1.95 or newer. On Debian/Ubuntu, install the native build and
-desktop dependencies:
+desktop dependencies through the system package manager:
 
 ```sh
-sudo apt install build-essential pkg-config curl bzip2 libx11-dev libxcursor-dev \
-  libxrandr-dev libxi-dev libwayland-dev libxkbcommon-dev libasound2-dev \
-  libpipewire-0.3-dev libclang-dev libmpv-dev \
-  libegl-mesa0 libglx-mesa0 libgl1-mesa-dri \
-  fontconfig fonts-noto-core fonts-noto-cjk fonts-dejavu-core
+./scripts/install-linux-deps.sh
 git submodule update --init XR-Corpus
 ```
+
+The installer checks the native-architecture packages, runs `sudo apt-get update`
+and `sudo apt-get install` for missing dependencies, and verifies their
+`pkg-config` modules. Enter your sudo password in the terminal when requested.
+When already running as root, it calls APT directly. The run and release scripts
+use this same check automatically, so the separate install step is optional.
+Once dependencies are installed, later launches do not need sudo or an APT update.
+Only package installation is elevated; build and run the application as your
+normal user. This follows Ubuntu's [APT guidance for scripts](https://documentation.ubuntu.com/project/contributors/bug-fix/install-built-packages/).
+
+The package list in `scripts/linux-build-env.sh` includes the X11/Wayland, ALSA,
+PipeWire/SPA, libclang, WebKitGTK 4.1, GTK 3 and D-Bus development packages, plus
+graphics/font runtimes. MPV builds additionally install `libmpv-dev`. APT manages
+the system files and their dependencies; the scripts do not extract `.deb`
+packages into the project or create substitute linker libraries. Other
+distributions need the equivalent development packages installed through their
+package manager.
 
 The build scripts compile the current working tree and never switch source
 revisions. They warn if XR-Corpus differs from the revision recorded by the main
@@ -25,12 +38,6 @@ can leave the submodule at an older, incompatible revision. When updating a
 checkout without local submodule work, run `git submodule update --init XR-Corpus`
 after pulling. Preserve any local submodule work before deliberately switching
 revisions. For a fresh clone, use `git clone --recurse-submodules`.
-
-On Debian/Ubuntu with PipeWire and libclang already installed, both Linux
-scripts can download missing PipeWire/SPA development files and libclang C
-headers into `target/linux-build-deps/`, without sudo. This build cache is
-reused on later runs and excluded from release packages. Other distributions
-need the equivalent development packages installed through their package manager.
 
 The scripts download Sherpa's official native libraries with curl, using the
 version resolved in `Cargo.lock` and the current proxy settings. They share the
@@ -51,10 +58,17 @@ Cargo's build output and the same `runtime/` data without creating a release
 directory. Set `WINIT_UNIX_BACKEND=x11` or `wayland` if the window backend
 needs to be selected explicitly.
 
+GTCRN speech denoising weights and their license are embedded in the client.
+Model discovery prepares them offline in the configured model directory, just
+as release packages include them. Enabling denoising never requires a model
+download; vocal separation remains an optional download.
+
 The Linux scripts include MPV playback by default. Media videos play inside the
 app, with the same subtitles and controls as Windows. X11 and Wayland are
 supported; hardware decoding depends on the installed graphics driver.
 Set `XRTRANSLATE_FEATURES=` to build without MPV when only audio is needed.
+Source builds use the system development package `libmpv-dev`, which supplies
+the linker files along with the MPV runtime.
 
 ## Build a local release
 
@@ -73,7 +87,10 @@ downloaded models, managed GPU runtimes, settings, and editable databases are
 excluded. Additional models, including optional OCR, and compatible runtimes
 are downloaded from the welcome flow according to the selected configuration.
 Install the system MPV runtime (`libmpv2` on Debian/Ubuntu) on machines using the
-release package. The packaged launcher shows installation instructions only
+release package. Account login also uses the system `libwebkit2gtk-4.1-0`
+package (its dependencies include GTK 3). The separate login helper is included
+in every desktop release, so no Python or additional login application is needed.
+The packaged launcher shows installation instructions only
 when a required shared library is missing; otherwise it opens the application
 directly. The application does not require a Python interpreter,
 virtual environment, or PyTorch.

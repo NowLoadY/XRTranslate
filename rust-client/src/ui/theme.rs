@@ -286,3 +286,21 @@ pub fn danger() -> Color32 {
 pub fn border_strong() -> Color32 {
     Color32::from_rgb(70, 78, 81)
 }
+
+pub(crate) struct AccountCapsuleColors {
+    pub fill: Color32,
+    pub empty: Color32,
+    pub rear: Color32,
+    pub idle_border: Color32,
+    pub identity: Color32,
+}
+
+pub(crate) fn account_capsule_colors() -> AccountCapsuleColors {
+    AccountCapsuleColors {
+        fill: Color32::WHITE,
+        empty: Color32::from_gray(248),
+        rear: Color32::from_gray(235),
+        idle_border: Color32::from_gray(173),
+        identity: Color32::from_rgb(13, 153, 113),
+    }
+}

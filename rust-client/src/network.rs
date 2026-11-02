@@ -776,7 +776,7 @@ async fn run_session(
                     }
                 }
                 if let Err(error) = write.send(Message::Binary(pcm.into())).await {
-                    let _ = event_tx.send(SessionEvent::Error(format!("Failed to send microphone audio: {error}")));
+                    let _ = event_tx.send(SessionEvent::Error(format!("Failed to send audio to the translation service: {error}")));
                     break;
                 }
             }

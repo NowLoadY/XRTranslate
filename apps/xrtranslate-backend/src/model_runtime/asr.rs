@@ -7,8 +7,9 @@ use xrtranslate_assets::{
 };
 use xrtranslate_config::NativeProviderConfig;
 use xrtranslate_inference::{
-    AsrOptions, AsrTranscript, InferenceError, OpenAiAsrAdapter, Qwen3AsrAdapter,
-    QwenAudioFlashAdapter, QwenAudioStreamingAdapter, ReqwestClient, SherpaOfflineAsrAdapter,
+    AsrOptions, AsrTranscript, DoubaoWebAsrAdapter, InferenceError, OpenAiAsrAdapter,
+    Qwen3AsrAdapter, QwenAudioFlashAdapter, QwenAudioStreamingAdapter, ReqwestClient,
+    SherpaOfflineAsrAdapter,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +27,7 @@ pub(crate) enum NativeAsrAdapter {
     OpenAi(OpenAiAsrAdapter<ReqwestClient>),
     QwenAudioFlash(QwenAudioFlashAdapter<ReqwestClient>),
     QwenAudioStreaming(QwenAudioStreamingAdapter),
+    DoubaoWeb(DoubaoWebAsrAdapter),
     SherpaOffline(SherpaOfflineAsrAdapter),
 }
 
@@ -49,6 +51,7 @@ impl AsrProfile {
         model: &str,
         api_key: Option<&str>,
         capabilities: &RemoteCapabilities,
+        accounts: &xrtranslate_connections::AccountStore,
     ) -> Result<NativeAsrAdapter, InferenceError> {
         match self {
             Self::Remote(
@@ -66,6 +69,10 @@ impl AsrProfile {
             Self::Remote(RemoteConnector::DashscopeAsr) => {
                 QwenAudioFlashAdapter::new(http, endpoint, model, api_key.unwrap_or_default())
                     .map(NativeAsrAdapter::QwenAudioFlash)
+            }
+            Self::Remote(RemoteConnector::DoubaoWebAsr) => {
+                DoubaoWebAsrAdapter::new(endpoint, model, accounts.clone())
+                    .map(NativeAsrAdapter::DoubaoWeb)
             }
             Self::Remote(RemoteConnector::DashscopeAsrWebsocket) => {
                 QwenAudioStreamingAdapter::new(endpoint, model, api_key.unwrap_or_default())
@@ -123,6 +130,7 @@ impl NativeAsrAdapter {
             audio.recv().await.map(|frame| (frame, audio))
         });
         match self {
+            Self::DoubaoWeb(adapter) => adapter.transcribe_stream(audio, options, on_update).await,
             Self::QwenAudioStreaming(adapter) => {
                 adapter.transcribe_stream(audio, options, on_update).await
             }
@@ -143,6 +151,7 @@ impl NativeAsrAdapter {
             Self::OpenAi(adapter) => adapter.transcribe_pcm16(pcm, options).await,
             Self::QwenAudioFlash(adapter) => adapter.transcribe_pcm16(pcm, options).await,
             Self::QwenAudioStreaming(adapter) => adapter.transcribe_pcm16(pcm, options).await,
+            Self::DoubaoWeb(adapter) => adapter.transcribe_pcm16(pcm, options).await,
             Self::SherpaOffline(adapter) => {
                 adapter
                     .transcribe_pcm16(pcm, options.language.as_deref())

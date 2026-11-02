@@ -1,5 +1,6 @@
 use serde_json::{Map, Value};
 use std::path::PathBuf;
+use xrtranslate_assets::remote::{AccountProvider, ConnectionChannel};
 use xrtranslate_prompt::TranslationPromptProfile;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,16 +32,20 @@ struct ServiceCategory {
 pub(crate) struct OnboardingProviderState {
     pub selected: String,
     pub remote: bool,
+    pub channel: ConnectionChannel,
     pub choices: Vec<OnboardingProviderChoice>,
     pub model: String,
     pub models: Vec<String>,
     pub api_key: String,
+    pub account: Option<AccountProvider>,
+    pub server_managed: bool,
 }
 
 #[derive(Clone)]
 pub(crate) struct OnboardingProviderChoice {
     pub name: String,
     pub remote: bool,
+    pub channel: ConnectionChannel,
     pub guide_url: Option<String>,
     pub model_asset: Option<String>,
     pub model_assets: Vec<String>,
@@ -61,6 +66,7 @@ pub struct ServiceConfigEditor {
     document: Value,
     categories: Vec<ServiceCategory>,
     dirty: bool,
+    language_change_pending: bool,
     message: Option<String>,
     onboarding_save_error: Option<String>,
     asr_streaming: std::sync::OnceLock<Option<bool>>,
@@ -90,6 +96,7 @@ impl ServiceConfigEditor {
             document: Value::Object(Map::new()),
             categories: Vec::new(),
             dirty: false,
+            language_change_pending: false,
             message: None,
             onboarding_save_error: None,
             language_capabilities: Default::default(),
@@ -99,6 +106,7 @@ impl ServiceConfigEditor {
         if let Err(error) = editor.reload() {
             editor.message = Some(error);
         }
+        editor.language_change_pending = false;
         editor
     }
 
@@ -121,6 +129,7 @@ impl ServiceConfigEditor {
         self.message = None;
         self.onboarding_save_error = None;
         self.dirty = false;
+        self.language_change_pending = true;
         Ok(())
     }
 
@@ -162,6 +171,11 @@ impl ServiceConfigEditor {
         })
     }
 
+    /// Consume successful configuration commits once; opening the app is not a change.
+    pub(crate) fn take_language_change(&mut self) -> bool {
+        std::mem::take(&mut self.language_change_pending)
+    }
+
     pub(crate) fn language_capabilities(
         &self,
     ) -> Result<xrtranslate_engine::language::LanguageCapabilities, String> {
@@ -182,6 +196,34 @@ impl ServiceConfigEditor {
         xrtranslate_config::AppConfig::from_value(document)
             .map(|config| config.runtime_requirements())
             .unwrap_or_default()
+    }
+
+    pub(crate) fn missing_account_connections(&self) -> bool {
+        let store = xrtranslate_connections::AccountStore::for_project_root(project_root());
+        self.categories
+            .iter()
+            .filter_map(|category| {
+                category
+                    .providers
+                    .iter()
+                    .find(|provider| provider.name == category.selected_provider)
+            })
+            .any(|provider| {
+                let Some(account) = provider_account(provider) else {
+                    return false;
+                };
+                let snapshot = store.snapshot(account);
+                snapshot.status != xrtranslate_connections::AccountStatus::Connected
+                    || snapshot.models.as_ref().is_some_and(|models| {
+                        let selected = provider
+                            .fields
+                            .iter()
+                            .find(|f| f.name == "model")
+                            .map(|f| f.value.as_str())
+                            .unwrap_or_default();
+                        !models.iter().any(|model| model.id == selected)
+                    })
+            })
     }
 
     pub fn selected_model_asset_ids(&self) -> Vec<xrtranslate_assets::ModelAssetId> {
@@ -312,12 +354,17 @@ impl ServiceConfigEditor {
         Some(OnboardingProviderState {
             selected: selected.name.clone(),
             remote: provider_is_remote(selected),
+            channel: provider_channel(selected),
+            account: provider_account(selected),
+            server_managed: provider_remote_model(selected)
+                .is_some_and(|model| model.server_managed),
             choices: category
                 .providers
                 .iter()
                 .map(|provider| OnboardingProviderChoice {
                     name: provider.name.clone(),
                     remote: provider_is_remote(provider),
+                    channel: provider_channel(provider),
                     guide_url: provider
                         .fields
                         .iter()
@@ -482,6 +529,7 @@ impl ServiceConfigEditor {
                 if incomplete {
                     Ok(OnboardingSaveOutcome::IncompleteRemoteProvider)
                 } else {
+                    self.language_change_pending = true;
                     Ok(OnboardingSaveOutcome::Saved {
                         resolved_error: self.onboarding_save_error.take(),
                     })
@@ -511,13 +559,16 @@ impl ServiceConfigEditor {
             })
             .any(|provider| {
                 provider_is_remote(provider)
-                    && ["model", "api_key"].iter().any(|required| {
-                        provider
-                            .fields
-                            .iter()
-                            .find(|field| field.name == *required)
-                            .is_none_or(|field| field.value.trim().is_empty())
-                    })
+                    && ["model", "api_key"]
+                        .iter()
+                        .filter(|key| **key != "api_key" || provider_account(provider).is_none())
+                        .any(|required| {
+                            provider
+                                .fields
+                                .iter()
+                                .find(|field| field.name == *required)
+                                .is_none_or(|field| field.value.trim().is_empty())
+                        })
             })
     }
 
@@ -675,6 +726,15 @@ fn sort_providers(category: &str, providers: &mut [ProviderCard]) {
 }
 
 pub fn provider_display_label(name: &str, language: crate::i18n::UiLanguage) -> String {
+    if let Some(label) = xrtranslate_assets::remote::catalog()
+        .providers
+        .iter()
+        .find(|provider| provider.id == name)
+        .and_then(|provider| provider.label.as_deref())
+    {
+        return crate::i18n::tr(language, label).to_owned();
+    }
+
     match name {
         "qwen" => crate::i18n::tr(language, "qwen (China Mainland)").to_owned(),
         "qwen-intl" => crate::i18n::tr(language, "qwen (International)").to_owned(),
@@ -946,6 +1006,30 @@ fn update_provider_voice_preset(provider: &mut ProviderCard, language: &str, pre
             value: encoded,
             kind: JsonFieldKind::Json,
         });
+    }
+}
+
+fn provider_account(provider: &ProviderCard) -> Option<AccountProvider> {
+    provider
+        .fields
+        .iter()
+        .find(|field| field.name == "connector")
+        .and_then(|field| {
+            serde_json::from_value::<xrtranslate_assets::remote::RemoteConnector>(Value::from(
+                field.value.as_str(),
+            ))
+            .ok()
+        })
+        .and_then(|connector| connector.account_provider())
+}
+
+fn provider_channel(provider: &ProviderCard) -> ConnectionChannel {
+    if provider_account(provider).is_some() {
+        ConnectionChannel::Account
+    } else if provider_is_remote(provider) {
+        ConnectionChannel::Api
+    } else {
+        ConnectionChannel::Local
     }
 }
 

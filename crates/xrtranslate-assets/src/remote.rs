@@ -10,18 +10,30 @@ use std::sync::OnceLock;
 #[serde(rename_all = "kebab-case")]
 pub enum RemoteConnector {
     OpenaiChat,
+    ChatgptResponses,
     OpenaiSpeech,
     GeminiSpeech,
     OpenaiTranscription,
     OpenaiAudioChat,
     DashscopeAsr,
     DashscopeAsrWebsocket,
+    DoubaoWebAsr,
 }
+
+/// User-facing connection channels are independent from the wire transport.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectionChannel {
+    Local,
+    Api,
+    Account,
+}
+
+pub use xrtranslate_connections::AccountProvider;
 
 impl RemoteConnector {
     pub fn capability(self) -> ModelCapability {
         match self {
-            Self::OpenaiChat => ModelCapability::Translation,
+            Self::OpenaiChat | Self::ChatgptResponses => ModelCapability::Translation,
             Self::OpenaiSpeech | Self::GeminiSpeech => ModelCapability::Tts,
             _ => ModelCapability::Asr,
         }
@@ -30,12 +42,29 @@ impl RemoteConnector {
     pub fn transport(self) -> &'static str {
         match self {
             Self::OpenaiChat
+            | Self::ChatgptResponses
             | Self::OpenaiTranscription
             | Self::OpenaiAudioChat
             | Self::OpenaiSpeech => "openai",
             Self::GeminiSpeech => "gemini",
             Self::DashscopeAsr => "dashscope",
-            Self::DashscopeAsrWebsocket => "websocket",
+            Self::DashscopeAsrWebsocket | Self::DoubaoWebAsr => "websocket",
+        }
+    }
+
+    pub const fn account_provider(self) -> Option<AccountProvider> {
+        match self {
+            Self::DoubaoWebAsr => Some(AccountProvider::Doubao),
+            Self::ChatgptResponses => Some(AccountProvider::Chatgpt),
+            _ => None,
+        }
+    }
+
+    pub const fn channel(self) -> ConnectionChannel {
+        if self.account_provider().is_some() {
+            ConnectionChannel::Account
+        } else {
+            ConnectionChannel::Api
         }
     }
 
@@ -80,7 +109,7 @@ impl RemoteConnector {
     }
 
     pub fn supports_audio_streaming(self) -> bool {
-        self == Self::DashscopeAsrWebsocket
+        matches!(self, Self::DashscopeAsrWebsocket | Self::DoubaoWebAsr)
     }
 }
 
@@ -135,7 +164,7 @@ pub struct RemoteCapabilities {
     pub context_max_chars: Option<usize>,
     pub vocabulary_bias: bool,
     pub single_user_message: bool,
-    /// Optional text or audio chat-completions reasoning level.
+    /// Optional reasoning level; each connector maps it to its wire format.
     pub reasoning_effort: Option<String>,
 }
 
@@ -154,6 +183,10 @@ pub struct TtsCapabilities {
 #[serde(deny_unknown_fields)]
 pub struct RemoteModelManifest {
     pub model: String,
+    /// A service-managed profile has a stable catalogue key, not a selectable
+    /// upstream model version. Its connector must not send this key as a model ID.
+    #[serde(default)]
+    pub server_managed: bool,
     pub connector: RemoteConnector,
     #[serde(default)]
     pub languages: Vec<String>,
@@ -172,12 +205,18 @@ pub struct RemoteServiceManifest {
     pub capability: ModelCapability,
     pub defaults: serde_json::Map<String, serde_json::Value>,
     pub models: Vec<String>,
+    /// Contract for text models discovered through this service's signed-in account.
+    /// The account connector validates the selected ID against its live catalogue.
+    #[serde(default)]
+    pub account_models: Option<RemoteCapabilities>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteProviderManifest {
     pub id: String,
+    #[serde(default)]
+    pub label: Option<String>,
     pub guide_url: String,
     pub services: Vec<RemoteServiceManifest>,
 }
@@ -205,6 +244,33 @@ pub fn remote_model(
         .models
         .iter()
         .find(|card| card.connector == connector && card.model == model)
+}
+
+pub fn account_model_capabilities(
+    connector: RemoteConnector,
+) -> Option<&'static RemoteCapabilities> {
+    catalog()
+        .providers
+        .iter()
+        .flat_map(|p| &p.services)
+        .find_map(|service| {
+            let selected = service
+                .defaults
+                .get("connector")
+                .and_then(|v| serde_json::from_value::<RemoteConnector>(v.clone()).ok());
+            (selected == Some(connector))
+                .then_some(service.account_models.as_ref())
+                .flatten()
+        })
+}
+
+pub fn model_capabilities(
+    connector: RemoteConnector,
+    model: &str,
+) -> Option<&'static RemoteCapabilities> {
+    remote_model(connector, model)
+        .map(|card| &card.capabilities)
+        .or_else(|| account_model_capabilities(connector))
 }
 
 /// Built-in choices for one service, shared by welcome and catalogue consumers.

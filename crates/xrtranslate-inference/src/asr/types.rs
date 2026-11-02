@@ -21,7 +21,8 @@ impl Default for AsrOptions {
     }
 }
 
-/// A completed ASR transcription.
+/// A completed ASR transcription. Empty text means no speech was recognized;
+/// it is distinct from a failed request or a missing provider result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AsrTranscript {
     /// Canonical language code(s) reported or retained by the adapter, when available.

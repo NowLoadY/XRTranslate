@@ -77,7 +77,8 @@ impl History {
             self.observed.pop_front();
         }
     }
-    fn record(&mut self, turn: PromptTurn, revision: u64) {
+    fn record(&mut self, mut turn: PromptTurn, revision: u64) {
+        let completed = !turn.translated_text.trim().is_empty();
         let Some(id) = turn.turn_id.as_deref() else {
             return;
         };
@@ -87,14 +88,21 @@ impl History {
                     && previous.target_language == turn.target_language
             })
         {
-            if revision >= *previous_revision {
-                *previous_revision = revision;
-                *previous = turn;
-                self.surrounding_source = None;
+            if revision < *previous_revision {
+                return;
             }
+            if turn.translated_text.is_empty() && turn.source_text == previous.source_text {
+                turn.translated_text.clone_from(&previous.translated_text);
+            }
+            *previous_revision = revision;
+            *previous = turn;
         } else if let Some((_, order)) = self.observed.iter().find(|(existing, _)| existing == id) {
             self.turns.push((*order, revision, turn));
             self.turns.sort_by_key(|(order, _, _)| *order);
+        } else {
+            return;
+        }
+        if completed {
             self.surrounding_source = None;
         }
         while self.turns.len() > MAX_TURNS
@@ -164,23 +172,63 @@ impl ContextBinding {
             surrounding_source,
             ..Default::default()
         };
-        for turn in turns.into_iter().filter(|turn| {
-            turn.target_language == target
-                || (turn.source_language == target && turn.target_language == source)
+        for turn in turns.iter().filter(|turn| {
+            !turn.translated_text.is_empty()
+                && (turn.target_language == target
+                    || (turn.source_language == target && turn.target_language == source))
         }) {
             if turn.turn_id.as_deref() == Some(id) {
-                context.previous_revision = Some(turn);
+                context.previous_revision = Some(turn.clone());
             } else {
-                context.recent_turns.push(turn);
+                context.recent_turns.push(turn.clone());
             }
+        }
+        if self.is_snapshot() {
+            return context;
+        }
+        // Recognition is usable context before translation finishes. Keep it in
+        // the existing source-only block; completed bilingual turns replace it.
+        let mut seen = Vec::new();
+        let pending = turns
+            .iter()
+            .filter(|turn| {
+                turn.turn_id.as_deref() != Some(id)
+                    && !context
+                        .recent_turns
+                        .iter()
+                        .any(|done| done.turn_id == turn.turn_id)
+                    && !turn.source_text.trim().is_empty()
+            })
+            .filter_map(|turn| {
+                if seen.contains(&turn.turn_id) {
+                    return None;
+                }
+                seen.push(turn.turn_id.clone());
+                Some(format!(
+                    "[{} {}] {}",
+                    turn.speaker_id, turn.source_language, turn.source_text
+                ))
+            })
+            .collect::<Vec<_>>();
+        if !pending.is_empty() {
+            let neighbors = context.surrounding_source.get_or_insert_with(|| {
+                xrtranslate_prompt::SurroundingSource {
+                    speaker_id: String::new(),
+                    source_language: String::new(),
+                    before: String::new(),
+                    after: String::new(),
+                }
+            });
+            if !neighbors.before.is_empty() {
+                neighbors.before.push('\n');
+            }
+            neighbors.before.push_str(&pending.join("\n"));
         }
         context
     }
+    /// Record final recognized source immediately, then fill its translation on completion.
     pub(crate) fn record(&self, turn: PromptTurn, revision: u64) {
-        if turn.source_language == turn.target_language
-            || turn.source_text.trim().is_empty()
-            || turn.translated_text.trim().is_empty()
-        {
+        if turn.source_language == turn.target_language || turn.source_text.trim().is_empty() {
             return;
         }
         if let Self::Conversation(memory) = self {
@@ -318,11 +366,24 @@ mod tests {
         let microphone = registry.bind(TaskContext::conversation("meeting"));
         let system = registry.bind(TaskContext::conversation("meeting"));
         microphone.observe("mic/1");
+        let mut pending = turn("mic/1", "first", "zh");
+        pending.translated_text.clear();
+        microphone.record(pending, 1);
         system.observe("system/1");
+        let context = system.snapshot("system/1", "", "en", "zh");
+        assert!(context.recent_turns.is_empty());
+        assert!(context.surrounding_source.unwrap().before.contains("first"));
+        assert!(
+            microphone
+                .snapshot("mic/1", "", "en", "zh")
+                .previous_revision
+                .is_none()
+        );
         system.record(turn("system/1", "second", "zh"), 1);
         microphone.record(turn("mic/1", "first revised", "zh"), 2);
         microphone.record(turn("mic/1", "stale", "zh"), 1);
         let context = microphone.snapshot("next", "", "en", "zh");
+        assert!(context.surrounding_source.is_none());
         assert_eq!(
             context
                 .recent_turns

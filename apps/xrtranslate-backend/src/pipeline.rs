@@ -167,6 +167,22 @@ impl RecognizedOutput {
         }
     }
 
+    /// A finalized, bounded audio unit needs one translation request. Sentence
+    /// splitting is only needed for revisable snapshots that commit incrementally.
+    pub(crate) fn coalesce_final_segments(&mut self) {
+        if self.segments.len() > 1 {
+            self.segments = vec![TranslationSegmentPair {
+                source_text: self.source_text.clone(),
+                translation_text: self
+                    .segments
+                    .iter()
+                    .map(|segment| segment.translation_text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            }];
+        }
+    }
+
     /// Removes text produced from the duplicated audio at a hard VAD boundary.
     /// Returns false when the new result contained only duplicated context.
     pub(crate) fn remove_overlap_with(&mut self, previous: &str) -> bool {
@@ -1210,45 +1226,18 @@ impl NativeInference {
             .map_or((None, Duration::ZERO), |(result, elapsed)| {
                 (Some(result), elapsed)
             });
-        let auto_result = if let Some(transcript) = streamed {
-            if transcript.text.trim().is_empty() {
-                return Ok(None);
-            }
-            if is_probable_asr_hallucination(
-                &transcript.text,
-                samples.len(),
-                SAMPLE_RATE_HZ,
-                delivery.quality_context().as_deref(),
-                echo_candidates,
-            ) {
-                self.transcribe_attempt(
-                    &pcm,
-                    samples.len(),
-                    asr_language(source_language),
-                    context_free_delivery.clone(),
-                    context_free_delivery.clone(),
-                    &[],
-                    max_tokens,
-                )
-                .await?
-            } else {
-                Some(AsrAttemptResult {
-                    transcript,
-                    prompt_trace: delivery.prompt_trace.clone(),
-                })
-            }
-        } else {
-            self.transcribe_attempt(
+        let auto_result = self
+            .transcribe_attempt(
                 &pcm,
                 samples.len(),
                 asr_language(source_language),
-                delivery.clone(),
-                context_free_delivery.clone(),
+                delivery,
+                context_free_delivery,
                 echo_candidates,
                 max_tokens,
+                streamed,
             )
-            .await?
-        };
+            .await?;
         let Some(auto_result) = auto_result else {
             return Ok(None);
         };
@@ -1331,6 +1320,7 @@ impl NativeInference {
                             forced_context_free_delivery,
                             echo_candidates,
                             max_tokens,
+                            None,
                         )
                         .await?
                     else {
@@ -1360,6 +1350,7 @@ impl NativeInference {
                                 alternate_context_free_delivery,
                                 echo_candidates,
                                 max_tokens,
+                                None,
                             )
                             .await?
                         else {
@@ -1410,6 +1401,7 @@ impl NativeInference {
         context_free_delivery: AsrPromptDelivery,
         echo_candidates: &[String],
         mut max_tokens: u32,
+        mut completed: Option<AsrTranscript>,
     ) -> Result<Option<AsrAttemptResult>, InferenceFailure> {
         let asr = self
             .asr
@@ -1421,19 +1413,23 @@ impl NativeInference {
             } else {
                 delivery.quality_context()
             };
-            let transcript = match asr
-                .transcribe_pcm16(
-                    pcm,
-                    NativeAsrOptions {
-                        language: language.clone(),
-                        instruction_prompt: delivery.instruction_prompt,
-                        context_bias: delivery.context_bias,
-                        vocabulary_bias: delivery.vocabulary_bias,
-                        max_tokens,
-                    },
-                )
-                .await
-            {
+            let result = match completed.take() {
+                Some(transcript) => Ok(transcript),
+                None => {
+                    asr.transcribe_pcm16(
+                        pcm,
+                        NativeAsrOptions {
+                            language: language.clone(),
+                            instruction_prompt: delivery.instruction_prompt,
+                            context_bias: delivery.context_bias,
+                            vocabulary_bias: delivery.vocabulary_bias,
+                            max_tokens,
+                        },
+                    )
+                    .await
+                }
+            };
+            let transcript = match result {
                 Ok(transcript) => transcript,
                 Err(error) if error.is_output_limit() => {
                     if retried {
@@ -1459,6 +1455,9 @@ impl NativeInference {
                     ));
                 }
             };
+            if transcript.text.trim().is_empty() {
+                return Ok(None);
+            }
             if !is_probable_asr_hallucination(
                 &transcript.text,
                 sample_count,

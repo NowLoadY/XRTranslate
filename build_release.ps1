@@ -136,6 +136,7 @@ if (-not $ValidateOnly) {
         '--package', 'xrtranslate-backend',
         '--package', 'xrtranslate-installer',
         '--package', 'xrtranslate-updater',
+        '--package', 'xrtranslate-account-login',
         '--package', 'xrtranslate-packager',
         '--features', 'rust-client/mpv,xrtranslate-backend/managed-ort'
     )
@@ -315,6 +316,7 @@ $packageArguments = @(
     '--corpus-bin', (Join-Path $projectRoot 'target\release\xr-corpus-server.exe'),
     '--installer-bin', (Join-Path $projectRoot 'target\release\xrtranslate-installer.exe'),
     '--updater-bin', (Join-Path $projectRoot 'target\release\xrtranslate-updater.exe'),
+    '--account-login-bin', (Join-Path $projectRoot 'target\release\xrtranslate-account-login.exe'),
     '--config', $configPath,
     '--resources-dir', (Join-Path $projectRoot 'rust-client\resources'),
     '--seed-database', $seedDatabase,

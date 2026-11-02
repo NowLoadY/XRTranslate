@@ -1,3 +1,5 @@
+mod doubao_web;
+pub use doubao_web::DoubaoWebAsrAdapter;
 mod openai_chat;
 mod qwen3;
 mod qwen_audio;
@@ -12,4 +14,4 @@ pub use sherpa::SherpaOfflineAsrAdapter;
 pub use openai_chat::OpenAiAsrAdapter;
 pub use qwen_audio_flash::QwenAudioFlashAdapter;
 pub use qwen_audio_streaming::QwenAudioStreamingAdapter;
-pub use qwen3::{Qwen3AsrAdapter, is_probable_asr_hallucination};
+pub use qwen3::Qwen3AsrAdapter;

@@ -52,13 +52,34 @@ Do not move retry behavior into a prompt template. A retry may render the same
 semantic graph for a different language or with optional context removed, but
 the decision to retry belongs to the route/pipeline policy.
 
+## Shared live translation
+
+Final recognized source enters task-owned conversation memory immediately.
+Untranslated neighboring turns use the existing source-only context block;
+completed translations replace them with bilingual history. Partial ASR text
+never becomes committed context. Each finalized, bounded audio unit is translated
+in one request with its full time range; punctuation does not multiply remote
+requests. Revisable snapshots retain incremental sentence commits.
+Ordinary turns have bounded overlap, subject
+to the configured model's inference slots. Preview and final publication keep
+input order without holding an inference slot while waiting for an older
+subtitle. Cancellation uses the same generation checks as other inference work.
+These rules apply to the common audio pipeline, independent of provider or app.
+
+Startup validates only the local model packages selected by active providers.
+An empty selection stays empty for API and account routes; it never activates
+the default local ASR or translation model. Bundled audio helpers retain their
+own resource requirements.
+
 ## Shared ASR audio admission
 
 `backend/pipeline/audio.rs` owns aligned raw/enhanced buffering and bounded VAD
 evidence for every connector. Empty enhancer output means pending input; an
 enhancer failure switches all unprocessed audio to aligned raw bypass. Draining
 preserves the complete raw tail and excludes synthetic padding from ASR and its
-timestamps. Enhancement feeds VAD and speaker analysis; ASR still receives raw PCM.
+timestamps. GTCRN enhancement feeds VAD and speaker analysis; ASR still receives
+raw PCM. Vocal separation instead supplies isolated vocals to the shared VAD
+and ASR path, retaining the user's VAD threshold and pause settings.
 
 Complete turns and overlapping windows require sufficient new speech duration
 and density. Clear short words and continuations of accepted windows are retained;
@@ -66,6 +87,25 @@ pre-roll and old overlap cannot qualify a fresh utterance. Live connectors use t
 same admission policy before sending their retained onset, and a rejected final
 turn completes without committing recognition or translation. These decisions
 must not branch on model names or live inside a provider adapter.
+
+Every ASR adapter returns `AsrTranscript` after successful completion, including
+empty or whitespace-only text when no words were recognized. The shared pipeline
+consumes streamed and whole-utterance results in one place: an empty result ends
+that utterance without retry, translation, or history, while later audio continues.
+Missing response fields, provider errors, and streams closed before completion
+remain errors; adapters must not turn them into empty transcripts. An empty live
+preview only retracts the draft and does not complete the utterance.
+
+Streaming adapters share `asr/audio.rs` to turn capture packets into their PCM
+wire frame sizes. VAD frames are not network frames: forwarding every small
+capture packet can build up service latency. Reframing preserves every sample,
+drains a short final frame before the finish message, and leaves pacing with the
+input source. It does not change utterance boundaries or sentence readiness.
+
+Completed-result quality checks live in `asr/quality.rs`. Repetition in prior
+turns is not by itself a recognition error: a context-echo retry requires the
+same text in the actual ASR request context. Repeated dialogue and lyrics remain
+valid; deduplication of overlapping audio stays in the shared pipeline.
 
 ## ASR text capabilities
 
@@ -197,6 +237,8 @@ runtime and resource lifecycle, consult
 
 ## Provider-specific notes
 
+- [Doubao account speech connection](doubao-speech.md) — account-login channel,
+  private sessions, native login hosts and experimental web ASR.
 - [Qwen ASR](qwen-asr.md)
 - [Qwen Audio WebSocket ASR](qwen-audio-streaming-asr.md)
 - [Qwen Translation](qwen-translation.md)

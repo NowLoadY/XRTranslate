@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en" data-success="{{success}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>XRTranslate</title>
+  <style nonce="{{nonce}}">
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: #fff; color: #202528; }
+    body { font-family: Inter, "Segoe UI", "Noto Sans", system-ui, sans-serif; }
+    main { min-height: 100vh; min-height: 100svh; display: grid; place-items: center; padding: 32px 24px; }
+    section { width: 100%; max-width: 420px; text-align: center; }
+    .mark { display: inline-grid; place-items: center; width: 64px; height: 64px; border: 1.5px solid #252a2d; border-radius: 50%; margin-bottom: 24px; }
+    svg { width: 28px; height: 28px; fill: none; stroke: #109b76; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .failure { display: none; stroke: #687176; }
+    [data-success="false"] .success { display: none; }
+    [data-success="false"] .failure { display: block; }
+    h1 { margin: 0; font-size: 24px; line-height: 1.35; font-weight: 560; letter-spacing: -.025em; }
+    p { margin: 12px 0 0; color: #778086; font-size: 14px; line-height: 1.7; }
+    .brand { margin-top: 40px; color: #a0a6aa; font-size: 12px; letter-spacing: .035em; }
+  </style>
+  <script nonce="{{nonce}}">
+    // Authorization parameters have no role in the completed page or its history.
+    history.replaceState(null, "", location.pathname);
+  </script>
+</head>
+<body>
+  <main>
+    <section aria-labelledby="title">
+      <span class="mark" aria-hidden="true">
+        <svg class="success" viewBox="0 0 24 24"><path d="m5 12 4.5 4.5L19 7"/></svg>
+        <svg class="failure" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></svg>
+      </span>
+      <h1 id="title">{{title}}</h1>
+      <p id="detail">{{detail}}</p>
+      <div class="brand">XRTranslate</div>
+    </section>
+  </main>
+  <script nonce="{{nonce}}">
+    const messages = {
+      en: ["You're connected", "Return to XRTranslate. You can close this tab.", "Sign-in wasn't completed", "Return to XRTranslate to try again."],
+      zh: ["账号已连接", "返回 XRTranslate 继续使用，可关闭此页面。", "登录未完成", "请返回 XRTranslate 重试。"],
+      ja: ["接続しました", "XRTranslate に戻ってください。このタブは閉じられます。", "ログインは未完了です", "XRTranslate に戻って再試行してください。"],
+      ko: ["계정이 연결되었습니다", "XRTranslate로 돌아가세요. 이 탭은 닫아도 됩니다.", "로그인이 완료되지 않았습니다", "XRTranslate로 돌아가 다시 시도하세요."],
+      ru: ["Аккаунт подключён", "Вернитесь в XRTranslate. Эту вкладку можно закрыть.", "Вход не завершён", "Вернитесь в XRTranslate и повторите попытку."]
+    };
+    const language = (navigator.language || "en").split("-")[0];
+    const copy = messages[language] || messages.en;
+    const offset = document.documentElement.dataset.success === "true" ? 0 : 2;
+    document.documentElement.lang = messages[language] ? language : "en";
+    document.getElementById("title").textContent = copy[offset];
+    document.getElementById("detail").textContent = copy[offset + 1];
+  </script>
+</body>
+</html>

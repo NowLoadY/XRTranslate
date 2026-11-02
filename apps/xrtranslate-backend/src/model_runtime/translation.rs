@@ -7,6 +7,7 @@ use xrtranslate_inference::{InferenceError, ReqwestClient, TranslationAdapter};
 pub(super) enum TranslationProfile {
     LocalCatalog,
     OpenAiCompatible,
+    ChatGptAccount,
 }
 
 impl TranslationProfile {
@@ -16,33 +17,43 @@ impl TranslationProfile {
                 .any(|manifest| manifest.provider == config.provider)
                 .then_some(Self::LocalCatalog);
         }
-        (config.connector == Some(RemoteConnector::OpenaiChat)).then_some(Self::OpenAiCompatible)
+        match config.connector {
+            Some(RemoteConnector::OpenaiChat) => Some(Self::OpenAiCompatible),
+            Some(RemoteConnector::ChatgptResponses) => Some(Self::ChatGptAccount),
+            _ => None,
+        }
     }
 
     pub(super) fn adapter(
         self,
         http: ReqwestClient,
         config: &NativeProviderConfig,
+        accounts: &xrtranslate_connections::AccountStore,
     ) -> Result<TranslationAdapter<ReqwestClient>, InferenceError> {
-        if self == Self::LocalCatalog {
-            return Err(InferenceError::InvalidConfiguration {
+        let adapter = match self {
+            Self::ChatGptAccount => TranslationAdapter::with_chatgpt_account(
+                accounts.clone(),
+                &config.url,
+                &config.model,
+            ),
+            Self::LocalCatalog => Err(InferenceError::InvalidConfiguration {
                 field: "translation.model_asset.runtime",
                 message: "local translation adapters must be constructed from the model card"
                     .into(),
-            });
-        }
-        let adapter = TranslationAdapter::with_bearer_token(
-            http,
-            &config.url,
-            &config.model,
-            config.translation_prompt_profile().map_err(|message| {
-                InferenceError::InvalidConfiguration {
-                    field: "translation.capabilities",
-                    message,
-                }
-            })?,
-            config.api_key.as_deref().unwrap_or_default(),
-        )?;
+            }),
+            Self::OpenAiCompatible => TranslationAdapter::with_bearer_token(
+                http,
+                &config.url,
+                &config.model,
+                config.translation_prompt_profile().map_err(|message| {
+                    InferenceError::InvalidConfiguration {
+                        field: "translation.capabilities",
+                        message,
+                    }
+                })?,
+                config.api_key.as_deref().unwrap_or_default(),
+            ),
+        }?;
         Ok(adapter.with_remote_capabilities(&config.capabilities))
     }
 }

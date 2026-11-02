@@ -44,16 +44,40 @@ fn with_gl<T>(
     state: &RenderState,
     action: impl FnOnce(&glow::Context, &wgpu::hal::gles::AdapterContext) -> T,
 ) -> T {
+    let texture_units = state.device.limits().max_sampled_textures_per_shader_stage;
     let hal = unsafe { state.device.as_hal::<wgpu::hal::api::Gles>() }.unwrap();
     let context = hal.context();
     let gl = context.lock();
     unsafe {
-        // wgpu keeps its VAO bound between submissions. mpv owns a different VAO
-        // and expects ordinary GL defaults; preserve wgpu's VAO and upload alignment.
+        // wgpu leaves its VAO, samplers and pixel upload layout bound. mpv
+        // expects GL defaults: inherited samplers override its subtitle atlas
+        // filtering, and a UI upload's row stride corrupts newly created textures.
         let vao = NonZeroU32::new(gl.get_parameter_i32(glow::VERTEX_ARRAY_BINDING) as u32)
             .map(glow::NativeVertexArray);
-        let unpack = gl.get_parameter_i32(glow::UNPACK_ALIGNMENT);
-        let pack = gl.get_parameter_i32(glow::PACK_ALIGNMENT);
+        let active_texture = gl.get_parameter_i32(glow::ACTIVE_TEXTURE) as u32;
+        let samplers: Vec<_> = (0..texture_units)
+            .map(|unit| {
+                let sampler = NonZeroU32::new(
+                    gl.get_parameter_indexed_i32(glow::SAMPLER_BINDING, unit) as u32,
+                )
+                .map(glow::NativeSampler);
+                gl.bind_sampler(unit, None);
+                sampler
+            })
+            .collect();
+        let pixel_store = [
+            (glow::UNPACK_ALIGNMENT, 4),
+            (glow::UNPACK_ROW_LENGTH, 0),
+            (glow::UNPACK_IMAGE_HEIGHT, 0),
+            (glow::PACK_ALIGNMENT, 4),
+            (glow::PACK_ROW_LENGTH, 0),
+        ]
+        .map(|(name, default)| {
+            let value = gl.get_parameter_i32(name);
+            gl.pixel_store_i32(name, default);
+            (name, value)
+        });
+        gl.active_texture(glow::TEXTURE0);
         gl.bind_vertex_array(None);
         gl.use_program(None);
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
@@ -70,8 +94,13 @@ fn with_gl<T>(
         }
         let result = action(&gl, context);
         gl.bind_vertex_array(vao);
-        gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, unpack);
-        gl.pixel_store_i32(glow::PACK_ALIGNMENT, pack);
+        for (unit, sampler) in samplers.into_iter().enumerate() {
+            gl.bind_sampler(unit as u32, sampler);
+        }
+        gl.active_texture(active_texture);
+        for (name, value) in pixel_store {
+            gl.pixel_store_i32(name, value);
+        }
         gl.flush();
         result
     }
@@ -85,10 +114,10 @@ struct Wake {
 }
 unsafe extern "C" fn render_wakeup(data: *mut c_void) {
     let wake = unsafe { &*(data as *const Wake) };
-    wake.dirty.store(true, Ordering::Release);
+    let already_dirty = wake.dirty.swap(true, Ordering::AcqRel);
     if wake.visible.load(Ordering::Acquire) {
         wake.ctx.request_repaint();
-    } else {
+    } else if !already_dirty {
         let _ = wake.commands.send(Command::Update);
     }
 }
@@ -116,6 +145,9 @@ pub(super) struct VideoRenderer {
     wake: Arc<Wake>,
     state: RenderState,
     surface: Option<Surface>,
+    // At most one draw is in flight. UI frames reuse the texture while it is
+    // pending instead of synchronously waiting for decoding/rendering.
+    pending: Option<mpsc::Receiver<Result<(), String>>>,
 }
 
 impl VideoRenderer {
@@ -136,7 +168,9 @@ impl VideoRenderer {
         let wake = Arc::new(Wake {
             ctx: ctx.clone(),
             visible: AtomicBool::new(false),
-            dirty: AtomicBool::new(true),
+            // A fresh surface forces its first draw. Start clean so the first
+            // hidden callback also queues an update instead of being coalesced.
+            dirty: AtomicBool::new(false),
             commands,
         });
         let worker_wake = wake.clone();
@@ -209,6 +243,9 @@ impl VideoRenderer {
                                 check(mpv::mpv_render_context_render(context, params.as_mut_ptr()))
                             });
                             let _ = reply.send(result);
+                            if worker_wake.visible.load(Ordering::Acquire) {
+                                worker_wake.ctx.request_repaint();
+                            }
                         }
                         Command::Update => {
                             if !worker_wake.visible.load(Ordering::Acquire)
@@ -217,8 +254,15 @@ impl VideoRenderer {
                                 with_gl(&worker_state, |_, _| {
                                     if mpv::mpv_render_context_update(context) & 1 != 0 {
                                         let mut skip = 1i32;
-                                        let mut params =
-                                            [param(13, &mut skip as *mut _ as *mut _), end()];
+                                        let mut block = 0i32;
+                                        // Skipping still performs mpv's timing by default.
+                                        // Never hold the UI's GL lock while waiting for
+                                        // the next audio-clock deadline on another page.
+                                        let mut params = [
+                                            param(13, &mut skip as *mut _ as *mut _),
+                                            param(12, &mut block as *mut _ as *mut _),
+                                            end(),
+                                        ];
                                         mpv::mpv_render_context_render(
                                             context,
                                             params.as_mut_ptr(),
@@ -253,6 +297,7 @@ impl VideoRenderer {
             wake,
             state: state.clone(),
             surface: None,
+            pending: None,
         })
     }
 
@@ -350,6 +395,24 @@ impl VideoRenderer {
     }
 
     pub(super) fn frame(&mut self, size: [u32; 2]) -> Result<egui::TextureId, String> {
+        if let Some(pending) = &self.pending {
+            match pending.try_recv() {
+                Ok(result) => {
+                    self.pending = None;
+                    result?;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    // Surface replacement also waits for completion without
+                    // blocking: keep scaling the previous frame during resize.
+                    self.wake.visible.store(true, Ordering::Release);
+                    return Ok(self.surface.as_ref().expect("pending draw surface").id);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.pending = None;
+                    return Err("Video rendering stopped unexpectedly".into());
+                }
+            }
+        }
         let limit = self
             .state
             .device
@@ -373,7 +436,7 @@ impl VideoRenderer {
                 .commands
                 .send(Command::Draw(surface.framebuffer, size, force, tx))
                 .map_err(|e| e.to_string())?;
-            rx.recv().map_err(|e| e.to_string())??;
+            self.pending = Some(rx);
         }
         Ok(surface.id)
     }

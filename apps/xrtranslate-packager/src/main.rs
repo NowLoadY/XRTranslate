@@ -84,6 +84,9 @@ struct Arguments {
     /// Native xrtranslate-backend executable built for the target platform.
     #[arg(long)]
     backend_bin: PathBuf,
+    /// Isolated official-account login window, shipped with every desktop release.
+    #[arg(long)]
+    account_login_bin: PathBuf,
     #[arg(long)]
     corpus_bin: PathBuf,
     /// Native xrtranslate-installer executable built for the target platform.
@@ -187,6 +190,7 @@ impl From<xrtranslate_assets::ModelAssetsPreflightError> for PackageError {
 struct ReleasePlan {
     rust_client_bin: PathBuf,
     backend_bin: PathBuf,
+    account_login_bin: PathBuf,
     corpus_bin: PathBuf,
     installer_bin: PathBuf,
     updater_bin: PathBuf,
@@ -265,6 +269,7 @@ impl ReleasePlan {
     fn from_arguments(arguments: Arguments) -> Result<Self, PackageError> {
         require_regular_file("--rust-client-bin", &arguments.rust_client_bin)?;
         require_regular_file("--backend-bin", &arguments.backend_bin)?;
+        require_regular_file("--account-login-bin", &arguments.account_login_bin)?;
         require_regular_file("--corpus-bin", &arguments.corpus_bin)?;
         require_regular_file("--installer-bin", &arguments.installer_bin)?;
         require_regular_file("--updater-bin", &arguments.updater_bin)?;
@@ -319,6 +324,7 @@ impl ReleasePlan {
         let manifest = release_manifest(
             &arguments.rust_client_bin,
             &arguments.backend_bin,
+            &arguments.account_login_bin,
             &arguments.corpus_bin,
             &arguments.installer_bin,
             &arguments.updater_bin,
@@ -331,6 +337,7 @@ impl ReleasePlan {
         Ok(Self {
             rust_client_bin: arguments.rust_client_bin,
             backend_bin: arguments.backend_bin,
+            account_login_bin: arguments.account_login_bin,
             corpus_bin: arguments.corpus_bin,
             installer_bin: arguments.installer_bin,
             updater_bin: arguments.updater_bin,
@@ -411,6 +418,15 @@ fn package(plan: &ReleasePlan) -> Result<PathBuf, PackageError> {
                     &plan.updater_bin,
                 )?),
         )?;
+        copy_file_to(
+            &plan.account_login_bin,
+            &staging
+                .join(INTERNAL_BIN_DIRECTORY)
+                .join(native_binary_name(
+                    "xrtranslate-account-login",
+                    &plan.account_login_bin,
+                )?),
+        )?;
         copy_vc_runtime(&plan.vc_runtime, &staging)?;
         copy_native_directory(&plan.resources_dir, &staging.join("resources"))?;
         copy_file_to(&plan.seed_database, &staging.join(CORPUS_SEED_PATH))?;
@@ -448,22 +464,13 @@ fn package(plan: &ReleasePlan) -> Result<PathBuf, PackageError> {
         }
         copy_file_to(&plan.vad_model, &staging.join(VAD_RELATIVE_PATH))?;
         copy_file_to(&plan.speaker_model, &staging.join(SPEAKER_RELATIVE_PATH))?;
-        let denoise = staging.join("models/gtcrn");
-        fs::create_dir_all(&denoise)
-            .and_then(|()| {
-                fs::write(
-                    denoise.join("gtcrn_simple.onnx"),
-                    include_bytes!("../../../assets/gtcrn/gtcrn_simple.onnx"),
-                )?;
-                fs::write(
-                    denoise.join("LICENSE"),
-                    include_bytes!("../../../assets/gtcrn/LICENSE"),
-                )
-            })
-            .map_err(|source| PackageError::Io {
-                context: "cannot write bundled noise suppression model".into(),
-                source,
-            })?;
+        xrtranslate_assets::ensure_bundled_gtcrn(
+            &ModelAssetsConfig::default().resolve_selected(&staging),
+        )
+        .map_err(|source| PackageError::Io {
+            context: "cannot write bundled noise suppression model".into(),
+            source,
+        })?;
         copy_file_to(
             &plan.onnx_runtime_cpu,
             &staging.join(onnx_cpu_metadata(&plan.rust_client_bin).path),
@@ -587,6 +594,7 @@ fn rewrite_config(config_path: &Path) -> Result<String, PackageError> {
 fn release_manifest(
     rust_client: &Path,
     backend: &Path,
+    account_login: &Path,
     corpus: &Path,
     installer: &Path,
     updater: &Path,
@@ -612,6 +620,7 @@ fn release_manifest(
         "python": false,
         "entrypoints": {
             "client": release_client_name(rust_client).unwrap_or_else(|_| "XRTranslate".into()),
+            "account_login": format!("{INTERNAL_BIN_DIRECTORY}/{}", native_binary_name("xrtranslate-account-login", account_login).unwrap_or_else(|_| "xrtranslate-account-login".into())),
             "backend": format!("{INTERNAL_BIN_DIRECTORY}/{}", native_binary_name("xrtranslate-backend", backend).unwrap_or_else(|_| "xrtranslate-backend".into())),
             "corpus": format!("{INTERNAL_BIN_DIRECTORY}/{}", native_binary_name("xr-corpus-server", corpus).unwrap_or_else(|_| "xr-corpus-server".into())),
             "installer": format!("{INTERNAL_BIN_DIRECTORY}/{}", native_binary_name("xrtranslate-installer", installer).unwrap_or_else(|_| "xrtranslate-installer".into())),

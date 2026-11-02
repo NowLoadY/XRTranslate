@@ -55,6 +55,32 @@ impl Speech {
         self.last_letter = None;
     }
 
+    /// Optional interaction owned by the caller; decorative speech stays passive.
+    pub(crate) fn dismiss_on_click(&mut self, ctx: &egui::Context, id: egui::Id, now: f64) {
+        if self.finished(now) {
+            return;
+        }
+        let Some(bounds) = self.bounds() else { return };
+        // Hit only the bubble body, not its tail or shadow.
+        let hit = bounds.shrink(17.0).intersect(ctx.viewport_rect());
+        let response = egui::Area::new(id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(hit.min)
+            .default_size(hit.size())
+            .constrain(false)
+            .fade_in(false)
+            .sense(egui::Sense::click())
+            .show(ctx, |ui| {
+                ui.allocate_space(hit.size());
+            })
+            .response
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if response.clicked() {
+            self.dismiss(now);
+            ctx.request_repaint();
+        }
+    }
+
     /// Use a caller-owned clock so dialogue pauses with its scene.
     pub fn advance(&mut self, now: f64) -> f32 {
         if self.finished(now) {
@@ -314,5 +340,46 @@ fn letter_delay(letter: &str) -> f64 {
         // CJK syllables/ideographs carry more information per character.
         '\u{3040}'..='\u{9fff}' | '\u{ac00}'..='\u{d7af}' => 0.075,
         _ => 0.042,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clicking_bubble_stops_remaining_text_but_allows_new_speech() {
+        let ctx = egui::Context::default();
+        let mut speech = Speech::default();
+        speech.say("An error message with more text still to reveal", 0.0);
+        speech.advance(0.0);
+        speech.position = Some(egui::pos2(200.0, 100.0));
+        speech.size = egui::vec2(160.0, 60.0);
+        speech.opacity = 1.0;
+        let revealed = speech.end;
+        let point = speech.position.unwrap();
+        for pressed in [None, None, Some(true), Some(false)] {
+            let mut input = egui::RawInput::default();
+            input.screen_rect = Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0)));
+            input.events.push(egui::Event::PointerMoved(point));
+            if let Some(pressed) = pressed {
+                input.events.push(egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            let _ = ctx.run_pass(input, |ctx| {
+                speech.dismiss_on_click(ctx, egui::Id::unique("error-bubble"), 0.1);
+            });
+        }
+        assert!(speech.finished(0.1));
+        assert_eq!(speech.advance(100.0), 0.0);
+        assert_eq!(speech.end, revealed);
+        speech.say("A different error", 101.0);
+        assert!(!speech.finished(101.0));
+        speech.advance(101.0);
+        assert!(speech.end > 0);
     }
 }

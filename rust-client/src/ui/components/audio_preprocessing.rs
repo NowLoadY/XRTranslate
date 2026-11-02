@@ -33,11 +33,9 @@ impl AudioPreprocessingModelState {
             | Self::Paused {
                 downloaded_bytes,
                 total_bytes,
-            } => Some(if *total_bytes == 0 {
-                0.0
-            } else {
-                (*downloaded_bytes as f64 / *total_bytes as f64).clamp(0.0, 1.0) as f32
-            }),
+            } if *total_bytes > 0 => {
+                Some((*downloaded_bytes as f64 / *total_bytes as f64).clamp(0.0, 1.0) as f32)
+            }
             _ => None,
         }
     }
@@ -80,7 +78,7 @@ pub struct AudioPreprocessingResponse {
     pub action: Option<AudioPreprocessingAction>,
 }
 
-/// Keep the normal button label legible above its download progress.
+/// A bounded option with a subtle progress fill and an always-visible percentage.
 pub(crate) fn download_progress_button(
     ui: &mut egui::Ui,
     label: &str,
@@ -99,53 +97,58 @@ fn download_progress_button_with_loading(
     progress: Option<f32>,
     loading: bool,
 ) -> egui::Response {
-    let background = ui.painter().add(egui::Shape::Noop);
-    let fill = ui.painter().add(egui::Shape::Noop);
-    let spinner_id = egui::IdSalt::new("download_spinner");
-    let mut atoms = egui::Atoms::new(label);
-    if loading {
-        atoms.push_left(egui::Atom::custom(spinner_id, egui::vec2(14.0, 14.0)));
-    }
-    let button = ui
-        .add_enabled_ui(enabled, |ui| {
-            egui::Button::new(atoms)
-                .selected(selected)
-                .fill(egui::Color32::TRANSPARENT)
-                .gap(6.0)
-                .min_size(egui::vec2(ui.available_width(), 30.0))
-                .atom_ui(ui)
-        })
-        .inner;
-    if let Some(rect) = button.rect(spinner_id) {
-        egui::Spinner::new()
-            .color(theme::text_normal())
-            .paint_at(ui, rect);
-    }
-    let response = button.response;
-    let visuals = ui.style().interact_selectable(&response, selected);
-    ui.painter().set(
-        background,
-        egui::Shape::rect_filled(response.rect, visuals.corner_radius, visuals.bg_fill),
-    );
-    if let Some(progress) = progress {
-        let mut rect = response.rect;
-        rect.max.x = rect.min.x + rect.width() * progress.clamp(0.0, 1.0);
+    let progress = progress
+        .filter(|value| value.is_finite())
+        .map(|value| value.clamp(0.0, 1.0));
+    ui.add_enabled_ui(enabled, |ui| {
+        let background = ui.painter().add(egui::Shape::Noop);
+        let fill = ui.painter().add(egui::Shape::Noop);
+        let spinner_id = egui::IdSalt::new("download_spinner");
+        let mut atoms = egui::Atoms::new(label);
+        if loading && progress.is_none() {
+            atoms.push_left(egui::Atom::custom(spinner_id, egui::vec2(14.0, 14.0)));
+        }
+        let mut button = egui::Button::new(atoms)
+            .truncate()
+            .selected(selected)
+            .fill(egui::Color32::TRANSPARENT)
+            .gap(6.0)
+            .min_size(egui::vec2(ui.available_width(), 32.0));
+        if let Some(progress) = progress {
+            button = button.right_text(egui::RichText::new(progress_percent(progress)).monospace());
+        }
+        let button = button.atom_ui(ui);
+        if let Some(rect) = button.rect(spinner_id) {
+            egui::Spinner::new().paint_at(ui, rect);
+        }
+        let response = button.response;
+        let visuals = ui.style().interact_selectable(&response, selected);
         ui.painter().set(
-            fill,
-            egui::Shape::rect_filled(
-                rect,
-                visuals.corner_radius,
-                theme::primary().gamma_multiply(0.18),
-            ),
+            background,
+            egui::Shape::rect_filled(response.rect, visuals.corner_radius, visuals.bg_fill),
         );
-    }
-    crate::ui::automation::button_response(
-        ui,
-        response.id,
-        label,
-        enabled && ui.is_enabled(),
-        response,
-    )
+        if let Some(progress) = progress {
+            // Clip a full-size rounded shape, so even a tiny amount of progress
+            // follows the button's corners instead of forming a separate pill.
+            let inner = response.rect.shrink(1.0);
+            let mut clip = inner;
+            clip.max.x = inner.min.x + inner.width() * progress;
+            ui.painter().with_clip_rect(clip).set(
+                fill,
+                egui::Shape::rect_filled(
+                    inner,
+                    visuals.corner_radius - 1,
+                    theme::primary().gamma_multiply(0.12),
+                ),
+            );
+        }
+        crate::ui::automation::button_response(ui, response.id, label, ui.is_enabled(), response)
+    })
+    .inner
+}
+
+fn progress_percent(progress: f32) -> String {
+    format!("{:.0}%", (progress * 100.0).floor())
 }
 
 /// Per-input selection and resource actions; the host owns download lifecycle.
@@ -199,6 +202,13 @@ pub(crate) fn audio_preprocessing_selector(
         .iter()
         .find_map(|(value, label)| (*value == selected).then_some(*label))
         .unwrap_or(labels[1]);
+    let selected_label = models
+        .state(selected)
+        .and_then(|state| state.progress())
+        .map_or_else(
+            || selected_label.to_owned(),
+            |progress| format!("{selected_label} · {}", progress_percent(progress)),
+        );
     let before = *selection;
     let mut action = None;
     let mut response = ui
@@ -206,6 +216,7 @@ pub(crate) fn audio_preprocessing_selector(
             ui.label(labels[0]);
             egui::ComboBox::from_id_salt(id_salt)
                 .selected_text(selected_label)
+                .truncate()
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                 .show_ui(ui, |ui| {
                     ui.set_min_width(190.0);
@@ -217,7 +228,7 @@ pub(crate) fn audio_preprocessing_selector(
                             .unwrap_or(&AudioPreprocessingModelState::Ready);
                         ui.push_id(index, |ui| {
                             ui.horizontal(|ui| {
-                                let deletable = value != AudioPreprocessing::None
+                                let deletable = value == AudioPreprocessing::VocalSeparation
                                     && matches!(state, AudioPreprocessingModelState::Ready);
                                 let width = ui.available_width()
                                     - if deletable {

@@ -1,6 +1,48 @@
 {
   "providers": [
     {
+      "id": "ChatGPT Account",
+      "label": "ChatGPT",
+      "guide_url": "https://developers.openai.com/siwc/quickstart",
+      "services": [{
+        "capability": "translation",
+        "defaults": {
+          "connector": "chatgpt-responses",
+          "url": "https://api.openai.com/v1/responses",
+          "model": "",
+          "context_window_tokens": 8192,
+          "max_tokens": 1024,
+          "parallel_slots": 2
+        },
+        "models": [],
+        "account_models": {
+          "translation_prompt_profile": "chat_messages",
+          "supports_chat": true,
+          "supports_context": true,
+          "streaming": "delta",
+          "reasoning_effort": "low"
+        }
+      }]
+    },
+    {
+      "id": "Doubao Account",
+      "label": "Doubao",
+      "guide_url": "https://www.doubao.com/chat",
+      "services": [
+        {
+          "capability": "asr",
+          "defaults": {
+            "connector": "doubao-web-asr",
+            "url": "wss://ws-samantha.doubao.com/samantha/audio/asr",
+            "model": "doubao-web-speech"
+          },
+          "models": [
+            "doubao-web-speech"
+          ]
+        }
+      ]
+    },
+    {
       "id": "siliconflow",
       "guide_url": "https://docs.siliconflow.cn/docs/userguide/quickstart",
       "services": [
@@ -245,6 +287,21 @@
     }
   ],
   "models": [
+    {
+      "model": "doubao-web-speech",
+      "server_managed": true,
+      "connector": "doubao-web-asr",
+      "languages": [
+        "zh",
+        "en"
+      ],
+      "capabilities": {
+        "streaming": "cumulative",
+        "asr_prompt_mode": "none",
+        "asr_language_hint": false
+      },
+      "native_text_polishing": false
+    },
     {
       "model": "FunAudioLLM/SenseVoiceSmall",
       "connector": "openai-transcription",

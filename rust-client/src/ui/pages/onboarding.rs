@@ -4,6 +4,7 @@
 //! optional TTS and OCR, and centralized resource download / runtime installation.
 
 use eframe::egui::{self, Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Stroke};
+use xrtranslate_assets::remote::ConnectionChannel;
 use xrtranslate_assets::{ModelAssetId, ModelCapability, ModelLevel};
 
 use crate::{
@@ -616,6 +617,7 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
     let mut model_change = None;
     let mut provider_change = None;
     let mut remote_fields = None;
+    let mut account_action = None;
     let mut delete_model = None;
     let capabilities = [
         ("asr", ModelCapability::Asr, "Speech Recognition Model"),
@@ -646,6 +648,7 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
             &levels,
             !app.model_task_manager.is_busy(),
             &local_availability,
+            &app.account_connections,
             if index % 2 == 0 {
                 Color32::from_rgb(59, 130, 246)
             } else {
@@ -660,6 +663,9 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
         if let Some(provider) = result.selected_provider {
             provider_change = Some((*category, provider));
         }
+        if result.account_action.is_some() {
+            account_action = result.account_action;
+        }
         if let Some(fields) = result.remote_fields {
             remote_fields = Some((*category, fields));
         }
@@ -667,6 +673,14 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
             delete_model = Some(asset_id);
         }
     });
+    if let Some(action) = account_action {
+        if action.changes_account(&app.account_connections) {
+            app.backend_manager.invalidate_runtime();
+        }
+        if let Err(error) = app.account_connections.perform(action, &project_root) {
+            app.notifications.error("", error);
+        }
+    }
     if let Some(asset_id) = delete_model {
         app.request_model_resource_deletion(asset_id);
     }
@@ -679,9 +693,6 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
             Ok(crate::service_config::OnboardingSaveOutcome::Saved { .. })
         );
         handle_onboarding_save(app, result);
-        if saved {
-            app.apply_language_route();
-        }
         let capability = match category {
             "asr" => Some(ModelCapability::Asr),
             "translation" => Some(ModelCapability::Translation),
@@ -712,7 +723,6 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
                 if let Err(error) = app.service_config.reload() {
                     app.last_error = Some(error);
                 }
-                app.apply_language_route();
                 app.model_task_manager.invalidate_discovery();
                 app.backend_manager.invalidate_runtime();
                 let requirements = app.service_config.runtime_requirements();
@@ -735,6 +745,7 @@ struct ModelConfigCardResult {
     selected_asset: Option<ModelAssetId>,
     selected_provider: Option<String>,
     remote_fields: Option<RemoteProviderFields>,
+    account_action: Option<crate::account_connections::AccountAction>,
     delete_asset: Option<xrtranslate_assets::ModelAssetId>,
 }
 
@@ -946,6 +957,7 @@ fn onboarding_model_config_card(
     levels: &[NativeModelPackage],
     delete_enabled: bool,
     local_availability: &crate::runtime_install::LocalModelAvailability,
+    accounts: &crate::account_connections::AccountConnections,
     stroke_color: Color32,
 ) -> ModelConfigCardResult {
     let mut result = ModelConfigCardResult::default();
@@ -962,7 +974,7 @@ fn onboarding_model_config_card(
         |ui| {
             ui.set_width(ui.available_width());
             let guide_url = provider.as_ref().and_then(|p| {
-                if p.remote {
+                if p.channel == ConnectionChannel::Api {
                     p.choices
                         .iter()
                         .find(|c| c.name == p.selected)
@@ -1011,117 +1023,114 @@ fn onboarding_model_config_card(
                 return;
             };
 
-            crate::ui::layout::responsive_columns(ui, 2, 200.0, |ui, index| {
-                if index == 0 {
-                    ui.label(i18n::tr(language, "Mode"));
-                    let mut remote = provider.remote;
-                    // Online providers have no active local package. Resolve
-                    // the return option from configured choices and the catalogue.
-                    let local_choice = provider.choices.iter().find(|choice| {
-                        !choice.remote
-                            && xrtranslate_assets::manifests_for_capability(capability).any(
-                                |manifest| {
-                                    manifest.provider == choice.name
-                                        && local_availability.supports(manifest.hardware)
-                                },
-                            )
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        ui.add_enabled_ui(local_choice.is_some(), |ui| {
-                            ui.selectable_value(
-                                &mut remote,
-                                false,
-                                i18n::tr(language, "Local model"),
-                            );
-                        });
-                        ui.selectable_value(&mut remote, true, i18n::tr(language, "Online API"));
-                    });
-                    if local_choice.is_none() {
-                        local_model_warning_icon(ui, language, local_availability);
-                    }
-                    if remote != provider.remote {
-                        let choice = if remote {
-                            provider.choices.iter().find(|choice| choice.remote)
-                        } else {
-                            local_choice
-                        };
-                        result.selected_provider = choice.map(|choice| choice.name.clone());
-                    }
-                } else if !provider.remote {
-                    let Some(mut asset_id) = selected_asset else {
-                        return;
-                    };
-                    ui.label(i18n::tr(language, "Model"));
-                    let selected_package = levels.iter().find(|package| package.id == asset_id);
-                    let selected_present = selected_package.is_some_and(|package| {
-                        model_asset_is_present(project_root, package.id).unwrap_or(false)
-                    });
-                    let selected_name = selected_package.map_or_else(
-                        || asset_id.as_str().to_owned(),
-                        |package| {
-                            format!(
-                                "{} · {}",
-                                i18n::tr(language, package.level.as_str()),
-                                package.label
-                            )
-                        },
-                    );
-                    let selected_label = if selected_present {
-                        format!("{} · {}", selected_name, i18n::tr(language, "Installed"))
+            ui.label(i18n::tr(language, "Mode"));
+            let mut channel = provider.channel;
+            let local_choice = provider.choices.iter().find(|choice| {
+                choice.channel == ConnectionChannel::Local
+                    && xrtranslate_assets::manifests_for_capability(capability).any(|manifest| {
+                        manifest.provider == choice.name
+                            && local_availability.supports(manifest.hardware)
+                    })
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                for (value, label) in [
+                    (ConnectionChannel::Local, "Local model"),
+                    (ConnectionChannel::Api, "Online API"),
+                    (ConnectionChannel::Account, "Account login"),
+                ] {
+                    let available = if value == ConnectionChannel::Local {
+                        local_choice.is_some()
                     } else {
-                        selected_name
+                        provider
+                            .choices
+                            .iter()
+                            .any(|choice| choice.channel == value)
                     };
-                    let local_available = levels
-                        .iter()
-                        .any(|package| local_availability.supports(package.hardware));
-                    ui.add_enabled_ui(local_available, |ui| {
-                        components::combobox_ui(
-                            ui,
-                            (category, "model_level"),
-                            selected_label,
-                            |ui| {
-                                result.delete_asset = local_model_choices(
-                                    ui,
-                                    language,
-                                    project_root,
-                                    &mut asset_id,
-                                    levels,
-                                    delete_enabled,
-                                    local_availability,
-                                );
-                            },
-                        );
+                    ui.add_enabled_ui(available, |ui| {
+                        ui.selectable_value(&mut channel, value, i18n::tr(language, label));
                     });
-                    if Some(asset_id) != selected_asset {
-                        result.selected_asset = Some(asset_id);
-                    }
-                } else {
-                    ui.label(i18n::tr(language, "Provider:"));
-                    let selected_label =
-                        crate::service_config::provider_display_label(&provider.selected, language);
-                    components::combobox_ui(
-                        ui,
-                        (category, "online_provider"),
-                        selected_label,
-                        |ui| {
-                            for choice in &provider.choices {
-                                if choice.remote {
-                                    let label = crate::service_config::provider_display_label(
-                                        &choice.name,
-                                        language,
-                                    );
-                                    if ui
-                                        .selectable_label(provider.selected == choice.name, label)
-                                        .clicked()
-                                    {
-                                        result.selected_provider = Some(choice.name.clone());
-                                    }
-                                }
-                            }
-                        },
-                    );
                 }
             });
+            if local_choice.is_none() {
+                local_model_warning_icon(ui, language, local_availability);
+            }
+            if channel != provider.channel {
+                let choice = if channel == ConnectionChannel::Local {
+                    local_choice
+                } else {
+                    provider
+                        .choices
+                        .iter()
+                        .find(|choice| choice.channel == channel)
+                };
+                result.selected_provider = choice.map(|choice| choice.name.clone());
+            }
+            ui.add_space(8.0);
+            if !provider.remote {
+                let Some(mut asset_id) = selected_asset else {
+                    return;
+                };
+                ui.label(i18n::tr(language, "Model"));
+                let selected_package = levels.iter().find(|package| package.id == asset_id);
+                let selected_present = selected_package.is_some_and(|package| {
+                    model_asset_is_present(project_root, package.id).unwrap_or(false)
+                });
+                let selected_name = selected_package.map_or_else(
+                    || asset_id.as_str().to_owned(),
+                    |package| {
+                        format!(
+                            "{} · {}",
+                            i18n::tr(language, package.level.as_str()),
+                            package.label
+                        )
+                    },
+                );
+                let selected_label = if selected_present {
+                    format!("{} · {}", selected_name, i18n::tr(language, "Installed"))
+                } else {
+                    selected_name
+                };
+                let local_available = levels
+                    .iter()
+                    .any(|package| local_availability.supports(package.hardware));
+                ui.add_enabled_ui(local_available, |ui| {
+                    components::combobox_ui(ui, (category, "model_level"), selected_label, |ui| {
+                        result.delete_asset = local_model_choices(
+                            ui,
+                            language,
+                            project_root,
+                            &mut asset_id,
+                            levels,
+                            delete_enabled,
+                            local_availability,
+                        );
+                    });
+                });
+                if Some(asset_id) != selected_asset {
+                    result.selected_asset = Some(asset_id);
+                }
+            } else {
+                ui.label(i18n::tr(language, "Provider:"));
+                let selected_label =
+                    crate::service_config::provider_display_label(&provider.selected, language);
+                components::combobox_ui(ui, (category, "online_provider"), selected_label, |ui| {
+                    for choice in &provider.choices {
+                        if choice.channel == provider.channel {
+                            let label = crate::service_config::provider_display_label(
+                                &choice.name,
+                                language,
+                            );
+                            if ui
+                                .selectable_label(provider.selected == choice.name, label)
+                                .clicked()
+                            {
+                                result.selected_provider = Some(choice.name.clone());
+                            }
+                        }
+                    }
+                });
+            }
 
             if !provider.remote {
                 let asset_id = result.selected_asset.or(selected_asset);
@@ -1132,7 +1141,33 @@ fn onboarding_model_config_card(
                 }
             }
 
-            if provider.remote {
+            if let Some(account) = provider.account {
+                result.account_action =
+                    components::account_capsule(ui, account, accounts, language);
+                result.remote_fields = account_model_fields(
+                    ui,
+                    category,
+                    provider,
+                    accounts,
+                    language,
+                    &mut result.account_action,
+                );
+                if let Some(choice) = provider
+                    .choices
+                    .iter()
+                    .find(|choice| choice.name == provider.selected)
+                {
+                    components::language_flags(
+                        ui,
+                        language,
+                        &choice
+                            .supported_languages
+                            .iter()
+                            .map(String::as_str)
+                            .collect::<Vec<_>>(),
+                    );
+                }
+            } else if provider.remote {
                 result.remote_fields = remote_provider_fields(ui, category, provider, language);
             } else {
                 match local_availability {
@@ -1179,6 +1214,74 @@ fn onboarding_surface(ui: &egui::Ui, color: Color32) -> Frame {
         .inner_margin(Margin::same(18))
 }
 
+fn account_model_fields(
+    ui: &mut egui::Ui,
+    category: &str,
+    provider: &mut crate::service_config::OnboardingProviderState,
+    connections: &crate::account_connections::AccountConnections,
+    language: i18n::UiLanguage,
+    action: &mut Option<crate::account_connections::AccountAction>,
+) -> Option<RemoteProviderFields> {
+    if provider.server_managed {
+        return None;
+    }
+    let previous = provider.model.clone();
+    let discovered = provider
+        .account
+        .and_then(|account| connections.snapshot(account))
+        .and_then(|snapshot| snapshot.models.as_ref());
+    if provider
+        .account
+        .is_some_and(|account| account.browser_oauth())
+        && discovered.is_none_or(Vec::is_empty)
+    {
+        return None;
+    }
+    if let Some(models) = discovered {
+        if !models.iter().any(|model| model.id == provider.model) {
+            provider.model = models
+                .first()
+                .map(|model| model.id.clone())
+                .unwrap_or_default();
+        }
+    }
+    ui.label(i18n::tr(language, "Model"));
+    let label = discovered
+        .and_then(|models| models.iter().find(|m| m.id == provider.model))
+        .map(|model| model.label.clone())
+        .unwrap_or_else(|| provider.model.clone());
+    ui.horizontal(|ui| {
+        components::combobox_ui(ui, (category, "account_model"), &label, |ui| {
+            if let Some(models) = discovered {
+                for model in models {
+                    ui.selectable_value(&mut provider.model, model.id.clone(), &model.label);
+                }
+            } else {
+                for model in &provider.models {
+                    ui.selectable_value(&mut provider.model, model.clone(), model);
+                }
+            }
+        });
+        if let Some(account) = provider.account.filter(|account| {
+            connections
+                .snapshot(*account)
+                .is_some_and(|s| s.models.is_some())
+        }) {
+            ui.add_enabled_ui(!connections.is_busy(), |ui| {
+                if components::refresh_button(ui, i18n::tr(language, "Refresh models")).clicked() {
+                    *action = Some(crate::account_connections::AccountAction::RefreshModels(
+                        account,
+                    ));
+                }
+            });
+        }
+    });
+    (provider.model != previous).then(|| RemoteProviderFields {
+        model: provider.model.clone(),
+        api_key: provider.api_key.clone(),
+    })
+}
+
 fn remote_provider_fields(
     ui: &mut egui::Ui,
     category: &str,
@@ -1217,6 +1320,7 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     let mut model_change = None;
     let mut voice_change = None;
     let mut remote_fields = None;
+    let mut account_action = None;
 
     let color = Color32::from_rgb(244, 113, 136);
     onboarding_surface(ui, color).show(ui, |ui| {
@@ -1243,7 +1347,18 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             &app.runtime_installer.local_model_availability(),
         );
         ui.add_space(10.0);
-        if provider.remote {
+        if let Some(account) = provider.account {
+            account_action =
+                components::account_capsule(ui, account, &app.account_connections, language);
+            remote_fields = account_model_fields(
+                ui,
+                "tts",
+                &mut provider,
+                &app.account_connections,
+                language,
+                &mut account_action,
+            );
+        } else if provider.remote {
             if let Some(url) = provider
                 .choices
                 .iter()
@@ -1433,6 +1548,14 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
         handle_onboarding_save(app, result);
     }
 
+    if let Some(action) = account_action {
+        if action.changes_account(&app.account_connections) {
+            app.backend_manager.invalidate_runtime();
+        }
+        if let Err(error) = app.account_connections.perform(action, &project_root) {
+            app.notifications.error("", error);
+        }
+    }
     if let Some(fields) = remote_fields {
         app.service_config
             .set_onboarding_remote_fields("tts", fields.model, fields.api_key);
@@ -1772,7 +1895,8 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
                 let downloaded = missing.iter().filter_map(|item| {
                     app.model_task_manager.model_download_progress(item.id).map(|(bytes, _)| bytes)
                 }).sum::<u64>();
-                let progress = (missing_download_bytes > 0 && downloaded > 0)
+                let progress = (missing_download_bytes > 0
+                    && (!active_downloads.is_empty() || downloaded > 0))
                     .then(|| downloaded as f32 / missing_download_bytes as f32);
                 let clicked = ui.scope(|ui| {
                     ui.set_max_width(220.0);
@@ -1889,7 +2013,11 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
     if requires_runtime {
         ui.add_space(16.0);
         render_runtime_installation_section(app, ui, language, &project_root);
-    } else if configuration_loaded && download_items.is_empty() && !requirements.missing_api_key {
+    } else if configuration_loaded
+        && download_items.is_empty()
+        && !requirements.missing_api_key
+        && !app.service_config.missing_account_connections()
+    {
         onboarding_surface(ui, Color32::from_rgb(16, 185, 129)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
@@ -2003,13 +2131,8 @@ fn render_download_card(
                                     &action_label,
                                     false,
                                     enabled,
-                                    progress.map(|(bytes, total)| {
-                                        if total > 0 {
-                                            bytes as f32 / total as f32
-                                        } else {
-                                            0.0
-                                        }
-                                    }),
+                                    progress.filter(|(_, total)| *total > 0)
+                                        .map(|(bytes, total)| bytes as f32 / total as f32),
                                 )
                             })
                             .inner;
@@ -2116,13 +2239,8 @@ fn render_runtime_installation_section(
                                 || (download_size.is_some()
                                     && !runtime_busy
                                     && !app.model_task_manager.is_busy()),
-                            download_progress.map(|(bytes, total)| {
-                                if total > 0 {
-                                    bytes as f32 / total as f32
-                                } else {
-                                    0.0
-                                }
-                            }),
+                            download_progress.filter(|(_, total)| *total > 0)
+                                .map(|(bytes, total)| bytes as f32 / total as f32),
                         )
                     })
                     .inner;

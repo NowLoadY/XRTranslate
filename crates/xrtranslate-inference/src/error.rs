@@ -29,6 +29,8 @@ impl Error for TransportError {}
 /// A structured, user-readable failure returned by an inference adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InferenceError {
+    /// Login is missing or was explicitly rejected by the account service.
+    AccountLoginRequired { provider: &'static str },
     /// An adapter was constructed with an unusable value.
     InvalidConfiguration {
         field: &'static str,
@@ -71,6 +73,7 @@ pub enum InferenceError {
 impl fmt::Display for InferenceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::AccountLoginRequired { provider } => write!(formatter, "{provider}: sign in again using Account login on the Welcome Page"),
             Self::InvalidConfiguration { field, message } => {
                 write!(formatter, "invalid {field}: {message}")
             }

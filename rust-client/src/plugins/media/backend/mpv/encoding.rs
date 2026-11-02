@@ -179,7 +179,7 @@ mod tests {
                 ("start", "0.5"),
                 ("idle", "yes"),
             ] {
-                reader.set_property_string(name, value).unwrap();
+                reader.set_option_string(name, value).unwrap();
             }
             reader.initialize().unwrap();
             reader

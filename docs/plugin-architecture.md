@@ -150,6 +150,12 @@ plugins use it independently. Meetings retain each recording run's time offset
 and source file so transcript navigation resolves to the matching audio track;
 the plugin owns playback selection and transcript following.
 
+The media plugin's MPV backend owns its playback state snapshot and video worker.
+UI reads consume observed state and playback actions are queued asynchronously.
+Video work stays bounded, and the worker completes before its target resources
+are retired. Hidden playback continues without holding UI graphics resources
+while waiting for the playback clock.
+
 VRChat OSC and ChilloutVR OSC are independent registered instances of the same
 plugin. They share composition, scheduling and UI; game profiles own packet
 arguments and text limits. Settings and manual input remain per output. The host

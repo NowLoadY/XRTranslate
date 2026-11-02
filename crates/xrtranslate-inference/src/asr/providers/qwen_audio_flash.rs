@@ -155,8 +155,6 @@ impl<C: AsyncHttpClient> QwenAudioFlashAdapter<C> {
             })?
             .trim()
             .to_owned();
-        // A successful empty transcript is a valid no-speech result. The
-        // shared pipeline suppresses it without surfacing a provider failure.
         Ok(AsrTranscript { language, text })
     }
 

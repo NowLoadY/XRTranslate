@@ -80,6 +80,16 @@ pub struct ReqwestClient {
 }
 
 impl ReqwestClient {
+    /// Account credentials may only be sent to the connector's fixed official endpoint.
+    pub(crate) fn for_account() -> Result<Self, TransportError> {
+        client_builder()
+            .timeout(Duration::from_secs(120))
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent(concat!("XRTranslate/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map(|client| Self { client })
+            .map_err(|_| TransportError::new("client", "Cannot create account service connection"))
+    }
     /// Builds a client with the request timeout used by the legacy backend.
     pub fn new(timeout: Duration) -> Result<Self, TransportError> {
         client_builder()
@@ -141,7 +151,13 @@ impl ReqwestClient {
             // json() supplies Content-Type only when absent; applying headers
             // first avoids appending a second value that can hide the JSON body.
             for (name, value) in &request.headers {
-                builder = builder.header(name, value);
+                let mut header = reqwest::header::HeaderValue::from_str(value)
+                    .map_err(|_| TransportError::new("headers", "Invalid request header"))?;
+                if name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("cookie")
+                {
+                    header.set_sensitive(true);
+                }
+                builder = builder.header(name, header);
             }
             if let Some(body) = &request.multipart {
                 let file = reqwest::multipart::Part::bytes(body.file.clone())

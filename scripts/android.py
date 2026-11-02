@@ -188,7 +188,6 @@ def native(sdk, args):
     seed = assets / 'XR-Corpus/corpora/default.sqlite'
     seed.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / 'XR-Corpus/corpora/default.sqlite', seed)
-    shutil.copytree(ROOT / 'assets/gtcrn', assets / 'models/gtcrn', dirs_exist_ok=True)
 
 def java_environment(sdk):
     environment = dict(os.environ, ANDROID_HOME=str(sdk))

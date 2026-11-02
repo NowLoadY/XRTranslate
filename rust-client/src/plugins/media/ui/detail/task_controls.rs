@@ -6,7 +6,6 @@ use crate::{
     ui::components,
 };
 use eframe::egui;
-use xrtranslate_protocol::AudioPreprocessing;
 
 pub(super) fn render_task_control_card(
     controller: &mut MediaController,
@@ -180,21 +179,14 @@ pub(super) fn render_task_control_card(
             }
             egui::CollapsingHeader::new(tr(language, "Recognition Settings")).show(ui, |ui| {
                 ui.add_enabled_ui(!task.is_task_running, |ui| {
-                    if task
-                        .recognition
-                        .preprocessing
-                        .unwrap_or(snapshot.default_preprocessing)
-                        != AudioPreprocessing::VocalSeparation
-                    {
-                        changed |= components::ModernSlider::new(
-                            tr(language, "VAD Sensitivity"),
-                            &mut task.recognition.background_noise,
-                            0.02..=0.95,
-                            0.6,
-                        )
-                        .show(ui)
-                        .changed();
-                    }
+                    changed |= components::ModernSlider::new(
+                        tr(language, "Filter strength"),
+                        &mut task.recognition.background_noise,
+                        0.02..=0.95,
+                        0.6,
+                    )
+                    .show(ui)
+                    .changed();
                     let pause_ms = crate::pause_tolerance_to_ms(task.recognition.pause_tolerance);
                     changed |= components::ModernSlider::new(
                         tr(language, "Pause tolerance"),

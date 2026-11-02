@@ -617,6 +617,9 @@ fn run_task(
 fn discover_models(project_root: PathBuf) -> NativeModelTaskResult {
     match load_assets(&project_root) {
         Ok(assets) => {
+            if let Err(error) = xrtranslate_assets::ensure_bundled_gtcrn(&assets) {
+                return NativeModelTaskResult::Failed(error.to_string());
+            }
             let ready = assets
                 .installed_assets()
                 .map(|asset| asset.manifest().id)

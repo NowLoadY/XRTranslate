@@ -593,7 +593,10 @@ impl AppConfig {
                     requirements.onnx_cuda = true;
                 }
                 Some(_) => {
-                    requirements.missing_api_key |= provider
+                    let account = provider.get("connector")
+                        .and_then(|value| serde_json::from_value::<xrtranslate_assets::remote::RemoteConnector>(value.clone()).ok())
+                        .and_then(|connector| connector.account_provider());
+                    requirements.missing_api_key |= account.is_none() && provider
                         .get("api_key")
                         .and_then(Value::as_str)
                         .is_none_or(|key| key.trim().is_empty());
@@ -1404,8 +1407,8 @@ impl ModelManagerConfig {
         if self.bundled_models.is_empty() {
             Self::default_bundled_models()
         } else {
-            // GTCRN ships with releases, but remains individually managed so
-            // deleting it does not trigger an unrelated required-resource download.
+            // GTCRN is embedded in the application and prepared offline.
+            // It never belongs in the runtime download plan.
             self.bundled_models
                 .iter()
                 .filter(|asset| {
@@ -1765,7 +1768,11 @@ fn active_native_provider(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
-    if !matches!(transport.as_str(), "local" | "onnx-cpu") && api_key.is_none() {
+    let account = object
+        .and_then(|provider| provider.get("connector"))
+        .and_then(|value| serde_json::from_value::<xrtranslate_assets::remote::RemoteConnector>(value.clone()).ok())
+        .and_then(|connector| connector.account_provider());
+    if !matches!(transport.as_str(), "local" | "onnx-cpu") && account.is_none() && api_key.is_none() {
         issues.push(format!(
             "{path}.api_key is required for remote API providers"
         ));

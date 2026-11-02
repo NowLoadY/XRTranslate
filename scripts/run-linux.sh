@@ -14,7 +14,7 @@ fi
 source "${ROOT_DIR}/scripts/linux-build-env.sh"
 prepare_linux_build_env "${ROOT_DIR}"
 
-cargo_args=(build --locked --target-dir "${ROOT_DIR}/target" -p rust-client -p xrtranslate-backend --features xrtranslate-backend/managed-ort --release)
+cargo_args=(build --locked --target-dir "${ROOT_DIR}/target" -p rust-client -p xrtranslate-account-login -p xrtranslate-backend --features xrtranslate-backend/managed-ort --release)
 if [[ -n "${FEATURES}" ]]; then
   cargo_args+=(--features "${FEATURES}")
 fi

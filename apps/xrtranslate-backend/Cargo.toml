@@ -17,6 +17,7 @@ managed-ort = [
 ]
 
 [dependencies]
+xrtranslate-connections = { path = "../../crates/xrtranslate-connections" }
 axum = { version = "0.8.8", features = ["ws"] }
 clap = { version = "4.5.58", features = ["derive"] }
 futures-util = "0.3.31"

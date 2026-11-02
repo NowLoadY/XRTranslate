@@ -701,6 +701,12 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
             && target.is_none_or(|target| anchor.distance(target) < 2.0)
             && !response.dragged(),
     );
+    if interactive && available && state.opacity >= 0.25 && matches!(state.line, Message::Error(_))
+    {
+        state
+            .speech
+            .dismiss_on_click(ctx, state_id().with("error-bubble"), state.clock);
+    }
     if interactive
         && (response.dragged() || (state.placement.was_dragged() && (size - small).abs() > 0.1))
     {

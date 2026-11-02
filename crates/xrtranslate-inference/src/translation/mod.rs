@@ -1,4 +1,5 @@
 mod adapter;
+mod transport;
 mod profile;
 mod types;
 

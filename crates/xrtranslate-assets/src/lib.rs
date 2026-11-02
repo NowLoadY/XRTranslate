@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+mod bundled;
 mod catalog;
 mod install;
 pub mod language;
@@ -13,6 +14,7 @@ pub mod remote;
 mod resolve;
 pub mod voices;
 
+pub use bundled::ensure_bundled_gtcrn;
 pub use catalog::{
     AUDIO8_TTS_ONNX_FP16, AsrDelivery, AsrPromptStyle, BARK3_INT8_ONNX, CONFUCIUS4_R2T2_Q8_GGUF,
     CPU_MODEL_HARDWARE, DEFAULT_GGUF_MANIFEST, GTCRN_ONNX, HAIDASS_TRANSLATE_143M_Q8_GGUF,

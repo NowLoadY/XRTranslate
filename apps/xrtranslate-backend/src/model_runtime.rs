@@ -41,6 +41,7 @@ pub(crate) struct NativeProviderPlan {
     pub(crate) language_capabilities: xrtranslate_engine::language::LanguageCapabilities,
     assets: ResolvedModelAssets,
     asr_profile: AsrProfile,
+    accounts: xrtranslate_connections::AccountStore,
     translation_profile: TranslationProfile,
     tts_profile: Option<TtsProfile>,
     translation_supports_reference_context: bool,
@@ -70,6 +71,14 @@ impl NativeProviderPlan {
         let mut route = config
             .native_model_route()
             .map_err(|error| error.to_string())?;
+        let accounts = xrtranslate_connections::AccountStore::for_project_root(project_root);
+        for provider in [&route.asr, &route.translation] {
+            if let Some(account) = provider.connector.and_then(|connector| connector.account_provider()) {
+                if accounts.status(account) != xrtranslate_connections::AccountStatus::Connected {
+                    return Err(format!("{}: sign in using Account login on the Welcome Page", account.id()));
+                }
+            }
+        }
         let runtime_layout = config.runtime_layout(project_root);
         route.llama_server_path =
             runtime_layout.resolve_llama_server_path(&route.llama_server_path);
@@ -122,6 +131,7 @@ impl NativeProviderPlan {
             route,
             assets,
             asr_profile,
+            accounts,
             translation_profile,
             tts_profile,
             translation_supports_reference_context,
@@ -379,6 +389,7 @@ impl NativeProviderPlan {
             self.asr_model_alias(),
             self.route.asr.api_key.as_deref(),
             &self.route.asr.capabilities,
+            &self.accounts,
         )
     }
 
@@ -403,7 +414,7 @@ impl NativeProviderPlan {
             );
         }
         self.translation_profile
-            .adapter(http, &self.route.translation)
+            .adapter(http, &self.route.translation, &self.accounts)
     }
 
     pub(crate) fn tts_adapter(&self, config: &AppConfig) -> Result<Option<TtsAdapter>, String> {
@@ -587,7 +598,7 @@ fn resolve_model_assets(
     for id in active_asset_ids {
         assets.select_asset(id);
     }
-    assets.resolve(project_root)
+    assets.resolve_selected(project_root)
 }
 
 fn apply_model_runtime(

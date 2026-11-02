@@ -224,8 +224,12 @@ impl VideoRenderer {
                                     && mpv::mpv_render_context_update(context) & 1 != 0
                                 {
                                     let mut skip = 1i32;
-                                    let mut params =
-                                        [param(13, &mut skip as *mut _ as *mut _), end()];
+                                    let mut block = 0i32;
+                                    let mut params = [
+                                        param(13, &mut skip as *mut _ as *mut _),
+                                        param(12, &mut block as *mut _ as *mut _),
+                                        end(),
+                                    ];
                                     mpv::mpv_render_context_render(context, params.as_mut_ptr());
                                 }
                             }

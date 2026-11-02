@@ -1,6 +1,9 @@
 use futures_util::{SinkExt, Stream, StreamExt};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use tokio::time::{Duration, MissedTickBehavior, timeout};
 use tokio::{net::TcpStream, sync::Mutex};
 use tokio_tungstenite::{
@@ -133,37 +136,30 @@ impl QwenAudioStreamingAdapter {
             self.start_task(&mut socket, &task_id, &run_task).await?;
         }
         let (mut writer, mut reader) = socket.split();
+        let audio_drained = AtomicBool::new(false);
         let send_audio = async {
+            let audio = crate::asr::audio::pcm16_frames(audio, PCM_FRAME_BYTES);
             futures_util::pin_mut!(audio);
-            let mut pending = Vec::with_capacity(PCM_FRAME_BYTES * 2);
             while let Some(frame) = audio.next().await {
-                if !frame.len().is_multiple_of(2) {
-                    return Err(InferenceError::InvalidAudio {
-                        message: "PCM16 input length must be even".into(),
-                    });
-                }
-                pending.extend_from_slice(&frame);
-                while pending.len() >= PCM_FRAME_BYTES {
-                    let frame = pending.drain(..PCM_FRAME_BYTES).collect::<Vec<_>>();
-                    writer
-                        .send(Message::Binary(frame.into()))
-                        .await
-                        .map_err(|error| websocket_error(&self.endpoint, "send", error))?;
-                }
-            }
-            if !pending.is_empty() {
                 writer
-                    .send(Message::Binary(pending.into()))
+                    .send(Message::Binary(frame?.into()))
                     .await
                     .map_err(|error| websocket_error(&self.endpoint, "send", error))?;
             }
+            audio_drained.store(true, Ordering::Release);
             writer
                 .send(Message::Text(finish_task(&task_id).to_string().into()))
                 .await
                 .map_err(|error| websocket_error(&self.endpoint, "send", error))?;
             Result::<(), InferenceError>::Ok(())
         };
-        let receive_results = collect_sentences(&mut reader, &self.endpoint, &task_id, on_update);
+        let receive_results = collect_sentences(
+            &mut reader,
+            &self.endpoint,
+            &task_id,
+            &audio_drained,
+            on_update,
+        );
         let ((), text) = timeout(TASK_TIMEOUT, async {
             tokio::try_join!(send_audio, receive_results)
         })
@@ -352,6 +348,7 @@ async fn collect_sentences<S, F, Fut>(
     reader: &mut futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<S>>,
     endpoint: &str,
     task_id: &str,
+    audio_drained: &AtomicBool,
     mut on_update: F,
 ) -> Result<String, InferenceError>
 where
@@ -374,9 +371,12 @@ where
                         if sentence["heartbeat"].as_bool() == Some(true) {
                             continue;
                         }
-                        let Some(text) = sentence["text"].as_str().map(str::trim) else {
-                            continue;
-                        };
+                        let text = sentence["text"]
+                            .as_str()
+                            .ok_or_else(|| {
+                                invalid_event(endpoint, "sentence.text must be a string")
+                            })?
+                            .trim();
                         let id = sentence["sentence_id"]
                             .as_u64()
                             .or_else(|| sentence["begin_time"].as_u64())
@@ -409,6 +409,12 @@ where
                         }
                     }
                     Some("task-finished") => {
+                        if !audio_drained.load(Ordering::Acquire) {
+                            return Err(invalid_event(
+                                endpoint,
+                                "task finished before audio was drained",
+                            ));
+                        }
                         // An empty sentence-begin or retracted draft has no
                         // pending text. A nonempty draft still needs its final.
                         if last_preview != committed {

@@ -17,6 +17,21 @@ public final class MainActivity extends GameActivity {
     private static native void openTranslation();
     private static native void backRequested();
     private static native void keyboardInsetChanged(int bottom);
+    private final AccountLogin accountLogin = new AccountLogin(this);
+    public void startAccountLogin(String specification) { accountLogin.start(specification); }
+    public void cancelAccountLogin() { accountLogin.cancel(); }
+    public String takeAccountLoginResult() { return accountLogin.takeResult(); }
+    public void openAccountAuthorization(String url) {
+        android.net.Uri uri = android.net.Uri.parse(url);
+        if (!"https".equals(uri.getScheme())) return;
+        runOnUiThread(() -> startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW, uri)));
+    }
+    public void returnFromAccountAuthorization() {
+        runOnUiThread(() -> startActivity(new android.content.Intent(this, MainActivity.class)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                | android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)));
+    }
+
 
     @Override protected void onSetUpWindow() {
         super.onSetUpWindow();
@@ -203,6 +218,7 @@ public final class MainActivity extends GameActivity {
     public void commitFileSave(long id) { documents.share(id); }
 
     @Override protected void onDestroy() {
+        accountLogin.cancel();
         keyboardInsetChanged(0);
         stopService(new android.content.Intent(this, org.xrtranslate.app.audio.MicrophoneService.class));
         documents.close();

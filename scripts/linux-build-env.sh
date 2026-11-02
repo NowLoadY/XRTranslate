@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
-# Sourced by the Linux entry points; development files never enter the release.
+# Sourced by Linux entry points. System dependencies are managed by APT.
 prepare_linux_build_env() {
-  mkdir -p "$(realpath -m "${1}/target")" || return
   check_linux_corpus "$1" || return
-  prepare_linux_system_deps "$1"
+  prepare_linux_system_deps "${XRTRANSLATE_FEATURES-mpv}" || return
+  mkdir -p "$(realpath -m "${1}/target")" || return
   prepare_linux_sherpa "$1"
 }
 
@@ -27,82 +27,52 @@ check_linux_corpus() {
 }
 
 prepare_linux_system_deps() {
-  local root="$1" pipewire_version='' clang_package='' clang_version='' clang_major=''
-  local cache cache_version multiarch pipewire_library header pc
-  local -a packages=() headers=()
+  local features="${1//,/ }" feature package architecture
+  local -a missing=() apt=(apt-get)
+  local -a packages=(
+    build-essential pkg-config curl bzip2
+    libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+    libwayland-dev libxkbcommon-dev libasound2-dev libpipewire-0.3-dev libclang-dev
+    libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev
+    libegl-mesa0 libglx-mesa0 libgl1-mesa-dri
+    fontconfig fonts-noto-core fonts-noto-cjk fonts-dejavu-core
+  )
+  local -a modules=(
+    x11 xcursor xrandr xi wayland-client xkbcommon alsa
+    'libpipewire-0.3 >= 0.3' libspa-0.2 webkit2gtk-4.1 gtk+-3.0 dbus-1
+  )
+  for feature in ${features}; do
+    case "${feature}" in
+      mpv|rust-client/mpv) packages+=(libmpv-dev); modules+=(mpv); break ;;
+    esac
+  done
 
-  if ! command -v pkg-config >/dev/null 2>&1; then
-    printf '%s\n' 'pkg-config is required; install the native dependencies in docs/linux-build.md.' >&2
-    return 1
-  fi
-  if ! command -v dpkg-query >/dev/null 2>&1; then
-    if ! pkg-config --exists 'libpipewire-0.3 >= 0.3' libspa-0.2; then
-      printf '%s\n' 'PipeWire development files are required; see docs/linux-build.md.' >&2
-      return 1
-    fi
-    return 0
-  fi
-
-  if ! pkg-config --exists 'libpipewire-0.3 >= 0.3' libspa-0.2; then
-    pipewire_version="$(dpkg-query -W -f='${Version} ${db:Status-Abbrev}\n' \
-      'libpipewire-0.3-0*' 2>/dev/null | awk '$2 == "ii" && !found {print $1; found=1}' || true)"
-    if [[ -z "${pipewire_version}" ]]; then
-      printf '%s\n' 'Install libpipewire-0.3-dev and libclang-dev first; see docs/linux-build.md.' >&2
-      return 1
-    fi
-    packages+=("libpipewire-0.3-dev=${pipewire_version}" "libspa-0.2-dev=${pipewire_version}")
-  fi
-
-  # libclang can be installed without its builtin C headers on desktop systems.
-  if [[ -z "${LIBCLANG_PATH:-}" && -z "${BINDGEN_EXTRA_CLANG_ARGS:-}" ]]; then
-    read -r clang_package clang_version <<< "$(dpkg-query -W \
-      -f='${Package} ${db:Status-Abbrev} ${Version}\n' 'libclang1-*' 2>/dev/null \
-      | awk '$2 == "ii" {print $1, $3}' | sort -V | tail -n 1 || true)"
-    clang_major="${clang_package#libclang1-}"
-    if [[ -n "${clang_major}" ]]; then
-      headers=(/usr/lib/llvm-"${clang_major}"/lib/clang/*/include/stddef.h)
-      if [[ ! -f "${headers[0]}" ]]; then
-        packages+=("libclang-common-${clang_major}-dev=${clang_version}")
+  if command -v apt-get >/dev/null 2>&1 && command -v dpkg-query >/dev/null 2>&1; then
+    architecture="$(dpkg --print-architecture)" || return
+    for package in "${packages[@]}"; do
+      # A foreign-architecture runtime alone does not satisfy a native build.
+      if ! dpkg-query -W -f='${Architecture} ${db:Status-Status}\n' "${package}" 2>/dev/null |
+        awk -v native="${architecture}" '($1 == native || $1 == "all") && $2 == "installed" { found=1 } END { exit !found }'; then
+        missing+=("${package}")
       fi
-    fi
-  fi
-  if [[ ${#packages[@]} -eq 0 ]]; then
-    return 0
-  fi
-
-  multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
-  cache_version="${pipewire_version:-system}-${clang_version:-system}"
-  cache="${root}/target/linux-build-deps/${multiarch}/${cache_version//:/_}"
-  if [[ ! -f "${cache}/ready" ]]; then
-    mkdir -p "${cache}/archives"
-    printf '%s\n' 'Preparing missing Linux development files in target/linux-build-deps (no sudo required).' >&2
-    if ! (cd "${cache}/archives" && apt-get download "${packages[@]}"); then
-      printf '%s\n' 'Download failed. Install libpipewire-0.3-dev and libclang-dev, then retry.' >&2
-      return 1
-    fi
-    for header in "${cache}"/archives/*.deb; do
-      dpkg-deb -x "${header}" "${cache}"
     done
-    if [[ -n "${pipewire_version}" ]]; then
-      for pc in "${cache}/usr/lib/${multiarch}/pkgconfig/"*.pc; do
-        sed -i 's|^prefix=/usr$|prefix=${pcfiledir}/../../..|' "${pc}"
-      done
-      pipewire_library="$(ldconfig -p | awk '/libpipewire-0[.]3[.]so[.]0 / && !found {print $NF; found=1}')"
-      if [[ ! -f "${pipewire_library}" ]]; then
-        printf '%s\n' 'The system PipeWire runtime library is missing.' >&2
-        return 1
+    if ((${#missing[@]})); then
+      if ((EUID != 0)); then
+        if ! command -v sudo >/dev/null 2>&1; then
+          printf '%s\n' 'Install sudo or run scripts/install-linux-deps.sh as root.' >&2
+          return 1
+        fi
+        apt=(sudo apt-get)
       fi
-      ln -sf "${pipewire_library}" "${cache}/usr/lib/${multiarch}/libpipewire-0.3.so"
+      printf 'Installing system dependencies through APT: %s\n' "${missing[*]}" >&2
+      "${apt[@]}" update || return
+      "${apt[@]}" install -y --no-install-recommends --no-remove "${missing[@]}" || return
     fi
-    touch "${cache}/ready"
-    rm -r -- "${cache}/archives"
   fi
-  if [[ -n "${pipewire_version}" ]]; then
-    export PKG_CONFIG_PATH="${cache}/usr/lib/${multiarch}/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
-  fi
-  headers=("${cache}"/usr/lib/llvm-"${clang_major}"/lib/clang/*/include/stddef.h)
-  if [[ -n "${clang_major}" && -f "${headers[0]}" ]]; then
-    export BINDGEN_EXTRA_CLANG_ARGS="-I'${headers[0]%/stddef.h}'"
+
+  if ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists "${modules[@]}"; then
+    printf '%s\n' 'Native build dependencies are unavailable. Install the system development packages listed in docs/linux-build.md.' >&2
+    return 1
   fi
 }
 

@@ -7,6 +7,7 @@ repository.workspace = true
 description = "Static local model manifests and preflight checks for XRTranslate."
 
 [dependencies]
+xrtranslate-connections = { path = "../xrtranslate-connections" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 uuid = { version = "1.18.1", features = ["v4"] }

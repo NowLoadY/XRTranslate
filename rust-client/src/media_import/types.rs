@@ -96,8 +96,14 @@ pub struct AudioImportProgress {
 pub enum AudioImportEvent {
     Started(AudioFileInfo),
     Progress(AudioImportProgress),
-    Completed { output_frames: u64 },
-    Stopped { output_frames: u64 },
+    Completed {
+        output_frames: u64,
+    },
+    Stopped {
+        output_frames: u64,
+    },
+    /// The downstream session owns the reason for closing the audio channel.
+    OutputClosed,
     Error(String),
 }
 

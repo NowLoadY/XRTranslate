@@ -28,7 +28,7 @@ pub fn has_unmet_prerequisites(
     let requirements = service_config.runtime_requirements();
 
     // 1. API key requirements
-    if requirements.missing_api_key {
+    if requirements.missing_api_key || service_config.missing_account_connections() {
         return true;
     }
 
@@ -66,6 +66,9 @@ pub fn evaluate_step_requirement(
     match step {
         1 => {
             let requirements = service_config.runtime_requirements();
+            if service_config.missing_account_connections() {
+                return Some("Sign in to every selected account service to continue.");
+            }
             if requirements.missing_api_key {
                 Some("Configure every required API key to continue.")
             } else {
@@ -81,6 +84,9 @@ pub fn evaluate_step_requirement(
                 return Some("Wait for runtime preparation to finish.");
             }
             let requirements = service_config.runtime_requirements();
+            if service_config.missing_account_connections() {
+                return Some("Sign in to every selected account service to continue.");
+            }
             if requirements.missing_api_key {
                 return Some("Configure every required API key to continue.");
             }

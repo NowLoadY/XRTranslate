@@ -582,3 +582,110 @@ pub extern "system" fn Java_org_xrtranslate_app_MainActivity_updateInstallComple
     };
     *UPDATE_INSTALL_RESULT.lock().unwrap() = Some(result);
 }
+
+/// Host-owned account login. The provider registry supplies scripts and origins;
+/// no JavaScript bridge exposes native functions to the remote page.
+pub fn open_account_authorization(url: &str) -> Result<(), String> {
+    with_activity(|env, activity| {
+        let value = env.new_string(url)?;
+        env.call_method(
+            activity,
+            "openAccountAuthorization",
+            "(Ljava/lang/String;)V",
+            &[jni::objects::JValue::Object(&value)],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn return_from_account_authorization() {
+    let _ = with_activity(|env, activity| {
+        env.call_method(activity, "returnFromAccountAuthorization", "()V", &[])?;
+        Ok(())
+    });
+}
+
+pub fn start_account_login(
+    provider: xrtranslate_connections::AccountProvider,
+) -> Result<(), String> {
+    let spec = xrtranslate_connections::login::spec(provider)
+        .ok_or("This account uses system-browser authorization")?;
+    let specification = serde_json::json!({
+        "provider": provider, "label": spec.label, "url": spec.url, "origin": spec.origin,
+        "hosts": spec.allowed_hosts, "required_attributes": spec.required_attributes,
+        "initialization_script": spec.initialization_script, "capture_script": spec.capture_script,
+        "user_agent": spec.user_agent,
+    })
+    .to_string();
+    with_activity(|env, activity| {
+        let value = env.new_string(specification)?;
+        env.call_method(
+            activity,
+            "startAccountLogin",
+            "(Ljava/lang/String;)V",
+            &[jni::objects::JValue::Object(&value)],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn cancel_account_login() {
+    let _ = with_activity(|env, activity| {
+        env.call_method(activity, "cancelAccountLogin", "()V", &[])?;
+        Ok(())
+    });
+}
+
+pub fn poll_account_login(
+    root: &std::path::Path,
+) -> Option<Result<Option<xrtranslate_connections::AccountProvider>, String>> {
+    let response = with_activity(|env, activity| {
+        let value = env
+            .call_method(
+                activity,
+                "takeAccountLoginResult",
+                "()Ljava/lang/String;",
+                &[],
+            )?
+            .l()?;
+        if value.is_null() {
+            return Ok(None);
+        }
+        let value = jni::objects::JString::from(value);
+        Ok(Some(env.get_string(&value)?.to_string_lossy().into_owned()))
+    });
+    let response = match response {
+        Ok(Some(value)) => value,
+        Ok(None) => return None,
+        Err(error) => return Some(Err(error)),
+    };
+    Some((|| {
+        let invalid = || "Could not open or complete account login. Please try again.".to_owned();
+        let data: serde_json::Value = serde_json::from_str(&response).map_err(|_| invalid())?;
+        if data.get("cancelled").and_then(serde_json::Value::as_bool) == Some(true) {
+            return Ok(None);
+        }
+        if data.get("error").and_then(serde_json::Value::as_str) == Some("webview_update_required")
+        {
+            return Err("Update Android System WebView to use account login.".to_owned());
+        }
+        let provider = serde_json::from_value(data.get("provider").cloned().ok_or_else(invalid)?)
+            .map_err(|_| invalid())?;
+        let session = xrtranslate_connections::login::captured_session(
+            provider,
+            data.get("url")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(invalid)?,
+            &data.get("capture").ok_or_else(invalid)?.to_string(),
+            data.get("cookies")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(invalid)?
+                .to_owned(),
+        )
+        .ok_or_else(invalid)?;
+        xrtranslate_connections::AccountStore::for_project_root(root)
+            .save(&session)
+            .map_err(|_| "Could not save account connection.".to_owned())?;
+        Ok(Some(provider))
+    })())
+}

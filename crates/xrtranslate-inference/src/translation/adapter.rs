@@ -7,6 +7,7 @@ use xrtranslate_prompt::PromptExecutionTrace;
 use super::{
     TranslationOptions, TranslationPromptProfile, TranslationResult,
     profile::{registered, translation_output_rejection},
+    transport::ChatTransport,
 };
 
 /// Reusable MT adapter for Hy-MT2 GGUF, Qwen-MT, and remote OpenAI-compatible services.
@@ -16,7 +17,7 @@ use super::{
 /// translation profile.
 #[derive(Debug, Clone)]
 pub struct TranslationAdapter<C> {
-    chat: OpenAiCompatibleClient<C>,
+    chat: ChatTransport<C>,
     model: String,
     profile: TranslationPromptProfile,
     streaming: RemoteStreaming,
@@ -33,7 +34,7 @@ impl<C> TranslationAdapter<C> {
     ) -> Result<Self, InferenceError> {
         let model = validated_model(model)?;
         Ok(Self {
-            chat: OpenAiCompatibleClient::new(http, endpoint)?,
+            chat: ChatTransport::Completions(OpenAiCompatibleClient::new(http, endpoint)?),
             model,
             profile,
             streaming: RemoteStreaming::Delta,
@@ -53,7 +54,9 @@ impl<C> TranslationAdapter<C> {
     ) -> Result<Self, InferenceError> {
         let model = validated_model(model)?;
         Ok(Self {
-            chat: OpenAiCompatibleClient::with_bearer_token(http, endpoint, token)?,
+            chat: ChatTransport::Completions(OpenAiCompatibleClient::with_bearer_token(
+                http, endpoint, token,
+            )?),
             model,
             profile,
             streaming: RemoteStreaming::Delta,
@@ -68,6 +71,21 @@ impl<C> TranslationAdapter<C> {
         self.reasoning_effort
             .clone_from(&capabilities.reasoning_effort);
         self
+    }
+
+    pub fn with_chatgpt_account(
+        store: xrtranslate_connections::AccountStore,
+        endpoint: &str,
+        model: impl Into<String>,
+    ) -> Result<Self, InferenceError> {
+        Ok(Self {
+            chat: ChatTransport::Responses(crate::responses::ChatGptClient::new(store, endpoint)?),
+            model: validated_model(model)?,
+            profile: TranslationPromptProfile::ChatMessages,
+            streaming: RemoteStreaming::Delta,
+            single_user_message: false,
+            reasoning_effort: None,
+        })
     }
 
     fn apply_request_options(&self, payload: &mut serde_json::Value) {
@@ -108,7 +126,7 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
         options.max_tokens = max_tokens;
         profile.apply_sampling(&mut payload, &options);
         self.apply_request_options(&mut payload);
-        let completion = self.chat.chat_completion(payload).await?;
+        let completion = self.chat.complete(payload).await?;
         let text = crate::openai::remove_completion_markers(&completion.text);
         if text.is_empty() {
             return Err(InferenceError::EmptyOutput { operation: "ask" });
@@ -198,7 +216,7 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
             let cumulative = self.streaming == RemoteStreaming::Cumulative;
             let mut previous = String::new();
             self.chat
-                .chat_completion_streaming(payload, cumulative, |text| {
+                .stream(payload, cumulative, |text| {
                     let text = profile.clean_output(&text);
                     let safe = translation_output_rejection(
                         source_text,
@@ -221,7 +239,7 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
                 })
                 .await?
         } else {
-            self.chat.chat_completion(payload).await?
+            self.chat.complete(payload).await?
         };
         let text = profile.clean_output(&completion.text);
         if text.is_empty() {

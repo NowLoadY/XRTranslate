@@ -110,11 +110,16 @@ struct State {
 pub struct Notifications(Arc<Mutex<State>>);
 
 impl Notifications {
+    pub fn info(&self, message: impl Into<String>) {
+        self.push(message.into(), String::new(), log::Level::Info);
+    }
+
     pub fn error(&self, message: impl Into<String>, details: impl Into<String>) {
-        let notice = Notice {
-            message: message.into(),
-            details: details.into(),
-        };
+        self.push(message.into(), details.into(), log::Level::Warn);
+    }
+
+    fn push(&self, message: String, details: String, level: log::Level) {
+        let notice = Notice { message, details };
         if notice.text().trim().is_empty() {
             return;
         }
@@ -127,7 +132,7 @@ impl Notifications {
         {
             return;
         }
-        log::warn!("{} {}", notice.message, notice.details);
+        log::log!(level, "{} {}", notice.message, notice.details);
         if state.pending.len() == MAX_PENDING {
             state.pending.pop_front();
         }

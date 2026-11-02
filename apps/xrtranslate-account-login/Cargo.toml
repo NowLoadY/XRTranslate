@@ -1,0 +1,15 @@
+[package]
+name = "xrtranslate-account-login"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Isolated official-account login window for XRTranslate"
+
+[dependencies]
+serde_json = "1.0.151"
+xrtranslate-connections = { path = "../../crates/xrtranslate-connections" }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+tao = "0.37.2"
+wry = "0.57.1"

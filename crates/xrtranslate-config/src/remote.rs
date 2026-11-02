@@ -149,10 +149,19 @@ pub(crate) fn resolve(
     if connector.is_some_and(|connector| connector.capability() != capability) {
         issues.push(format!("{path}.connector does not support {section}"));
     }
-    let mut capabilities = if let Some(card) =
-        connector.and_then(|connector| remote::remote_model(connector, model))
+    if connector.is_some_and(|connector| connector.account_provider().is_some())
+        && connector
+            .and_then(|connector| remote::model_capabilities(connector, model))
+            .is_none()
     {
-        card.capabilities.clone()
+        issues.push(format!(
+            "{path}.model must select a registered account service profile"
+        ));
+    }
+    let mut capabilities = if let Some(declared) =
+        connector.and_then(|connector| remote::model_capabilities(connector, model))
+    {
+        declared.clone()
     } else {
         // Flat fields remain accepted for existing custom configurations.
         let supports_context = get("supports_prompt_context")
@@ -236,6 +245,13 @@ pub(crate) fn resolve(
             ));
         }
     }
+    if connector == Some(RemoteConnector::DoubaoWebAsr)
+        && (capabilities.asr_language_hint == Some(true) || capabilities.supports_context)
+    {
+        issues.push(format!(
+            "{path}.capabilities: this account connector cannot accept language hints or context"
+        ));
+    }
     if capabilities.asr_response_format.is_some()
         && connector != Some(RemoteConnector::OpenaiTranscription)
     {
@@ -246,11 +262,15 @@ pub(crate) fn resolve(
     if capabilities.reasoning_effort.is_some()
         && !matches!(
             connector,
-            Some(RemoteConnector::OpenaiChat | RemoteConnector::OpenaiAudioChat)
+            Some(
+                RemoteConnector::OpenaiChat
+                    | RemoteConnector::OpenaiAudioChat
+                    | RemoteConnector::ChatgptResponses
+            )
         )
     {
         issues.push(format!(
-            "{path}.capabilities.reasoning_effort requires a chat-completions connector"
+            "{path}.capabilities.reasoning_effort requires a chat inference connector"
         ));
     }
     if get("asr_context_max_chars")
@@ -259,6 +279,13 @@ pub(crate) fn resolve(
         issues.push(format!(
             "{path}.asr_context_max_chars must be a positive integer"
         ));
+    }
+    if let Some(declared) = connector.and_then(remote::account_model_capabilities) {
+        if &capabilities != declared {
+            issues.push(format!(
+                "{path}.capabilities must match the account connector's supported capabilities"
+            ));
+        }
     }
     if capabilities.context_max_chars == Some(0) {
         issues.push(format!(

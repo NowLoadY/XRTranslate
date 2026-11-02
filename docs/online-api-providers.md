@@ -161,7 +161,7 @@ The shared `capabilities` object has these fields:
 | `context_max_chars` | Optional ASR lexical-context limit |
 | `vocabulary_bias` | Structured weighted hotword support |
 | `single_user_message` | Encode rendered translation messages as one user message |
-| `reasoning_effort` | Optional chat-completions reasoning level, applied to translation, `ask` and audio chat; absent means use the server default |
+| `reasoning_effort` | Optional reasoning level, applied to translation, `ask` and audio chat; connectors map it to their wire format; absent means use the server default |
 
 ASR models declaring `streaming: cumulative` on a live-audio connector send
 frames during speech and emit partial snapshots. The normal VAD path selects
@@ -217,3 +217,98 @@ the catalogue and, if it should be a shipped preset, an empty provider entry in
 the connector contract changes.
 Do not add hash identities, local test servers, or provider-by-provider test
 loops. See [Provider integration](providers/README.md) for ownership boundaries.
+
+## Account login channel
+
+Account login is a third channel beside local models and API providers. It uses
+this same remote service catalogue, connector dispatch and capability validation,
+but authenticates through `xrtranslate-connections` instead of `api_key`. Its
+private session files never enter configuration exports. A `server_managed`
+model card names an application service profile, not an advertised upstream model
+version. Welcome does not display a model/API-key form for such a service.
+See [Doubao account speech](providers/doubao-speech.md) for the initial connector,
+platform requirements and measured live acceptance.
+
+All account providers use one inventory and lifecycle in
+`xrtranslate-connections::accounts`: saved identities, the active account,
+credential generations, selection, disconnection and presentation snapshots.
+Each provider stores its typed credentials in
+`runtime/accounts/<provider>.accounts.json` under a provider-scoped lock.
+Authorization adapters supply credentials and optional model discovery; they do
+not implement separate account managers. These files use the current format
+directly, without importing earlier development formats.
+
+Welcome uses the same account capsule for every provider. Its rear capsule
+opens a wrapped row of saved account capsules, with a checkmark on the current
+account and a plus icon for signing in to another account. Selecting a connected
+account uses its saved credentials and model list immediately. Selecting a signed
+out account starts reauthorization. Hovering an account exposes its sign-out
+icon; signing out clears only that account's credentials and models. Identity
+metadata remains available for reauthorization. Cancelling login leaves the
+current account selected. Only switching or signing out the active account
+invalidates the running service; signing out an inactive account does not.
+
+### ChatGPT account inference
+
+Welcome → Configure models → Translation → Account login → ChatGPT uses the
+official **Continue with ChatGPT** flow for open-source/local apps. An eligible
+ChatGPT Plus/Pro account authorizes XRTranslate in the system browser. The host
+detects the loopback callback, verifies the authorization, saves the connection,
+and brings the app back to the foreground. No API key or WebView cookie capture
+is involved. The shared account capsule shows the available email, phone or
+profile name. Model refresh is an icon beside the model picker. The browser callback is a
+centered, localized page with no external assets and clears its OAuth query.
+
+This is a model inference service for the existing translation route. Translation
+still renders its configured prompt graph, supplies task-owned context, and uses
+the shared output validation and commit path. The separate stateless chat/Ask
+task uses the same service only through its declared `supports_chat` capability;
+it does not become the translation pipeline or inherit translation history.
+
+The catalogue's `account_models` declaration owns the supported text contract
+(`chat_messages`, context, delta streaming, chat, low reasoning effort). The connector obtains model
+IDs and display names from the signed-in account's official `/v1/models`
+response. Welcome preserves the selected available model, otherwise selects the
+first model in the server's ordering. Configuration contains that actual model
+ID; there is no invented default model or service-managed model alias. The
+connector checks account catalogue membership before sending a request.
+
+`xrtranslate-connections::chatgpt` owns dynamic client registration, stable host
+identity, PKCE/state/nonce, JWKS signature and identity validation, model discovery,
+refresh and revocation. It uses the shared account inventory. Each registration keeps
+its own issued client ID and credentials; sign-out retains the non-secret mapping
+for reauthorization. Token refresh is serialized across processes, and old failed
+requests cannot expire a newer login or another selected account. No tokens enter
+configuration, logs or release packaging. Network and quota failures do not
+delete account connections. Failed remote revocation is reported after local
+credentials are cleared.
+
+`xrtranslate-inference::responses` owns the fixed official Responses endpoint and
+wire conversion. It preserves graph message content/order, maps system messages
+to developer messages, sends `store: false` and `stream: true`, and omits fields
+unsupported by this authorization route. Only `response.completed` accepts final
+output; partial text followed by failure, incompletion or disconnect is rejected.
+Authentication redirects are disabled. Cancellation drops the active request.
+The shared `reasoning_effort` capability becomes `reasoning.effort` on this wire;
+account adapters use the same capability configuration as other online models.
+The service declares two inference slots, used by the shared bounded scheduler;
+it has no separate account-only translation pipeline.
+
+This authorization flow currently does **not** support audio input or the
+transcription API. It registers no ASR or TTS service. Linux release builds and
+local checks cover callback validation/cancellation, account/model selection,
+credential isolation, configuration capabilities and complete/incomplete SSE.
+Existing-account inference was verified on Linux on 2026-11-02 with
+GPT-6.1 Terra at low reasoning effort and Doubao ASR. A 343-second Atlas audio
+replay completed 71 matching audio units without errors, duplicates or reordered
+subtitles. Audio-unit end to final subtitle latency was 3.4 seconds median,
+5.3 seconds at the 95th percentile and 11.0 seconds maximum. This is recorded
+audio paced in real time, not a live-game latency guarantee. Windows and Android
+still need interactive authorization, inference and foreground-return acceptance;
+local checks do not establish account entitlement.
+
+Official contracts reviewed 2026-10-29:
+[registration](https://developers.openai.com/siwc/token-sharing-open-source/sign-in),
+[accounts and renewal](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions),
+[models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference),
+[capability limits](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations).

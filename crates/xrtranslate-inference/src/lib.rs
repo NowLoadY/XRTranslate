@@ -11,6 +11,7 @@ mod asr;
 mod error;
 mod http;
 mod openai;
+mod responses;
 mod translation;
 mod tts;
 mod wav;
@@ -18,7 +19,7 @@ mod wav;
 #[cfg(feature = "sherpa")]
 pub use asr::SherpaOfflineAsrAdapter;
 pub use asr::{
-    AsrOptions, AsrTranscript, AsrVocabularyBias, OpenAiAsrAdapter, Qwen3AsrAdapter,
+    AsrOptions, AsrTranscript, AsrVocabularyBias, DoubaoWebAsrAdapter, OpenAiAsrAdapter, Qwen3AsrAdapter,
     QwenAudioFlashAdapter, QwenAudioStreamingAdapter, is_probable_asr_hallucination,
 };
 pub use error::{InferenceError, TransportError};

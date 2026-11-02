@@ -3,10 +3,10 @@
 use super::{MediaBackend, PlaybackStatus};
 use std::ffi::{CStr, CString};
 use std::path::PathBuf;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
 mod encoding;
 pub(crate) use encoding::encode_video;
+#[cfg(test)]
+mod tests;
 
 struct MpvHandle {
     handle: *mut libmpv_sys::mpv_handle,
@@ -47,44 +47,67 @@ impl MpvHandle {
     fn new() -> Result<Self, String> {
         let instance = Self::create()?;
         #[cfg(any(windows, target_os = "linux"))]
-        instance.set_property_string("vo", "libmpv")?;
-        instance.set_property_string("hwdec", "auto-safe")?;
-        instance.set_property_string("keep-open", "always")?;
-        instance.set_property_string("msg-level", "all=error")?;
-        instance.set_property_string("input-default-bindings", "no")?;
-        instance.set_property_string("input-vo-keyboard", "no")?;
-        instance.set_property_string("audio-channels", "stereo")?;
-        instance.set_property_string("audio-normalize-downmix", "yes")?;
+        instance.set_option_string("vo", "libmpv")?;
+        instance.set_option_string("hwdec", "auto-safe")?;
+        instance.set_option_string("keep-open", "always")?;
+        instance.set_option_string("msg-level", "all=error")?;
+        instance.set_option_string("input-default-bindings", "no")?;
+        instance.set_option_string("input-vo-keyboard", "no")?;
+        instance.set_option_string("audio-channels", "stereo")?;
+        instance.set_option_string("audio-normalize-downmix", "yes")?;
         // The media timeline owns subtitles; sidecar/embedded tracks must not
         // render a second copy beneath its overlay.
-        instance.set_property_string("sub-auto", "no")?;
-        instance.set_property_string("sid", "no")?;
+        instance.set_option_string("sub-auto", "no")?;
+        instance.set_option_string("sid", "no")?;
         let subtitle_style = super::super::subtitles::SubtitleStyle::default();
-        instance.set_property_string("osd-font", &subtitle_style.font)?;
-        instance.set_property_string("osd-scale-by-window", "yes")?;
-        instance.set_property_string("osd-font-size", &subtitle_style.size.to_string())?;
-        instance.set_property_string("osd-color", &subtitle_style.rgb())?;
-        instance.set_property_string("osd-border-color", "#000000")?;
-        instance.set_property_string("osd-border-size", "1.5")?;
-        instance.set_property_string("osd-shadow-offset", "1")?;
-        instance.set_property_string("osd-align-y", "bottom")?;
-        instance.set_property_string("osd-align-x", "center")?;
-        instance.set_property_string("osd-margin-y", "24")?;
-        instance.set_property_string("osd-margin-x", "24")?;
+        instance.set_option_string("osd-font", &subtitle_style.font)?;
+        instance.set_option_string("osd-scale-by-window", "yes")?;
+        instance.set_option_string("osd-font-size", &subtitle_style.size.to_string())?;
+        instance.set_option_string("osd-color", &subtitle_style.rgb())?;
+        instance.set_option_string("osd-border-color", "#000000")?;
+        instance.set_option_string("osd-border-size", "1.5")?;
+        instance.set_option_string("osd-shadow-offset", "1")?;
+        instance.set_option_string("osd-align-y", "bottom")?;
+        instance.set_option_string("osd-align-x", "center")?;
+        instance.set_option_string("osd-margin-y", "24")?;
+        instance.set_option_string("osd-margin-x", "24")?;
 
+        // The render API never waits on the UI's graphics context for an audio
+        // clock deadline. Let mpv schedule callbacks at the actual display time.
+        instance.set_option_string("video-timing-offset", "0")?;
         instance.initialize()?;
+        instance.observe_properties()?;
 
         Ok(instance)
     }
 
+    // Export owns a separate worker/core and needs the synchronous result.
     fn command(&self, args: &[&str]) -> Result<(), String> {
+        self.submit_command(args, false)
+    }
+
+    fn command_async(&self, args: &[&str]) -> Result<(), String> {
+        self.submit_command(args, true)
+    }
+
+    fn submit_command(&self, args: &[&str], asynchronous: bool) -> Result<(), String> {
         let cstrings: Result<Vec<CString>, _> = args.iter().map(|s| CString::new(*s)).collect();
         let cstrings = cstrings.map_err(|e| e.to_string())?;
         let mut ptrs: Vec<*const std::os::raw::c_char> =
             cstrings.iter().map(|cs| cs.as_ptr()).collect();
         ptrs.push(std::ptr::null());
 
-        let err = unsafe { libmpv_sys::mpv_command(self.handle, ptrs.as_mut_ptr()) };
+        let err = unsafe {
+            if asynchronous {
+                libmpv_sys::mpv_command_async(
+                    self.handle,
+                    u64::from(args.first() == Some(&"loadfile")),
+                    ptrs.as_mut_ptr(),
+                )
+            } else {
+                libmpv_sys::mpv_command(self.handle, ptrs.as_mut_ptr())
+            }
+        };
         if err < 0 {
             let err_str = unsafe {
                 let s = libmpv_sys::mpv_error_string(err);
@@ -99,11 +122,31 @@ impl MpvHandle {
         Ok(())
     }
 
+    fn set_option_string(&self, name: &str, val: &str) -> Result<(), String> {
+        let name = CString::new(name).map_err(|e| e.to_string())?;
+        let value = CString::new(val).map_err(|e| e.to_string())?;
+        let error = unsafe {
+            libmpv_sys::mpv_set_option_string(self.handle, name.as_ptr(), value.as_ptr())
+        };
+        if error < 0 {
+            Err(format!("Failed to configure MPV: {error}"))
+        } else {
+            Ok(())
+        }
+    }
+
     fn set_property_string(&self, name: &str, val: &str) -> Result<(), String> {
         let c_name = CString::new(name).map_err(|e| e.to_string())?;
         let c_val = CString::new(val).map_err(|e| e.to_string())?;
         let err = unsafe {
-            libmpv_sys::mpv_set_property_string(self.handle, c_name.as_ptr(), c_val.as_ptr())
+            let mut value = c_val.as_ptr();
+            libmpv_sys::mpv_set_property_async(
+                self.handle,
+                0,
+                c_name.as_ptr(),
+                libmpv_sys::mpv_format_MPV_FORMAT_STRING,
+                &mut value as *mut _ as *mut _,
+            )
         };
         if err < 0 {
             Err(format!("Failed to set property {}", name))
@@ -116,8 +159,9 @@ impl MpvHandle {
         let c_name = CString::new(name).map_err(|e| e.to_string())?;
         let mut flag: std::os::raw::c_int = if val { 1 } else { 0 };
         let err = unsafe {
-            libmpv_sys::mpv_set_property(
+            libmpv_sys::mpv_set_property_async(
                 self.handle,
+                0,
                 c_name.as_ptr(),
                 libmpv_sys::mpv_format_MPV_FORMAT_FLAG,
                 &mut flag as *mut _ as *mut std::ffi::c_void,
@@ -134,8 +178,9 @@ impl MpvHandle {
         let c_name = CString::new(name).map_err(|e| e.to_string())?;
         let mut v = val;
         let err = unsafe {
-            libmpv_sys::mpv_set_property(
+            libmpv_sys::mpv_set_property_async(
                 self.handle,
+                0,
                 c_name.as_ptr(),
                 libmpv_sys::mpv_format_MPV_FORMAT_DOUBLE,
                 &mut v as *mut _ as *mut std::ffi::c_void,
@@ -148,71 +193,137 @@ impl MpvHandle {
         }
     }
 
+    // Only the offline export worker polls synchronously; playback uses events.
     fn get_property_f64(&self, name: &str) -> Option<f64> {
-        let c_name = CString::new(name).ok()?;
-        let mut val: f64 = 0.0;
-        let err = unsafe {
+        let name = CString::new(name).ok()?;
+        let mut value = 0.0;
+        let error = unsafe {
             libmpv_sys::mpv_get_property(
                 self.handle,
-                c_name.as_ptr(),
+                name.as_ptr(),
                 libmpv_sys::mpv_format_MPV_FORMAT_DOUBLE,
-                &mut val as *mut _ as *mut std::ffi::c_void,
+                &mut value as *mut _ as *mut _,
             )
         };
-        if err >= 0 { Some(val) } else { None }
+        (error >= 0).then_some(value)
     }
 
-    fn get_property_i64(&self, name: &str) -> Option<i64> {
-        let c_name = CString::new(name).ok()?;
-        let mut val: i64 = 0;
-        let err = unsafe {
-            libmpv_sys::mpv_get_property(
-                self.handle,
-                c_name.as_ptr(),
-                libmpv_sys::mpv_format_MPV_FORMAT_INT64,
-                &mut val as *mut _ as *mut std::ffi::c_void,
-            )
+    fn observed_properties() -> [(&'static CStr, libmpv_sys::mpv_format); 13] {
+        use libmpv_sys::*;
+        [
+            (c"time-pos", mpv_format_MPV_FORMAT_DOUBLE),
+            (c"duration", mpv_format_MPV_FORMAT_DOUBLE),
+            (c"eof-reached", mpv_format_MPV_FORMAT_FLAG),
+            (c"pause", mpv_format_MPV_FORMAT_FLAG),
+            (c"audio-params/channel-count", mpv_format_MPV_FORMAT_INT64),
+            (c"audio-params/hr-channels", mpv_format_MPV_FORMAT_STRING),
+            (c"hwdec-current", mpv_format_MPV_FORMAT_STRING),
+            (c"video-format", mpv_format_MPV_FORMAT_STRING),
+            (c"dwidth", mpv_format_MPV_FORMAT_INT64),
+            (c"dheight", mpv_format_MPV_FORMAT_INT64),
+            (c"estimated-vf-fps", mpv_format_MPV_FORMAT_DOUBLE),
+            (c"container-fps", mpv_format_MPV_FORMAT_DOUBLE),
+            (c"vo-drop-frame-count", mpv_format_MPV_FORMAT_INT64),
+        ]
+    }
+
+    fn observe_properties(&self) -> Result<(), String> {
+        for (name, format) in Self::observed_properties() {
+            let error =
+                unsafe { libmpv_sys::mpv_observe_property(self.handle, 0, name.as_ptr(), format) };
+            if error < 0 {
+                return Err(format!("Cannot observe MPV state: {error}"));
+            }
+        }
+        Ok(())
+    }
+
+    fn refresh_properties(&self) {
+        // Some nested properties (notably audio-params/*) do not notify when
+        // restored after a reload. Reconfiguration requests a fresh snapshot,
+        // asynchronously and once per event batch, never once per UI getter.
+        for (name, format) in Self::observed_properties() {
+            let error = unsafe {
+                libmpv_sys::mpv_get_property_async(self.handle, 0, name.as_ptr(), format)
+            };
+            if error < 0 {
+                log::warn!(
+                    "Cannot request MPV state {}: {error}",
+                    name.to_string_lossy()
+                );
+            }
+        }
+    }
+}
+
+// Owned snapshots of property events. Getters used by layout, subtitles and
+// scrolling never synchronously wait for the player core or video renderer.
+#[derive(Default)]
+struct PlaybackSnapshot {
+    time_ms: i64,
+    duration_ms: i64,
+    eof: bool,
+    paused: Option<bool>,
+    channels: Option<usize>,
+    layout: Option<String>,
+    diagnostics: super::PlayerDiagnostics,
+    estimated_fps: Option<f64>,
+    container_fps: Option<f64>,
+}
+
+impl PlaybackSnapshot {
+    /// The event and its payload are valid only until the next mpv_wait_event.
+    unsafe fn update(&mut self, property: &libmpv_sys::mpv_event_property) {
+        use libmpv_sys::*;
+        if property.name.is_null() {
+            return;
+        }
+        let name = unsafe { CStr::from_ptr(property.name) }.to_bytes();
+        let flag = (!property.data.is_null() && property.format == mpv_format_MPV_FORMAT_FLAG)
+            .then(|| unsafe { *(property.data as *const i32) != 0 });
+        let number = (!property.data.is_null() && property.format == mpv_format_MPV_FORMAT_DOUBLE)
+            .then(|| unsafe { *(property.data as *const f64) })
+            .filter(|value| value.is_finite());
+        let integer = (!property.data.is_null() && property.format == mpv_format_MPV_FORMAT_INT64)
+            .then(|| unsafe { *(property.data as *const i64) });
+        let string = || {
+            if property.data.is_null() || property.format != mpv_format_MPV_FORMAT_STRING {
+                return None;
+            }
+            let value = unsafe { *(property.data as *const *const std::ffi::c_char) };
+            (!value.is_null()).then(|| {
+                unsafe { CStr::from_ptr(value) }
+                    .to_string_lossy()
+                    .into_owned()
+            })
         };
-        if err >= 0 { Some(val) } else { None }
-    }
-
-    fn get_property_bool(&self, name: &str) -> Option<bool> {
-        let c_name = CString::new(name).ok()?;
-        let mut val: std::os::raw::c_int = 0;
-        let err = unsafe {
-            libmpv_sys::mpv_get_property(
-                self.handle,
-                c_name.as_ptr(),
-                libmpv_sys::mpv_format_MPV_FORMAT_FLAG,
-                &mut val as *mut _ as *mut std::ffi::c_void,
-            )
-        };
-        if err >= 0 { Some(val != 0) } else { None }
-    }
-
-    fn get_property_string(&self, name: &str) -> Option<String> {
-        let c_name = CString::new(name).ok()?;
-        let ptr = unsafe { libmpv_sys::mpv_get_property_string(self.handle, c_name.as_ptr()) };
-        if !ptr.is_null() {
-            let s = unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() };
-            unsafe { libmpv_sys::mpv_free(ptr as *mut _) };
-            Some(s)
-        } else {
-            None
+        match name {
+            b"time-pos" => {
+                self.time_ms = number.map(|seconds| (seconds * 1000.0) as i64).unwrap_or(0)
+            }
+            b"duration" => {
+                self.duration_ms = number.map(|seconds| (seconds * 1000.0) as i64).unwrap_or(0)
+            }
+            b"eof-reached" => self.eof = flag.unwrap_or(false),
+            b"pause" => self.paused = flag,
+            b"audio-params/channel-count" => {
+                self.channels = integer
+                    .filter(|&count| count > 0)
+                    .map(|count| count as usize)
+            }
+            b"audio-params/hr-channels" => self.layout = string(),
+            b"hwdec-current" => {
+                self.diagnostics.hwdec_current = string().unwrap_or_else(|| "no".into())
+            }
+            b"video-format" => self.diagnostics.video_codec = string().unwrap_or_default(),
+            b"dwidth" => self.diagnostics.width = integer.unwrap_or(0),
+            b"dheight" => self.diagnostics.height = integer.unwrap_or(0),
+            b"estimated-vf-fps" => self.estimated_fps = number.filter(|&fps| fps > 0.0),
+            b"container-fps" => self.container_fps = number.filter(|&fps| fps > 0.0),
+            b"vo-drop-frame-count" => self.diagnostics.dropped_frames = integer.unwrap_or(0),
+            _ => {}
         }
-    }
-
-    fn poll_event(&self) -> Option<u32> {
-        let event_ptr = unsafe { libmpv_sys::mpv_wait_event(self.handle, 0.0) };
-        if event_ptr.is_null() {
-            return None;
-        }
-        let event_id = unsafe { (*event_ptr).event_id };
-        if event_id == libmpv_sys::mpv_event_id_MPV_EVENT_NONE {
-            None
-        } else {
-            Some(event_id)
-        }
+        self.diagnostics.fps = self.estimated_fps.or(self.container_fps).unwrap_or(0.0);
     }
 }
 
@@ -222,9 +333,8 @@ pub struct MpvBackend {
     video: Option<super::gpu::VideoRenderer>,
     mpv: MpvHandle,
     status: PlaybackStatus,
-    duration_ms: i64,
-    cached_diagnostics: Mutex<super::PlayerDiagnostics>,
-    last_diag_poll: Mutex<Instant>,
+    snapshot: PlaybackSnapshot,
+    error: Option<String>,
     active_channels: Vec<super::super::task::AudioChannelItem>,
     subtitle_style: super::super::subtitles::SubtitleStyle,
     subtitle_text: String,
@@ -281,49 +391,63 @@ impl MpvBackend {
             video: None,
             mpv,
             status: PlaybackStatus::Stopped,
-            duration_ms: 0,
-            cached_diagnostics: Mutex::new(super::PlayerDiagnostics::default()),
-            last_diag_poll: Mutex::new(Instant::now() - Duration::from_secs(10)),
+            snapshot: PlaybackSnapshot::default(),
+            error: None,
             active_channels: Vec::new(),
             subtitle_style: Default::default(),
             subtitle_text: String::new(),
         })
     }
+
+    fn load(&mut self, source: &str) -> Result<(), String> {
+        self.mpv.command_async(&["loadfile", source])?;
+        // Observations only report changed values. Keep metadata and pause state
+        // across loads, or an unchanged duration/channel count/pause value would
+        // be lost when reopening the same file. New values arrive via events.
+        self.snapshot.time_ms = 0;
+        self.snapshot.eof = false;
+        self.error = None;
+        self.status = if self.snapshot.paused == Some(true) {
+            PlaybackStatus::Paused
+        } else {
+            PlaybackStatus::Playing
+        };
+        Ok(())
+    }
 }
 
 impl MediaBackend for MpvBackend {
+    fn take_error(&mut self) -> Option<String> {
+        self.error.take()
+    }
+
     fn load_local_file(&mut self, path: PathBuf) -> Result<(), String> {
-        self.mpv.command(&["loadfile", &path.to_string_lossy()])?;
-        self.status = PlaybackStatus::Playing;
-        Ok(())
+        self.load(&path.to_string_lossy())
     }
 
     fn load_stream_url(&mut self, url: String) -> Result<(), String> {
-        self.mpv.command(&["loadfile", &url])?;
-        self.status = PlaybackStatus::Playing;
-        Ok(())
+        self.load(&url)
     }
 
     fn play(&mut self) {
-        if let Some(eof) = self.mpv.get_property_bool("eof-reached") {
-            if eof {
-                let _ = self.mpv.command(&["seek", "0", "absolute"]);
-            }
-        } else if self.status == PlaybackStatus::Stopped {
-            let _ = self.mpv.command(&["seek", "0", "absolute"]);
+        if self.snapshot.eof || self.status == PlaybackStatus::Stopped {
+            let _ = self.mpv.command_async(&["seek", "0", "absolute"]);
+            self.snapshot.eof = false;
         }
+        self.snapshot.paused = Some(false);
         let _ = self.mpv.set_property_bool("pause", false);
         self.status = PlaybackStatus::Playing;
     }
 
     fn pause(&mut self) {
+        self.snapshot.paused = Some(true);
         let _ = self.mpv.set_property_bool("pause", true);
         self.status = PlaybackStatus::Paused;
     }
 
     fn stop(&mut self) {
-        let _ = self.mpv.command(&["stop"]);
-        let _ = self.mpv.command(&["show-text", "", "0", "1"]);
+        let _ = self.mpv.command_async(&["stop"]);
+        let _ = self.mpv.command_async(&["show-text", "", "0", "1"]);
         self.subtitle_text.clear();
         self.status = PlaybackStatus::Stopped;
     }
@@ -333,8 +457,12 @@ impl MediaBackend for MpvBackend {
         if was_stopped {
             let _ = self.mpv.set_property_bool("pause", true);
         }
+        self.snapshot.time_ms = ms.max(0);
+        self.snapshot.eof = false;
         let secs = (ms.max(0) as f64) / 1000.0;
-        let _ = self.mpv.command(&["seek", &secs.to_string(), "absolute"]);
+        let _ = self
+            .mpv
+            .command_async(&["seek", &secs.to_string(), "absolute"]);
         if was_stopped {
             self.status = PlaybackStatus::Paused;
         }
@@ -349,90 +477,99 @@ impl MediaBackend for MpvBackend {
     }
 
     fn get_time_ms(&self) -> i64 {
-        self.mpv
-            .get_property_f64("time-pos")
-            .map(|t| (t * 1000.0) as i64)
-            .unwrap_or(0)
+        self.snapshot.time_ms
     }
-
     fn get_duration_ms(&self) -> i64 {
-        self.duration_ms
+        self.snapshot.duration_ms
     }
-
     fn get_status(&self) -> PlaybackStatus {
         self.status
     }
-
     fn get_diagnostics(&self) -> super::PlayerDiagnostics {
-        let mut last_poll = self.last_diag_poll.lock().unwrap();
-        let now = Instant::now();
-        if now.duration_since(*last_poll) >= Duration::from_millis(250) {
-            *last_poll = now;
-            let hwdec_current = self
-                .mpv
-                .get_property_string("hwdec-current")
-                .unwrap_or_else(|| "no".to_string());
-            let video_codec = self
-                .mpv
-                .get_property_string("video-format")
-                .unwrap_or_else(|| {
-                    self.mpv
-                        .get_property_string("video-codec")
-                        .unwrap_or_default()
-                });
-            let width = self
-                .mpv
-                .get_property_i64("dwidth")
-                .unwrap_or_else(|| self.mpv.get_property_i64("video-params/w").unwrap_or(0));
-            let height = self
-                .mpv
-                .get_property_i64("dheight")
-                .unwrap_or_else(|| self.mpv.get_property_i64("video-params/h").unwrap_or(0));
-            let fps = self
-                .mpv
-                .get_property_f64("estimated-vf-fps")
-                .unwrap_or_else(|| self.mpv.get_property_f64("container-fps").unwrap_or(0.0));
-            let dropped_frames = self
-                .mpv
-                .get_property_i64("vo-drop-frame-count")
-                .unwrap_or_else(|| self.mpv.get_property_i64("drop-frame-count").unwrap_or(0));
-
-            let mut cached = self.cached_diagnostics.lock().unwrap();
-            *cached = super::PlayerDiagnostics {
-                hwdec_current,
-                video_codec,
-                width,
-                height,
-                fps,
-                dropped_frames,
-            };
-        }
-
-        self.cached_diagnostics.lock().unwrap().clone()
+        self.snapshot.diagnostics.clone()
     }
 
     fn tick(&mut self) {
+        use libmpv_sys::{
+            mpv_error_string, mpv_event_end_file,
+            mpv_event_id_MPV_EVENT_AUDIO_RECONFIG as AUDIO_RECONFIG,
+            mpv_event_id_MPV_EVENT_COMMAND_REPLY as COMMAND_REPLY,
+            mpv_event_id_MPV_EVENT_END_FILE as END_FILE,
+            mpv_event_id_MPV_EVENT_FILE_LOADED as FILE_LOADED,
+            mpv_event_id_MPV_EVENT_GET_PROPERTY_REPLY as GET_PROPERTY_REPLY,
+            mpv_event_id_MPV_EVENT_NONE as NONE,
+            mpv_event_id_MPV_EVENT_PLAYBACK_RESTART as PLAYBACK_RESTART,
+            mpv_event_id_MPV_EVENT_PROPERTY_CHANGE as PROPERTY_CHANGE,
+            mpv_event_id_MPV_EVENT_VIDEO_RECONFIG as VIDEO_RECONFIG, mpv_event_property,
+            mpv_wait_event,
+        };
         let mut end_file_event = false;
-        while let Some(event_id) = self.mpv.poll_event() {
-            if event_id == libmpv_sys::mpv_event_id_MPV_EVENT_END_FILE {
-                end_file_event = true;
-            } else if event_id == libmpv_sys::mpv_event_id_MPV_EVENT_PLAYBACK_RESTART {
-                end_file_event = false;
-                if let Some(duration) = self.mpv.get_property_f64("duration") {
-                    if duration > 0.0 {
-                        self.duration_ms = (duration * 1000.0) as i64;
+        let mut refresh = false;
+        // A bounded, non-blocking drain keeps bursts of property events from
+        // monopolizing a UI frame. mpv coalesces changes to observed properties.
+        for _ in 0..256 {
+            let event = unsafe { mpv_wait_event(self.mpv.handle, 0.0).as_ref() };
+            let Some(event) = event else { break };
+            match event.event_id {
+                NONE => break,
+                PROPERTY_CHANGE | GET_PROPERTY_REPLY if !event.data.is_null() => {
+                    unsafe {
+                        self.snapshot
+                            .update(&*(event.data as *const mpv_event_property))
+                    };
+                }
+                END_FILE => {
+                    end_file_event = true;
+                    if let Some(end) = unsafe { (event.data as *const mpv_event_end_file).as_ref() }
+                        && end.error < 0
+                    {
+                        self.error = Some(
+                            unsafe { CStr::from_ptr(mpv_error_string(end.error)) }
+                                .to_string_lossy()
+                                .into_owned(),
+                        );
                     }
                 }
-                if !self.active_channels.is_empty() {
-                    let channels = self.active_channels.clone();
-                    self.set_channel_routing(&channels);
+                FILE_LOADED => {
+                    end_file_event = false;
+                    refresh = true;
+                    self.snapshot.eof = false;
+                    self.status = if self.snapshot.paused == Some(true) {
+                        PlaybackStatus::Paused
+                    } else {
+                        PlaybackStatus::Playing
+                    };
+                    // Apply routing once per loaded file, not on PLAYBACK_RESTART:
+                    // changing audio filters can itself restart playback.
+                    if !self.active_channels.is_empty() {
+                        self.set_channel_routing(&self.active_channels.clone());
+                    }
                 }
+                PLAYBACK_RESTART => {
+                    end_file_event = false;
+                    refresh = true;
+                }
+                AUDIO_RECONFIG | VIDEO_RECONFIG => refresh = true,
+                COMMAND_REPLY if event.reply_userdata == 1 && event.error < 0 => {
+                    self.error = Some(
+                        unsafe { CStr::from_ptr(mpv_error_string(event.error)) }
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                    self.status = PlaybackStatus::Stopped;
+                }
+                _ => {}
             }
         }
-
-        let eof_reached = self.mpv.get_property_bool("eof-reached").unwrap_or(false);
-        let paused = self.mpv.get_property_bool("pause");
-        self.status = reconcile_playback_status(self.status, end_file_event, eof_reached, paused);
+        if refresh {
+            self.mpv.refresh_properties();
+        }
+        self.status = reconcile_playback_status(
+            self.status,
+            end_file_event,
+            self.snapshot.eof,
+            self.snapshot.paused,
+        );
     }
 
     #[cfg(any(windows, target_os = "linux"))]
@@ -473,7 +610,7 @@ impl MediaBackend for MpvBackend {
             let duration = if text.is_empty() { "0" } else { "2147483647" };
             if self
                 .mpv
-                .command(&["show-text", text, duration, "1"])
+                .command_async(&["show-text", text, duration, "1"])
                 .is_ok()
             {
                 self.subtitle_text = text.to_owned();
@@ -493,16 +630,10 @@ impl MediaBackend for MpvBackend {
     }
 
     fn get_audio_channel_count(&self) -> Option<usize> {
-        let count = self.mpv.get_property_i64("audio-params/channel-count")?;
-        if count > 0 {
-            Some(count as usize)
-        } else {
-            None
-        }
+        self.snapshot.channels
     }
-
     fn get_audio_layout(&self) -> Option<String> {
-        self.mpv.get_property_string("audio-params/hr-channels")
+        self.snapshot.layout.clone()
     }
 
     fn set_channel_routing(&mut self, channels: &[super::super::task::AudioChannelItem]) {

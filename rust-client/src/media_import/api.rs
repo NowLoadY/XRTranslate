@@ -73,6 +73,10 @@ pub fn import_audio_file(
                 Err(AudioImportError::Cancelled) => AudioImportOutcome::Stopped {
                     output_frames: sent_frames.load(Ordering::Acquire),
                 },
+                Err(error @ AudioImportError::OutputClosed) => {
+                    let _ = event_tx.send(AudioImportEvent::OutputClosed);
+                    return Err(error);
+                }
                 Err(error) => {
                     let _ = event_tx.send(AudioImportEvent::Error(error.to_string()));
                     return Err(error);

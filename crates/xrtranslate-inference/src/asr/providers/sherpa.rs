@@ -180,11 +180,6 @@ impl SherpaOfflineAsrAdapter {
             .await
             .map_err(|error| self.error(error))?
             .map_err(|error| self.error(error))?;
-        if text.trim().is_empty() {
-            return Err(InferenceError::EmptyOutput {
-                operation: "Sherpa offline ASR",
-            });
-        }
         Ok(AsrTranscript {
             language: language.map(str::to_owned),
             text,
