@@ -12,6 +12,12 @@ configuration UI: users select a built-in provider and one of its listed models,
 then enter the API key. There is no custom-provider action or endpoint editor.
 The settings page does not contain a second service editor.
 
+Beijing Qwen workspace keys also work with the preset DashScope endpoints;
+the workspace-specific Base URL shown by Alibaba is optional for these services.
+The `qwen` and `qwen-audio-streaming` presets use the Beijing region, while
+`qwen-intl` requires a Singapore key. See Alibaba's
+[Base URL reference](https://help.aliyun.com/zh/model-studio/base-url).
+
 ## Free-tier translation presets
 
 The following API options were checked against official documentation on
@@ -124,6 +130,7 @@ it to one of the implemented wire formats:
 | Connector | Capability | Request and result |
 | --- | --- | --- |
 | `openai-chat` | Translation | Chat-completions messages; JSON or SSE text |
+| `dashscope-translation` | Translation | Source-only user message, language options and graph-rendered domain hints; JSON or SSE text |
 | `openai-speech` | TTS | Speech JSON request; WAV audio |
 | `gemini-speech` | TTS | Interactions speech request; SSE PCM audio |
 | `openai-transcription` | ASR | WAV multipart upload; JSON transcript |
@@ -135,6 +142,10 @@ Any host implementing a format can reuse its connector. Only a new wire
 format requires adapter code. `url` is the complete endpoint; it is not
 restricted to an official vendor host. `model` is the service's exact model ID.
 Credentials remain provider settings and never enter the catalogue.
+
+DashScope HTTP ASR can return `400 / CLIENT_ERROR / ASR_RESPONSE_HAVE_NO_WORDS`
+for an empty recognition. The connector normalizes that exact response to an
+empty transcript for the shared ASR pipeline; other HTTP errors remain failures.
 
 New catalogue integrations may declare `connector` explicitly. Legacy `openai` transport
 uses the capability and endpoint path to distinguish chat from multipart ASR;

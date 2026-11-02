@@ -35,11 +35,13 @@ pub enum MeetingAudioSource {
     Microphone,
     SystemAudio,
     Both,
+    OnlineStream,
 }
 
 /// Host-owned values which the meeting UI may read but never mutate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeetingUiSnapshot {
+    pub download_proxy_url: String,
     pub default_audio_source: MeetingAudioSource,
     pub default_source_language: String,
     pub default_target_language: String,
@@ -53,6 +55,7 @@ pub struct MeetingUiSnapshot {
 impl Default for MeetingUiSnapshot {
     fn default() -> Self {
         Self {
+            download_proxy_url: String::new(),
             default_audio_source: MeetingAudioSource::Microphone,
             default_source_language: "auto".into(),
             default_target_language: "zh".into(),
@@ -72,6 +75,9 @@ pub enum MeetingInputRequest {
     },
     ImportedAudio {
         path: PathBuf,
+    },
+    OnlineAudio {
+        url: String,
     },
 }
 

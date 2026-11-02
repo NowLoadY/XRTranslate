@@ -31,6 +31,11 @@ domain. Adapters preserve rendered content and role order; they do not append
 hidden instructions or reconstruct context wrappers. Models requiring a fixed
 prompt select it through the same domain boundary.
 
+Structured translation endpoints receive the current source and language pair
+in their dedicated fields, with graph-rendered content delivered as translation
+hints. The connector changes the wire representation without composing a second
+prompt or conversation.
+
 Style selection and graph editing use one prompt library and activation path.
 Canvas layout and editor interaction remain separate from execution semantics.
 Shared editor behavior belongs to the common UI infrastructure.

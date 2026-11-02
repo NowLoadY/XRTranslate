@@ -26,6 +26,7 @@ impl XRTranslateApp {
     pub(crate) fn render_media_plugin_page(&mut self, ui: &mut egui::Ui) {
         let preprocessing_models = self.audio_preprocessing_models();
         let snapshot = plugins::media::MediaUiSnapshot {
+            download_proxy_url: self.download_proxy_url.clone(),
             language: self.ui_language,
             languages: self.language_capabilities(),
             default_preprocessing: self.service_config.default_audio_preprocessing(),
@@ -67,7 +68,7 @@ impl XRTranslateApp {
             plugins::media::MediaAction::StartTranslation { request } => {
                 use plugins::media::MediaTranslationRequest;
                 let (source, target) = match &request {
-                    MediaTranslationRequest::ImportMediaFile {
+                    MediaTranslationRequest::ImportMedia {
                         source_language,
                         target_language,
                         ..
@@ -82,7 +83,7 @@ impl XRTranslateApp {
                     return;
                 };
                 let recognition = match &request {
-                    MediaTranslationRequest::ImportMediaFile { recognition, .. }
+                    MediaTranslationRequest::ImportMedia { recognition, .. }
                     | MediaTranslationRequest::LiveStream { recognition, .. } => recognition,
                 };
                 if !self.audio_preprocessing_ready(recognition.preprocessing) {
@@ -95,8 +96,8 @@ impl XRTranslateApp {
                 self.stop_plugin_task(PluginId::MEDIA);
                 let previous_recognition = self.loopback_recognition.clone();
                 let input = match request {
-                    MediaTranslationRequest::ImportMediaFile {
-                        path,
+                    MediaTranslationRequest::ImportMedia {
+                        source: media_source,
                         audio_track,
                         mut recognition,
                         audio_channels,
@@ -121,18 +122,31 @@ impl XRTranslateApp {
                         // File quality uses native delivery: complete utterances for
                         // non-streaming ASR, native streaming where supported.
                         recognition.continuous_recognition = false;
-                        TranslationInput::File {
-                            path,
-                            recognition,
-                            options: media_import::AudioImportOptions {
-                                audio_track,
-                                recognition_channels: audio_channels
-                                    .iter()
-                                    .filter(|channel| channel.recognition)
-                                    .map(|channel| channel.index)
-                                    .collect(),
-                                ..media_import::AudioImportOptions::for_recognition(preprocessing)
-                            },
+                        let options = media_import::AudioImportOptions {
+                            audio_track,
+                            recognition_channels: audio_channels
+                                .iter()
+                                .filter(|channel| channel.recognition)
+                                .map(|channel| channel.index)
+                                .collect(),
+                            ..media_import::AudioImportOptions::for_recognition(preprocessing)
+                        };
+                        match media_source {
+                            plugins::media::backend::MediaSource::LocalFile(path) => {
+                                TranslationInput::File {
+                                    path,
+                                    recognition,
+                                    options,
+                                }
+                            }
+                            plugins::media::backend::MediaSource::OnlineFile(url) => {
+                                TranslationInput::OnlineAudio {
+                                    url,
+                                    recognition,
+                                    options,
+                                }
+                            }
+                            plugins::media::backend::MediaSource::NetworkStream(_) => return,
                         }
                     }
                     MediaTranslationRequest::LiveStream { recognition, .. } => {

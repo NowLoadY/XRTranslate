@@ -3,7 +3,9 @@ use super::{
     presentation::{capture_label, page_header},
 };
 use crate::plugins::meeting::{
-    MeetingAudioSource, MeetingUiSnapshot, controller::MeetingController, i18n::tr,
+    MeetingAudioSource, MeetingUiSnapshot,
+    controller::{MeetingController, MeetingInputMode},
+    i18n::tr,
 };
 use crate::ui::components;
 use eframe::egui;
@@ -21,10 +23,9 @@ pub(super) fn render_setup(
     );
     page_header(
         ui,
-        if controller.draft.import_audio {
-            "Import audio"
-        } else {
-            "New live meeting"
+        match controller.draft.mode {
+            MeetingInputMode::File => "Import audio",
+            MeetingInputMode::Live => "New live meeting",
         },
         language,
         |ui| {
@@ -61,7 +62,7 @@ pub(super) fn render_setup(
 
                 ui.add_space(14.0);
 
-                if controller.draft.import_audio {
+                if controller.draft.mode == MeetingInputMode::File {
                     ui.label(
                         egui::RichText::new(tr(language, "Audio File"))
                             .strong()
@@ -98,16 +99,28 @@ pub(super) fn render_setup(
                     ui.add_space(4.0);
 
                     let system_audio = crate::audio::AudioSystem::supports_system_audio();
-                    if !system_audio {
+                    if !system_audio
+                        && matches!(
+                            controller.draft.capture_source,
+                            MeetingAudioSource::SystemAudio | MeetingAudioSource::Both
+                        )
+                    {
                         controller.draft.capture_source = MeetingAudioSource::Microphone;
                     }
                     let capture_options = [
                         MeetingAudioSource::Microphone,
                         MeetingAudioSource::SystemAudio,
                         MeetingAudioSource::Both,
+                        MeetingAudioSource::OnlineStream,
                     ]
                     .into_iter()
-                    .filter(|source| system_audio || *source == MeetingAudioSource::Microphone)
+                    .filter(|source| {
+                        system_audio
+                            || matches!(
+                                source,
+                                MeetingAudioSource::Microphone | MeetingAudioSource::OnlineStream
+                            )
+                    })
                     .map(|source| (source, capture_label(source, language).to_owned()))
                     .collect::<Vec<_>>();
                     components::searchable_combobox(
@@ -119,10 +132,14 @@ pub(super) fn render_setup(
                     );
 
                     ui.add_space(8.0);
-                    ui.checkbox(
-                        &mut controller.draft.save_recording,
-                        tr(language, "Keep the recording"),
-                    );
+                    if controller.draft.capture_source == MeetingAudioSource::OnlineStream {
+                        render_podcast(controller, snapshot, ui);
+                    } else {
+                        ui.checkbox(
+                            &mut controller.draft.save_recording,
+                            tr(language, "Keep the recording"),
+                        );
+                    }
                 }
 
                 ui.add_space(14.0);
@@ -150,7 +167,7 @@ pub(super) fn render_setup(
                     ui,
                     tr(
                         language,
-                        if controller.draft.import_audio {
+                        if controller.draft.mode != MeetingInputMode::Live {
                             "Create and process"
                         } else {
                             "Start meeting"
@@ -166,4 +183,33 @@ pub(super) fn render_setup(
         });
 
     action
+}
+
+fn render_podcast(
+    controller: &mut MeetingController,
+    snapshot: &MeetingUiSnapshot,
+    ui: &mut egui::Ui,
+) {
+    let language = snapshot.language;
+    ui.label(tr(language, "Stream URL or RSS feed"));
+    if components::input_field(ui, &mut controller.podcast.url, "https://…").changed() {
+        controller.podcast.invalidate();
+        controller.error = None;
+    }
+    match controller
+        .podcast
+        .render_selection(ui, language, &snapshot.download_proxy_url)
+    {
+        Ok(true) => {
+            controller.error = None;
+            if let Some(episode) = controller.podcast.selected_episode() {
+                controller.draft.name = episode.title.clone();
+            }
+        }
+        Err(error) => controller.error = Some(error),
+        _ => {}
+    }
+    if let Some(error) = &controller.error {
+        components::error_notice(ui, language, tr(language, error));
+    }
 }

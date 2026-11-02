@@ -453,6 +453,7 @@ impl TextTranslation {
                                     .text_audio_source()
                                     .unwrap_or(CaptureSource::Microphone),
                                 finish_when_audio_ends: false,
+                                workload: xrtranslate_protocol::InferenceWorkload::Realtime,
                                 prompt_graphs: Some(graphs.clone()),
                             },
                         );

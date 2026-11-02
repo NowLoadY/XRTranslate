@@ -9,32 +9,32 @@ pub(super) fn render(
     language: crate::i18n::UiLanguage,
     ui: &mut egui::Ui,
 ) {
+    let overlay = controller.fullscreen_mode;
     let label = tr(language, "Subtitle style");
-    let tint = if controller.fullscreen_mode {
+    let tint = if overlay {
         egui::Color32::WHITE
     } else {
         theme::text_strong()
     };
     let response = ui.add_sized([18.0, 36.0], egui::Button::new("").frame(false));
     let response =
-        crate::ui::automation::button_response(ui, response.id, label, ui.is_enabled(), response)
-            .on_hover_text(label);
+        crate::ui::automation::button_response(ui, response.id, label, ui.is_enabled(), response);
+    let response = components::playback_tooltip(response, label, overlay);
     let center = response.rect.center();
+    let arrow_y = if overlay { -1.5 } else { 1.5 };
     ui.painter().add(egui::Shape::line(
         vec![
-            center + egui::vec2(-3.0, 1.5),
-            center + egui::vec2(0.0, -1.5),
-            center + egui::vec2(3.0, 1.5),
+            center + egui::vec2(-3.0, arrow_y),
+            center + egui::vec2(0.0, -arrow_y),
+            center + egui::vec2(3.0, arrow_y),
         ],
         egui::Stroke::new(1.2, tint),
     ));
     let mut changed = false;
-    egui::Popup::from_toggle_button_response(&response)
-        .align(egui::RectAlign::TOP_END)
+    components::playback_popup(&response, overlay)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             ui.set_width(180.0);
-            ui.visuals_mut().override_text_color = Some(theme::text_strong());
             let Some(task) = controller
                 .active_task_id
                 .as_deref()
@@ -62,41 +62,50 @@ pub(super) fn render(
                         }))
                         .min_size(egui::vec2(86.0, 36.0)),
                     );
-                    if crate::ui::automation::button_response(
+                    let button = crate::ui::automation::button_response(
                         ui,
                         button.id,
                         tr(language, hint),
                         enabled,
                         button,
-                    )
-                    .on_hover_text(tr(language, hint))
-                    .clicked()
-                    {
+                    );
+                    if components::playback_tooltip(button, tr(language, hint), overlay).clicked() {
                         style.size = (style.size + delta).clamp(12.0, 72.0);
                         changed = true;
                     }
                 }
             });
-            ui.horizontal(|ui| {
-                ui.label(tr(language, "Text color"));
-                let [r, g, b] = style.color;
-                let mut color = egui::Color32::from_rgb(r, g, b);
-                let swatch = ui.add(
-                    egui::Button::new("")
-                        .fill(color)
-                        .min_size(egui::vec2(40.0, 18.0)),
-                );
-                egui::containers::menu::SubMenu::new().show(ui, &swatch, |ui| {
-                    ui.spacing_mut().slider_width = 220.0;
-                    if egui::color_picker::color_picker_color32(
-                        ui,
-                        &mut color,
-                        egui::color_picker::Alpha::Opaque,
-                    ) {
-                        style.color = [color.r(), color.g(), color.b()];
-                        changed = true;
-                    }
-                });
+            let [r, g, b] = style.color;
+            let mut color = egui::Color32::from_rgb(r, g, b);
+            let color_row = ui
+                .horizontal(|ui| {
+                    ui.label(tr(language, "Text color"));
+                    ui.add(
+                        egui::Button::new("")
+                            .fill(color)
+                            .sense(egui::Sense::hover())
+                            .min_size(egui::vec2(40.0, 18.0)),
+                    );
+                })
+                .response
+                .interact(egui::Sense::click());
+            let color_row = crate::ui::automation::button_response(
+                ui,
+                color_row.id,
+                tr(language, "Text color"),
+                ui.is_enabled(),
+                color_row,
+            );
+            egui::containers::menu::SubMenu::new().show(ui, &color_row, |ui| {
+                ui.spacing_mut().slider_width = 220.0;
+                if egui::color_picker::color_picker_color32(
+                    ui,
+                    &mut color,
+                    egui::color_picker::Alpha::Opaque,
+                ) {
+                    style.color = [color.r(), color.g(), color.b()];
+                    changed = true;
+                }
             });
             ui.menu_button(format!("{}: {}", tr(language, "Font"), style.font), |ui| {
                 ui.set_width(230.0);

@@ -966,7 +966,7 @@ pub struct AsrConfig {
     /// Duration after which a shorter micro-pause may close the utterance.
     #[serde(default = "default_vad_adaptive_after_ms")]
     pub vad_adaptive_after_ms: u32,
-    /// Micro-pause accepted after `vad_adaptive_after_ms`.
+    /// Minimum pause approached between `vad_adaptive_after_ms` and the utterance limit.
     #[serde(default = "default_vad_adaptive_silence_ms")]
     pub vad_adaptive_silence_ms: u32,
     /// Hard limit for speech with no usable pause.

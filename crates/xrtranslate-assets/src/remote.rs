@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 #[serde(rename_all = "kebab-case")]
 pub enum RemoteConnector {
     OpenaiChat,
+    DashscopeTranslation,
     ChatgptResponses,
     OpenaiSpeech,
     GeminiSpeech,
@@ -33,7 +34,9 @@ pub use xrtranslate_connections::AccountProvider;
 impl RemoteConnector {
     pub fn capability(self) -> ModelCapability {
         match self {
-            Self::OpenaiChat | Self::ChatgptResponses => ModelCapability::Translation,
+            Self::OpenaiChat | Self::DashscopeTranslation | Self::ChatgptResponses => {
+                ModelCapability::Translation
+            }
             Self::OpenaiSpeech | Self::GeminiSpeech => ModelCapability::Tts,
             _ => ModelCapability::Asr,
         }
@@ -42,6 +45,7 @@ impl RemoteConnector {
     pub fn transport(self) -> &'static str {
         match self {
             Self::OpenaiChat
+            | Self::DashscopeTranslation
             | Self::ChatgptResponses
             | Self::OpenaiTranscription
             | Self::OpenaiAudioChat

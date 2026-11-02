@@ -30,8 +30,6 @@ pub const FRAME_BYTES: usize = FRAME_SAMPLES * std::mem::size_of::<i16>();
 
 const CONTEXT_SAMPLES: usize = 64;
 const STATE_SHAPE: [usize; 3] = [2, 1, 128];
-const MIN_DYNAMIC_SILENCE_FRAMES: usize = 2; // 64 ms at 16 kHz / 512 samples.
-const DYNAMIC_SILENCE_CALIBRATION_PERCENT: usize = 85;
 
 /// Errors from PCM validation, endpoint configuration, and ONNX inference.
 #[derive(Debug)]
@@ -306,12 +304,9 @@ pub struct EndpointConfig {
     pub speech_threshold: f32,
     /// Consecutive non-speech frames that finish an active utterance.
     pub silence_frames_to_finalize: usize,
-    /// Calibration duration for dynamic endpointing. By roughly this point,
-    /// long utterances accept a shorter natural pause.
+    /// Duration before long utterances begin accepting shorter pauses.
     pub adaptive_silence_after_frames: usize,
-    /// Preferred long-utterance pause near
-    /// [`Self::adaptive_silence_after_frames`]. Longer speech keeps shrinking
-    /// the required pause down to the fixed 64 ms lower bound.
+    /// Minimum pause approached as speech reaches [`Self::max_active_frames`].
     pub adaptive_silence_frames_to_finalize: usize,
     /// Number of previous non-speech frames copied before a speech start.
     pub pre_roll_frames: usize,
@@ -340,7 +335,7 @@ impl Default for EndpointConfig {
             speech_threshold: 0.5,
             // 512 samples at 16 kHz is 32 ms; 16 frames is roughly 512 ms.
             silence_frames_to_finalize: 16,
-            // After ~4 seconds, accept a ~128 ms micro-pause.
+            // After ~4 seconds, gradually shorten pauses toward ~128 ms.
             adaptive_silence_after_frames: 125,
             adaptive_silence_frames_to_finalize: 4,
             // Preserve the ~320 ms pre-roll used by the prior Qwen3 path.
@@ -398,30 +393,17 @@ impl EndpointConfig {
     }
 
     fn silence_frames_to_finalize_for(self, active_frames: usize) -> usize {
-        let ordinary = self.silence_frames_to_finalize;
-        if ordinary <= MIN_DYNAMIC_SILENCE_FRAMES {
-            return ordinary;
-        }
-        let preferred = self
-            .adaptive_silence_frames_to_finalize
-            .max(MIN_DYNAMIC_SILENCE_FRAMES)
-            .min(ordinary);
-        let preferred_drop = ordinary.saturating_sub(preferred);
-        if preferred_drop == 0 {
-            return ordinary;
-        }
-        let calibration_frames = self
-            .adaptive_silence_after_frames
-            .saturating_mul(DYNAMIC_SILENCE_CALIBRATION_PERCENT)
-            .div_ceil(100)
+        let ramp_frames = self
+            .max_active_frames
+            .saturating_sub(self.adaptive_silence_after_frames)
             .max(1);
-        let maximum_drop = ordinary - MIN_DYNAMIC_SILENCE_FRAMES;
-        let drop = preferred_drop
-            .saturating_mul(active_frames)
-            .checked_div(calibration_frames)
-            .unwrap_or(maximum_drop)
-            .min(maximum_drop);
-        (ordinary - drop).max(MIN_DYNAMIC_SILENCE_FRAMES)
+        let elapsed = active_frames
+            .saturating_sub(self.adaptive_silence_after_frames)
+            .min(ramp_frames);
+        let drop = (self.silence_frames_to_finalize - self.adaptive_silence_frames_to_finalize)
+            .saturating_mul(elapsed)
+            / ramp_frames;
+        self.silence_frames_to_finalize - drop
     }
 }
 
@@ -588,21 +570,18 @@ impl EndpointDetector {
                     active.trailing_silence_frames += 1;
                 }
 
-                if !is_speech {
-                    let silence_frames_to_finalize = self
-                        .config
-                        .silence_frames_to_finalize_for(active.active_frames);
-                    if active.trailing_silence_frames >= silence_frames_to_finalize {
-                        Some(
-                            if silence_frames_to_finalize < self.config.silence_frames_to_finalize {
-                                UtteranceEndReason::AdaptiveSilence
-                            } else {
-                                UtteranceEndReason::Silence
-                            },
-                        )
-                    } else {
-                        None
-                    }
+                // Keep the pause threshold fixed while waiting for speech to resume.
+                let silence_frames_to_finalize = self.config.silence_frames_to_finalize_for(
+                    active.active_frames - active.trailing_silence_frames,
+                );
+                if active.trailing_silence_frames >= silence_frames_to_finalize {
+                    Some(
+                        if silence_frames_to_finalize < self.config.silence_frames_to_finalize {
+                            UtteranceEndReason::AdaptiveSilence
+                        } else {
+                            UtteranceEndReason::Silence
+                        },
+                    )
                 } else if active.active_frames >= self.config.max_active_frames {
                     Some(UtteranceEndReason::MaxActiveFrames)
                 } else {

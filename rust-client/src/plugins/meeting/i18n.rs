@@ -22,6 +22,48 @@ pub fn tr<'a>(language: UiLanguage, english: &'a str) -> &'a str {
 
 const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     (
+        "Cannot determine whether this source is live",
+        "无法确认此音源是否为直播，请使用带直播标记的 RSS 或直播流地址",
+        "ライブ音声か確認できません",
+        "라이브 음원인지 확인할 수 없습니다",
+        "Не удалось определить, идёт ли прямой эфир",
+    ),
+    (
+        "Online stream / RSS",
+        "网络直播 / RSS",
+        "ライブ配信 / RSS",
+        "라이브 스트림 / RSS",
+        "Онлайн-трансляция / RSS",
+    ),
+    (
+        "Stream URL or RSS feed",
+        "直播音源链接或 RSS 地址",
+        "配信URLまたはRSS",
+        "스트림 URL 또는 RSS 피드",
+        "URL трансляции или RSS",
+    ),
+    (
+        "Recorded episodes are not supported here",
+        "此处不支持录播单集",
+        "ここでは録画エピソードは非対応です",
+        "여기서는 녹화된 에피소드를 지원하지 않습니다",
+        "Записанные эпизоды здесь не поддерживаются",
+    ),
+    (
+        "This stream is not live",
+        "此节目尚未开播或已经结束",
+        "この配信はライブ中ではありません",
+        "현재 라이브 중이 아닙니다",
+        "Трансляция сейчас не идёт",
+    ),
+    (
+        "Load a stream URL or RSS feed and select live audio",
+        "请加载直播链接或 RSS，并选择直播音源",
+        "配信URLまたはRSSを読み込み、ライブ音声を選択してください",
+        "스트림 URL 또는 RSS를 불러오고 라이브 오디오를 선택하세요",
+        "Загрузите URL или RSS и выберите прямой эфир",
+    ),
+    (
         "Play recording",
         "播放录音",
         "録音を再生",

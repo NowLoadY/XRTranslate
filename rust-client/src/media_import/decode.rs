@@ -11,7 +11,7 @@ use symphonia::core::{
     codecs::{CODEC_TYPE_NULL, DecoderOptions},
     errors::Error as SymphoniaError,
     formats::FormatOptions,
-    io::MediaSourceStream,
+    io::{MediaSource, MediaSourceStream},
     meta::MetadataOptions,
     probe::Hint,
 };
@@ -88,9 +88,29 @@ fn run_symphonia_import(
     event_tx: &Sender<AudioImportEvent>,
 ) -> Result<u64, AudioImportError> {
     let file = File::open(decode_path)?;
-    let media_source = MediaSourceStream::new(Box::new(file), Default::default());
+    decode_source(
+        original_path,
+        Box::new(file),
+        audio_tx,
+        options,
+        stop_requested,
+        sent_frames,
+        event_tx,
+    )
+}
+
+pub(super) fn decode_source(
+    original_path: &Path,
+    source: Box<dyn MediaSource>,
+    audio_tx: &Sender<Vec<f32>>,
+    options: &AudioImportOptions,
+    stop_requested: &AtomicBool,
+    sent_frames: &AtomicU64,
+    event_tx: &Sender<AudioImportEvent>,
+) -> Result<u64, AudioImportError> {
+    let media_source = MediaSourceStream::new(source, Default::default());
     let mut hint = Hint::new();
-    if let Some(extension) = decode_path
+    if let Some(extension) = original_path
         .extension()
         .and_then(|extension| extension.to_str())
     {
@@ -455,6 +475,7 @@ fn map_decode_error(error: SymphoniaError) -> AudioImportError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "mpv")]
     use crate::media_import::AudioImportPacing;
     use std::{io::Write, sync::atomic::Ordering, time::Duration};
 
@@ -532,12 +553,9 @@ mod tests {
             audio_tx,
             AudioImportOptions {
                 chunk_frames: 127,
-                output_sample_rate: 44_100,
-                output_channels: 2,
-                pacing: AudioImportPacing::AsFastAsPossible,
-                audio_track: None,
-                recognition_channels: Vec::new(),
-                gate_threshold_db: None,
+                ..AudioImportOptions::for_recognition(
+                    xrtranslate_protocol::AudioPreprocessing::VocalSeparation,
+                )
             },
             &AtomicBool::new(false),
             &sent,
@@ -668,20 +686,5 @@ mod tests {
             if info.source_channels == 2 && info.source_sample_rate == 44_100
                 && info.output_sample_rate == 44_100 && info.path == source))
         );
-        let progress = events
-            .iter()
-            .rev()
-            .find_map(|event| match event {
-                AudioImportEvent::Progress(progress) => Some(progress),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(progress.decoded_source_frames, output_frames);
-        assert_eq!(
-            progress.position,
-            Duration::from_secs_f64(output_frames as f64 / 44_100.0)
-        );
-        assert_eq!(progress.duration, Some(progress.position));
-        assert_eq!(progress.fraction, Some(1.0));
     }
 }

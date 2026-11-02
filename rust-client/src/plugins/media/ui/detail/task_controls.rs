@@ -35,11 +35,6 @@ pub(super) fn render_task_control_card(
                 .is_some_and(|text| !text.trim().is_empty())
         })
         .count();
-    let audio_tracks = controller
-        .backend
-        .as_ref()
-        .map(|backend| backend.audio_tracks().to_vec())
-        .unwrap_or_default();
     let Some(task) = controller.store.get_mut(&id) else {
         return MediaAction::None;
     };
@@ -48,7 +43,10 @@ pub(super) fn render_task_control_card(
             .audio_channels
             .iter()
             .any(|channel| channel.recognition);
-    let local_file = matches!(task.source, MediaSource::LocalFile(_));
+    let local_file = matches!(
+        task.source,
+        MediaSource::LocalFile(_) | MediaSource::OnlineFile(_)
+    );
     let preprocessing = task
         .recognition
         .preprocessing
@@ -60,7 +58,6 @@ pub(super) fn render_task_control_card(
     let mut changed = false;
     let mut language_changed = false;
     let mut routing = false;
-    let mut track_changed = false;
     let mut preprocessing_action = None;
     components::card(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -74,12 +71,6 @@ pub(super) fn render_task_control_card(
                 language,
             );
         });
-        if !subtitles && local_file {
-            ui.add_space(10.0);
-            ui.add_enabled_ui(!task.is_task_running, |ui| {
-                track_changed = super::audio_tracks::selector(ui, task, &audio_tracks, language);
-            });
-        }
         if !subtitles {
             ui.add_enabled_ui(!task.is_task_running, |ui| {
                 let response = components::audio_preprocessing_selector(
@@ -279,20 +270,24 @@ pub(super) fn render_task_control_card(
     });
     let request = if (start || restart) && !subtitles {
         Some(match &task.source {
-            MediaSource::LocalFile(path) => MediaTranslationRequest::ImportMediaFile {
-                path: match task.selected_audio() {
-                    super::super::super::backend::PlaybackAudio::External(path) => path,
-                    _ => path.clone(),
-                },
-                audio_track: (task.audio_track
-                    == super::super::super::task::AudioTrackSelection::Original)
-                    .then_some(task.original_audio_track)
-                    .flatten(),
-                source_language: task.source_language.clone(),
-                target_language: task.target_language.clone(),
-                recognition: task.recognition.clone(),
-                audio_channels: task.audio_channels.clone(),
-            },
+            MediaSource::LocalFile(_) | MediaSource::OnlineFile(_) => {
+                MediaTranslationRequest::ImportMedia {
+                    source: match task.selected_audio() {
+                        super::super::super::backend::PlaybackAudio::External(path) => {
+                            MediaSource::LocalFile(path)
+                        }
+                        _ => task.source.clone(),
+                    },
+                    audio_track: (task.audio_track
+                        == super::super::super::task::AudioTrackSelection::Original)
+                        .then_some(task.original_audio_track)
+                        .flatten(),
+                    source_language: task.source_language.clone(),
+                    target_language: task.target_language.clone(),
+                    recognition: task.recognition.clone(),
+                    audio_channels: task.audio_channels.clone(),
+                }
+            }
             MediaSource::NetworkStream(_) => MediaTranslationRequest::LiveStream {
                 source_language: task.source_language.clone(),
                 target_language: task.target_language.clone(),
@@ -303,9 +298,6 @@ pub(super) fn render_task_control_card(
     } else {
         None
     };
-    if track_changed {
-        controller.apply_audio_selection();
-    }
     if routing {
         controller.apply_channel_routing();
     }

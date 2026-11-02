@@ -73,6 +73,12 @@ own resource requirements.
 
 ## Shared ASR audio admission
 
+The shared VAD preserves the configured pause tolerance for short utterances.
+After the adaptive duration, it gradually shortens the pause toward the
+configured minimum at the utterance limit. Waiting in silence does not lower
+that threshold further. The duration limit applies during both speech and
+silence; native streaming and completed-window recognition use the same rules.
+
 `backend/pipeline/audio.rs` owns aligned raw/enhanced buffering and bounded VAD
 evidence for every connector. Empty enhancer output means pending input; an
 enhancer failure switches all unprocessed audio to aligned raw bypass. Draining

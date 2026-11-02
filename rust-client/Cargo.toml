@@ -27,6 +27,7 @@ log = "0.4.33"
 mdns-sd = "0.21.5"
 parking_lot = "0.12.5"
 reqwest = { version = "0.13.4", features = ["json", "socks"] }
+roxmltree = "0.21.2"
 rubato = "4.0.0"
 audioadapter-buffers = "4.0.0"
 rosc = "0.11.4"

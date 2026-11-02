@@ -18,6 +18,7 @@ use std::path::PathBuf;
 pub enum MediaSource {
     LocalFile(PathBuf),
     NetworkStream(String),
+    OnlineFile(String),
 }
 
 pub use crate::audio_playback::PlaybackStatus;

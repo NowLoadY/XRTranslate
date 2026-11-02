@@ -32,6 +32,7 @@ pub(super) struct SubtitleEdit {
 }
 
 pub struct MediaController {
+    pub(super) podcast: crate::ui::online_audio::PodcastBrowser,
     pub route: MediaRoute,
     pub store: MediaTaskStore,
     pub storage_dir: PathBuf,
@@ -106,6 +107,7 @@ impl Default for MediaController {
             };
 
         Self {
+            podcast: Default::default(),
             route: MediaRoute::Library,
             store,
             storage_dir,
@@ -180,6 +182,7 @@ impl MediaController {
     }
 
     pub fn open_library(&mut self) {
+        self.podcast.invalidate();
         self.subtitle_edit = None;
         if let Some(backend) = &mut self.backend {
             backend.stop();
@@ -194,6 +197,7 @@ impl MediaController {
     }
 
     pub fn open_create(&mut self) {
+        self.podcast = Default::default();
         self.subtitle_edit = None;
         if let Some(backend) = &mut self.backend {
             backend.stop();
@@ -219,38 +223,43 @@ impl MediaController {
         if input.is_empty() {
             return Err("Please enter a media stream URL or select a local file".into());
         }
+        if input.starts_with("rtsp://") || input.starts_with("rtmp://") {
+            return Err("Only HTTP and HTTPS media links are supported here".into());
+        }
 
-        let (source, default_title, media_type) = if input.starts_with("http://")
-            || input.starts_with("https://")
-            || input.starts_with("rtsp://")
-            || input.starts_with("rtmp://")
-        {
-            let title = input
-                .split('?')
-                .next()
-                .unwrap_or(input)
-                .split('/')
-                .next_back()
-                .filter(|s| !s.is_empty())
-                .unwrap_or("Network Stream")
-                .to_string();
-            (
-                MediaSource::NetworkStream(input.to_string()),
-                title,
-                super::task::MediaType::Video,
-            )
-        } else {
-            let path = PathBuf::from(input);
-            if !path.is_file() {
-                return Err("Local media file does not exist or URL is invalid".into());
-            }
-            let title = path
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "Local Media".into());
-            let media_type = super::task::detect_media_type(&path);
-            (MediaSource::LocalFile(path), title, media_type)
-        };
+        let (source, default_title, media_type) =
+            if input.starts_with("http://") || input.starts_with("https://") {
+                let episode = self
+                    .podcast
+                    .selected_episode()
+                    .ok_or("Load the link and select a recorded episode first")?;
+                if episode.kind == crate::media_import::podcast::AudioKind::Unknown {
+                    return Err("Cannot determine whether this source is recorded".into());
+                }
+                if episode.kind != crate::media_import::podcast::AudioKind::Recorded {
+                    return Err("Live streams are not supported here".into());
+                }
+                (
+                    MediaSource::OnlineFile(episode.audio_url.clone()),
+                    episode.title.clone(),
+                    if episode.video {
+                        super::task::MediaType::Video
+                    } else {
+                        super::task::MediaType::AudioOnly
+                    },
+                )
+            } else {
+                let path = PathBuf::from(input);
+                if !path.is_file() {
+                    return Err("Local media file does not exist or URL is invalid".into());
+                }
+                let title = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Local Media".into());
+                let media_type = super::task::detect_media_type(&path);
+                (MediaSource::LocalFile(path), title, media_type)
+            };
 
         let title = if self.draft_title.trim().is_empty() {
             default_title
@@ -337,7 +346,9 @@ impl MediaController {
             );
             let loaded = match &task.source {
                 MediaSource::LocalFile(path) => backend.load_local_file(path.clone()),
-                MediaSource::NetworkStream(url) => backend.load_stream_url(url.clone()),
+                MediaSource::NetworkStream(url) | MediaSource::OnlineFile(url) => {
+                    backend.load_stream_url(url.clone())
+                }
             };
             match loaded {
                 Ok(()) => self.playback_loaded = true,
@@ -725,7 +736,7 @@ impl MediaController {
                         MediaSource::LocalFile(p) => {
                             let _ = backend.load_local_file(p.clone());
                         }
-                        MediaSource::NetworkStream(u) => {
+                        MediaSource::NetworkStream(u) | MediaSource::OnlineFile(u) => {
                             let _ = backend.load_stream_url(u.clone());
                         }
                     }

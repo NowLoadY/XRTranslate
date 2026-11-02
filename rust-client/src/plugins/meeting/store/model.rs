@@ -134,6 +134,16 @@ pub struct NewMeeting {
 }
 
 impl NewMeeting {
+    /// Online streams use the live lifecycle; URLs never become local audio paths.
+    pub fn live_stream(
+        name: impl Into<String>,
+        url: impl Into<String>,
+        source_language: impl Into<String>,
+        target_language: impl Into<String>,
+    ) -> Self {
+        Self::live(name, Some(url.into()), source_language, target_language)
+    }
+
     pub fn live(
         name: impl Into<String>,
         input_source: Option<String>,

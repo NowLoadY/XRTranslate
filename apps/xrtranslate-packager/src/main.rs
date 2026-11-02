@@ -759,11 +759,6 @@ fn copy_model_packages(staging: &Path, assets: &ResolvedModelAssets) -> Result<(
 
 fn verify_staged_release(staging: &Path) -> Result<(), PackageError> {
     verify_file_size(
-        "bundled noise suppression model",
-        &staging.join(DENOISE_RELATIVE_PATH),
-        RuntimeLayout::DENOISE_MODEL_BYTES,
-    )?;
-    verify_file_size(
         "noise suppression license",
         &staging.join("models/gtcrn/LICENSE"),
         1_069,
@@ -774,6 +769,7 @@ fn verify_staged_release(staging: &Path) -> Result<(), PackageError> {
         "runtime/recordings",
         "runtime/user-config.json",
         "runtime/rust-client-settings.json",
+        "runtime/accounts",
     ] {
         if staging.join(private).exists() {
             return Err(PackageError::InvalidInput(format!(
@@ -795,12 +791,16 @@ fn verify_staged_release(staging: &Path) -> Result<(), PackageError> {
         }
     }
     ensure_directory_is_native("staged release", staging)?;
-    for required in ["LICENSE", CORPUS_SEED_PATH] {
-        if !staging.join(required).exists() {
-            return Err(PackageError::InvalidInput(format!(
-                "staged release is missing required corpus asset {required}"
-            )));
-        }
+    for required in [
+        "LICENSE",
+        "config.json",
+        CORPUS_SEED_PATH,
+        "resources/branding/xrtranslate-logo.png",
+        "resources/plugins/vr_overlay/input/actions.json",
+        ONNX_LICENSE_RELATIVE_PATH,
+        ONNX_NOTICES_RELATIVE_PATH,
+    ] {
+        require_regular_file("release asset", &staging.join(required))?;
     }
     let manifest_path = staging.join("release-manifest.json");
     let manifest: Value =
@@ -817,6 +817,30 @@ fn verify_staged_release(staging: &Path) -> Result<(), PackageError> {
         return Err(PackageError::InvalidInput(
             "staged release manifest must set python to false".into(),
         ));
+    }
+    for path in manifest["entrypoints"].as_object().unwrap().values() {
+        require_regular_file("release executable", &staging.join(path.as_str().unwrap()))?;
+    }
+    for asset in [
+        &manifest["vad_model"],
+        &manifest["speaker_model"],
+        &manifest["denoise_model"],
+        &manifest["runtime"]["onnx_cpu"],
+    ] {
+        verify_file_size(
+            "release model or runtime",
+            &staging.join(asset["path"].as_str().unwrap()),
+            asset["bytes"].as_u64().unwrap(),
+        )?;
+    }
+    for file in manifest["runtime"]["msvc"]["files"].as_array().unwrap() {
+        for path in file["paths"].as_array().unwrap() {
+            verify_file_size(
+                "release C++ runtime",
+                &staging.join(path.as_str().unwrap()),
+                file["bytes"].as_u64().unwrap(),
+            )?;
+        }
     }
     Ok(())
 }

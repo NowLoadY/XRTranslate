@@ -169,7 +169,8 @@ fn playback_controls(
     ))
     .size(12.0);
     let width = ui.available_width();
-    if width < 360.0 {
+    let compact = width < 440.0;
+    if compact {
         ui.label(time.clone());
     }
     let response = playback_slider(
@@ -232,11 +233,11 @@ fn playback_controls(
             }
         }
         // Keep essential controls on one row, including on narrow screens.
-        if width >= 360.0 {
+        if !compact {
             ui.label(time);
         }
-        if controller.can_show_video() {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if controller.can_show_video() {
                 if playback_button(
                     ui,
                     tr(
@@ -278,8 +279,9 @@ fn playback_controls(
                 if response.clicked() {
                     controller.show_subtitles = !controller.show_subtitles;
                 }
-            });
-        }
+            }
+            super::audio_tracks::render(controller, language, ui);
+        });
     });
 }
 

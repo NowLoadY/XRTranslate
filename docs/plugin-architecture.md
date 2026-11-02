@@ -100,6 +100,16 @@ use a short, limited wait for nearby statements; imported recordings proceed at 
 available processing speed. Ending a meeting finishes accepted translations before
 marking it complete. Meeting context remains separate from live translation.
 
+Online inputs keep the same plugin boundaries. Meeting setup accepts live audio
+and RSS live items; the media import page accepts recorded episodes and finite
+online media. Each page owns its selection and rejects unsupported content in
+place. There is no shared entry page or automatic plugin routing. RSS discovery,
+HTTP range reads and streaming decoding live in `media_import`, independently of
+either plugin. Online recordings use the existing media subtitle job; online
+meetings use the existing meeting recognition and translation jobs. Input EOF
+completion is independent of inference priority, so a live network source can
+drain cleanly without becoming offline work. See [online audio](online-audio.md).
+
 ## Registration and lifecycle
 
 `PluginDescriptor` declares identity, navigation, settings contribution, and

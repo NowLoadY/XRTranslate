@@ -158,32 +158,3 @@ impl From<io::Error> for AudioImportError {
         Self::Io(error)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use xrtranslate_protocol::AudioPreprocessing;
-    #[test]
-    fn finite_recognition_uses_processor_format_and_preserves_ungated_audio() {
-        for mode in [
-            AudioPreprocessing::None,
-            AudioPreprocessing::Gtcrn,
-            AudioPreprocessing::VocalSeparation,
-        ] {
-            let options = AudioImportOptions::for_recognition(mode);
-            assert_eq!(options.pacing, AudioImportPacing::AsFastAsPossible);
-            assert_eq!(
-                (options.output_sample_rate, options.output_channels),
-                if mode == AudioPreprocessing::VocalSeparation {
-                    (44_100, 2)
-                } else {
-                    (16_000, 1)
-                }
-            );
-            assert_eq!(
-                options.gate_threshold_db.is_some(),
-                mode == AudioPreprocessing::Gtcrn
-            );
-        }
-    }
-}

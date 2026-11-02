@@ -47,7 +47,7 @@ pub(super) fn render(
 
     let action = match plugin.controller.route {
         MediaRoute::Library => library::render_library(&mut plugin.controller, language, ui),
-        MediaRoute::Create => create::render_create(&mut plugin.controller, language, ui),
+        MediaRoute::Create => create::render_create(&mut plugin.controller, snapshot, ui),
         MediaRoute::Detail => detail::render_detail(&mut plugin.controller, snapshot, ui),
     };
     crate::ui::notifications::observe_error(

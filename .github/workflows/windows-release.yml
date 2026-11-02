@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag, for example v0.3.3
+        description: Existing release tag, for example v0.3.5
         required: true
         type: string
       source_commit:
@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   windows:
-    runs-on: windows-2022
+    runs-on: windows-2025-vs2026
     timeout-minutes: 120
     defaults:
       run:
@@ -29,7 +29,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag }}
       SOURCE_COMMIT: ${{ inputs.source_commit }}
-      RUSTUP_TOOLCHAIN: 1.95.0-x86_64-pc-windows-msvc
+      RUSTUP_TOOLCHAIN: 1.99.1-x86_64-pc-windows-msvc
       CARGO_TERM_COLOR: always
 
     steps:
@@ -38,7 +38,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if ($env:RELEASE_TAG -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
-            throw 'Tag must be a Cargo version prefixed with v, for example v0.3.3.'
+            throw 'Tag must be a Cargo version prefixed with v, for example v0.3.5.'
           }
           if ($env:SOURCE_COMMIT -and $env:SOURCE_COMMIT -cnotmatch '^[0-9a-f]{40}$') {
             throw 'Source commit must be a full lowercase Git commit SHA.'
@@ -55,17 +55,17 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
-      - name: Install Rust 1.95 for Visual Studio 2022
+      - name: Install Rust 1.99.1 for Visual Studio 2026
         id: toolchain
         run: |
-          & rustup toolchain install 1.95.0 --profile minimal --target x86_64-pc-windows-msvc --no-self-update
+          & rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal --no-self-update
           if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
           & rustc --version
           if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain activation failed.' }
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $visualStudio = & $vswhere -latest -products '*' -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if ($LASTEXITCODE -ne 0 -or -not $visualStudio) { throw 'Visual Studio 2022 C++ tools are required.' }
-          Write-Host "Using Visual Studio 2022: $visualStudio"
+          $visualStudio = & $vswhere -latest -products '*' -version '[18.0,)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if ($LASTEXITCODE -ne 0 -or -not $visualStudio) { throw 'Visual Studio 2026 C++ tools are required.' }
+          Write-Host "Using Visual Studio: $visualStudio"
           "native-image=$env:ImageOS-$env:ImageVersion" >> $env:GITHUB_OUTPUT
 
       - name: Verify source, Cargo version and submodule revisions
@@ -190,16 +190,23 @@ jobs:
             $directory, $archivePath, [System.IO.Compression.CompressionLevel]::Optimal, $false)
           $archive = [System.IO.Compression.ZipFile]::OpenRead($archivePath)
           try {
-            if (-not $archive.GetEntry("XRTranslate-$env:RELEASE_TAG.exe") -or
-                -not $archive.GetEntry('release-manifest.json') -or
-                -not $archive.GetEntry('config.json') -or
-                -not $archive.GetEntry('bin/xrtranslate-backend.exe')) {
-              throw 'ZIP must contain the standard executable, manifest, config and bin directory at its root.'
+            $files = @(Get-ChildItem -LiteralPath $directory -Recurse -File)
+            if (@($archive.Entries | Where-Object Name).Count -ne $files.Count) {
+              throw 'ZIP file count does not match the verified release directory.'
             }
-            if ($archive.GetEntry('models/gtcrn/gtcrn_simple.onnx').Length -ne 535638 -or
-                $archive.GetEntry('models/gtcrn/LICENSE').Length -ne 1069) {
-              throw 'The noise suppression model and its license must be bundled.'
+            foreach ($file in $files) {
+              $relative = [System.IO.Path]::GetRelativePath($directory, $file.FullName).Replace('\', '/')
+              $entry = $archive.GetEntry($relative)
+              if (-not $entry -or $entry.Length -ne $file.Length) { throw "ZIP is missing or truncated: $relative" }
+              $stream = $entry.Open()
+              try {
+                $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream))
+                if ($hash -cne (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash) {
+                  throw "ZIP content differs from the verified release: $relative"
+                }
+              } finally { $stream.Dispose() }
             }
+            Write-Host "Verified all $($files.Count) packaged files against the ZIP."
           } finally {
             $archive.Dispose()
           }

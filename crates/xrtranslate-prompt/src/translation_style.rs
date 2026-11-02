@@ -30,6 +30,15 @@ const CHINESE_TRANSLATION_STYLE: &str = concat!(
     "Output only the final Simplified Chinese translation."
 );
 
+const CUTE_TRANSLATION_STYLE: &str = concat!(
+    "Translate into natural, idiomatic target-language expression with a cute, warm, lightly playful tone. The result should sound like a native speaker chatting in an endearing, approachable way.\n\n",
+    "Understand the source meaning and context first, then express that meaning naturally in the target language. Adjust word order and phrasing freely instead of translating word-for-word or copying the source sentence structure.\n\n",
+    "Make the cute tone noticeable through friendly conversational wording, a light rhythm, and occasional gentle sentence endings or particles where natural in the target language. Vary these choices with the context. Prefer small, expressive touches over exaggerated baby talk or a catchphrase repeated in every sentence.\n\n",
+    "Preserve the speaker's meaning, intent, emotions, and relationships. Keep all facts, names, numbers, negation, uncertainty, and urgency accurate. You may make the delivery softer or more playful, but do not turn a refusal into agreement, anger into affection, or a warning into a joke.\n\n",
+    "Do not invent affection, flirtation, nicknames, character roles, emojis, or extra remarks. Convey any of these already present in the source naturally, without amplifying them. Keep the translation concise and avoid padding it with filler.\n\n",
+    "For serious, formal, or technical content, use a restrained version of this style so that clarity and the original intent remain intact. Accurate meaning comes first, natural target-language expression second, and cute delivery third."
+);
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TranslationStyle {
     pub node_id: String,
@@ -237,14 +246,17 @@ impl PromptNodeGraph {
             .label = "Translation style".into();
         self.bind_translation_style(&style);
         self.save_style_preset("Default");
-        self.translation_style
-            .as_mut()
-            .unwrap()
-            .presets
-            .push(TranslationStylePreset {
-                name: "Chinese".into(),
-                text: CHINESE_TRANSLATION_STYLE.into(),
-            });
+        self.translation_style.as_mut().unwrap().presets.extend(
+            [
+                ("Chinese", CHINESE_TRANSLATION_STYLE),
+                ("Cute", CUTE_TRANSLATION_STYLE),
+            ]
+            .into_iter()
+            .map(|(name, text)| TranslationStylePreset {
+                name: name.into(),
+                text: text.into(),
+            }),
+        );
         for (prefix, page) in [
             ("openai", PromptNodePage::ChatMessages),
             ("hunyuan", PromptNodePage::TranslationInstruction),

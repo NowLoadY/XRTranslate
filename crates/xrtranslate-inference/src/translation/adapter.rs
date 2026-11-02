@@ -1,13 +1,13 @@
 use crate::{
     AsyncHttpClient, InferenceError, OpenAiCompatibleClient, openai::non_streaming_chat_payload,
 };
-use xrtranslate_assets::remote::{RemoteCapabilities, RemoteStreaming};
+use xrtranslate_assets::remote::{RemoteCapabilities, RemoteConnector, RemoteStreaming};
 use xrtranslate_prompt::PromptExecutionTrace;
 
 use super::{
     TranslationOptions, TranslationPromptProfile, TranslationResult,
     profile::{registered, translation_output_rejection},
-    transport::ChatTransport,
+    transport::{ChatTransport, RequestFormat},
 };
 
 /// Reusable MT adapter for Hy-MT2 GGUF, Qwen-MT, and remote OpenAI-compatible services.
@@ -21,7 +21,7 @@ pub struct TranslationAdapter<C> {
     model: String,
     profile: TranslationPromptProfile,
     streaming: RemoteStreaming,
-    single_user_message: bool,
+    request_format: RequestFormat,
     reasoning_effort: Option<String>,
 }
 
@@ -38,7 +38,7 @@ impl<C> TranslationAdapter<C> {
             model,
             profile,
             streaming: RemoteStreaming::Delta,
-            single_user_message: false,
+            request_format: RequestFormat::Messages,
             reasoning_effort: None,
         })
     }
@@ -60,14 +60,18 @@ impl<C> TranslationAdapter<C> {
             model,
             profile,
             streaming: RemoteStreaming::Delta,
-            single_user_message: false,
+            request_format: RequestFormat::Messages,
             reasoning_effort: None,
         })
     }
 
-    pub fn with_remote_capabilities(mut self, capabilities: &RemoteCapabilities) -> Self {
+    pub fn with_remote_config(
+        mut self,
+        connector: Option<RemoteConnector>,
+        capabilities: &RemoteCapabilities,
+    ) -> Self {
         self.streaming = capabilities.streaming;
-        self.single_user_message = capabilities.single_user_message;
+        self.request_format = RequestFormat::from_remote(connector, capabilities);
         self.reasoning_effort
             .clone_from(&capabilities.reasoning_effort);
         self
@@ -83,7 +87,7 @@ impl<C> TranslationAdapter<C> {
             model: validated_model(model)?,
             profile: TranslationPromptProfile::ChatMessages,
             streaming: RemoteStreaming::Delta,
-            single_user_message: false,
+            request_format: RequestFormat::Messages,
             reasoning_effort: None,
         })
     }
@@ -192,25 +196,13 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
         );
         profile.apply_sampling(&mut payload, &options);
         self.apply_request_options(&mut payload);
-        if self.single_user_message {
-            let ordered = [
-                xrtranslate_prompt::PromptMessageRole::System,
-                xrtranslate_prompt::PromptMessageRole::User,
-            ];
-            let content = ordered
-                .iter()
-                .flat_map(|role| {
-                    prompt
-                        .messages
-                        .iter()
-                        .filter(move |message| message.role == *role)
-                })
-                .filter(|message| !message.content.trim().is_empty())
-                .map(|message| message.content.trim())
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            payload["messages"] = serde_json::json!([{"role": "user", "content": content}]);
-        }
+        self.request_format.apply(
+            &mut payload,
+            &prompt.messages,
+            source_text,
+            &options.source_language,
+            &options.target_language,
+        );
 
         let completion = if streaming && self.streaming != RemoteStreaming::None {
             let cumulative = self.streaming == RemoteStreaming::Cumulative;

@@ -17,6 +17,34 @@ pub fn tr(language: UiLanguage, english: &'static str) -> &'static str {
 
 const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     (
+        "File path, recorded media URL or RSS feed",
+        "文件路径、录播链接或 RSS 地址",
+        "ファイルパス、録画メディアURL、またはRSS",
+        "파일 경로, 녹화 미디어 URL 또는 RSS 피드",
+        "Путь к файлу, ссылка на запись или RSS",
+    ),
+    (
+        "Cannot determine whether this source is recorded",
+        "无法确认此音源是否为录播，请使用单集链接或 RSS",
+        "録画音声か確認できません",
+        "녹화된 음원인지 확인할 수 없습니다",
+        "Не удалось определить, записан ли этот источник",
+    ),
+    (
+        "Live streams are not supported here",
+        "此处不支持直播音源，请选择录播单集",
+        "ここではライブ配信は非対応です。録画エピソードを選択してください",
+        "여기서는 라이브 스트림을 지원하지 않습니다. 녹화된 에피소드를 선택하세요",
+        "Прямые эфиры здесь не поддерживаются. Выберите записанный эпизод",
+    ),
+    (
+        "Load the link and select a recorded episode first",
+        "请先加载链接并选择录播单集",
+        "リンクを読み込み、録画エピソードを選択してください",
+        "링크를 불러오고 녹화된 에피소드를 선택하세요",
+        "Загрузите ссылку и выберите записанный эпизод",
+    ),
+    (
         "Audio processing",
         "音频处理",
         "音声処理",
@@ -225,11 +253,11 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Открыть медиа",
     ),
     (
-        "Choose or drop audio, video or subtitles, or paste a stream URL.",
-        "选择或拖入音频、视频、字幕，也可粘贴媒体流地址。",
-        "音声・動画・字幕を選択またはドロップするか、ストリームURLを貼り付けてください。",
-        "오디오, 동영상, 자막을 선택하거나 끌어 놓거나 스트림 URL을 붙여넣으세요.",
-        "Выберите или перетащите аудио, видео, субтитры либо вставьте адрес потока.",
+        "Choose or drop audio, video or subtitles, or paste a recorded media URL or RSS feed.",
+        "选择或拖入音频、视频、字幕，也可粘贴录播链接或 RSS 地址。",
+        "音声・動画・字幕を選択またはドロップするか、録画メディアURLやRSSを貼り付けてください。",
+        "오디오, 동영상, 자막을 선택하거나 끌어 놓거나 녹화 미디어 URL 또는 RSS 피드를 붙여넣으세요.",
+        "Выберите или перетащите аудио, видео, субтитры либо вставьте ссылку на запись или RSS.",
     ),
     (
         "Choose file",

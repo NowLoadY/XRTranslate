@@ -137,6 +137,18 @@ impl<C: AsyncHttpClient> QwenAudioFlashAdapter<C> {
                     endpoint: self.endpoint.clone(),
                     source,
                 })?;
+        // DashScope encodes an empty recognition as a client error. Return the
+        // shared empty transcript so silence does not abort the audio pipeline.
+        if response.status == 400
+            && serde_json::from_str::<Value>(&response.body).is_ok_and(|value| {
+                value["code"] == "CLIENT_ERROR" && value["message"] == "ASR_RESPONSE_HAVE_NO_WORDS"
+            })
+        {
+            return Ok(AsrTranscript {
+                language,
+                text: String::new(),
+            });
+        }
         if !(200..300).contains(&response.status) {
             return Err(InferenceError::HttpStatus {
                 endpoint: self.endpoint.clone(),

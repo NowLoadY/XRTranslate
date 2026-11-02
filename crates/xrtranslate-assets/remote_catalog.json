@@ -229,7 +229,7 @@
             "max_tokens": 512,
             "model": "qwen-mt-flash",
             "parallel_slots": 2,
-            "connector": "openai-chat",
+            "connector": "dashscope-translation",
             "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
           },
           "models": ["qwen-mt-flash", "qwen-mt-lite", "qwen-mt-plus", "qwen-mt-turbo"]
@@ -260,7 +260,7 @@
             "max_tokens": 512,
             "model": "qwen-mt-flash",
             "parallel_slots": 2,
-            "connector": "openai-chat",
+            "connector": "dashscope-translation",
             "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
           },
           "models": ["qwen-mt-flash", "qwen-mt-lite", "qwen-mt-plus", "qwen-mt-turbo"]
@@ -459,42 +459,38 @@
     },
     {
       "model": "qwen-mt-flash",
-      "connector": "openai-chat",
+      "connector": "dashscope-translation",
       "capabilities": {
         "supports_chat": false,
         "streaming": "delta",
-        "supports_context": true,
-        "single_user_message": true
+        "supports_context": true
       }
     },
     {
       "model": "qwen-mt-lite",
-      "connector": "openai-chat",
+      "connector": "dashscope-translation",
       "capabilities": {
         "supports_chat": false,
         "streaming": "delta",
-        "supports_context": true,
-        "single_user_message": true
+        "supports_context": true
       }
     },
     {
       "model": "qwen-mt-plus",
-      "connector": "openai-chat",
+      "connector": "dashscope-translation",
       "capabilities": {
         "supports_chat": false,
         "streaming": "cumulative",
-        "supports_context": true,
-        "single_user_message": true
+        "supports_context": true
       }
     },
     {
       "model": "qwen-mt-turbo",
-      "connector": "openai-chat",
+      "connector": "dashscope-translation",
       "capabilities": {
         "supports_chat": false,
         "streaming": "cumulative",
-        "supports_context": true,
-        "single_user_message": true
+        "supports_context": true
       }
     },
     {

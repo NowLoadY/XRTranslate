@@ -1,5 +1,72 @@
 use eframe::egui;
 
+/// One placement and appearance policy for player menus and their nested menus.
+pub(crate) fn playback_popup(response: &egui::Response, overlay: bool) -> egui::Popup<'static> {
+    let popup = egui::Popup::from_toggle_button_response(response).align(if overlay {
+        egui::RectAlign::BOTTOM_END
+    } else {
+        egui::RectAlign::TOP_END
+    });
+    if overlay {
+        popup.style(overlay_popup_style)
+    } else {
+        popup
+    }
+}
+
+fn overlay_popup_style(style: &mut egui::Style) {
+    let visuals = &mut style.visuals;
+    let accent = egui::Color32::from_rgb(155, 220, 255);
+    visuals.override_text_color = None;
+    visuals.weak_text_color = Some(egui::Color32::from_white_alpha(190));
+    visuals.window_fill = egui::Color32::from_black_alpha(88);
+    visuals.window_stroke = egui::Stroke::NONE;
+    visuals.window_shadow = egui::Shadow::NONE;
+    visuals.popup_shadow = egui::Shadow::NONE;
+    visuals.panel_fill = egui::Color32::TRANSPARENT;
+    visuals.faint_bg_color = egui::Color32::TRANSPARENT;
+    visuals.extreme_bg_color = egui::Color32::TRANSPARENT;
+    visuals.text_edit_bg_color = Some(egui::Color32::TRANSPARENT);
+    for widget in [
+        &mut visuals.widgets.noninteractive,
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+        &mut visuals.widgets.open,
+    ] {
+        widget.bg_fill = egui::Color32::TRANSPARENT;
+        widget.weak_bg_fill = egui::Color32::TRANSPARENT;
+        widget.bg_stroke = egui::Stroke::NONE;
+        widget.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    }
+    visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_white_alpha(20);
+    visuals.widgets.active.weak_bg_fill = egui::Color32::from_white_alpha(32);
+    visuals.widgets.hovered.fg_stroke.color = accent;
+    visuals.widgets.active.fg_stroke.color = accent;
+    visuals.widgets.open.fg_stroke.color = accent;
+    visuals.selection.bg_fill = egui::Color32::from_white_alpha(20);
+    visuals.selection.stroke = egui::Stroke::new(0.0, accent);
+}
+
+pub(crate) fn playback_tooltip(
+    response: egui::Response,
+    label: &str,
+    overlay: bool,
+) -> egui::Response {
+    if !overlay {
+        return response.on_hover_text(label);
+    }
+    let mut tooltip = egui::Tooltip::for_enabled(&response);
+    tooltip.popup = tooltip
+        .popup
+        .align(egui::RectAlign::BOTTOM_END)
+        .style(overlay_popup_style);
+    tooltip.show(|ui| {
+        ui.label(label);
+    });
+    response
+}
+
 /// Compact volume and mute controls shared by media and meeting playback.
 pub(crate) fn playback_volume(
     ui: &mut egui::Ui,
@@ -33,8 +100,9 @@ pub(crate) fn playback_volume(
             }
             let mut value = f64::from(*volume);
             let label = crate::i18n::tr(language, "Volume");
-            let response = playback_slider(ui, &mut value, 1.0, width, true, overlay)
-                .on_hover_text(format!("{label} {:.0}%", value * 100.0));
+            let response = playback_slider(ui, &mut value, 1.0, width, true, overlay);
+            let response =
+                playback_tooltip(response, &format!("{label} {:.0}%", value * 100.0), overlay);
             response.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::Role::Slider, ui.is_enabled(), label)
             });
@@ -102,9 +170,11 @@ pub(crate) fn playback_button(
             tint,
         );
     }
-    response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(label)
+    playback_tooltip(
+        response.on_hover_cursor(egui::CursorIcon::PointingHand),
+        label,
+        overlay,
+    )
 }
 
 pub(crate) fn playback_slider(

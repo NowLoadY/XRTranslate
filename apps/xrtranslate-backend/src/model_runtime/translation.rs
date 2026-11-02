@@ -18,7 +18,9 @@ impl TranslationProfile {
                 .then_some(Self::LocalCatalog);
         }
         match config.connector {
-            Some(RemoteConnector::OpenaiChat) => Some(Self::OpenAiCompatible),
+            Some(RemoteConnector::OpenaiChat | RemoteConnector::DashscopeTranslation) => {
+                Some(Self::OpenAiCompatible)
+            }
             Some(RemoteConnector::ChatgptResponses) => Some(Self::ChatGptAccount),
             _ => None,
         }
@@ -54,6 +56,6 @@ impl TranslationProfile {
                 config.api_key.as_deref().unwrap_or_default(),
             ),
         }?;
-        Ok(adapter.with_remote_capabilities(&config.capabilities))
+        Ok(adapter.with_remote_config(config.connector, &config.capabilities))
     }
 }

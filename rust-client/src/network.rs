@@ -434,6 +434,7 @@ pub struct SessionConfig {
     /// websocket writer. This is required for file import and graceful live
     /// capture shutdown, where a producer disconnect marks end-of-input.
     pub finish_when_audio_ends: bool,
+    pub workload: InferenceWorkload,
     pub prompt_graphs: Option<PromptGraphSet>,
 }
 
@@ -545,15 +546,11 @@ async fn run_session(
         mut continuous_recognition,
         mut audio_source,
         finish_when_audio_ends,
+        workload,
         prompt_graphs,
     } = config;
     let (source_lang, target_lang) = languages.wire();
     let mut translation_options = translation_options(languages);
-    let workload = if finish_when_audio_ends {
-        InferenceWorkload::Offline
-    } else {
-        InferenceWorkload::Realtime
-    };
     let _ = event_tx.send(SessionEvent::Status("Connecting to backend…".into()));
     let text_only = audio_rx.is_none();
     let mut url = match reqwest::Url::parse(&server_url) {

@@ -1,7 +1,7 @@
 use crate::plugins::meeting::{
     MeetingAction, MeetingInputRequest, MeetingReprocessRequest, MeetingStartRequest,
     MeetingUiSnapshot,
-    controller::{MeetingController, MeetingPane, MeetingRoute},
+    controller::{MeetingController, MeetingInputMode, MeetingPane, MeetingRoute},
     store::SegmentMarker,
 };
 
@@ -48,19 +48,20 @@ pub(super) fn apply_action(
     }
     match action {
         UiAction::None => {}
-        UiAction::NewLive => {
+        UiAction::NewLive | UiAction::NewImport => {
             controller.playback.unload();
             controller.search.clear();
-            controller.reset_draft(false, snapshot);
-            controller.route = MeetingRoute::Create;
-        }
-        UiAction::NewImport => {
-            controller.playback.unload();
-            controller.search.clear();
-            controller.reset_draft(true, snapshot);
+            controller.reset_draft(
+                match action {
+                    UiAction::NewImport => MeetingInputMode::File,
+                    _ => MeetingInputMode::Live,
+                },
+                snapshot,
+            );
             controller.route = MeetingRoute::Create;
         }
         UiAction::Back => {
+            controller.podcast.invalidate();
             controller.handle_back();
         }
         UiAction::Open(id) => {
@@ -178,15 +179,26 @@ pub(super) fn apply_action(
 
 fn start_request(controller: &MeetingController) -> MeetingStartRequest {
     let draft = &controller.draft;
-    let input = if draft.import_audio {
-        MeetingInputRequest::ImportedAudio {
+    let input = match draft.mode {
+        MeetingInputMode::File => MeetingInputRequest::ImportedAudio {
             path: draft.import_path.trim().into(),
+        },
+        MeetingInputMode::Live
+            if draft.capture_source == super::super::MeetingAudioSource::OnlineStream =>
+        {
+            MeetingInputRequest::OnlineAudio {
+                url: controller
+                    .podcast
+                    .selected_episode()
+                    .expect("validated podcast selection")
+                    .audio_url
+                    .clone(),
+            }
         }
-    } else {
-        MeetingInputRequest::Live {
+        MeetingInputMode::Live => MeetingInputRequest::Live {
             source: draft.capture_source,
             save_recording: draft.save_recording,
-        }
+        },
     };
     MeetingStartRequest {
         name: draft.name.trim().into(),
@@ -218,7 +230,29 @@ pub(super) fn draft_validation_error(
     ) {
         return Some(error);
     }
-    if controller.draft.import_audio {
+    if controller.draft.mode == MeetingInputMode::Live
+        && controller.draft.capture_source == super::super::MeetingAudioSource::OnlineStream
+    {
+        use crate::media_import::podcast::AudioKind;
+        match controller
+            .podcast
+            .selected_episode()
+            .map(|episode| episode.kind)
+        {
+            Some(AudioKind::Live) => {}
+            Some(AudioKind::Unknown) => {
+                return Some("Cannot determine whether this source is live".into());
+            }
+            Some(AudioKind::Recorded) => {
+                return Some("Recorded episodes are not supported here".into());
+            }
+            Some(AudioKind::Pending | AudioKind::Ended) => {
+                return Some("This stream is not live".into());
+            }
+            None => return Some("Load a stream URL or RSS feed and select live audio".into()),
+        }
+    }
+    if controller.draft.mode == MeetingInputMode::File {
         let value = controller.draft.import_path.trim();
         if value.is_empty() {
             return Some("Choose an audio file".into());

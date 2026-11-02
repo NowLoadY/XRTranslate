@@ -23,6 +23,7 @@ pub use task::MediaType;
 
 #[derive(Clone, Debug)]
 pub struct MediaUiSnapshot {
+    pub download_proxy_url: String,
     pub language: UiLanguage,
     pub languages: xrtranslate_engine::language::LanguageCapabilities,
     pub default_preprocessing: xrtranslate_protocol::AudioPreprocessing,
@@ -45,8 +46,8 @@ pub(crate) fn runtime_bin_directories() -> Vec<PathBuf> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MediaTranslationRequest {
-    ImportMediaFile {
-        path: PathBuf,
+    ImportMedia {
+        source: backend::MediaSource,
         audio_track: Option<i64>,
         source_language: String,
         target_language: String,
@@ -209,7 +210,7 @@ impl TranslationSessionPlugin for MediaPlugin {
         let task_id = self.controller.active_task_id.clone()?;
         let is_file = matches!(
             &self.controller.current_source,
-            Some(backend::MediaSource::LocalFile(_))
+            Some(backend::MediaSource::LocalFile(_) | backend::MediaSource::OnlineFile(_))
         );
         Some(PluginSessionBinding {
             owner: PluginSessionOwner::new(

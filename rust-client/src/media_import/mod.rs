@@ -6,11 +6,17 @@
 
 mod api;
 mod decode;
+mod http;
 mod mpv_extract;
+#[cfg(feature = "mpv")]
+mod mpv_stream;
+#[cfg(test)]
+mod online_tests;
+pub(crate) mod podcast;
 mod stream;
 mod types;
 
-pub use api::{AudioImportHandle, import_audio_file};
+pub use api::{AudioImportHandle, import_audio_file, import_audio_url};
 #[allow(unused_imports)]
 pub use types::{
     AudioFileInfo, AudioImportError, AudioImportEvent, AudioImportOptions, AudioImportOutcome,

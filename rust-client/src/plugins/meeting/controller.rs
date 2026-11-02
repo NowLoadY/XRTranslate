@@ -30,11 +30,18 @@ pub enum MeetingPane {
 pub struct MeetingDraft {
     pub name: String,
     pub import_path: String,
-    pub import_audio: bool,
+    pub mode: MeetingInputMode,
     pub save_recording: bool,
     pub capture_source: MeetingAudioSource,
     pub source_language: String,
     pub target_language: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MeetingInputMode {
+    #[default]
+    Live,
+    File,
 }
 
 impl Default for MeetingDraft {
@@ -42,7 +49,7 @@ impl Default for MeetingDraft {
         Self {
             name: "New meeting".into(),
             import_path: String::new(),
-            import_audio: false,
+            mode: MeetingInputMode::Live,
             save_recording: false,
             capture_source: MeetingAudioSource::Microphone,
             source_language: "auto".into(),
@@ -65,6 +72,7 @@ pub struct ActiveMeetingCapture {
 pub type SharedMeetingCapture = Arc<Mutex<Option<ActiveMeetingCapture>>>;
 
 pub struct MeetingController {
+    pub(super) podcast: crate::ui::online_audio::PodcastBrowser,
     pub(super) playback: super::playback::MeetingPlayback,
     pub store: Arc<MeetingStore>,
     pub route: MeetingRoute,
@@ -128,6 +136,7 @@ impl MeetingController {
         let recovery_meetings = store.list_meetings(usize::MAX).unwrap_or_default();
         recover_interrupted_recordings(&recovery_meetings);
         Self {
+            podcast: Default::default(),
             playback: Default::default(),
             store,
             route: MeetingRoute::Library,
@@ -253,9 +262,10 @@ impl MeetingController {
         }
     }
 
-    pub fn reset_draft(&mut self, import_audio: bool, snapshot: &MeetingUiSnapshot) {
+    pub fn reset_draft(&mut self, mode: MeetingInputMode, snapshot: &MeetingUiSnapshot) {
+        self.podcast = Default::default();
         self.draft = MeetingDraft {
-            import_audio,
+            mode,
             capture_source: snapshot.default_audio_source,
             source_language: snapshot.default_source_language.clone(),
             target_language: snapshot.default_target_language.clone(),
@@ -276,6 +286,14 @@ impl MeetingController {
         }
         let name = request.name.trim();
         let result = match &request.input {
+            MeetingInputRequest::OnlineAudio { url } => {
+                self.store.create_meeting(NewMeeting::live_stream(
+                    name,
+                    url,
+                    &request.source_language,
+                    &request.target_language,
+                ))
+            }
             MeetingInputRequest::ImportedAudio { path } => {
                 self.store.create_meeting(NewMeeting::imported_audio(
                     name,
@@ -789,6 +807,7 @@ fn capture_source_name(source: MeetingAudioSource) -> &'static str {
         MeetingAudioSource::Microphone => "microphone",
         MeetingAudioSource::SystemAudio => "system_audio",
         MeetingAudioSource::Both => "both",
+        MeetingAudioSource::OnlineStream => "online_stream",
     }
 }
 

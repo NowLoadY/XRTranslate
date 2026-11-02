@@ -203,6 +203,7 @@ impl MediaTask {
         let media_type = match &source {
             MediaSource::LocalFile(p) => detect_media_type(p),
             MediaSource::NetworkStream(_) => MediaType::Video,
+            MediaSource::OnlineFile(_) => MediaType::AudioOnly,
         };
         Self::new_with_media_type(
             title,

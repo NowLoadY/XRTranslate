@@ -6,7 +6,7 @@ param(
     [switch]$IncludeModels,
     # Verified ONNX Runtime 1.28 core DLL. GPU providers are downloaded later.
     [string]$OnnxRuntimeCpu,
-    # VS 2022 VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT; auto-detected with vswhere.
+    # Visual Studio VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT; auto-detected with vswhere.
     [string]$VcRuntimeDirectory,
     # Validate existing release inputs without building, downloading, or staging.
     [switch]$ValidateOnly
@@ -40,11 +40,11 @@ function Resolve-VcRuntimeDirectory {
     } else {
         $vswherePath = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
         if (-not (Test-Path -LiteralPath $vswherePath -PathType Leaf)) {
-            throw 'Visual Studio discovery (vswhere.exe) was not found. Pass -VcRuntimeDirectory pointing to a VS 2022 VC/Redist/MSVC/<version>/x64/Microsoft.VC*.CRT directory. System32 DLLs are not release inputs.'
+            throw 'Visual Studio discovery (vswhere.exe) was not found. Pass -VcRuntimeDirectory pointing to a Visual Studio VC/Redist/MSVC/<version>/x64/Microsoft.VC*.CRT directory. System32 DLLs are not release inputs.'
         }
-        $installations = @(& $vswherePath -all -products '*' -version '[17.0,18.0)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath)
+        $installations = @(& $vswherePath -all -products '*' -version '[17.0,)' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath)
         if ($LASTEXITCODE -ne 0) {
-            throw 'Could not discover Visual Studio 2022 redistributable files. Pass -VcRuntimeDirectory explicitly.'
+            throw 'Could not discover Visual Studio redistributable files. Pass -VcRuntimeDirectory explicitly.'
         }
         foreach ($installation in $installations) {
             $redistRoot = Join-Path $installation 'VC\Redist\MSVC'
@@ -64,7 +64,7 @@ function Resolve-VcRuntimeDirectory {
         foreach ($candidate in $candidateDirectories) {
             $layout = [regex]::Match($candidate, '[\\/]VC[\\/]Redist[\\/]MSVC[\\/](?<version>[^\\/]+)[\\/]x64[\\/]Microsoft\.VC[0-9]+\.CRT[\\/]?$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
             if (-not $layout.Success) {
-                throw 'VC runtime files must come from a VS 2022 VC/Redist/MSVC/<version>/x64/Microsoft.VC*.CRT directory. Do not use System32 or debug runtime files.'
+                throw 'VC runtime files must come from a Visual Studio VC/Redist/MSVC/<version>/x64/Microsoft.VC*.CRT directory. Do not use System32 or debug runtime files.'
             }
             if (-not (Test-Path -LiteralPath $candidate -PathType Container)) {
                 throw "VC runtime redistributable directory was not found: $candidate"
@@ -84,7 +84,7 @@ function Resolve-VcRuntimeDirectory {
     )
     $selected = $available | Sort-Object Version -Descending | Select-Object -First 1
     if ($null -eq $selected) {
-        throw 'No VS 2022 x64 redistributable CRT directory was found. Ensure the VS C++ redistributable files are present, or pass -VcRuntimeDirectory <VC/Redist/MSVC/version/x64/Microsoft.VC*.CRT>. No system dependencies will be installed.'
+        throw 'No Visual Studio x64 redistributable CRT directory was found. Ensure the VS C++ redistributable files are present, or pass -VcRuntimeDirectory <VC/Redist/MSVC/version/x64/Microsoft.VC*.CRT>. No system dependencies will be installed.'
     }
     return $selected.Path
 }

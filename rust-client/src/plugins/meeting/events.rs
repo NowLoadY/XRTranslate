@@ -318,12 +318,14 @@ impl MeetingEventSink {
     }
 
     /// Registers all recognition streams belonging to one meeting operation.
-    pub fn begin_sessions(&self, count: usize) {
+    pub fn begin_sessions(&self, count: usize, finish_on_end: bool) {
         if let Ok(mut previews) = self.inner.previews.lock() {
             *previews = Default::default();
         }
         self.inner.active_sessions.store(count, Ordering::Release);
-        self.inner.finish_requested.store(false, Ordering::Release);
+        self.inner
+            .finish_requested
+            .store(finish_on_end, Ordering::Release);
     }
 
     pub fn cancel_sessions(&self) {
@@ -337,6 +339,7 @@ impl MeetingEventSink {
     }
 
     pub fn request_finish(&self) {
+        self.set_translation_paused(false);
         self.inner.finish_requested.store(true, Ordering::Release);
         if self.inner.active_sessions.load(Ordering::Acquire) == 0 {
             self.drain();
@@ -609,6 +612,51 @@ mod tests {
     }
 
     #[test]
+    fn online_input_ends_live_meeting_without_ui_import_poll() {
+        let store = Arc::new(MeetingStore::open_in_memory().unwrap());
+        let bundle = store
+            .create_meeting(NewMeeting::live_stream(
+                "Radio",
+                "https://example.org/live",
+                "en",
+                "zh",
+            ))
+            .unwrap();
+        store.start_meeting(&bundle.meeting.id).unwrap();
+        let active = Arc::new(std::sync::Mutex::new(Some(ActiveMeetingCapture {
+            meeting_id: bundle.meeting.id.clone(),
+            topic_id: bundle.topics[0].id.clone(),
+            recognition_run_id: "online".into(),
+            timeline_offset_ms: 0,
+            imported_audio: false,
+        })));
+        let sink = MeetingEventSink::start(store.clone(), active.clone());
+        sink.begin_sessions(1, true);
+        assert!(active.lock().unwrap().is_some());
+        let owner =
+            TranslationSessionOwner::Plugin(crate::session_coordinator::PluginSessionOwner::new(
+                super::super::super::PluginId::MEETING.as_str(),
+                "online",
+                "Meeting Notes",
+                "Meeting Notes",
+                "Meeting",
+            ));
+        sink.on_translation_event(
+            &owner,
+            &TranslationEvent::Finished {
+                stream_id: 1,
+                outcome: TranslationOutcome::Completed,
+            },
+        );
+        wait_for(|| active.lock().unwrap().is_none());
+        assert_eq!(
+            store.get_meeting(&bundle.meeting.id).unwrap().status,
+            super::super::store::MeetingStatus::Ended
+        );
+        assert!(bundle.meeting.audio_source_path.is_none());
+    }
+
+    #[test]
     fn both_audio_streams_drain_before_the_last_translation_ends_the_meeting() {
         use crate::session_coordinator::PluginSessionOwner;
         let store = Arc::new(MeetingStore::open_in_memory().unwrap());
@@ -628,7 +676,7 @@ mod tests {
         sink.begin_translation(
             xrtranslate_engine::language::LanguageSelection::parse("en", "zh").unwrap(),
         );
-        sink.begin_sessions(2);
+        sink.begin_sessions(2, false);
         let owner = TranslationSessionOwner::Plugin(PluginSessionOwner::new(
             super::super::super::PluginId::MEETING.as_str(),
             "run",
@@ -766,7 +814,7 @@ mod tests {
         sink.begin_translation(
             xrtranslate_engine::language::LanguageSelection::parse("en", "zh").unwrap(),
         );
-        sink.begin_sessions(1);
+        sink.begin_sessions(1, false);
         sink.set_translation_paused(true);
         let mut segment = recognized(1, 1);
         segment.revisable = false;

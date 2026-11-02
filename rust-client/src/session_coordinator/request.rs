@@ -29,6 +29,11 @@ pub(crate) enum TranslationInput {
         recognition: RecognitionSettings,
         options: AudioImportOptions,
     },
+    OnlineAudio {
+        url: String,
+        recognition: RecognitionSettings,
+        options: AudioImportOptions,
+    },
 }
 
 impl TranslationInput {
@@ -74,7 +79,9 @@ impl TranslationTask {
                     TranslationInput::Live(source) | TranslationInput::ExclusiveLive(source) => {
                         *source
                     }
-                    TranslationInput::File { .. } => CaptureSource::SystemAudio,
+                    TranslationInput::File { .. } | TranslationInput::OnlineAudio { .. } => {
+                        CaptureSource::SystemAudio
+                    }
                 },
             },
             |binding| TranslationSessionOwner::Plugin(binding.owner.clone()),

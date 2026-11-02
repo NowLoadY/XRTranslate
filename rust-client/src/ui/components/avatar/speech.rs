@@ -370,9 +370,11 @@ mod tests {
                     modifiers: egui::Modifiers::NONE,
                 });
             }
-            let _ = ctx.run_pass(input, |ctx| {
+            let mut output = ctx.run_pass(input, |ctx| {
                 speech.dismiss_on_click(ctx, egui::Id::unique("error-bubble"), 0.1);
             });
+            // This interaction test has no renderer to consume texture updates.
+            output.textures_delta.clear();
         }
         assert!(speech.finished(0.1));
         assert_eq!(speech.advance(100.0), 0.0);

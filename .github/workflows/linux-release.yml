@@ -29,7 +29,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag }}
       SOURCE_COMMIT: ${{ inputs.source_commit }}
-      RUSTUP_TOOLCHAIN: 1.95.0-x86_64-unknown-linux-gnu
+      RUSTUP_TOOLCHAIN: 1.99.1-x86_64-unknown-linux-gnu
       CARGO_BUILD_JOBS: '4'
       CARGO_TERM_COLOR: always
 
@@ -56,7 +56,7 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
-      - name: Install Linux prerequisites and Rust 1.95
+      - name: Install Linux prerequisites and Rust 1.99.1
         id: toolchain
         run: |
           set -euo pipefail
@@ -68,7 +68,7 @@ jobs:
             libpipewire-0.3-dev libclang-dev libmpv-dev libegl-mesa0 libglx-mesa0 \
             libgl1-mesa-dri fontconfig fonts-noto-core fonts-noto-cjk \
             fonts-dejavu-core zip
-          rustup toolchain install 1.95.0 --profile minimal --no-self-update
+          rustup toolchain install 1.99.1 --profile minimal --no-self-update
           rustc --version
           printf 'image=%s-%s\n' "$ImageOS" "$ImageVersion" >> "$GITHUB_OUTPUT"
 
@@ -107,8 +107,8 @@ jobs:
             ~/.cargo/registry/src
             ~/.cargo/git/db
             ~/.cargo/git/checkouts
-          key: cargo-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-rust1.95-${{ hashFiles('Cargo.lock', 'XR-Corpus/Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-rust1.95-
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-rust1.99.1-${{ hashFiles('Cargo.lock', 'XR-Corpus/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-rust1.99.1-
 
       - name: Cache compatible release build outputs
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -117,8 +117,8 @@ jobs:
             target/release
             target/sherpa-onnx-prebuilt
             !target/sherpa-onnx-prebuilt/*.tar.bz2
-          key: release-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-rust1.95-${{ steps.toolchain.outputs.image }}-${{ hashFiles('Cargo.lock', 'XR-Corpus/Cargo.lock', '**/Cargo.toml', '**/build.rs', 'scripts/linux-build-env.sh', 'scripts/build-linux-release.sh') }}-${{ steps.source.outputs.commit }}
-          restore-keys: release-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-rust1.95-${{ steps.toolchain.outputs.image }}-${{ hashFiles('Cargo.lock', 'XR-Corpus/Cargo.lock', '**/Cargo.toml', '**/build.rs', 'scripts/linux-build-env.sh', 'scripts/build-linux-release.sh') }}-
+          key: release-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-rust1.99.1-${{ steps.toolchain.outputs.image }}-${{ hashFiles('Cargo.lock', 'XR-Corpus/Cargo.lock', '**/Cargo.toml', '**/build.rs', 'scripts/linux-build-env.sh', 'scripts/build-linux-release.sh') }}-${{ steps.source.outputs.commit }}
+          restore-keys: release-${{ runner.os }}-${{ runner.arch }}-ubuntu26.04-rust1.99.1-${{ steps.toolchain.outputs.image }}-${{ hashFiles('Cargo.lock', 'XR-Corpus/Cargo.lock', '**/Cargo.toml', '**/build.rs', 'scripts/linux-build-env.sh', 'scripts/build-linux-release.sh') }}-
 
       - name: Cache fixed release resources
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
