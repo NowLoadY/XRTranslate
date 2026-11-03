@@ -222,6 +222,19 @@
           "models": ["qwen-audio-3.0-asr-flash", "qwen-audio-3.1-asr-flash"]
         },
         {
+          "capability": "asr",
+          "defaults": {
+            "connector": "dashscope-asr-websocket",
+            "url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
+            "model": "qwen-audio-3.0-asr-flash-streaming",
+            "api_key": "",
+            "parallel_slots": 2,
+            "vocabulary_weight": 4
+          },
+          "models": ["qwen-audio-3.0-asr-flash-streaming", "qwen-audio-3.1-asr-flash-streaming"],
+          "provider_aliases": ["qwen-audio-streaming"]
+        },
+        {
           "capability": "translation",
           "defaults": {
             "api_key": "",
@@ -264,24 +277,6 @@
             "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
           },
           "models": ["qwen-mt-flash", "qwen-mt-lite", "qwen-mt-plus", "qwen-mt-turbo"]
-        }
-      ]
-    },
-    {
-      "id": "qwen-audio-streaming",
-      "guide_url": "https://help.aliyun.com/zh/model-studio/developer-reference/get-api-key",
-      "services": [
-        {
-          "capability": "asr",
-          "defaults": {
-            "connector": "dashscope-asr-websocket",
-            "url": "wss://dashscope.aliyuncs.com/api-ws/v1/inference",
-            "model": "qwen-audio-3.0-asr-flash-streaming",
-            "api_key": "",
-            "parallel_slots": 2,
-            "vocabulary_weight": 4
-          },
-          "models": ["qwen-audio-3.0-asr-flash-streaming", "qwen-audio-3.1-asr-flash-streaming"]
         }
       ]
     }

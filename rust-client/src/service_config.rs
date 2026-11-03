@@ -378,11 +378,12 @@ impl ServiceConfigEditor {
                 })
                 .collect(),
             models: category_capability(category_key)
-                .and_then(|capability| {
-                    xrtranslate_assets::remote::service(&selected.name, capability)
+                .into_iter()
+                .flat_map(|capability| {
+                    xrtranslate_assets::remote::services(&selected.name, capability)
                 })
-                .map(|service| service.models.clone())
-                .unwrap_or_default(),
+                .flat_map(|service| service.models.iter().cloned())
+                .collect(),
             model: field("model"),
             api_key: field("api_key"),
         })
@@ -591,7 +592,9 @@ impl ServiceConfigEditor {
                                 },
                             )
                             || category_capability(key).is_some_and(|capability| {
-                                xrtranslate_assets::remote::service(name, capability).is_some()
+                                xrtranslate_assets::remote::services(name, capability)
+                                    .next()
+                                    .is_some()
                             })
                     })
                     .map(|(name, config)| ProviderCard {
@@ -657,6 +660,9 @@ impl ServiceConfigEditor {
         self.asr_streaming.take();
         Self::sync_categories(&mut self.document, &self.categories)?;
         xrtranslate_config::save_user_config_document(&self.path, &project_root(), &self.document)?;
+        for category in &mut self.categories {
+            *category = Self::make_category(&self.document, category.key);
+        }
         self.dirty = false;
         Ok(())
     }
@@ -688,6 +694,7 @@ impl ServiceConfigEditor {
                 }
             }
         }
+        xrtranslate_config::apply_remote_defaults(document);
         Ok(())
     }
 }

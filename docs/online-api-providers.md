@@ -14,9 +14,17 @@ The settings page does not contain a second service editor.
 
 Beijing Qwen workspace keys also work with the preset DashScope endpoints;
 the workspace-specific Base URL shown by Alibaba is optional for these services.
-The `qwen` and `qwen-audio-streaming` presets use the Beijing region, while
-`qwen-intl` requires a Singapore key. See Alibaba's
+The `qwen` preset uses the Beijing region; its model list includes both HTTP
+and streaming ASR models. `qwen-intl` requires a Singapore key. See Alibaba's
 [Base URL reference](https://help.aliyun.com/zh/model-studio/base-url).
+
+A provider can declare several services for the same capability when its models
+use different wire protocols. Welcome combines their model choices. The shared
+configuration boundary selects the declared connector and default endpoint by
+the selected model, retaining the provider's API key and user overrides. Streaming
+remains a model capability; it does not create another provider or pipeline.
+Former provider IDs declared by a service are folded at the same boundary,
+preserving the active model and credentials without duplicate Welcome entries.
 
 ## Free-tier translation presets
 

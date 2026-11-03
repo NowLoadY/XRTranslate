@@ -13,8 +13,8 @@ pub fn companion(name: &str) -> Avatar {
     };
     if variant == 2 {
         avatar.face.nose = Some(Nose {
-            position: Vec2::new(0.0, 0.12),
-            size: 0.04,
+            position: Vec2::new(0.0, 0.375),
+            size: 0.03,
         });
     }
     avatar

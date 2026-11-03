@@ -1,7 +1,8 @@
 # Qwen Audio streaming ASR
 
-XRTranslate ships `qwen-audio-streaming` on Welcome with
-`qwen-audio-3.0-asr-flash-streaming` and `qwen-audio-3.1-asr-flash-streaming`.
+On Welcome, select `qwen (China Mainland)`, then choose
+`qwen-audio-3.0-asr-flash-streaming` or `qwen-audio-3.1-asr-flash-streaming`
+in the model list alongside the non-streaming models.
 Both declare `streaming: cumulative` on the `dashscope-asr-websocket` connector.
 Keys are entered on Welcome and remain in runtime. The endpoint and key must
 belong to the same region; remote connections use `wss://`.
@@ -91,8 +92,8 @@ translation and TTS remain owned by the shared sentence gate. See
 [Qwen ASR](qwen-asr.md) for the common sentence behavior.
 
 Provider pricing and account quotas apply to submitted audio. Bounded pre-roll,
-overlap and quality recovery can add submitted duration. This is a separately
-configured online service, not one of the free HTTP ASR presets.
+overlap and quality recovery can add submitted duration. This is a paid online
+model, not one of the free HTTP ASR presets.
 
 Official protocol references, checked 2026-10-12:
 

@@ -66,13 +66,22 @@ impl crate::AppConfig {
 /// objects and use exactly the same connector/capability resolution.
 pub fn apply_remote_defaults(document: &mut Value) {
     for provider in &remote::catalog().providers {
-        for service in &provider.services {
-            let section = match service.capability {
-                ModelCapability::Asr => "asr",
-                ModelCapability::Translation => "translation",
-                ModelCapability::Tts => "tts",
-                _ => continue,
-            };
+        for (section, capability) in [
+            ("asr", ModelCapability::Asr),
+            ("translation", ModelCapability::Translation),
+            ("tts", ModelCapability::Tts),
+        ] {
+            for service in provider
+                .services
+                .iter()
+                .filter(|s| s.capability == capability)
+            {
+                for alias in &service.provider_aliases {
+                    if let Some(category) = document.get_mut(section) {
+                        fold_provider_alias(category, &provider.id, alias, service);
+                    }
+                }
+            }
             let Some(settings) = document
                 .get_mut(section)
                 .and_then(|section| section.get_mut("providers"))
@@ -81,8 +90,36 @@ pub fn apply_remote_defaults(document: &mut Value) {
             else {
                 continue;
             };
+            let services = || {
+                provider
+                    .services
+                    .iter()
+                    .filter(|s| s.capability == capability)
+            };
+            let model = settings
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let Some(service) = services()
+                .find(|service| service.models.iter().any(|id| id == model))
+                .or_else(|| services().next())
+            else {
+                continue;
+            };
             for (key, value) in &service.defaults {
-                settings.entry(key.clone()).or_insert_with(|| value.clone());
+                // Follow the selected model when switching built-in protocols.
+                // Credentials and explicitly customized endpoints remain user-owned.
+                let inherited_route = matches!(key.as_str(), "connector" | "url")
+                    && services().any(|other| {
+                        settings
+                            .get(key)
+                            .is_some_and(|current| other.defaults.get(key) == Some(current))
+                    });
+                if inherited_route {
+                    settings.insert(key.clone(), value.clone());
+                } else {
+                    settings.entry(key.clone()).or_insert_with(|| value.clone());
+                }
             }
             settings
                 .entry("guide_url")
@@ -105,6 +142,39 @@ pub fn apply_remote_defaults(document: &mut Value) {
                     settings.insert("transport".into(), Value::from(connector.transport()));
                 }
             }
+        }
+    }
+}
+
+fn fold_provider_alias(
+    category: &mut Value,
+    provider: &str,
+    alias: &str,
+    service: &remote::RemoteServiceManifest,
+) {
+    let selected = category.get("provider").and_then(Value::as_str) == Some(alias);
+    let Some(providers) = category.get_mut("providers").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(Value::Object(mut previous)) = providers.remove(alias) else {
+        return;
+    };
+    if selected {
+        for (key, value) in &service.defaults {
+            previous.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+        providers.insert(provider.to_owned(), Value::Object(previous));
+        category["provider"] = provider.into();
+    } else if let Some(key) = previous.remove("api_key") {
+        let settings = providers
+            .entry(provider)
+            .or_insert_with(|| Value::Object(Map::new()));
+        if settings
+            .get("api_key")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            settings["api_key"] = key;
         }
     }
 }

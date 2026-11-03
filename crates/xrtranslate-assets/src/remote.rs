@@ -209,6 +209,9 @@ pub struct RemoteServiceManifest {
     pub capability: ModelCapability,
     pub defaults: serde_json::Map<String, serde_json::Value>,
     pub models: Vec<String>,
+    /// Former provider IDs folded into this provider at the configuration boundary.
+    #[serde(default)]
+    pub provider_aliases: Vec<String>,
     /// Contract for text models discovered through this service's signed-in account.
     /// The account connector validates the selected ID against its live catalogue.
     #[serde(default)]
@@ -277,16 +280,16 @@ pub fn model_capabilities(
         .or_else(|| account_model_capabilities(connector))
 }
 
-/// Built-in choices for one service, shared by welcome and catalogue consumers.
-pub fn service(
+/// A provider can serve the same capability through several model-specific protocols.
+/// Keep their model choices together while retaining each connector's wire contract.
+pub fn services(
     provider: &str,
     capability: ModelCapability,
-) -> Option<&'static RemoteServiceManifest> {
+) -> impl Iterator<Item = &'static RemoteServiceManifest> {
     catalog()
         .providers
         .iter()
-        .find(|entry| entry.id == provider)?
-        .services
-        .iter()
-        .find(|service| service.capability == capability)
+        .filter(move |entry| entry.id == provider)
+        .flat_map(|entry| &entry.services)
+        .filter(move |service| service.capability == capability)
 }

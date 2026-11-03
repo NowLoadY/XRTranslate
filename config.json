@@ -21,8 +21,7 @@
         "url": "http://127.0.0.1:8001/v1/chat/completions"
       },
       "qwen": {},
-      "qwen-intl": {},
-      "qwen-audio-streaming": {}
+      "qwen-intl": {}
     },
     "vad_adaptive_after_ms": 4000,
     "vad_adaptive_silence_ms": 128,
