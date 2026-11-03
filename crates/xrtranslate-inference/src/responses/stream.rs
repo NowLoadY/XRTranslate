@@ -114,6 +114,10 @@ impl ResponseStream {
         }
     }
 
+    pub(super) fn is_completed(&self) -> bool {
+        self.completed
+    }
+
     pub fn finish(mut self) -> Result<ChatCompletion, TransportError> {
         self.push(b"\n\n")?;
         if !self.completed {

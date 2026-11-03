@@ -1,4 +1,5 @@
 use serde_json::{Value, json};
+use std::ops::ControlFlow;
 
 mod stream;
 
@@ -127,6 +128,7 @@ impl<C: AsyncHttpClient> OpenAiCompatibleClient<C> {
             .http
             .execute_streaming(request, |chunk| {
                 let update = stream.push(&chunk);
+                let completed = stream.is_completed();
                 let callback = update
                     .as_ref()
                     .ok()
@@ -137,7 +139,11 @@ impl<C: AsyncHttpClient> OpenAiCompatibleClient<C> {
                     if let Some(callback) = callback {
                         callback.await;
                     }
-                    Ok(())
+                    Ok(if completed {
+                        ControlFlow::Break(())
+                    } else {
+                        ControlFlow::Continue(())
+                    })
                 }
             })
             .await

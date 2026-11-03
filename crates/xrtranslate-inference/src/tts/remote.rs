@@ -1,6 +1,7 @@
 //! Online synthesis wire formats; callers receive only mono PCM16 chunks.
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
+use std::ops::ControlFlow;
 use xrtranslate_assets::remote::{RemoteConnector, RemoteModelManifest, TtsCapabilities};
 
 use super::{SynthesizedPcm, decode_pcm16_wav};
@@ -118,7 +119,7 @@ impl RemoteTtsAdapter {
                     for delivery in pending? {
                         delivery.await?;
                     }
-                    Ok(())
+                    Ok(ControlFlow::Continue(()))
                 }
             })
             .await

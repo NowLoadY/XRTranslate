@@ -1,6 +1,7 @@
 //! ChatGPT plan transport. Keeps the shared prompt graph and translation output
 //! checks intact while speaking the official Responses API contract.
 mod stream;
+use std::ops::ControlFlow;
 
 use crate::{AsyncHttpClient, ChatCompletion, HttpRequest, InferenceError, ReqwestClient};
 use serde_json::{Value, json};
@@ -53,6 +54,7 @@ impl ChatGptClient {
             .http
             .execute_streaming(request, |chunk| {
                 let update = stream.push(&chunk);
+                let completed = stream.is_completed();
                 let callback = update
                     .as_ref()
                     .ok()
@@ -63,7 +65,11 @@ impl ChatGptClient {
                     if let Some(callback) = callback {
                         callback.await;
                     }
-                    Ok(())
+                    Ok(if completed {
+                        ControlFlow::Break(())
+                    } else {
+                        ControlFlow::Continue(())
+                    })
                 }
             })
             .await

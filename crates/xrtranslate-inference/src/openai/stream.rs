@@ -103,6 +103,10 @@ impl ChatStream {
         Ok(true)
     }
 
+    pub(super) fn is_completed(&self) -> bool {
+        self.finished
+    }
+
     pub(super) fn finish(mut self, endpoint: &str) -> Result<ChatCompletion, InferenceError> {
         if self.json {
             return parse_chat_completion(endpoint, &String::from_utf8_lossy(&self.pending));

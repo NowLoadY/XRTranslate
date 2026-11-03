@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{ops::ControlFlow, time::Duration};
 
 use reqwest::Method;
 use serde_json::Value;
@@ -53,7 +53,8 @@ pub trait AsyncHttpClient: Send + Sync {
     ) -> impl Future<Output = Result<HttpResponse, TransportError>> + Send;
 
     /// Reads a successful response incrementally. The awaited consumer provides
-    /// backpressure; dropping this future cancels the request without a worker.
+    /// backpressure; `Break` stops at a protocol completion event without waiting
+    /// for HTTP EOF. Dropping this future cancels the request without a worker.
     fn execute_streaming<F, Fut>(
         &self,
         request: HttpRequest,
@@ -61,12 +62,12 @@ pub trait AsyncHttpClient: Send + Sync {
     ) -> impl Future<Output = Result<HttpResponse, TransportError>> + Send
     where
         F: FnMut(Vec<u8>) -> Fut + Send,
-        Fut: Future<Output = Result<(), TransportError>> + Send,
+        Fut: Future<Output = Result<ControlFlow<()>, TransportError>> + Send,
     {
         async move {
             let mut response = self.execute(request).await?;
             if (200..300).contains(&response.status) {
-                on_chunk(std::mem::take(&mut response.body).into_bytes()).await?;
+                let _ = on_chunk(std::mem::take(&mut response.body).into_bytes()).await?;
             }
             Ok(response)
         }
@@ -209,7 +210,7 @@ impl AsyncHttpClient for ReqwestClient {
     ) -> Result<HttpResponse, TransportError>
     where
         F: FnMut(Vec<u8>) -> Fut + Send,
-        Fut: Future<Output = Result<(), TransportError>> + Send,
+        Fut: Future<Output = Result<ControlFlow<()>, TransportError>> + Send,
     {
         let mut response = self.send(&request).await?;
         let status = response.status().as_u16();
@@ -225,7 +226,22 @@ impl AsyncHttpClient for ReqwestClient {
             .await
             .map_err(|error| TransportError::new("response_body", error.to_string()))?
         {
-            on_chunk(chunk.to_vec()).await?;
+            if on_chunk(chunk.to_vec()).await?.is_break() {
+                // Drain a short HTTP/1 tail without delaying the result or losing
+                // keep-alive. HTTP/2 can close just this stream and reuse the connection.
+                if matches!(
+                    response.version(),
+                    reqwest::Version::HTTP_10 | reqwest::Version::HTTP_11
+                ) {
+                    tokio::spawn(async move {
+                        let _ = tokio::time::timeout(Duration::from_secs(1), async {
+                            while let Ok(Some(_)) = response.chunk().await {}
+                        })
+                        .await;
+                    });
+                }
+                break;
+            }
         }
         Ok(HttpResponse {
             status,
