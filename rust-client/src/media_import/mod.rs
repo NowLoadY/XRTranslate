@@ -7,12 +7,13 @@
 mod api;
 mod decode;
 mod http;
+mod links;
 mod mpv_extract;
 #[cfg(feature = "mpv")]
 mod mpv_stream;
 #[cfg(test)]
 mod online_tests;
-pub(crate) mod podcast;
+pub(crate) mod discovery;
 mod stream;
 mod types;
 

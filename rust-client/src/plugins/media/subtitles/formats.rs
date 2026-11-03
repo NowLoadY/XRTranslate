@@ -1,5 +1,5 @@
 //! Subtitle text and cue identity survive format conversion.
-use super::{SubtitleCue, SubtitleMetadata, SubtitleTimeline};
+use super::{SubtitleCue, SubtitleMetadata, SubtitleTimeline, normalize_cue_text};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 
@@ -7,6 +7,19 @@ use std::fmt::Write;
 pub(super) struct CueOrigin {
     label: String,
     settings: String,
+}
+
+impl CueOrigin {
+    pub(super) fn for_split(&self, id: &str) -> Self {
+        Self {
+            label: if self.label.is_empty() {
+                String::new()
+            } else {
+                id.into()
+            },
+            settings: self.settings.clone(),
+        }
+    }
 }
 
 impl SubtitleTimeline {
@@ -40,7 +53,7 @@ impl SubtitleTimeline {
             if end_ms < start_ms {
                 return Err("Subtitle end precedes its start".into());
             }
-            let text = lines[time_index + 1..].join("\n");
+            let text = normalize_cue_text(&lines[time_index + 1..].join("\n"));
             if text.trim().is_empty() {
                 return Err("Subtitle cue contains no text".into());
             }
@@ -100,7 +113,19 @@ impl SubtitleTimeline {
         } else {
             String::new()
         };
+        let mut exported = 0;
         for (index, cue) in self.cues.iter().enumerate() {
+            // Keep the export boundary safe for legacy or externally supplied
+            // cues too: a blank line ends a cue in SRT/VTT.
+            let text = if playback {
+                normalize_cue_text(&cue.playback_text())
+            } else {
+                cue.export_text()
+            };
+            if text.is_empty() {
+                continue;
+            }
+            exported += 1;
             let origin = self.origins.get(&cue.id);
             let label = origin.map(|o| o.label.as_str()).filter(|s| !s.is_empty());
             if vtt {
@@ -108,14 +133,8 @@ impl SubtitleTimeline {
                     let _ = writeln!(output, "{label}");
                 }
             } else {
-                let _ = writeln!(
-                    output,
-                    "{}",
-                    label
-                        .filter(|s| s.parse::<u64>().is_ok())
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| (index + 1).to_string())
-                );
+                // Imported labels can be out of order or have gaps after edits.
+                let _ = writeln!(output, "{exported}");
             }
             let end = self.effective_end_at(index);
             let settings = if vtt {
@@ -131,19 +150,7 @@ impl SubtitleTimeline {
                 if settings.is_empty() { "" } else { " " },
                 settings
             );
-            if playback {
-                let _ = writeln!(output, "{}", cue.playback_text());
-            } else {
-                let _ = writeln!(output, "{}", cue.original_text.trim());
-                if let Some(translated) = cue
-                    .translated_text
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|text| !text.is_empty() && *text != cue.original_text.trim())
-                {
-                    let _ = writeln!(output, "{translated}");
-                }
-            }
+            let _ = writeln!(output, "{text}");
             output.push('\n');
         }
         output
@@ -184,4 +191,69 @@ fn format_time(ms: i64, vtt: bool) -> String {
         if vtt { '.' } else { ',' },
         ms % 1000
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn paragraph_timeline() -> SubtitleTimeline {
+        let mut timeline = SubtitleTimeline::parse(
+            "1\n00:01:07,616 --> 00:01:11,552\nHello.\n\n2\n00:01:11,552 --> 00:01:15,264\nNext.\n",
+        )
+        .unwrap();
+        timeline.cues[0].original_text = "Hello.\r\n \t\r\nWelcome.\rAgain.".into();
+        timeline.cues[0].translated_text = Some("你好。\n\n欢迎。\r\r再来。".into());
+        timeline.cues[0].source_language = "en".into();
+        timeline.cues[0].target_language = "zh".into();
+        timeline
+    }
+
+    #[test]
+    fn generated_paragraphs_do_not_split_srt_or_vtt_cues() {
+        let timeline = paragraph_timeline();
+        for output in [timeline.export_srt(), timeline.export_vtt()] {
+            let parsed = SubtitleTimeline::parse(&output).expect("export must be valid subtitles");
+            assert_eq!(parsed.count(), 2);
+            assert_eq!(parsed.cues[0].start_ms, 67_616);
+            assert_eq!(parsed.cues[0].end_ms, 71_552);
+            assert_eq!(
+                parsed.cues[0].original_text,
+                "Hello.\nWelcome.\nAgain.\n你好。\n欢迎。\n再来。"
+            );
+            assert_eq!(parsed.cues[1].original_text, "Next.");
+            assert!(!output.contains('\r'));
+        }
+        // Export normalization must not change the editable transcript.
+        assert!(timeline.cues[0].original_text.contains("\r\n \t\r\n"));
+    }
+
+    #[test]
+    fn srt_renumbers_imported_labels_and_skips_empty_cues() {
+        let mut timeline = SubtitleTimeline::parse(
+            "9\n00:00:03,000 --> 00:00:04,000\nLast.\n\n4\n00:00:01,000 --> 00:00:02,000\nFirst.\n\n5\n00:00:02,000 --> 00:00:03,000\nEmpty.\n",
+        )
+        .unwrap();
+        timeline.cues[0].translated_text = Some("\n First.\r\n".into());
+        timeline.cues[1].original_text = "\r\n \t\n".into();
+        timeline.cues[2].original_text.clear();
+        timeline.cues[2].translated_text = Some("最后。".into());
+        assert_eq!(
+            timeline.export_srt(),
+            "1\n00:00:01,000 --> 00:00:02,000\nFirst.\n\n2\n00:00:03,000 --> 00:00:04,000\n最后。\n\n"
+        );
+        assert!(timeline.export_vtt().contains("\n\n9\n00:00:03.000"));
+    }
+
+    #[cfg(all(feature = "mpv", any(windows, target_os = "linux")))]
+    #[test]
+    fn video_export_keeps_multiline_cues_together() {
+        let output = paragraph_timeline().export_playback_srt();
+        let parsed = SubtitleTimeline::parse(&output).unwrap();
+        assert_eq!(parsed.count(), 2);
+        assert_eq!(
+            parsed.cues[0].original_text,
+            "Hello.\nWelcome.\nAgain.\n你好。\n欢迎。\n再来"
+        );
+    }
 }

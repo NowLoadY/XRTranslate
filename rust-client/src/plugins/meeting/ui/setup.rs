@@ -16,6 +16,17 @@ pub(super) fn render_setup(
     ui: &mut egui::Ui,
 ) -> UiAction {
     let language = snapshot.language;
+    if controller.resource_browser.choosing {
+        if controller.resource_browser.render_picker(
+            ui,
+            language,
+            crate::media_import::discovery::MediaKind::Live,
+        ) && let Some(resource) = controller.resource_browser.selected_resource()
+        {
+            controller.draft.name = resource.title.clone();
+        }
+        return UiAction::None;
+    }
     let mut action = UiAction::None;
     let import_notice = tr(
         language,
@@ -133,7 +144,7 @@ pub(super) fn render_setup(
 
                     ui.add_space(8.0);
                     if controller.draft.capture_source == MeetingAudioSource::OnlineStream {
-                        render_podcast(controller, snapshot, ui);
+                        render_online_source(controller, snapshot, ui);
                     } else {
                         ui.checkbox(
                             &mut controller.draft.save_recording,
@@ -185,24 +196,29 @@ pub(super) fn render_setup(
     action
 }
 
-fn render_podcast(
+fn render_online_source(
     controller: &mut MeetingController,
     snapshot: &MeetingUiSnapshot,
     ui: &mut egui::Ui,
 ) {
     let language = snapshot.language;
-    ui.label(tr(language, "Stream URL or RSS feed"));
-    if components::input_field(ui, &mut controller.podcast.url, "https://…").changed() {
-        controller.podcast.invalidate();
+    if components::input_field(
+        ui,
+        &mut controller.resource_browser.url,
+        tr(language, "Link or share text"),
+    )
+    .changed()
+    {
+        controller.resource_browser.invalidate();
         controller.error = None;
     }
     match controller
-        .podcast
+        .resource_browser
         .render_selection(ui, language, &snapshot.download_proxy_url)
     {
         Ok(true) => {
             controller.error = None;
-            if let Some(episode) = controller.podcast.selected_episode() {
+            if let Some(episode) = controller.resource_browser.selected_resource() {
                 controller.draft.name = episode.title.clone();
             }
         }

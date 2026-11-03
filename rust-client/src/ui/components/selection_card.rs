@@ -10,12 +10,14 @@ pub fn grid(
     id: &str,
     count: usize,
     height: f32,
+    preferred_width: f32,
     mut card: impl FnMut(&mut egui::Ui, usize, f32),
 ) {
     let width = (ui.available_width() - 32.0).max(1.0);
     let gap = 24.0;
-    let columns = (((width + gap) / 280.0).floor() as usize).clamp(1, 4);
-    let card_width = ((width - gap * (columns - 1) as f32) / columns as f32).min(320.0);
+    let columns = (((width + gap) / preferred_width).floor() as usize).clamp(1, 4);
+    let card_width =
+        ((width - gap * (columns - 1) as f32) / columns as f32).min(preferred_width + 40.0);
     let row_width =
         card_width * columns.min(count) as f32 + gap * columns.min(count).saturating_sub(1) as f32;
     let left = ((ui.available_width() - row_width) * 0.5).max(0.0);

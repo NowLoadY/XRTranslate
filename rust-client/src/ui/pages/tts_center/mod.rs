@@ -96,6 +96,7 @@ pub fn render(
             "tts_presets",
             voices.len(),
             220.0,
+            280.0,
             |ui, index, width| {
                 let voice = &voices[index];
                 let active = controller.status.ready
@@ -142,6 +143,7 @@ pub fn render(
             "tts_voice_cards",
             controller.catalog.visible.len(),
             300.0,
+            280.0,
             |ui, index, width| {
                 let card = &controller.catalog.cards[controller.catalog.visible[index]];
                 let reference = builtin(&card.id);

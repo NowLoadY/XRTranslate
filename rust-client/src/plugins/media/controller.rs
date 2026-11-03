@@ -32,7 +32,7 @@ pub(super) struct SubtitleEdit {
 }
 
 pub struct MediaController {
-    pub(super) podcast: crate::ui::online_audio::PodcastBrowser,
+    pub(super) resource_browser: crate::ui::resource_browser::ResourceBrowser,
     pub route: MediaRoute,
     pub store: MediaTaskStore,
     pub storage_dir: PathBuf,
@@ -107,7 +107,7 @@ impl Default for MediaController {
             };
 
         Self {
-            podcast: Default::default(),
+            resource_browser: Default::default(),
             route: MediaRoute::Library,
             store,
             storage_dir,
@@ -182,7 +182,7 @@ impl MediaController {
     }
 
     pub fn open_library(&mut self) {
-        self.podcast.invalidate();
+        self.resource_browser.invalidate();
         self.subtitle_edit = None;
         if let Some(backend) = &mut self.backend {
             backend.stop();
@@ -197,7 +197,7 @@ impl MediaController {
     }
 
     pub fn open_create(&mut self) {
-        self.podcast = Default::default();
+        self.resource_browser = Default::default();
         self.subtitle_edit = None;
         if let Some(backend) = &mut self.backend {
             backend.stop();
@@ -228,19 +228,19 @@ impl MediaController {
         }
 
         let (source, default_title, media_type) =
-            if input.starts_with("http://") || input.starts_with("https://") {
+            if crate::media_import::discovery::input_url(input).is_some() {
                 let episode = self
-                    .podcast
-                    .selected_episode()
-                    .ok_or("Load the link and select a recorded episode first")?;
-                if episode.kind == crate::media_import::podcast::AudioKind::Unknown {
+                    .resource_browser
+                    .selected_resource()
+                    .ok_or("Select recorded audio first")?;
+                if episode.kind == crate::media_import::discovery::MediaKind::Unknown {
                     return Err("Cannot determine whether this source is recorded".into());
                 }
-                if episode.kind != crate::media_import::podcast::AudioKind::Recorded {
+                if episode.kind != crate::media_import::discovery::MediaKind::Recorded {
                     return Err("Live streams are not supported here".into());
                 }
                 (
-                    MediaSource::OnlineFile(episode.audio_url.clone()),
+                    MediaSource::OnlineFile(episode.url.clone()),
                     episode.title.clone(),
                     if episode.video {
                         super::task::MediaType::Video
@@ -464,22 +464,11 @@ impl MediaController {
         {
             return;
         }
-        // Blank lines delimit cues in SRT/VTT; keep line breaks within one cue.
-        let clean = |text: &str| {
-            text.lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        let original = clean(&edit.cue.original_text);
-        if original.is_empty() {
+        edit.cue.normalize_text();
+        if edit.cue.original_text.is_empty() {
             self.error = Some("Subtitle text cannot be empty".into());
             return;
         }
-        let translated = clean(edit.cue.translated_text.as_deref().unwrap_or_default());
-        edit.cue.original_text = original;
-        edit.cue.translated_text = (!translated.is_empty()).then_some(translated);
         if let Some(index) = self
             .subtitles
             .cues()
@@ -586,9 +575,6 @@ impl MediaController {
 
     pub fn start_task(&mut self) {
         self.subtitle_edit = None;
-        if !self.is_subtitle_task() {
-            self.subtitles.clear();
-        }
         self.previews = Default::default();
         self.error = None;
         self.is_extracting = false;

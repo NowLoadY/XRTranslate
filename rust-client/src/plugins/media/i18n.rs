@@ -17,11 +17,32 @@ pub fn tr(language: UiLanguage, english: &'static str) -> &'static str {
 
 const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     (
-        "File path, recorded media URL or RSS feed",
-        "文件路径、录播链接或 RSS 地址",
-        "ファイルパス、録画メディアURL、またはRSS",
-        "파일 경로, 녹화 미디어 URL 또는 RSS 피드",
-        "Путь к файлу, ссылка на запись или RSS",
+        "Subtitle character limit",
+        "单条字幕字数上限",
+        "字幕の文字数上限",
+        "자막당 글자 수 제한",
+        "Лимит символов в субтитре",
+    ),
+    (
+        "Original and translation combined",
+        "原文与译文合计",
+        "原文と翻訳の合計",
+        "원문과 번역의 합계",
+        "Оригинал и перевод вместе",
+    ),
+    (
+        "Split long subtitles",
+        "拆分过长字幕",
+        "長い字幕を分割",
+        "긴 자막 나누기",
+        "Разделить длинные субтитры",
+    ),
+    (
+        "File, link or share text",
+        "文件、链接或分享文案",
+        "ファイル、リンク、共有テキスト",
+        "파일, 링크 또는 공유 텍스트",
+        "Файл, ссылка или текст публикации",
     ),
     (
         "Cannot determine whether this source is recorded",
@@ -38,11 +59,11 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "Прямые эфиры здесь не поддерживаются. Выберите записанный эпизод",
     ),
     (
-        "Load the link and select a recorded episode first",
-        "请先加载链接并选择录播单集",
-        "リンクを読み込み、録画エピソードを選択してください",
-        "링크를 불러오고 녹화된 에피소드를 선택하세요",
-        "Загрузите ссылку и выберите записанный эпизод",
+        "Select recorded audio first",
+        "请选择录播音频",
+        "録音済みの音声を選択してください",
+        "녹음된 오디오를 선택하세요",
+        "Выберите аудиозапись",
     ),
     (
         "Audio processing",
@@ -251,13 +272,6 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "メディアを開く",
         "미디어 열기",
         "Открыть медиа",
-    ),
-    (
-        "Choose or drop audio, video or subtitles, or paste a recorded media URL or RSS feed.",
-        "选择或拖入音频、视频、字幕，也可粘贴录播链接或 RSS 地址。",
-        "音声・動画・字幕を選択またはドロップするか、録画メディアURLやRSSを貼り付けてください。",
-        "오디오, 동영상, 자막을 선택하거나 끌어 놓거나 녹화 미디어 URL 또는 RSS 피드를 붙여넣으세요.",
-        "Выберите или перетащите аудио, видео, субтитры либо вставьте ссылку на запись или RSS.",
     ),
     (
         "Choose file",

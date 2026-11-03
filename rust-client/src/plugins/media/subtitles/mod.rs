@@ -7,6 +7,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use xrtranslate_protocol::{SegmentBoundary, SegmentTiming};
 
+pub(super) const SUBTITLE_CHAR_LIMIT_RANGE: std::ops::RangeInclusive<usize> = 20..=2_000;
+
+pub(super) fn default_subtitle_char_limit() -> usize {
+    200
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubtitleCue {
     pub id: String,
@@ -22,6 +28,33 @@ pub struct SubtitleCue {
 }
 
 impl SubtitleCue {
+    pub(super) fn export_text(&self) -> String {
+        let original = normalize_cue_text(&self.original_text);
+        let translated = normalize_cue_text(self.translated_text.as_deref().unwrap_or_default());
+        if translated.is_empty() || translated == original {
+            original
+        } else if original.is_empty() {
+            translated
+        } else {
+            format!("{original}\n{translated}")
+        }
+    }
+
+    /// Count the exported bilingual text, including spaces and punctuation but
+    /// excluding line separators. Never count UTF-8 bytes as characters.
+    pub(super) fn character_count(&self) -> usize {
+        self.export_text().chars().filter(|c| *c != '\n').count()
+    }
+
+    pub(super) fn normalize_text(&mut self) {
+        self.original_text = normalize_cue_text(&self.original_text);
+        self.translated_text = self
+            .translated_text
+            .as_deref()
+            .map(normalize_cue_text)
+            .filter(|text| !text.is_empty());
+    }
+
     pub fn playback_text(&self) -> String {
         let original = playback_line(&self.original_text, &self.source_language);
         match self.translated_text.as_deref() {
@@ -36,6 +69,18 @@ impl SubtitleCue {
             _ => original.to_owned(),
         }
     }
+}
+
+/// Paragraph separators are not part of a subtitle cue. Keep meaningful line
+/// breaks, with one rule shared by generation, editing, persistence and export.
+pub(super) fn normalize_cue_text(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn playback_line<'a>(text: &'a str, language: &str) -> &'a str {
@@ -56,6 +101,53 @@ fn playback_line<'a>(text: &'a str, language: &str) -> &'a str {
         }
     }
     text
+}
+
+#[cfg(test)]
+mod text_normalization_tests {
+    use super::*;
+
+    #[test]
+    fn length_check_counts_the_exported_bilingual_body() {
+        let mut cue = SubtitleTimeline::parse("1\n00:00:00,000 --> 00:00:04,000\nHello.\n")
+            .unwrap()
+            .cues()[0]
+            .clone();
+        cue.original_text = " Hello.\r\n\r\nWorld! ".into();
+        cue.translated_text = Some(" 你好。\n\n世界！ ".into());
+        assert_eq!(cue.export_text(), "Hello.\nWorld!\n你好。\n世界！");
+        assert_eq!(cue.character_count(), 18);
+        cue.translated_text = Some("Hello.\nWorld!".into());
+        assert_eq!(cue.character_count(), 12);
+        cue.original_text = "测试 🧪".into();
+        cue.translated_text = None;
+        assert_eq!(cue.character_count(), 4);
+    }
+
+    #[test]
+    fn cue_updates_refinement_and_edits_store_normalized_text() {
+        let mut timeline =
+            SubtitleTimeline::parse("1\n00:00:01,000 --> 00:00:02,000\nFirst.\n").unwrap();
+        let mut cue = timeline.cues()[0].clone();
+        cue.original_text = "First.\r\n\r\nSecond.".into();
+        cue.translated_text = Some("第一句。\n \n第二句。".into());
+        assert!(timeline.add_cue_with_metadata(cue.clone(), SubtitleMetadata::authored()));
+        assert_eq!(timeline.cues()[0].original_text, "First.\nSecond.");
+        assert_eq!(
+            timeline.cues()[0].translated_text.as_deref(),
+            Some("第一句。\n第二句。")
+        );
+        assert!(!timeline.add_cue_with_metadata(cue.clone(), SubtitleMetadata::authored()));
+
+        cue.original_text = "Refined.\r\rSentence.".into();
+        timeline.replace_refined(0..1, vec![cue.clone()]);
+        assert_eq!(timeline.cues()[0].original_text, "Refined.\nSentence.");
+        cue.original_text = "Edited.\n\nSentence.".into();
+        timeline.edit_cue(cue).unwrap();
+        assert_eq!(timeline.cues()[0].original_text, "Edited.\nSentence.");
+        timeline.set_translation("srt_0", "\r\n \n".into(), "en", "zh");
+        assert!(timeline.cues()[0].translated_text.is_none());
+    }
 }
 
 #[cfg(test)]
@@ -129,8 +221,9 @@ pub fn cue_from_translation(input: TranslationCueInput) -> (SubtitleCue, Subtitl
             start_ms: input.start_ms,
             end_ms: input.end_ms,
             speaker_name,
-            original_text: input.source,
-            translated_text: Some(input.translated),
+            original_text: normalize_cue_text(&input.source),
+            translated_text: Some(normalize_cue_text(&input.translated))
+                .filter(|text| !text.is_empty()),
             source_language: input.source_language,
             target_language: input.target_language,
         },
@@ -177,6 +270,13 @@ pub struct SubtitleTimeline {
 }
 
 impl SubtitleTimeline {
+    pub(super) fn normalize_text(&mut self) {
+        for cue in &mut self.cues {
+            cue.normalize_text();
+        }
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     pub fn new() -> Self {
         Self {
             cues: Vec::new(),
@@ -252,7 +352,10 @@ impl SubtitleTimeline {
         sources: impl IntoIterator<Item = (u32, &'a str)>,
     ) {
         self.revision = self.revision.wrapping_add(1);
-        let sources = sources.into_iter().collect::<BTreeMap<_, _>>();
+        let sources = sources
+            .into_iter()
+            .map(|(index, source)| (index, normalize_cue_text(source)))
+            .collect::<BTreeMap<_, _>>();
         let prefix = format!("stream_{stream_id}_turn_{turn_id}_segment_");
         self.cues.retain(|cue| {
             let Some(index) = cue
@@ -280,7 +383,12 @@ impl SubtitleTimeline {
         });
     }
 
-    pub fn add_cue_with_metadata(&mut self, cue: SubtitleCue, metadata: SubtitleMetadata) -> bool {
+    pub fn add_cue_with_metadata(
+        &mut self,
+        mut cue: SubtitleCue,
+        metadata: SubtitleMetadata,
+    ) -> bool {
+        cue.normalize_text();
         self.revision = self.revision.wrapping_add(1);
         if cue.original_text.trim().is_empty()
             && cue
@@ -418,8 +526,11 @@ impl SubtitleTimeline {
     pub(super) fn replace_refined(
         &mut self,
         range: std::ops::Range<usize>,
-        cues: Vec<SubtitleCue>,
+        mut cues: Vec<SubtitleCue>,
     ) {
+        for cue in &mut cues {
+            cue.normalize_text();
+        }
         if self.cues[range.clone()] == cues {
             return;
         }
@@ -434,6 +545,25 @@ impl SubtitleTimeline {
         }
         self.cues.splice(range, cues);
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    pub(super) fn replace_split(&mut self, index: usize, cues: Vec<SubtitleCue>) {
+        let original = &self.cues[index];
+        let origin = self.origins.get(&original.id).cloned();
+        let metadata = SubtitleMetadata {
+            timing: SegmentTiming::EstimatedTextPartition,
+            finalized: true,
+            revisable: false,
+            ..self.metadata_for(&original.id)
+        };
+        for cue in &cues {
+            self.metadata.insert(cue.id.clone(), metadata);
+            if let Some(origin) = &origin {
+                self.origins
+                    .insert(cue.id.clone(), origin.for_split(&cue.id));
+            }
+        }
+        self.replace_refined(index..index + 1, cues);
     }
 
     /// Merge neighboring text in timeline order while retaining the drop target's identity.
@@ -467,6 +597,7 @@ impl SubtitleTimeline {
         let target = &mut self.cues[target_index];
         target.original_text = original;
         target.translated_text = (!translated.is_empty()).then_some(translated);
+        target.normalize_text();
         target.start_ms = start_ms;
         target.end_ms = end_ms;
         self.metadata
@@ -485,6 +616,7 @@ impl SubtitleTimeline {
         &mut self,
         mut cue: SubtitleCue,
     ) -> Option<(SubtitleCue, Option<SubtitleMetadata>)> {
+        cue.normalize_text();
         let index = self.cues.iter().position(|current| current.id == cue.id)?;
         let bounds = self.time_bounds(index);
         cue.start_ms = cue.start_ms.clamp(*bounds.start(), *bounds.end());
@@ -505,7 +637,8 @@ impl SubtitleTimeline {
         Some((std::mem::replace(&mut self.cues[index], cue), metadata))
     }
 
-    pub(super) fn restore_cue(&mut self, cue: SubtitleCue, metadata: Option<SubtitleMetadata>) {
+    pub(super) fn restore_cue(&mut self, mut cue: SubtitleCue, metadata: Option<SubtitleMetadata>) {
+        cue.normalize_text();
         let Some(current) = self.cues.iter_mut().find(|current| current.id == cue.id) else {
             return;
         };
@@ -527,7 +660,8 @@ impl SubtitleTimeline {
     ) {
         self.revision = self.revision.wrapping_add(1);
         if let Some(cue) = self.cues.iter_mut().find(|cue| cue.id == id) {
-            cue.translated_text = Some(translated);
+            cue.translated_text =
+                Some(normalize_cue_text(&translated)).filter(|text| !text.is_empty());
             cue.source_language = source_language.to_owned();
             cue.target_language = target_language.to_owned();
         }

@@ -126,6 +126,7 @@ pub(super) fn render(
         "translation_style_cards",
         cards.len(),
         336.0,
+        280.0,
         |ui, index, width| {
             let style = &cards[index];
             let current = enabled && active_text.as_deref() == Some(style.text.as_str());

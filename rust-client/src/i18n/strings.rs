@@ -1,5 +1,12 @@
 /// Consolidated single-source-of-truth dictionary: `(English Key, Chinese (zh), Japanese (ja), Korean (ko), Russian (ru))`
 pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
+    ("Choose a resource", "选择资源", "メディアを選択", "미디어 선택", "Выберите медиа"),
+    ("Search resources", "搜索资源", "メディアを検索", "미디어 검색", "Поиск медиа"),
+    ("Upcoming", "未开播", "配信予定", "방송 예정", "Скоро"),
+    ("Ended", "已结束", "終了", "종료됨", "Завершено"),
+    ("Unknown", "待确认", "未確認", "확인 필요", "Не определено"),
+    ("Paste a valid link", "请粘贴有效链接", "有効なリンクを貼り付けてください", "유효한 링크를 붙여 넣으세요", "Вставьте действительную ссылку"),
+    ("No public audio found on this page", "此页面未找到公开音频", "このページに公開音声が見つかりません", "이 페이지에서 공개 오디오를 찾을 수 없습니다", "На этой странице не найдено общедоступного аудио"),
     ("Sign in to another account", "登录其他账号", "別のアカウントでログイン", "다른 계정으로 로그인", "Войти в другой аккаунт"),
     ("Switch account", "切换账号", "アカウントを切り替え", "계정 전환", "Сменить аккаунт"),
     ("Continue with ChatGPT", "使用 ChatGPT 登录", "ChatGPT で続行", "ChatGPT로 계속", "Продолжить с ChatGPT"),

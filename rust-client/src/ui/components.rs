@@ -80,13 +80,21 @@ pub(crate) fn live_preview(ui: &mut Ui, preview: &crate::session_coordinator::Tr
 }
 
 pub fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
+    card_with_border(ui, theme::border().gamma_multiply(0.55), add_contents)
+}
+
+pub(crate) fn card_with_border<R>(
+    ui: &mut Ui,
+    border: Color32,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> R {
     let border_id = ui.next_auto_id().with("organic_card_border");
     crate::ui::organic_border::show(
         ui,
         border_id,
         card_frame(ui.ctx()),
         theme::container_radius_f32(16.0),
-        theme::border().gamma_multiply(0.55),
+        border,
         add_contents,
     )
     .inner

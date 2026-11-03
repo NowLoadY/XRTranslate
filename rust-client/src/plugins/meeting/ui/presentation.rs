@@ -54,7 +54,7 @@ pub(super) fn capture_label(
         MeetingAudioSource::Microphone => tr(language, "Microphone"),
         MeetingAudioSource::SystemAudio => tr(language, "System audio"),
         MeetingAudioSource::Both => tr(language, "Microphone + system"),
-        MeetingAudioSource::OnlineStream => tr(language, "Online stream / RSS"),
+        MeetingAudioSource::OnlineStream => tr(language, "Online stream"),
     }
 }
 

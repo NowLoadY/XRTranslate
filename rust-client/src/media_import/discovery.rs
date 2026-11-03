@@ -1,21 +1,27 @@
-//! Public podcast links resolve to ordinary audio URLs before recognition starts.
-use std::sync::{Arc, atomic::AtomicBool};
+//! Shared discovery of public media, browser pages and subscription catalogues.
+use std::{
+    collections::HashSet,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 use reqwest::Url;
 use serde_json::Value;
 
 use super::http::{HttpClient, http_url};
+pub(crate) use super::links::input_url;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PodcastEpisode {
+pub(crate) struct MediaResource {
     pub title: String,
-    pub audio_url: String,
-    pub kind: AudioKind,
+    pub url: String,
+    pub kind: MediaKind,
     pub video: bool,
+    pub thumbnail: Option<String>,
+    webpage: Option<Url>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AudioKind {
+pub(crate) enum MediaKind {
     Recorded,
     Live,
     Pending,
@@ -28,14 +34,35 @@ pub(crate) fn resolve(
     input: &str,
     proxy: &str,
     stop: Arc<AtomicBool>,
-) -> Result<Vec<PodcastEpisode>, String> {
-    let url = http_url(input)?;
+) -> Result<Vec<MediaResource>, String> {
+    let url = input_url(input).ok_or("Paste a valid link")?;
     let client = HttpClient::new(proxy, stop)?;
+    resolve_url(&client, url, &mut HashSet::new())
+}
+
+fn resolve_url(
+    client: &HttpClient,
+    mut url: Url,
+    visited: &mut HashSet<String>,
+) -> Result<Vec<MediaResource>, String> {
+    url.set_fragment(None);
+    if visited.len() >= 16 || !visited.insert(url.to_string()) {
+        return Err("No public audio found on this page".into());
+    }
     if url.host_str() == Some("podcasts.apple.com") {
-        return resolve_apple(&client, &url);
+        return resolve_apple(client, &url);
     }
     let response = client.get(&url, None)?;
-    let url = response.url().clone();
+    if response.url() != &url {
+        url = response.url().clone();
+        url.set_fragment(None);
+        if !visited.insert(url.to_string()) {
+            return Err("No public audio found on this page".into());
+        }
+        if url.host_str() == Some("podcasts.apple.com") {
+            return resolve_apple(client, &url);
+        }
+    }
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -44,63 +71,121 @@ pub(crate) fn resolve(
         .to_ascii_lowercase();
     if content_type.contains("mpegurl") || url.path().ends_with(".m3u8") {
         let document = client.document(response)?;
-        let kind = hls_kind(&client, &url, &document, 0)?;
-        return Ok(vec![PodcastEpisode {
+        let kind = hls_kind(client, &url, &document, 0)?;
+        return Ok(vec![MediaResource {
             title: url
                 .path()
                 .rsplit('/')
                 .next()
                 .unwrap_or("Online audio")
                 .to_owned(),
-            audio_url: url.into(),
+            url: url.into(),
             kind,
             video: true,
+            thumbnail: None,
+            webpage: None,
         }]);
     }
     if content_type.starts_with("audio/")
         || content_type.starts_with("video/")
-        || matches!(
-            url.path().rsplit('.').next(),
-            Some("mp3" | "m4a" | "aac" | "ogg" | "flac" | "wav" | "mp4" | "webm" | "mkv")
-        ) && !content_type.contains("html")
+        || super::links::media_path(&url) && !content_type.contains("html")
     {
-        return Ok(vec![PodcastEpisode {
+        return Ok(vec![MediaResource {
             title: url
                 .path_segments()
                 .and_then(|mut parts| parts.next_back())
                 .filter(|name| !name.is_empty())
                 .unwrap_or("Online audio")
                 .to_owned(),
-            audio_url: url.into(),
+            url: url.into(),
             kind: if ["icy-name", "icy-br", "icy-description"]
                 .iter()
                 .any(|key| response.headers().contains_key(*key))
             {
-                AudioKind::Live
+                MediaKind::Live
             } else if response.content_length().is_some() {
-                AudioKind::Recorded
+                MediaKind::Recorded
             } else {
-                AudioKind::Unknown
+                MediaKind::Unknown
             },
             video: content_type.starts_with("video/"),
+            thumbnail: None,
+            webpage: None,
         }]);
     }
     let document = client.document(response)?;
-    let episodes = if matches!(
+    if matches!(
         url.host_str(),
         Some("www.xiaoyuzhoufm.com" | "xiaoyuzhoufm.com")
     ) {
-        parse_xiaoyuzhou(&document)?
-    } else {
-        parse_feed(&document, &url)?
-    };
-    if episodes.is_empty() {
-        return Err(
-            "No public podcast audio found. Use an episode link, RSS feed, or direct audio URL"
-                .into(),
-        );
+        let mut episodes = parse_xiaoyuzhou(&document)?;
+        let thumbnail = super::links::page_links(&document, &url).thumbnail;
+        for episode in &mut episodes {
+            episode.thumbnail = thumbnail.clone();
+        }
+        return if episodes.is_empty() {
+            Err("No public audio found on this page".into())
+        } else {
+            Ok(episodes)
+        };
     }
-    Ok(episodes)
+    if let Ok(episodes) = parse_feed(&document, &url)
+        && !episodes.is_empty()
+    {
+        return Ok(episodes);
+    }
+    let page = super::links::page_links(&document, &url);
+    let mut error = None;
+    // Prefer the page's player, then its most relevant feed, then download links.
+    for (sources, feed) in [
+        (page.media, false),
+        (page.feeds, true),
+        (page.downloads, false),
+    ] {
+        let mut episodes: Vec<MediaResource> = Vec::new();
+        for source in sources {
+            if visited.len() >= 16 {
+                break;
+            }
+            if visited.contains(source.as_str()) {
+                continue;
+            }
+            match resolve_url(client, source, visited) {
+                Ok(mut found) if feed => {
+                    let page_url = page.canonical.as_ref().unwrap_or(&url);
+                    if let Some(index) = found
+                        .iter()
+                        .position(|episode| episode.webpage.as_ref() == Some(page_url))
+                    {
+                        return Ok(vec![found.swap_remove(index)]);
+                    }
+                    return Ok(found);
+                }
+                Ok(found) => {
+                    for episode in found {
+                        if !episodes.iter().any(|existing| existing.url == episode.url) {
+                            episodes.push(episode);
+                        }
+                    }
+                }
+                Err(cause) => {
+                    error.get_or_insert(cause);
+                }
+            }
+        }
+        if !episodes.is_empty() {
+            if episodes.len() == 1 {
+                if !page.title.is_empty() {
+                    episodes[0].title = page.title;
+                }
+                if episodes[0].thumbnail.is_none() {
+                    episodes[0].thumbnail = page.thumbnail;
+                }
+            }
+            return Ok(episodes);
+        }
+    }
+    Err(error.unwrap_or_else(|| "No public audio found on this page".into()))
 }
 
 fn hls_kind(
@@ -108,15 +193,15 @@ fn hls_kind(
     base: &Url,
     document: &str,
     depth: usize,
-) -> Result<AudioKind, String> {
+) -> Result<MediaKind, String> {
     if depth > 3 || !document.trim_start().starts_with("#EXTM3U") {
         return Err("Invalid HLS playlist".into());
     }
     if document.lines().any(|line| line.trim() == "#EXT-X-ENDLIST") {
-        return Ok(AudioKind::Recorded);
+        return Ok(MediaKind::Recorded);
     }
     if document.contains("#EXT-X-TARGETDURATION:") {
-        return Ok(AudioKind::Live);
+        return Ok(MediaKind::Live);
     }
     let link = document
         .lines()
@@ -140,7 +225,7 @@ fn hls_kind(
     hls_kind(client, &base, &client.document(response)?, depth + 1)
 }
 
-fn resolve_apple(client: &HttpClient, url: &Url) -> Result<Vec<PodcastEpisode>, String> {
+fn resolve_apple(client: &HttpClient, url: &Url) -> Result<Vec<MediaResource>, String> {
     let episode_id = url
         .query_pairs()
         .find(|(key, _)| key == "i")
@@ -177,7 +262,15 @@ fn resolve_apple(client: &HttpClient, url: &Url) -> Result<Vec<PodcastEpisode>, 
                     .is_some_and(|value| value.to_string() == *id)
             })
         })
-        .filter_map(|entry| episode(entry["trackName"].as_str(), entry["episodeUrl"].as_str()))
+        .filter_map(|entry| {
+            let mut resource = episode(entry["trackName"].as_str(), entry["episodeUrl"].as_str())?;
+            resource.thumbnail = entry["artworkUrl600"]
+                .as_str()
+                .or_else(|| entry["artworkUrl100"].as_str())
+                .and_then(|value| http_url(value).ok())
+                .map(Into::into);
+            Some(resource)
+        })
         .collect::<Vec<_>>();
     if !episodes.is_empty() {
         return Ok(episodes);
@@ -199,22 +292,28 @@ fn resolve_apple(client: &HttpClient, url: &Url) -> Result<Vec<PodcastEpisode>, 
     Ok(episodes)
 }
 
-fn episode(title: Option<&str>, url: Option<&str>) -> Option<PodcastEpisode> {
-    Some(PodcastEpisode {
+fn episode(title: Option<&str>, url: Option<&str>) -> Option<MediaResource> {
+    Some(MediaResource {
         title: title
             .filter(|s| !s.trim().is_empty())
             .unwrap_or("Untitled episode")
             .to_owned(),
-        audio_url: http_url(url?).ok()?.into(),
-        kind: AudioKind::Recorded,
+        url: http_url(url?).ok()?.into(),
+        kind: MediaKind::Recorded,
         video: false,
+        thumbnail: None,
+        webpage: None,
     })
 }
 
-fn parse_feed(document: &str, base: &Url) -> Result<Vec<PodcastEpisode>, String> {
+fn parse_feed(document: &str, base: &Url) -> Result<Vec<MediaResource>, String> {
     let xml = roxmltree::Document::parse(document)
         .map_err(|_| "This link is not a supported podcast page or RSS feed".to_owned())?;
-    let mut episodes: Vec<PodcastEpisode> = Vec::new();
+    let mut episodes: Vec<MediaResource> = Vec::new();
+    let channel_image = xml
+        .descendants()
+        .find(|node| matches!(node.tag_name().name(), "channel" | "feed"))
+        .and_then(|node| feed_image(node, base));
     for item in xml.descendants().filter(|node| {
         node.has_tag_name("item")
             || node.tag_name().name() == "entry"
@@ -222,21 +321,21 @@ fn parse_feed(document: &str, base: &Url) -> Result<Vec<PodcastEpisode>, String>
     }) {
         let kind = if item.tag_name().name() == "liveItem" {
             match item.attribute("status") {
-                Some("live") => AudioKind::Live,
-                Some("pending") => AudioKind::Pending,
-                Some("ended") => AudioKind::Ended,
+                Some("live") => MediaKind::Live,
+                Some("pending") => MediaKind::Pending,
+                Some("ended") => MediaKind::Ended,
                 _ => continue,
             }
         } else {
-            AudioKind::Recorded
+            MediaKind::Recorded
         };
         let same_kind = episodes
             .iter()
             .filter(|episode| {
-                (episode.kind == AudioKind::Recorded) == (kind == AudioKind::Recorded)
+                (episode.kind == MediaKind::Recorded) == (kind == MediaKind::Recorded)
             })
             .count();
-        if same_kind >= if kind == AudioKind::Recorded { 200 } else { 32 } {
+        if same_kind >= if kind == MediaKind::Recorded { 200 } else { 32 } {
             continue;
         }
         let title = item
@@ -267,11 +366,20 @@ fn parse_feed(document: &str, base: &Url) -> Result<Vec<PodcastEpisode>, String>
         if let Some(link) = link
             && let Ok(url) = base.join(link)
             && let Some(mut episode) = episode(title, Some(url.as_str()))
-            && !episodes.iter().any(|existing: &PodcastEpisode| {
-                existing.audio_url == episode.audio_url && existing.kind == kind
+            && !episodes.iter().any(|existing: &MediaResource| {
+                existing.url == episode.url && existing.kind == kind
             })
         {
             episode.kind = kind;
+            episode.thumbnail = feed_image(item, base).or_else(|| channel_image.clone());
+            episode.webpage = item
+                .children()
+                .find(|node| {
+                    node.tag_name().name() == "link"
+                        && node.attribute("rel").is_none_or(|rel| rel == "alternate")
+                })
+                .and_then(|node| node.attribute("href").or_else(|| node.text()))
+                .and_then(|link| base.join(link.trim()).ok());
             episode.video = enclosure
                 .and_then(|node| node.attribute("type"))
                 .is_some_and(|mime| mime.starts_with("video/"));
@@ -279,6 +387,22 @@ fn parse_feed(document: &str, base: &Url) -> Result<Vec<PodcastEpisode>, String>
         }
     }
     Ok(episodes)
+}
+
+fn feed_image(node: roxmltree::Node<'_, '_>, base: &Url) -> Option<String> {
+    node.children()
+        .filter(|node| matches!(node.tag_name().name(), "image" | "thumbnail"))
+        .find_map(|node| {
+            node.attribute("href")
+                .or_else(|| node.attribute("url"))
+                .or_else(|| {
+                    node.children()
+                        .find(|node| node.tag_name().name() == "url")
+                        .and_then(|node| node.text())
+                })
+        })
+        .and_then(|value| super::links::absolute_url(base, value))
+        .map(Into::into)
 }
 
 fn audio_mime(mime: &str) -> bool {
@@ -296,7 +420,7 @@ fn audio_mime(mime: &str) -> bool {
         )
 }
 
-fn parse_xiaoyuzhou(document: &str) -> Result<Vec<PodcastEpisode>, String> {
+fn parse_xiaoyuzhou(document: &str) -> Result<Vec<MediaResource>, String> {
     // Read the page's serialized public episode data, not comments or recommendations.
     let marker = document
         .find("id=\"__NEXT_DATA__\"")
@@ -356,13 +480,13 @@ mod tests {
                 .map(|episode| episode.kind)
                 .collect::<Vec<_>>(),
             [
-                AudioKind::Recorded,
-                AudioKind::Live,
-                AudioKind::Pending,
-                AudioKind::Ended
+                MediaKind::Recorded,
+                MediaKind::Live,
+                MediaKind::Pending,
+                MediaKind::Ended
             ]
         );
-        assert_eq!(episodes[1].audio_url, "https://example.org/live.m3u8");
+        assert_eq!(episodes[1].url, "https://example.org/live.m3u8");
     }
 
     #[test]
@@ -376,7 +500,7 @@ mod tests {
             parse_feed(rss, &Url::parse("https://example.org/feed.xml").unwrap()).unwrap();
         assert_eq!(episodes.len(), 2);
         assert_eq!(episodes[0].title, "One & two");
-        assert_eq!(episodes[0].audio_url, "https://example.org/one.mp3?a=1&b=2");
+        assert_eq!(episodes[0].url, "https://example.org/one.mp3?a=1&b=2");
         let atom = r#"<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>Atom</title><link rel="enclosure" type="audio/mpeg" href="audio.mp3"/></entry></feed>"#;
         assert_eq!(
             parse_feed(atom, &Url::parse("https://example.org/").unwrap()).unwrap()[0].title,

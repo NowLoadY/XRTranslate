@@ -6,6 +6,7 @@ pub mod i18n;
 pub mod installer;
 mod subtitle_job;
 mod subtitle_refinement;
+mod subtitle_repair;
 pub mod subtitles;
 pub mod task;
 pub mod ui;
@@ -26,6 +27,7 @@ pub struct MediaUiSnapshot {
     pub download_proxy_url: String,
     pub language: UiLanguage,
     pub languages: xrtranslate_engine::language::LanguageCapabilities,
+    pub supports_ask: bool,
     pub default_preprocessing: xrtranslate_protocol::AudioPreprocessing,
     pub preprocessing_models: crate::ui::components::AudioPreprocessingModels,
 }

@@ -9,8 +9,11 @@ use eframe::egui;
 impl XRTranslateApp {
     pub(crate) fn poll_media_translation(&mut self, ctx: &egui::Context) {
         self.media_plugin.poll_translation_events();
-        self.media_plugin
-            .poll_subtitle_refinement(&mut self.ask, ctx);
+        self.media_plugin.poll_subtitle_processing(
+            self.service_config.supports_ask(),
+            |prompt| self.ask.request(prompt, ctx),
+            ctx,
+        );
         if let Some(owner) = self.media_plugin.take_cancelled_retranslation() {
             self.cancel_text_tasks(Some(&owner));
             self.cancel_pending_tasks(Some(&owner));
@@ -29,6 +32,7 @@ impl XRTranslateApp {
             download_proxy_url: self.download_proxy_url.clone(),
             language: self.ui_language,
             languages: self.language_capabilities(),
+            supports_ask: self.service_config.supports_ask(),
             default_preprocessing: self.service_config.default_audio_preprocessing(),
             preprocessing_models,
         };
@@ -52,7 +56,11 @@ impl XRTranslateApp {
             plugins::media::MediaAction::TranslateSubtitles { restart } => {
                 self.stop_plugin_task(PluginId::MEDIA);
                 let capabilities = self.language_capabilities();
-                if let Err(error) = self.media_plugin.start_subtitles(capabilities, restart) {
+                if let Err(error) = self.media_plugin.start_subtitles(
+                    capabilities,
+                    restart,
+                    self.service_config.supports_ask(),
+                ) {
                     self.media_plugin.set_error(error);
                 }
             }
@@ -150,6 +158,7 @@ impl XRTranslateApp {
                         }
                     }
                     MediaTranslationRequest::LiveStream { recognition, .. } => {
+                        self.media_plugin.controller.subtitles.clear();
                         self.media_plugin.controller.start_task();
                         self.loopback_recognition = recognition;
                         TranslationInput::Live(CaptureSource::SystemAudio)

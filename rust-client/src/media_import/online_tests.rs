@@ -275,12 +275,12 @@ fn mpv_network_audio_applies_channel_selection_before_downmixing() {
 #[ignore = "requires an explicitly selected public audio URL"]
 fn public_online_audio() {
     let url = std::env::var("XRT_AUDIO_CHECK_URL").unwrap();
-    let episodes = super::podcast::resolve(&url, "", Arc::new(AtomicBool::new(false))).unwrap();
+    let episodes = super::discovery::resolve(&url, "", Arc::new(AtomicBool::new(false))).unwrap();
     let episode = &episodes[0];
     eprintln!("Resolved {:?}: {}", episode.kind, episode.title);
     let (tx, rx) = crossbeam_channel::bounded(4);
     let import = import_audio_url(
-        episode.audio_url.clone(),
+        episode.url.clone(),
         String::new(),
         tx,
         AudioImportOptions {

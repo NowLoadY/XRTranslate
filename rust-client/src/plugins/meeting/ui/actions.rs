@@ -61,7 +61,7 @@ pub(super) fn apply_action(
             controller.route = MeetingRoute::Create;
         }
         UiAction::Back => {
-            controller.podcast.invalidate();
+            controller.resource_browser.invalidate();
             controller.handle_back();
         }
         UiAction::Open(id) => {
@@ -188,10 +188,10 @@ fn start_request(controller: &MeetingController) -> MeetingStartRequest {
         {
             MeetingInputRequest::OnlineAudio {
                 url: controller
-                    .podcast
-                    .selected_episode()
+                    .resource_browser
+                    .selected_resource()
                     .expect("validated podcast selection")
-                    .audio_url
+                    .url
                     .clone(),
             }
         }
@@ -233,23 +233,23 @@ pub(super) fn draft_validation_error(
     if controller.draft.mode == MeetingInputMode::Live
         && controller.draft.capture_source == super::super::MeetingAudioSource::OnlineStream
     {
-        use crate::media_import::podcast::AudioKind;
+        use crate::media_import::discovery::MediaKind;
         match controller
-            .podcast
-            .selected_episode()
+            .resource_browser
+            .selected_resource()
             .map(|episode| episode.kind)
         {
-            Some(AudioKind::Live) => {}
-            Some(AudioKind::Unknown) => {
+            Some(MediaKind::Live) => {}
+            Some(MediaKind::Unknown) => {
                 return Some("Cannot determine whether this source is live".into());
             }
-            Some(AudioKind::Recorded) => {
+            Some(MediaKind::Recorded) => {
                 return Some("Recorded episodes are not supported here".into());
             }
-            Some(AudioKind::Pending | AudioKind::Ended) => {
+            Some(MediaKind::Pending | MediaKind::Ended) => {
                 return Some("This stream is not live".into());
             }
-            None => return Some("Load a stream URL or RSS feed and select live audio".into()),
+            None => return Some("Paste a link and select live audio".into()),
         }
     }
     if controller.draft.mode == MeetingInputMode::File {

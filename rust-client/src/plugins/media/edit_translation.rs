@@ -140,6 +140,7 @@ impl SubtitleRetranslation {
         match result {
             Ok(result) => {
                 draft.cue.translated_text = Some(result.text);
+                draft.cue.normalize_text();
                 draft.cue.source_language = result.source_language;
                 draft.cue.target_language = result.target_language;
                 None
@@ -204,6 +205,18 @@ mod tests {
             Some("入口在右边。")
         );
         assert_eq!(draft.cue.start_ms, timeline.cues()[0].start_ms);
+    }
+
+    #[test]
+    fn generated_retranslation_is_cleaned_before_the_draft_is_saved() {
+        let (_, mut draft, pending) = edit();
+        let mut translated = result().unwrap();
+        translated.text = "入口在左边。\r\n\r\n请向左走。".into();
+        pending.apply(Some("task"), Some(&mut draft), Ok(translated));
+        assert_eq!(
+            draft.cue.translated_text.as_deref(),
+            Some("入口在左边。\n请向左走。")
+        );
     }
 
     #[test]

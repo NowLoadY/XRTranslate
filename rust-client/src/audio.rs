@@ -529,6 +529,51 @@ struct AudioRouteControl {
     resources: Mutex<Option<AudioRouteResources>>,
 }
 
+impl AudioRouteControl {
+    fn is_active(&self) -> bool {
+        matches!(
+            decode_route_state(self.state.load(Ordering::Acquire)),
+            AudioRouteState::Starting | AudioRouteState::Running
+        )
+    }
+
+    fn fail(&self, message: impl FnOnce() -> String) {
+        let mut last_error = self.last_error.lock();
+        if self
+            .state
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+                matches!(
+                    decode_route_state(state),
+                    AudioRouteState::Starting | AudioRouteState::Running
+                )
+                .then_some(encode_route_state(AudioRouteState::Faulted))
+            })
+            .is_ok()
+        {
+            let message = message();
+            log::error!("{message}");
+            *last_error = Some(message);
+        }
+    }
+
+    fn stream_error(&self, node: &str, error: cpal::Error) {
+        if stream_error_is_recoverable(&error) {
+            log::debug!("{node}: {error}");
+        } else {
+            self.fail(|| format!("{node} stream failed: {error}"));
+        }
+    }
+}
+
+fn stream_error_is_recoverable(error: &cpal::Error) -> bool {
+    // CPAL recovers xruns itself; rerouting and scheduling notices do not
+    // invalidate the stream either.
+    matches!(
+        error.kind(),
+        cpal::ErrorKind::Xrun | cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::RealtimeDenied
+    )
+}
+
 #[derive(Clone)]
 struct RoutedTtsTarget {
     control: Weak<AudioRouteControl>,
@@ -651,6 +696,10 @@ impl AudioRouteHandle {
         let Some(resources) = resources else {
             return;
         };
+        self.control.state.store(
+            encode_route_state(AudioRouteState::Stopping),
+            Ordering::Release,
+        );
         for source in [
             &self.control.microphone,
             &self.control.system_loopback,
@@ -658,6 +707,7 @@ impl AudioRouteHandle {
         ]
         .into_iter()
         .flatten()
+        .chain(self.control.media.iter())
         {
             source.queue.lock().clear();
             source.level.store(0.0f32.to_bits(), Ordering::Relaxed);
@@ -667,10 +717,6 @@ impl AudioRouteHandle {
         self.control
             .output_level
             .store(0.0f32.to_bits(), Ordering::Relaxed);
-        self.control.state.store(
-            encode_route_state(AudioRouteState::Stopping),
-            Ordering::Release,
-        );
         let control = Arc::clone(&self.control);
         let spawn = thread::Builder::new()
             .name("audio-route-reaper".into())
@@ -952,12 +998,7 @@ fn start_route_loopback_capture(
                 Arc::clone(&control.studio_metering),
             ) {
                 let _ = ready_tx.send(Err(error.clone()));
-                log::error!("Audio route WASAPI loopback stopped: {error}");
-                *control.last_error.lock() = Some(error);
-                control.state.store(
-                    encode_route_state(AudioRouteState::Faulted),
-                    Ordering::Release,
-                );
+                control.fail(|| format!("Audio route WASAPI loopback stopped: {error}"));
             }
         })
         .map_err(|error| {
@@ -1383,6 +1424,38 @@ impl AudioSystem {
         Ok(replacements)
     }
 
+    /// Poll on the host thread, never from a CPAL callback: dropping a stream
+    /// joins its callback thread. Stop the whole graph once and let the UI
+    /// report the failure instead of leaving dead outputs marked as active.
+    pub(crate) fn take_audio_route_error(&mut self) -> Option<String> {
+        let error = self.audio_routes.iter().find_map(|route| {
+            let microphone_error = route
+                .control
+                .resources
+                .lock()
+                .as_ref()
+                .and_then(|resources| {
+                    resources
+                        .shared_microphones
+                        .iter()
+                        .find_map(|fanout| fanout.failure.lock().clone())
+                });
+            if let Some(error) = microphone_error {
+                route.control.fail(|| error);
+            }
+            let status = route.status();
+            (status.state == AudioRouteState::Faulted)
+                .then_some(status.last_error)
+                .flatten()
+        })?;
+        for route in self.audio_routes.drain(..) {
+            route.stop();
+        }
+        self.microphone_fanouts
+            .retain(|_, fanout| fanout.strong_count() > 0);
+        Some(error)
+    }
+
     fn build_audio_route(
         &self,
         config: AudioRouteConfig,
@@ -1540,6 +1613,7 @@ impl AudioSystem {
                 raw_rx,
                 AUDIO_ROUTE_SAMPLE_RATE,
                 Arc::clone(buffer),
+                Arc::downgrade(&control),
             )?);
             Some(start_route_loopback_capture(
                 &source.target,
@@ -1569,11 +1643,24 @@ impl AudioSystem {
             #[cfg(any(windows, target_os = "linux"))]
             loopback,
         });
-        control.state.store(
-            encode_route_state(AudioRouteState::Running),
-            Ordering::Release,
-        );
         let handle = AudioRouteHandle { control };
+        // A callback can fail as soon as play() returns. Do not overwrite that
+        // failure with Running or leave the just-installed resources alive.
+        if handle
+            .control
+            .state
+            .compare_exchange(
+                encode_route_state(AudioRouteState::Starting),
+                encode_route_state(AudioRouteState::Running),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            let error = handle.control.last_error.lock().clone().unwrap_or_default();
+            handle.stop();
+            return Err(AudioRouteError::StreamStart(error));
+        }
         Ok(handle)
     }
 
@@ -1784,8 +1871,12 @@ impl AudioSystem {
         fanout: Option<&Arc<MicrophoneFanout>>,
     ) -> Result<(Option<Stream>, thread::JoinHandle<()>), AudioRouteError> {
         if let Some(fanout) = fanout {
-            let worker =
-                spawn_route_source_worker(fanout.attach(), fanout.sample_rate, Arc::clone(&sink))?;
+            let worker = spawn_route_source_worker(
+                fanout.attach(),
+                fanout.sample_rate,
+                Arc::clone(&sink),
+                Arc::downgrade(&control),
+            )?;
             return Ok((None, worker));
         }
         let device = if source.device_id.is_empty() {
@@ -1818,7 +1909,12 @@ impl AudioSystem {
         let sample_format = config.sample_format();
         let stream_config: cpal::StreamConfig = config.into();
         let (raw_tx, raw_rx) = bounded::<Vec<f32>>(16);
-        let worker = spawn_route_source_worker(raw_rx, sample_rate, Arc::clone(&sink))?;
+        let worker = spawn_route_source_worker(
+            raw_rx,
+            sample_rate,
+            Arc::clone(&sink),
+            Arc::downgrade(&control),
+        )?;
 
         macro_rules! build_input {
             ($sample:ty) => {
@@ -2128,13 +2224,7 @@ where
                 }
             },
             move |error| {
-                let message = format!("route microphone stream failed: {error}");
-                log::error!("{message}");
-                *control.last_error.lock() = Some(message);
-                control.state.store(
-                    encode_route_state(AudioRouteState::Faulted),
-                    Ordering::Release,
-                );
+                control.stream_error("route microphone", error);
             },
             None,
         )
@@ -2177,10 +2267,14 @@ where
                 });
             },
             move |error| {
-                log::error!("shared microphone stream failed: {error}");
-                failure
-                    .lock()
-                    .get_or_insert_with(|| format!("Microphone capture failed: {error}"));
+                if stream_error_is_recoverable(&error) {
+                    log::debug!("shared microphone: {error}");
+                } else {
+                    failure.lock().get_or_insert_with(|| {
+                        log::error!("shared microphone stream failed: {error}");
+                        format!("Microphone capture failed: {error}")
+                    });
+                }
             },
             None,
         )
@@ -2231,21 +2325,10 @@ fn spawn_route_media_worker(
     thread::Builder::new()
         .name("audio-route-media".into())
         .spawn(move || {
-            let active = || {
-                control.upgrade().is_some_and(|control| {
-                    matches!(
-                        decode_route_state(control.state.load(Ordering::Acquire)),
-                        AudioRouteState::Starting | AudioRouteState::Running
-                    )
-                })
-            };
+            let active = || control.upgrade().is_some_and(|control| control.is_active());
             let fail = |error: String| {
                 if let Some(control) = control.upgrade() {
-                    *control.last_error.lock() = Some(error);
-                    control.state.store(
-                        encode_route_state(AudioRouteState::Faulted),
-                        Ordering::Release,
-                    );
+                    control.fail(|| error);
                 }
             };
             while active() {
@@ -2306,6 +2389,7 @@ fn spawn_route_source_worker(
     raw_rx: Receiver<Vec<f32>>,
     source_rate: u32,
     sink: Arc<AudioRouteSourceBuffer>,
+    control: Weak<AudioRouteControl>,
 ) -> Result<thread::JoinHandle<()>, AudioRouteError> {
     let mut resampler = if source_rate == AUDIO_ROUTE_SAMPLE_RATE {
         None
@@ -2329,7 +2413,14 @@ fn spawn_route_source_worker(
         .name("audio-route-source".into())
         .spawn(move || {
             let mut pending = VecDeque::new();
-            while let Ok(samples) = raw_rx.recv() {
+            // A shared microphone may still be used by ASR or another route.
+            // Stop this subscription without waiting for its sender to drop.
+            while control.upgrade().is_some_and(|control| control.is_active()) {
+                let samples = match raw_rx.recv_timeout(Duration::from_millis(50)) {
+                    Ok(samples) => samples,
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                };
                 let Some(resampler) = &mut resampler else {
                     sink.push(samples);
                     continue;
@@ -2387,6 +2478,148 @@ impl RouteRateReader {
             self.phase -= 1.0;
         }
         sample
+    }
+}
+
+#[cfg(test)]
+mod route_failure_tests {
+    use super::*;
+
+    fn control(state: AudioRouteState) -> Arc<AudioRouteControl> {
+        Arc::new(AudioRouteControl {
+            follow_tts: false,
+            tts_enabled: Arc::new(AtomicBool::new(true)),
+            state: AtomicU8::new(encode_route_state(state)),
+            last_error: Mutex::new(None),
+            dropped_samples: Arc::new(AtomicU64::new(0)),
+            output_level: Arc::new(AtomicU32::new(0)),
+            studio_metering: Arc::new(AtomicBool::new(false)),
+            output_sample_rate: AUDIO_ROUTE_SAMPLE_RATE,
+            microphone: None,
+            system_loopback: None,
+            tts: None,
+            media: Vec::new(),
+            routed_tts_targets: Arc::new(Mutex::new(Vec::new())),
+            resources: Mutex::new(None),
+        })
+    }
+
+    #[test]
+    fn repeated_backend_failures_are_recorded_and_reported_once() {
+        for state in [AudioRouteState::Starting, AudioRouteState::Running] {
+            let control = control(state);
+            control.stream_error(
+                "route output",
+                cpal::Error::with_message(cpal::ErrorKind::BackendError, "ALSA I/O error (5)"),
+            );
+            let first_error = control.last_error.lock().clone().unwrap();
+            assert!(first_error.contains("ALSA I/O error (5)"));
+            for _ in 0..1000 {
+                control.fail(|| panic!("repeated failures must not format or log again"));
+            }
+            assert!(!control.is_active());
+            assert_eq!(control.last_error.lock().as_ref(), Some(&first_error));
+
+            let mut audio = AudioSystem::new();
+            audio.audio_routes.push(AudioRouteHandle { control });
+            assert_eq!(audio.take_audio_route_error(), Some(first_error));
+            assert!(audio.audio_routes.is_empty());
+            assert_eq!(audio.take_audio_route_error(), None);
+        }
+    }
+
+    #[test]
+    fn recoverable_callbacks_keep_routes_running_and_shutdown_ignores_late_errors() {
+        let control = control(AudioRouteState::Running);
+        for kind in [
+            cpal::ErrorKind::Xrun,
+            cpal::ErrorKind::DeviceChanged,
+            cpal::ErrorKind::RealtimeDenied,
+        ] {
+            control.stream_error("route output", cpal::Error::new(kind));
+            assert!(control.is_active());
+            assert!(control.last_error.lock().is_none());
+        }
+        for state in [AudioRouteState::Stopping, AudioRouteState::Stopped] {
+            control
+                .state
+                .store(encode_route_state(state), Ordering::Release);
+            control.stream_error(
+                "route output",
+                cpal::Error::new(cpal::ErrorKind::BackendError),
+            );
+            assert_eq!(
+                decode_route_state(control.state.load(Ordering::Acquire)),
+                state
+            );
+            assert!(control.last_error.lock().is_none());
+        }
+    }
+
+    #[test]
+    fn source_worker_exits_even_when_shared_capture_sender_remains_alive() {
+        for state in [AudioRouteState::Stopping, AudioRouteState::Faulted] {
+            let control = control(AudioRouteState::Running);
+            let source = Arc::new(AudioRouteSourceBuffer::new(
+                Some(480),
+                1.0,
+                &[],
+                Arc::clone(&control.dropped_samples),
+                Arc::clone(&control.studio_metering),
+            ));
+            let (tx, rx) = bounded(16);
+            let worker = spawn_route_source_worker(
+                rx,
+                AUDIO_ROUTE_SAMPLE_RATE,
+                source,
+                Arc::downgrade(&control),
+            )
+            .unwrap();
+            control
+                .state
+                .store(encode_route_state(state), Ordering::Release);
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !worker.is_finished() && std::time::Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                worker.is_finished(),
+                "route shutdown waited on a shared capture"
+            );
+            worker.join().unwrap();
+            assert!(tx.send(vec![0.0]).is_err());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "Requires the ALSA null PCM; opens a real stream without playing sound"]
+    fn failed_output_releases_the_stream_and_can_be_reopened() {
+        let mut audio = AudioSystem::new();
+        let config = AudioRouteConfig {
+            output_device_id: "alsa:null".into(),
+            ..Default::default()
+        };
+        let routes = audio.replace_audio_routes(vec![config.clone()]).unwrap();
+        assert_eq!(routes[0].status().state, AudioRouteState::Running);
+        routes[0].control.stream_error(
+            "route output",
+            cpal::Error::with_message(cpal::ErrorKind::BackendError, "simulated ALSA I/O error"),
+        );
+        assert!(audio.take_audio_route_error().is_some());
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while routes[0].status().state == AudioRouteState::Stopping
+            && std::time::Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(routes[0].status().state, AudioRouteState::Stopped);
+        assert!(routes[0].control.resources.lock().is_none());
+        assert!(audio.routed_tts_targets.lock().is_empty());
+        assert!(audio.take_audio_route_error().is_none());
+        let restarted = audio.replace_audio_routes(vec![config]).unwrap();
+        assert_eq!(restarted[0].status().state, AudioRouteState::Running);
+        audio.replace_audio_routes(Vec::new()).unwrap();
     }
 }
 
@@ -2596,6 +2829,10 @@ where
         .build_output_stream(
             config,
             move |output: &mut [T], _: &cpal::OutputCallbackInfo| {
+                if !control.is_active() {
+                    output.fill(T::from_sample(0.0));
+                    return;
+                }
                 let mut microphone_queue = microphone.as_ref().map(|source| source.queue.lock());
                 let mut loopback_queue = system_loopback.as_ref().map(|source| source.queue.lock());
                 let mut tts_queue = tts.as_ref().map(|source| source.queue.lock());
@@ -2650,13 +2887,7 @@ where
                 }
             },
             move |error| {
-                let message = format!("route output stream failed: {error}");
-                log::error!("{message}");
-                *callback_control.last_error.lock() = Some(message);
-                callback_control.state.store(
-                    encode_route_state(AudioRouteState::Faulted),
-                    Ordering::Release,
-                );
+                callback_control.stream_error("route output", error);
             },
             None,
         )
@@ -3049,11 +3280,7 @@ fn start_route_loopback_capture(
                 })
             {
                 let _ = ready_tx.send(Err(error.clone()));
-                *control.last_error.lock() = Some(error);
-                control.state.store(
-                    encode_route_state(AudioRouteState::Faulted),
-                    Ordering::Release,
-                );
+                control.fail(|| format!("Audio route Linux loopback stopped: {error}"));
             }
         })
         .map_err(|error| {

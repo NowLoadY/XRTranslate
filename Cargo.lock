@@ -2257,6 +2257,7 @@ checksum = "def286cf47194f3fe45b8e37c503ada7a20a64b59a903b4bc704baec943b1827"
 dependencies = [
  "ahash",
  "egui",
+ "ehttp",
  "enum-map",
  "image",
  "itertools 0.15.0",
@@ -2293,6 +2294,20 @@ dependencies = [
  "skrifa",
  "sys-locale",
  "unicode-script",
+]
+
+[[package]]
+name = "ehttp"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b4a4c99bf60678f5c2185fe425eac33e3e7c9fcfa6cbd632412691e4288f076"
+dependencies = [
+ "document-features",
+ "js-sys",
+ "ureq 3.4.0",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -6862,6 +6877,7 @@ dependencies = [
  "bytemuck",
  "cpal",
  "crossbeam-channel",
+ "dom_query",
  "eframe",
  "egui_extras",
  "env_logger",
@@ -8886,6 +8902,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "972d7902c8735f2695410b8aed7df6ed12a47394aa1c8d7af49f0497b731a94d"
 dependencies = [
  "base64 0.23.1",
+ "flate2",
  "log",
  "percent-encoding",
  "rustls",

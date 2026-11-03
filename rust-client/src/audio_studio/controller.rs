@@ -395,6 +395,9 @@ pub enum AudioStudioHostEvent {
         request_id: u64,
         message: String,
     },
+    RoutingFailed {
+        message: String,
+    },
     Deactivated {
         request_id: u64,
     },
@@ -420,6 +423,79 @@ pub struct AudioStudioController {
     pending_graph_revision: Option<u64>,
     active_graph_revision: Option<u64>,
     failed_graph_revision: Option<u64>,
+}
+
+#[cfg(test)]
+mod route_failure_tests {
+    use super::*;
+
+    #[test]
+    fn runtime_failure_stops_automatic_retries_until_the_route_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut controller = AudioStudioController::open(directory.path());
+        let mut graph = AudioGraph::new("test", "Test");
+        graph.nodes = vec![
+            AudioNode::new("tts", "TTS", AudioNodeKind::TextToSpeech),
+            AudioNode::new(
+                "output",
+                "Output",
+                AudioNodeKind::MonitorOutput { device_id: None },
+            ),
+        ];
+        graph.links = vec![AudioLink::new("tts-output", "tts", "output")];
+        controller.settings.graph = graph;
+        let host = HostAudioSnapshot {
+            discovery_complete: true,
+            capabilities: HostAudioCapabilities {
+                tts_source: true,
+                monitor_output: true,
+                ..Default::default()
+            },
+            devices: vec![HostAudioDevice {
+                id: DeviceId::new("output"),
+                name: "Output".into(),
+                role: AudioDeviceRole::MonitorRender,
+                is_default: true,
+                voicemeeter_strip_index: None,
+            }],
+            ..Default::default()
+        };
+        let actions = controller.reconcile_live_routing(&host).unwrap();
+        let [AudioStudioHostAction::ActivateGraph { request_id, .. }] = actions.as_slice() else {
+            panic!("expected activation, got {actions:?}");
+        };
+        controller.handle_host_event(AudioStudioHostEvent::Activated {
+            request_id: *request_id,
+        });
+        controller.handle_host_event(AudioStudioHostEvent::RoutingFailed {
+            message: "Output disconnected".into(),
+        });
+        assert!(matches!(
+            controller.lifecycle,
+            AudioStudioLifecycle::Error { .. }
+        ));
+        assert_eq!(
+            controller.last_error.as_deref(),
+            Some("Output disconnected")
+        );
+        for _ in 0..3 {
+            assert!(controller.reconcile_live_routing(&host).unwrap().is_empty());
+        }
+        let actions = controller
+            .handle_ui_action(
+                AudioStudioUiAction::SetNodeDevice {
+                    node_id: NodeId::new("output"),
+                    device_id: Some(DeviceId::new("output")),
+                },
+                &host,
+            )
+            .unwrap();
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, AudioStudioHostAction::ActivateGraph { .. }))
+        );
+    }
 }
 
 impl AudioStudioController {
@@ -885,6 +961,15 @@ impl AudioStudioController {
                 if matches!(self.lifecycle, AudioStudioLifecycle::Activating { request_id: expected, .. } if expected == request_id)
                 {
                     self.pending_graph_revision = None;
+                    self.failed_graph_revision = Some(self.graph_revision);
+                    self.record_lifecycle_error(message);
+                }
+            }
+            AudioStudioHostEvent::RoutingFailed { message } => {
+                if matches!(self.lifecycle, AudioStudioLifecycle::Active { .. }) {
+                    self.active_graph_revision = None;
+                    // A failed device must not be reopened on every UI frame.
+                    // Changing the route allows the normal activation path to retry.
                     self.failed_graph_revision = Some(self.graph_revision);
                     self.record_lifecycle_error(message);
                 }

@@ -11,7 +11,7 @@ pub mod layout;
 pub mod modal;
 pub(crate) mod model_comparison;
 pub(crate) mod notifications;
-pub(crate) mod online_audio;
+pub(crate) mod resource_browser;
 pub mod organic_border;
 pub mod organic_line;
 pub mod pages;

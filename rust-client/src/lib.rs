@@ -2594,6 +2594,18 @@ impl XRTranslateApp {
         }
     }
 
+    fn poll_audio_route_errors(&mut self) {
+        if let Some(message) = self.audio_system.take_audio_route_error() {
+            if let Some(route) = self.voicemeeter_route.take() {
+                let _ = route.clear();
+            }
+            let _ = self.stop_audio_studio_managed_voicemeeter();
+            self.last_error = Some(message.clone());
+            self.audio_studio
+                .handle_host_event(AudioStudioHostEvent::RoutingFailed { message });
+        }
+    }
+
     fn reconcile_audio_studio_live_routing(&mut self) {
         self.audio_system.set_tts_enabled(self.tts_enabled);
         let _ = self
@@ -6273,6 +6285,15 @@ impl eframe::App for XRTranslateApp {
             self.notifications.error("", error);
         }
 
+        // Device failures must also release routes while the window is hidden
+        // or minimized, when the UI/reconciliation pass may not run.
+        self.poll_audio_route_errors();
+        if matches!(
+            self.audio_studio.lifecycle(),
+            audio_studio::AudioStudioLifecycle::Active { .. }
+        ) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         self.adapt_model_languages();
         self.poll_avatar(Some(ctx.clone()));
         self.poll_microphone_sync(ctx);

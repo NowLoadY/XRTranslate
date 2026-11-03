@@ -54,11 +54,13 @@ pub(super) fn render_task_control_card(
     let model_ready = subtitles || snapshot.preprocessing_models.is_ready(preprocessing);
     let mut start = false;
     let mut restart = false;
+    let mut repair = false;
     let mut pause = false;
     let mut changed = false;
     let mut language_changed = false;
     let mut routing = false;
     let mut preprocessing_action = None;
+    let can_edit = controller.subtitle_edit.is_none();
     components::card(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.add_enabled_ui(!task.is_task_running, |ui| {
@@ -70,6 +72,37 @@ pub(super) fn render_task_control_card(
                 capabilities,
                 language,
             );
+        });
+        ui.add_enabled_ui(!task.is_task_running, |ui| {
+            crate::ui::layout::flow_row(ui, |ui| {
+                ui.label(tr(language, "Subtitle character limit"))
+                    .on_hover_text(tr(language, "Original and translation combined"));
+                changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut task.subtitle_char_limit)
+                            .range(super::super::super::subtitles::SUBTITLE_CHAR_LIMIT_RANGE),
+                    )
+                    .changed();
+                if snapshot.supports_ask
+                    && controller
+                        .subtitles
+                        .cues()
+                        .iter()
+                        .any(|cue| cue.character_count() > task.subtitle_char_limit)
+                {
+                    repair = components::secondary_button_enabled(
+                        ui,
+                        tr(language, "Split long subtitles"),
+                        can_edit
+                            && snapshot
+                                .languages
+                                .for_text()
+                                .select(&task.source_language, &task.target_language)
+                                .is_ok(),
+                    )
+                    .clicked();
+                }
+            });
         });
         if !subtitles {
             ui.add_enabled_ui(!task.is_task_running, |ui| {
@@ -311,6 +344,8 @@ pub(super) fn render_task_control_card(
         MediaAction::StopTranslation
     } else if let Some(action) = preprocessing_action {
         MediaAction::AudioPreprocessing(action)
+    } else if repair {
+        MediaAction::TranslateSubtitles { restart: false }
     } else if start || restart {
         if subtitles {
             MediaAction::TranslateSubtitles { restart }

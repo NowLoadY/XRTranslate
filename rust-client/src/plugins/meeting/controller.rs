@@ -72,7 +72,7 @@ pub struct ActiveMeetingCapture {
 pub type SharedMeetingCapture = Arc<Mutex<Option<ActiveMeetingCapture>>>;
 
 pub struct MeetingController {
-    pub(super) podcast: crate::ui::online_audio::PodcastBrowser,
+    pub(super) resource_browser: crate::ui::resource_browser::ResourceBrowser,
     pub(super) playback: super::playback::MeetingPlayback,
     pub store: Arc<MeetingStore>,
     pub route: MeetingRoute,
@@ -136,7 +136,7 @@ impl MeetingController {
         let recovery_meetings = store.list_meetings(usize::MAX).unwrap_or_default();
         recover_interrupted_recordings(&recovery_meetings);
         Self {
-            podcast: Default::default(),
+            resource_browser: Default::default(),
             playback: Default::default(),
             store,
             route: MeetingRoute::Library,
@@ -263,7 +263,7 @@ impl MeetingController {
     }
 
     pub fn reset_draft(&mut self, mode: MeetingInputMode, snapshot: &MeetingUiSnapshot) {
-        self.podcast = Default::default();
+        self.resource_browser = Default::default();
         self.draft = MeetingDraft {
             mode,
             capture_source: snapshot.default_audio_source,

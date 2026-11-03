@@ -212,6 +212,30 @@ mod tests {
     }
 
     #[test]
+    fn generated_paragraphs_are_cleaned_before_display_and_keep_matching_translations() {
+        let mut timeline = SubtitleTimeline::new();
+        let segment = recognized("Hello.\r\n \t\r\nWelcome.");
+        apply_recognition_snapshot(&mut timeline, vec![segment.clone()]);
+        let id = timeline.cues()[0].id.clone();
+        assert_eq!(timeline.cues()[0].original_text, "Hello.\nWelcome.");
+        timeline.set_translation(&id, "你好。\n\n欢迎。\r\n".into(), "en", "zh");
+        assert_eq!(
+            timeline.cues()[0].translated_text.as_deref(),
+            Some("你好。\n欢迎。")
+        );
+
+        // Cumulative recognition can repeat the original paragraph formatting.
+        // That must not invalidate a translation of the same normalized text.
+        apply_recognition_snapshot(&mut timeline, vec![segment]);
+        assert_eq!(timeline.count(), 1);
+        assert_eq!(
+            timeline.cues()[0].translated_text.as_deref(),
+            Some("你好。\n欢迎。")
+        );
+        assert!(!timeline.cues()[0].playback_text().contains("\n\n"));
+    }
+
+    #[test]
     fn recognition_snapshots_keep_matching_translations_and_invalidate_revised_source() {
         let mut timeline = SubtitleTimeline::new();
         let (cue, metadata) = translation_cue(recognized("Hello."), &timeline).unwrap();

@@ -88,11 +88,15 @@ pub(super) fn render_subtitles_card(
             target = ScrollTarget::Row(index);
         }
     }
-    let idle = controller
+    let task = controller
         .active_task_id
         .as_deref()
-        .and_then(|id| controller.store.get(id))
-        .is_some_and(|task| !task.is_task_running);
+        .and_then(|id| controller.store.get(id));
+    let idle = task.is_some_and(|task| !task.is_task_running);
+    let char_limit = task.map_or_else(
+        super::super::subtitles::default_subtitle_char_limit,
+        |task| task.subtitle_char_limit,
+    );
     let editing_index = controller.subtitle_edit.as_ref().and_then(|draft| {
         controller
             .subtitles
@@ -183,7 +187,16 @@ pub(super) fn render_subtitles_card(
             let index = row.entry;
             let cue = &subtitles.cues()[index];
             let text = (editing_index != Some(index)).then(|| prepare_cue_text(ui, cue).1);
-            components::card(ui, |ui| {
+            let displayed_cue = draft
+                .as_ref()
+                .filter(|draft| draft.cue.id == cue.id)
+                .map_or(cue, |draft| &draft.cue);
+            let border = if displayed_cue.character_count() > char_limit {
+                crate::ui::theme::danger()
+            } else {
+                crate::ui::theme::border().gamma_multiply(0.55)
+            };
+            components::card_with_border(ui, border, |ui| {
                 ui.set_width(ui.available_width());
                 if editing_index == Some(index) {
                     edit_action = super::subtitle_edit::render(
@@ -374,4 +387,64 @@ fn prepare_cue_text(ui: &egui::Ui, cue: &SubtitleCue) -> (f32, CueText) {
 struct CueText {
     original: std::sync::Arc<egui::Galley>,
     translated: Option<std::sync::Arc<egui::Galley>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::media::{
+        backend::MediaSource,
+        subtitles::SubtitleTimeline,
+        task::{MediaTask, SubtitleMode},
+    };
+
+    #[test]
+    fn long_rows_turn_red_and_follow_limit_and_draft_changes_without_a_model() {
+        let storage = tempfile::tempdir().unwrap();
+        let mut controller = MediaController::default();
+        controller.backend = None;
+        controller.storage_dir = storage.path().to_owned();
+        controller.store.tasks.clear();
+        let mut task = MediaTask::new(
+            "Test subtitle border".into(),
+            MediaSource::LocalFile("test.srt".into()),
+            "en".into(),
+            "zh".into(),
+            SubtitleMode::None,
+            Default::default(),
+        );
+        task.subtitle_char_limit = 20;
+        controller.active_task_id = Some(task.id.clone());
+        controller.store.add_or_update(task);
+        controller.subtitles = SubtitleTimeline::parse(
+            "1\n00:00:01,000 --> 00:00:17,000\nFirst sentence. Second sentence.",
+        )
+        .unwrap();
+        let ctx = egui::Context::default();
+        let render = |controller: &mut MediaController| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(700.0, 600.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| render_subtitles_card(controller, crate::i18n::UiLanguage::English, ui),
+            );
+            output.textures_delta.clear();
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape,
+                    egui::Shape::Rect(rect) if rect.stroke.color == crate::ui::theme::danger()
+                )
+            })
+        };
+        assert!(render(&mut controller));
+        controller.store.tasks[0].subtitle_char_limit = 200;
+        assert!(!render(&mut controller));
+        controller.store.tasks[0].subtitle_char_limit = 20;
+        controller.begin_subtitle_edit("srt_0", SubtitleField::Original);
+        controller.subtitle_edit.as_mut().unwrap().cue.original_text = "Short.".into();
+        assert!(!render(&mut controller));
+    }
 }

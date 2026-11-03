@@ -148,6 +148,8 @@ pub struct MediaTask {
     pub subtitle_mode: SubtitleMode,
     #[serde(default)]
     pub subtitle_style: super::subtitles::SubtitleStyle,
+    #[serde(default = "super::subtitles::default_subtitle_char_limit")]
+    pub subtitle_char_limit: usize,
     #[serde(default = "default_video_recognition")]
     pub recognition: RecognitionSettings,
     #[serde(default)]
@@ -241,6 +243,7 @@ impl MediaTask {
             recognition,
             // Until probed, an empty selection lets the shared decoder mix every channel.
             subtitle_style: Default::default(),
+            subtitle_char_limit: super::subtitles::default_subtitle_char_limit(),
             audio_channels: Vec::new(),
             audio_track: AudioTrackSelection::Original,
             original_audio_track: None,
@@ -267,6 +270,11 @@ impl MediaTaskStore {
         {
             for task in &mut store.tasks {
                 task.subtitle_style.normalize();
+                let limits = super::subtitles::SUBTITLE_CHAR_LIMIT_RANGE;
+                task.subtitle_char_limit = task
+                    .subtitle_char_limit
+                    .clamp(*limits.start(), *limits.end());
+                task.subtitles.normalize_text();
                 task.is_task_running = false;
             }
             return store;
@@ -330,11 +338,17 @@ mod tests {
             Some(xrtranslate_protocol::AudioPreprocessing::None)
         );
         let mut legacy = serde_json::to_value(&task).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("subtitle_char_limit");
         legacy["recognition"]
             .as_object_mut()
             .unwrap()
             .remove("preprocessing");
         let mut restored: MediaTask = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.subtitle_char_limit, 200);
+        restored.subtitle_char_limit = 160;
         assert_eq!(
             restored.recognition,
             RecognitionSettings {
@@ -346,11 +360,42 @@ mod tests {
             Some(xrtranslate_protocol::AudioPreprocessing::VocalSeparation);
         let restored: MediaTask =
             serde_json::from_slice(&serde_json::to_vec(&restored).unwrap()).unwrap();
+        assert_eq!(restored.subtitle_char_limit, 160);
         assert_eq!(
             restored.recognition.preprocessing,
             Some(xrtranslate_protocol::AudioPreprocessing::VocalSeparation)
         );
         assert!(!restored.is_task_running);
+    }
+
+    #[test]
+    fn loading_legacy_tasks_cleans_paragraph_breaks_before_display() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut task = MediaTask::new_with_media_type(
+            "Subtitle document".into(),
+            MediaSource::LocalFile("subtitles.srt".into()),
+            MediaType::Subtitles,
+            "en".into(),
+            "zh".into(),
+            SubtitleMode::None,
+            default_video_recognition(),
+        );
+        task.subtitles =
+            SubtitleTimeline::parse("1\n00:00:01,000 --> 00:00:02,000\nFirst.\n").unwrap();
+        let mut legacy = serde_json::to_value(MediaTaskStore { tasks: vec![task] }).unwrap();
+        let cue = &mut legacy["tasks"][0]["subtitles"]["cues"][0];
+        cue["original_text"] = "First.\n\nSecond.".into();
+        cue["translated_text"] = "第一句。\r\r第二句。".into();
+        std::fs::write(
+            directory.path().join("video_tasks.json"),
+            legacy.to_string(),
+        )
+        .unwrap();
+        let restored = MediaTaskStore::load_from_dir(directory.path());
+        let cue = &restored.tasks[0].subtitles.cues()[0];
+        assert_eq!(cue.original_text, "First.\nSecond.");
+        assert_eq!(cue.translated_text.as_deref(), Some("第一句。\n第二句。"));
+        assert_eq!((cue.start_ms, cue.end_ms), (1000, 2000));
     }
 
     #[test]

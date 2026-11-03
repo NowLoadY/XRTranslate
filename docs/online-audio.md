@@ -1,21 +1,36 @@
-# Online audio
+# Online media
 
 Users choose the plugin before entering a link. No shared link inbox or automatic
-plugin switch is involved. The plugins share discovery and decoding code, not UI
-ownership or session state.
+plugin switch is involved. The plugins share discovery, resource selection and
+decoding; each keeps its own input and session state.
 
 | Location | Accepted online content | Processing |
 | --- | --- | --- |
-| Meeting → New meeting → Audio source → Online stream / RSS | Live radio, live HLS, RSS items explicitly marked live | Realtime recognition and meeting translation; pause skips incoming audio; finish drains accepted work |
+| Meeting → New meeting → Audio source → Online stream | Live radio, live HLS, RSS items explicitly marked live | Realtime recognition and meeting translation; pause skips incoming audio; finish drains accepted work |
 | Media → Import media → existing file/link field | Recorded podcast episodes, RSS episodes, finite online audio/video | Existing file-style recognition, subtitle translation, playback and seeking |
 
-Load the link/RSS and select an item before starting. Mixed feeds display item
-status; the selected plugin rejects incompatible items in place. Upcoming and
+Paste a browser address or share text. Discovery starts automatically after input
+settles; a single result is selected directly, while multiple results open the
+shared resource selection page. Its searchable, scrollable card grid shows public
+artwork when available, otherwise a media icon. Discovery exposes the same media
+resource type for HTML players, direct URLs and feeds. Incompatible cards are
+disabled for the selected plugin. Upcoming and
 ended live items do not become recordings automatically. Existing local file and
 meeting-recording workflows remain available.
 
 ## Source discovery
 
+- The shared input parser extracts HTTP(S) links from share text, trims surrounding
+  punctuation and supplies HTTPS for bare domains. Existing local files retain
+  their file-import path. Changing the input cancels the previous lookup.
+- Ordinary HTML pages use their audio/video players, Open Graph audio/video and
+  structured `AudioObject`/`VideoObject` content URLs. If none resolves, discovery
+  follows advertised RSS/Atom feeds, then public media download links. Relative
+  URLs, HTML base URLs and redirects share the same resolver.
+- A page with several feeds prefers the one closest to its address. When a feed
+  contains an entry linking to the current page (including its canonical URL),
+  only that episode is selected. Discovery deduplicates URLs and bounds traversal
+  to avoid cycles; it does not crawl arbitrary page links or execute JavaScript.
 - RSS `<item>/<enclosure>` and Atom enclosure links describe recorded episodes.
 - Podcasting 2.0 `<podcast:liveItem>` uses its `status`, rather than guessing from
   scheduled times. Standard and alternate enclosures are supported; an HTML
@@ -56,6 +71,14 @@ wait for accepted recognition and translations. Source audio retention is curren
 available for the existing device-capture workflow, not network live input.
 
 ## Verification
+
+On 2026-11-03, real-link checks covered Changelog browser pages and feeds, exact
+episode selection, share text, bare domains, Apple Podcasts, Xiaoyuzhou, KQED live
+radio, direct MP3 and Samplelib pages with multiple HTML audio players. The desktop
+UI was checked for automatic discovery, shared artwork/icon card grids, search,
+selection, scrolling, returning to the input and replacing a pending lookup.
+Targeted HTTP checks also covered relative sources, HTML entities, structured
+media, redirects, feed/page matching, discovery cycles and pages without audio.
 
 Run the deterministic import, source-selection and meeting lifecycle tests:
 
