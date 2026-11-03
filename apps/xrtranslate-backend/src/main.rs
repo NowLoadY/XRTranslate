@@ -483,20 +483,21 @@ async fn main() {
 }
 
 async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Arguments::parse();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(format!(
             "warn,xrtranslate_backend=info,{}",
             std::env::var("RUST_LOG").unwrap_or_default(),
         )))
+        .with_writer(std::io::stderr)
         .with_ansi(false)
         .with_target(false)
         .init();
 
-    info!("XRTranslate backend started");
-    let args = Arguments::parse();
     if let Some(command) = &args.command {
         return diagnostics::run(&args, command).await;
     }
+    info!("XRTranslate backend started");
     let configured_root = args
         .config
         .parent()
