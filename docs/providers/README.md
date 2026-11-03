@@ -85,7 +85,8 @@ enhancer failure switches all unprocessed audio to aligned raw bypass. Draining
 preserves the complete raw tail and excludes synthetic padding from ASR and its
 timestamps. GTCRN enhancement feeds VAD and speaker analysis; ASR still receives
 raw PCM. Vocal separation instead supplies isolated vocals to the shared VAD
-and ASR path, retaining the user's VAD threshold and pause settings.
+and ASR path, retaining the same configured threshold, pause, duration limit,
+and boundary overlap.
 
 Complete turns and overlapping windows require sufficient new speech duration
 and density. Clear short words and continuations of accepted windows are retained;

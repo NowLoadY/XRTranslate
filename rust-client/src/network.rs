@@ -552,6 +552,7 @@ async fn run_session(
     let (source_lang, target_lang) = languages.wire();
     let mut translation_options = translation_options(languages);
     let _ = event_tx.send(SessionEvent::Status("Connecting to backend…".into()));
+    let mut playback_error = None;
     let text_only = audio_rx.is_none();
     let mut url = match reqwest::Url::parse(&server_url) {
         Ok(url) => url,
@@ -565,7 +566,7 @@ async fn run_session(
         .filter(|(key, _)| {
             !matches!(
                 key.as_ref(),
-                "text_only" | "conversation_id" | "input_source"
+                "text_only" | "tts" | "conversation_id" | "input_source"
             )
         })
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
@@ -574,6 +575,13 @@ async fn run_session(
     if text_only {
         url.query_pairs_mut().append_pair("text_only", "true");
     }
+    if tts_handle.is_some() {
+        url.query_pairs_mut().append_pair("tts", "true");
+    }
+    log::info!(
+        "Connecting translation session: text_only={text_only}, speech_output={}",
+        tts_handle.is_some()
+    );
     let input_source = if text_only {
         "text"
     } else {
@@ -681,6 +689,8 @@ async fn run_session(
                 }
             }
         });
+    } else {
+        drop(pcm_tx);
     }
     let mut turn_started = false;
     let mut finish_sent = false;
@@ -820,11 +830,18 @@ async fn run_session(
                     }
                     Some(Ok(Message::Binary(audio))) => {
                         if cancel_requested.load(Ordering::Acquire){continue;}
+                        log::debug!("Received TTS audio: bytes={}", audio.len());
                         if let Some(tts) = &tts_handle {
-                            if let Err(error) = tts.play_pcm(&audio) {
-                                let _ = event_tx.send(SessionEvent::BackendError {
-                                    message: format!("TTS playback failed: {error}"),
-                                });
+                            match tts.play_pcm(&audio) {
+                                Err(error) if playback_error.as_ref() != Some(&error) => {
+                                    log::error!("TTS playback failed: {error}");
+                                    let _ = event_tx.send(SessionEvent::BackendError {
+                                        message: format!("TTS playback failed: {error}"),
+                                    });
+                                    playback_error = Some(error);
+                                }
+                                Ok(()) => playback_error = None,
+                                Err(_) => {}
                             }
                         }
                         let _ = event_tx.send(SessionEvent::TtsAudio(audio.to_vec()));
@@ -1428,12 +1445,13 @@ fn forward_server_event(
             }
         }
         Some("error") => {
+            let message = data
+                .and_then(|d| d.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("Unknown backend error");
+            log::error!("Translation session {stream_id}: {message}");
             let _ = event_tx.send(SessionEvent::BackendError {
-                message: data
-                    .and_then(|d| d.get("message"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("Unknown backend error")
-                    .into(),
+                message: message.into(),
             });
         }
         _ => {}

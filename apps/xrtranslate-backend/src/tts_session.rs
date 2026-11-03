@@ -16,7 +16,7 @@ use tokio::{
     sync::{mpsc, watch},
     time::Instant,
 };
-use tracing::warn;
+use tracing::{info, warn};
 use xrtranslate_config::AppConfig;
 use xrtranslate_engine::TtsEpoch;
 use xrtranslate_inference::{InferenceError, SynthesizedPcm};
@@ -98,6 +98,9 @@ pub(crate) async fn run_tts_worker(
 ) {
     while let Some(job) = jobs.recv().await {
         let started = Instant::now();
+        let mut audio_bytes = 0;
+        let mut audio_chunks = 0;
+        let mut completed = false;
         let output = if *generation.borrow_and_update() != job.generation
             || *epoch.borrow_and_update() != job.tts_epoch
         {
@@ -110,6 +113,8 @@ pub(crate) async fn run_tts_worker(
                 output = async {
                     for chunk in &job.text_chunks {
                         adapter.synthesize_stream(chunk, &job.voice_name, &job.target_language, |audio| {
+                            audio_bytes += audio.bytes.len();
+                            audio_chunks += 1;
                             let results = results.clone();
                             async move {
                                 results.send(TtsSynthesisResult {
@@ -119,12 +124,15 @@ pub(crate) async fn run_tts_worker(
                             }
                         }).await?;
                     }
+                    completed = true;
                     Ok(())
                 } => output,
             }
         };
         if let Err(error) = &output {
-            warn!(%error, elapsed_ms = millis(started.elapsed()), "TTS synthesis failed");
+            warn!(%error, audio_bytes, elapsed_ms = millis(started.elapsed()), "TTS synthesis failed");
+        } else {
+            info!(completed, audio_bytes, audio_chunks, elapsed_ms = millis(started.elapsed()), "TTS synthesis finished");
         }
         if results
             .send(TtsSynthesisResult {

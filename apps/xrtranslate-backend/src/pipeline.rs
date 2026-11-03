@@ -212,8 +212,6 @@ pub(crate) struct TranslationOutput {
 pub(crate) struct NativePipeline {
     vad: SileroVad,
     endpoint: EndpointDetector,
-    endpoint_config: EndpointConfig,
-    base_endpoint_config: EndpointConfig,
     preprocessing: AudioPreprocessor,
     preprocessing_mode: AudioPreprocessing,
     vocal_activity: VocalActivity,
@@ -604,8 +602,6 @@ impl NativePipeline {
         Ok(Self {
             vad,
             endpoint,
-            endpoint_config,
-            base_endpoint_config: endpoint_config,
             preprocessing,
             preprocessing_mode,
             vocal_activity: VocalActivity::default(),
@@ -684,7 +680,7 @@ impl NativePipeline {
                     .vocal_activity
                     .evidence(&raw_samples[..real_samples], probability);
             }
-            let active = vad_is_active(probability, self.endpoint_config.speech_threshold);
+            let active = vad_is_active(probability, self.endpoint.config().speech_threshold);
             self.observe_vad_activity(active);
 
             if self.fixed_window.is_some() {
@@ -750,13 +746,13 @@ impl NativePipeline {
                 && !self.preprocessing.is_vocal()
                 && self.speech_gate.allows_onset(
                     self.endpoint.active_frame_count() * FRAME_SAMPLES,
-                    self.endpoint_config.speech_threshold,
+                    self.endpoint.config().speech_threshold,
                 )
             {
                 // Every live connector waits for the same speech evidence as
                 // buffered recognition. Include the retained onset once ready.
                 let (capture, input) = LiveCapture::begin(
-                    self.endpoint_config,
+                    self.endpoint.config(),
                     &self.endpoint.active_samples()
                         [..self.endpoint.active_samples().len() - padding],
                     self.processed_samples,
@@ -896,19 +892,14 @@ impl NativePipeline {
         continuous_recognition: bool,
         audio_source: AudioSource,
     ) -> Result<(), String> {
-        let mut config = self.base_endpoint_config;
+        let mut config = self.endpoint.config();
         if let Some(threshold) = vad_threshold {
             config.speech_threshold = threshold;
         }
         if let Some(silence_ms) = vad_silence_ms {
             config.silence_frames_to_finalize = frames_for_ms(silence_ms);
         }
-        self.base_endpoint_config = config;
-        if self.preprocessing.is_vocal() {
-            config = preprocessing::vocal_endpoint_config(config);
-        }
         self.endpoint = EndpointDetector::new(config).map_err(|error| error.to_string())?;
-        self.endpoint_config = config;
         self.speech_gate = SpeechGate::new(
             (config.max_active_frames
                 + config.pre_roll_frames
@@ -997,7 +988,7 @@ impl NativePipeline {
     fn finish_utterance(&mut self, timed: TimedUtterance) -> Option<PipelineEvent> {
         let valid = self
             .speech_gate
-            .accept(&timed.utterance, self.endpoint_config.speech_threshold);
+            .accept(&timed.utterance, self.endpoint.config().speech_threshold);
         if let Some(capture) = self.live_capture.take() {
             capture.finish(valid.then_some(timed));
             None

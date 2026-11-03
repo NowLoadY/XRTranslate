@@ -423,6 +423,7 @@ pub struct AudioStudioController {
     pending_graph_revision: Option<u64>,
     active_graph_revision: Option<u64>,
     failed_graph_revision: Option<u64>,
+    routing_issue: Option<String>,
 }
 
 #[cfg(test)]
@@ -516,6 +517,7 @@ impl AudioStudioController {
                 pending_graph_revision: None,
                 active_graph_revision: None,
                 failed_graph_revision: None,
+                routing_issue: None,
             },
             Err(error) => Self {
                 repository,
@@ -528,6 +530,7 @@ impl AudioStudioController {
                 pending_graph_revision: None,
                 active_graph_revision: None,
                 failed_graph_revision: None,
+                routing_issue: None,
             },
         }
     }
@@ -1060,6 +1063,15 @@ impl AudioStudioController {
             resolve_graph_devices(self.selected_graph(), &self.settings.device_defaults, host);
         let has_render_route = has_enabled_render_route(&graph);
         let validation = validate_for_host(&graph, host);
+        let issue = (has_render_route && !validation.is_valid()).then(|| {
+            AudioStudioControllerError::InvalidGraph(validation.clone()).to_string()
+        });
+        if self.routing_issue != issue {
+            if let Some(message) = &issue {
+                log::warn!("Audio routing unavailable: {message}");
+            }
+            self.routing_issue = issue;
+        }
         if !has_render_route || !validation.is_valid() {
             return match self.lifecycle {
                 AudioStudioLifecycle::Active { .. } => self.deactivate(),
@@ -1461,6 +1473,7 @@ impl AudioStudioController {
     }
 
     fn record_lifecycle_error(&mut self, message: String) {
+        log::error!("Audio routing failed: {message}");
         let graph_id = self.lifecycle.graph_id().cloned();
         self.last_error = Some(message.clone());
         self.lifecycle = AudioStudioLifecycle::Error { graph_id, message };

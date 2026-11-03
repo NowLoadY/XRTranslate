@@ -780,3 +780,6 @@ impl ActiveUtterance {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

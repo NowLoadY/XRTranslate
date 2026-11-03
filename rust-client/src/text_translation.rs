@@ -68,6 +68,7 @@ impl TextConnection {
 
 struct TextTask {
     scope: Arc<ChannelScope>,
+    host_tts: bool,
     pending: Option<String>,
     languages: LanguageSelection,
     context: TaskContext,
@@ -101,6 +102,7 @@ impl TextTask {
         same_languages
             && compatible_context
             && self.scope.publish_to_host_outputs == other.scope.publish_to_host_outputs
+            && self.host_tts == other.host_tts
             && self.scope.text_audio_source() == other.scope.text_audio_source()
     }
 
@@ -120,6 +122,49 @@ impl TextTask {
 
     fn is_idle(&self) -> bool {
         self.terminal && self.scope.finished.load(Ordering::Acquire) && self.connection.drained
+    }
+
+    fn connect(
+        &mut self,
+        server_url: &str,
+        graphs: PromptGraphSet,
+        tts: Option<crate::audio::TtsPlayerHandle>,
+        tts_enabled: bool,
+        ctx: Option<egui::Context>,
+    ) {
+        let session = network::start_text_session(
+            self.connection.tx.clone(),
+            SessionConfig {
+                input_sample_rate: 16_000,
+                input_channels: 1,
+                save_separated_audio: false,
+                preprocessing: None,
+                context: self.context.clone(),
+                server_url: server_url.to_owned(),
+                languages: self.languages,
+                external_audio_gate: ExternalAudioGate::default(),
+                publish_to_host_outputs: self.scope.publish_to_host_outputs,
+                tts: tts.filter(|_| self.host_tts),
+                egui_ctx: ctx,
+                vad_threshold: 0.0,
+                vad_silence_ms: 0,
+                continuous_recognition: false,
+                audio_source: self
+                    .scope
+                    .text_audio_source()
+                    .unwrap_or(CaptureSource::Microphone),
+                finish_when_audio_ends: false,
+                workload: xrtranslate_protocol::InferenceWorkload::Realtime,
+                prompt_graphs: Some(graphs),
+            },
+        );
+        // Queue this before the first text request, including
+        // when the UI switch was enabled before startup.
+        session.set_tts_enabled(tts_enabled && session.uses_host_tts());
+        self.scope
+            .stream_id
+            .store(session.stream_id(), Ordering::Release);
+        self.connection.session = Some(session);
     }
 
     fn send_pending(&mut self) -> Result<(), String> {
@@ -176,6 +221,8 @@ impl TextTask {
 pub(crate) struct TextTranslation {
     tasks: Vec<TextTask>,
     completed: VecDeque<CompletedText>,
+    errors: Vec<String>,
+    tts_enabled: bool,
     backend_preparing: bool,
     next_poll: Instant,
 }
@@ -197,6 +244,8 @@ impl Default for TextTranslation {
         Self {
             tasks: Vec::new(),
             completed: VecDeque::new(),
+            errors: Vec::new(),
+            tts_enabled: false,
             backend_preparing: false,
             next_poll: Instant::now(),
         }
@@ -249,9 +298,17 @@ impl TextTranslation {
             while let Ok(event) = task.connection.rx.try_recv() {
                 match event {
                     SessionEvent::StreamEnded { .. } => task.connection.drained = true,
-                    SessionEvent::Error(_)
-                    | SessionEvent::BackendError { .. }
-                    | SessionEvent::Disconnected(_) => task.connection.close(),
+                    SessionEvent::Error(message) | SessionEvent::BackendError { message } => {
+                        // Speech can fail after the final text result. Keep its
+                        // diagnostic visible even though translation completed.
+                        if task.scope.active.load(Ordering::Acquire)
+                            && task.scope.publish_to_host_outputs
+                        {
+                            self.errors.push(message);
+                        }
+                        task.connection.close();
+                    }
+                    SessionEvent::Disconnected(_) => task.connection.close(),
                     _ => {}
                 }
             }
@@ -350,11 +407,13 @@ impl TextTranslation {
             .as_ref()
             .is_none_or(|binding| binding.publish_to_host_outputs());
         let scope = ChannelScope::text(owner, publish_to_host_outputs);
+        let host_tts = task.plugin.as_ref().is_none_or(|binding| binding.host_tts);
         scope
             .asr_only
             .store(task.languages.asr_only(), Ordering::Release);
         self.tasks.push(TextTask {
             scope,
+            host_tts,
             pending: Some(text),
             languages: task.languages,
             context: task.context,
@@ -378,6 +437,20 @@ impl TextTranslation {
         }
     }
 
+    pub(crate) fn set_tts_enabled(&mut self, enabled: bool) {
+        if self.tts_enabled == enabled {
+            return;
+        }
+        self.tts_enabled = enabled;
+        for task in &self.tasks {
+            if let Some(session) = &task.connection.session
+                && session.uses_host_tts()
+            {
+                session.set_tts_enabled(enabled);
+            }
+        }
+    }
+
     pub(crate) fn cancel_owner(&mut self, owner: &TranslationSessionOwner) {
         self.completed.retain(|result| result.owner != *owner);
         self.tasks.retain(|task| {
@@ -395,6 +468,7 @@ impl TextTranslation {
 
     pub(crate) fn reset(&mut self) {
         self.completed.clear();
+        self.errors.clear();
         for task in self.tasks.drain(..) {
             task.cancel();
         }
@@ -406,12 +480,12 @@ impl TextTranslation {
         backend: &mut BackendManager,
         server_url: &str,
         graphs: PromptGraphSet,
+        tts: impl Fn() -> Option<crate::audio::TtsPlayerHandle>,
         ctx: Option<egui::Context>,
         target: &Sender<TaskEvent>,
     ) -> TextPoll {
         self.retire_finished();
         self.reuse_connections();
-        let mut errors = Vec::new();
         let waiting: Vec<_> = (0..self.tasks.len())
             .filter(|&index| self.needs_connection(index))
             .collect();
@@ -431,36 +505,13 @@ impl TextTranslation {
                     self.backend_preparing = false;
                     for index in waiting {
                         let task = &mut self.tasks[index];
-                        let session = network::start_text_session(
-                            task.connection.tx.clone(),
-                            SessionConfig {
-                                input_sample_rate: 16_000,
-                                input_channels: 1,
-                                save_separated_audio: false,
-                                preprocessing: None,
-                                context: task.context.clone(),
-                                server_url: server_url.to_owned(),
-                                languages: task.languages,
-                                external_audio_gate: ExternalAudioGate::default(),
-                                publish_to_host_outputs: task.scope.publish_to_host_outputs,
-                                tts: None,
-                                egui_ctx: ctx.clone(),
-                                vad_threshold: 0.0,
-                                vad_silence_ms: 0,
-                                continuous_recognition: false,
-                                audio_source: task
-                                    .scope
-                                    .text_audio_source()
-                                    .unwrap_or(CaptureSource::Microphone),
-                                finish_when_audio_ends: false,
-                                workload: xrtranslate_protocol::InferenceWorkload::Realtime,
-                                prompt_graphs: Some(graphs.clone()),
-                            },
+                        task.connect(
+                            server_url,
+                            graphs.clone(),
+                            tts(),
+                            self.tts_enabled,
+                            ctx.clone(),
                         );
-                        task.scope
-                            .stream_id
-                            .store(session.stream_id(), Ordering::Release);
-                        task.connection.session = Some(session);
                     }
                 }
                 Ok(BackendStart::Starting(_)) => self.backend_preparing = true,
@@ -468,7 +519,7 @@ impl TextTranslation {
                     self.backend_preparing = false;
                     for index in waiting {
                         let task = &mut self.tasks[index];
-                        task.fail(error.clone(), target, &mut errors);
+                        task.fail(error.clone(), target, &mut self.errors);
                     }
                 }
             }
@@ -479,11 +530,11 @@ impl TextTranslation {
                     SessionEvent::Connected => {
                         task.emit(event, target);
                         if let Err(error) = task.send_pending() {
-                            task.fail(error, target, &mut errors);
+                            task.fail(error, target, &mut self.errors);
                         }
                     }
                     SessionEvent::Error(error) => {
-                        task.fail(error.clone(), target, &mut errors);
+                        task.fail(error.clone(), target, &mut self.errors);
                     }
                     SessionEvent::BackendError { message } => {
                         let error = message.clone();
@@ -491,11 +542,11 @@ impl TextTranslation {
                         task.emit(event, target);
                         task.finish(error.clone(), target);
                         if task.scope.publish_to_host_outputs {
-                            errors.push(error);
+                            self.errors.push(error);
                         }
                     }
                     SessionEvent::Disconnected(reason) => {
-                        task.fail(reason.clone(), target, &mut errors);
+                        task.fail(reason.clone(), target, &mut self.errors);
                     }
                     SessionEvent::Translation {
                         revisable,
@@ -526,7 +577,7 @@ impl TextTranslation {
                 } else {
                     "Text translation timed out"
                 };
-                task.fail(error.into(), target, &mut errors);
+                task.fail(error.into(), target, &mut self.errors);
             }
         }
         if self
@@ -538,7 +589,7 @@ impl TextTranslation {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         TextPoll {
-            errors,
+            errors: std::mem::take(&mut self.errors),
             completed: std::mem::take(&mut self.completed),
         }
     }
@@ -553,8 +604,213 @@ impl Drop for TextTranslation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_coordinator::{
+        PluginSessionBinding, PluginSessionOwner, SessionOutputPolicy,
+    };
+    use futures::{SinkExt, StreamExt};
+    use serde_json::{Value, json};
+    use tokio_tungstenite::tungstenite::Message;
     use xrtranslate_prompt::{ContextFacts, SurroundingSource};
     use xrtranslate_protocol::InferenceWorkload;
+
+    fn speech_task(host_tts: bool) -> TranslationTask {
+        let plugin = (!host_tts).then(|| {
+            PluginSessionBinding::text(
+                PluginSessionOwner::new(
+                    "media",
+                    uuid::Uuid::new_v4().to_string(),
+                    "Media",
+                    "Media",
+                    "Translating",
+                ),
+                SessionOutputPolicy::Host,
+            )
+        });
+        TranslationTask::text(
+            "Hello.".into(),
+            LanguageSelection::parse("en", "zh").unwrap(),
+            plugin,
+        )
+        .with_context(TaskContext::conversation("typing-test"))
+    }
+
+    async fn speech_backend() -> (String, Receiver<Value>, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("ws://{}", listener.local_addr().unwrap());
+        let (sent, received) = crossbeam_channel::unbounded();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    sent.send(json!({"query": request.uri().query()})).unwrap();
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
+            socket
+                .send(Message::Text(
+                    json!({"action": "session_ready", "data": {}})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            while let Some(Ok(message)) = socket.next().await {
+                let Message::Text(text) = message else {
+                    continue;
+                };
+                let command: Value = serde_json::from_str(&text).unwrap();
+                if command["action"] == "session_config" {
+                    continue;
+                }
+                let translate = command["action"] == "translate_text";
+                sent.send(command).unwrap();
+                if translate {
+                    socket
+                        .send(Message::Binary(vec![1, 0, 2, 0].into()))
+                        .await
+                        .unwrap();
+                    socket
+                        .send(Message::Text(
+                            json!({"action": "recognition_stream_ended"})
+                                .to_string()
+                                .into(),
+                        ))
+                        .await
+                        .unwrap();
+                }
+            }
+        });
+        (address, received, server)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn typing_speech_follows_startup_toggle_and_reused_connections_without_enabling_plugins()
+    {
+        for (host_tts, initially_enabled) in [(true, true), (true, false), (false, true)] {
+            let (address, wire, server) = speech_backend().await;
+            let audio = crate::audio::AudioSystem::new();
+            let mut translator = TextTranslation::default();
+            translator.set_tts_enabled(initially_enabled);
+            translator.submit(speech_task(host_tts)).unwrap();
+            translator.tasks[0].connect(
+                &address,
+                PromptGraphSet {
+                    graph: Default::default(),
+                },
+                Some(audio.tts_handle(44_100)),
+                translator.tts_enabled,
+                None,
+            );
+            let receive = || wire.recv_timeout(Duration::from_secs(3)).unwrap();
+            let handshake = receive();
+            let query = handshake["query"].as_str().unwrap();
+            assert!(query.contains("text_only=true"));
+            assert_eq!(query.contains("tts=true"), host_tts);
+            assert_eq!(
+                receive(),
+                json!({"action": "toggle_feature", "feature": "tts", "enabled": host_tts && initially_enabled})
+            );
+            let task = &mut translator.tasks[0];
+            let session = task.connection.session.as_ref().unwrap();
+            let stream = session.stream_id();
+            assert_eq!(session.uses_host_tts(), host_tts);
+            task.send_pending().unwrap();
+            assert_eq!(receive()["action"], "translate_text");
+            let mut audio_received = false;
+            loop {
+                match task
+                    .connection
+                    .rx
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                {
+                    SessionEvent::TtsAudio(bytes) => {
+                        assert_eq!(bytes, [1, 0, 2, 0]);
+                        audio_received = true;
+                    }
+                    SessionEvent::StreamEnded { .. } => break,
+                    SessionEvent::BackendError { message } if host_tts => {
+                        // This transport test deliberately has no hardware route.
+                        assert!(message.contains("No active speech output"), "{message}");
+                    }
+                    SessionEvent::Error(error) | SessionEvent::BackendError { message: error } => {
+                        panic!("{error}")
+                    }
+                    _ => {}
+                }
+            }
+            assert!(audio_received);
+            task.terminal = true;
+            task.scope.finished.store(true, Ordering::Release);
+            task.connection.drained = true;
+
+            translator.set_tts_enabled(!initially_enabled);
+            if host_tts {
+                assert_eq!(
+                    receive(),
+                    json!({"action": "toggle_feature", "feature": "tts", "enabled": !initially_enabled})
+                );
+            }
+            translator.submit(speech_task(host_tts)).unwrap();
+            let reused = translator
+                .tasks
+                .last()
+                .unwrap()
+                .connection
+                .session
+                .as_ref()
+                .unwrap();
+            assert_eq!(reused.stream_id(), stream);
+            assert_eq!(reused.uses_host_tts(), host_tts);
+            assert_eq!(receive()["action"], "translate_text");
+            reused.finish();
+            assert_eq!(receive()["event"], "input_ended");
+            translator.reset();
+            server.abort();
+            let _ = server.await;
+        }
+    }
+
+    #[test]
+    fn silent_plugin_tasks_cannot_reuse_typing_speech_connections() {
+        let mut translator = TextTranslation::default();
+        translator.submit(speech_task(true)).unwrap();
+        translator.submit(speech_task(false)).unwrap();
+        assert_eq!(
+            translator.tasks[0].scope.publish_to_host_outputs,
+            translator.tasks[1].scope.publish_to_host_outputs
+        );
+        assert!(!translator.tasks[0].compatible_connection(&translator.tasks[1]));
+    }
+
+    #[test]
+    fn late_speech_failures_are_reported_after_translation_completes() {
+        let mut translator = TextTranslation::default();
+        translator.submit(speech_task(true)).unwrap();
+        let task = &mut translator.tasks[0];
+        task.terminal = true;
+        task.scope.finished.store(true, Ordering::Release);
+        task.segments.insert(1, "你好。".into());
+        task.connection
+            .tx
+            .send(SessionEvent::BackendError {
+                message: "TTS failed: unavailable".into(),
+            })
+            .unwrap();
+        translator.retire_finished();
+        assert_eq!(
+            translator.completed.pop_front().unwrap().translated,
+            "你好。"
+        );
+        assert_eq!(translator.errors, ["TTS failed: unavailable"]);
+        translator.retire_finished();
+        assert_eq!(translator.errors.len(), 1);
+        translator.reset();
+        assert!(translator.errors.is_empty());
+    }
 
     #[test]
     fn offline_snapshots_do_not_change_live_conversation_or_each_others_facts() {

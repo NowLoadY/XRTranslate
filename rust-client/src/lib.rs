@@ -39,6 +39,7 @@ mod history;
 mod i18n;
 mod media_host;
 pub(crate) mod media_import;
+mod logging;
 mod model_install;
 mod network;
 #[cfg(any(windows, target_os = "linux"))]
@@ -5496,6 +5497,7 @@ impl XRTranslateApp {
             && crate::feature_access::is_available(crate::feature_access::Feature::TtsPlayback);
         self.audio_system.set_tts_enabled(self.tts_enabled);
         self.save_settings();
+        self.text_translation.set_tts_enabled(self.tts_enabled);
         if !self.tts_enabled {
             self.audio_system.clear_tts_playback();
         }
@@ -5936,11 +5938,16 @@ impl XRTranslateApp {
         if !self.translation_enabled {
             return;
         }
+        self.text_translation.set_tts_enabled(self.tts_enabled);
         let output = self.text_translation.poll(
             &mut self.backend_manager,
             &self.server_url,
             PromptGraphSet {
                 graph: self.prompt_library.active_graph(),
+            },
+            || {
+                crate::feature_access::is_available(crate::feature_access::Feature::TtsPlayback)
+                    .then(|| self.audio_system.tts_handle(self.service_config.tts_sample_rate()))
             },
             Some(ctx.clone()),
             &self.event_tx,
@@ -6896,7 +6903,7 @@ fn cleanup_runtime_cache() {
 
 pub fn run() -> eframe::Result<()> {
     #[cfg(not(target_os = "android"))]
-    env_logger::init();
+    logging::init();
 
     #[cfg(debug_assertions)]
     {

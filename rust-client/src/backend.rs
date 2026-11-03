@@ -1,9 +1,10 @@
+use crate::logging::{LogPolicy, RotatingLog};
 #[cfg(windows)]
 use crate::child_process::KillOnCloseJob;
 use serde_json::Value;
 use std::{
     fs,
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Read, Write},
     net::{TcpStream, ToSocketAddrs},
     path::PathBuf,
     process::{Child, Command, Stdio},
@@ -11,11 +12,8 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
-use xrtranslate_config::{AppConfig, RuntimeLayout, StorageConfig};
+use xrtranslate_config::{AppConfig, RuntimeLayout};
 
-const MIN_LOG_FILE_BYTES: u64 = 64 * 1024;
-const MAX_LOG_FILE_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_LOG_FILES: usize = 8;
 const DIAGNOSTIC_READ_BYTES: usize = 64 * 1024;
 const STARTUP_ERROR_MARKER: &str = "[XRTRANSLATE_STARTUP_ERROR]";
 const CORPUS_SERVER_URL: &str = "http://127.0.0.1:7766";
@@ -50,8 +48,8 @@ pub struct BackendManager {
     project_root: PathBuf,
     runtime_layout: RuntimeLayout,
     llama_server_path: String,
-    log_policy: BackendLogPolicy,
-    corpus_log_policy: BackendLogPolicy,
+    log_policy: LogPolicy,
+    corpus_log_policy: LogPolicy,
     processes: Option<Arc<Mutex<BackendProcesses>>>,
 }
 
@@ -97,7 +95,7 @@ impl BackendManager {
             .map(|config| config.model_manager.llama_server_path.clone())
             .unwrap_or_default();
         let llama_server_path = preferred_llama_server_path(&layout, &configured_path);
-        let log_policy = BackendLogPolicy::new(
+        let log_policy = LogPolicy::new(
             &project_root,
             config
                 .as_ref()
@@ -105,7 +103,7 @@ impl BackendManager {
                 .unwrap_or_default(),
             "backend_startup.log",
         );
-        let corpus_log_policy = BackendLogPolicy::new(
+        let corpus_log_policy = LogPolicy::new(
             &project_root,
             config
                 .as_ref()
@@ -272,14 +270,12 @@ impl BackendManager {
         let mut command = Command::new(executable);
         command.current_dir(&self.project_root).stdin(Stdio::null());
 
-        let mirror_to_console = std::env::var_os("XRTRANSLATE_BACKEND_CONSOLE_LOG").is_some();
         let capture_output = fs::create_dir_all(&self.log_policy.directory).is_ok();
         if capture_output {
             command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        } else if mirror_to_console {
-            command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
         } else {
-            command.stdout(Stdio::null()).stderr(Stdio::null());
+            log::error!("Cannot create backend log directory; forwarding logs to the console");
+            command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
         }
 
         crate::child_process::hide_console(&mut command);
@@ -562,10 +558,9 @@ impl BackendProcesses {
         let capture_output = fs::create_dir_all(&manager.corpus_log_policy.directory).is_ok();
         if capture_output {
             command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        } else if mirror_to_console {
-            command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
         } else {
-            command.stdout(Stdio::null()).stderr(Stdio::null());
+            log::error!("Cannot create backend log directory; forwarding logs to the console");
+            command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
         }
         crate::child_process::hide_console(&mut command);
         let mut child = crate::child_process::spawn(command)
@@ -586,59 +581,6 @@ impl BackendProcesses {
     }
 }
 
-#[derive(Clone)]
-struct BackendLogPolicy {
-    directory: PathBuf,
-    file_name: String,
-    max_file_bytes: u64,
-    retained_files: usize,
-}
-
-impl BackendLogPolicy {
-    fn new(project_root: &std::path::Path, storage: StorageConfig, file_name: &str) -> Self {
-        let directory = if storage.log_dir.as_os_str().is_empty() {
-            project_root.join("runtime").join("logs")
-        } else {
-            absolute_from_project_root(project_root, storage.log_dir)
-        };
-        Self {
-            directory,
-            file_name: file_name.to_owned(),
-            max_file_bytes: storage
-                .log_max_bytes
-                .clamp(MIN_LOG_FILE_BYTES, MAX_LOG_FILE_BYTES),
-            retained_files: storage.log_retained_files.clamp(1, MAX_LOG_FILES),
-        }
-    }
-
-    fn active_path(&self) -> PathBuf {
-        self.directory.join(&self.file_name)
-    }
-
-    fn archive_path(&self, index: usize) -> PathBuf {
-        self.directory.join(format!("{}.{}", self.file_name, index))
-    }
-
-    fn rotate(&self) {
-        let archive_count = self.retained_files.saturating_sub(1);
-        if archive_count == 0 {
-            let _ = fs::remove_file(self.active_path());
-            return;
-        }
-        let _ = fs::remove_file(self.archive_path(archive_count));
-        for index in (1..archive_count).rev() {
-            let _ = fs::rename(self.archive_path(index), self.archive_path(index + 1));
-        }
-        let _ = fs::rename(self.active_path(), self.archive_path(1));
-    }
-
-    fn read_current(&self, maximum_bytes: usize) -> String {
-        let mut bytes = Vec::new();
-        append_file_tail(&mut bytes, &self.active_path(), maximum_bytes);
-        String::from_utf8_lossy(&bytes).into_owned()
-    }
-}
-
 fn startup_error_summary(log: &str) -> Option<String> {
     log.lines().rev().find_map(|line| {
         line.find(STARTUP_ERROR_MARKER).and_then(|index| {
@@ -654,7 +596,7 @@ struct BoundedLogCapture {
 }
 
 impl BoundedLogCapture {
-    fn start(child: &mut Child, policy: BackendLogPolicy, mirror_to_console: bool) -> Self {
+    fn start(child: &mut Child, policy: LogPolicy, mirror_to_console: bool) -> Self {
         let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(64);
         let writer = thread::Builder::new()
             .name("backend-log-writer".into())
@@ -703,68 +645,31 @@ fn spawn_log_reader(
 }
 
 fn write_bounded_log(
-    policy: BackendLogPolicy,
+    policy: LogPolicy,
     receiver: mpsc::Receiver<Vec<u8>>,
     mirror_to_console: bool,
 ) {
-    if fs::create_dir_all(&policy.directory).is_err() {
-        for _ in receiver {}
-        return;
-    }
-    policy.rotate();
-    let mut output = fs::File::create(policy.active_path()).ok();
-    let mut written = 0_u64;
-    for mut chunk in receiver {
-        if mirror_to_console {
-            let _ = std::io::stdout().write_all(&chunk);
-            let _ = std::io::stdout().flush();
+    let mut output = match RotatingLog::open(policy) {
+        Ok(output) => Some(output),
+        Err(error) => {
+            log::error!("Cannot open backend log: {error}");
+            None
         }
-        if output.is_none() {
-            continue;
+    };
+    for chunk in receiver {
+        if mirror_to_console || output.is_none() {
+            let _ = std::io::stderr().write_all(&chunk);
         }
-        if chunk.len() as u64 > policy.max_file_bytes {
-            let keep = policy.max_file_bytes as usize;
-            chunk.drain(..chunk.len() - keep);
+        if let Some(file) = output.as_mut()
+            && let Err(error) = file.write_all(&chunk)
+        {
+            log::error!("Cannot write backend log: {error}");
+            let _ = std::io::stderr().write_all(&chunk);
+            output = None;
         }
-        if written > 0 && written.saturating_add(chunk.len() as u64) > policy.max_file_bytes {
-            output.take();
-            policy.rotate();
-            output = fs::File::create(policy.active_path()).ok();
-            written = 0;
-        }
-        if let Some(file) = output.as_mut() {
-            if file.write_all(&chunk).is_err() {
-                output.take();
-                continue;
-            }
-            written = written.saturating_add(chunk.len() as u64);
-        }
-    }
-    if let Some(mut output) = output {
-        let _ = output.flush();
     }
 }
 
-fn append_file_tail(output: &mut Vec<u8>, path: &std::path::Path, maximum_bytes: usize) {
-    let Ok(mut file) = fs::File::open(path) else {
-        return;
-    };
-    let length = file.metadata().map(|value| value.len()).unwrap_or(0);
-    let keep = length.min(maximum_bytes as u64);
-    if file
-        .seek(SeekFrom::Start(length.saturating_sub(keep)))
-        .is_err()
-    {
-        return;
-    }
-    let mut bytes = Vec::with_capacity(keep as usize);
-    if file.take(keep).read_to_end(&mut bytes).is_ok() {
-        output.extend_from_slice(&bytes);
-        if output.len() > maximum_bytes {
-            output.drain(..output.len() - maximum_bytes);
-        }
-    }
-}
 
 impl Drop for BackendManager {
     fn drop(&mut self) {
@@ -773,12 +678,12 @@ impl Drop for BackendManager {
 }
 
 #[cfg(target_os = "android")]
-fn project_root() -> PathBuf {
+pub(crate) fn project_root() -> PathBuf {
     std::env::current_dir().expect("Application storage initialized")
 }
 
 #[cfg(not(target_os = "android"))]
-fn project_root() -> PathBuf {
+pub(crate) fn project_root() -> PathBuf {
     for start in [std::env::current_dir().ok(), std::env::current_exe().ok()] {
         let Some(start) = start else {
             continue;

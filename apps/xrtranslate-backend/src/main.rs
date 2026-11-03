@@ -484,10 +484,15 @@ async fn main() {
 
 async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(tracing_subscriber::EnvFilter::new(format!(
+            "warn,xrtranslate_backend=info,{}",
+            std::env::var("RUST_LOG").unwrap_or_default(),
+        )))
+        .with_ansi(false)
         .with_target(false)
         .init();
 
+    info!("XRTranslate backend started");
     let args = Arguments::parse();
     if let Some(command) = &args.command {
         return diagnostics::run(&args, command).await;
@@ -634,6 +639,10 @@ async fn vrcx_status(State(state): State<BackendState>) -> impl IntoResponse {
 struct SessionOptions {
     #[serde(default)]
     text_only: bool,
+    /// Speech output is independent of the input mode. Text-only plugin jobs
+    /// leave this off so they do not load a speech model or require a voice.
+    #[serde(default)]
+    tts: bool,
     #[serde(default)]
     input_source: String,
 }
@@ -648,6 +657,7 @@ async fn websocket(
 
 async fn serve_session(socket: WebSocket, state: BackendState, options: SessionOptions) {
     let text_only = options.text_only;
+    let speech_requested = !text_only || options.tts;
     let input_source = if options.input_source.is_empty() {
         if text_only { "text" } else { "microphone" }.to_owned()
     } else {
@@ -719,7 +729,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
     let prompt_graphs = Arc::new(tokio::sync::RwLock::new(PromptGraphSet {
         graph: PromptNodeGraph::builtin_default(),
     }));
-    let speech = if text_only {
+    let speech = if !speech_requested {
         None
     } else {
         match state.prepare_speech().await {
@@ -756,6 +766,10 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
     let mut workload = InferenceWorkload::Realtime;
     let voices = speech.map(|resources| &resources.voices);
     let tts = speech.and_then(|resources| resources.tts.clone());
+    info!(
+        session_id, text_only, speech_requested, tts_available = tts.is_some(),
+        provider = %state.config.tts.provider, "session initialized"
+    );
     let (tts_job_sender, tts_job_receiver) = mpsc::channel(TTS_QUEUE_CAPACITY);
     let (tts_result_sender, mut tts_result_receiver) = mpsc::channel(TTS_QUEUE_CAPACITY);
     let (tts_epoch_sender, tts_epoch_receiver) = watch::channel(session.tts_epoch());
@@ -1284,6 +1298,15 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
                         Ok(ClientControl::Action(ActionControl::ToggleFeature { feature, enabled })) => {
                             match feature {
                                 Feature::Tts => {
+                                    if enabled && tts.is_none() {
+                                        if send_error(
+                                            &outbound_sender,
+                                            "Speech synthesis is unavailable. Check the speech model settings.".into(),
+                                        ).await.is_err() {
+                                            break;
+                                        }
+                                        continue;
+                                    }
                                     session.set_tts_enabled(enabled);
                                     if *tts_epoch_sender.borrow() != session.tts_epoch() {
                                         tts_epoch_sender.send_replace(session.tts_epoch());
@@ -3763,7 +3786,10 @@ async fn handle_inference_event(
                 Err(_) => return Ok(false),
             };
             let tts_text = output.translated_text.clone();
-            let tts_revisable = context.revisable;
+            let speak_translation = session.tts_enabled()
+                && !context.revisable
+                && !output.asr_only
+                && !tts_text.trim().is_empty();
             if session
                 .submit_translation_segment_for_route_and_turn(
                     generation.route_epoch,
@@ -3785,10 +3811,16 @@ async fn handle_inference_event(
                 .map_err(axum::Error::new)?
             {
                 send_session_output(writer, session, generation).await?;
-                if session.tts_enabled()
-                    && voice_ready
-                    && !tts_revisable
-                    && !tts_text.trim().is_empty()
+                if speak_translation && !voice_ready {
+                    send_scoped_error(
+                        writer,
+                        generation,
+                        "No speech voice is ready. Select a voice in the speech settings.".into(),
+                    )
+                    .await?;
+                    return Ok(false);
+                }
+                if speak_translation
                     && let Some(adapter) = tts
                     && let Some(tts_jobs) = tts_jobs
                 {
@@ -4008,6 +4040,7 @@ async fn send_scoped_error(
     generation: PipelineGeneration,
     message: String,
 ) -> Result<(), axum::Error> {
+    warn!(?generation, %message, "session error");
     send_event(
         writer,
         Some(generation),
@@ -4083,6 +4116,90 @@ async fn shutdown_signal() {
         Err(error) => {
             warn!(%error, "Ctrl+C listener is unavailable; keeping backend running");
             std::future::pending::<()>().await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod speech_output_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn synthesis_queues_only_the_completed_translation() {
+        let provider = serde_json::json!({"provider": "google", "providers": {"google": {"api_key": "test-only"}}});
+        let config = AppConfig::from_value(serde_json::json!({
+            "asr": provider, "translation": provider, "tts": provider,
+        }))
+        .unwrap();
+        let plan = NativeProviderPlan::resolve(&config, std::path::Path::new(".")).unwrap();
+        let adapter = plan.tts_adapter(&config).unwrap().unwrap();
+        for (enabled, revisable, asr_only, expected_jobs) in [
+            (true, false, false, 1),
+            (false, false, false, 0),
+            (true, true, false, 0),
+            (true, false, true, 0),
+        ] {
+            let mut session = SessionAdapter::new("zh", "en").unwrap();
+            session.set_tts_enabled(enabled);
+            let generation = PipelineGeneration {
+                route_epoch: session.route_epoch(),
+                audio_epoch: AudioEpoch::INITIAL,
+            };
+            let (writer, _reader) = mpsc::channel(8);
+            let mut jobs = VecDeque::new();
+            let event = InferenceEvent::Translation {
+                generation,
+                target_language: "en".into(),
+                queue_elapsed: Duration::ZERO,
+                asr_elapsed: Duration::ZERO,
+                total_elapsed: Duration::ZERO,
+                context: SegmentContext {
+                    turn_id: "speech-test".into(),
+                    segment_index: 0,
+                    segment_count: 1,
+                    speaker_id: String::new(),
+                    source_start_ms: 0.0,
+                    source_end_ms: 0.0,
+                    timing: SegmentTiming::EstimatedTextPartition,
+                    boundary: SegmentBoundary::Silence,
+                    revisable,
+                    overlap_ratio: 0.0,
+                    authoritative_snapshot: false,
+                    revision: 0,
+                    activation_matches: Vec::new(),
+                    context_matches: Vec::new(),
+                },
+                output: Ok(TranslationOutput {
+                    source_text: "你打篮球吗？".into(),
+                    translated_text: "Do you play basketball?".into(),
+                    source_language: "zh".into(),
+                    target_language: "en".into(),
+                    additional_source_text: None,
+                    additional_translations: Vec::new(),
+                    asr_only,
+                    term_matches: Vec::new(),
+                    prompt_trace: None,
+                    mt_elapsed: Duration::ZERO,
+                }),
+            };
+            handle_inference_event(
+                &writer,
+                &mut session,
+                generation,
+                event,
+                Some(&adapter),
+                Some(&mut jobs),
+                "Kore",
+                true,
+                2000,
+            )
+            .await
+            .unwrap();
+            assert_eq!(jobs.len(), expected_jobs);
+            if let Some(job) = jobs.pop_front() {
+                assert_eq!(job.text_chunks, ["Do you play basketball?"]);
+                assert_eq!(job.target_language, "en");
+            }
         }
     }
 }

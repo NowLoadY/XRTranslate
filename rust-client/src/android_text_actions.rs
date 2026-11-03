@@ -233,7 +233,14 @@ fn translate_request(
     while CANCELLED_THROUGH.load(Ordering::Acquire) < id
         && started.elapsed() < Duration::from_secs(160)
     {
-        translator.poll(backend, &settings.server_url, graphs.clone(), None, &events);
+        translator.poll(
+            backend,
+            &settings.server_url,
+            graphs.clone(),
+            || None,
+            None,
+            &events,
+        );
         for event in received.try_iter() {
             if event.scope.accepts_events() {
                 if let crate::network::SessionEvent::PromptTrace(trace) = &event.event {

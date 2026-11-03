@@ -41,8 +41,8 @@ pub struct OutputDevice {
 }
 
 fn default_host() -> cpal::Host {
-    // Preserve existing microphone/speaker selection and saved ALSA IDs.
-    // Virtual outputs are resolved separately through the Linux adapter.
+    // Preserve microphone capture and explicit ALSA IDs. Default and virtual
+    // playback outputs use the Linux sound server in resolve_route_output.
     #[cfg(target_os = "linux")]
     return cpal::host_from_id(cpal::HostId::Alsa).expect("ALSA host is available");
     #[cfg(not(target_os = "linux"))]
@@ -785,9 +785,9 @@ impl TtsPlayerHandle {
             .filter(|target| target.is_running())
             .cloned()
             .collect::<Vec<_>>();
-        // No enabled graph output means silence, never an implicit speaker fallback.
+        // Never fall back to an output the user did not connect in the graph.
         if targets.is_empty() {
-            return Ok(());
+            return Err("No active speech output. Check the Audio Studio output connections and devices.".into());
         }
         let samples = resample_mono(
             pcm16_mono_samples(pcm),
@@ -1666,7 +1666,7 @@ impl AudioSystem {
 
     fn resolve_route_output(&self, device_id: &str) -> Result<cpal::Device, AudioRouteError> {
         #[cfg(target_os = "linux")]
-        if !device_id.is_empty() && !device_id.starts_with("alsa:") {
+        if !device_id.starts_with("alsa:") {
             return crate::audio_linux::resolve_output(device_id)
                 .map_err(AudioRouteError::DeviceUnavailable);
         }
@@ -2050,9 +2050,8 @@ impl AudioSystem {
 
     fn create_voice_preview(&self) -> Result<VoicePreview, String> {
         let device = self
-            .host
-            .default_output_device()
-            .ok_or("No default audio output device available for voice preview")?;
+            .resolve_route_output("")
+            .map_err(|error| error.to_string())?;
         let config = device
             .default_output_config()
             .map_err(|error| format!("Cannot read voice preview output format: {error}"))?;
@@ -2626,6 +2625,18 @@ mod route_failure_tests {
 #[cfg(test)]
 mod playback_cancellation_tests {
     use super::*;
+
+    #[test]
+    fn missing_speech_output_reports_failure() {
+        let player = TtsPlayerHandle {
+            source_sample_rate: 24_000,
+            routed_tts_targets: Arc::new(Mutex::new(Vec::new())),
+            playback: Arc::new(TtsPlaybackScope::default()),
+        };
+        assert!(player.play_pcm(&[1, 0]).unwrap_err().contains("No active speech output"));
+        player.cancel();
+        assert!(player.play_pcm(&[1, 0]).is_ok());
+    }
 
     #[test]
     fn cancelling_one_session_preserves_other_queued_audio() {

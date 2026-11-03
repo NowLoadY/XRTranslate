@@ -613,6 +613,11 @@ pub fn virtual_outputs() -> Result<Vec<OutputDevice>, String> {
 pub fn resolve_output(id: &str) -> Result<cpal::Device, String> {
     let host = cpal::host_from_id(cpal::HostId::PulseAudio)
         .map_err(|error| format!("PulseAudio/PipeWire output is unavailable: {error}"))?;
+    if id.is_empty() {
+        return host
+            .default_output_device()
+            .ok_or_else(|| "No default PulseAudio/PipeWire output is available".into());
+    }
     host.device_by_id(&cpal::DeviceId::new(cpal::HostId::PulseAudio, id))
         .ok_or_else(|| format!("virtual output '{id}' is no longer available"))
 }
