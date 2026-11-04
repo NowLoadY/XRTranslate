@@ -146,7 +146,8 @@ pub(super) fn render_setup(
                     if controller.draft.capture_source == MeetingAudioSource::OnlineStream {
                         render_online_source(controller, snapshot, ui);
                     } else {
-                        ui.checkbox(
+                        crate::ui::components::checkbox(
+                            ui,
                             &mut controller.draft.save_recording,
                             tr(language, "Keep the recording"),
                         );

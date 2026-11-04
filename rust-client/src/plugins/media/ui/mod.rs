@@ -13,6 +13,18 @@ use super::{
 use crate::ui::components;
 use eframe::egui;
 
+pub(super) fn subtitle_target(task: &str, cue: &str) -> egui::Id {
+    subtitles_target(task).with(cue)
+}
+
+pub(super) fn subtitles_target(task: &str) -> egui::Id {
+    egui::Id::unique("media_subtitles").with(task)
+}
+
+pub(super) fn settings_target(task: &str) -> egui::Id {
+    egui::Id::unique("media_settings").with(task)
+}
+
 pub(super) fn render(
     plugin: &mut MediaPlugin,
     snapshot: &MediaUiSnapshot,
@@ -27,7 +39,7 @@ pub(super) fn render(
                     .show_percentage(),
             );
             ui.label(tr(language, "Exporting video"));
-            if ui.button(tr(language, "Cancel")).clicked() {
+            if components::button(ui, tr(language, "Cancel")).clicked() {
                 job.cancel();
             }
         });
@@ -88,8 +100,9 @@ fn render_runtime_install_banner(
     if !cfg!(all(windows, feature = "mpv")) {
         return;
     }
-    egui::CollapsingHeader::new(tr(language, "Optional playback support")).show(ui, |ui| {
-        match controller.mpv_installer.state() {
+    crate::ui::components::CollapsingHeader::new(tr(language, "Optional playback support")).show(
+        ui,
+        |ui| match controller.mpv_installer.state() {
             super::installer::MpvInstallState::Downloading { downloaded, total } => {
                 let fraction = if *total == 0 {
                     0.0
@@ -109,8 +122,8 @@ fn render_runtime_install_banner(
                     controller.error = Some(error);
                 }
             }
-        }
-    });
+        },
+    );
 }
 
 fn export_controls(
@@ -132,7 +145,7 @@ fn export_controls(
         ("Export VTT", crate::export::Format::Vtt),
         ("Export LRC", crate::export::Format::Lrc),
     ] {
-        if ui.button(tr(language, label)).clicked() {
+        if components::button(ui, tr(language, label)).clicked() {
             crate::ui::notifications::observe_error(
                 ui.ctx(),
                 ui.make_persistent_id("export"),
@@ -156,9 +169,7 @@ fn export_controls(
         }
     }
     if video_available
-        && ui
-            .button(tr(language, "Export video with subtitles"))
-            .clicked()
+        && components::button(ui, tr(language, "Export video with subtitles")).clicked()
     {
         ui.close();
         return true;

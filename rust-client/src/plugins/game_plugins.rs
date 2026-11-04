@@ -37,27 +37,27 @@ impl Selection {
             Self::Avatar => connector.label(),
             Self::BigWalk => "Big Walk",
         };
-        egui::ComboBox::from_id_salt("game_plugin_selection")
-            .selected_text(label)
-            .show_ui(ui, |ui| {
-                for game in Connector::ALL {
-                    if ui
-                        .selectable_label(*self == Self::Avatar && *connector == game, game.label())
-                        .clicked()
-                    {
-                        *self = Self::Avatar;
-                        *connector = game;
-                    }
-                }
-                if ui
-                    .selectable_label(*self == Self::BigWalk, "Big Walk")
-                    .clicked()
+        crate::ui::components::combobox_ui(ui, "game_plugin_selection", label, |ui| {
+            for game in Connector::ALL {
+                if crate::ui::components::selectable_label(
+                    ui,
+                    *self == Self::Avatar && *connector == game,
+                    game.label(),
+                )
+                .clicked()
                 {
-                    *self = Self::BigWalk;
+                    *self = Self::Avatar;
+                    *connector = game;
                 }
-            })
-            .response
-            .on_hover_text(tr(language, "Game"));
+            }
+            if crate::ui::components::selectable_label(ui, *self == Self::BigWalk, "Big Walk")
+                .clicked()
+            {
+                *self = Self::BigWalk;
+            }
+        })
+        .response
+        .on_hover_text(tr(language, "Game"));
         before != (*self, *connector)
     }
 }

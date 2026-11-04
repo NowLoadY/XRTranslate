@@ -50,12 +50,14 @@ pub(super) fn render_timeline(
         tr(language, "Search this meeting"),
     );
     ui.horizontal_wrapped(|ui| {
-        ui.selectable_value(
+        components::selectable_value(
+            ui,
             &mut controller.highlights_only,
             false,
             tr(language, "All messages"),
         );
-        ui.selectable_value(
+        components::selectable_value(
+            ui,
             &mut controller.highlights_only,
             true,
             tr(language, "Highlights"),
@@ -574,8 +576,7 @@ fn render_segment(
                 },
             );
             super::timestamp(segment, can_seek, active, language, action, ui);
-            if ui
-                .selectable_label(marked, highlight)
+            if components::selectable_label(ui, marked, highlight)
                 .on_hover_text(tr(
                     language,
                     "Mark this message; click again to edit its note.",

@@ -195,6 +195,7 @@ pub enum PromptMessageRole {
     System,
     #[default]
     User,
+    Assistant,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

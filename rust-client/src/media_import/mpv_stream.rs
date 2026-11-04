@@ -92,6 +92,11 @@ pub(super) fn decode(
     }
     decoder.set("o", &format!("tcp://{}", listener.local_addr()?))?;
     decoder.set("audio-samplerate", &options.output_sample_rate.to_string())?;
+    if let Some((start, end)) = options.range_ms {
+        decoder.set("start", &format!("{:.3}", start as f64 / 1000.0))?;
+        decoder.set("length", &format!("{:.3}", (end - start) as f64 / 1000.0))?;
+        decoder.set("hr-seek", "yes")?;
+    }
     decoder.set(
         "audio-channels",
         if options.output_channels == 2 {

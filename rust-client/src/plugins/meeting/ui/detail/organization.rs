@@ -30,14 +30,20 @@ pub(super) fn render(
     } else {
         "Manage speakers"
     };
-    egui::CollapsingHeader::new(tr(language, title)).show(ui, |ui| {
+    crate::ui::components::CollapsingHeader::new(tr(language, title)).show(ui, |ui| {
         if can_create_topic {
-            components::text_edit_ui(
+            let response = components::text_edit_ui(
                 ui,
                 "meeting_new_topic",
                 egui::TextEdit::singleline(&mut controller.new_topic_title)
                     .hint_text(tr(language, "New topic title"))
                     .desired_width(f32::INFINITY),
+            );
+            crate::ui::automation::text_response(
+                ui,
+                tr(language, "New topic title"),
+                &mut controller.new_topic_title,
+                response,
             );
             if components::animated_button_enabled(
                 ui,
@@ -61,11 +67,17 @@ pub(super) fn render(
                             .or_insert_with(|| {
                                 crate::compact_speaker_label(&speaker.name).unwrap_or_default()
                             });
-                        crate::ui::components::text_edit_ui(
+                        let response = crate::ui::components::text_edit_ui(
                             ui,
                             ("speaker_name", &speaker.id),
                             egui::TextEdit::singleline(name)
                                 .desired_width(180.0_f32.min(ui.available_width())),
+                        );
+                        crate::ui::automation::text_response(
+                            ui,
+                            tr(language, "Speaker name"),
+                            name,
+                            response,
                         );
                         if components::edit_button(ui, tr(language, "Rename")).clicked() {
                             *action = UiAction::RenameSpeaker(speaker.id.clone(), name.clone());

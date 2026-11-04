@@ -20,7 +20,7 @@ pub(super) fn note_editor(
         let draft = drafts
             .entry(marker.id.clone())
             .or_insert_with(|| marker.text.clone());
-        if components::text_edit_ui(
+        let response = components::text_edit_ui(
             ui,
             "highlight_note",
             egui::TextEdit::multiline(draft)
@@ -28,6 +28,12 @@ pub(super) fn note_editor(
                 .hint_text(tr(language, "Add a note (optional)"))
                 .desired_rows(2)
                 .desired_width(f32::INFINITY),
+        );
+        if crate::ui::automation::text_response(
+            ui,
+            tr(language, "Add a note (optional)"),
+            draft,
+            response,
         )
         .changed()
         {
@@ -43,13 +49,16 @@ pub(super) fn note_editor(
                 edited.text = draft.clone();
                 *action = UiAction::SaveMarker(edited);
             }
-            ui.menu_button("⋯", |ui| {
+            let button = ui.button("⋯");
+            let button =
+                crate::ui::automation::Control::button(tr(language, "More")).response(ui, button);
+            egui::Popup::menu(&button).show(|ui| {
                 let label = if draft.trim().is_empty() && marker.text.trim().is_empty() {
                     "Remove highlight"
                 } else {
                     "Remove highlight and note"
                 };
-                if ui.button(tr(language, label)).clicked() {
+                if components::button(ui, tr(language, label)).clicked() {
                     *action = UiAction::RemoveMarker(marker.id.clone());
                     ui.close();
                 }

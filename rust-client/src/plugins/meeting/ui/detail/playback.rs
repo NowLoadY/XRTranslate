@@ -136,13 +136,11 @@ fn clip_selector(
     };
     if playback.clips.len() > 1 {
         let mut selected = playback.selected;
-        egui::ComboBox::from_id_salt("meeting_recording")
-            .selected_text(label(selected))
-            .show_ui(ui, |ui| {
-                for index in 0..playback.clips.len() {
-                    ui.selectable_value(&mut selected, index, label(index));
-                }
-            });
+        components::combobox_ui(ui, "meeting_recording", label(selected), |ui| {
+            for index in 0..playback.clips.len() {
+                components::selectable_value(ui, &mut selected, index, label(index));
+            }
+        });
         if selected != playback.selected {
             playback.select(selected)?;
         }

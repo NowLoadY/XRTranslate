@@ -12,6 +12,43 @@ use xrtranslate_engine::language::SupportedLanguage;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatCompletion {
     pub text: String,
+    /// Provider-reported usage; absent means unavailable, never zero usage.
+    pub usage: Option<TokenUsage>,
+}
+
+/// Common counters only; provider-specific attribution can be much larger than the answer.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TokenUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+}
+
+impl TokenUsage {
+    pub(crate) fn from_json(value: Option<&Value>) -> Option<Self> {
+        let value = value.filter(|value| value.is_object())?;
+        Some(Self {
+            input_tokens: value
+                .get("input_tokens")
+                .or_else(|| value.get("prompt_tokens"))
+                .and_then(Value::as_u64),
+            output_tokens: value
+                .get("output_tokens")
+                .or_else(|| value.get("completion_tokens"))
+                .and_then(Value::as_u64),
+            cached_input_tokens: value
+                .pointer("/input_tokens_details/cached_tokens")
+                .or_else(|| value.pointer("/prompt_tokens_details/cached_tokens"))
+                .and_then(Value::as_u64),
+            reasoning_tokens: value
+                .pointer("/output_tokens_details/reasoning_tokens")
+                .or_else(|| value.pointer("/completion_tokens_details/reasoning_tokens"))
+                .and_then(Value::as_u64),
+            total_tokens: value.get("total_tokens").and_then(Value::as_u64),
+        })
+    }
 }
 
 /// Shared authenticated OpenAI HTTP adapter.
@@ -253,10 +290,16 @@ pub(crate) fn parse_chat_completion(
         message: "choices[0].message.content must be text or text content parts".into(),
         body_preview: preview(body),
     })?;
-    Ok(ChatCompletion { text })
+    Ok(ChatCompletion {
+        text,
+        usage: TokenUsage::from_json(json.get("usage")),
+    })
 }
 
 fn validate_finish_reason(endpoint: &str, reason: Option<&str>) -> Result<(), InferenceError> {
+    if reason.is_some_and(|reason| reason.ends_with("MALFORMED_FUNCTION_CALL")) {
+        return Err(InferenceError::RejectedOutput { operation: "completion", reason: "Provider could not produce a valid function call; return the requested text response instead".into() });
+    }
     if let Some(reason) = reason.filter(|reason| *reason != "stop") {
         return Err(InferenceError::IncompleteCompletion {
             endpoint: endpoint.into(),

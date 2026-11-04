@@ -551,7 +551,7 @@ impl CorpusStudioController {
             promptable: true,
             activation: CorpusActivation::Always,
             inherit_domain: true,
-                recognition_aliases: Default::default(),
+            recognition_aliases: Default::default(),
             priority: 20,
             values: vec![String::new(); LANGUAGE_CODES.len()],
         });
@@ -595,7 +595,11 @@ pub(crate) fn render(
             ui.heading(tr(language, "Terminology library"));
             ui.label(format!(
                 "{} · {}",
-                controller.snapshot.as_ref().map_or(0, |s| s.nodes.iter().filter(|node| node.promptable).count()),
+                controller.snapshot.as_ref().map_or(0, |s| s
+                    .nodes
+                    .iter()
+                    .filter(|node| node.promptable)
+                    .count()),
                 tr(language, "terms")
             ));
             if controller.pending {
@@ -789,7 +793,8 @@ fn render_domain_branch(
             }
             if ui
                 .add_enabled_ui(!controller.draft_dirty, |ui| {
-                    ui.selectable_label(
+                    components::selectable_label(
+                        ui,
                         controller.selected_domain.as_deref() == Some(&domain.id),
                         RichText::new(tr_dynamic(language, &domain.title).into_owned()).color(
                             if domain_effective_enabled(controller, snapshot, &domain.id) {
@@ -812,7 +817,7 @@ fn render_domain_branch(
                 && !controller.draft_dirty
             {
                 ui.menu_button("⋯", |ui| {
-                    if ui.button(tr(language, "Rename")).clicked() {
+                    if components::button(ui, tr(language, "Rename")).clicked() {
                         controller.editing_domain = true;
                         controller.confirm_delete_domain = false;
                     }
@@ -821,7 +826,7 @@ fn render_domain_branch(
                             .nodes
                             .iter()
                             .any(|node| node.domain_id == domain.id)
-                        && ui.button(tr(language, "Delete empty domain")).clicked()
+                        && components::button(ui, tr(language, "Delete empty domain")).clicked()
                     {
                         controller.confirm_delete_domain = true;
                         controller.editing_domain = false;
@@ -897,7 +902,8 @@ fn render_browser(
         .show(ui, |ui| {
             if ui
                 .add_enabled_ui(!controller.draft_dirty, |ui| {
-                    ui.selectable_label(
+                    components::selectable_label(
+                        ui,
                         controller.selected_domain.is_none(),
                         tr(language, "All domains"),
                     )
@@ -1568,31 +1574,29 @@ fn render_workspace(
             controller.editor.cancel_wire();
         }
         if matches!(controller.view, CorpusView::Graph | CorpusView::Layered) {
-            if ui
-                .button("−")
+            if components::button(ui, "−")
                 .on_hover_text(tr(language, "Zoom out"))
                 .clicked()
             {
                 zoom_step = -180.0;
             }
-            if ui
-                .button("+")
+            if components::button(ui, "+")
                 .on_hover_text(tr(language, "Zoom in"))
                 .clicked()
             {
                 zoom_step = 180.0;
             }
-            if ui.button(tr(language, "Fit graph")).clicked() {
+            if components::button(ui, tr(language, "Fit graph")).clicked() {
                 controller.editor.canvas.fit_pending = true;
                 controller.fit_layout = true;
             }
             if controller.selected_node.is_some()
-                && ui
-                    .selectable_label(
-                        controller.focus_connections,
-                        tr(language, "Connections only"),
-                    )
-                    .clicked()
+                && components::selectable_label(
+                    ui,
+                    controller.focus_connections,
+                    tr(language, "Connections only"),
+                )
+                .clicked()
             {
                 controller.focus_connections = !controller.focus_connections;
             }
@@ -1604,9 +1608,12 @@ fn render_workspace(
                     (CorpusView::Graph, "Individual connections"),
                     (CorpusView::Layered, "Hierarchy"),
                 ] {
-                    if ui
-                        .selectable_label(controller.view == view, tr(language, label))
-                        .clicked()
+                    if components::selectable_label(
+                        ui,
+                        controller.view == view,
+                        tr(language, label),
+                    )
+                    .clicked()
                     {
                         controller.view = view;
                         controller.layout_signature = None;

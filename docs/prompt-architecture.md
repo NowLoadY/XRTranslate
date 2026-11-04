@@ -57,9 +57,11 @@ capabilities. The prompt graph renders supported text inputs. Structured
 vocabulary passes through its own typed contract. Providers declare support;
 neither adapters nor consumers reinterpret one capability as another.
 
-Translation context follows task and language ownership. Stateless ask requests
-use the configured translation adapter without joining conversation history;
-the calling feature supplies the request's purpose and necessary input facts.
+Translation context follows task and language ownership. Stateless Ask accepts
+one instruction or caller-owned messages through the configured translation
+adapter, without joining backend history or a remote conversation. The Agent
+owns its local message history; the prompt graph's Chat Messages output is a
+translation rendering path, not an Agent or a server-side chat session.
 
 Each translation task supplies exactly one `TaskContext` mode:
 

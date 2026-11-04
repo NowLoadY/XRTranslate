@@ -126,7 +126,7 @@ pub(super) fn render(
                             .selected_text(editor::language_name(language, draft.languages[position])).show_ui(ui, |ui| {
                                 for index in 0..LANGUAGE_CODES.len() {
                                     if index != draft.languages[1-position] {
-                                        draft.dirty |= ui.selectable_value(&mut draft.languages[position], index,
+                                        draft.dirty |= components::selectable_value(ui, &mut draft.languages[position], index,
                                             editor::language_name(language, index)).changed();
                                     }
                                 }

@@ -7,12 +7,16 @@ use crate::{
 use eframe::egui;
 use view::View;
 
-pub(super) fn overview(controller: &MediaController, ui: &mut egui::Ui) -> Option<usize> {
-    let cues = controller.subtitles.cues();
+pub(super) fn overview(
+    controller: &MediaController,
+    subtitles: &crate::plugins::media::subtitles::SubtitleTimeline,
+    ui: &mut egui::Ui,
+) -> Option<usize> {
+    let cues = subtitles.cues();
     let last = cues.len().checked_sub(1)?;
     let duration = controller
         .get_duration_ms()
-        .max(controller.subtitles.effective_end_at(last))
+        .max(subtitles.effective_end_at(last))
         .max(cues[last].start_ms)
         .max(1);
     let (labels, _) = ui.allocate_exact_size(
@@ -84,13 +88,13 @@ pub(super) fn overview(controller: &MediaController, ui: &mut egui::Ui) -> Optio
     let x = |time: i64| rect.left() + view.fraction(time as f64) as f32 * rect.width();
     let current = controller
         .can_play()
-        .then(|| controller.subtitles.active_cue_at(position))
+        .then(|| subtitles.active_cue_at(position))
         .flatten();
     let range = view.visible_range(cues);
     let mut index = range.start;
     while index < range.end {
         let cue = &cues[index];
-        let end_ms = controller.subtitles.effective_end_at(index);
+        let end_ms = subtitles.effective_end_at(index);
         if end_ms as f64 <= view.start {
             index += 1;
             continue;

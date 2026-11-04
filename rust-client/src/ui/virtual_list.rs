@@ -248,6 +248,7 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
             .scroll_source(egui::scroll_area::ScrollSource::NONE)
             .vertical_scroll_offset(gesture.scroll_offset);
     }
+    let mut reveal = false;
     let output = scroll.show_viewport(ui, |ui, viewport| {
         let content_width = ui.available_width();
         ui.set_max_width((content_width - grip_width).max(1.0));
@@ -278,10 +279,14 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
         {
             gesture = None;
         }
+        let requested = row_key
+            .zip(super::automation::attention::reveal_target(ui.ctx()))
+            .and_then(|(key, target)| rows.iter().position(|(_, row)| key(row) == target));
+        reveal = gesture.is_none() && requested.is_some();
         let scroll_target = if gesture.is_some() {
             ScrollTarget::None
         } else {
-            scroll_target
+            requested.map_or(scroll_target, ScrollTarget::Row)
         };
 
         if let Some(key) = row_key.filter(|_| gesture.is_none()) {
@@ -391,6 +396,9 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
                 } else {
                     render_row(ui, index, row_height, row);
                 }
+                if let Some(key) = key {
+                    super::automation::attention::record(ui, key, rect);
+                }
                 if let Some(ordinal) = merge_index {
                     crate::ui::automation::record_output(
                         ui,
@@ -438,6 +446,11 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
         }
         None
     });
+    // The inner ScrollArea consumes its scroll request. Reveal its viewport in
+    // the enclosing page too, before a nested list can report a visible target.
+    if reveal && !ui.clip_rect().contains(output.inner_rect.center()) {
+        ui.scroll_to_rect(output.inner_rect, Some(egui::Align::Center));
+    }
     if let Some(gesture) = gesture {
         if !was_merging {
             // Cancel native kinetic/target animations once when a merge starts.

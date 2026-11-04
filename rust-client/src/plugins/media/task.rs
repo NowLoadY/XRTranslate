@@ -11,6 +11,7 @@ pub enum SubtitleMode {
     #[default]
     RealtimeTranslation,
     ImportedSrt(PathBuf),
+    TranslateExisting,
     None,
 }
 
@@ -21,6 +22,8 @@ pub enum MediaType {
     AudioOnly,
     Subtitles,
 }
+
+pub const SUBTITLE_EXTENSIONS: &[&str] = &["srt", "vtt"];
 
 pub const AUDIO_EXTENSIONS: &[&str] = &[
     "mp3", "wav", "flac", "aac", "ogg", "m4a", "opus", "wma", "ape", "alac", "aiff", "aif", "oga",
@@ -138,6 +141,8 @@ pub enum AudioTrackSelection {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MediaTask {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) optimization: Option<super::workspace::Workspace>,
     pub id: String,
     pub title: String,
     pub source: MediaSource,
@@ -180,6 +185,39 @@ pub(super) fn default_video_recognition() -> RecognitionSettings {
 }
 
 impl MediaTask {
+    pub(super) fn translation_request(&self) -> super::MediaTranslationRequest {
+        use super::MediaTranslationRequest;
+        match &self.source {
+            MediaSource::NetworkStream(_) => MediaTranslationRequest::LiveStream {
+                source_language: self.source_language.clone(),
+                target_language: self.target_language.clone(),
+                recognition: self.recognition.clone(),
+                audio_channels: self.audio_channels.clone(),
+            },
+            _ => MediaTranslationRequest::ImportMedia {
+                source: match self.selected_audio() {
+                    super::backend::PlaybackAudio::External(path) => MediaSource::LocalFile(path),
+                    _ => self.source.clone(),
+                },
+                audio_track: (self.audio_track == AudioTrackSelection::Original)
+                    .then_some(self.original_audio_track)
+                    .flatten(),
+                source_language: self.source_language.clone(),
+                target_language: self.target_language.clone(),
+                recognition: self.recognition.clone(),
+                audio_channels: self.audio_channels.clone(),
+            },
+        }
+    }
+
+    pub(super) fn translates_subtitles(&self) -> bool {
+        self.media_type == MediaType::Subtitles
+            || matches!(
+                self.subtitle_mode,
+                SubtitleMode::ImportedSrt(_) | SubtitleMode::TranslateExisting
+            )
+    }
+
     pub(super) fn selected_audio(&self) -> super::backend::PlaybackAudio {
         use super::backend::PlaybackAudio;
         match (self.audio_track, &self.separated_audio) {
@@ -234,6 +272,7 @@ impl MediaTask {
 
         Self {
             id: uuid::Uuid::new_v4().to_string(),
+            optimization: None,
             title,
             source,
             media_type,
@@ -276,6 +315,9 @@ impl MediaTaskStore {
                     .clamp(*limits.start(), *limits.end());
                 task.subtitles.normalize_text();
                 task.is_task_running = false;
+                if let Some(workspace) = &mut task.optimization {
+                    workspace.recover();
+                }
             }
             return store;
         }

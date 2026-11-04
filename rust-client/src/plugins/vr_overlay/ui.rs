@@ -2,7 +2,7 @@
 
 use super::renderer::{VrSubtitleCard, paint_cards};
 use super::runtime::{VrOverlaySettings, VrRuntimeStatus};
-use crate::ui::components::{ModernSlider, card};
+use crate::ui::components::{self, ModernSlider, card};
 use crate::ui::theme;
 use eframe::egui;
 
@@ -128,7 +128,8 @@ fn render_header(
         settings.avatar_enabled = true;
     }
     if settings.interaction_enabled {
-        ui.checkbox(
+        crate::ui::components::checkbox(
+            ui,
             &mut settings.review_before_send,
             if english {
                 "Review before sending to OSC"
@@ -189,7 +190,7 @@ fn render_position_card(
         .id_salt("vr_dist")
         .label_width(92.0)
         .show(ui);
-        egui::CollapsingHeader::new(tr("Precise Position"))
+        crate::ui::components::CollapsingHeader::new(tr("Precise Position"))
             .id_salt("vr_precise_position")
             .default_open(true)
             .show(ui, |ui| {
@@ -243,28 +244,42 @@ fn render_display_card(
         ui.horizontal_wrapped(|ui| {
             ui.label(tr("Max Subtitle Count"));
             for count in 1..=5 {
-                ui.selectable_value(&mut settings.max_items, count, count.to_string());
+                components::selectable_value(ui, &mut settings.max_items, count, count.to_string());
             }
         });
         ui.horizontal_wrapped(|ui| {
-            ui.checkbox(&mut settings.bilingual, tr("Bilingual Subtitles"));
-            ui.checkbox(&mut settings.show_speaker, tr("Speaker numbers"));
+            crate::ui::components::checkbox(ui, &mut settings.bilingual, tr("Bilingual Subtitles"));
+            crate::ui::components::checkbox(ui, &mut settings.show_speaker, tr("Speaker numbers"));
         });
         ui.horizontal_wrapped(|ui| {
             ui.label(tr("Font Size"));
-            ui.add(
+            let response = ui.add(
                 egui::DragValue::new(&mut settings.font_size)
                     .range(12.0..=36.0)
                     .speed(0.5)
                     .suffix(" px"),
             );
+            crate::ui::automation::number_response(
+                ui,
+                tr("Font Size"),
+                &mut settings.font_size,
+                12.0..=36.0,
+                response,
+            );
             ui.add_space(8.0);
             ui.label(tr("Display Duration"));
-            ui.add(
+            let response = ui.add(
                 egui::DragValue::new(&mut settings.display_timeout_seconds)
                     .range(3.0..=30.0)
                     .speed(0.5)
                     .suffix(" s"),
+            );
+            crate::ui::automation::number_response(
+                ui,
+                tr("Display Duration"),
+                &mut settings.display_timeout_seconds,
+                3.0..=30.0,
+                response,
             );
         });
         ModernSlider::new(
@@ -391,7 +406,7 @@ fn render_combined_preview_and_position_card(
         .id_salt("vr_dist")
         .label_width(92.0)
         .show(ui);
-        egui::CollapsingHeader::new(tr("Precise Position"))
+        crate::ui::components::CollapsingHeader::new(tr("Precise Position"))
             .id_salt("vr_precise_position")
             .show(ui, |ui| {
                 ModernSlider::new(
@@ -648,7 +663,7 @@ fn spatial_preview(
             ) {
                 *color = value.to_srgba_unmultiplied();
             }
-            if ui.button(tr("Transparent")).clicked() {
+            if components::button(ui, tr("Transparent")).clicked() {
                 color[3] = 0;
             }
         });
@@ -679,13 +694,15 @@ pub fn render_settings_contribution(
     ui.horizontal_wrapped(|ui| {
         ui.label(crate::i18n::tr(language, "Max Lines:"));
         for count in 1..=5 {
-            ui.selectable_value(&mut settings.max_items, count, count.to_string());
+            components::selectable_value(ui, &mut settings.max_items, count, count.to_string());
         }
-        ui.checkbox(
+        crate::ui::components::checkbox(
+            ui,
             &mut settings.bilingual,
             crate::i18n::tr(language, "Bilingual"),
         );
-        ui.checkbox(
+        crate::ui::components::checkbox(
+            ui,
             &mut settings.show_speaker,
             crate::i18n::tr(language, "Speaker numbers"),
         );

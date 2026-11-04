@@ -55,6 +55,22 @@ pub fn import_audio_file(
         audio_tx,
         options,
         move |audio_tx, options, stop, sent, events| {
+            if options.range_ms.is_some() {
+                #[cfg(feature = "mpv")]
+                return super::mpv_stream::decode(
+                    &path.to_string_lossy(),
+                    "",
+                    audio_tx,
+                    options,
+                    &stop,
+                    sent,
+                    events,
+                );
+                #[cfg(not(feature = "mpv"))]
+                return Err(AudioImportError::Unsupported(
+                    "Audio intervals require MPV".into(),
+                ));
+            }
             run_import(&path, audio_tx, options, &stop, sent, events)
         },
     )
@@ -74,7 +90,10 @@ pub fn import_audio_url(
         move |audio_tx, options, stop, sent, events| {
             // Only the URL path supplies a codec hint; signed query strings are not extensions.
             let parsed = super::http::http_url(&url).map_err(AudioImportError::InvalidOptions)?;
-            let result = if options.audio_track.is_some() || parsed.path().ends_with(".m3u8") {
+            let result = if options.range_ms.is_some()
+                || options.audio_track.is_some()
+                || parsed.path().ends_with(".m3u8")
+            {
                 Err(AudioImportError::Unsupported(
                     "Stream requires MPV decoding".into(),
                 ))
@@ -184,6 +203,11 @@ fn validate_options(
     audio_tx: &Sender<Vec<f32>>,
     options: &AudioImportOptions,
 ) -> Result<(), AudioImportError> {
+    if options.range_ms.is_some_and(|(start, end)| end <= start) {
+        return Err(AudioImportError::InvalidOptions(
+            "Audio interval must have positive duration".into(),
+        ));
+    }
     if !(1..=2).contains(&options.output_channels) {
         return Err(AudioImportError::InvalidOptions(
             "output must be mono or stereo".into(),

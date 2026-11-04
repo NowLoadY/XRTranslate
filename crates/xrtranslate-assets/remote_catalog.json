@@ -4,25 +4,28 @@
       "id": "ChatGPT Account",
       "label": "ChatGPT",
       "guide_url": "https://developers.openai.com/siwc/quickstart",
-      "services": [{
-        "capability": "translation",
-        "defaults": {
-          "connector": "chatgpt-responses",
-          "url": "https://api.openai.com/v1/responses",
-          "model": "",
-          "context_window_tokens": 8192,
-          "max_tokens": 1024,
-          "parallel_slots": 2
-        },
-        "models": [],
-        "account_models": {
-          "translation_prompt_profile": "chat_messages",
-          "supports_chat": true,
-          "supports_context": true,
-          "streaming": "delta",
-          "reasoning_effort": "low"
+      "services": [
+        {
+          "capability": "translation",
+          "defaults": {
+            "connector": "chatgpt-responses",
+            "url": "https://api.openai.com/v1/responses",
+            "model": "",
+            "context_window_tokens": 32768,
+            "max_tokens": 1024,
+            "parallel_slots": 2
+          },
+          "models": [],
+          "account_models": {
+            "translation_prompt_profile": "chat_messages",
+            "supports_chat": true,
+            "supports_json_output": true,
+            "supports_context": true,
+            "streaming": "delta",
+            "reasoning_effort": "low"
+          }
         }
-      }]
+      ]
     },
     {
       "id": "Doubao Account",
@@ -36,9 +39,7 @@
             "url": "wss://ws-samantha.doubao.com/samantha/audio/asr",
             "model": "doubao-web-speech"
           },
-          "models": [
-            "doubao-web-speech"
-          ]
+          "models": ["doubao-web-speech"]
         }
       ]
     },
@@ -93,7 +94,7 @@
           "capability": "translation",
           "defaults": {
             "api_key": "",
-            "context_window_tokens": 8192,
+            "context_window_tokens": 32768,
             "max_tokens": 1024,
             "model": "gemini-3.5-flash-lite",
             "parallel_slots": 1,
@@ -246,6 +247,19 @@
             "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
           },
           "models": ["qwen-mt-flash", "qwen-mt-lite", "qwen-mt-plus", "qwen-mt-turbo"]
+        },
+        {
+          "capability": "translation",
+          "defaults": {
+            "api_key": "",
+            "context_window_tokens": 32768,
+            "max_tokens": 2048,
+            "model": "qwen-plus",
+            "parallel_slots": 2,
+            "connector": "openai-chat",
+            "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+          },
+          "models": ["qwen-plus"]
         }
       ]
     },
@@ -277,19 +291,39 @@
             "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
           },
           "models": ["qwen-mt-flash", "qwen-mt-lite", "qwen-mt-plus", "qwen-mt-turbo"]
+        },
+        {
+          "capability": "translation",
+          "defaults": {
+            "api_key": "",
+            "context_window_tokens": 32768,
+            "max_tokens": 2048,
+            "model": "qwen-plus",
+            "parallel_slots": 2,
+            "connector": "openai-chat",
+            "url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
+          },
+          "models": ["qwen-plus"]
         }
       ]
     }
   ],
   "models": [
     {
+      "model": "qwen-plus",
+      "connector": "openai-chat",
+      "capabilities": {
+        "supports_chat": true,
+        "streaming": "delta",
+        "supports_context": true,
+        "supports_json_output": true
+      }
+    },
+    {
       "model": "doubao-web-speech",
       "server_managed": true,
       "connector": "doubao-web-asr",
-      "languages": [
-        "zh",
-        "en"
-      ],
+      "languages": ["zh", "en"],
       "capabilities": {
         "streaming": "cumulative",
         "asr_prompt_mode": "none",
@@ -345,6 +379,7 @@
       "connector": "openai-chat",
       "capabilities": {
         "supports_chat": true,
+        "supports_json_output": true,
         "streaming": "delta",
         "supports_context": true,
         "reasoning_effort": "minimal"
@@ -408,7 +443,9 @@
       "model": "qwen-audio-3.0-asr-flash",
       "connector": "dashscope-asr",
       "languages": ["zh", "en", "ja", "ko", "vi", "th", "id", "ms", "fil", "hi", "ar", "fr", "de", "es", "pt", "ru", "it", "nl", "sv", "da", "fi", "no", "el", "pl", "cs", "hu", "ro", "bg", "hr", "sk"],
-      "language_aliases": [["tl", "fil"]],
+      "language_aliases": [
+        ["tl", "fil"]
+      ],
       "capabilities": {
         "asr_prompt_mode": "context_bias",
         "context_max_chars": 400,
@@ -420,7 +457,9 @@
       "model": "qwen-audio-3.1-asr-flash",
       "connector": "dashscope-asr",
       "languages": ["zh", "en", "ja", "ko", "vi", "th", "id", "ms", "fil", "hi", "ar", "fr", "de", "es", "pt", "ru", "it", "nl", "sv", "da", "fi", "no", "el", "pl", "cs", "hu", "ro", "bg", "hr", "sk"],
-      "language_aliases": [["tl", "fil"]],
+      "language_aliases": [
+        ["tl", "fil"]
+      ],
       "capabilities": {
         "asr_prompt_mode": "context_bias",
         "context_max_chars": 400,
@@ -432,7 +471,9 @@
       "model": "qwen-audio-3.0-asr-flash-streaming",
       "connector": "dashscope-asr-websocket",
       "languages": ["zh", "en", "ja", "ko", "vi", "th", "id", "ms", "fil", "hi", "ar", "fr", "de", "es", "pt", "ru", "it", "nl", "sv", "da", "fi", "no", "el", "pl", "cs", "hu", "ro", "bg", "hr", "sk"],
-      "language_aliases": [["tl", "fil"]],
+      "language_aliases": [
+        ["tl", "fil"]
+      ],
       "capabilities": {
         "streaming": "cumulative",
         "asr_prompt_mode": "context_bias",
@@ -444,7 +485,9 @@
       "model": "qwen-audio-3.1-asr-flash-streaming",
       "connector": "dashscope-asr-websocket",
       "languages": ["zh", "en", "ja", "ko", "vi", "th", "id", "ms", "fil", "hi", "ar", "fr", "de", "es", "pt", "ru", "it", "nl", "sv", "da", "fi", "no", "el", "pl", "cs", "hu", "ro", "bg", "hr", "sk"],
-      "language_aliases": [["tl", "fil"]],
+      "language_aliases": [
+        ["tl", "fil"]
+      ],
       "capabilities": {
         "streaming": "cumulative",
         "asr_prompt_mode": "context_bias",

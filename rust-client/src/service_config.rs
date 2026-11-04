@@ -1,7 +1,31 @@
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 use xrtranslate_assets::remote::{AccountProvider, ConnectionChannel};
+use xrtranslate_config::TextModelSelection;
 use xrtranslate_prompt::TranslationPromptProfile;
+
+#[derive(Clone, Copy)]
+struct TextModelContract {
+    profile: TranslationPromptProfile,
+    supports_ask: bool,
+    supports_chat: bool,
+    input_budget: usize,
+}
+
+impl TextModelContract {
+    fn resolve(provider: xrtranslate_config::NativeProviderConfig) -> Option<Self> {
+        Some(Self {
+            profile: provider.translation_prompt_profile().ok()?,
+            supports_ask: provider.supports_ask().ok()?,
+            supports_chat: provider.supports_chat().ok()?,
+            input_budget: provider
+                .runtime
+                .context_window_tokens
+                .saturating_sub(provider.runtime.max_tokens)
+                .saturating_sub(256) as usize,
+        })
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum JsonFieldKind {
@@ -30,6 +54,7 @@ struct ServiceCategory {
 
 #[derive(Clone)]
 pub(crate) struct OnboardingProviderState {
+    pub follow_translation: Option<bool>,
     pub selected: String,
     pub remote: bool,
     pub channel: ConnectionChannel,
@@ -59,7 +84,7 @@ pub(crate) enum OnboardingSaveOutcome {
     IncompleteRemoteProvider,
 }
 
-/// Editable view of the ASR, translation, and TTS provider portions of `config.json`.
+/// Editable model providers and role selections in `config.json`.
 /// The original JSON document is retained so unrelated project settings are preserved.
 pub struct ServiceConfigEditor {
     path: PathBuf,
@@ -70,7 +95,9 @@ pub struct ServiceConfigEditor {
     message: Option<String>,
     onboarding_save_error: Option<String>,
     asr_streaming: std::sync::OnceLock<Option<bool>>,
-    translation_contract: std::sync::OnceLock<Option<(TranslationPromptProfile, bool)>>,
+    translation_contract: std::sync::OnceLock<Option<TextModelContract>>,
+    agent_contract: std::sync::OnceLock<Option<TextModelContract>>,
+    agent_choices: std::sync::OnceLock<Vec<TextModelSelection>>,
     language_capabilities:
         std::sync::OnceLock<Result<xrtranslate_engine::language::LanguageCapabilities, String>>,
 }
@@ -101,6 +128,8 @@ impl ServiceConfigEditor {
             onboarding_save_error: None,
             language_capabilities: Default::default(),
             translation_contract: Default::default(),
+            agent_contract: Default::default(),
+            agent_choices: Default::default(),
             asr_streaming: Default::default(),
         };
         if let Err(error) = editor.reload() {
@@ -113,6 +142,8 @@ impl ServiceConfigEditor {
     pub fn reload(&mut self) -> Result<(), String> {
         self.language_capabilities.take();
         self.translation_contract.take();
+        self.agent_contract.take();
+        self.agent_choices.take();
         self.asr_streaming.take();
         self.document = xrtranslate_config::load_user_config_document(&self.path, &project_root())
             .map_err(|error| format!("Cannot read {}: {error}", self.path.display()))?;
@@ -135,7 +166,7 @@ impl ServiceConfigEditor {
 
     pub fn translation_prompt_profile(&self) -> TranslationPromptProfile {
         self.translation_contract()
-            .map(|(profile, _)| profile)
+            .map(|contract| contract.profile)
             .unwrap_or_default()
     }
 
@@ -154,21 +185,90 @@ impl ServiceConfigEditor {
 
     pub(crate) fn supports_ask(&self) -> bool {
         self.translation_contract()
-            .is_some_and(|(profile, chat)| chat || profile == TranslationPromptProfile::Contextual)
+            .is_some_and(|contract| contract.supports_ask)
     }
 
-    fn translation_contract(&self) -> Option<(TranslationPromptProfile, bool)> {
+    pub(crate) fn agent_available(&self) -> bool {
+        self.agent_contract()
+            .is_some_and(|contract| contract.supports_chat)
+    }
+
+    pub(crate) fn agent_input_budget(&self) -> usize {
+        self.agent_contract()
+            .map_or(0, |contract| contract.input_budget)
+    }
+
+    fn agent_contract(&self) -> Option<TextModelContract> {
+        *self.agent_contract.get_or_init(|| {
+            let config = xrtranslate_config::AppConfig::from_value(self.document.clone()).ok()?;
+            TextModelContract::resolve(config.agent_provider().ok()?)
+        })
+    }
+
+    fn translation_contract(&self) -> Option<TextModelContract> {
         *self.translation_contract.get_or_init(|| {
             xrtranslate_config::AppConfig::from_value(self.document.clone())
                 .ok()
                 .and_then(|config| config.native_model_route().ok())
-                .and_then(|route| {
-                    Some((
-                        route.translation.translation_prompt_profile().ok()?,
-                        route.translation.supports_chat().ok()?,
-                    ))
-                })
+                .and_then(|route| TextModelContract::resolve(route.translation))
         })
+    }
+
+    fn agent_selection(&self) -> Option<TextModelSelection> {
+        self.document
+            .pointer("/agent/model")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+    }
+
+    fn agent_choices(&self) -> &[TextModelSelection] {
+        self.agent_choices.get_or_init(|| {
+            xrtranslate_config::AppConfig::from_value(self.document.clone())
+                .map(|config| config.chat_model_selections())
+                .unwrap_or_default()
+        })
+    }
+
+    fn set_agent_selection(&mut self, selection: Option<TextModelSelection>) {
+        self.document["agent"]["model"] = serde_json::to_value(selection).unwrap();
+        self.agent_contract.take();
+        self.agent_choices.take();
+        self.dirty = true;
+        self.message = None;
+    }
+
+    pub(crate) fn set_agent_follows_translation(&mut self, follow: bool) {
+        let selection = if follow {
+            None
+        } else {
+            self.onboarding_provider_state("agent")
+                .and_then(|state| {
+                    self.agent_choices()
+                        .iter()
+                        .find(|choice| {
+                            choice.provider == state.selected && choice.model == state.model
+                        })
+                        .or_else(|| {
+                            self.agent_choices()
+                                .iter()
+                                .find(|choice| choice.provider == state.selected)
+                        })
+                        .cloned()
+                })
+                .or_else(|| self.agent_choices().first().cloned())
+        };
+        self.set_agent_selection(selection);
+    }
+
+    pub(crate) fn select_agent_model(&mut self, model: String) {
+        if let Some(mut selection) = self.agent_selection() {
+            selection.model = model;
+            if xrtranslate_config::AppConfig::from_value(self.document.clone())
+                .is_ok_and(|config| config.text_model_supports_chat(&selection))
+            {
+                self.set_agent_selection(Some(selection));
+            }
+        }
     }
 
     /// Consume successful configuration commits once; opening the app is not a change.
@@ -202,26 +302,17 @@ impl ServiceConfigEditor {
         let store = xrtranslate_connections::AccountStore::for_project_root(project_root());
         self.categories
             .iter()
-            .filter_map(|category| {
-                category
-                    .providers
-                    .iter()
-                    .find(|provider| provider.name == category.selected_provider)
-            })
+            .map(|category| category.key)
+            .chain(["agent"])
+            .filter_map(|category| self.onboarding_provider_state(category))
             .any(|provider| {
-                let Some(account) = provider_account(provider) else {
+                let Some(account) = provider.account else {
                     return false;
                 };
                 let snapshot = store.snapshot(account);
                 snapshot.status != xrtranslate_connections::AccountStatus::Connected
                     || snapshot.models.as_ref().is_some_and(|models| {
-                        let selected = provider
-                            .fields
-                            .iter()
-                            .find(|f| f.name == "model")
-                            .map(|f| f.value.as_str())
-                            .unwrap_or_default();
-                        !models.iter().any(|model| model.id == selected)
+                        !models.iter().any(|model| model.id == provider.model)
                     })
             })
     }
@@ -335,14 +426,31 @@ impl ServiceConfigEditor {
         &self,
         category_key: &str,
     ) -> Option<OnboardingProviderState> {
-        let category = self
-            .categories
-            .iter()
-            .find(|category| category.key == category_key)?;
+        let is_agent = category_key == "agent";
+        let selection = is_agent.then(|| self.agent_selection()).flatten();
+        let category = self.categories.iter().find(|category| {
+            category.key
+                == if is_agent {
+                    "translation"
+                } else {
+                    category_key
+                }
+        })?;
         let selected = category
             .providers
             .iter()
-            .find(|provider| provider.name == category.selected_provider)?;
+            .find(|provider| {
+                provider.name
+                    == selection
+                        .as_ref()
+                        .map_or(category.selected_provider.as_str(), |s| &s.provider)
+            })
+            .or_else(|| {
+                category
+                    .providers
+                    .iter()
+                    .find(|provider| provider.name == category.selected_provider)
+            })?;
         let field = |name: &str| {
             selected
                 .fields
@@ -352,6 +460,7 @@ impl ServiceConfigEditor {
                 .unwrap_or_default()
         };
         Some(OnboardingProviderState {
+            follow_translation: is_agent.then_some(selection.is_none()),
             selected: selected.name.clone(),
             remote: provider_is_remote(selected),
             channel: provider_channel(selected),
@@ -361,6 +470,13 @@ impl ServiceConfigEditor {
             choices: category
                 .providers
                 .iter()
+                .filter(|provider| {
+                    !is_agent
+                        || self
+                            .agent_choices()
+                            .iter()
+                            .any(|choice| choice.provider == provider.name)
+                })
                 .map(|provider| OnboardingProviderChoice {
                     name: provider.name.clone(),
                     remote: provider_is_remote(provider),
@@ -377,19 +493,53 @@ impl ServiceConfigEditor {
                     voices: provider_voice_presets(provider),
                 })
                 .collect(),
-            models: category_capability(category_key)
-                .into_iter()
-                .flat_map(|capability| {
-                    xrtranslate_assets::remote::services(&selected.name, capability)
-                })
-                .flat_map(|service| service.models.iter().cloned())
-                .collect(),
-            model: field("model"),
+            models: if is_agent {
+                self.agent_choices()
+                    .iter()
+                    .filter(|choice| choice.provider == selected.name)
+                    .map(|choice| choice.model.clone())
+                    .collect()
+            } else {
+                category_capability(category_key)
+                    .into_iter()
+                    .flat_map(|capability| {
+                        xrtranslate_assets::remote::services(&selected.name, capability)
+                    })
+                    .flat_map(|service| service.models.iter().cloned())
+                    .chain(
+                        (provider_is_remote(selected) && !field("model").is_empty())
+                            .then(|| field("model")),
+                    )
+                    .fold(Vec::new(), |mut models, model| {
+                        if !models.contains(&model) {
+                            models.push(model);
+                        }
+                        models
+                    })
+            },
+            model: selection.map(|s| s.model).unwrap_or_else(|| {
+                if is_agent && !provider_is_remote(selected) {
+                    field("model_asset")
+                } else {
+                    field("model")
+                }
+            }),
             api_key: field("api_key"),
         })
     }
 
     pub(crate) fn select_onboarding_provider(&mut self, category_key: &str, provider_name: &str) {
+        if category_key == "agent" {
+            if let Some(selection) = self
+                .agent_choices()
+                .iter()
+                .find(|choice| choice.provider == provider_name)
+                .cloned()
+            {
+                self.set_agent_selection(Some(selection));
+            }
+            return;
+        }
         if let Some(category) = self
             .categories
             .iter_mut()
@@ -460,23 +610,42 @@ impl ServiceConfigEditor {
         model: String,
         api_key: String,
     ) {
-        let Some(category) = self
-            .categories
-            .iter_mut()
-            .find(|category| category.key == category_key)
-        else {
+        let is_agent = category_key == "agent";
+        let selection = self.agent_selection();
+        if is_agent {
+            self.select_agent_model(model.clone());
+        }
+        let Some(category) = self.categories.iter_mut().find(|category| {
+            category.key
+                == if is_agent {
+                    "translation"
+                } else {
+                    category_key
+                }
+        }) else {
             return;
         };
-        let Some(provider) = category
-            .providers
-            .iter_mut()
-            .find(|provider| provider.name == category.selected_provider)
-        else {
+        let Some(provider) = category.providers.iter_mut().find(|provider| {
+            provider.name
+                == selection
+                    .as_ref()
+                    .filter(|_| is_agent)
+                    .map_or(category.selected_provider.as_str(), |s| &s.provider)
+        }) else {
             return;
         };
         for (name, value) in [("model", model), ("api_key", api_key)] {
+            if is_agent && name == "model" {
+                continue;
+            }
             if let Some(field) = provider.fields.iter_mut().find(|field| field.name == name) {
                 field.value = value;
+            } else {
+                provider.fields.push(ConfigField {
+                    name: name.into(),
+                    value,
+                    kind: JsonFieldKind::String,
+                });
             }
         }
         self.dirty = true;
@@ -549,28 +718,40 @@ impl ServiceConfigEditor {
     }
 
     fn has_incomplete_remote_provider(&self) -> bool {
-        self.categories
-            .iter()
-            .filter(|category| matches!(category.key, "asr" | "translation" | "tts"))
-            .filter_map(|category| {
-                category
-                    .providers
-                    .iter()
-                    .find(|provider| provider.name == category.selected_provider)
-            })
-            .any(|provider| {
-                provider_is_remote(provider)
-                    && ["model", "api_key"]
+        let agent_incomplete = self.agent_selection().is_some()
+            && self
+                .onboarding_provider_state("agent")
+                .is_some_and(|state| {
+                    state.remote
+                        && (state.model.is_empty()
+                            || (state.account.is_none() && state.api_key.trim().is_empty()))
+                });
+        agent_incomplete
+            || self
+                .categories
+                .iter()
+                .filter(|category| matches!(category.key, "asr" | "translation" | "tts"))
+                .filter_map(|category| {
+                    category
+                        .providers
                         .iter()
-                        .filter(|key| **key != "api_key" || provider_account(provider).is_none())
-                        .any(|required| {
-                            provider
-                                .fields
-                                .iter()
-                                .find(|field| field.name == *required)
-                                .is_none_or(|field| field.value.trim().is_empty())
-                        })
-            })
+                        .find(|provider| provider.name == category.selected_provider)
+                })
+                .any(|provider| {
+                    provider_is_remote(provider)
+                        && ["model", "api_key"]
+                            .iter()
+                            .filter(|key| {
+                                **key != "api_key" || provider_account(provider).is_none()
+                            })
+                            .any(|required| {
+                                provider
+                                    .fields
+                                    .iter()
+                                    .find(|field| field.name == *required)
+                                    .is_none_or(|field| field.value.trim().is_empty())
+                            })
+                })
     }
 
     fn make_category(document: &Value, key: &'static str) -> ServiceCategory {
@@ -581,22 +762,6 @@ impl ServiceConfigEditor {
             .map(|providers| {
                 providers
                     .iter()
-                    .filter(|(name, config)| {
-                        config.get("connector").is_none()
-                            && !config.get("transport").and_then(Value::as_str).is_some_and(
-                                |transport| {
-                                    matches!(
-                                        transport,
-                                        "openai" | "dashscope" | "websocket" | "gemini"
-                                    )
-                                },
-                            )
-                            || category_capability(key).is_some_and(|capability| {
-                                xrtranslate_assets::remote::services(name, capability)
-                                    .next()
-                                    .is_some()
-                            })
-                    })
                     .map(|(name, config)| ProviderCard {
                         name: name.clone(),
                         fields: config
@@ -635,6 +800,8 @@ impl ServiceConfigEditor {
     fn save(&mut self) -> Result<(), String> {
         self.language_capabilities.take();
         self.translation_contract.take();
+        self.agent_contract.take();
+        self.agent_choices.take();
         self.asr_streaming.take();
         Self::sync_categories(&mut self.document, &self.categories)?;
         let parsed = xrtranslate_config::AppConfig::from_value(self.document.clone())
@@ -647,6 +814,12 @@ impl ServiceConfigEditor {
             &route.translation,
             xrtranslate_assets::ModelCapability::Translation,
         )?;
+        if let Some(agent) = parsed.for_agent()? {
+            validate_native_provider_asset(
+                &agent.agent_provider()?,
+                xrtranslate_assets::ModelCapability::Translation,
+            )?;
+        }
         parsed.remote_tts()?;
         validate_tts_provider_asset(&parsed.tts)?;
         #[cfg(not(target_os = "android"))]
@@ -657,6 +830,8 @@ impl ServiceConfigEditor {
     fn save_draft(&mut self) -> Result<(), String> {
         self.language_capabilities.take();
         self.translation_contract.take();
+        self.agent_contract.take();
+        self.agent_choices.take();
         self.asr_streaming.take();
         Self::sync_categories(&mut self.document, &self.categories)?;
         xrtranslate_config::save_user_config_document(&self.path, &project_root(), &self.document)?;
@@ -1166,5 +1341,64 @@ fn parse_value(value: &str, kind: JsonFieldKind) -> Result<Value, String> {
             .ok_or_else(|| format!("{value:?} must be a JSON number")),
         JsonFieldKind::Json => serde_json::from_str(value.trim())
             .map_err(|error| format!("Invalid JSON value {value:?}: {error}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn agent_card_filters_models_and_edits_only_its_role_and_shared_credentials() {
+        let mut document: Value = serde_json::from_str(include_str!("../../config.json")).unwrap();
+        document["translation"]["provider"] = json!("qwen");
+        document["translation"]["providers"]["qwen"]["api_key"] = json!("test-only");
+        let document = xrtranslate_config::AppConfig::from_value(document)
+            .unwrap()
+            .raw;
+        let original = document["translation"].clone();
+        let mut editor = ServiceConfigEditor {
+            path: PathBuf::new(),
+            categories: ["asr", "translation", "tts", "ocr"]
+                .into_iter()
+                .map(|key| ServiceConfigEditor::make_category(&document, key))
+                .collect(),
+            document,
+            dirty: false,
+            language_change_pending: false,
+            message: None,
+            onboarding_save_error: None,
+            asr_streaming: Default::default(),
+            translation_contract: Default::default(),
+            agent_contract: Default::default(),
+            agent_choices: Default::default(),
+            language_capabilities: Default::default(),
+        };
+        let state = editor.onboarding_provider_state("agent").unwrap();
+        assert_eq!(state.follow_translation, Some(true));
+        assert_eq!(state.models, ["qwen-plus"]);
+        assert!(!editor.agent_available());
+        assert!(!state.choices.iter().any(|choice| choice.name == "hunyuan"));
+        editor.set_agent_follows_translation(false);
+        editor.select_onboarding_provider("agent", "qwen");
+        editor.set_onboarding_remote_fields("agent", "qwen-plus".into(), "shared-key".into());
+        ServiceConfigEditor::sync_categories(&mut editor.document, &editor.categories).unwrap();
+        let mut expected = original;
+        expected["providers"]["qwen"]["api_key"] = json!("shared-key");
+        assert_eq!(editor.document["translation"], expected);
+        let state = editor.onboarding_provider_state("agent").unwrap();
+        assert_eq!(state.follow_translation, Some(false));
+        assert_eq!(state.model, "qwen-plus");
+        assert!(editor.agent_available());
+        assert!(editor.agent_input_budget() > 28_000);
+        editor.select_agent_model("qwen-mt-plus".into());
+        assert_eq!(
+            editor.onboarding_provider_state("agent").unwrap().model,
+            "qwen-plus"
+        );
+        editor.set_agent_follows_translation(true);
+        assert!(!editor.agent_available());
+        assert!(editor.document["agent"]["model"].is_null());
     }
 }

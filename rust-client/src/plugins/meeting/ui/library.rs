@@ -141,21 +141,27 @@ pub(super) fn render_library(
                                 egui::include_image!("../../../../resources/icons/more.svg"),
                                 |ui| {
                                     if can_continue(meeting)
-                                        && ui.button(tr(language, "Continue recording")).clicked()
+                                        && components::button(
+                                            ui,
+                                            tr(language, "Continue recording"),
+                                        )
+                                        .clicked()
                                     {
                                         action = UiAction::Continue(meeting.id.clone());
                                         ui.close();
                                     }
-                                    if ui.button(tr(language, "Export Markdown")).clicked() {
+                                    if components::button(ui, tr(language, "Export Markdown"))
+                                        .clicked()
+                                    {
                                         action = UiAction::ExportMeeting(meeting.id.clone());
                                         ui.close();
                                     }
-                                    if ui
-                                        .add_enabled(
-                                            !controller.is_recording(&meeting.id),
-                                            egui::Button::new(tr(language, "Delete")),
-                                        )
-                                        .clicked()
+                                    if components::secondary_button_enabled(
+                                        ui,
+                                        tr(language, "Delete"),
+                                        !controller.is_recording(&meeting.id),
+                                    )
+                                    .clicked()
                                     {
                                         action = UiAction::AskDelete(meeting.id.clone());
                                         ui.close();

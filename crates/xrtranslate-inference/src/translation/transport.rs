@@ -5,9 +5,9 @@ use crate::{
 use serde_json::{Value, json};
 use xrtranslate_assets::remote::{RemoteCapabilities, RemoteConnector};
 use xrtranslate_engine::language::SupportedLanguage;
-use xrtranslate_prompt::PromptMessage;
+use xrtranslate_prompt::{PromptMessage, TranslationPromptProfile};
 
-/// Encodes the rendered graph without authoring or reordering its content.
+/// Encodes messages for the provider's supported input shape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum RequestFormat {
     Messages,
@@ -16,6 +16,25 @@ pub(super) enum RequestFormat {
 }
 
 impl RequestFormat {
+    /// Keep caller-owned conversation roles unless the model only accepts one
+    /// instruction. Serializing that transcript preserves role/data boundaries.
+    pub fn instruction_messages(
+        self,
+        messages: &[PromptMessage],
+        profile: TranslationPromptProfile,
+    ) -> Value {
+        if self == Self::Messages && profile == TranslationPromptProfile::ChatMessages {
+            return json!(messages);
+        }
+        if messages.len() == 1 && messages[0].role == xrtranslate_prompt::PromptMessageRole::User {
+            return json!(messages);
+        }
+        json!([{"role":"user", "content":format!(
+            "Continue the following conversation. Return only the next assistant response.\n{}",
+            serde_json::to_string(messages).expect("text messages serialize")
+        )}])
+    }
+
     pub fn from_remote(
         connector: Option<RemoteConnector>,
         capabilities: &RemoteCapabilities,

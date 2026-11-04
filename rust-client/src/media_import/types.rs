@@ -15,6 +15,8 @@ pub enum AudioImportPacing {
 
 #[derive(Debug, Clone)]
 pub struct AudioImportOptions {
+    /// Optional finite source interval. Output timestamps begin at zero.
+    pub range_ms: Option<(u64, u64)>,
     /// Number of interleaved sample frames per emitted message.
     pub chunk_frames: usize,
     pub output_sample_rate: u32,
@@ -30,6 +32,7 @@ pub struct AudioImportOptions {
 impl Default for AudioImportOptions {
     fn default() -> Self {
         Self {
+            range_ms: None,
             chunk_frames: 1_600,
             output_sample_rate: IMPORT_SAMPLE_RATE,
             output_channels: 1,

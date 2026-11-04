@@ -68,6 +68,26 @@ pub struct ElementDescriptor {
     pub value: ElementValue,
     pub enabled: bool,
     pub rect: [f32; 4],
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<[f64; 2]>,
+}
+
+impl ElementDescriptor {
+    pub fn actions(&self) -> &'static [&'static str] {
+        if !self.enabled {
+            return &[];
+        }
+        match self.kind {
+            ElementKind::Button | ElementKind::Tab | ElementKind::Card => &["click"],
+            ElementKind::Toggle | ElementKind::Checkbox => &["click", "set"],
+            ElementKind::Slider | ElementKind::TextInput => &["set"],
+            ElementKind::ComboBox if !self.options.is_empty() => &["click", "set"],
+            ElementKind::ComboBox => &["click"],
+            ElementKind::Other => &[],
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -79,69 +99,55 @@ pub struct FrameSnapshot {
 impl FrameSnapshot {
     #[must_use]
     pub fn find_element(&self, target: &str) -> Option<&ElementDescriptor> {
-        let trimmed = target.trim();
-        if trimmed.is_empty() {
-            return None;
+        self.resolve_element(target).ok()
+    }
+
+    pub fn resolve_element<'a>(&'a self, target: &str) -> Result<&'a ElementDescriptor, String> {
+        let target = target.trim();
+        if target.is_empty() {
+            return Err("Supply a control ID or label".into());
         }
-
-        let target_lower = trimmed.to_lowercase();
-
-        // 1. Match by explicit hex ID (16 hex chars)
-        if trimmed.len() == 16 {
-            if let Some(elem) = self
-                .elements
+        let unique = |elements: Vec<&'a ElementDescriptor>| match elements.as_slice() {
+            [element] => Ok(*element),
+            [] => Err(format!(
+                "Control '{target}' not found on page '{}'",
+                self.page
+            )),
+            _ => Err(format!(
+                "Control '{target}' is ambiguous; use an ID from ui.read"
+            )),
+        };
+        let ids: Vec<_> = self
+            .elements
+            .iter()
+            .filter(|e| e.id_hex.eq_ignore_ascii_case(target))
+            .collect();
+        if !ids.is_empty() {
+            return unique(ids);
+        }
+        if let Some(index) = target
+            .strip_prefix('#')
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            return unique(self.elements.iter().filter(|e| e.index == index).collect());
+        }
+        let exact: Vec<_> = self
+            .elements
+            .iter()
+            .filter(|e| e.label.eq_ignore_ascii_case(target))
+            .collect();
+        if !exact.is_empty() {
+            return unique(exact);
+        }
+        if let Ok(index) = target.parse::<usize>() {
+            return unique(self.elements.iter().filter(|e| e.index == index).collect());
+        }
+        let lower = target.to_lowercase();
+        unique(
+            self.elements
                 .iter()
-                .find(|e| e.id_hex.to_lowercase() == target_lower)
-            {
-                return Some(elem);
-            }
-        }
-
-        // 2. Match by explicit index (e.g. "#0", "#1")
-        if let Some(index_str) = trimmed.strip_prefix('#') {
-            if let Ok(idx) = index_str.parse::<usize>() {
-                if let Some(elem) = self.elements.iter().find(|e| e.index == idx) {
-                    return Some(elem);
-                }
-            }
-        }
-
-        // 3. Match by exact label (case-insensitive)
-        if let Some(elem) = self
-            .elements
-            .iter()
-            .find(|e| e.label.to_lowercase() == target_lower)
-        {
-            return Some(elem);
-        }
-
-        // 4. Match by plain numeric index (short integers like "0", "12")
-        if trimmed.len() <= 4 {
-            if let Ok(idx) = trimmed.parse::<usize>() {
-                if let Some(elem) = self.elements.iter().find(|e| e.index == idx) {
-                    return Some(elem);
-                }
-            }
-        }
-
-        // 5. Match by any hex ID
-        if let Some(elem) = self
-            .elements
-            .iter()
-            .find(|e| e.id_hex.to_lowercase() == target_lower)
-        {
-            return Some(elem);
-        }
-
-        // 6. Match by label contains substring (case-insensitive)
-        if let Some(elem) = self
-            .elements
-            .iter()
-            .find(|e| e.label.to_lowercase().contains(&target_lower))
-        {
-            return Some(elem);
-        }
-
-        None
+                .filter(|e| e.label.to_lowercase().contains(&lower))
+                .collect(),
+        )
     }
 }

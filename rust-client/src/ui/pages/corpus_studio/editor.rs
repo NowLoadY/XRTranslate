@@ -37,7 +37,8 @@ impl TermForm {
                 .iter()
                 .enumerate()
                 .filter(|(_, other)| {
-                    other.promptable && other.id != node.id
+                    other.promptable
+                        && other.id != node.id
                         && other.domain_id == node.domain_id
                         && values.iter().any(|(i, value)| {
                             other
@@ -155,7 +156,7 @@ pub(super) fn render_inspector(
                 let existing = snapshot.domains.iter().find(|existing|
                     existing.parent_id.is_none() && existing.title.trim().to_lowercase() == domain.title.trim().to_lowercase());
                 if let Some(existing) = existing {
-                    if ui.button(tr(language, "Use existing domain")).clicked() {
+                    if components::button(ui, tr(language, "Use existing domain")).clicked() {
                         node.domain_id = existing.id.clone();
                         form.new_domain = None;
                         changed = true;
@@ -190,7 +191,7 @@ pub(super) fn render_inspector(
                         .show_ui(ui, |ui| {
                             for index in 0..LANGUAGE_CODES.len() {
                                 if index != languages[1 - position] {
-                                    ui.selectable_value(&mut languages[position], index, language_name(language, index));
+                                    components::selectable_value(ui, &mut languages[position], index, language_name(language, index));
                                 }
                             }
                         });

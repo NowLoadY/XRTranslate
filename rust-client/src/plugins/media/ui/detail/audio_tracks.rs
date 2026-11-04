@@ -3,7 +3,7 @@ use crate::{
     plugins::media::{
         backend::MediaSource, controller::MediaController, i18n::tr, task::AudioTrackSelection,
     },
-    ui::components::{playback_button, playback_popup, playback_tooltip},
+    ui::components::{self, playback_button, playback_popup, playback_tooltip},
 };
 use eframe::egui;
 
@@ -50,7 +50,8 @@ pub(super) fn render(controller: &mut MediaController, language: UiLanguage, ui:
                 .collect::<Vec<_>>();
             ui.add_enabled_ui(enabled, |ui| {
                 if original.is_empty() {
-                    ui.selectable_value(
+                    components::selectable_value(
+                        ui,
                         &mut task.audio_track,
                         AudioTrackSelection::Original,
                         tr(language, "Original"),
@@ -64,7 +65,8 @@ pub(super) fn render(controller: &mut MediaController, language: UiLanguage, ui:
                     } else {
                         tr(language, "Original").into()
                     };
-                    let response = ui.selectable_label(
+                    let response = components::selectable_label(
+                        ui,
                         task.audio_track == AudioTrackSelection::Original
                             && task.original_audio_track == Some(track.id),
                         &label,
@@ -86,9 +88,13 @@ pub(super) fn render(controller: &mut MediaController, language: UiLanguage, ui:
                         ),
                     ] {
                         ui.add_enabled_ui(path.is_file(), |ui| {
-                            if ui
-                                .selectable_value(&mut task.audio_track, value, tr(language, label))
-                                .clicked()
+                            if components::selectable_value(
+                                ui,
+                                &mut task.audio_track,
+                                value,
+                                tr(language, label),
+                            )
+                            .clicked()
                             {
                                 ui.close();
                             }

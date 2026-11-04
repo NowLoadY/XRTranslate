@@ -9,7 +9,8 @@ use crate::{
     PromptVariable, TranslationPromptContext,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PromptMessage {
     pub role: PromptMessageRole,
     pub content: String,

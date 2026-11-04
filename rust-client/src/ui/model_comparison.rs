@@ -102,7 +102,7 @@ pub(super) fn vram_budget(
                     for dev in available_gpus {
                         let text = format!("{} · {:.1} GiB", dev.name, dev.memory_bytes as f64 / GIB);
                         let is_selected = dev.name == gpu;
-                        if ui.selectable_label(is_selected, text).clicked() && !is_selected {
+                        if crate::ui::components::selectable_label(ui, is_selected, text).clicked() && !is_selected {
                             selected_gpu_changed = Some(dev.name.clone());
                         }
                     }

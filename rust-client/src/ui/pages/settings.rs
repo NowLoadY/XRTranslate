@@ -88,7 +88,12 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     for item in &nav_items {
-                        ui.selectable_value(&mut app.settings_section, item.id, item.label);
+                        components::selectable_value(
+                            ui,
+                            &mut app.settings_section,
+                            item.id,
+                            item.label,
+                        );
                     }
                 });
             });
@@ -196,12 +201,14 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
                         "settings_theme_variant",
                         selected_variant_text,
                         |ui| {
-                            ui.selectable_value(
+                            components::selectable_value(
+                                ui,
                                 &mut variant,
                                 crate::ui::theme::ThemeVariant::Default,
                                 crate::i18n::tr(app.ui_language, "Default"),
                             );
-                            ui.selectable_value(
+                            components::selectable_value(
+                                ui,
                                 &mut variant,
                                 crate::ui::theme::ThemeVariant::HandDrawn,
                                 crate::i18n::tr(app.ui_language, "Hand-drawn"),
@@ -248,12 +255,14 @@ fn render_general_appearance_section(app: &mut crate::XRTranslateApp, ui: &mut e
                         "settings_theme_variant",
                         selected_variant_text,
                         |ui| {
-                            ui.selectable_value(
+                            components::selectable_value(
+                                ui,
                                 &mut variant,
                                 crate::ui::theme::ThemeVariant::Default,
                                 crate::i18n::tr(app.ui_language, "Default"),
                             );
-                            ui.selectable_value(
+                            components::selectable_value(
+                                ui,
                                 &mut variant,
                                 crate::ui::theme::ThemeVariant::HandDrawn,
                                 crate::i18n::tr(app.ui_language, "Hand-drawn"),

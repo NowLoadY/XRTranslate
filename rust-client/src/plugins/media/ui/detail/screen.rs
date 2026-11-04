@@ -13,7 +13,39 @@ pub(in crate::plugins::media::ui) fn render_detail(
     snapshot: &MediaUiSnapshot,
     ui: &mut egui::Ui,
 ) -> MediaAction {
+    let blocked = controller.pending_subtitle_change.is_some();
+    let mut action = ui
+        .add_enabled_ui(!blocked, |ui| {
+            render_detail_contents(controller, snapshot, ui)
+        })
+        .inner;
+    if controller.subtitles.count() > 0
+        && matches!(
+            action,
+            MediaAction::StartTranslation { .. }
+                | MediaAction::TranslateSubtitles { restart: true }
+        )
+    {
+        controller.pending_subtitle_change =
+            Some(crate::plugins::media::files::SubtitleChange::Action(action));
+        action = MediaAction::None;
+    }
+    let confirmed = super::files::confirm_change(controller, snapshot.language, ui.ctx());
+    if confirmed != MediaAction::None {
+        confirmed
+    } else {
+        action
+    }
+}
+
+fn render_detail_contents(
+    controller: &mut MediaController,
+    snapshot: &MediaUiSnapshot,
+    ui: &mut egui::Ui,
+) -> MediaAction {
     let language = snapshot.language;
+    let optimizing = controller.active_task_id.is_some()
+        && snapshot.optimizing_task == controller.active_task_id;
     let mut action = MediaAction::None;
     if controller.fullscreen_mode
         && (!controller.can_show_video() || ui.input(|i| i.key_pressed(egui::Key::Escape)))
@@ -72,6 +104,18 @@ pub(in crate::plugins::media::ui) fn render_detail(
     if action == MediaAction::StopTranslation {
         return action;
     }
+    if controller.is_subtitle_task() {
+        let action = ui
+            .add_enabled_ui(controller.subtitle_edit.is_none(), |ui| {
+                render_task_control_card(controller, snapshot, ui)
+            })
+            .inner;
+        ui.add_space(12.0);
+        ui.push_id(controller.active_task_id.clone(), |ui| {
+            super::super::subtitles::render_subtitles_card(controller, language, optimizing, ui);
+        });
+        return action;
+    }
     let height = ui.available_height();
     if controller.fullscreen_mode {
         render_viewport_card(controller, language, ui, height);
@@ -79,7 +123,9 @@ pub(in crate::plugins::media::ui) fn render_detail(
         let stacked = layout::should_stack(ui.available_width(), 2, 380.0);
         if stacked && controller.subtitle_edit.is_some() {
             ui.push_id(controller.active_task_id.clone(), |ui| {
-                super::super::subtitles::render_subtitles_card(controller, language, ui);
+                super::super::subtitles::render_subtitles_card(
+                    controller, language, optimizing, ui,
+                );
             });
             return action;
         }
@@ -92,7 +138,7 @@ pub(in crate::plugins::media::ui) fn render_detail(
                     ui.allocate_ui(egui::vec2(ui.available_width(), height * 0.65), |ui| {
                         ui.push_id(controller.active_task_id.clone(), |ui| {
                             super::super::subtitles::render_subtitles_card(
-                                controller, language, ui,
+                                controller, language, optimizing, ui,
                             );
                         });
                     });
@@ -110,7 +156,9 @@ pub(in crate::plugins::media::ui) fn render_detail(
                     })
                     .inner;
                 columns[1].push_id(controller.active_task_id.clone(), |ui| {
-                    super::super::subtitles::render_subtitles_card(controller, language, ui);
+                    super::super::subtitles::render_subtitles_card(
+                        controller, language, optimizing, ui,
+                    );
                 });
             });
         }

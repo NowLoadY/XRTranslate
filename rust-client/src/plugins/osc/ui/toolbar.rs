@@ -118,22 +118,26 @@ pub fn render_toolbar(
                                 "osc_format_mode",
                                 plugin.draft().format_mode.label(language),
                                 |ui| {
-                                    let r1 = ui.selectable_value(
+                                    let r1 = components::selectable_value(
+                                        ui,
                                         &mut plugin.draft_mut().format_mode,
                                         OscFormatMode::BilingualSourceFirst,
                                         OscFormatMode::BilingualSourceFirst.label(language),
                                     );
-                                    let r2 = ui.selectable_value(
+                                    let r2 = components::selectable_value(
+                                        ui,
                                         &mut plugin.draft_mut().format_mode,
                                         OscFormatMode::BilingualTargetFirst,
                                         OscFormatMode::BilingualTargetFirst.label(language),
                                     );
-                                    let r3 = ui.selectable_value(
+                                    let r3 = components::selectable_value(
+                                        ui,
                                         &mut plugin.draft_mut().format_mode,
                                         OscFormatMode::Inline,
                                         OscFormatMode::Inline.label(language),
                                     );
-                                    let r4 = ui.selectable_value(
+                                    let r4 = components::selectable_value(
+                                        ui,
                                         &mut plugin.draft_mut().format_mode,
                                         OscFormatMode::TargetOnly,
                                         OscFormatMode::TargetOnly.label(language),
@@ -197,13 +201,13 @@ pub fn render_toolbar(
                                     for value in
                                         [OscMessageSeparator::NewLine, OscMessageSeparator::Space]
                                     {
-                                        selection_changed |= ui
-                                            .selectable_value(
-                                                &mut plugin.draft_mut().message_separator,
-                                                value,
-                                                value.layout_label(language, target_only),
-                                            )
-                                            .changed();
+                                        selection_changed |= components::selectable_value(
+                                            ui,
+                                            &mut plugin.draft_mut().message_separator,
+                                            value,
+                                            value.layout_label(language, target_only),
+                                        )
+                                        .changed();
                                     }
                                     selection_changed
                                 },
@@ -344,14 +348,14 @@ pub fn render_toolbar(
                                                 1 => &mut plugin.draft_mut().system_audio_prefix,
                                                 _ => &mut plugin.draft_mut().typing_prefix,
                                             };
-                                            changed |= components::text_edit_ui(
+                                            let response = components::text_edit_ui(
                                                 ui,
                                                 id,
                                                 egui::TextEdit::singleline(prefix)
                                                     .desired_width((width - 60.0).max(64.0))
                                                     .char_limit(MAX_PREFIX_LENGTH),
-                                            )
-                                            .changed();
+                                            );
+                                            changed |= crate::ui::automation::text_response(ui, label, prefix, response).changed();
                                             if components::reset_button(ui, id).clicked() {
                                                 *prefix = default.into();
                                                 changed = true;

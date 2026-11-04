@@ -95,7 +95,7 @@ pub(super) fn render(
                     if ui.add(egui::Button::image_and_text(icon, tr(language, "Translation style"))).clicked() {
                         controller.style_panel.collapsed = !controller.style_panel.collapsed;
                     }
-                    if ui.button(tr(language, "Locate node")).on_hover_text(tr(language, "Locate style node")).clicked() {
+                    if crate::ui::components::button(ui, tr(language, "Locate node")).on_hover_text(tr(language, "Locate style node")).clicked() {
                         locate_node(&draft.graph, controller, canvas);
                     }
                 });

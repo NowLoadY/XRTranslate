@@ -14,6 +14,12 @@ pub enum TextMode {
 pub struct TextComposer {
     pub text: String,
     pub mode: TextMode,
+    submit_key: SubmitShortcut,
+}
+
+/// Enter submission shared by text entry surfaces, including IME confirmation.
+#[derive(Clone, Default)]
+pub(crate) struct SubmitShortcut {
     composing: bool,
 }
 
@@ -63,55 +69,7 @@ impl TextComposer {
             self.mode = TextMode::Translate;
         }
         let editor_id = ui.make_persistent_id((id, "editor"));
-        let focused = ui.memory(|memory| memory.has_focus(editor_id));
-        let was_composing = self.composing;
-        let ime_event = ui.input(|input| {
-            let mut changed = false;
-            if focused {
-                for event in &input.events {
-                    match event {
-                        egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => {
-                            // Some platforms send empty preedit events while the
-                            // editor is merely focused, without any composition.
-                            changed |= self.composing || !text.is_empty();
-                            self.composing = !text.is_empty();
-                        }
-                        egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
-                            changed |= self.composing || !text.is_empty();
-                            self.composing = false;
-                        }
-                        _ => {}
-                    }
-                }
-            } else {
-                self.composing = false;
-            }
-            changed
-        });
-        let ime_busy = was_composing || self.composing || ime_event;
-        let enter = focused
-            && ui.input_mut(|input| {
-                let mut enter = false;
-                input.events.retain(|event| {
-                    if let egui::Event::Key {
-                        key: egui::Key::Enter,
-                        pressed: true,
-                        repeat,
-                        modifiers,
-                        ..
-                    } = event
-                        && *modifiers == egui::Modifiers::NONE
-                    {
-                        // Confirming an IME candidate must neither submit the
-                        // draft nor insert a newline into the committed text.
-                        enter |= !repeat && !ime_busy;
-                        false
-                    } else {
-                        true
-                    }
-                });
-                enter
-            });
+        let enter = self.submit_key.pressed(ui.ctx(), editor_id);
         let mut submit = false;
         let compact = ui.available_width() < 600.0;
         let radius = if compact { 22 } else { 10 };
@@ -136,14 +94,7 @@ impl TextComposer {
                             (TextMode::Direct, "Direct"),
                         ] {
                             let label = tr(context.language, label);
-                            let response = ui.selectable_label(self.mode == mode, label);
-                            let response = crate::ui::automation::button_response(
-                                ui,
-                                response.id,
-                                label,
-                                response.enabled(),
-                                response,
-                            );
+                            let response = super::selectable_label(ui, self.mode == mode, label);
                             if response.clicked() {
                                 self.mode = mode;
                             }
@@ -222,11 +173,65 @@ impl TextComposer {
             },
         );
         if submit {
-            self.composing = false;
+            self.submit_key = SubmitShortcut::default();
             ui.memory_mut(|memory| memory.request_focus(editor_id));
             self.submission(languages.0, languages.1)
         } else {
             None
         }
+    }
+}
+
+impl SubmitShortcut {
+    pub(crate) fn pressed(&mut self, ctx: &egui::Context, editor_id: egui::Id) -> bool {
+        let focused = ctx.memory(|memory| memory.has_focus(editor_id));
+        let was_composing = self.composing;
+        let ime_event = ctx.input(|input| {
+            let mut changed = false;
+            if focused {
+                for event in &input.events {
+                    match event {
+                        egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => {
+                            // Some platforms send empty preedit events while the
+                            // editor is merely focused, without any composition.
+                            changed |= self.composing || !text.is_empty();
+                            self.composing = !text.is_empty();
+                        }
+                        egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
+                            changed |= self.composing || !text.is_empty();
+                            self.composing = false;
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
+                self.composing = false;
+            }
+            changed
+        });
+        let ime_busy = was_composing || self.composing || ime_event;
+        focused
+            && ctx.input_mut(|input| {
+                let mut enter = false;
+                input.events.retain(|event| {
+                    if let egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        repeat,
+                        modifiers,
+                        ..
+                    } = event
+                        && *modifiers == egui::Modifiers::NONE
+                    {
+                        // Confirming an IME candidate must neither submit the
+                        // draft nor insert a newline into the committed text.
+                        enter |= !repeat && !ime_busy;
+                        false
+                    } else {
+                        true
+                    }
+                });
+                enter
+            })
     }
 }

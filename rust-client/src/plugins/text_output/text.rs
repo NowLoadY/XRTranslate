@@ -214,9 +214,13 @@ pub(crate) fn render_banner_selector(
                     if kind == BannerContentType::Lyrics && !lyrics_available {
                         continue;
                     }
-                    changed |= ui
-                        .selectable_value(&mut banner.content_type, kind, kind.label(language))
-                        .changed();
+                    changed |= components::selectable_value(
+                        ui,
+                        &mut banner.content_type,
+                        kind,
+                        kind.label(language),
+                    )
+                    .changed();
                 }
                 changed
             });
@@ -230,12 +234,18 @@ pub(crate) fn render_banner_selector(
         match banner.content_type {
             BannerContentType::None => {}
             BannerContentType::CustomText => {
-                if components::text_edit_ui(
+                let response = components::text_edit_ui(
                     ui,
                     combo_id,
                     egui::TextEdit::singleline(&mut banner.custom_text)
                         .hint_text("e.g. [AFK] or [CN/JP]")
                         .desired_width(150.0),
+                );
+                if crate::ui::automation::text_response(
+                    ui,
+                    crate::i18n::tr(language, "Custom Text"),
+                    &mut banner.custom_text,
+                    response,
                 )
                 .changed()
                 {

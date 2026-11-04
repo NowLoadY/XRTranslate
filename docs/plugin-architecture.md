@@ -21,6 +21,16 @@ for host effects. They do not receive the root application object or access
 another plugin's private state. The host connects collaborating plugins through
 small contracts, as it distributes lyric text to selected outputs.
 
+Director exposes plugin-owned operations through `ToolProvider`. The native CLI
+and the headless Agent plugin share this contract; the dispatcher only discovers
+and forwards calls, without interpreting plugin tool names. UI actions and
+semantic tools reuse the same domain state and operations. The Agent owns its
+execution environment; domain working documents remain with their plugins.
+Providers are discovered through a paged catalogue; full schemas are requested
+only when needed. Ordinary plugin page controls already use the shared UI
+provider and do not need duplicate plugin-specific commands.
+See [Director CLI and Agent design](design/director-agent.md).
+
 ## Translation and result contracts
 
 `session_coordinator` is the shared integration boundary:

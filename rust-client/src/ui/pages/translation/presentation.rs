@@ -225,11 +225,12 @@ fn render_lines(
                     foreground.gamma_multiply(opacity),
                     latest,
                 );
-                if cfg!(any(windows, target_os = "linux")) {
-                    selection.show(ui, *id, galley, ranges);
+                let response = if cfg!(any(windows, target_os = "linux")) {
+                    selection.show(ui, *id, galley, ranges)
                 } else {
-                    paint_lyric(ui, galley, foreground);
-                }
+                    paint_lyric(ui, galley, foreground)
+                };
+                crate::ui::automation::record_text_output(ui, text, &response);
                 if !latest {
                     ui.add_space(gap);
                 }
@@ -277,7 +278,11 @@ fn lyric_layout(
     ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
-fn paint_lyric(ui: &mut egui::Ui, galley: std::sync::Arc<egui::Galley>, color: Color32) {
+fn paint_lyric(
+    ui: &mut egui::Ui,
+    galley: std::sync::Arc<egui::Galley>,
+    color: Color32,
+) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), galley.size().y),
         egui::Sense::hover(),
@@ -286,6 +291,7 @@ fn paint_lyric(ui: &mut egui::Ui, galley: std::sync::Arc<egui::Galley>, color: C
     if ui.is_rect_visible(rect) {
         ui.painter().galley(rect.center_top(), galley, color);
     }
+    response
 }
 
 fn fade_top(ui: &egui::Ui, viewport: egui::Rect, backdrop: Color32) {

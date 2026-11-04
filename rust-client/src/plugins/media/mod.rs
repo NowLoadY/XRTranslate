@@ -2,15 +2,17 @@ pub mod backend;
 pub mod controller;
 mod edit_translation;
 pub mod events;
+mod files;
 pub mod i18n;
 pub mod installer;
 mod subtitle_job;
 mod subtitle_refinement;
-mod subtitle_repair;
+mod subtitle_split;
 pub mod subtitles;
 pub mod task;
 pub mod ui;
 mod video_export;
+pub(crate) mod workspace;
 
 use crate::i18n::UiLanguage;
 use crate::session_coordinator::{
@@ -27,7 +29,8 @@ pub struct MediaUiSnapshot {
     pub download_proxy_url: String,
     pub language: UiLanguage,
     pub languages: xrtranslate_engine::language::LanguageCapabilities,
-    pub supports_ask: bool,
+    pub can_optimize: bool,
+    pub optimizing_task: Option<String>,
     pub default_preprocessing: xrtranslate_protocol::AudioPreprocessing,
     pub preprocessing_models: crate::ui::components::AudioPreprocessingModels,
 }
@@ -64,8 +67,63 @@ pub enum MediaTranslationRequest {
     },
 }
 
+impl MediaTranslationRequest {
+    /// The same selected source, channels and processing feed full imports and trials.
+    pub(crate) fn import_input(
+        &self,
+        default_preprocessing: xrtranslate_protocol::AudioPreprocessing,
+        range_ms: Option<(u64, u64)>,
+    ) -> Result<crate::session_coordinator::TranslationInput, String> {
+        use crate::{media_import::AudioImportOptions, session_coordinator::TranslationInput};
+        let Self::ImportMedia {
+            source,
+            audio_track,
+            recognition,
+            audio_channels,
+            ..
+        } = self
+        else {
+            return Err("This task has no finite audio source".into());
+        };
+        if !audio_channels.is_empty() && !audio_channels.iter().any(|channel| channel.recognition) {
+            return Err("Select at least one recognition channel".into());
+        }
+        let mut recognition = recognition.clone();
+        recognition.continuous_recognition = false;
+        let options = AudioImportOptions {
+            range_ms,
+            audio_track: *audio_track,
+            recognition_channels: audio_channels
+                .iter()
+                .filter(|channel| channel.recognition)
+                .map(|channel| channel.index)
+                .collect(),
+            ..AudioImportOptions::for_recognition(
+                recognition.preprocessing.unwrap_or(default_preprocessing),
+            )
+        };
+        match source {
+            backend::MediaSource::LocalFile(path) => Ok(TranslationInput::File {
+                path: path.clone(),
+                recognition,
+                options,
+            }),
+            backend::MediaSource::OnlineFile(url) => Ok(TranslationInput::OnlineAudio {
+                url: url.clone(),
+                recognition,
+                options,
+            }),
+            backend::MediaSource::NetworkStream(_) => {
+                Err("This task has no finite audio source".into())
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum MediaAction {
+    OptimizeSubtitles,
+    StopOptimization,
     #[default]
     None,
     StartTranslation {
@@ -80,6 +138,11 @@ pub enum MediaAction {
 }
 
 pub struct MediaPlugin {
+    pub(crate) available_preprocessing: Vec<xrtranslate_protocol::AudioPreprocessing>,
+    pub(crate) default_preprocessing: xrtranslate_protocol::AudioPreprocessing,
+    pub(crate) pending_optimization: Option<String>,
+    workspace_trial: Option<workspace::PendingTrial>,
+    pub(crate) workspace_cancelled: Vec<crate::session_coordinator::TranslationSessionOwner>,
     subtitle_job: Option<subtitle_job::SubtitleJob>,
     subtitle_retranslation: Option<edit_translation::SubtitleRetranslation>,
     stop_requested: bool,
@@ -96,6 +159,11 @@ impl Default for MediaPlugin {
 impl MediaPlugin {
     pub fn new() -> Self {
         Self {
+            available_preprocessing: vec![xrtranslate_protocol::AudioPreprocessing::None],
+            default_preprocessing: xrtranslate_protocol::AudioPreprocessing::None,
+            pending_optimization: None,
+            workspace_trial: None,
+            workspace_cancelled: Vec::new(),
             subtitle_job: None,
             subtitle_retranslation: None,
             stop_requested: false,
@@ -151,6 +219,8 @@ impl MediaPlugin {
         self.controller.active_task_id.is_some() || self.controller.video_export.is_some()
     }
     pub fn pause_task(&mut self) {
+        self.pending_optimization = None;
+        self.cancel_workspace_trial("Media task stopped");
         self.subtitle_job = None;
         self.stop_requested = false;
         self.controller.previews = Default::default();

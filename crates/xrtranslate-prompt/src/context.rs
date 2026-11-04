@@ -2,6 +2,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::PromptMode;
 
+/// A lightweight input-budget estimate shared with vocabulary selection:
+/// roughly three ASCII characters or one non-ASCII character per token.
+/// This is a heuristic, not a model-specific tokenizer.
+pub fn estimated_tokens(text: &str) -> usize {
+    text.chars()
+        .map(|character| if character.is_ascii() { 1 } else { 3 })
+        .sum::<usize>()
+        .div_ceil(3)
+}
+
 /// Provider-neutral facts available before speech recognition. The prompt
 /// graph may render these terms into a free-form instruction prompt or a
 /// lexical context field, while weighted vocabulary delivery stays separate.

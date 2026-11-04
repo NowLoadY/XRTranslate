@@ -39,7 +39,7 @@ pub fn render(
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.menu_button("⋯", |ui| {
-                if ui.button(tr(language, "TTS settings")).clicked() {
+                if components::button(ui, tr(language, "TTS settings")).clicked() {
                     action = Some(Action::Configure);
                     ui.close();
                 }

@@ -505,3 +505,50 @@ fn online_meeting_recognizes_translates_and_persists() {
         bundle.meeting.status
     );
 }
+
+#[cfg(feature = "mpv")]
+#[test]
+fn mpv_time_range_delivers_only_the_selected_audio() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("interval.wav");
+    let mut audio = wav(5);
+    for (index, sample) in audio[44..].chunks_exact_mut(2).enumerate() {
+        let level = if (2 * 16_000..3 * 16_000).contains(&index) {
+            8192i16
+        } else {
+            0
+        };
+        sample.copy_from_slice(&level.to_le_bytes());
+    }
+    std::fs::write(&path, audio).unwrap();
+    let (tx, rx) = crossbeam_channel::bounded(4);
+    let import = import_audio_file(
+        path,
+        tx,
+        AudioImportOptions {
+            range_ms: Some((2000, 3000)),
+            gate_threshold_db: None,
+            pacing: AudioImportPacing::AsFastAsPossible,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut samples = Vec::new();
+    while let Ok(chunk) = rx.recv_timeout(Duration::from_secs(5)) {
+        samples.extend(chunk);
+    }
+    assert!(matches!(
+        terminal(&import),
+        AudioImportEvent::Completed { .. }
+    ));
+    assert!(
+        (16_000..=17_024).contains(&samples.len()),
+        "{} samples",
+        samples.len()
+    );
+    assert!(
+        samples[..15_500]
+            .iter()
+            .all(|sample| (*sample - 0.25).abs() < 0.005)
+    );
+}

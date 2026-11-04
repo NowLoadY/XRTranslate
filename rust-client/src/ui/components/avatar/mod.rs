@@ -18,8 +18,8 @@ pub use companion::companion;
 pub use face::{Face, Nose};
 pub use geometry::body::HeadShape;
 pub use hair::Hair;
-pub use model::{Material, Part};
 pub(crate) use model::{Geometry, Model};
+pub use model::{Material, Part};
 pub(crate) use motion::Motion;
 pub use motion::{Expression, Gaze, Pose};
 pub use presentation::Presentation;
@@ -31,6 +31,7 @@ pub(crate) use render::stereo::StereoRenderer;
 pub use wardrobe::{Accessory, Appearance};
 
 pub use speech::Speech;
+pub(crate) use speech::popup_rect;
 #[cfg(any(windows, target_os = "linux"))]
 pub(crate) use surface::Surface;
 

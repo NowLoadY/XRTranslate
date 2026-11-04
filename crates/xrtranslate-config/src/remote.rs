@@ -109,12 +109,14 @@ pub fn apply_remote_defaults(document: &mut Value) {
             for (key, value) in &service.defaults {
                 // Follow the selected model when switching built-in protocols.
                 // Credentials and explicitly customized endpoints remain user-owned.
-                let inherited_route = matches!(key.as_str(), "connector" | "url")
-                    && services().any(|other| {
-                        settings
-                            .get(key)
-                            .is_some_and(|current| other.defaults.get(key) == Some(current))
-                    });
+                let inherited_route = matches!(
+                    key.as_str(),
+                    "connector" | "url" | "context_window_tokens" | "max_tokens" | "parallel_slots"
+                ) && services().any(|other| {
+                    settings
+                        .get(key)
+                        .is_some_and(|current| other.defaults.get(key) == Some(current))
+                });
                 if inherited_route {
                     settings.insert(key.clone(), value.clone());
                 } else {
@@ -257,10 +259,11 @@ pub(crate) fn resolve(
         };
         RemoteCapabilities {
             translation_prompt_profile: Default::default(),
-            // Preserve Ask for existing custom chat endpoints. Specialized models
-            // can override this through capabilities.supports_chat.
-            supports_chat: capability == ModelCapability::Translation
-                && connector == Some(RemoteConnector::OpenaiChat),
+            // A chat-shaped endpoint does not prove the model follows instructions.
+            // Unknown models opt in through their declared capabilities.
+            supports_ask: false,
+            supports_chat: false,
+            supports_json_output: false,
             streaming: if capability == ModelCapability::Translation {
                 RemoteStreaming::Delta
             } else {

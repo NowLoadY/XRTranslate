@@ -1,5 +1,5 @@
 use super::*;
-use crate::ui::graph_canvas;
+use crate::ui::{components, graph_canvas};
 
 #[derive(Clone, Copy)]
 struct NodePalette {
@@ -238,7 +238,7 @@ pub(super) fn render_graph_editor(
                     controller.mark_dirty();
                 }
                 ui.separator();
-                if ui.button(tr(language, "Auto layout")).clicked() {
+                if components::button(ui, tr(language, "Auto layout")).clicked() {
                     let before = draft.clone();
                     draft.graph.auto_layout();
                     compact_graph(&mut draft.graph);
@@ -271,22 +271,22 @@ pub(super) fn render_graph_editor(
                 render_branch_filters(&draft.graph, controller, ui, language);
             });
             ui.separator();
-            if ui.button(tr(language, "New graph")).clicked() {
+            if components::button(ui, tr(language, "New graph")).clicked() {
                 save_before_switch(snapshot, controller, actions);
                 draft = new_profile();
                 actions.push(PromptStudioAction::CreateProfile(draft.clone()));
                 controller.set_draft(draft.clone());
                 ui.close();
             }
-            if ui.button(tr(language, "Import")).clicked() {
+            if components::button(ui, tr(language, "Import")).clicked() {
                 actions.push(PromptStudioAction::ImportProfile);
                 ui.close();
             }
-            if ui.button(tr(language, "Export")).clicked() {
+            if components::button(ui, tr(language, "Export")).clicked() {
                 actions.push(PromptStudioAction::ExportProfile(draft.clone()));
                 ui.close();
             }
-            if !draft.read_only && ui.button(tr(language, "Delete")).clicked() {
+            if !draft.read_only && components::button(ui, tr(language, "Delete")).clicked() {
                 actions.push(PromptStudioAction::DeleteProfile(draft.id.clone()));
                 ui.close();
             }
@@ -595,7 +595,10 @@ fn render_delivery_tabs(
     let tabs: &[(PromptTarget, &str)] = match controller.domain() {
         PromptGraphDomain::Translation => &[
             (PromptTarget::ChatMessages, "Chat messages"),
-            (PromptTarget::TranslationInstruction, "Translation instruction"),
+            (
+                PromptTarget::TranslationInstruction,
+                "Translation instruction",
+            ),
         ],
         PromptGraphDomain::Asr => &[
             (PromptTarget::AsrInstruction, "ASR INSTRUCTION"),
@@ -614,12 +617,12 @@ fn render_delivery_tabs(
             Some(160.0),
             |ui| {
                 for &(target, label) in tabs {
-                    if ui
-                        .selectable_label(
-                            controller.active_target == target,
-                            crate::i18n::tr(language, label),
-                        )
-                        .clicked()
+                    if components::selectable_label(
+                        ui,
+                        controller.active_target == target,
+                        crate::i18n::tr(language, label),
+                    )
+                    .clicked()
                     {
                         controller.select_target(target);
                         ui.close();
@@ -670,21 +673,17 @@ fn render_branch_filters(
         );
         crate::ui::components::combobox_ui_with_width(
             ui,
-            (
-                "prompt_branch_filter",
-                controller.active_target,
-                condition,
-            ),
+            ("prompt_branch_filter", controller.active_target, condition),
             selected_branch_text,
             Some(112.0),
             |ui| {
                 for (option_label, value) in options {
-                    if ui
-                        .selectable_label(
-                            selected == value,
-                            crate::i18n::tr(language, option_label),
-                        )
-                        .clicked()
+                    if components::selectable_label(
+                        ui,
+                        selected == value,
+                        crate::i18n::tr(language, option_label),
+                    )
+                    .clicked()
                     {
                         controller.set_branch_filter(graph, condition, value);
                     }
@@ -713,19 +712,22 @@ fn render_branch_filters(
             selected_text_filter,
             Some(112.0),
             |ui| {
-                if ui
-                    .selectable_label(selected.is_none(), crate::i18n::tr(language, "All"))
-                    .clicked()
+                if components::selectable_label(
+                    ui,
+                    selected.is_none(),
+                    crate::i18n::tr(language, "All"),
+                )
+                .clicked()
                 {
                     controller.set_text_branch_filter(graph, &source_id, None);
                 }
                 for case in cases {
-                    if ui
-                        .selectable_label(
-                            selected.as_deref() == Some(&case),
-                            display_text_case(&case),
-                        )
-                        .clicked()
+                    if components::selectable_label(
+                        ui,
+                        selected.as_deref() == Some(&case),
+                        display_text_case(&case),
+                    )
+                    .clicked()
                     {
                         controller.set_text_branch_filter(graph, &source_id, Some(case));
                     }
@@ -828,7 +830,7 @@ fn render_node_menu(
             ],
         };
         for &(label, variable) in variables {
-            if ui.button(crate::i18n::tr(language, label)).clicked() {
+            if components::button(ui, crate::i18n::tr(language, label)).clicked() {
                 let position = node_add_position(controller, &draft.graph, preferred_center);
                 let before = draft.clone();
                 let id = draft.graph.add_variable(page, variable, position);
@@ -844,7 +846,7 @@ fn render_node_menu(
                     .strong(),
             );
             for (label, block) in available_blocks() {
-                if ui.button(crate::i18n::tr(language, label)).clicked() {
+                if components::button(ui, crate::i18n::tr(language, label)).clicked() {
                     let position = node_add_position(controller, &draft.graph, preferred_center);
                     let before = draft.clone();
                     let value = match block {
@@ -885,7 +887,7 @@ fn render_node_menu(
                 .strong(),
         );
         for &(label, condition) in conditions {
-            if ui.button(crate::i18n::tr(language, label)).clicked() {
+            if components::button(ui, crate::i18n::tr(language, label)).clicked() {
                 let position = node_add_position(controller, &draft.graph, preferred_center);
                 let before = draft.clone();
                 let id = draft.graph.add_condition_value(page, condition, position);
@@ -899,8 +901,7 @@ fn render_node_menu(
                 .small()
                 .strong(),
         );
-        if ui
-            .button(crate::i18n::tr(language, "Boolean value"))
+        if components::button(ui, crate::i18n::tr(language, "Boolean value"))
             .clicked()
         {
             let position = node_add_position(controller, &draft.graph, preferred_center);
@@ -909,8 +910,7 @@ fn render_node_menu(
             finish_node_add(draft, controller, before, id);
             ui.close();
         }
-        if ui
-            .button(crate::i18n::tr(language, "Text comparison"))
+        if components::button(ui, crate::i18n::tr(language, "Text comparison"))
             .clicked()
         {
             let position = node_add_position(controller, &draft.graph, preferred_center);
@@ -925,8 +925,7 @@ fn render_node_menu(
             finish_node_add(draft, controller, before, id);
             ui.close();
         }
-        if ui
-            .button(crate::i18n::tr(language, "Text branch selector"))
+        if components::button(ui, crate::i18n::tr(language, "Text branch selector"))
             .on_hover_text(crate::i18n::tr(
                 language,
                 "Connect finite text such as Recognition mode; its possible outputs become named branches",
@@ -940,8 +939,7 @@ fn render_node_menu(
             ui.close();
         }
         ui.separator();
-        if ui
-            .button(crate::i18n::tr(language, "Conditional switch"))
+        if components::button(ui, crate::i18n::tr(language, "Conditional switch"))
             .clicked()
         {
             let position = node_add_position(controller, &draft.graph, preferred_center);
@@ -952,8 +950,7 @@ fn render_node_menu(
         }
     });
     ui.menu_button(crate::i18n::tr(language, "Compose"), |ui| {
-        if ui
-            .button(crate::i18n::tr(language, "Compose"))
+        if components::button(ui, crate::i18n::tr(language, "Compose"))
             .on_hover_text(crate::i18n::tr(
                 language,
                 "Arrange fixed text and connected {0}-{4} input slots",
@@ -1220,8 +1217,7 @@ fn render_nodes(
             && !profile.graph.links.iter().any(|link| link.to == node.id)
         {
             response.context_menu(|ui| {
-                if ui
-                    .button(crate::i18n::tr(language, "Use as translation style"))
+                if components::button(ui, crate::i18n::tr(language, "Use as translation style"))
                     .clicked()
                 {
                     controller.push_history(profile.clone());
@@ -1674,9 +1670,13 @@ fn draw_node(
                             PromptTextComparison::StartsWith,
                             PromptTextComparison::EndsWith,
                         ] {
-                            discrete_changed |= ui
-                                .selectable_value(operator, option, format!("{option:?}"))
-                                .changed();
+                            discrete_changed |= components::selectable_value(
+                                ui,
+                                operator,
+                                option,
+                                format!("{option:?}"),
+                            )
+                            .changed();
                         }
                     },
                 );

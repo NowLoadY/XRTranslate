@@ -1,4 +1,7 @@
-use std::{ops::ControlFlow, time::Duration};
+use std::{
+    ops::ControlFlow,
+    time::{Duration, Instant},
+};
 
 use reqwest::Method;
 use serde_json::Value;
@@ -183,6 +186,11 @@ impl ReqwestClient {
                     if !should_retry {
                         break;
                     }
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        kind,
+                        "Retrying model HTTP connection"
+                    );
                     tokio::time::sleep(Duration::from_millis(25 * (1 << attempt))).await;
                 }
             }
@@ -194,12 +202,15 @@ impl ReqwestClient {
 
 impl AsyncHttpClient for ReqwestClient {
     async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, TransportError> {
+        let started = Instant::now();
         let response = self.send(&request).await?;
+        let headers_ms = started.elapsed().as_millis();
         let status = response.status().as_u16();
         let body = response
             .text()
             .await
             .map_err(|error| TransportError::new("response_body", error.to_string()))?;
+        log_timing(&request, started, headers_ms, None, status);
         Ok(HttpResponse { status, body })
     }
 
@@ -212,20 +223,25 @@ impl AsyncHttpClient for ReqwestClient {
         F: FnMut(Vec<u8>) -> Fut + Send,
         Fut: Future<Output = Result<ControlFlow<()>, TransportError>> + Send,
     {
+        let started = Instant::now();
         let mut response = self.send(&request).await?;
+        let headers_ms = started.elapsed().as_millis();
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
             let body = response
                 .text()
                 .await
                 .map_err(|error| TransportError::new("response_body", error.to_string()))?;
+            log_timing(&request, started, headers_ms, None, status);
             return Ok(HttpResponse { status, body });
         }
+        let mut first_chunk_ms = None;
         while let Some(chunk) = response
             .chunk()
             .await
             .map_err(|error| TransportError::new("response_body", error.to_string()))?
         {
+            first_chunk_ms.get_or_insert_with(|| started.elapsed().as_millis());
             if on_chunk(chunk.to_vec()).await?.is_break() {
                 // Drain a short HTTP/1 tail without delaying the result or losing
                 // keep-alive. HTTP/2 can close just this stream and reuse the connection.
@@ -243,11 +259,29 @@ impl AsyncHttpClient for ReqwestClient {
                 break;
             }
         }
+        log_timing(&request, started, headers_ms, first_chunk_ms, status);
         Ok(HttpResponse {
             status,
             body: String::new(),
         })
     }
+}
+
+fn log_timing(
+    request: &HttpRequest,
+    started: Instant,
+    headers_ms: u128,
+    first_chunk_ms: Option<u128>,
+    status: u16,
+) {
+    tracing::info!(
+        model = request.body["model"].as_str().unwrap_or(""),
+        headers_ms,
+        ?first_chunk_ms,
+        elapsed_ms = started.elapsed().as_millis(),
+        status,
+        "Model HTTP request completed"
+    );
 }
 
 fn request_error_kind(error: &reqwest::Error) -> &'static str {

@@ -1,7 +1,7 @@
 //! Fullscreen onboarding wizard and initial setup steps.
 //!
 //! Provides the step-by-step setup flow for model provider configuration,
-//! optional TTS and OCR, and centralized resource download / runtime installation.
+//! optional Agent, TTS and OCR, and centralized resource download / runtime installation.
 
 use eframe::egui::{self, Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Stroke};
 use xrtranslate_assets::remote::ConnectionChannel;
@@ -558,12 +558,25 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
         if let Ok(current) = configured_model_packages(&project_root)
             && memory_bytes < xrtranslate_assets::MANAGED_LOCAL_MODEL_MINIMUM_VRAM_BYTES
         {
+            // An independent Agent package must not replace the translator's default.
+            let primary_assets: Vec<_> = ["asr", "translation"]
+                .into_iter()
+                .filter_map(|category| app.service_config.onboarding_provider_state(category))
+                .filter_map(|state| {
+                    state
+                        .choices
+                        .into_iter()
+                        .find(|choice| choice.name == state.selected)?
+                        .model_asset
+                })
+                .collect();
             for package in current.iter().filter(|package| {
                 package.level == ModelLevel::Normal
                     && matches!(
                         package.capability,
                         ModelCapability::Asr | ModelCapability::Translation
                     )
+                    && primary_assets.iter().any(|id| id == package.id.as_str())
             }) {
                 if let Some(asset_id) =
                     default_model_for_vram(package.provider, package.capability, memory_bytes)
@@ -598,13 +611,6 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
             app.save_settings();
         }
     }
-    let packages = match configured_model_packages(&project_root) {
-        Ok(packages) => packages,
-        Err(error) => {
-            app.last_error = Some(error);
-            Vec::new()
-        }
-    };
     if let Some(new_gpu) = model_comparison::vram_budget(
         ui,
         language,
@@ -614,28 +620,66 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
         app.set_preferred_gpu(&new_gpu);
     }
     ui.add_space(12.0);
+    render_onboarding_model_cards(
+        app,
+        ui,
+        &[
+            ("asr", ModelCapability::Asr, "Speech Recognition Model"),
+            (
+                "translation",
+                ModelCapability::Translation,
+                "Translation Model",
+            ),
+        ],
+    );
+}
+
+fn render_onboarding_model_cards(
+    app: &mut crate::XRTranslateApp,
+    ui: &mut egui::Ui,
+    capabilities: &[(&'static str, ModelCapability, &'static str)],
+) {
+    let language = app.ui_language;
+    let project_root = app.project_root();
+    let local_availability = app.runtime_installer.local_model_availability();
+    let packages = match configured_model_packages(&project_root) {
+        Ok(packages) => packages,
+        Err(error) => {
+            app.last_error = Some(error);
+            Vec::new()
+        }
+    };
     let mut model_change = None;
     let mut provider_change = None;
     let mut remote_fields = None;
     let mut account_action = None;
     let mut delete_model = None;
-    let capabilities = [
-        ("asr", ModelCapability::Asr, "Speech Recognition Model"),
-        (
-            "translation",
-            ModelCapability::Translation,
-            "Translation Model",
-        ),
-    ];
+    let mut follow_translation = None;
     crate::ui::layout::responsive_columns(ui, capabilities.len(), 300.0, |ui, index| {
         let (category, capability, title) = &capabilities[index];
-        let package = packages
-            .iter()
-            .find(|package| package.capability == *capability);
         let provider = app.service_config.onboarding_provider_state(category);
-        let levels = package.map_or_else(Vec::new, |package| {
+        let package = packages.iter().find(|package| {
+            if *category == "agent" {
+                provider
+                    .as_ref()
+                    .is_some_and(|state| state.model == package.id.as_str())
+            } else {
+                package.capability == *capability
+            }
+        });
+        let mut levels = package.map_or_else(Vec::new, |package| {
             model_packages_for_provider(package.provider, package.capability)
         });
+        if *category == "agent" {
+            levels.retain(|package| {
+                provider.as_ref().is_some_and(|state| {
+                    state
+                        .models
+                        .iter()
+                        .any(|model| model == package.id.as_str())
+                })
+            });
+        }
         let result = onboarding_model_config_card(
             ui,
             language,
@@ -656,10 +700,18 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
             },
         );
         ui.add_space(12.0);
-        model_comparison::model_chart(ui, language, *capability, package.map(|package| package.id));
-        if let Some(asset_id) = result.selected_asset {
-            model_change = Some((*capability, asset_id));
+        if *category != "agent" {
+            model_comparison::model_chart(
+                ui,
+                language,
+                *capability,
+                package.map(|package| package.id),
+            );
         }
+        if let Some(asset_id) = result.selected_asset {
+            model_change = Some((*category, *capability, asset_id));
+        }
+        follow_translation = follow_translation.or(result.follow_translation);
         if let Some(provider) = result.selected_provider {
             provider_change = Some((*category, provider));
         }
@@ -683,6 +735,11 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
     }
     if let Some(asset_id) = delete_model {
         app.request_model_resource_deletion(asset_id);
+    }
+    if let Some(follow) = follow_translation {
+        app.service_config.set_agent_follows_translation(follow);
+        let result = app.service_config.save_onboarding_configuration();
+        handle_onboarding_save(app, result);
     }
     if let Some((category, provider)) = provider_change {
         app.service_config
@@ -717,7 +774,12 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
         ui.add_space(10.0);
         components::error_notice(ui, language, message);
     }
-    if let Some((capability, asset_id)) = model_change {
+    if let Some(("agent", _, asset_id)) = model_change {
+        app.service_config
+            .select_agent_model(asset_id.as_str().to_owned());
+        let result = app.service_config.save_onboarding_configuration();
+        handle_onboarding_save(app, result);
+    } else if let Some((_, capability, asset_id)) = model_change {
         match set_model_asset(&project_root, capability, asset_id) {
             Ok(()) => {
                 if let Err(error) = app.service_config.reload() {
@@ -742,6 +804,7 @@ fn render_onboarding_models(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) 
 
 #[derive(Default)]
 struct ModelConfigCardResult {
+    follow_translation: Option<bool>,
     selected_asset: Option<ModelAssetId>,
     selected_provider: Option<String>,
     remote_fields: Option<RemoteProviderFields>,
@@ -974,7 +1037,7 @@ fn onboarding_model_config_card(
         |ui| {
             ui.set_width(ui.available_width());
             let guide_url = provider.as_ref().and_then(|p| {
-                if p.channel == ConnectionChannel::Api {
+                if p.channel == ConnectionChannel::Api && p.follow_translation != Some(true) {
                     p.choices
                         .iter()
                         .find(|c| c.name == p.selected)
@@ -1005,23 +1068,68 @@ fn onboarding_model_config_card(
                     ));
                 }
             });
-            ui.label(
-                RichText::new(i18n::tr(
-                    language,
-                    if capability == ModelCapability::Asr {
-                        "Speech → text"
-                    } else {
-                        "Text → translation"
-                    },
-                ))
-                .size(12.0)
-                .color(theme::text_weak()),
-            );
+            if category != "agent" {
+                ui.label(
+                    RichText::new(i18n::tr(
+                        language,
+                        if capability == ModelCapability::Asr {
+                            "Speech → text"
+                        } else {
+                            "Text → translation"
+                        },
+                    ))
+                    .size(12.0)
+                    .color(theme::text_weak()),
+                );
+            }
             ui.add_space(10.0);
             let Some(provider) = provider.as_mut() else {
                 ui.label(i18n::tr(language, "No providers configured"));
                 return;
             };
+
+            if let Some(follow) = provider.follow_translation {
+                let mut selected = follow;
+                ui.horizontal_wrapped(|ui| {
+                    components::selectable_value(
+                        ui,
+                        &mut selected,
+                        true,
+                        i18n::tr(language, "Follow translation model"),
+                    );
+                    ui.add_enabled_ui(!provider.choices.is_empty(), |ui| {
+                        components::selectable_value(
+                            ui,
+                            &mut selected,
+                            false,
+                            i18n::tr(language, "Choose another model"),
+                        );
+                    });
+                });
+                if selected != follow {
+                    result.follow_translation = Some(selected);
+                    return;
+                }
+                if follow {
+                    ui.add_space(8.0);
+                    ui.label(
+                        ModelAssetId::from_config_key(&provider.model)
+                            .map(|id| xrtranslate_assets::manifest_for(id).label)
+                            .unwrap_or(&provider.model),
+                    );
+                    if !provider.models.contains(&provider.model) {
+                        ui.label(
+                            RichText::new(i18n::tr(
+                                language,
+                                "Agent is unavailable for this model",
+                            ))
+                            .color(theme::text_weak()),
+                        );
+                    }
+                    return;
+                }
+                ui.add_space(10.0);
+            }
 
             ui.label(i18n::tr(language, "Mode"));
             let mut channel = provider.channel;
@@ -1048,11 +1156,21 @@ fn onboarding_model_config_card(
                             .any(|choice| choice.channel == value)
                     };
                     ui.add_enabled_ui(available, |ui| {
-                        ui.selectable_value(&mut channel, value, i18n::tr(language, label));
+                        components::selectable_value(
+                            ui,
+                            &mut channel,
+                            value,
+                            i18n::tr(language, label),
+                        );
                     });
                 }
             });
-            if local_choice.is_none() {
+            if local_choice.is_none()
+                && provider
+                    .choices
+                    .iter()
+                    .any(|choice| choice.channel == ConnectionChannel::Local)
+            {
                 local_model_warning_icon(ui, language, local_availability);
             }
             if channel != provider.channel {
@@ -1121,9 +1239,12 @@ fn onboarding_model_config_card(
                                 &choice.name,
                                 language,
                             );
-                            if ui
-                                .selectable_label(provider.selected == choice.name, label)
-                                .clicked()
+                            if components::selectable_label(
+                                ui,
+                                provider.selected == choice.name,
+                                label,
+                            )
+                            .clicked()
                             {
                                 result.selected_provider = Some(choice.name.clone());
                             }
@@ -1198,12 +1319,17 @@ fn onboarding_model_config_card(
 fn render_onboarding_optional(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
     ui.heading(i18n::tr(app.ui_language, "Optional features"));
     ui.add_space(16.0);
-    #[cfg(target_os = "android")]
-    render_onboarding_tts(app, ui);
-    #[cfg(not(target_os = "android"))]
-    crate::ui::layout::responsive_columns(ui, 2, 340.0, |ui, index| match index {
-        0 => render_onboarding_tts(app, ui),
-        _ => render_onboarding_ocr(app, ui),
+    let count = if cfg!(target_os = "android") { 2 } else { 3 };
+    crate::ui::layout::responsive_grid(ui, count, 2, 340.0, |ui, index| match index {
+        0 => render_onboarding_model_cards(
+            app,
+            ui,
+            &[("agent", ModelCapability::Translation, "Agent Model")],
+        ),
+        1 => render_onboarding_tts(app, ui),
+        #[cfg(not(target_os = "android"))]
+        2 => render_onboarding_ocr(app, ui),
+        _ => {}
     });
 }
 
@@ -1254,11 +1380,16 @@ fn account_model_fields(
         components::combobox_ui(ui, (category, "account_model"), &label, |ui| {
             if let Some(models) = discovered {
                 for model in models {
-                    ui.selectable_value(&mut provider.model, model.id.clone(), &model.label);
+                    components::selectable_value(
+                        ui,
+                        &mut provider.model,
+                        model.id.clone(),
+                        &model.label,
+                    );
                 }
             } else {
                 for model in &provider.models {
-                    ui.selectable_value(&mut provider.model, model.clone(), model);
+                    components::selectable_value(ui, &mut provider.model, model.clone(), model);
                 }
             }
         });
@@ -1293,7 +1424,7 @@ fn remote_provider_fields(
     ui.label(i18n::tr(language, "Model"));
     components::combobox_ui(ui, (category, "online_model"), &previous_model, |ui| {
         for model in &provider.models {
-            ui.selectable_value(&mut provider.model, model.clone(), model);
+            components::selectable_value(ui, &mut provider.model, model.clone(), model);
         }
     });
     ui.add_space(8.0);
@@ -1480,7 +1611,8 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                                     configured.label,
                                     |ui| {
                                         for preset in &choices {
-                                            ui.selectable_value(
+                                            components::selectable_value(
+                                                ui,
                                                 &mut selected_key,
                                                 preset.key.to_owned(),
                                                 preset.label,
@@ -1601,8 +1733,7 @@ fn optional_provider_selector(
                 let response = ui.add_enabled_ui(
                     choice.name == "none" || choice.remote || local_available,
                     |ui| {
-                        if ui
-                            .selectable_label(provider.selected == choice.name, label)
+                        if components::selectable_label(ui, provider.selected == choice.name, label)
                             .clicked()
                         {
                             selected_provider = Some(choice.name.clone());
@@ -1715,6 +1846,8 @@ fn handle_onboarding_save(
 
     match result {
         Ok(OnboardingSaveOutcome::Saved { resolved_error }) => {
+            app.stop_agent("Model configuration changed");
+            app.backend_manager.invalidate_runtime();
             app.model_task_manager.invalidate_discovery();
             if resolved_error.as_ref() == app.last_error.as_ref() {
                 app.last_error = None;
@@ -2131,7 +2264,8 @@ fn render_download_card(
                                     &action_label,
                                     false,
                                     enabled,
-                                    progress.filter(|(_, total)| *total > 0)
+                                    progress
+                                        .filter(|(_, total)| *total > 0)
                                         .map(|(bytes, total)| bytes as f32 / total as f32),
                                 )
                             })
@@ -2239,7 +2373,8 @@ fn render_runtime_installation_section(
                                 || (download_size.is_some()
                                     && !runtime_busy
                                     && !app.model_task_manager.is_busy()),
-                            download_progress.filter(|(_, total)| *total > 0)
+                            download_progress
+                                .filter(|(_, total)| *total > 0)
                                 .map(|(bytes, total)| bytes as f32 / total as f32),
                         )
                     })

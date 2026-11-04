@@ -34,7 +34,11 @@ pub(super) fn render_create(
                 &mut controller.draft_source,
                 tr(language, "File, link or share text"),
                 tr(language, "Choose file"),
-                &[("Media", task::MEDIA_EXTENSIONS), ("All files", &["*"])],
+                &[
+                    ("Media", task::MEDIA_EXTENSIONS),
+                    ("Subtitles", task::SUBTITLE_EXTENSIONS),
+                    ("All files", &["*"]),
+                ],
             );
             if changed {
                 controller.resource_browser.invalidate();
@@ -81,13 +85,14 @@ pub(super) fn render_create(
                 }
             }
             ui.add_space(12.0);
-            egui::CollapsingHeader::new(tr(language, "Task Title (Optional)")).show(ui, |ui| {
-                components::input_field(
-                    ui,
-                    &mut controller.draft_title,
-                    tr(language, "Task Title (Optional)"),
-                );
-            });
+            crate::ui::components::CollapsingHeader::new(tr(language, "Task Title (Optional)"))
+                .show(ui, |ui| {
+                    components::input_field(
+                        ui,
+                        &mut controller.draft_title,
+                        tr(language, "Task Title (Optional)"),
+                    );
+                });
             ui.add_space(12.0);
             if components::primary_button_enabled(
                 ui,

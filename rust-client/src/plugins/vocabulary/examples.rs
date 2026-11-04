@@ -111,7 +111,7 @@ impl Requests {
                         ));
                         return true;
                     }
-                    Ok(Err(error)) => Some(Err(error)),
+                    Ok(Err(error)) => Some(Err(error.to_string())),
                     Err(crossbeam_channel::TryRecvError::Empty) => None,
                     Err(_) => Some(Err("Ask request was interrupted".into())),
                 },

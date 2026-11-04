@@ -4,9 +4,13 @@ use eframe::egui::{self, Color32, FontId, Painter, Pos2, Rect, Vec2};
 use std::borrow::Cow;
 use unicode_segmentation::UnicodeSegmentation;
 
+const PAGE_GRAPHEMES: usize = 96;
+
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Speech {
     text: Cow<'static, str>,
+    #[serde(default)]
+    page_start: usize,
     end: usize,
     next_letter: f64,
     last_letter: Option<f64>,
@@ -38,6 +42,7 @@ impl Speech {
 
     pub fn say(&mut self, text: impl Into<Cow<'static, str>>, now: f64) {
         self.text = text.into();
+        self.page_start = 0;
         self.end = 0;
         self.next_letter = now;
         self.last_letter = None;
@@ -86,23 +91,70 @@ impl Speech {
         if self.finished(now) {
             return 0.0;
         }
+        let page_end = self.page_end();
         while self.end < self.text.len() && now >= self.next_letter {
+            if self.end >= page_end {
+                self.page_start = self.end;
+                self.next_letter = now;
+                self.last_letter = None;
+                break;
+            }
             let letter = self.text[self.end..].graphemes(true).next().unwrap();
             self.end += letter.len();
             let delay = letter_delay(letter);
             self.last_letter =
                 (delay < 0.15 && !letter.trim().is_empty()).then_some(self.next_letter);
             self.next_letter += delay;
-            if self.end == self.text.len() {
+            if self.end == page_end {
                 let reading_time =
-                    (self.text.graphemes(true).count() as f64 * 0.035).clamp(2.2, 4.0);
-                self.dismiss_at = Some(self.next_letter + reading_time);
+                    (self.text[self.page_start..self.end].graphemes(true).count() as f64 * 0.035)
+                        .clamp(2.2, 4.0);
+                // Keep a completed page readable even after a delayed frame.
+                self.next_letter = self.next_letter.max(now) + reading_time;
+                if self.end == self.text.len() {
+                    self.dismiss_at = Some(self.next_letter);
+                }
             }
         }
         self.last_letter.map_or(0.0, |at| {
             let age = ((now - at) / 0.12).clamp(0.0, 1.0) as f32;
             (age * std::f32::consts::PI).sin().max(0.0) * 0.65
         })
+    }
+
+    /// Page boundaries belong to the dialogue, so every surface shares its timing.
+    fn page_end(&self) -> usize {
+        let mut boundary = 0;
+        let mut newlines = 0;
+        for (count, (offset, letter)) in self.text[self.page_start..]
+            .grapheme_indices(true)
+            .enumerate()
+        {
+            if count == PAGE_GRAPHEMES {
+                return self.page_start
+                    + if boundary >= offset / 2 {
+                        boundary
+                    } else {
+                        offset
+                    };
+            }
+            if letter.contains('\n') {
+                newlines += 1;
+                if newlines == 4 {
+                    return self.page_start + offset + letter.len();
+                }
+            }
+            if letter.chars().next().is_some_and(|c| {
+                c.is_whitespace()
+                    || matches!(
+                        c,
+                        '.' | '!' | '?' | '。' | '！' | '？' | '，' | ',' | ';' | '；'
+                    )
+            }) {
+                boundary = offset + letter.len();
+            }
+        }
+        self.text.len()
     }
 
     /// Paint without a widget or hit region; the bubble never steals page input.
@@ -145,7 +197,7 @@ impl Speech {
         let width_limit = if bounds.height() < 72.0 { 340.0 } else { 260.0 };
         let max_width = (bounds.width() - radius * 3.0 - 44.0).clamp(80.0, width_limit);
         let galley = painter.layout(
-            self.text[..self.end].to_owned(),
+            self.text[self.page_start..self.end].to_owned(),
             FontId::proportional(14.0),
             theme::text_strong(),
             max_width,
@@ -160,10 +212,10 @@ impl Speech {
         // smooth contraction when a shorter sentence replaces the current one.
         self.size += (desired_size - self.size) * (1.0 - (-dt / 0.12).exp());
         self.size = self.size.min(bounds.size());
-        // Use the full sentence only to choose a stable side ahead of typing.
+        // Use the current page to choose a stable side ahead of typing.
         let full_size = (painter
             .layout(
-                self.text.to_string(),
+                self.text[self.page_start..self.page_end()].to_owned(),
                 FontId::proportional(14.0),
                 theme::text_strong(),
                 max_width,
@@ -172,11 +224,7 @@ impl Speech {
             + egui::vec2(28.0, 22.0))
         .max(egui::vec2(38.0, 40.0))
         .min(bounds.size());
-        let body = Rect::from_min_max(
-            anchor - egui::vec2(radius * 1.3, radius * 1.7),
-            anchor + egui::vec2(radius * 1.3, radius * 1.1),
-        )
-        .expand(4.0);
+        let body = body_bounds(anchor, radius);
         self.settled_for = if settled {
             (self.settled_for + dt).min(1.0)
         } else {
@@ -264,6 +312,38 @@ impl Speech {
     }
 }
 
+/// Place interactive content using the same space/occlusion policy as speech.
+pub(crate) fn popup_rect(
+    bounds: Rect,
+    anchor: Pos2,
+    radius: f32,
+    size: Vec2,
+    occupied: &[Rect],
+) -> Rect {
+    let size = size.min(bounds.size());
+    let direction = bubble_direction(
+        bounds,
+        body_bounds(anchor, radius),
+        anchor,
+        radius,
+        size,
+        occupied,
+        Some(Vec2::DOWN),
+    );
+    let center = bounds
+        .shrink2(size * 0.5)
+        .clamp(bubble_center(anchor, radius, size, direction));
+    Rect::from_center_size(center, size)
+}
+
+fn body_bounds(anchor: Pos2, radius: f32) -> Rect {
+    Rect::from_min_max(
+        anchor - egui::vec2(radius * 1.3, radius * 1.7),
+        anchor + egui::vec2(radius * 1.3, radius * 1.1),
+    )
+    .expand(4.0)
+}
+
 fn bubble_center(anchor: Pos2, radius: f32, size: Vec2, direction: Vec2) -> Pos2 {
     anchor
         + egui::vec2(
@@ -346,6 +426,84 @@ fn letter_delay(letter: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_speech_clears_each_page_and_delivers_the_complete_message() {
+        let text = format!(
+            "{}最后一页。",
+            "中文 e\u{301} 👩🏽‍💻 with words and punctuation.\n另一行文字。\n".repeat(12)
+        );
+        let mut speech = Speech::default();
+        speech.say(text.clone(), 0.0);
+        let mut pages = Vec::new();
+        let mut visible = String::new();
+        let mut last_change = 0.0;
+        let mut now = 0.0;
+        while !speech.finished(now) && now < 180.0 {
+            let previous_start = speech.page_start;
+            speech.advance(now);
+            let current = &speech.text[speech.page_start..speech.end];
+            if speech.page_start != previous_start {
+                assert!(now - last_change >= 2.2, "leave time to read the page");
+                assert!(current.is_empty(), "clear before continuing to type");
+                pages.push(std::mem::take(&mut visible));
+                // Native and VR surfaces receive the same page and clock state.
+                let restored: Speech =
+                    serde_json::from_str(&serde_json::to_string(&speech).unwrap()).unwrap();
+                assert_eq!(restored.page_start, speech.page_start);
+                assert_eq!(restored.next_letter, speech.next_letter);
+                assert_eq!(
+                    restored.on_surface(&Speech::default()).page_start,
+                    speech.page_start
+                );
+            }
+            if visible != current {
+                visible = current.to_owned();
+                last_change = now;
+            }
+            now += 0.05;
+        }
+        assert!(speech.finished(now));
+        assert_eq!(speech.end, text.len());
+        pages.push(visible);
+        assert!(pages.len() > 2);
+        assert_eq!(pages.concat(), text, "no omitted or duplicated characters");
+        let boundaries: Vec<_> = text
+            .grapheme_indices(true)
+            .map(|(offset, _)| offset)
+            .chain(std::iter::once(text.len()))
+            .collect();
+        let mut offset = 0;
+        for page in pages {
+            assert!(page.graphemes(true).count() <= PAGE_GRAPHEMES);
+            offset += page.len();
+            assert!(
+                boundaries.contains(&offset),
+                "do not split emoji or accents"
+            );
+        }
+    }
+
+    #[test]
+    fn input_popup_prefers_clear_space_and_stays_inside_the_viewport() {
+        let bounds = Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let size = egui::vec2(340.0, 54.0);
+        let anchor = egui::pos2(400.0, 300.0);
+        let below = popup_rect(bounds, anchor, 30.0, size, &[]);
+        assert!(below.top() > anchor.y);
+        let alternate = popup_rect(bounds, anchor, 30.0, size, &[below]);
+        assert_eq!(alternate.intersect(below).area(), 0.0);
+        for anchor in [
+            egui::pos2(50.0, 60.0),
+            egui::pos2(750.0, 60.0),
+            egui::pos2(50.0, 550.0),
+            egui::pos2(750.0, 550.0),
+        ] {
+            let rect = popup_rect(bounds, anchor, 30.0, size, &[]);
+            assert!(bounds.contains_rect(rect));
+            assert_eq!(rect.intersect(body_bounds(anchor, 30.0)).area(), 0.0);
+        }
+    }
 
     #[test]
     fn clicking_bubble_stops_remaining_text_but_allows_new_speech() {

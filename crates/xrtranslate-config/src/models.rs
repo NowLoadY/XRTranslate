@@ -37,6 +37,160 @@ impl InstalledModel {
 }
 
 impl AppConfig {
+    /// Catalogue-backed Chat choices, including explicitly declared custom and
+    /// account models. Availability of credentials is checked when saving/running.
+    pub fn chat_model_selections(&self) -> Vec<crate::TextModelSelection> {
+        let mut choices = Vec::new();
+        for (provider, settings) in &self.translation.providers {
+            let local = settings
+                .get("transport")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|transport| matches!(transport, "local" | "onnx-cpu"));
+            let models: Vec<String> = if local {
+                xrtranslate_assets::manifests_for_capability(ModelCapability::Translation)
+                    .filter(|model| model.provider == provider)
+                    .filter(|model| {
+                        matches!(
+                            model.runtime,
+                            Some(ModelRuntime::LlamaTextChat {
+                                supports_chat: true,
+                                ..
+                            })
+                        )
+                    })
+                    .map(|model| model.id.as_str().to_owned())
+                    .collect()
+            } else {
+                xrtranslate_assets::remote::services(provider, ModelCapability::Translation)
+                    .flat_map(|service| service.models.iter().cloned())
+                    .chain(
+                        settings
+                            .get("model")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned),
+                    )
+                    .chain(
+                        self.agent
+                            .model
+                            .as_ref()
+                            .filter(|selection| selection.provider == *provider)
+                            .map(|selection| selection.model.clone()),
+                    )
+                    .collect()
+            };
+            for model in models {
+                let selection = crate::TextModelSelection {
+                    provider: provider.clone(),
+                    model,
+                };
+                if choices.contains(&selection) {
+                    continue;
+                }
+                let chat = local || self.text_model_supports_chat(&selection);
+                if chat {
+                    choices.push(selection);
+                }
+            }
+        }
+        choices
+    }
+
+    pub fn text_model_supports_chat(&self, selection: &crate::TextModelSelection) -> bool {
+        self.with_text_model(selection).is_ok_and(|config| {
+            if let Some(id) = ModelAssetId::from_config_key(&selection.model) {
+                return matches!(
+                    manifest_for(id).runtime,
+                    Some(ModelRuntime::LlamaTextChat {
+                        supports_chat: true,
+                        ..
+                    })
+                );
+            }
+            let settings = config.translation.providers[&selection.provider].as_object();
+            let transport = settings
+                .and_then(|s| s.get("transport"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let mut issues = Vec::new();
+            let (_, capabilities) = crate::remote::resolve(
+                "translation",
+                settings,
+                transport,
+                &selection.provider,
+                &mut issues,
+            );
+            issues.is_empty() && capabilities.supports_chat
+        })
+    }
+
+    /// Resolve a text model using the existing provider's credentials and tuning.
+    /// This temporary selection cannot change the user's translation choice.
+    pub fn with_text_model(&self, selection: &crate::TextModelSelection) -> Result<Self, String> {
+        let provider = self
+            .translation
+            .providers
+            .get(&selection.provider)
+            .ok_or("The selected text provider is not configured")?;
+        if let Some(id) = ModelAssetId::from_config_key(&selection.model) {
+            let model = manifest_for(id);
+            if model.capability != ModelCapability::Translation
+                || model.provider != selection.provider
+            {
+                return Err("The text model does not belong to this provider".into());
+            }
+            return self.with_model_assets(&[id]);
+        }
+        if matches!(
+            provider
+                .get("transport")
+                .and_then(serde_json::Value::as_str),
+            Some("local" | "onnx-cpu")
+        ) {
+            return Err("Select a local model from the catalogue".into());
+        }
+        let mut raw = self.raw.clone();
+        raw["translation"]["provider"] = json!(selection.provider);
+        raw["translation"]["providers"][&selection.provider]["model"] = json!(selection.model);
+        let mut selected = Self::from_value(raw).map_err(|error| error.to_string())?;
+        selected.source_path = self.source_path.clone();
+        Ok(selected)
+    }
+
+    /// A separate Agent uses the same model plan machinery as translation.
+    /// Following, or explicitly selecting the identical route, reuses that plan.
+    pub fn for_agent(&self) -> Result<Option<Self>, String> {
+        let Some(selection) = &self.agent.model else {
+            return Ok(None);
+        };
+        let mut selected = self.with_text_model(selection)?;
+        let route = selected
+            .native_model_route()
+            .map_err(|error| error.to_string())?;
+        if !route.translation.supports_chat()? {
+            return Err("Agent requires a model with general chat capability".into());
+        }
+        if self
+            .native_model_route()
+            .map_err(|error| error.to_string())?
+            .translation
+            == route.translation
+        {
+            return Ok(None);
+        }
+        selected.agent.model = None;
+        selected.raw["agent"]["model"] = serde_json::Value::Null;
+        Ok(Some(selected))
+    }
+
+    pub fn agent_provider(&self) -> Result<crate::NativeProviderConfig, String> {
+        self.for_agent()?
+            .as_ref()
+            .unwrap_or(self)
+            .native_model_route()
+            .map(|route| route.translation)
+            .map_err(|error| error.to_string())
+    }
+
     /// Shared install paths, independent of the currently selected providers.
     pub fn model_asset_paths(&self) -> ModelAssetsConfig {
         ModelAssetsConfig::with_directory_overrides(

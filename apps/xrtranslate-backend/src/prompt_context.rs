@@ -1,6 +1,6 @@
 use xr_corpus_protocol::SegmentContext as CorpusSegmentContext;
 use xrtranslate_engine::TranslationSegmentPair;
-use xrtranslate_prompt::{PromptTurn, SurroundingSource, TranslationPromptContext};
+use xrtranslate_prompt::{PromptTurn, SurroundingSource, TranslationPromptContext, estimated_tokens};
 
 const MAX_REFERENCE_CHARS: usize = 1_200;
 
@@ -174,15 +174,6 @@ fn within_budget(context: &TranslationPromptContext, token_budget: usize) -> boo
     };
     let rendered = format!("# Translation Context\n\n{reference}");
     rendered.chars().count() <= MAX_REFERENCE_CHARS && estimated_tokens(&rendered) <= token_budget
-}
-
-/// The same conservative estimate used for vocabulary selection: roughly
-/// three ASCII characters or one non-ASCII character per token.
-fn estimated_tokens(text: &str) -> usize {
-    text.chars()
-        .map(|character| if character.is_ascii() { 1 } else { 3 })
-        .sum::<usize>()
-        .div_ceil(3)
 }
 
 fn render_term_row(term: &xr_corpus_protocol::CorpusPromptTerm) -> String {

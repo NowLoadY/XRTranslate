@@ -16,10 +16,9 @@ use eframe::egui::{
 use std::collections::{HashMap, HashSet};
 use xrtranslate_prompt::{
     PromptCondition, PromptExecutionTrace, PromptGraphDomain, PromptLink, PromptMessageRole,
-    PromptNode, PromptNodeGraph, PromptNodeKind, PromptNodePage, PromptTarget,
-    PromptSystemValue, PromptTemplateLibrary, PromptTemplateProfile, PromptTextComparison,
-    PromptVariable, TranslationPromptBlock, compose_input_indexes, condition_label,
-    system_value_label,
+    PromptNode, PromptNodeGraph, PromptNodeKind, PromptNodePage, PromptSystemValue, PromptTarget,
+    PromptTemplateLibrary, PromptTemplateProfile, PromptTextComparison, PromptVariable,
+    TranslationPromptBlock, compose_input_indexes, condition_label, system_value_label,
 };
 
 const NODE_WIDTH: f32 = 220.0;
@@ -367,8 +366,7 @@ impl PromptStudioController {
     }
 
     fn node_is_visible(&self, node: &PromptNode) -> bool {
-        node.page.is_visible_on(self.active_target)
-            && !self.branch_hidden_nodes.contains(&node.id)
+        node.page.is_visible_on(self.active_target) && !self.branch_hidden_nodes.contains(&node.id)
     }
 
     fn sync_branch_filters(&mut self, graph: &PromptNodeGraph) {
@@ -757,9 +755,12 @@ fn render_profile_picker(
                 } else {
                     name.into_owned()
                 };
-                if ui
-                    .selectable_label(profile.id == snapshot.selected_id, label)
-                    .clicked()
+                if crate::ui::components::selectable_label(
+                    ui,
+                    profile.id == snapshot.selected_id,
+                    label,
+                )
+                .clicked()
                 {
                     save_before_switch(snapshot, controller, actions);
                     controller.select_profile_from_snapshot(profile.id.clone(), &snapshot.profiles);
@@ -901,8 +902,7 @@ fn presentation_label(label: &str) -> String {
     if let Some(first) = text.get_mut(..1) {
         first.make_ascii_uppercase();
     }
-    text.replace("asr", "ASR")
-        .replace("tts", "TTS")
+    text.replace("asr", "ASR").replace("tts", "TTS")
 }
 
 fn graph_space_rect(position: [f32; 2], size: Vec2) -> Rect {
@@ -1001,9 +1001,7 @@ fn domain_for_target(target: PromptTarget) -> PromptGraphDomain {
         PromptTarget::ChatMessages | PromptTarget::TranslationInstruction => {
             PromptGraphDomain::Translation
         }
-        PromptTarget::AsrInstruction | PromptTarget::AsrContextBias => {
-            PromptGraphDomain::Asr
-        }
+        PromptTarget::AsrInstruction | PromptTarget::AsrContextBias => PromptGraphDomain::Asr,
     }
 }
 
@@ -1042,6 +1040,7 @@ fn input_socket_label(graph: &PromptNodeGraph, node: &PromptNode, input: u8) -> 
             .map(|role| match role {
                 PromptMessageRole::System => "SYSTEM",
                 PromptMessageRole::User => "USER",
+                PromptMessageRole::Assistant => "ASSISTANT",
             })
             .map_or_else(|| "MESSAGE".into(), |role| format!("{} {role}", input + 1)),
         _ => String::new(),

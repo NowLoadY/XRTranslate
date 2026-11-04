@@ -9,6 +9,11 @@ configuration own implementation details; operational guides retain procedures
 needed to build, integrate, or use the system. Avoid repeating the same rule
 across documents; link to its owner.
 
+Exploratory reasoning, private design drafts, machine-specific measurements and
+task traces belong in the gitignored `deepthink/` directory. Keep public documents
+focused on current contracts and necessary operating instructions. Markdown
+embedded by the application remains source code and stays with its owning module.
+
 ## Contracts and architecture
 
 - [Refactoring contract](refactoring-contract.md): compatibility invariants,
@@ -40,6 +45,9 @@ across documents; link to its owner.
   Runtime, CUDA, cuDNN, eligibility, and provider-composition policy.
 
 ## Features and operations
+
+- [Director CLI and Agent](design/director-agent.md): plugin operations, shared UI actions,
+  native external control and the media optimization environment.
 
 - [Online audio](online-audio.md): separate meeting live streams and media podcast/RSS imports.
 

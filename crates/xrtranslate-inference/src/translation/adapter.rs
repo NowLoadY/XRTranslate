@@ -2,7 +2,7 @@ use crate::{
     AsyncHttpClient, InferenceError, OpenAiCompatibleClient, openai::non_streaming_chat_payload,
 };
 use xrtranslate_assets::remote::{RemoteCapabilities, RemoteConnector, RemoteStreaming};
-use xrtranslate_prompt::PromptExecutionTrace;
+use xrtranslate_prompt::{PromptExecutionTrace, PromptMessage};
 
 use super::{
     TranslationOptions, TranslationPromptProfile, TranslationResult,
@@ -23,6 +23,7 @@ pub struct TranslationAdapter<C> {
     streaming: RemoteStreaming,
     request_format: RequestFormat,
     reasoning_effort: Option<String>,
+    supports_json_output: bool,
 }
 
 impl<C> TranslationAdapter<C> {
@@ -40,6 +41,7 @@ impl<C> TranslationAdapter<C> {
             streaming: RemoteStreaming::Delta,
             request_format: RequestFormat::Messages,
             reasoning_effort: None,
+            supports_json_output: false,
         })
     }
 
@@ -62,6 +64,7 @@ impl<C> TranslationAdapter<C> {
             streaming: RemoteStreaming::Delta,
             request_format: RequestFormat::Messages,
             reasoning_effort: None,
+            supports_json_output: false,
         })
     }
 
@@ -74,6 +77,7 @@ impl<C> TranslationAdapter<C> {
         self.request_format = RequestFormat::from_remote(connector, capabilities);
         self.reasoning_effort
             .clone_from(&capabilities.reasoning_effort);
+        self.supports_json_output = capabilities.supports_json_output;
         self
     }
 
@@ -89,6 +93,7 @@ impl<C> TranslationAdapter<C> {
             streaming: RemoteStreaming::Delta,
             request_format: RequestFormat::Messages,
             reasoning_effort: None,
+            supports_json_output: false,
         })
     }
 
@@ -104,24 +109,30 @@ impl<C> TranslationAdapter<C> {
 }
 
 impl<C: AsyncHttpClient> TranslationAdapter<C> {
-    /// Ask is one user instruction. It does not render a translation graph,
-    /// retrieve reference material, or read/write conversation history.
+    /// One stateless request with caller-owned context. It does not render a
+    /// translation graph, retrieve references, or read/write conversation history.
     pub async fn ask(
         &self,
-        prompt: &str,
+        messages: &[PromptMessage],
         context_window_tokens: u32,
         max_tokens: u32,
-    ) -> Result<String, InferenceError> {
-        if prompt.trim().is_empty() {
+        response_schema: Option<&serde_json::Value>,
+    ) -> Result<crate::ChatCompletion, InferenceError> {
+        if messages.is_empty()
+            || messages
+                .iter()
+                .any(|message| message.content.trim().is_empty())
+        {
             return Err(InferenceError::InvalidConfiguration {
-                field: "ask.prompt",
-                message: "must not be empty".into(),
+                field: "ask.messages",
+                message: "requires nonempty messages".into(),
             });
         }
         let profile = registered(self.profile);
         let mut payload = non_streaming_chat_payload(
             &self.model,
-            serde_json::json!([{"role": "user", "content": prompt}]),
+            self.request_format
+                .instruction_messages(messages, self.profile),
             profile.temperature(),
             max_tokens,
         );
@@ -130,12 +141,20 @@ impl<C: AsyncHttpClient> TranslationAdapter<C> {
         options.max_tokens = max_tokens;
         profile.apply_sampling(&mut payload, &options);
         self.apply_request_options(&mut payload);
-        let completion = self.chat.complete(payload).await?;
-        let text = crate::openai::remove_completion_markers(&completion.text);
-        if text.is_empty() {
+        if let Some(schema) = response_schema.filter(|_| self.supports_json_output) {
+            payload["response_format"] = serde_json::json!({"type":"json_schema","json_schema":{"name":"response","strict":false,"schema":schema}});
+        }
+        let started = std::time::Instant::now();
+        let mut completion = self.chat.complete(payload).await.map_err(|error| {
+            tracing::warn!(operation = "ask", model = %self.model, elapsed_ms = started.elapsed().as_millis(), error = %error, "Model inference failed");
+            error
+        })?;
+        tracing::info!(operation = "ask", model = %self.model, messages = messages.len(), elapsed_ms = started.elapsed().as_millis(), usage = ?completion.usage, "Model inference completed");
+        completion.text = crate::openai::remove_completion_markers(&completion.text);
+        if completion.text.is_empty() {
             return Err(InferenceError::EmptyOutput { operation: "ask" });
         }
-        Ok(text)
+        Ok(completion)
     }
 
     pub async fn translate(
@@ -266,4 +285,108 @@ fn validated_model(model: impl Into<String>) -> Result<String, InferenceError> {
         });
     }
     Ok(model)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{HttpRequest, HttpResponse, TransportError};
+    use serde_json::{Value, json};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct RecordingHttp(Arc<Mutex<Vec<Value>>>);
+
+    impl AsyncHttpClient for RecordingHttp {
+        async fn execute(&self, request: HttpRequest) -> Result<HttpResponse, TransportError> {
+            self.0.lock().unwrap().push(request.body);
+            Ok(HttpResponse {
+                status: 200,
+                body: json!({"choices":[{"message":{"content":"answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2048,"prompt_tokens_details":{"cached_tokens":1024}}})
+                    .to_string(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn ask_preserves_caller_history_and_adapts_single_instruction_models() {
+        let http = RecordingHttp::default();
+        let adapter = TranslationAdapter::new(
+            http.clone(),
+            "http://localhost/v1/chat/completions",
+            "fixture",
+            TranslationPromptProfile::ChatMessages,
+        )
+        .unwrap();
+        let mut messages: Vec<PromptMessage> = serde_json::from_value(json!([
+            {"role":"system","content":"rules and tools"},
+            {"role":"user","content":"goal"}
+        ]))
+        .unwrap();
+        let completion = adapter.ask(&messages, 8192, 512, None).await.unwrap();
+        assert_eq!(completion.text, "answer");
+        assert_eq!(completion.usage.unwrap().cached_input_tokens, Some(1024));
+        messages.extend(
+            serde_json::from_value::<Vec<PromptMessage>>(json!([
+                {"role":"assistant","content":"action"},
+                {"role":"user","content":"result"}
+            ]))
+            .unwrap(),
+        );
+        adapter.ask(&messages, 8192, 512, None).await.unwrap();
+        // A new caller supplies its own context, even on the same adapter.
+        adapter.ask(&messages[..2], 8192, 512, None).await.unwrap();
+        {
+            let requests = http.0.lock().unwrap();
+            assert_eq!(requests[0]["messages"], json!(&messages[..2]));
+            assert_eq!(requests[1]["messages"], json!(messages));
+            assert_eq!(requests[2]["messages"], requests[0]["messages"]);
+            for request in requests.iter() {
+                assert!(request.get("response_format").is_none());
+                assert!(request.get("previous_response_id").is_none());
+                assert!(request.get("conversation").is_none());
+            }
+        }
+        adapter
+            .clone()
+            .with_remote_config(
+                None,
+                &RemoteCapabilities {
+                    supports_json_output: true,
+                    ..Default::default()
+                },
+            )
+            .ask(&messages, 8192, 512, Some(&json!({"type":"object"})))
+            .await
+            .unwrap();
+        assert_eq!(
+            http.0.lock().unwrap().last().unwrap()["response_format"],
+            json!({"type":"json_schema","json_schema":{"name":"response","strict":false,"schema":{"type":"object"}}})
+        );
+        let single = TranslationAdapter::new(
+            http.clone(),
+            "http://localhost/v1/chat/completions",
+            "fixture",
+            TranslationPromptProfile::Contextual,
+        )
+        .unwrap();
+        single
+            .ask(&messages, 8192, 512, Some(&json!({"type":"object"})))
+            .await
+            .unwrap();
+        let requests = http.0.lock().unwrap();
+        assert!(requests.last().unwrap().get("response_format").is_none());
+        let wire = &requests.last().unwrap()["messages"];
+        assert_eq!(wire.as_array().unwrap().len(), 1);
+        assert_eq!(wire[0]["role"], "user");
+        let (_, transcript) = wire[0]["content"]
+            .as_str()
+            .unwrap()
+            .split_once('\n')
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<PromptMessage>>(transcript).unwrap(),
+            messages
+        );
+    }
 }

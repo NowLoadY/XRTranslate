@@ -149,16 +149,17 @@ pub(super) fn render_detail(
     ui.add_space(8.0);
     playback::render(controller, language, ui);
     ui.horizontal_wrapped(|ui| {
-        if ui
-            .selectable_label(
-                controller.pane != MeetingPane::Minutes,
-                tr(language, "Transcript"),
-            )
-            .clicked()
+        if components::selectable_label(
+            ui,
+            controller.pane != MeetingPane::Minutes,
+            tr(language, "Transcript"),
+        )
+        .clicked()
         {
             controller.pane = MeetingPane::Timeline;
         }
-        ui.selectable_value(
+        components::selectable_value(
+            ui,
             &mut controller.pane,
             MeetingPane::Minutes,
             tr(language, "Organize"),
@@ -168,21 +169,21 @@ pub(super) fn render_detail(
             tr(language, "More"),
             egui::include_image!("../../../../../resources/icons/more.svg"),
             |ui| {
-                if ui.button(tr(language, "Export Markdown")).clicked() {
+                if components::button(ui, tr(language, "Export Markdown")).clicked() {
                     action = UiAction::Export;
                     ui.close();
                 }
-                if ui.button(tr(language, "Full transcript")).clicked() {
+                if components::button(ui, tr(language, "Full transcript")).clicked() {
                     controller.pane = MeetingPane::Transcript;
                     ui.close();
                 }
                 if meeting.can_reprocess
-                    && ui
-                        .add_enabled(
-                            controller.active_meeting_id().is_none(),
-                            egui::Button::new(tr(language, "Reprocess audio")),
-                        )
-                        .clicked()
+                    && components::secondary_button_enabled(
+                        ui,
+                        tr(language, "Reprocess audio"),
+                        controller.active_meeting_id().is_none(),
+                    )
+                    .clicked()
                 {
                     action = UiAction::Reprocess;
                     ui.close();

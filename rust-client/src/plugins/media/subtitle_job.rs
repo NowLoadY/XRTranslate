@@ -27,7 +27,7 @@ pub(super) struct SubtitleJob {
     waiting_revision: Option<(u64, usize)>,
     pending: Option<PendingSubtitle>,
     refinement: Option<super::subtitle_refinement::SubtitleRefinement>,
-    repair: Option<super::subtitle_repair::SubtitleRepair>,
+    optimize: bool,
 }
 
 struct PendingSubtitle {
@@ -102,7 +102,7 @@ impl MediaPlugin {
         &mut self,
         languages: LanguageCapabilities,
         restart: bool,
-        supports_ask: bool,
+        can_optimize: bool,
     ) -> Result<(), String> {
         let task = self
             .controller
@@ -121,8 +121,7 @@ impl MediaPlugin {
             waiting_revision: None,
             pending: None,
             refinement: None,
-            repair: supports_ask
-                .then(|| super::subtitle_repair::SubtitleRepair::new(task.subtitle_char_limit)),
+            optimize: can_optimize,
         });
         self.stop_requested = false;
         if restart {
@@ -137,6 +136,7 @@ impl MediaPlugin {
         &mut self,
         languages: LanguageSelection,
         supports_ask: bool,
+        can_optimize: bool,
     ) -> Result<(), String> {
         let task = self
             .controller
@@ -158,7 +158,7 @@ impl MediaPlugin {
             pending: None,
             refinement: supports_ask
                 .then(|| super::subtitle_refinement::SubtitleRefinement::new(limit)),
-            repair: supports_ask.then(|| super::subtitle_repair::SubtitleRepair::new(limit)),
+            optimize: can_optimize,
         });
         Ok(())
     }
@@ -202,7 +202,8 @@ impl MediaPlugin {
         }
         let cues = &timeline.cues()[..ready];
         let Some(index) = cues.iter().position(needs_translation) else {
-            if !source_open && job.repair.is_none() {
+            if !source_open {
+                self.pending_optimization = job.optimize.then(|| job.task.clone());
                 self.subtitle_job = None;
                 self.controller.pause_task();
             } else {
@@ -236,6 +237,7 @@ impl MediaPlugin {
     pub(crate) fn poll_subtitle_processing(
         &mut self,
         supports_ask: bool,
+        can_optimize: bool,
         mut request: impl FnMut(String) -> crate::ask::Reply,
         ctx: &eframe::egui::Context,
     ) {
@@ -245,10 +247,10 @@ impl MediaPlugin {
         if self.controller.active_task_id.as_deref() != Some(&job.task) {
             return;
         }
-        // A model switch can remove editing support while a task is running.
+        // Editing and autonomous optimization have separate capability gates.
+        job.optimize &= can_optimize;
         if !supports_ask {
             job.refinement = None;
-            job.repair = None;
             return;
         }
         let revision = self.controller.subtitles.revision();
@@ -260,24 +262,6 @@ impl MediaPlugin {
                 ctx,
             ) {
                 job.refinement = None;
-            }
-        }
-        if !job.source_open
-            && job.refinement.is_none()
-            && job.pending.is_none()
-            && !self
-                .controller
-                .subtitles
-                .cues()
-                .iter()
-                .any(needs_translation)
-            && let Some(repair) = &mut job.repair
-        {
-            // Offline corrections should not replay translated speech or publish
-            // duplicate captions to the host's live output routes.
-            job.output_policy = SessionOutputPolicy::PluginOnly;
-            if repair.poll(&mut self.controller.subtitles, request, ctx) {
-                job.repair = None;
             }
         }
         self.controller.dirty |= self.controller.subtitles.revision() != revision;
@@ -348,6 +332,16 @@ impl MediaPlugin {
                         ..
                     }
                 ) {
+                    let cue = pending
+                        .inputs
+                        .iter()
+                        .find(|cue| cue.id == pending.translation.cue);
+                    log::warn!(
+                        "Media subtitle translation failed: task={} cue={} range_ms={:?}: {error}",
+                        job.task,
+                        pending.translation.cue,
+                        cue.map(|cue| (cue.start_ms, cue.end_ms))
+                    );
                     self.controller.error = Some(error);
                 }
                 self.subtitle_job = None;
@@ -645,7 +639,7 @@ mod tests {
         plugin.controller.active_task_id = Some(task.id.clone());
         plugin.controller.store.add_or_update(task);
         plugin
-            .start_file_subtitles(LanguageSelection::parse("en", "zh").unwrap(), false)
+            .start_file_subtitles(LanguageSelection::parse("en", "zh").unwrap(), false, false)
             .unwrap();
         (plugin, storage)
     }
@@ -783,15 +777,9 @@ mod tests {
     }
 
     #[test]
-    fn long_subtitles_are_split_translated_and_checked_again_without_restarting_asr() {
+    fn completed_translations_offer_an_agent_workspace_without_restarting_asr() {
         let (mut plugin, _storage) = fixture();
-        let id = plugin.controller.active_task_id.clone().unwrap();
-        plugin
-            .controller
-            .store
-            .get_mut(&id)
-            .unwrap()
-            .subtitle_char_limit = 20;
+        let task = plugin.controller.active_task_id.clone().unwrap();
         plugin.controller.subtitles = SubtitleTimeline::parse(
             "1\n00:00:01,000 --> 00:00:17,000\nAlpha beta gamma delta. Epsilon zeta eta theta.",
         )
@@ -799,65 +787,15 @@ mod tests {
         plugin
             .controller
             .subtitles
-            .set_translation("srt_0", "原来的完整译文。".into(), "en", "zh");
+            .set_translation("srt_0", "完整译文。".into(), "en", "zh");
+        let before = plugin.controller.subtitles.cues().to_vec();
         plugin
             .start_subtitles(LanguageCapabilities::default(), false, true)
             .unwrap();
-        assert_eq!(plugin.controller.subtitles.count(), 1);
-        // A completed translation must keep the job alive for the repair pass.
         assert!(plugin.next_subtitle_task().is_none());
-        assert!(plugin.subtitle_job.is_some());
-        plugin.subtitle_job.as_mut().unwrap().output_policy = SessionOutputPolicy::Host;
-        let ctx = eframe::egui::Context::default();
-        let mut requests = 0;
-        for _ in 0..30 {
-            plugin.poll_subtitle_processing(
-                true,
-                |prompt| {
-                    requests += 1;
-                    let source: String =
-                        serde_json::from_str(prompt.rsplit("\n\n").next().unwrap()).unwrap();
-                    let parts = match source.as_str() {
-                        "Alpha beta gamma delta. Epsilon zeta eta theta." => {
-                            vec!["Alpha beta gamma delta.", "Epsilon zeta eta theta."]
-                        }
-                        "Alpha beta gamma delta." => vec!["Alpha beta", "gamma delta."],
-                        "Epsilon zeta eta theta." => vec!["Epsilon zeta", "eta theta."],
-                        other => panic!("unexpected split: {other}"),
-                    };
-                    let (tx, rx) = crossbeam_channel::bounded(1);
-                    tx.send(Ok(serde_json::to_string(&parts).unwrap())).unwrap();
-                    rx
-                },
-                &ctx,
-            );
-            if let Some(task) = plugin.next_subtitle_task() {
-                assert_eq!(
-                    task.plugin.as_ref().unwrap().output_policy,
-                    SessionOutputPolicy::PluginOnly
-                );
-                complete(&mut plugin, &task);
-            }
-            if plugin.subtitle_job.is_none() {
-                break;
-            }
-        }
         assert!(plugin.subtitle_job.is_none());
-        assert_eq!(requests, 3);
-        let cues = plugin.controller.subtitles.cues();
-        assert_eq!(cues.len(), 4);
-        assert!(
-            cues.iter()
-                .all(|cue| !needs_translation(cue) && cue.character_count() <= 20)
-        );
-        assert_eq!((cues[0].start_ms, cues[3].end_ms), (1_000, 17_000));
-        assert!(
-            cues.windows(2)
-                .all(|pair| pair[0].end_ms == pair[1].start_ms)
-        );
-        let saved =
-            super::super::task::MediaTaskStore::load_from_dir(&plugin.controller.storage_dir);
-        assert_eq!(saved.get(&id).unwrap().subtitles.cues(), cues);
+        assert_eq!(plugin.pending_optimization.as_deref(), Some(task.as_str()));
+        assert_eq!(plugin.controller.subtitles.cues(), before);
     }
 
     #[test]
@@ -891,22 +829,32 @@ mod tests {
                 .unwrap();
             let ctx = eframe::egui::Context::default();
             if mode != "unsupported" {
-                let (tx, rx) = crossbeam_channel::bounded(1);
-                let mut rx = Some(rx);
-                plugin.poll_subtitle_processing(true, |_| rx.take().unwrap(), &ctx);
+                plugin.poll_subtitle_processing(
+                    true,
+                    true,
+                    |_| panic!("completed subtitles must not start the removed repair loop"),
+                    &ctx,
+                );
                 if mode == "cancelled" {
                     plugin.pause_task();
                 }
-                plugin.poll_subtitle_processing(false, |_| panic!("unsupported editing"), &ctx);
-                assert!(
-                    tx.send(Ok(r#"["First sentence.", "Second sentence."]"#.into()))
-                        .is_err()
+                plugin.poll_subtitle_processing(
+                    false,
+                    false,
+                    |_| panic!("unsupported editing"),
+                    &ctx,
                 );
             } else {
-                plugin.poll_subtitle_processing(false, |_| panic!("unsupported editing"), &ctx);
+                plugin.poll_subtitle_processing(
+                    false,
+                    false,
+                    |_| panic!("unsupported editing"),
+                    &ctx,
+                );
             }
             assert!(plugin.next_subtitle_task().is_none());
             assert!(plugin.subtitle_job.is_none());
+            assert!(plugin.pending_optimization.is_none());
             assert_eq!(plugin.controller.subtitles.cues(), before);
             assert!(before[0].character_count() > 20);
         }

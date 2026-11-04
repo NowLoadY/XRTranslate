@@ -67,7 +67,8 @@ impl Draft {
                         .selected_text(editor::language_name(language, *selected))
                         .show_ui(ui, |ui| {
                             for &index in &available {
-                                ui.selectable_value(
+                                components::selectable_value(
+                                    ui,
                                     selected,
                                     index,
                                     editor::language_name(language, index),

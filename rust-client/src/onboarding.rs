@@ -64,18 +64,8 @@ pub fn evaluate_step_requirement(
     runtime_installer: &RuntimeInstaller,
 ) -> Option<&'static str> {
     match step {
-        1 => {
-            let requirements = service_config.runtime_requirements();
-            if service_config.missing_account_connections() {
-                return Some("Sign in to every selected account service to continue.");
-            }
-            if requirements.missing_api_key {
-                Some("Configure every required API key to continue.")
-            } else {
-                None
-            }
-        }
-        2 => None,
+        // Configuration spans multiple pages. Validate the complete selection
+        // at the final step so a later page's fields cannot block reaching it.
         3 => {
             if model_task_manager.is_busy() {
                 return Some("Wait for the current model task to finish.");

@@ -1,4 +1,5 @@
 mod audio_tracks;
+pub(super) mod files;
 mod media;
 mod screen;
 mod subtitle_style;

@@ -284,7 +284,7 @@ impl XRTranslateApp {
             let effects = self
                 .voice_interaction
                 .controller
-                .ask_done(operation, result);
+                .ask_done(operation, result.map_err(|error| error.to_string()));
             self.voice_effects(effects, ctx);
         }
         if let Some((operation, result)) =

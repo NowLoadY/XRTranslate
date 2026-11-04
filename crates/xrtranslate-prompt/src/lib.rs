@@ -14,7 +14,7 @@ mod translation_style;
 
 pub use context::{
     AsrPromptContext, ContextFacts, PromptTurn, SurroundingSource, TaskContext, TranslationPromptBlock,
-    TranslationPromptContext,
+    TranslationPromptContext, estimated_tokens,
 };
 pub use execution::{
     PromptExecution, PromptExecutionTrace, PromptMessage, PromptNodeTrace, PromptRender,

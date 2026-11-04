@@ -134,13 +134,13 @@ impl BigWalkPlugin {
                         MessageFormat::BilingualSourceFirst,
                         MessageFormat::Inline,
                     ] {
-                        changed |= ui
-                            .selectable_value(
-                                &mut self.settings.format,
-                                format,
-                                format.label(language),
-                            )
-                            .changed();
+                        changed |= components::selectable_value(
+                            ui,
+                            &mut self.settings.format,
+                            format,
+                            format.label(language),
+                        )
+                        .changed();
                     }
                     changed
                 },

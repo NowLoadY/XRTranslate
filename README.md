@@ -111,7 +111,7 @@ Download the latest Windows version from [GitHub Releases](https://github.com/No
 
 - **Quick translation:** on Windows, select or copy text in another app, then press `Ctrl+Alt+Y`. Change or disable the shortcut in Settings → General. Selection access depends on the source app; copying text is the fallback. On Linux, copy text and choose Settings → General → Translate clipboard. The floating window shows the source and translation, with copy and close controls.
 - **Translation history:** open “Search translation history” on the translation page. Local saving is off by default; enable it to retain and search future results across restarts. Delete individual entries or review a date range for bulk deletion; dates use local time and include both days.
-- **Media:** Media and Meeting plugins are enabled by default. Open Media to create an audio, video or SRT/VTT task. Subtitle translation preserves cue times and supports pause/resume and SRT/VTT/LRC export. Playback components are optional. Manage plugin visibility in Settings → Plugins.
+- **Media:** Media and Meeting plugins are enabled by default. Open an audio, video or SRT/VTT file in Media. Recognize audio or import existing subtitles for translation, preview and video burn-in. Subtitle files can also be translated on their own and attached to a video later. Translation preserves cue times and supports pause/resume and SRT/VTT/LRC export; subtitle-only tasks do not require playback components. Manage plugin visibility in Settings → Plugins.
 
 Linux build instructions are available in [docs/linux-build.md](docs/linux-build.md); the platform boundary is described in [docs/platform-architecture.md](docs/platform-architecture.md).
 

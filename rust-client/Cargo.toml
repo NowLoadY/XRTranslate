@@ -53,6 +53,9 @@ xrtranslate-protocol = { path = "../crates/xrtranslate-protocol" }
 xrt-connector-core = { git = "https://github.com/NowLoadY/XRT-Avatar-Plugin.git", rev = "a01af88f7d37263e50b2daa67ca742e353601a80" }
 libmpv-sys = { version = "3.1.0", optional = true }
 
+[dev-dependencies]
+xrtranslate-inference = { path = "../crates/xrtranslate-inference", features = ["managed-ort"] }
+
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 raw-window-handle = "0.6.2"

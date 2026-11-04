@@ -9,6 +9,7 @@ const MAX_PENDING_ERRORS: usize = 8;
 pub(super) enum Message {
     Localized(&'static str),
     Error(String),
+    Text { source: &'static str, text: String },
     Command(super::Command),
 }
 
@@ -17,6 +18,7 @@ impl Message {
         match self {
             Self::Localized(key) => Cow::Borrowed(i18n::tr(language, key)),
             Self::Command(command) => Cow::Borrowed(command.reply(language)),
+            Self::Text { text, .. } => Cow::Owned(text.clone()),
             Self::Error(detail) => Cow::Owned(format!(
                 "{}: {detail}",
                 i18n::tr(language, "Something went wrong")
@@ -51,6 +53,19 @@ impl Inbox {
 
     pub(crate) fn post(&mut self, message: &'static str) {
         self.enqueue(message.into());
+    }
+
+    /// Keep the latest update from a producer, rather than a backlog of stale progress.
+    pub(crate) fn post_text(&mut self, source: &'static str, text: String) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        self.letters.retain(|message| !matches!(message, Message::Text { source: previous, .. } if *previous == source));
+        self.enqueue(Message::Text {
+            source,
+            text: text.to_owned(),
+        });
     }
 
     /// Polling a persistent failure must not repeat it after the bubble finishes.
@@ -102,5 +117,28 @@ impl Inbox {
         // The companion calls this only after finishing its sentence and cooldown.
         self.reading = self.letters.pop_front();
         self.reading.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dynamic_progress_keeps_latest_update_and_existing_mail() {
+        let mut inbox = Inbox::default();
+        inbox.post("Welcome");
+        inbox.post_text("agent", "正在检查。".into());
+        inbox.post_text("agent", "检查完成。".into());
+        assert_eq!(inbox.read(), Some(Message::Localized("Welcome")));
+        assert_eq!(
+            inbox.read().unwrap().text(UiLanguage::Chinese),
+            "检查完成。"
+        );
+        inbox.post_text("agent", "检查完成。".into());
+        assert!(
+            inbox.read().is_none(),
+            "do not repeat a message currently being read"
+        );
     }
 }

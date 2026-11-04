@@ -531,6 +531,7 @@ pub struct AppConfig {
     pub integrations: IntegrationsConfig,
     pub storage: StorageConfig,
     pub translation: TranslationConfig,
+    pub agent: AgentConfig,
     pub tts: TtsConfig,
     pub ocr: OcrConfig,
     pub model_manager: ModelManagerConfig,
@@ -593,15 +594,33 @@ impl AppConfig {
                     requirements.onnx_cuda = true;
                 }
                 Some(_) => {
-                    let account = provider.get("connector")
-                        .and_then(|value| serde_json::from_value::<xrtranslate_assets::remote::RemoteConnector>(value.clone()).ok())
+                    let account = provider
+                        .get("connector")
+                        .and_then(|value| {
+                            serde_json::from_value::<xrtranslate_assets::remote::RemoteConnector>(
+                                value.clone(),
+                            )
+                            .ok()
+                        })
                         .and_then(|connector| connector.account_provider());
-                    requirements.missing_api_key |= account.is_none() && provider
-                        .get("api_key")
-                        .and_then(Value::as_str)
-                        .is_none_or(|key| key.trim().is_empty());
+                    requirements.missing_api_key |= account.is_none()
+                        && provider
+                            .get("api_key")
+                            .and_then(Value::as_str)
+                            .is_none_or(|key| key.trim().is_empty());
                 }
             }
+        }
+        if let Some(selection) = &self.agent.model
+            && let Ok(mut agent) = self.with_text_model(selection)
+        {
+            agent.agent.model = None;
+            let extra = agent.runtime_requirements();
+            requirements.llama_cpp |= extra.llama_cpp;
+            requirements.onnx_tts |= extra.onnx_tts;
+            requirements.onnx_cpu |= extra.onnx_cpu;
+            requirements.onnx_cuda |= extra.onnx_cuda;
+            requirements.missing_api_key |= extra.missing_api_key;
         }
         requirements
     }
@@ -657,6 +676,7 @@ impl AppConfig {
             integrations: typed.integrations,
             storage: typed.storage,
             translation: typed.translation,
+            agent: typed.agent,
             tts: typed.tts,
             ocr: typed.ocr,
             model_manager: typed.model_manager,
@@ -836,6 +856,12 @@ impl AppConfig {
                 }
             }
         }
+        if let Some(selection) = &self.agent.model
+            && xrtranslate_assets::ModelAssetId::from_config_key(&selection.model).is_some()
+            && !keys.contains(&selection.model)
+        {
+            keys.push(selection.model.clone());
+        }
         keys
     }
 }
@@ -905,11 +931,29 @@ struct TypedConfig {
     #[serde(default)]
     translation: TranslationConfig,
     #[serde(default)]
+    agent: AgentConfig,
+    #[serde(default)]
     tts: TtsConfig,
     #[serde(default)]
     ocr: OcrConfig,
     #[serde(default)]
     model_manager: ModelManagerConfig,
+}
+
+/// A role references existing provider settings; it never stores another credential.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextModelSelection {
+    pub provider: String,
+    /// Remote model ID or local catalogue asset ID.
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentConfig {
+    /// None follows the selected translation model.
+    pub model: Option<TextModelSelection>,
 }
 
 /// HTTP/WebSocket listener settings.
@@ -1770,9 +1814,13 @@ fn active_native_provider(
         .map(str::to_owned);
     let account = object
         .and_then(|provider| provider.get("connector"))
-        .and_then(|value| serde_json::from_value::<xrtranslate_assets::remote::RemoteConnector>(value.clone()).ok())
+        .and_then(|value| {
+            serde_json::from_value::<xrtranslate_assets::remote::RemoteConnector>(value.clone())
+                .ok()
+        })
         .and_then(|connector| connector.account_provider());
-    if !matches!(transport.as_str(), "local" | "onnx-cpu") && account.is_none() && api_key.is_none() {
+    if !matches!(transport.as_str(), "local" | "onnx-cpu") && account.is_none() && api_key.is_none()
+    {
         issues.push(format!(
             "{path}.api_key is required for remote API providers"
         ));
@@ -1827,11 +1875,25 @@ impl NativeProviderConfig {
                 == xrtranslate_assets::remote::RemoteStreaming::Cumulative
     }
 
-    /// Text editing also works with instruction-based contextual translators.
+    /// Instruction capability is declared by the model, not its prompt format.
+    /// General chat includes single-request instructions.
     pub fn supports_ask(&self) -> Result<bool, String> {
-        Ok(self.supports_chat()?
-            || self.translation_prompt_profile()?
-                == xrtranslate_assets::TranslationPromptProfile::Contextual)
+        if !self.uses_local_runtime() {
+            return Ok(self.capabilities.supports_ask || self.capabilities.supports_chat);
+        }
+        let model = xrtranslate_assets::language::provider_model(
+            &self.provider,
+            self.model_asset.as_deref(),
+            xrtranslate_assets::ModelCapability::Translation,
+        )?;
+        match model.runtime {
+            Some(xrtranslate_assets::ModelRuntime::LlamaTextChat {
+                supports_ask,
+                supports_chat,
+                ..
+            }) => Ok(supports_ask || supports_chat),
+            _ => Err("selected translation model has no instruction capability contract".into()),
+        }
     }
 
     /// Whether the selected translation model supports general chat.

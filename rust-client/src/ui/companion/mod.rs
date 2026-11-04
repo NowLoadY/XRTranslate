@@ -3,6 +3,7 @@
 //! turn that decision into one Presentation. Desktop/VR surfaces own placement
 //! and sensing, never a second conversation, reaction policy, or character clock.
 mod attention;
+mod composer;
 mod dialogue;
 mod feedback;
 mod inbox;
@@ -109,6 +110,7 @@ struct Guide {
     speech: Speech,
     motion: Motion,
     feedback: feedback::Feedback,
+    composer: composer::Composer,
 }
 
 impl Guide {
@@ -148,6 +150,7 @@ impl Guide {
             speech: Speech::default(),
             motion: Motion::default(),
             feedback: feedback::Feedback::default(),
+            composer: composer::Composer::default(),
         }
     }
 
@@ -357,7 +360,7 @@ impl Guide {
         }
     }
 
-    fn attend(&mut self, target: Option<Target>, clicked: bool, scene: &dialogue::Context) {
+    fn attend(&mut self, target: Option<Target>, scene: &dialogue::Context) {
         let hovered = target.map(|target| target.attention);
         if hovered != self.candidate {
             self.candidate = hovered;
@@ -367,15 +370,10 @@ impl Guide {
         if dwell >= 0.7 {
             self.focus = target;
         }
-        if clicked && hovered == Some(Attention::Avatar) {
-            self.focus = target;
-        }
         if !self.ready_to_speak() {
             return;
         }
-        if clicked && hovered == Some(Attention::Avatar) {
-            self.say(scene.reply(Attention::Avatar));
-        } else if let Some(topic) = hovered
+        if let Some(topic) = hovered
             && dwell >= 2.0
             && topic.bit() != 0
             && self.mentioned & topic.bit() == 0
@@ -515,9 +513,12 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     let hidden = app.modal_dialog.open
         || ctx.memory(|memory| memory.top_modal_layer().is_some())
         || screen.height() < small * 4.0;
+    if hidden {
+        state.composer.close(ctx);
+    }
     let vr_active = vr.avatar_available;
     let interactive = !hidden && (focused || vr_active) && !ctx.any_popup_open();
-    let paused = !interactive || pressed;
+    let paused = !interactive || pressed || state.composer.open;
     let visual_dt = (wall - state.last_wall).clamp(0.0, 0.05) as f32;
     let elapsed_wall = if paused || state.paused {
         0.0
@@ -546,8 +547,11 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         app.background_image.texture_id(),
     );
     let small = dock.map_or(small, |spot| spot.radius);
-    let available =
-        !hidden && (state.stage != Stage::Ready || dock.is_some() || state.clock < state.resume_at);
+    let available = !hidden
+        && (state.composer.open
+            || state.stage != Stage::Ready
+            || dock.is_some()
+            || state.clock < state.resume_at);
     if (available || (vr_active && !hidden)) && !paused && !ctx.text_edit_focused() {
         state.announce_pending();
         state.read_mail(&mut app.companion_inbox);
@@ -611,12 +615,18 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
         size,
         interactive && available && !state.relocating && state.opacity >= 0.25,
     );
+    if response.clicked() {
+        state.composer.toggle(ctx);
+        state.enter(Stage::Ready);
+        entrance_frame = None;
+    }
     if state.stage == Stage::Ready {
         state.center = anchor;
     }
     if response.dragged_by(egui::PointerButton::Primary)
         || response.drag_stopped_by(egui::PointerButton::Primary)
     {
+        state.composer.close(ctx);
         if state.stage != Stage::Ready {
             state.enter(Stage::Ready);
         }
@@ -638,10 +648,11 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     let hovered = focus.map(|target| target.attention);
     if state.stage == Stage::Ready
         && !paused
+        && !state.composer.open
         && !ctx.text_edit_focused()
         && state.clock >= state.resume_at
     {
-        state.attend(focus, response.clicked(), &scene);
+        state.attend(focus, &scene);
     } else {
         state.candidate_since = state.clock;
     }
@@ -681,31 +692,76 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     let mut painter = ctx.layer_painter(layer).with_clip_rect(screen);
     painter.multiply_opacity(smooth(state.opacity));
     if state.opacity > 0.0 {
+        super::automation::attention::paint(&painter, anchor, size);
         app.avatar_appearance
             .model()
             .paint(&painter, state_id(), anchor, size, pose);
     }
-    let talking = state.speech.paint_avoiding(
-        &painter,
-        if state.stage == Stage::Ready {
-            screen.shrink(12.0)
-        } else {
-            bounds
-        },
-        anchor,
-        size,
-        state.clock,
-        visual_dt,
-        state.parking.occupied(),
-        speed < 12.0
-            && target.is_none_or(|target| anchor.distance(target) < 2.0)
-            && !response.dragged(),
-    );
-    if interactive && available && state.opacity >= 0.25 && matches!(state.line, Message::Error(_))
+    let talking = !state.composer.open
+        && state.speech.paint_avoiding(
+            &painter,
+            if state.stage == Stage::Ready {
+                screen.shrink(12.0)
+            } else {
+                bounds
+            },
+            anchor,
+            size,
+            state.clock,
+            visual_dt,
+            state.parking.occupied(),
+            speed < 12.0
+                && target.is_none_or(|target| anchor.distance(target) < 2.0)
+                && !response.dragged(),
+        );
+    if interactive
+        && available
+        && !state.composer.open
+        && state.opacity >= 0.25
+        && matches!(state.line, Message::Error(_))
     {
         state
             .speech
             .dismiss_on_click(ctx, state_id().with("error-bubble"), state.clock);
+    }
+    if available {
+        let unavailable = if !app.plugin_enabled(crate::plugins::PluginId::AGENT) {
+            Some("Enable Agent in Settings")
+        } else if !app.service_config.agent_available() {
+            Some("Choose an Agent model on the Welcome Page")
+        } else {
+            None
+        };
+        match state.composer.show(
+            ctx,
+            anchor,
+            size,
+            state.parking.occupied(),
+            language,
+            unavailable,
+            app.agent.active(),
+        ) {
+            Some(composer::Action::Submit(goal)) => {
+                let follow_up = app.agent.active();
+                match app.submit_agent_instruction(goal) {
+                    Ok(()) => {
+                        state.composer.accepted(ctx);
+                        state.say(if follow_up {
+                            "I've received your update."
+                        } else {
+                            "I'll get started."
+                        });
+                    }
+                    Err(error) => {
+                        log::warn!("Avatar Agent instruction failed: {error}");
+                        state.composer.error =
+                            Some("Could not send the instruction. Please try again.");
+                    }
+                }
+            }
+            Some(composer::Action::Stop) => app.stop_agent("Stopped by user"),
+            None => {}
+        }
     }
     if interactive
         && (response.dragged() || (state.placement.was_dragged() && (size - small).abs() > 0.1))

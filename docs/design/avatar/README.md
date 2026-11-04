@@ -11,7 +11,7 @@ The code lives under `rust-client/src/ui/components/avatar`:
 - `face.rs`, `motion.rs`, `wardrobe.rs`: independent facial objects, expressions/gaze and hat/scarf/tie attachment sockets.
 - `render/`: shared WGPU resources, 3D/shadow passes and transparent 2D composition. `export.rs` is a debug-only PNG renderer using those same passes.
 - `companion.rs`: the simple body variants used by style cards.
-- `speech.rs`: screen-facing speech bubbles with delayed following, animated bounds and opacity, Unicode grapheme reveal, punctuation pauses and independent mouth activity.
+- `speech.rs`: screen-facing speech bubbles with delayed following, animated bounds and opacity, Unicode grapheme reveal, punctuation pauses and independent mouth activity. Long messages clear and continue in short pages after a reading pause; page timing belongs to the shared dialogue, so desktop and VR surfaces stay in sync without truncating the message.
 
 The application companion lives in `ui/companion/`. `mod.rs` owns one persistent scene across onboarding, translation, studios, settings and plugin pages; `dialogue.rs` owns all dialogue selection, contextual replies and model/voice/resource status cues. `attention.rs` reads hovered or keyboard-focused controls from egui on the first welcome page only. `parking.rs` finds quiet space across onboarding and application pages, including floating toolbars, preferring the title's right-hand whitespace, then a smaller size or another clear position. It caches the result and checks for layout changes at a bounded interval. `placement.rs` shares silhouette bounds between pointer capture, travel and window clamping. The app shell renders the companion after page content and modal handling. Onboarding only supplies its special introductory layout and existing prerequisite result; individual pages contain no dialogue or movement logic. Translations reuse the existing five-language table.
 
@@ -40,15 +40,3 @@ This uses the real GPU renderer without opening the app or loading user configur
 ![Classic modeling reference](classic-concept.png)
 
 Generated with the built-in image generation tool. This is a modeling reference, not an exact screenshot or a packaged runtime asset.
-
-## Generation prompt
-
-```text
-Use case: stylized-concept
-Asset type: 3D character modeling reference sheet for the XRTranslate desktop app.
-Primary request: Design one original adorable minimalist floating round mascot whose identity comes from its wearable 3D hat, not stickers or arbitrary ornaments. It must be straightforward to construct with smooth rounded 3D solids.
-Subject: A soft matte light gray-white spherical body, no arms or legs, two dark thick round-ended vertical pill eyes, a tiny curved smile. The eyes may bend into happy arches. No realistic pupils, no painted highlights. A charming small slate-blue / muted periwinkle courier beret sits properly on the head: a compact flattened dome, a short rounded forward visor, and two softly overlapping rounded folds at the crown suggest a pair of conversational speech bubbles through their physical silhouette. Keep the hat restrained and cute, not tall or elaborate. A small matching cool pale-blue scarf wraps the lower body with one short rounded tail, no bow. The round body remains dominant.
-Composition: clean white modeling sheet showing front, three-quarter and side views of exactly the same character, plus a small exploded view separating the removable hat, scarf and bare body to clarify the clothing attachment system. Consistent proportions across views.
-Materials and lighting: matte clay-like smooth solids, very soft neutral studio lighting, subtle form shadows, no glossy specular highlights or glowing edges.
-Constraints: no lettering, no logos, no X stickers, no badges, no ears, no antlers, no antennae, no random decorative symbols, no busy texture. The hat's sculpted silhouette is the unique identity. Clothing must have real thickness and wrap around the body in three dimensions. This is a practical reference for native GPU modeling, not a UI mockup.
-```

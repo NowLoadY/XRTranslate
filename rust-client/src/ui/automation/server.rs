@@ -159,6 +159,7 @@ fn handle_http_request(
     egui_ctx: &egui::Context,
 ) {
     let mut content_length: usize = 0;
+    let mut browser_origin = false;
 
     let parts: Vec<&str> = initial_line.split_whitespace().collect();
     let method = parts.first().copied().unwrap_or("GET");
@@ -175,6 +176,7 @@ fn handle_http_request(
                 content_length = val_str.trim().parse().unwrap_or(0);
             }
         }
+        browser_origin |= trimmed.to_ascii_lowercase().starts_with("origin:");
         line.clear();
     }
 
@@ -184,9 +186,19 @@ fn handle_http_request(
         return;
     }
 
+    // Local automation clients need no browser-origin access or unbounded bodies.
+    if content_length > 1_048_576 {
+        let _ = stream.write_all(
+            b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        return;
+    }
     let mut body = vec![0u8; content_length];
-    if content_length > 0 {
-        let _ = std::io::Read::read_exact(reader, &mut body);
+    if content_length > 0 && std::io::Read::read_exact(reader, &mut body).is_err() {
+        let _ = stream.write_all(
+            b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        return;
     }
     let body_str = String::from_utf8_lossy(&body);
 
@@ -197,7 +209,13 @@ fn handle_http_request(
 
     let director_response = if method == "POST" || !body_str.trim().is_empty() {
         if let Ok(cmd) = serde_json::from_str::<DirectorCommand>(&body_str) {
-            execute_driver_command(cmd, driver, egui_ctx)
+            if browser_origin && matches!(cmd, DirectorCommand::Tools | DirectorCommand::Call(_)) {
+                DirectorResponse::err(
+                    "Operation tools are available to local automation clients only",
+                )
+            } else {
+                execute_driver_command(cmd, driver, egui_ctx)
+            }
         } else if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&body_str) {
             parse_json_value_command(json_val, driver, egui_ctx)
         } else {
@@ -412,13 +430,17 @@ fn execute_driver_command(
     egui_ctx: &egui::Context,
 ) -> DirectorResponse {
     let (responder, receiver) = bounded(1);
-    let envelope = CommandEnvelope { command, responder };
-    if driver.channel().send(envelope).is_err() {
-        return DirectorResponse::err("Automation driver channel closed");
+    let envelope = CommandEnvelope {
+        command,
+        responder,
+        expires: std::time::Instant::now() + Duration::from_secs(5),
+        cancelled: Default::default(),
+    };
+    if driver.channel().try_send(envelope).is_err() {
+        return DirectorResponse::err("Automation queue is full or closed");
     }
 
-    // Request immediate repaint on egui thread
-    egui_ctx.request_repaint();
+    super::request_frame(egui_ctx);
 
     // Wait up to 5 seconds for execution
     match receiver.recv_timeout(Duration::from_secs(5)) {

@@ -40,6 +40,9 @@ impl SessionEventSubscriber for MediaTranslationSink {
 impl MediaPlugin {
     pub fn poll_translation_events(&mut self) {
         while let Ok((operation, event)) = self.event_sink.rx.try_recv() {
+            if self.accept_workspace_event(&operation, &event) {
+                continue;
+            }
             if self.accept_retranslation_event(&operation, &event) {
                 continue;
             }
@@ -120,7 +123,7 @@ impl MediaPlugin {
     }
 }
 
-fn apply_recognition_snapshot(
+pub(super) fn apply_recognition_snapshot(
     timeline: &mut super::subtitles::SubtitleTimeline,
     segments: Vec<TranslationSegment>,
 ) {
@@ -142,7 +145,7 @@ fn apply_recognition_snapshot(
     }
 }
 
-fn translation_cue(
+pub(super) fn translation_cue(
     segment: TranslationSegment,
     timeline: &super::subtitles::SubtitleTimeline,
 ) -> Option<(SubtitleCue, SubtitleMetadata)> {

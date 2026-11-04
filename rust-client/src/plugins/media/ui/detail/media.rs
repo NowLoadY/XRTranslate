@@ -33,7 +33,7 @@ pub(super) fn render_viewport_card(
         ui.add_space(8.0);
         playback_controls(controller, language, ui);
     });
-    egui::CollapsingHeader::new(tr(language, "Playback details")).show(ui, |ui| {
+    crate::ui::components::CollapsingHeader::new(tr(language, "Playback details")).show(ui, |ui| {
         let diagnostics = controller.get_diagnostics();
         ui.weak(format!(
             "{} · {} × {} · {:.1} FPS · {} · {} {}",

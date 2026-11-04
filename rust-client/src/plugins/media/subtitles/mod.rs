@@ -289,6 +289,11 @@ impl SubtitleTimeline {
         }
     }
 
+    pub(super) fn replace(&mut self, mut timeline: Self) {
+        timeline.revision = self.revision.wrapping_add(1);
+        *self = timeline;
+    }
+
     pub fn clear(&mut self) {
         self.revision = self.revision.wrapping_add(1);
         self.vtt_prelude.clear();
@@ -564,6 +569,17 @@ impl SubtitleTimeline {
             }
         }
         self.replace_refined(index..index + 1, cues);
+    }
+
+    pub(super) fn replace_range_from(&mut self, range: std::ops::Range<usize>, replacement: &Self) {
+        for cue in replacement.cues() {
+            self.metadata
+                .insert(cue.id.clone(), replacement.metadata_for(&cue.id));
+            if let Some(origin) = replacement.origins.get(&cue.id) {
+                self.origins.insert(cue.id.clone(), origin.clone());
+            }
+        }
+        self.replace_refined(range, replacement.cues().to_vec());
     }
 
     /// Merge neighboring text in timeline order while retaining the drop target's identity.

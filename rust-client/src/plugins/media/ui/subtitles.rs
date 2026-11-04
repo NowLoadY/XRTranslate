@@ -16,6 +16,7 @@ const SINGLE_LINE_HEADER_WIDTH: f32 = 360.0;
 pub(super) fn render_subtitles_card(
     controller: &mut MediaController,
     language: crate::i18n::UiLanguage,
+    optimizing: bool,
     ui: &mut egui::Ui,
 ) {
     let can_play = controller.can_play();
@@ -49,6 +50,7 @@ pub(super) fn render_subtitles_card(
         controller.last_auto_scrolled_cue_id = None;
     }
     let follow = can_play
+        && !optimizing
         && controller.subtitle_edit.is_none()
         && controller
             .last_manual_scroll
@@ -65,22 +67,44 @@ pub(super) fn render_subtitles_card(
         }
         controller.last_auto_scrolled_cue_id = current.clone();
     }
-    ui.label(egui::RichText::new(tr(language, "Subtitles")).strong());
+    super::detail::files::subtitle_header(controller, language, ui);
     let measurements_id = egui::Id::unique("media_subtitle_measurements");
-    if controller.subtitles.count() == 0 {
+    let task = controller
+        .active_task_id
+        .as_deref()
+        .and_then(|id| controller.store.get(id));
+    let preview = task
+        .and_then(|task| task.optimization.as_ref())
+        .filter(|workspace| {
+            optimizing && workspace.status == "open" && controller.subtitle_edit.is_none()
+        });
+    let subtitles = preview.map_or(&controller.subtitles, |workspace| &workspace.draft);
+    if preview.is_some() {
+        ui.weak(tr(language, "Optimization preview"));
+    }
+    let list_rect = ui.available_rect_before_wrap();
+    if subtitles.count() == 0 {
         ui.data_mut(|data| data.remove::<Measurements<usize>>(measurements_id));
         egui::scroll_area::State::default().store(
             ui.ctx(),
             ui.make_persistent_id(egui::IdSalt::new("media_subtitles")),
         );
         ui.weak(tr(language, "No subtitles yet"));
+        if let Some(task) = task {
+            crate::ui::automation::attention::record(
+                ui,
+                super::subtitles_target(&task.id),
+                list_rect,
+            );
+        }
         return;
     }
-    if let Some(index) = super::timeline::overview(controller, ui) {
-        let cue = &controller.subtitles.cues()[index];
+    let mut seek = None;
+    if let Some(index) = super::timeline::overview(controller, subtitles, ui) {
+        let cue = &subtitles.cues()[index];
         let (id, start) = (cue.id.clone(), cue.start_ms);
         if can_play {
-            controller.seek_to(start, false);
+            seek = Some((start, false));
         }
         controller.last_manual_scroll = Some(std::time::Instant::now());
         controller.last_auto_scrolled_cue_id = Some(id);
@@ -88,10 +112,6 @@ pub(super) fn render_subtitles_card(
             target = ScrollTarget::Row(index);
         }
     }
-    let task = controller
-        .active_task_id
-        .as_deref()
-        .and_then(|id| controller.store.get(id));
     let idle = task.is_some_and(|task| !task.is_task_running);
     let char_limit = task.map_or_else(
         super::super::subtitles::default_subtitle_char_limit,
@@ -114,10 +134,12 @@ pub(super) fn render_subtitles_card(
     {
         target = ScrollTarget::Row(index);
     }
-    let can_edit = idle && editing_index.is_none();
+    let can_edit = idle && editing_index.is_none() && preview.is_none();
     let edit_hint = tr(
         language,
-        if !idle {
+        if preview.is_some() {
+            "Optimizing subtitles"
+        } else if !idle {
             "Pause translation to edit."
         } else if !can_edit {
             "Save or cancel this edit first."
@@ -125,16 +147,15 @@ pub(super) fn render_subtitles_card(
             "Double-click to edit."
         },
     );
-    let mut seek = None;
     let mut edit = None;
     let mut delete = None;
     let mut edit_action = super::subtitle_edit::EditAction::None;
-    let subtitles = &controller.subtitles;
     let task_id = controller.active_task_id.as_deref();
     let draft = &mut controller.subtitle_edit;
     let revision = egui::IdSalt::new((
         task_id,
         subtitles.revision(),
+        preview.map(|workspace| (&workspace.id, workspace.revision)),
         editing_index,
         edit_height.to_bits(),
     ));
@@ -164,7 +185,7 @@ pub(super) fn render_subtitles_card(
                         .iter()
                         .enumerate()
                         .map(|(index, cue)| MeasuredRow {
-                            id: measurements_id.with((task_id, &cue.id)),
+                            id: super::subtitle_target(task_id.unwrap_or_default(), &cue.id),
                             signature: egui::IdSalt::new((
                                 &cue.original_text,
                                 &cue.translated_text,
@@ -222,7 +243,7 @@ pub(super) fn render_subtitles_card(
                         )
                         .clicked()
                     {
-                        seek = Some(cue.start_ms);
+                        seek = Some((cue.start_ms, true));
                     }
                     for (field, time) in [
                         (SubtitleField::Start, cue.start_ms),
@@ -314,6 +335,9 @@ pub(super) fn render_subtitles_card(
             });
         },
     );
+    if let Some(task) = task {
+        crate::ui::automation::attention::record(ui, super::subtitles_target(&task.id), list_rect);
+    }
     ui.data_mut(|data| data.insert_temp(measurements_id, measurements));
     if let Some(id) = delete {
         controller.delete_subtitle(&id);
@@ -328,8 +352,8 @@ pub(super) fn render_subtitles_card(
         let (source, target) = (source.id.clone(), target.id.clone());
         controller.merge_subtitles(&source, &target);
     }
-    if let Some(time) = seek {
-        controller.seek_to(time, true);
+    if let Some((time, play)) = seek {
+        controller.seek_to(time, play);
     }
     if let Some((id, field)) = edit {
         controller.begin_subtitle_edit(&id, field);
@@ -421,7 +445,7 @@ mod tests {
         )
         .unwrap();
         let ctx = egui::Context::default();
-        let render = |controller: &mut MediaController| {
+        let render = |controller: &mut MediaController, optimizing| {
             let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
@@ -430,7 +454,14 @@ mod tests {
                     )),
                     ..Default::default()
                 },
-                |ui| render_subtitles_card(controller, crate::i18n::UiLanguage::English, ui),
+                |ui| {
+                    render_subtitles_card(
+                        controller,
+                        crate::i18n::UiLanguage::English,
+                        optimizing,
+                        ui,
+                    )
+                },
             );
             output.textures_delta.clear();
             output.shapes.iter().any(|shape| {
@@ -439,12 +470,43 @@ mod tests {
                 )
             })
         };
-        assert!(render(&mut controller));
+        assert!(render(&mut controller, false));
         controller.store.tasks[0].subtitle_char_limit = 200;
-        assert!(!render(&mut controller));
+        assert!(!render(&mut controller, false));
         controller.store.tasks[0].subtitle_char_limit = 20;
         controller.begin_subtitle_edit("srt_0", SubtitleField::Original);
         controller.subtitle_edit.as_mut().unwrap().cue.original_text = "Short.".into();
-        assert!(!render(&mut controller));
+        assert!(!render(&mut controller, false));
+        controller.subtitle_edit = None;
+        let base = controller.subtitles.clone();
+        let mut draft = base.clone();
+        let mut cue = draft.cues()[0].clone();
+        cue.original_text = "Short.".into();
+        draft.edit_cue(cue).unwrap();
+        controller.store.tasks[0].optimization =
+            Some(crate::plugins::media::workspace::Workspace {
+                id: "preview".into(),
+                revision: 1,
+                status: "open".into(),
+                context: serde_json::Value::Null,
+                base: base.clone(),
+                draft,
+                committed: None,
+                records: Vec::new(),
+                trials: Vec::new(),
+            });
+        assert!(
+            !render(&mut controller, true),
+            "render the optimized draft during the run"
+        );
+        assert!(
+            render(&mut controller, false),
+            "return to the published document when optimization stops"
+        );
+        assert_eq!(
+            controller.subtitles.export_srt(),
+            base.export_srt(),
+            "preview must not publish edits"
+        );
     }
 }

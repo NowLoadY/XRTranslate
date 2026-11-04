@@ -650,6 +650,7 @@ mod tests {
                             output_channels: 2,
                             pacing: AudioImportPacing::AsFastAsPossible,
                             audio_track: None,
+                            range_ms: None,
                             recognition_channels: Vec::new(),
                             gate_threshold_db: None,
                         },

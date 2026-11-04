@@ -10,6 +10,7 @@ pub(super) fn render_library(
     ui: &mut egui::Ui,
 ) -> MediaAction {
     let mut action = MediaAction::None;
+    let mut choose_file = false;
     components::page_header(ui, tr(language, "Media"), |_| {});
     components::library_start(
         ui,
@@ -43,30 +44,51 @@ pub(super) fn render_library(
             },
         ],
         |ui| {
-            #[cfg(target_os = "android")]
-            let import = components::primary_button(ui, tr(language, "Import media"));
-            #[cfg(not(target_os = "android"))]
-            let import = components::round_icon_button(
-                ui,
-                tr(language, "Import media"),
-                egui::include_image!("../../../../resources/icons/import.svg"),
-                40.0,
-            );
-            if import.clicked() {
-                controller.open_create();
-                action = MediaAction::StopTranslation;
-            }
+            ui.horizontal(|ui| {
+                ui.set_max_width(100.0);
+                #[cfg(target_os = "android")]
+                let import = components::primary_button(ui, tr(language, "Import media"));
+                #[cfg(not(target_os = "android"))]
+                let import = components::round_icon_button(
+                    ui,
+                    tr(language, "Import media"),
+                    egui::include_image!("../../../../resources/icons/import.svg"),
+                    40.0,
+                );
+                choose_file = import.clicked();
+                if components::round_icon_button(
+                    ui,
+                    tr(language, "Open link"),
+                    egui::include_image!("../../../../resources/icons/stream.svg"),
+                    40.0,
+                )
+                .clicked()
+                {
+                    controller.open_create();
+                    action = MediaAction::StopTranslation;
+                }
+            });
         },
     );
-    if let Some(path) = ui.input(|input| {
-        input
-            .raw
-            .dropped_files
-            .first()
-            .map(|file| file.path().to_path_buf())
-    }) {
-        controller.open_create();
-        controller.draft_source = path.to_string_lossy().into_owned();
+    let selected = crate::file_dialog::FileDialog::new()
+        .add_filter("Media and subtitles", super::super::task::MEDIA_EXTENSIONS)
+        .add_filter("Subtitles", super::super::task::SUBTITLE_EXTENSIONS)
+        .add_filter("All files", &["*"])
+        .pick_file(ui.ctx(), "media_library_import", choose_file);
+    let paths = selected.map(|path| vec![path]).unwrap_or_else(|| {
+        ui.input(|input| {
+            input
+                .raw
+                .dropped_files
+                .iter()
+                .map(|file| file.path().to_path_buf())
+                .collect()
+        })
+    });
+    if !paths.is_empty() {
+        if let Err(error) = controller.open_files(paths) {
+            controller.error = Some(error);
+        }
         return MediaAction::StopTranslation;
     }
     super::render_runtime_install_banner(controller, language, ui);
@@ -118,13 +140,13 @@ pub(super) fn render_library(
                                                 &task.subtitles,
                                                 controller.video_export.is_none() && super::super::video_export::VideoExport::supported(task),
                                             ) { export_video = Some(task.id.clone()); }
-                                            if ui.button(tr(language, "Delete")).clicked() {
+                                            if components::button(ui, tr(language, "Delete")).clicked() {
                                                 delete = Some(task.id.clone());
                                                 ui.close();
                                             }
                                         },
                                     );
-                                    if components::open_button(ui, tr(language, "Open task"))
+                                    if components::open_button(ui, &format!("{} · {}", tr(language, "Open task"), task.title))
                                         .clicked()
                                     {
                                         open = Some(task.id.clone());

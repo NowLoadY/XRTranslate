@@ -82,12 +82,14 @@ pub fn show(
                 ui.add_space(8.0);
                 ui.label(tr(language, "Reference transcript"));
                 ui.horizontal(|ui| {
-                    ui.selectable_value(
+                    components::selectable_value(
+                        ui,
                         &mut draft.manual_transcript,
                         false,
                         tr(language, "Automatic (ASR)"),
                     );
-                    ui.selectable_value(
+                    components::selectable_value(
+                        ui,
                         &mut draft.manual_transcript,
                         true,
                         tr(language, "Specify text"),

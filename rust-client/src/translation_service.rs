@@ -164,6 +164,7 @@ pub(crate) struct TaskChannel {
 }
 
 pub(crate) struct AudioTask {
+    pub import: Option<crate::media_import::AudioImportHandle>,
     pub owner: TranslationSessionOwner,
     pub languages: LanguageSelection,
     pub channels: Vec<TaskChannel>,
@@ -188,6 +189,7 @@ impl AudioTask {
         }
     }
     pub fn cancel(mut self) {
+        self.import.take();
         self.invalidate();
         for channel in &mut self.channels {
             channel.session.cancel();
@@ -200,6 +202,7 @@ impl AudioTask {
 
     /// Natural completion closes transport but lets completed TTS finish playing.
     pub fn retire(mut self) {
+        self.import.take();
         self.invalidate();
         for channel in &mut self.channels {
             channel.session.disconnect();

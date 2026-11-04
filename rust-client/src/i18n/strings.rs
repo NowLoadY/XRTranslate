@@ -1,5 +1,17 @@
 /// Consolidated single-source-of-truth dictionary: `(English Key, Chinese (zh), Japanese (ja), Korean (ko), Russian (ru))`
 pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
+    ("What would you like me to do?", "需要我做什么？", "何をしましょうか？", "무엇을 도와드릴까요?", "Что мне сделать?"),
+    ("Agent instruction", "Agent 指令", "エージェントへの指示", "에이전트 지시", "Задание агенту"),
+    ("Agent is working…", "正在执行任务…", "タスクを実行中…", "작업 중…", "Выполняю задачу…"),
+    ("Stop", "停止", "停止", "중지", "Остановить"),
+    ("Enable Agent in Settings", "请在设置中启用 Agent", "設定でエージェントを有効にしてください", "설정에서 에이전트를 활성화하세요", "Включите агента в настройках"),
+    ("Choose an Agent model on the Welcome Page", "请在欢迎页选择 Agent 模型", "ようこそページでエージェントモデルを選択してください", "시작 페이지에서 에이전트 모델을 선택하세요", "Выберите модель агента на странице приветствия"),
+    ("Could not send the instruction. Please try again.", "发送失败，请重试。", "指示を送信できませんでした。もう一度お試しください。", "지시를 보내지 못했습니다. 다시 시도하세요.", "Не удалось отправить задание. Попробуйте ещё раз."),
+    ("Add a requirement or correction…", "补充要求或调整方向…", "要望の追加や修正…", "요구 사항 추가 또는 방향 수정…", "Дополните или уточните задачу…"),
+    ("I've received your update.", "收到补充要求。", "追加の指示を受け取りました。", "추가 지시를 받았습니다.", "Уточнение получено."),
+    ("I'll get started.", "收到，我来处理。", "わかりました。取りかかります。", "알겠습니다. 시작할게요.", "Хорошо, приступаю."),
+    ("Please shorten the instruction", "指令过长，请缩短后再试", "指示を短くしてください", "지시를 더 짧게 작성하세요", "Пожалуйста, сократите задание"),
+    ("I'm improving the translation.", "我对翻译进行优化。", "翻訳を改善します。", "번역을 개선할게요.", "Я улучшаю перевод."),
     ("Choose a resource", "选择资源", "メディアを選択", "미디어 선택", "Выберите медиа"),
     ("Search resources", "搜索资源", "メディアを検索", "미디어 검색", "Поиск медиа"),
     ("Upcoming", "未开播", "配信予定", "방송 예정", "Скоро"),
@@ -1183,6 +1195,8 @@ pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "최신으로 이동",
         "К последнему",
     ),
+    ("Agent", "智能助手", "エージェント", "에이전트", "Агент"),
+    ("Optimize tasks using the configured model.","使用已配置的模型优化任务。","設定済みモデルでタスクを改善します。","설정한 모델로 작업을 개선합니다.","Улучшать задачи с помощью выбранной модели."),
     ("Lyrics", "歌词", "歌詞", "가사", "Текст песни"),
     (
         "Lyric timing offset:",
@@ -6026,6 +6040,10 @@ pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "번역 모델",
         "Модель перевода",
     ),
+    ("Agent Model", "Agent 模型", "Agent モデル", "Agent 모델", "Модель агента"),
+    ("Follow translation model", "跟随翻译模型", "翻訳モデルを使用", "번역 모델 따르기", "Использовать модель перевода"),
+    ("Choose another model", "另外选定", "別のモデルを選択", "다른 모델 선택", "Выбрать другую модель"),
+    ("Agent is unavailable for this model", "此模型暂不支持 Agent", "このモデルは Agent に非対応", "이 모델은 Agent를 지원하지 않습니다", "Эта модель не поддерживает агента"),
     (
         "llama-server path:",
         "llama-server 路径：",

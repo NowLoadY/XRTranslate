@@ -11,11 +11,11 @@ pub mod layout;
 pub mod modal;
 pub(crate) mod model_comparison;
 pub(crate) mod notifications;
-pub(crate) mod resource_browser;
 pub mod organic_border;
 pub mod organic_line;
 pub mod pages;
 pub(crate) mod previews;
+pub(crate) mod resource_browser;
 pub mod theme;
 pub mod virtual_list;
 
@@ -599,6 +599,36 @@ struct NavigationEntry {
     page: Page,
     title: &'static str,
     icon: egui::ImageSource<'static>,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct NavigationPage {
+    pub route: String,
+    pub title: &'static str,
+    pub label: String,
+    #[serde(skip)]
+    pub page: Page,
+}
+
+/// The CLI uses the same routes and availability as the sidebar.
+pub(crate) fn navigation_pages(
+    plugins: &crate::plugins::PluginPreferences,
+    tts_configured: bool,
+    language: crate::i18n::UiLanguage,
+) -> Vec<NavigationPage> {
+    navigation_entries(plugins, tts_configured)
+        .into_iter()
+        .map(|entry| NavigationPage {
+            route: serde_json::to_value(entry.page)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_owned(),
+            title: entry.title,
+            label: crate::i18n::tr(language, entry.title).into(),
+            page: entry.page,
+        })
+        .collect()
 }
 
 fn navigation_entries(

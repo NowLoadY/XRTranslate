@@ -10,7 +10,7 @@ use crate::audio_studio::{
 };
 use crate::i18n::{tr, tr_dynamic};
 use crate::ui::{
-    graph_canvas,
+    components, graph_canvas,
     graph_editor::{
         GraphEditHistory, GraphEditorState, GraphShortcut, LayeredLayoutOptions, LayoutNode,
         layered_layout,
@@ -1830,8 +1830,7 @@ fn render_node_control(
                 Some(control_rect.width()),
                 |ui| {
                     let automatic_label = automatic_device_text(role, host_audio, language);
-                    if ui
-                        .selectable_label(selected.is_none(), automatic_label)
+                    if components::selectable_label(ui, selected.is_none(), automatic_label)
                         .clicked()
                     {
                         commands.push(CanvasCommand::SetNodeDevice {
@@ -1853,8 +1852,7 @@ fn render_node_control(
                         } else {
                             device.name.clone()
                         };
-                        if ui
-                            .selectable_label(selected.as_ref() == Some(&device.id), label)
+                        if components::selectable_label(ui, selected.as_ref() == Some(&device.id), label)
                             .clicked()
                         {
                             commands.push(CanvasCommand::SetNodeDevice {
@@ -1948,8 +1946,7 @@ fn render_system_audio_control(
         selected_mode_text,
         Some(mode_rect.width()),
         |ui| {
-            if ui
-                .selectable_label(endpoint_mode, "Entire output device")
+            if components::selectable_label(ui, endpoint_mode, "Entire output device")
                 .on_hover_text("Captures every application playing on the selected output device")
                 .clicked()
                 && !endpoint_mode
@@ -1962,8 +1959,7 @@ fn render_system_audio_control(
                     },
                 });
             }
-            if ui
-                .selectable_label(!endpoint_mode, "One application")
+            if components::selectable_label(ui, !endpoint_mode, "One application")
                 .on_hover_text("Captures only the selected application and its child processes")
                 .clicked()
                 && endpoint_mode
@@ -2008,8 +2004,7 @@ fn render_system_audio_control(
                 selected_text,
                 Some(source_rect.width()),
                 |ui| {
-                    if ui
-                        .selectable_label(device_id.is_none(), "System default")
+                    if components::selectable_label(ui, device_id.is_none(), "System default")
                         .clicked()
                     {
                         commands.push(CanvasCommand::SetSystemAudioCapture {
@@ -2026,9 +2021,12 @@ fn render_system_audio_control(
                         } else {
                             device.name.clone()
                         };
-                        if ui
-                            .selectable_label(device_id.as_ref() == Some(&device.id), label)
-                            .clicked()
+                        if components::selectable_label(
+                            ui,
+                            device_id.as_ref() == Some(&device.id),
+                            label,
+                        )
+                        .clicked()
                         {
                             commands.push(CanvasCommand::SetSystemAudioCapture {
                                 node_id: node.id.clone(),
@@ -2065,7 +2063,7 @@ fn render_system_audio_control(
                         let selected = application
                             .as_ref()
                             .is_some_and(|application| application.id == candidate.id);
-                        if ui.selectable_label(selected, label).clicked() {
+                        if components::selectable_label(ui, selected, label).clicked() {
                             commands.push(CanvasCommand::SetSystemAudioCapture {
                                 node_id: node.id.clone(),
                                 capture: SystemAudioCapture::Application {
@@ -2550,11 +2548,11 @@ fn render_quick_controls(
                 let locked = snapshot.host_audio.translation_workflow_locked_by.is_some() && snapshot.selected_graph.reaches_asr_sink(&node.id);
                 ui.add_enabled_ui(!locked, |ui| {
                     crate::ui::components::combobox_ui_with_width(ui, "device", device_selection_text(&node.kind, &snapshot.host_audio, language), Some(420.0), |ui| {
-                        if ui.selectable_label(node.kind.selected_device().is_none(), tr(language, "Automatic")).clicked() {
+                        if components::selectable_label(ui, node.kind.selected_device().is_none(), tr(language, "Automatic")).clicked() {
                             actions.push(AudioStudioUiAction::SetNodeDevice { node_id: node.id.clone(), device_id: None });
                         }
                         for device in snapshot.host_audio.devices.iter().filter(|device| device.role == role && !device.id.0.is_empty()) {
-                            if ui.selectable_label(node.kind.selected_device() == Some(&device.id), &device.name).clicked() {
+                            if components::selectable_label(ui, node.kind.selected_device() == Some(&device.id), &device.name).clicked() {
                                 actions.push(AudioStudioUiAction::SetNodeDevice { node_id: node.id.clone(), device_id: Some(device.id.clone()) });
                                 if role == AudioDeviceRole::GameMicrophoneSink && device.voicemeeter_strip_index.is_none() {
                                     actions.push(AudioStudioUiAction::SetNodeVoiceMeeterBus { node_id: node.id.clone(), bus: None });
@@ -2580,7 +2578,7 @@ fn render_quick_controls(
                         let bus = selected_voicemeeter_bus(node);
                         crate::ui::components::combobox_ui_with_width(ui, "bus", bus.label(), Some(120.0), |ui| {
                             for candidate in target.snapshot.edition.supported_buses() {
-                                if ui.selectable_label(bus == *candidate, candidate.label()).clicked() {
+                                if components::selectable_label(ui, bus == *candidate, candidate.label()).clicked() {
                                     actions.push(AudioStudioUiAction::SetNodeVoiceMeeterBus { node_id: node.id.clone(), bus: Some(*candidate) });
                                 }
                             }
@@ -2648,9 +2646,12 @@ fn render_header(
                         } else {
                             name
                         };
-                        if ui
-                            .selectable_label(*id == snapshot.selected_graph.id, label)
-                            .clicked()
+                        if components::selectable_label(
+                            ui,
+                            *id == snapshot.selected_graph.id,
+                            label,
+                        )
+                        .clicked()
                         {
                             if *id != snapshot.selected_graph.id {
                                 actions.push(AudioStudioUiAction::SelectGraph(id.clone()));
@@ -2668,7 +2669,7 @@ fn render_header(
             },
         );
         ui.menu_button("⋯", |ui| {
-            if ui.button(tr(language, "New graph")).clicked() {
+            if components::button(ui, tr(language, "New graph")).clicked() {
                 actions.push(AudioStudioUiAction::NewGraph);
                 state.show_graph = true;
                 state.rename_graph = Some(String::new());
@@ -2677,7 +2678,7 @@ fn render_header(
                 *focus_name = true;
                 ui.close();
             }
-            if ui.button(tr(language, "Duplicate graph")).clicked() {
+            if components::button(ui, tr(language, "Duplicate graph")).clicked() {
                 actions.push(AudioStudioUiAction::DuplicateGraph);
                 state.rename_graph = None;
                 state.pending_graph_delete = false;
@@ -2704,7 +2705,7 @@ fn render_header(
                 ui.close();
             }
             ui.separator();
-            if ui.button(tr(language, "Reset graph")).clicked() {
+            if components::button(ui, tr(language, "Reset graph")).clicked() {
                 state.pending_safe_reset = true;
                 state.pending_graph_delete = false;
                 state.rename_graph = None;
@@ -2776,7 +2777,7 @@ fn render_header(
             if apply {
                 actions.push(AudioStudioUiAction::RenameGraph(name.clone()));
                 state.rename_graph = None;
-            } else if ui.button(tr(language, "Cancel")).clicked() {
+            } else if components::button(ui, tr(language, "Cancel")).clicked() {
                 state.rename_graph = None;
             } else {
                 state.rename_graph = Some(name);
@@ -2784,8 +2785,13 @@ fn render_header(
         });
     }
     ui.horizontal_wrapped(|ui| {
-        ui.selectable_value(&mut state.show_graph, true, tr(language, "Node graph"));
-        ui.selectable_value(&mut state.show_graph, false, tr(language, "Quick controls"));
+        components::selectable_value(ui, &mut state.show_graph, true, tr(language, "Node graph"));
+        components::selectable_value(
+            ui,
+            &mut state.show_graph,
+            false,
+            tr(language, "Quick controls"),
+        );
         ui.separator();
         if state.show_graph {
             ui.menu_button(tr(language, "+ Node"), |ui| {
@@ -2909,7 +2915,7 @@ fn render_header(
                 state.pending_safe_reset = false;
                 state.pending_graph_delete = false;
             }
-            if ui.button(tr(language, "Cancel")).clicked() {
+            if components::button(ui, tr(language, "Cancel")).clicked() {
                 state.pending_safe_reset = false;
                 state.pending_graph_delete = false;
             }
@@ -3196,7 +3202,7 @@ fn add_node_button(
     slug: &str,
     kind: AudioNodeKind,
 ) {
-    if !ui.button(label).clicked() {
+    if !components::button(ui, label).clicked() {
         return;
     }
     let id = unique_node_id(&snapshot.selected_graph, slug);

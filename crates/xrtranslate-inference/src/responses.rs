@@ -138,7 +138,13 @@ fn responses_payload(chat: Value) -> Result<Value, InferenceError> {
                 _ => return Err(invalid()),
             };
             let text = message["content"].as_str().ok_or_else(invalid)?;
-            Ok(json!({"role": role, "content": text}))
+            let mut item = json!({"role": role, "content": text});
+            // This adapter exposes final answers only, never provider commentary.
+            // Preserve that phase when callers replay the returned answer.
+            if role == "assistant" {
+                item["phase"] = json!("final_answer");
+            }
+            Ok(item)
         })
         .collect::<Result<Vec<_>, _>>()?;
     if input.is_empty() {
@@ -147,6 +153,16 @@ fn responses_payload(chat: Value) -> Result<Value, InferenceError> {
     // This authorization route rejects sampling/output-limit fields and requires
     // streaming, including callers that only want the final translation/Ask result.
     let mut payload = json!({"model": model, "input": input, "store": false, "stream": true});
+    if let Some(format) = chat.get("response_format") {
+        let format = if format["type"] == "json_schema" {
+            let mut schema = format["json_schema"].clone();
+            schema["type"] = json!("json_schema");
+            schema
+        } else {
+            format.clone()
+        };
+        payload["text"] = json!({"format": format});
+    }
     if let Some(effort) = chat.get("reasoning_effort").and_then(Value::as_str) {
         payload["reasoning"] = json!({"effort": effort});
     }
@@ -163,16 +179,24 @@ mod tests {
             {"role":"user", "content":"你好"},
             {"role":"assistant", "content":"Hello"},
             {"role":"user", "content":"再见"}
-        ], "temperature":0.7,"max_tokens":256,"stream":false,"reasoning_effort":"low"}))
+        ], "temperature":0.7,"max_tokens":256,"stream":false,"reasoning_effort":"low","response_format":{"type":"json_schema","json_schema":{"name":"response","strict":false,"schema":{"type":"object"}}}}))
         .unwrap();
         assert_eq!(
             result["input"][0],
             json!({"role":"developer","content":"Translate faithfully."})
         );
         assert_eq!(result["input"][2]["role"], "assistant");
+        assert_eq!(result["input"][2]["phase"], "final_answer");
+        assert!(result["input"][3].get("phase").is_none());
         assert_eq!(result["input"][3]["content"], "再见");
         assert_eq!(result["stream"], true);
         assert_eq!(result["store"], false);
+        assert_eq!(
+            result["text"]["format"],
+            json!({"type":"json_schema","name":"response","strict":false,"schema":{"type":"object"}})
+        );
+        assert!(result.get("conversation").is_none());
+        assert!(result.get("previous_response_id").is_none());
         assert_eq!(result["reasoning"], json!({"effort":"low"}));
         assert!(result.get("reasoning_effort").is_none());
         assert!(result.get("temperature").is_none() && result.get("max_tokens").is_none());

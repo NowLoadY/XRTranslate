@@ -9,6 +9,8 @@ use crate::ui::Page;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", content = "args", rename_all = "snake_case")]
 pub enum DirectorCommand {
+    Tools,
+    Call(crate::director::ToolCall),
     Page(String),
     GetPage,
     List {
@@ -71,10 +73,14 @@ impl DirectorResponse {
 pub struct CommandEnvelope {
     pub command: DirectorCommand,
     pub responder: Sender<DirectorResponse>,
+    pub expires: std::time::Instant,
+    pub cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Default)]
 pub struct AutomationFrameState {
+    pub pages: Vec<crate::ui::NavigationPage>,
+    pub pending_widget_reply: Option<Sender<DirectorResponse>>,
     pub active_page_name: String,
     pub elements: Vec<ElementDescriptor>,
     pub pending_click: Option<String>,
@@ -88,9 +94,11 @@ pub struct AutomationFrameState {
 }
 
 pub struct AutomationDriver {
+    context: std::sync::OnceLock<egui::Context>,
     pub(crate) frame_state: Mutex<AutomationFrameState>,
     command_tx: Sender<CommandEnvelope>,
     command_rx: Receiver<CommandEnvelope>,
+    host_requests: Mutex<Vec<CommandEnvelope>>,
 }
 
 impl Default for AutomationDriver {
@@ -104,9 +112,11 @@ impl AutomationDriver {
     pub fn new() -> Self {
         let (command_tx, command_rx) = bounded(32);
         Self {
+            context: Default::default(),
             frame_state: Mutex::new(AutomationFrameState::default()),
             command_tx,
             command_rx,
+            host_requests: Mutex::new(Vec::new()),
         }
     }
 
@@ -115,8 +125,28 @@ impl AutomationDriver {
         self.command_tx.clone()
     }
 
+    pub(crate) fn request_repaint(&self) {
+        if let Some(context) = self.context.get() {
+            super::request_frame(context);
+        }
+    }
+
+    pub(crate) fn owns_context(&self, context: &egui::Context) -> bool {
+        self.context.get() == Some(context)
+    }
+
+    pub(super) fn context(&self) -> Option<&egui::Context> {
+        self.context.get()
+    }
+
+    pub(crate) fn take_host_requests(&self) -> Vec<CommandEnvelope> {
+        std::mem::take(&mut *self.host_requests.lock().unwrap())
+    }
+
     /// Called at the start of each egui frame to process incoming director action commands.
     pub fn begin_frame(&self, ctx: &egui::Context, current_page: &str) {
+        self.context.get_or_init(|| ctx.clone());
+        super::attention::begin_frame(ctx);
         let mut state = self.frame_state.lock().unwrap();
         state.active_page_name = current_page.to_string();
         state.elements.clear();
@@ -124,7 +154,20 @@ impl AutomationDriver {
 
         // Process any pending commands from external clients
         while let Ok(envelope) = self.command_rx.try_recv() {
+            if envelope.expires <= std::time::Instant::now()
+                || envelope
+                    .cancelled
+                    .load(std::sync::atomic::Ordering::Acquire)
+            {
+                let _ = envelope.responder.send(DirectorResponse::err(
+                    "Request cancelled or expired before execution",
+                ));
+                continue;
+            }
             match envelope.command {
+                DirectorCommand::Tools | DirectorCommand::Call(_) => {
+                    self.host_requests.lock().unwrap().push(envelope);
+                }
                 DirectorCommand::Page(_)
                 | DirectorCommand::Click(_)
                 | DirectorCommand::Set { .. }
@@ -136,7 +179,7 @@ impl AutomationDriver {
                 | DirectorCommand::Scroll { .. } => {
                     self.execute_action_command(ctx, &mut state, envelope);
                     // Let this action reach its widget before accepting another mutation.
-                    ctx.request_repaint();
+                    super::request_frame(ctx);
                     break;
                 }
                 DirectorCommand::GetPage
@@ -158,6 +201,19 @@ impl AutomationDriver {
             page: state.active_page_name.clone(),
             elements: state.elements.clone(),
         };
+        if let Some(responder) = state.pending_widget_reply.take() {
+            let response = if state.action_performed_this_frame {
+                DirectorResponse::ok(
+                    "UI action completed",
+                    Some(serde_json::json!({"page":current_page})),
+                )
+            } else {
+                DirectorResponse::err("Control was not available or enabled in this frame")
+            };
+            state.pending_click = None;
+            state.pending_set = None;
+            let _ = responder.send(response);
+        }
 
         let queries = std::mem::take(&mut state.pending_queries);
         for envelope in queries {
@@ -171,7 +227,9 @@ impl AutomationDriver {
         state: &mut AutomationFrameState,
         envelope: CommandEnvelope,
     ) {
-        let CommandEnvelope { command, responder } = envelope;
+        let CommandEnvelope {
+            command, responder, ..
+        } = envelope;
         match command {
             DirectorCommand::AudioFile(path) => {
                 let response = match super::audio::configure(path) {
@@ -188,76 +246,49 @@ impl AutomationDriver {
                 if let Some(step_str) = target.strip_prefix("onboarding:") {
                     if let Ok(step) = step_str.parse::<usize>() {
                         state.pending_onboarding_step = Some(step);
-                        let _ = responder.send(DirectorResponse::ok(
-                            format!("Navigating to Onboarding Step {step}"),
-                            None,
-                        ));
+                        state.pending_widget_reply = Some(responder);
                         return;
                     }
                 }
-                let page = match target.as_str() {
-                    "translation" => Some(Page::Translation),
-                    "gameplugins" | "game_plugins" | "game-plugins" => {
-                        crate::plugins::PluginId::AVATAR
-                            .is_supported()
-                            .then_some(Page::GamePlugins)
-                    }
-                    "settings" => Some(Page::Settings),
-                    "audiostudio" | "audio_studio" | "audio-studio" | "audio" => {
-                        Some(Page::AudioStudio)
-                    }
-                    "ttscenter" | "tts_center" | "tts-center" | "tts" => Some(Page::TtsCenter),
-                    "promptstudio" | "prompt_studio" | "prompt-studio" | "prompt" => {
-                        Some(Page::PromptStudio)
-                    }
-                    "corpusstudio" | "corpus" | "corpus_studio" | "corpus-studio"
-                    | "vocabulary" => Some(Page::CorpusStudio),
-                    _ => {
-                        let plugin = target.strip_prefix("plugin:").unwrap_or(&target);
-                        let plugin = match plugin {
-                            "vroverlay" => "vr_overlay",
-                            "media" | "videoplayer" | "player" => "video_player",
-                            plugin => plugin,
-                        };
-                        crate::plugins::PluginId::parse(plugin)
-                            .filter(|id| id.is_supported())
-                            .map(Page::Plugin)
-                    }
-                };
+                let page = state
+                    .pages
+                    .iter()
+                    .find(|entry| {
+                        entry.route.eq_ignore_ascii_case(&target)
+                            || entry.title.eq_ignore_ascii_case(&target)
+                            || entry.label.eq_ignore_ascii_case(&target)
+                    })
+                    .map(|entry| entry.page);
                 if let Some(page) = page {
                     state.pending_page = Some(page);
-                    let _ = responder.send(DirectorResponse::ok(
-                        format!("Navigating to page: {page_name}"),
-                        None,
-                    ));
+                    state.pending_widget_reply = Some(responder);
                 } else {
                     let _ = responder.send(DirectorResponse::err(format!(
-                        "Unknown page '{page_name}'. Valid pages: Translation, GamePlugins, Settings, AudioStudio, PromptStudio, CorpusStudio, TtsCenter, plugin:<id>, onboarding:<step>"
+                        "Page '{page_name}' is unavailable; use ui.pages to discover current routes"
                     )));
                 }
             }
             DirectorCommand::Click(target) => {
-                state.pending_click = Some(
-                    state
-                        .last_snapshot
-                        .find_element(&target)
-                        .map_or_else(|| target.clone(), |element| element.id_hex.clone()),
-                );
-                let _ = responder.send(DirectorResponse::ok(
-                    format!("Scheduled click on '{target}'"),
-                    None,
-                ));
+                let element = match state.last_snapshot.resolve_element(&target) {
+                    Ok(element) => element,
+                    Err(error) => {
+                        let _ = responder.send(DirectorResponse::err(error));
+                        return;
+                    }
+                };
+                state.pending_click = Some(element.id_hex.clone());
+                state.pending_widget_reply = Some(responder);
             }
             DirectorCommand::Set { target, value } => {
-                let resolved = state
-                    .last_snapshot
-                    .find_element(&target)
-                    .map_or_else(|| target.clone(), |element| element.id_hex.clone());
-                state.pending_set = Some((resolved, value.clone()));
-                let _ = responder.send(DirectorResponse::ok(
-                    format!("Queued set on '{target}' to {value:?}"),
-                    None,
-                ));
+                let element = match state.last_snapshot.resolve_element(&target) {
+                    Ok(element) => element,
+                    Err(error) => {
+                        let _ = responder.send(DirectorResponse::err(error));
+                        return;
+                    }
+                };
+                state.pending_set = Some((element.id_hex.clone(), value));
+                state.pending_widget_reply = Some(responder);
             }
             DirectorCommand::Wait(ms) => {
                 let _ = responder.send(DirectorResponse::ok(format!("Waited {ms}ms"), None));
@@ -296,12 +327,12 @@ impl AutomationDriver {
                         modifiers: egui::Modifiers::NONE,
                     });
                 }
-                ctx.request_repaint();
+                super::request_frame(ctx);
                 let _ = responder.send(DirectorResponse::ok("Pointer queued", None));
             }
             DirectorCommand::Text(text) => {
                 state.pending_input.push(egui::Event::Text(text));
-                ctx.request_repaint();
+                super::request_frame(ctx);
                 let _ = responder.send(DirectorResponse::ok("Text input queued", None));
             }
             DirectorCommand::Scroll { x, y, delta } => {
@@ -315,7 +346,7 @@ impl AutomationDriver {
                         modifiers: egui::Modifiers::NONE,
                     },
                 ]);
-                ctx.request_repaint();
+                super::request_frame(ctx);
                 let _ = responder.send(DirectorResponse::ok("Scroll queued", None));
             }
             _ => {}
@@ -323,7 +354,9 @@ impl AutomationDriver {
     }
 
     fn execute_query_command(&self, state: &AutomationFrameState, envelope: CommandEnvelope) {
-        let CommandEnvelope { command, responder } = envelope;
+        let CommandEnvelope {
+            command, responder, ..
+        } = envelope;
         let snapshot = &state.last_snapshot;
         match command {
             DirectorCommand::GetPage => {

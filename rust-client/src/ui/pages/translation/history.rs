@@ -568,6 +568,15 @@ fn render_header(
             egui::Sense::hover()
         }),
     );
+    let response = if openable {
+        crate::ui::automation::Control::button(crate::i18n::tr(
+            app.ui_language,
+            "Click to view full screen",
+        ))
+        .response(ui, response)
+    } else {
+        response
+    };
     let clicked = openable && response.clicked();
     if openable {
         response

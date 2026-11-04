@@ -6,6 +6,7 @@
 //! repeated navigation/settings metadata; statically typed runtime composition
 //! remains explicit in the host adapter.
 
+pub(crate) mod agent;
 pub(crate) mod auto_input;
 pub(crate) mod avatar;
 pub(crate) mod bigwalk;
@@ -21,6 +22,23 @@ pub(crate) mod text_output;
 pub(crate) mod vocabulary;
 pub mod vr_overlay;
 
+/// Composition only: each plugin owns its commands and UI-shared handlers.
+/// Register ToolProvider implementations here; the host and Agent need no changes.
+pub(crate) fn tool_providers(
+    app: &mut crate::XRTranslateApp,
+) -> Vec<&mut dyn crate::director::ToolProvider> {
+    let media = app.plugin_enabled(PluginId::MEDIA);
+    let agent = app.plugin_enabled(PluginId::AGENT);
+    let mut providers: Vec<&mut dyn crate::director::ToolProvider> = vec![&mut app.ui_tools];
+    if media {
+        providers.push(&mut app.media_plugin);
+    }
+    if agent {
+        providers.push(&mut app.agent);
+    }
+    providers
+}
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{collections::BTreeMap, fmt};
 
@@ -29,6 +47,7 @@ use std::{collections::BTreeMap, fmt};
 pub struct PluginId(&'static str);
 
 impl PluginId {
+    pub const AGENT: Self = Self("agent");
     pub const LYRICS: Self = Self("lyrics");
     pub const VOCABULARY: Self = Self("vocabulary");
     pub const OSC: Self = Self("osc");
@@ -56,6 +75,7 @@ impl PluginId {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "agent" => Some(Self::AGENT),
             "lyrics" => Some(Self::LYRICS),
             "vocabulary" => Some(Self::VOCABULARY),
             "osc" => Some(Self::OSC),
@@ -142,7 +162,20 @@ pub struct PluginDescriptor {
     pub default_enabled: bool,
 }
 
-const PLUGIN_DESCRIPTORS: [PluginDescriptor; 7] = [
+const PLUGIN_DESCRIPTORS: [PluginDescriptor; 8] = [
+    PluginDescriptor {
+        id: PluginId::AGENT,
+        title_key: "Agent",
+        description_key: "Optimize tasks using the configured model.",
+        navigation_order: None,
+        icon: PluginIcon {
+            uri: "bytes://plugins/agent/icon.svg",
+            bytes: include_bytes!("../../resources/icons/star.svg"),
+        },
+        scroll_policy: PluginScrollPolicy::Plugin,
+        settings_contribution: PluginSettingsContribution::EnablementOnly,
+        default_enabled: true,
+    },
     PluginDescriptor {
         id: PluginId::VOCABULARY,
         title_key: "Vocabulary",

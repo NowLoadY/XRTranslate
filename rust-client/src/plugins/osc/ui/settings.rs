@@ -56,11 +56,17 @@ pub fn render(
                                     .color(crate::ui::theme::text_strong())
                                     .size(12.5),
                             );
-                            crate::ui::components::text_edit_ui(
+                            let response = crate::ui::components::text_edit_ui(
                                 ui,
                                 "osc_target_ip",
                                 egui::TextEdit::singleline(&mut plugin.draft_mut().ip)
                                     .desired_width(140.0),
+                            );
+                            crate::ui::automation::text_response(
+                                ui,
+                                crate::i18n::tr(language, "Target IP:"),
+                                &mut plugin.draft_mut().ip,
+                                response,
                             );
                             ui.end_row();
 
@@ -69,9 +75,11 @@ pub fn render(
                                     .color(crate::ui::theme::text_strong())
                                     .size(12.5),
                             );
-                            ui.add(
-                                egui::DragValue::new(&mut plugin.draft_mut().send_port)
-                                    .range(1..=u16::MAX),
+                            components::number_input(
+                                ui,
+                                &mut plugin.draft_mut().send_port,
+                                crate::i18n::tr(language, "Send Port:"),
+                                1..=u16::MAX,
                             );
                             ui.end_row();
 
@@ -81,9 +89,11 @@ pub fn render(
                                         .color(crate::ui::theme::text_strong())
                                         .size(12.5),
                                 );
-                                ui.add(
-                                    egui::DragValue::new(&mut plugin.draft_mut().listen_port)
-                                        .range(1..=u16::MAX),
+                                components::number_input(
+                                    ui,
+                                    &mut plugin.draft_mut().listen_port,
+                                    crate::i18n::tr(language, "Listen Port:"),
+                                    1..=u16::MAX,
                                 );
                                 ui.end_row();
                             }
@@ -93,9 +103,11 @@ pub fn render(
                                     .color(crate::ui::theme::text_strong())
                                     .size(12.5),
                             );
-                            ui.add(
-                                egui::DragValue::new(&mut plugin.draft_mut().max_text_length)
-                                    .range(1..=game.max_text_length()),
+                            components::number_input(
+                                ui,
+                                &mut plugin.draft_mut().max_text_length,
+                                crate::i18n::tr(language, "Max Text Length:"),
+                                1..=game.max_text_length(),
                             );
                             ui.end_row();
                         });

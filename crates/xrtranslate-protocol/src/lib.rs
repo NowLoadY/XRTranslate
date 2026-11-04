@@ -8,15 +8,90 @@
 
 pub mod tts;
 
-/// A single instruction to the configured translation model, without conversation context.
+/// Configured text-model role. Both use the same stateless inference transport.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AskTarget {
+    #[default]
+    Translation,
+    Agent,
+}
+
+/// One stateless inference. The caller supplies all context; neither form joins
+/// a backend conversation or continues a provider session.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AskRequest {
-    pub prompt: String,
+#[serde(untagged, deny_unknown_fields)]
+pub enum AskRequest {
+    Prompt {
+        prompt: String,
+    },
+    Messages {
+        messages: Vec<xrtranslate_prompt::PromptMessage>,
+        #[serde(default)]
+        target: AskTarget,
+        /// Requested JSON answer shape; adapters use native schema support when available.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_schema: Option<serde_json::Value>,
+    },
+}
+
+impl AskRequest {
+    pub fn target(&self) -> AskTarget {
+        match self {
+            Self::Messages { target, .. } => *target,
+            Self::Prompt { .. } => AskTarget::Translation,
+        }
+    }
+    pub fn response_schema(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Messages {
+                response_schema, ..
+            } => response_schema.as_ref(),
+            _ => None,
+        }
+    }
+
+    pub fn into_messages(self) -> Vec<xrtranslate_prompt::PromptMessage> {
+        match self {
+            Self::Prompt { prompt } => vec![xrtranslate_prompt::PromptMessage {
+                role: xrtranslate_prompt::PromptMessageRole::User,
+                content: prompt,
+            }],
+            Self::Messages { messages, .. } => messages,
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AskResponse {
     pub text: String,
+}
+
+/// An unusable model answer can be corrected by the caller; service failures cannot.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AskError {
+    pub error: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub invalid_output: bool,
+}
+
+impl From<String> for AskError {
+    fn from(error: String) -> Self {
+        Self {
+            error,
+            invalid_output: false,
+        }
+    }
+}
+impl From<&str> for AskError {
+    fn from(error: &str) -> Self {
+        error.to_owned().into()
+    }
+}
+impl std::fmt::Display for AskError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.error)
+    }
 }
 
 use std::{error::Error, fmt};

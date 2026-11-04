@@ -1,12 +1,19 @@
+pub(crate) mod attention;
 pub mod audio;
 mod capture;
+mod controls;
 pub mod driver;
 pub mod registry;
 pub mod server;
+pub(crate) mod tools;
 
 use eframe::egui::{self, Rect};
 use std::sync::{Arc, OnceLock};
 
+pub use controls::{
+    Control, ControlAction, button_response, number_response, record_button, record_checkbox,
+    record_combobox, record_slider, record_text_input, record_toggle, text_response,
+};
 pub use driver::AutomationDriver;
 pub use registry::{ElementDescriptor, ElementKind, ElementValue};
 pub use server::{DEFAULT_DIRECTOR_PORT, DirectorServer};
@@ -23,6 +30,16 @@ pub fn driver() -> Arc<AutomationDriver> {
         .clone()
 }
 
+/// Queued UI actions need a real frame even when the window is hidden. This is
+/// a one-frame request; it neither raises the window nor starts continuous painting.
+pub(super) fn request_frame(ctx: &egui::Context) {
+    ctx.send_viewport_cmd_to(
+        egui::ViewportId::ROOT,
+        egui::ViewportCommand::RequestPaintWhileHidden,
+    );
+    ctx.request_repaint();
+}
+
 pub fn init(egui_ctx: egui::Context, port: Option<u16>) {
     let d = driver();
     let port = port.unwrap_or(DEFAULT_DIRECTOR_PORT);
@@ -32,8 +49,14 @@ pub fn init(egui_ctx: egui::Context, port: Option<u16>) {
     }
 }
 
-pub fn begin_frame(ctx: &egui::Context, current_page: &str) {
-    driver().begin_frame(ctx, current_page);
+pub(crate) fn begin_frame(
+    ctx: &egui::Context,
+    current_page: &str,
+    pages: Vec<crate::ui::NavigationPage>,
+) {
+    let driver = driver();
+    driver.frame_state.lock().unwrap().pages = pages;
+    driver.begin_frame(ctx, current_page);
 }
 
 pub fn raw_input(ctx: &egui::Context, input: &mut egui::RawInput) {
@@ -47,373 +70,41 @@ pub fn finish_frame(current_page: &str) {
     driver().finish_frame(current_page);
 }
 
-/// Expose rendered read-only values to the same inspection API as controls.
+/// Expose rendered read-only values through the same component registry.
 pub fn record_output(ui: &egui::Ui, label: &str, value: ElementValue, rect: Rect) {
-    let d = driver();
-    let mut state = d.frame_state.lock().unwrap();
-    let index = state.elements.len();
-    state.elements.push(ElementDescriptor {
-        index,
-        id_hex: format!("{:016x}", ui.make_persistent_id(label).value()),
-        label: label.to_owned(),
-        kind: ElementKind::Other,
-        value,
-        enabled: false,
-        rect: [rect.min.x, rect.min.y, rect.width(), rect.height()],
-    });
+    Control::new(label, ElementKind::Other, value).record(
+        ui,
+        ui.make_persistent_id(label),
+        false,
+        rect,
+    );
 }
 
-/// Apply a Director click through the same response consumed by the page.
-pub fn button_response(
-    ui: &mut egui::Ui,
-    id: egui::Id,
-    label: &str,
-    enabled: bool,
-    mut response: egui::Response,
-) -> egui::Response {
-    if record_button(ui, id, label, enabled, response.rect) {
-        response
-            .flags
-            .insert(egui::response::Flags::FAKE_PRIMARY_CLICKED);
-        let now = ui.input(|input| input.time);
-        ui.data_mut(|data| data.insert_temp(id.with("click_time"), now));
-        ui.ctx().request_repaint();
+pub fn record_text_output(ui: &egui::Ui, text: &str, response: &egui::Response) {
+    if ui.is_rect_visible(response.rect) {
+        Control::new("Text", ElementKind::Other, ElementValue::Text(text.into())).record(
+            ui,
+            response.id,
+            false,
+            response.rect,
+        );
     }
-    response
 }
 
 #[must_use]
 pub fn take_pending_page() -> Option<Page> {
     let d = driver();
     let mut state = d.frame_state.lock().unwrap();
-    state.pending_page.take()
+    let page = state.pending_page.take();
+    state.action_performed_this_frame |= page.is_some();
+    page
 }
 
 #[must_use]
 pub fn take_pending_onboarding_step() -> Option<usize> {
     let d = driver();
     let mut state = d.frame_state.lock().unwrap();
-    state.pending_onboarding_step.take()
-}
-
-/// Records a button element in the current frame and checks if an automated click should be simulated.
-pub fn record_button(
-    ui: &mut egui::Ui,
-    id: egui::Id,
-    label: &str,
-    enabled: bool,
-    rect: Rect,
-) -> bool {
-    let d = driver();
-    let id_hex = format!("{:016x}", id.value());
-    let mut should_click = false;
-
-    {
-        let mut state = d.frame_state.lock().unwrap();
-        let index = state.elements.len();
-        state.elements.push(ElementDescriptor {
-            index,
-            id_hex: id_hex.clone(),
-            label: label.to_string(),
-            kind: ElementKind::Button,
-            value: ElementValue::None,
-            enabled,
-            rect: [rect.min.x, rect.min.y, rect.width(), rect.height()],
-        });
-
-        if let Some(target) = &state.pending_click {
-            if matches_target(target, index, &id_hex, label) && enabled {
-                should_click = true;
-                state.action_performed_this_frame = true;
-            }
-        }
-    }
-
-    if should_click {
-        let mut state = d.frame_state.lock().unwrap();
-        state.pending_click = None;
-        ui.ctx().request_repaint();
-    }
-
-    should_click
-}
-
-/// Records a toggle switch element in the current frame and checks for automated value changes.
-pub fn record_toggle(
-    ui: &mut egui::Ui,
-    id: egui::Id,
-    label: &str,
-    checked: bool,
-    enabled: bool,
-    rect: Rect,
-) -> Option<bool> {
-    let d = driver();
-    let id_hex = format!("{:016x}", id.value());
-    let mut new_val = None;
-
-    {
-        let mut state = d.frame_state.lock().unwrap();
-        let index = state.elements.len();
-        state.elements.push(ElementDescriptor {
-            index,
-            id_hex: id_hex.clone(),
-            label: label.to_string(),
-            kind: ElementKind::Toggle,
-            value: ElementValue::Bool(checked),
-            enabled,
-            rect: [rect.min.x, rect.min.y, rect.width(), rect.height()],
-        });
-
-        if let Some(target) = &state.pending_click {
-            if matches_target(target, index, &id_hex, label) && enabled {
-                new_val = Some(!checked);
-                state.action_performed_this_frame = true;
-            }
-        } else if let Some((target, val)) = &state.pending_set {
-            if matches_target(target, index, &id_hex, label) && enabled {
-                if let Some(b) = val.as_bool() {
-                    new_val = Some(b);
-                    state.action_performed_this_frame = true;
-                }
-            }
-        }
-    }
-
-    if new_val.is_some() {
-        let mut state = d.frame_state.lock().unwrap();
-        state.pending_click = None;
-        state.pending_set = None;
-        ui.ctx().request_repaint();
-    }
-
-    new_val
-}
-
-/// Records a checkbox element in the current frame and checks for automated value changes.
-pub fn record_checkbox(
-    ui: &mut egui::Ui,
-    id: egui::Id,
-    label: &str,
-    checked: bool,
-    enabled: bool,
-    rect: Rect,
-) -> Option<bool> {
-    let d = driver();
-    let id_hex = format!("{:016x}", id.value());
-    let mut new_val = None;
-
-    {
-        let mut state = d.frame_state.lock().unwrap();
-        let index = state.elements.len();
-        state.elements.push(ElementDescriptor {
-            index,
-            id_hex: id_hex.clone(),
-            label: label.to_string(),
-            kind: ElementKind::Checkbox,
-            value: ElementValue::Bool(checked),
-            enabled,
-            rect: [rect.min.x, rect.min.y, rect.width(), rect.height()],
-        });
-
-        if let Some(target) = &state.pending_click {
-            if matches_target(target, index, &id_hex, label) && enabled {
-                new_val = Some(!checked);
-                state.action_performed_this_frame = true;
-            }
-        } else if let Some((target, val)) = &state.pending_set {
-            if matches_target(target, index, &id_hex, label) && enabled {
-                if let Some(b) = val.as_bool() {
-                    new_val = Some(b);
-                    state.action_performed_this_frame = true;
-                }
-            }
-        }
-    }
-
-    if new_val.is_some() {
-        let mut state = d.frame_state.lock().unwrap();
-        state.pending_click = None;
-        state.pending_set = None;
-        ui.ctx().request_repaint();
-    }
-
-    new_val
-}
-
-/// Records a slider element in the current frame and checks for automated value changes.
-pub fn record_slider(
-    ui: &mut egui::Ui,
-    id: egui::Id,
-    label: &str,
-    value: f64,
-    enabled: bool,
-    rect: Rect,
-) -> Option<f64> {
-    let d = driver();
-    let id_hex = format!("{:016x}", id.value());
-    let mut new_val = None;
-
-    {
-        let mut state = d.frame_state.lock().unwrap();
-        let index = state.elements.len();
-        state.elements.push(ElementDescriptor {
-            index,
-            id_hex: id_hex.clone(),
-            label: label.to_string(),
-            kind: ElementKind::Slider,
-            value: ElementValue::Number(value),
-            enabled,
-            rect: [rect.min.x, rect.min.y, rect.width(), rect.height()],
-        });
-
-        if let Some((target, val)) = &state.pending_set {
-            if matches_target(target, index, &id_hex, label) && enabled {
-                if let Some(num) = val.as_number() {
-                    new_val = Some(num);
-                    state.action_performed_this_frame = true;
-                }
-            }
-        }
-    }
-
-    if new_val.is_some() {
-        let mut state = d.frame_state.lock().unwrap();
-        state.pending_set = None;
-        ui.ctx().request_repaint();
-    }
-
-    new_val
-}
-
-/// Records a combobox / dropdown element in the current frame and checks for automated selection.
-pub fn record_combobox(
-    ui: &mut egui::Ui,
-    id: egui::Id,
-    label: &str,
-    current_value: &str,
-    enabled: bool,
-    rect: Rect,
-) -> Option<String> {
-    let d = driver();
-    let id_hex = format!("{:016x}", id.value());
-    let mut new_val = None;
-
-    {
-        let mut state = d.frame_state.lock().unwrap();
-        let index = state.elements.len();
-        state.elements.push(ElementDescriptor {
-            index,
-            id_hex: id_hex.clone(),
-            label: label.to_string(),
-            kind: ElementKind::ComboBox,
-            value: ElementValue::Text(current_value.to_string()),
-            enabled,
-            rect: [rect.min.x, rect.min.y, rect.width(), rect.height()],
-        });
-
-        if let Some((target, val)) = &state.pending_set {
-            if matches_target(target, index, &id_hex, label) && enabled {
-                if let Some(txt) = val.as_text() {
-                    new_val = Some(txt);
-                    state.action_performed_this_frame = true;
-                }
-            }
-        }
-    }
-
-    if new_val.is_some() {
-        let mut state = d.frame_state.lock().unwrap();
-        state.pending_set = None;
-        ui.ctx().request_repaint();
-    }
-
-    new_val
-}
-
-/// Records a text edit input element in the current frame and checks for automated text input.
-pub fn record_text_input(
-    ui: &mut egui::Ui,
-    id: egui::Id,
-    label: &str,
-    text: &str,
-    enabled: bool,
-    rect: Rect,
-) -> Option<String> {
-    let d = driver();
-    let id_hex = format!("{:016x}", id.value());
-    let mut new_val = None;
-
-    {
-        let mut state = d.frame_state.lock().unwrap();
-        let index = state.elements.len();
-        state.elements.push(ElementDescriptor {
-            index,
-            id_hex: id_hex.clone(),
-            label: label.to_string(),
-            kind: ElementKind::TextInput,
-            value: ElementValue::Text(text.to_string()),
-            enabled,
-            rect: [rect.min.x, rect.min.y, rect.width(), rect.height()],
-        });
-
-        if let Some((target, val)) = &state.pending_set {
-            if matches_target(target, index, &id_hex, label) && enabled {
-                if let Some(txt) = val.as_text() {
-                    new_val = Some(txt);
-                    state.action_performed_this_frame = true;
-                }
-            }
-        }
-    }
-
-    if new_val.is_some() {
-        let mut state = d.frame_state.lock().unwrap();
-        state.pending_set = None;
-        ui.ctx().request_repaint();
-    }
-
-    new_val
-}
-
-fn matches_target(target: &str, index: usize, id_hex: &str, label: &str) -> bool {
-    let target = target.trim();
-    if target.is_empty() {
-        return false;
-    }
-
-    // 1. Exact 16-char hex ID
-    if target.len() == 16 && id_hex.eq_ignore_ascii_case(target) {
-        return true;
-    }
-
-    // 2. Explicit index "#0"
-    if let Some(index_str) = target.strip_prefix('#') {
-        if let Ok(idx) = index_str.parse::<usize>() {
-            return idx == index;
-        }
-    }
-
-    // 3. Exact label
-    if label.eq_ignore_ascii_case(target) {
-        return true;
-    }
-
-    // 4. Short numeric index "0"
-    if target.len() <= 4 {
-        if let Ok(idx) = target.parse::<usize>() {
-            return idx == index;
-        }
-    }
-
-    // 5. Hex ID match
-    if id_hex.eq_ignore_ascii_case(target) {
-        return true;
-    }
-
-    // 6. Label substring match
-    if label.to_lowercase().contains(&target.to_lowercase()) {
-        return true;
-    }
-
-    false
+    let step = state.pending_onboarding_step.take();
+    state.action_performed_this_frame |= step.is_some();
+    step
 }

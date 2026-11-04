@@ -1027,15 +1027,29 @@ fn vad_is_active(probability: f32, threshold: f32) -> bool {
 }
 
 impl NativeInference {
-    pub(crate) async fn ask(&self, prompt: &str) -> Result<String, InferenceFailure> {
+    pub(crate) async fn ask(
+        &self,
+        messages: &[xrtranslate_prompt::PromptMessage],
+        response_schema: Option<&serde_json::Value>,
+    ) -> Result<String, InferenceError> {
+        let started = Instant::now();
         self.translation
             .ask(
-                prompt,
+                messages,
                 self.translation_context_window_tokens,
                 self.translation_max_output_tokens,
+                response_schema,
             )
             .await
-            .map_err(|error| InferenceFailure::request("Ask failed", error))
+            .map(|completion| {
+                tracing::info!(
+                    messages = messages.len(),
+                    elapsed_ms = started.elapsed().as_millis(),
+                    usage = ?completion.usage,
+                    "Instruction inference completed"
+                );
+                completion.text
+            })
     }
 
     pub(crate) fn for_diagnostics(model_plan: &NativeProviderPlan) -> Result<Self, String> {
@@ -1373,6 +1387,7 @@ impl NativeInference {
         let asr_elapsed = stream_elapsed + asr_started.elapsed();
         let mut source_text = remove_asr_stutters(&transcript.text);
         if source_text.is_empty() {
+            tracing::info!("ASR text was empty after normalization");
             return Ok(None);
         }
         let source_code = source.map_or("auto", SupportedLanguage::code);
@@ -1458,6 +1473,7 @@ impl NativeInference {
                 }
             };
             if transcript.text.trim().is_empty() {
+                tracing::info!(sample_count, "ASR provider returned no recognized words");
                 return Ok(None);
             }
             if !is_probable_asr_hallucination(

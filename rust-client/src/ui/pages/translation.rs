@@ -248,7 +248,8 @@ fn render_translation_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::U
                     (CaptureSource::Both, _) => crate::i18n::tr(app.ui_language, "Both").to_owned(),
                 };
                 components::combobox_ui(ui, "capture_source", selected_source_text, |ui| {
-                    ui.selectable_value(
+                    components::selectable_value(
+                        ui,
                         &mut app.capture_source,
                         CaptureSource::Microphone,
                         crate::i18n::tr(app.ui_language, "Microphone"),
@@ -260,12 +261,14 @@ fn render_translation_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::U
                             crate::SystemAudioInputSelection::Application { .. }
                         );
                     ui.add_enabled_ui(system_audio_available, |ui| {
-                        ui.selectable_value(
+                        components::selectable_value(
+                            ui,
                             &mut app.capture_source,
                             CaptureSource::SystemAudio,
                             crate::i18n::tr(app.ui_language, "System Audio"),
                         );
-                        ui.selectable_value(
+                        components::selectable_value(
+                            ui,
                             &mut app.capture_source,
                             CaptureSource::Both,
                             crate::i18n::tr(app.ui_language, "Both"),
@@ -280,17 +283,20 @@ fn render_translation_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::U
             render_input_channels(app, ui, render_capture_device_selector);
 
             ui.add_space(8.0);
-            egui::CollapsingHeader::new(crate::i18n::tr(app.ui_language, "Recognition settings"))
-                .id_salt("recognition_settings")
-                .show(ui, |ui| {
-                    render_input_channels(app, ui, render_input_adaptation);
-                    if let Some(config) = &app.selected_input_config {
-                        ui.weak(format!(
-                            "{} Hz, {} ch ({})",
-                            config.sample_rate, config.channels, config.sample_format
-                        ));
-                    }
-                });
+            crate::ui::components::CollapsingHeader::new(crate::i18n::tr(
+                app.ui_language,
+                "Recognition settings",
+            ))
+            .id_salt("recognition_settings")
+            .show(ui, |ui| {
+                render_input_channels(app, ui, render_input_adaptation);
+                if let Some(config) = &app.selected_input_config {
+                    ui.weak(format!(
+                        "{} Hz, {} ch ({})",
+                        config.sample_rate, config.channels, config.sample_format
+                    ));
+                }
+            });
             ui.add_space(12.0);
 
             if app.service_config.tts_supports_cloning() {
@@ -445,12 +451,14 @@ fn render_input_adaptation(
                     &automatic_mode
                 };
                 components::combobox_ui(ui, ("recognition_mode", source), selected_mode, |ui| {
-                    ui.selectable_value(
+                    components::selectable_value(
+                        ui,
                         &mut recognition.continuous_recognition,
                         false,
                         &automatic_mode,
                     );
-                    ui.selectable_value(
+                    components::selectable_value(
+                        ui,
                         &mut recognition.continuous_recognition,
                         true,
                         pseudo_streaming,

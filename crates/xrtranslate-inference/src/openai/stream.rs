@@ -123,7 +123,10 @@ impl ChatStream {
             });
         }
         validate_finish_reason(endpoint, self.finish_reason.as_deref())?;
-        Ok(ChatCompletion { text: self.text })
+        Ok(ChatCompletion {
+            text: self.text,
+            usage: None,
+        })
     }
 }
 

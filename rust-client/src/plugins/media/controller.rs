@@ -44,6 +44,7 @@ pub struct MediaController {
     pub video_display: Option<super::backend::VideoDisplay>,
     pub subtitles: SubtitleTimeline,
     pub(super) subtitle_edit: Option<SubtitleEdit>,
+    pub(super) pending_subtitle_change: Option<super::files::SubtitleChange>,
     pub previews: crate::session_coordinator::LivePreviews,
     pub show_subtitles: bool,
     pub fullscreen_mode: bool,
@@ -119,6 +120,7 @@ impl Default for MediaController {
             video_display: None,
             subtitles: SubtitleTimeline::new(),
             subtitle_edit: None,
+            pending_subtitle_change: None,
             previews: Default::default(),
             show_subtitles: true,
             fullscreen_mode: false,
@@ -184,6 +186,7 @@ impl MediaController {
     pub fn open_library(&mut self) {
         self.resource_browser.invalidate();
         self.subtitle_edit = None;
+        self.pending_subtitle_change = None;
         if let Some(backend) = &mut self.backend {
             backend.stop();
         }
@@ -199,6 +202,7 @@ impl MediaController {
     pub fn open_create(&mut self) {
         self.resource_browser = Default::default();
         self.subtitle_edit = None;
+        self.pending_subtitle_change = None;
         if let Some(backend) = &mut self.backend {
             backend.stop();
         }
@@ -278,9 +282,7 @@ impl MediaController {
         );
 
         if media_type == super::task::MediaType::Subtitles {
-            task.subtitles = SubtitleTimeline::parse(
-                &std::fs::read_to_string(input).map_err(|e| e.to_string())?,
-            )?;
+            task.subtitles = super::files::read_subtitles(std::path::Path::new(input))?;
             task.duration_ms = task
                 .subtitles
                 .cues()
@@ -304,6 +306,7 @@ impl MediaController {
     pub fn open_task(&mut self, task_id: &str) -> Result<(), String> {
         let task = self.store.get(task_id).ok_or("Task not found")?.clone();
         self.subtitle_edit = None;
+        self.pending_subtitle_change = None;
         self.previews = Default::default();
         self.active_task_id = Some(task_id.to_string());
         self.current_source = Some(task.source.clone());
@@ -566,6 +569,30 @@ impl MediaController {
         }
     }
 
+    /// Shared by the settings UI and plugin operations; both update the same task.
+    pub(super) fn set_task_recognition(
+        &mut self,
+        id: &str,
+        settings: crate::client_settings::RecognitionSettings,
+    ) -> Result<(), String> {
+        if !settings.background_noise.is_finite()
+            || !(0.02..=0.95).contains(&settings.background_noise)
+            || !settings.pause_tolerance.is_finite()
+            || !(0.0..=1.0).contains(&settings.pause_tolerance)
+        {
+            return Err("Recognition options are outside the supported range".into());
+        }
+        let task = self.store.get_mut(id).ok_or("Media task not found")?;
+        if task.is_task_running {
+            return Err("Wait for the current media task to finish".into());
+        }
+        if task.recognition != settings {
+            task.recognition = settings;
+            self.dirty = true;
+        }
+        Ok(())
+    }
+
     pub fn is_audio_only_task(&self) -> bool {
         self.active_task_id
             .as_deref()
@@ -575,6 +602,7 @@ impl MediaController {
 
     pub fn start_task(&mut self) {
         self.subtitle_edit = None;
+        self.pending_subtitle_change = None;
         self.previews = Default::default();
         self.error = None;
         self.is_extracting = false;
@@ -850,10 +878,7 @@ impl MediaController {
             }
         }
 
-        if self.dirty
-            && self.active_task_id.is_some()
-            && self.last_save_instant.elapsed().as_secs() >= 5
-        {
+        if self.dirty && self.last_save_instant.elapsed().as_secs() >= 5 {
             let duration = self.get_duration_ms();
             if let Some(task) = self
                 .active_task_id

@@ -40,6 +40,9 @@ pub mod text_composer;
 pub(crate) use expanded_text_edit::expanded_text_edit;
 pub use source_input::source_input;
 
+mod collapsing;
+pub use collapsing::CollapsingHeader;
+
 pub fn page_header(ui: &mut Ui, title: &str, actions: impl FnOnce(&mut Ui)) {
     let title = egui::RichText::new(title)
         .size(22.0)
@@ -1058,8 +1061,8 @@ pub fn combobox_ui_with_width<R>(
         combo_id,
         &selected_str,
         &selected_str,
-        true,
-        resp.response.rect,
+        std::iter::empty(),
+        &resp.response,
     );
     let hovered = resp.response.hovered() || resp.response.is_pointer_button_down_on();
     ui.memory_mut(|m| {
@@ -1084,6 +1087,40 @@ pub fn combobox_ui_with_width<R>(
     }
 
     resp
+}
+
+/// Native-looking controls share registration and keep their normal click handlers.
+pub fn button(ui: &mut Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
+    let text = text.into();
+    let label = text.text().to_owned();
+    let response = ui.button(text);
+    crate::ui::automation::Control::button(&label).response(ui, response)
+}
+
+pub fn selectable_label(
+    ui: &mut Ui,
+    selected: bool,
+    text: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    let text = text.into();
+    let label = text.text().to_owned();
+    let response = ui.selectable_label(selected, text);
+    use crate::ui::automation::{Control, ElementKind, ElementValue};
+    Control::new(&label, ElementKind::Button, ElementValue::Bool(selected)).response(ui, response)
+}
+
+pub fn selectable_value<T: PartialEq>(
+    ui: &mut Ui,
+    current: &mut T,
+    value: T,
+    text: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    let mut response = selectable_label(ui, *current == value, text);
+    if response.clicked() && *current != value {
+        *current = value;
+        response.mark_changed();
+    }
+    response
 }
 
 /// Searchable choices shared by dropdowns and nested menus.
@@ -1128,7 +1165,7 @@ pub fn searchable_options<T: PartialEq + Clone>(
             continue;
         }
         match_count += 1;
-        if ui.selectable_value(selected, val.clone(), label).clicked() {
+        if selectable_value(ui, selected, val.clone(), label).clicked() {
             changed = true;
             ui.close();
             if is_more_than_3 {
@@ -1253,13 +1290,11 @@ pub fn searchable_combobox_with_options<T: PartialEq + Clone>(
         combo_id,
         &selected_text,
         &selected_text,
-        true,
-        resp.response.rect,
+        options.iter().map(|(_, label)| label.clone()),
+        &resp.response,
     ) {
         for (val, label) in options {
-            if label.eq_ignore_ascii_case(&target_text)
-                || label.to_lowercase().contains(&target_text.to_lowercase())
-            {
+            if label == &target_text {
                 *selected = val.clone();
                 changed = true;
                 break;
@@ -1816,10 +1851,11 @@ fn translation_language_selector_inner(
                 cached_additional_language_options(ui, id, source, target, capabilities);
             ui.horizontal_wrapped(|ui| {
                 let mut enabled = additional.is_some();
-                let response = ui.add_enabled(
-                    enabled || !available.is_empty(),
-                    egui::Checkbox::new(&mut enabled, tr("Fixed extra language")),
-                );
+                let response = ui
+                    .add_enabled_ui(enabled || !available.is_empty(), |ui| {
+                        checkbox(ui, &mut enabled, tr("Fixed extra language"))
+                    })
+                    .inner;
                 response.clone().on_hover_text(tr(
                     "This output language stays fixed when the input language changes.",
                 ));
@@ -2156,21 +2192,27 @@ pub fn checkbox(
     checked: &mut bool,
     text: impl Into<egui::WidgetText>,
 ) -> egui::Response {
+    let text = text.into();
+    let label = text.text().to_owned();
+    checkbox_labeled(ui, checked, text, &label)
+}
+
+/// A separate label identifies compact checkboxes whose caption is outside the widget.
+pub fn checkbox_labeled(
+    ui: &mut Ui,
+    checked: &mut bool,
+    text: impl Into<egui::WidgetText>,
+    label: &str,
+) -> egui::Response {
     let id = ui.next_auto_id();
     let text = text.into();
     let is_hand_drawn = theme::is_hand_drawn(ui.ctx());
 
     if !is_hand_drawn {
-        let label_text = text.text().to_string();
         let mut resp = ui.checkbox(checked, text);
-        if let Some(new_val) = crate::ui::automation::record_checkbox(
-            ui,
-            resp.id,
-            &label_text,
-            *checked,
-            true,
-            resp.rect,
-        ) {
+        if let Some(new_val) =
+            crate::ui::automation::record_checkbox(ui, resp.id, label, *checked, true, resp.rect)
+        {
             *checked = new_val;
             resp.mark_changed();
         }
@@ -2206,14 +2248,9 @@ pub fn checkbox(
         *checked = !*checked;
         response.mark_changed();
     }
-    if let Some(new_val) = crate::ui::automation::record_checkbox(
-        ui,
-        id,
-        &galley.text().to_string(),
-        *checked,
-        true,
-        rect,
-    ) {
+    if let Some(new_val) =
+        crate::ui::automation::record_checkbox(ui, id, label, *checked, true, rect)
+    {
         *checked = new_val;
         response.mark_changed();
     }
@@ -2506,7 +2543,31 @@ pub fn singleline_input(
         edit = edit.password(true);
     }
     let id_salt = ui.next_auto_id().with("singleline_input");
-    text_edit_ui(ui, id_salt, edit)
+    let mut response = text_edit_ui(ui, id_salt, edit);
+    if !secret
+        && let Some(text) = crate::ui::automation::record_text_input(
+            ui,
+            response.id,
+            if hint.is_empty() { "input" } else { hint },
+            value,
+            response.enabled(),
+            response.rect,
+        )
+    {
+        *value = text;
+        response.mark_changed();
+    }
+    response
+}
+
+pub fn number_input<T: egui::emath::Numeric>(
+    ui: &mut Ui,
+    value: &mut T,
+    label: &str,
+    range: std::ops::RangeInclusive<T>,
+) -> egui::Response {
+    let response = ui.add(egui::DragValue::new(value).range(range.clone()));
+    crate::ui::automation::number_response(ui, label, value, range, response)
 }
 
 pub fn status_badge(ui: &mut Ui, status: &str, is_active: bool, is_error: bool) {
@@ -2906,16 +2967,16 @@ impl<'a, Num: egui::emath::Numeric> ModernSlider<'a, Num> {
             } else {
                 self.label
             };
-            if let Some(new_val) = crate::ui::automation::record_slider(
-                ui,
-                slider_id,
+            use crate::ui::automation::{Control, ControlAction, ElementKind, ElementValue};
+            if let Some(ControlAction::Set(ElementValue::Number(value))) = Control::new(
                 record_label,
-                self.value.to_f64(),
-                true,
-                response.rect,
-            ) {
-                let clamped = new_val.clamp(self.range.start().to_f64(), self.range.end().to_f64());
-                *self.value = Num::from_f64(clamped);
+                ElementKind::Slider,
+                ElementValue::Number(self.value.to_f64()),
+            )
+            .range(self.range.start().to_f64(), self.range.end().to_f64())
+            .record(ui, slider_id, response.enabled(), response.rect)
+            {
+                *self.value = Num::from_f64(value);
                 response.mark_changed();
             }
 

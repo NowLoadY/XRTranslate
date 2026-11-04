@@ -88,9 +88,11 @@ impl AvatarPlugin {
                     egui::Button::new(egui::RichText::new(text).color(theme::text_strong()))
                         .selected(*selected == index)
                         .wrap();
-                if ui
+                let response = ui
                     .add_sized([ui.available_width(), height], button)
-                    .on_hover_text(tr(language, label))
+                    .on_hover_text(tr(language, label));
+                if crate::ui::automation::Control::button(tr(language, label))
+                    .response(ui, response)
                     .clicked()
                 {
                     *selected = index;
@@ -110,15 +112,20 @@ impl AvatarPlugin {
                     ("Footer", &mut self.settings.footer)
                 };
                 ui.label(tr(language, label));
-                components::text_edit_ui(
+                let response = components::text_edit_ui(
                     ui,
                     ("avatar_text", selected),
                     egui::TextEdit::multiline(banner)
                         .desired_width(f32::INFINITY)
                         .desired_rows(3),
                 );
+                crate::ui::automation::text_response(ui, tr(language, label), banner, response);
             } else {
-                ui.checkbox(&mut self.settings.messages, tr(language, "Messages"));
+                crate::ui::components::checkbox(
+                    ui,
+                    &mut self.settings.messages,
+                    tr(language, "Messages"),
+                );
                 ui.add_enabled_ui(self.settings.messages, |ui| {
                     components::audio_source_filter(
                         ui,
@@ -127,29 +134,35 @@ impl AvatarPlugin {
                     );
                     ui.horizontal(|ui| {
                         ui.label(tr(language, "Format:"));
-                        egui::ComboBox::from_id_salt("avatar_message_format")
-                            .width(ui.available_width())
-                            .truncate()
-                            .selected_text(self.settings.format.label(language))
-                            .show_ui(ui, |ui| {
+                        components::combobox_ui_with_width(
+                            ui,
+                            "avatar_message_format",
+                            self.settings.format.label(language),
+                            Some(ui.available_width()),
+                            |ui| {
                                 for mode in [
                                     MessageFormat::TargetOnly,
                                     MessageFormat::BilingualSourceFirst,
                                     MessageFormat::BilingualTargetFirst,
                                     MessageFormat::Inline,
                                 ] {
-                                    ui.selectable_value(
+                                    components::selectable_value(
+                                        ui,
                                         &mut self.settings.format,
                                         mode,
                                         mode.label(language),
                                     );
                                 }
-                            });
+                            },
+                        );
                     });
                     ui.horizontal(|ui| {
                         ui.label(tr(language, "Display seconds"));
-                        ui.add(
-                            egui::DragValue::new(&mut self.settings.message_seconds).range(1..=15),
+                        components::number_input(
+                            ui,
+                            &mut self.settings.message_seconds,
+                            tr(language, "Display seconds"),
+                            1..=15,
                         );
                     });
                 });

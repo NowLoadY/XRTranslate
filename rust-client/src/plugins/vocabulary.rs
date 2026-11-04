@@ -260,14 +260,22 @@ impl Page {
                 .find(|folder| folder.id == self.folder)
                 .map(|folder| folder.label(language))
                 .unwrap_or(tr(language, "Default wordbook"));
-            egui::ComboBox::from_id_salt("vocabulary_folder")
-                .selected_text(label)
-                .width(ui.available_width().min(220.0))
-                .show_ui(ui, |ui| {
+            components::combobox_ui_with_width(
+                ui,
+                "vocabulary_folder",
+                label,
+                Some(ui.available_width().min(220.0)),
+                |ui| {
                     for folder in &self.folders {
-                        ui.selectable_value(&mut self.folder, folder.id, folder.label(language));
+                        components::selectable_value(
+                            ui,
+                            &mut self.folder,
+                            folder.id,
+                            folder.label(language),
+                        );
                     }
-                });
+                },
+            );
             if self.folder != old {
                 self.offset = 0;
                 self.records.clear();
@@ -280,7 +288,7 @@ impl Page {
                 }
                 let more = more_button(ui, language);
                 egui::Popup::menu(&more).show(|ui| {
-                    if ui.button(tr(language, "Rename wordbook")).clicked() {
+                    if components::button(ui, tr(language, "Rename wordbook")).clicked() {
                         self.folder_edit = Some((
                             Some(self.folder),
                             self.folders
@@ -292,8 +300,7 @@ impl Page {
                         ui.close();
                     }
                     if self.folder != DEFAULT_FOLDER
-                        && ui
-                            .button(tr(language, "Delete wordbook"))
+                        && components::button(ui, tr(language, "Delete wordbook"))
                             .on_hover_text(tr(language, "Words will move to the default wordbook."))
                             .clicked()
                     {
@@ -307,21 +314,27 @@ impl Page {
             let mut cancel = false;
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
-                ui.add(
+                let response = ui.add(
                     egui::TextEdit::singleline(name)
                         .hint_text(tr(language, "Wordbook name"))
                         .desired_width(ui.available_width().min(300.0)),
+                );
+                crate::ui::automation::text_response(
+                    ui,
+                    tr(language, "Wordbook name"),
+                    name,
+                    response,
                 );
                 let duplicate = self.folders.iter().any(|folder| {
                     Some(folder.id) != *id
                         && folder.label(language).to_lowercase() == name.trim().to_lowercase()
                 });
-                if ui
-                    .add_enabled(
-                        !busy && !name.trim().is_empty() && !duplicate,
-                        egui::Button::new(tr(language, "Save")),
-                    )
-                    .clicked()
+                if components::secondary_button_enabled(
+                    ui,
+                    tr(language, "Save"),
+                    !busy && !name.trim().is_empty() && !duplicate,
+                )
+                .clicked()
                 {
                     action = Some(match *id {
                         Some(id) => Action::RenameFolder {
@@ -331,7 +344,7 @@ impl Page {
                         None => Action::CreateFolder(name.trim().to_owned()),
                     });
                 }
-                cancel = ui.button(tr(language, "Cancel")).clicked();
+                cancel = components::button(ui, tr(language, "Cancel")).clicked();
             });
             if cancel {
                 self.folder_edit = None;
@@ -339,16 +352,21 @@ impl Page {
         }
         ui.add_space(16.0);
         ui.horizontal(|ui| {
-            if ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.query)
-                        .hint_text(tr(
-                            language,
-                            "Search words or translations in this wordbook",
-                        ))
-                        .desired_width(ui.available_width().min(360.0)),
-                )
-                .changed()
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut self.query)
+                    .hint_text(tr(
+                        language,
+                        "Search words or translations in this wordbook",
+                    ))
+                    .desired_width(ui.available_width().min(360.0)),
+            );
+            if crate::ui::automation::text_response(
+                ui,
+                tr(language, "Search words or translations in this wordbook"),
+                &mut self.query,
+                response,
+            )
+            .changed()
             {
                 self.offset = 0;
                 self.reload = true;
@@ -444,18 +462,24 @@ impl Page {
                                     ui.add_enabled_ui(!busy, |ui| {
                                         let more = more_button(ui, language);
                                         egui::Popup::menu(&more).show(|ui| {
-                                            if ui.button(tr(language, "Edit translation")).clicked()
+                                            if components::button(
+                                                ui,
+                                                tr(language, "Edit translation"),
+                                            )
+                                            .clicked()
                                             {
                                                 open =
                                                     Some((record.entry.clone(), Some(record.id)));
                                                 ui.close();
                                             }
-                                            if ui
-                                                .button(tr(
+                                            if components::button(
+                                                ui,
+                                                tr(
                                                     language,
                                                     "Remove word and all its translations",
-                                                ))
-                                                .clicked()
+                                                ),
+                                            )
+                                            .clicked()
                                             {
                                                 action = Some(Action::RemoveWord {
                                                     folder: self.folder,

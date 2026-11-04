@@ -121,6 +121,7 @@ impl TextLayout<'_> {
         id: egui::Id,
     ) {
         let response = selection.show(ui, id, self.galley.clone(), &self.segments);
+        crate::ui::automation::record_text_output(ui, self.galley.text(), &response);
         if !selection.is_active() {
             self.term_tooltip(response);
         }
@@ -132,6 +133,7 @@ impl TextLayout<'_> {
 
     pub fn show(&self, ui: &mut Ui) -> egui::Response {
         let response = ui.add(egui::Label::new(self.galley.clone()).wrap());
+        crate::ui::automation::record_text_output(ui, self.galley.text(), &response);
         self.term_tooltip(response)
     }
 

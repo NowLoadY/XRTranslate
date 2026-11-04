@@ -88,14 +88,20 @@ impl Page {
                                     ui.add_enabled_ui(!busy, |ui| {
                                         let more = more_button(ui, language);
                                         egui::Popup::menu(&more).show(|ui| {
-                                            if ui.button(tr(language, "Edit translation")).clicked()
+                                            if components::button(
+                                                ui,
+                                                tr(language, "Edit translation"),
+                                            )
+                                            .clicked()
                                             {
                                                 self.word_edit = Some((row.clone(), self.folder));
                                                 ui.close();
                                             }
-                                            if ui
-                                                .button(tr(language, "Remove this translation"))
-                                                .clicked()
+                                            if components::button(
+                                                ui,
+                                                tr(language, "Remove this translation"),
+                                            )
+                                            .clicked()
                                             {
                                                 action = Some(Action::Remove(row.id));
                                                 ui.close();
@@ -213,17 +219,29 @@ impl Page {
         let (row, folder) = self.word_edit.as_mut()?;
         let mut action = None;
         ui.weak(tr(language, "Original"));
-        ui.add(
+        let response = ui.add(
             egui::TextEdit::multiline(&mut row.entry.source)
                 .desired_rows(1)
                 .desired_width(f32::INFINITY),
         );
+        crate::ui::automation::text_response(
+            ui,
+            tr(language, "Original"),
+            &mut row.entry.source,
+            response,
+        );
         ui.add_space(10.0);
         ui.weak(tr(language, "Translation"));
-        ui.add(
+        let response = ui.add(
             egui::TextEdit::multiline(&mut row.entry.translated)
                 .desired_rows(2)
                 .desired_width(f32::INFINITY),
+        );
+        crate::ui::automation::text_response(
+            ui,
+            tr(language, "Translation"),
+            &mut row.entry.translated,
+            response,
         );
         ui.add_space(12.0);
         let mut cancel = false;
@@ -234,14 +252,17 @@ impl Page {
                 .find(|item| item.id == *folder)
                 .map(|item| item.label(language))
                 .unwrap_or(tr(language, "Default wordbook"));
-            egui::ComboBox::from_id_salt("edit_word_folder")
-                .selected_text(label)
-                .width(ui.available_width().min(220.0))
-                .show_ui(ui, |ui| {
+            components::combobox_ui_with_width(
+                ui,
+                "edit_word_folder",
+                label,
+                Some(ui.available_width().min(220.0)),
+                |ui| {
                     for item in &self.folders {
-                        ui.selectable_value(folder, item.id, item.label(language));
+                        components::selectable_value(ui, folder, item.id, item.label(language));
                     }
-                });
+                },
+            );
             let valid =
                 !row.entry.source.trim().is_empty() && !row.entry.translated.trim().is_empty();
             if components::secondary_button_enabled(ui, tr(language, "Save"), !busy && valid)

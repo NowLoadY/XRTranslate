@@ -25,7 +25,13 @@ pub(super) fn render_minutes(
                     .desired_rows(8)
                     .desired_width(f32::INFINITY),
             );
-            controller.minutes_dirty |= response.changed();
+            controller.minutes_dirty |= crate::ui::automation::text_response(
+                ui,
+                tr(language, "Minutes"),
+                &mut controller.minutes_draft,
+                response,
+            )
+            .changed();
             if components::primary_button_enabled(
                 ui,
                 tr(language, "Save minutes"),

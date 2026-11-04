@@ -10,6 +10,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
 };
 
+mod account_connections;
 #[cfg(target_os = "android")]
 mod android;
 #[cfg(target_os = "android")]
@@ -31,15 +32,18 @@ mod child_process;
 mod client_settings;
 pub(crate) mod contributors;
 mod desktop_shortcut;
+mod director;
+mod director_cli;
+mod director_host;
 mod export;
 mod feature_access;
 mod file_dialog;
 mod focused_input;
 mod history;
 mod i18n;
+mod logging;
 mod media_host;
 pub(crate) mod media_import;
-mod logging;
 mod model_install;
 mod network;
 #[cfg(any(windows, target_os = "linux"))]
@@ -61,7 +65,6 @@ mod runtime_install;
 #[cfg(any(windows, target_os = "linux"))]
 mod screen_capture;
 mod service_config;
-mod account_connections;
 pub mod session_coordinator;
 mod streaming;
 mod text_translation;
@@ -681,6 +684,8 @@ struct XRTranslateApp {
     companion_inbox: ui::companion::Inbox,
     text_translation: text_translation::TextTranslation,
     ask: ask::Ask,
+    agent: plugins::agent::AgentPlugin,
+    ui_tools: ui::automation::tools::UiTools,
     text_composer: ui::components::text_composer::TextComposer,
     server_url: String,
     download_proxy_url: String,
@@ -716,7 +721,6 @@ struct XRTranslateApp {
     media_plugin: plugins::media::MediaPlugin,
     #[cfg(any(windows, target_os = "linux"))]
     ocr: ocr_host::OcrHost,
-    host_audio_import: Option<media_import::AudioImportHandle>,
     pending_translations: Vec<TranslationTask>,
     active_languages: Option<LanguageSelection>,
     plugin_preferences: PluginPreferences,
@@ -1008,6 +1012,8 @@ impl Default for XRTranslateApp {
         let audio_applications = audio_system.available_audio_applications();
         let (event_tx, event_rx) = bounded(256);
         let backend_manager = backend::BackendManager::load();
+        let agent =
+            plugins::agent::AgentPlugin::load(backend_manager.project_root().join("runtime/agent"));
         let service_config = service_config::ServiceConfigEditor::load();
         let mut settings = ClientSettings::load(&backend_manager.project_root());
         settings.sanitize_devices(&devices, &loopback_devices);
@@ -1931,6 +1937,8 @@ impl Default for XRTranslateApp {
             companion_inbox: ui::companion::Inbox::default(),
             text_translation: text_translation::TextTranslation::default(),
             ask: ask::Ask::default(),
+            agent,
+            ui_tools: Default::default(),
             text_composer: ui::components::text_composer::TextComposer::default(),
             server_url: settings.server_url,
             download_proxy_url: settings.download_proxy_url,
@@ -1966,7 +1974,6 @@ impl Default for XRTranslateApp {
             media_plugin,
             #[cfg(any(windows, target_os = "linux"))]
             ocr,
-            host_audio_import: None,
             pending_translations: Vec::new(),
             active_languages: None,
             plugin_preferences: settings.plugin_preferences,
@@ -3447,6 +3454,7 @@ impl XRTranslateApp {
             }
         };
         config.save_separated_audio = owner.is_plugin(PluginId::MEDIA.as_str())
+            && options.range_ms.is_none()
             && config.preprocessing
                 == Some(xrtranslate_protocol::AudioPreprocessing::VocalSeparation);
         let scope = ChannelScope::audio(owner.clone(), plugin.publish_to_host_outputs());
@@ -3468,12 +3476,14 @@ impl XRTranslateApp {
         };
         match import {
             Ok(import) => {
-                if meeting {
+                let import = if meeting {
                     self.meeting_plugin.set_audio_import(import);
+                    None
                 } else {
-                    self.host_audio_import = Some(import);
-                }
+                    Some(import)
+                };
                 self.audio_tasks.push(AudioTask {
+                    import,
                     owner,
                     languages: task.languages,
                     paused: false,
@@ -4325,8 +4335,8 @@ impl XRTranslateApp {
                 self.meeting_plugin.event_sink.finish_active();
             }
             PluginId::MEDIA => {
+                self.stop_media_agent();
                 self.media_plugin.poll_translation_events();
-                self.host_audio_import = None;
                 self.media_plugin.stop_import();
                 self.media_plugin.pause_task();
             }
@@ -4407,8 +4417,10 @@ impl XRTranslateApp {
                 .iter()
                 .any(|channel| channel.scope.failed.load(Ordering::Acquire));
             let avatar = self.avatar_task_ended(&task.owner, failed);
-            if task.owner.is_plugin(PluginId::MEDIA.as_str()) {
-                self.host_audio_import = None;
+            if task.owner.is_plugin(PluginId::MEDIA.as_str())
+                && task.owner.operation_id()
+                    == self.media_plugin.controller.active_task_id.as_deref()
+            {
                 // The source's Finished event closes recognition. The media
                 // plugin may still be translating its remaining subtitles.
                 self.media_plugin.stop_import();
@@ -4616,7 +4628,9 @@ impl XRTranslateApp {
         if self.meeting_plugin.event_sink.owns_recognition(owner) {
             self.meeting_plugin.fail_active_startup(error);
         }
-        if owner.is_plugin(PluginId::MEDIA.as_str()) {
+        if owner.is_plugin(PluginId::MEDIA.as_str())
+            && owner.operation_id() == self.media_plugin.controller.active_task_id.as_deref()
+        {
             self.media_plugin.fail_subtitle_startup();
             self.media_plugin.set_error(error);
         }
@@ -4768,6 +4782,7 @@ impl XRTranslateApp {
             None
         };
         let mut active = AudioTask {
+            import: None,
             owner: owner.clone(),
             languages: task.languages,
             channels: Vec::new(),
@@ -5186,81 +5201,29 @@ impl XRTranslateApp {
         }
 
         let host_events = self
-            .host_audio_import
-            .as_ref()
-            .map(|import| import.events().try_iter().collect::<Vec<_>>())
-            .unwrap_or_default();
-        let mut host_completed = false;
-        for event in host_events {
-            match event {
-                media_import::AudioImportEvent::Started(info) => {
-                    self.set_connection_status(format!(
-                        "Processing media audio ({} Hz)",
-                        info.source_sample_rate
-                    ));
-                }
-                media_import::AudioImportEvent::Progress(progress) => {
-                    let percentage = progress.fraction.map(|value| value * 100.0);
-                    match progress.stage {
-                        media_import::AudioImportStage::Extracting => {
-                            self.media_plugin.update_import_progress(
-                                plugins::media::ImportProgressStage::Extracting,
-                                progress.fraction,
-                                progress.position,
-                                progress.duration,
-                            );
-                            self.set_connection_status(percentage.map_or_else(
-                                || {
-                                    format!(
-                                        "Extracting media audio · {}s",
-                                        progress.position.as_secs()
-                                    )
-                                },
-                                |value| format!("Extracting media audio · {value:.0}%"),
-                            ));
-                        }
-                        media_import::AudioImportStage::Recognizing => {
-                            self.media_plugin.update_import_progress(
-                                plugins::media::ImportProgressStage::Recognizing,
-                                progress.fraction,
-                                progress.position,
-                                progress.duration,
-                            );
-                            self.set_connection_status(percentage.map_or_else(
-                                || {
-                                    format!(
-                                        "Transcribing media audio · {}s",
-                                        progress.position.as_secs()
-                                    )
-                                },
-                                |value| format!("Transcribing media audio · {value:.0}%"),
-                            ));
-                        }
-                    }
-                }
-                media_import::AudioImportEvent::Completed { .. } => {
-                    self.media_plugin.complete_import();
-                    host_completed = true;
-                }
-                media_import::AudioImportEvent::Stopped { .. }
-                | media_import::AudioImportEvent::OutputClosed => {
-                    // Session events report downstream failures; do not replace or cancel them.
-                    self.media_plugin.stop_import();
-                    self.host_audio_import = None;
-                }
-                media_import::AudioImportEvent::Error(error) => {
-                    log::error!("Host audio import error: {error}");
-                    self.media_plugin.stop_import();
-                    self.media_plugin.set_error(error.clone());
-                    self.last_error = Some(error);
-                    self.stop_plugin_task(PluginId::MEDIA);
-                    self.host_audio_import = None;
+            .audio_tasks
+            .iter()
+            .flat_map(|task| {
+                task.import
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|import| import.events().try_iter())
+                    .map(|event| (task.owner.clone(), event))
+            })
+            .collect::<Vec<_>>();
+        for (owner, event) in host_events {
+            if matches!(
+                event,
+                media_import::AudioImportEvent::Completed { .. }
+                    | media_import::AudioImportEvent::Stopped { .. }
+                    | media_import::AudioImportEvent::OutputClosed
+                    | media_import::AudioImportEvent::Error(_)
+            ) {
+                if let Some(task) = self.audio_tasks.iter_mut().find(|task| task.owner == owner) {
+                    task.import = None;
                 }
             }
-        }
-        if host_completed {
-            self.host_audio_import = None;
-            self.set_connection_status("Finishing media translation");
+            self.apply_media_import_event(&owner, event);
         }
     }
 
@@ -5873,6 +5836,7 @@ impl XRTranslateApp {
     }
 
     fn stop(&mut self) {
+        self.stop_agent("Application stopped");
         self.stop_avatar();
         self.auto_input_plugin.set_enabled(false);
         ui::automation::audio::detach();
@@ -5911,7 +5875,6 @@ impl XRTranslateApp {
             state.pending_route_change = None;
         }
         self.meeting_plugin.clear_audio_import();
-        self.host_audio_import = None;
         self.audio_system.stop();
         let tasks = std::mem::take(&mut self.audio_tasks);
         for task in tasks {
@@ -5947,7 +5910,10 @@ impl XRTranslateApp {
             },
             || {
                 crate::feature_access::is_available(crate::feature_access::Feature::TtsPlayback)
-                    .then(|| self.audio_system.tts_handle(self.service_config.tts_sample_rate()))
+                    .then(|| {
+                        self.audio_system
+                            .tts_handle(self.service_config.tts_sample_rate())
+                    })
             },
             Some(ctx.clone()),
             &self.event_tx,
@@ -6281,10 +6247,7 @@ impl eframe::App for XRTranslateApp {
             }
             self.notifications.info(format!(
                 "{} · {}",
-                i18n::tr_dynamic(
-                    self.ui_language,
-                    provider.label()
-                ),
+                i18n::tr_dynamic(self.ui_language, provider.label()),
                 i18n::tr(self.ui_language, "Signed in. Account connected."),
             ));
         }
@@ -6328,16 +6291,21 @@ impl eframe::App for XRTranslateApp {
         }
         #[cfg(target_os = "android")]
         self.poll_android_text_actions(ctx);
+        // Task progress belongs to logic: occluded/minimized windows may receive
+        // logic-only passes while their viewport still reports visible=true.
+        self.refresh_media_director();
+        self.poll_audio_import();
+        if !self.first_run {
+            self.poll_backend_startup(Some(ctx.clone()));
+            self.poll_text_translation(ctx);
+            self.poll_media_translation(ctx);
+            self.poll_agent(ctx);
+            self.poll_meeting_translation(ctx);
+            self.poll_session_events();
+            self.media_plugin.poll_translation_events();
+        }
         if !ctx.input(|input| input.viewport().visible().unwrap_or(true)) {
             self.media_plugin.controller.hide_video();
-            if !self.first_run {
-                self.poll_backend_startup(Some(ctx.clone()));
-                self.poll_text_translation(ctx);
-                self.poll_media_translation(ctx);
-                self.poll_meeting_translation(ctx);
-                self.poll_session_events();
-                self.media_plugin.poll_translation_events();
-            }
             // Keep an existing companion reading queued errors while hidden.
             self.observe_companion_errors();
             ui::companion::tick_background(ctx, self);
@@ -6394,7 +6362,16 @@ impl eframe::App for XRTranslateApp {
         }
 
         let page_name = self.current_page_name();
-        ui::automation::begin_frame(ui.ctx(), &page_name);
+        ui::automation::begin_frame(
+            ui.ctx(),
+            &page_name,
+            ui::navigation_pages(
+                &self.plugin_preferences,
+                self.service_config.tts_is_configured(),
+                self.ui_language,
+            ),
+        );
+        self.poll_director();
         if let Some(page) = ui::automation::take_pending_page() {
             self.navigation.open(page);
             self.first_run = false;
@@ -6478,7 +6455,6 @@ impl eframe::App for XRTranslateApp {
         self.poll_audio_application_refresh();
         self.discover_audio_sources_on_page_entry();
         self.reconcile_audio_studio_live_routing();
-        self.poll_audio_import();
         self.media_plugin.on_visibility_changed(
             !self.first_run && self.navigation.page == Page::Plugin(PluginId::MEDIA),
         );
@@ -6556,12 +6532,6 @@ impl eframe::App for XRTranslateApp {
         self.show_available_update();
         self.show_ready_update();
 
-        self.poll_backend_startup(Some(ui.ctx().clone()));
-        self.poll_text_translation(ui.ctx());
-        self.poll_media_translation(ui.ctx());
-        self.poll_meeting_translation(ui.ctx());
-        self.poll_session_events();
-        self.media_plugin.poll_translation_events();
         if self.plugin_enabled(PluginId::MEETING) {
             self.meeting_plugin.controller.poll_live_view();
         }
@@ -6902,6 +6872,10 @@ fn cleanup_runtime_cache() {
 }
 
 pub fn run() -> eframe::Result<()> {
+    let args: Vec<_> = std::env::args().collect();
+    if let Some(index) = args.iter().position(|arg| arg == "--control") {
+        std::process::exit(director_cli::run(args[index + 1..].to_vec()));
+    }
     #[cfg(not(target_os = "android"))]
     logging::init();
 

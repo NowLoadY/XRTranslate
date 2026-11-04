@@ -703,6 +703,80 @@ async fn run_session(
             return;
         }
         tokio::select! {
+            // Receive diagnostics before sending more buffered file audio.
+            biased;
+            message = read.next() => {
+                match message {
+                    Some(Ok(Message::Text(text))) => {
+                        if cancel_requested.load(Ordering::Acquire){continue;}
+                        let payload = serde_json::from_str::<Value>(&text).ok();
+                        if payload.as_ref().is_some_and(|payload| payload["action"] == "session_ready") {
+                            session_ready = true;
+                            let _ = event_tx.send(SessionEvent::Connected);
+                        }
+                        let drained = pipeline_drain_reason(&text);
+                        forward_server_event(
+                            &event_tx,
+                            &text,
+                            stream_id,
+                            continuous_recognition,
+                            publish_to_host_outputs,
+                            audio_source,
+                        );
+                        if !session_ready && payload.as_ref().is_some_and(|payload| payload["action"] == "error") {
+                            // Keep the initialization error instead of replacing it with a socket reset.
+                            let _ = event_tx.send(SessionEvent::Disconnected("Session initialization failed".into()));
+                            if let Some(ctx) = &egui_ctx { ctx.request_repaint(); }
+                            let _ = write.close().await;
+                            return;
+                        }
+                        if let Some(reason) = drained {
+                            if reason == DrainReason::Paused {
+                                if paused.load(Ordering::Acquire) {
+                                    let _ = event_tx.send(SessionEvent::Status("Paused".into()));
+                                }
+                            } else {
+                                let _ = write.close().await;
+                                let _ = event_tx.send(SessionEvent::Disconnected("Finished".into()));
+                                break;
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Binary(audio))) => {
+                        if cancel_requested.load(Ordering::Acquire){continue;}
+                        log::debug!("Received TTS audio: bytes={}", audio.len());
+                        if let Some(tts) = &tts_handle {
+                            match tts.play_pcm(&audio) {
+                                Err(error) if playback_error.as_ref() != Some(&error) => {
+                                    log::error!("TTS playback failed: {error}");
+                                    let _ = event_tx.send(SessionEvent::BackendError {
+                                        message: format!("TTS playback failed: {error}"),
+                                    });
+                                    playback_error = Some(error);
+                                }
+                                Ok(()) => playback_error = None,
+                                Err(_) => {}
+                            }
+                        }
+                        let _ = event_tx.send(SessionEvent::TtsAudio(audio.to_vec()));
+                    }
+                    Some(Ok(Message::Close(_))) | None => {
+                        let _ = event_tx.send(SessionEvent::Disconnected("Backend closed the connection".into()));
+                        if let Some(ctx) = &egui_ctx { ctx.request_repaint(); }
+                        break;
+                    }
+                    Some(Err(error)) => {
+                        let _ = event_tx.send(SessionEvent::Error(format!("Backend connection failed: {error}")));
+                        if let Some(ctx) = &egui_ctx { ctx.request_repaint(); }
+                        break;
+                    }
+                    _ => {}
+                }
+                if let Some(ctx) = &egui_ctx {
+                    ctx.request_repaint();
+                }
+            }
+
             _ = ticker.tick() => {
                 if cancel_requested.load(Ordering::Acquire) {
                     let _ = write.close().await;
@@ -791,77 +865,7 @@ async fn run_session(
                     break;
                 }
             }
-            message = read.next() => {
-                match message {
-                    Some(Ok(Message::Text(text))) => {
-                        if cancel_requested.load(Ordering::Acquire){continue;}
-                        let payload = serde_json::from_str::<Value>(&text).ok();
-                        if payload.as_ref().is_some_and(|payload| payload["action"] == "session_ready") {
-                            session_ready = true;
-                            let _ = event_tx.send(SessionEvent::Connected);
-                        }
-                        let drained = pipeline_drain_reason(&text);
-                        forward_server_event(
-                            &event_tx,
-                            &text,
-                            stream_id,
-                            continuous_recognition,
-                            publish_to_host_outputs,
-                            audio_source,
-                        );
-                        if !session_ready && payload.as_ref().is_some_and(|payload| payload["action"] == "error") {
-                            // Keep the initialization error instead of replacing it with a socket reset.
-                            let _ = event_tx.send(SessionEvent::Disconnected("Session initialization failed".into()));
-                            if let Some(ctx) = &egui_ctx { ctx.request_repaint(); }
-                            let _ = write.close().await;
-                            return;
-                        }
-                        if let Some(reason) = drained {
-                            if reason == DrainReason::Paused {
-                                if paused.load(Ordering::Acquire) {
-                                    let _ = event_tx.send(SessionEvent::Status("Paused".into()));
-                                }
-                            } else {
-                                let _ = write.close().await;
-                                let _ = event_tx.send(SessionEvent::Disconnected("Finished".into()));
-                                break;
-                            }
-                        }
-                    }
-                    Some(Ok(Message::Binary(audio))) => {
-                        if cancel_requested.load(Ordering::Acquire){continue;}
-                        log::debug!("Received TTS audio: bytes={}", audio.len());
-                        if let Some(tts) = &tts_handle {
-                            match tts.play_pcm(&audio) {
-                                Err(error) if playback_error.as_ref() != Some(&error) => {
-                                    log::error!("TTS playback failed: {error}");
-                                    let _ = event_tx.send(SessionEvent::BackendError {
-                                        message: format!("TTS playback failed: {error}"),
-                                    });
-                                    playback_error = Some(error);
-                                }
-                                Ok(()) => playback_error = None,
-                                Err(_) => {}
-                            }
-                        }
-                        let _ = event_tx.send(SessionEvent::TtsAudio(audio.to_vec()));
-                    }
-                    Some(Ok(Message::Close(_))) | None => {
-                        let _ = event_tx.send(SessionEvent::Disconnected("Backend closed the connection".into()));
-                        if let Some(ctx) = &egui_ctx { ctx.request_repaint(); }
-                        break;
-                    }
-                    Some(Err(error)) => {
-                        let _ = event_tx.send(SessionEvent::Error(format!("Backend connection failed: {error}")));
-                        if let Some(ctx) = &egui_ctx { ctx.request_repaint(); }
-                        break;
-                    }
-                    _ => {}
-                }
-                if let Some(ctx) = &egui_ctx {
-                    ctx.request_repaint();
-                }
-            }
+
         }
     }
 }

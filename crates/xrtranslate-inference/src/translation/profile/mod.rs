@@ -4,9 +4,7 @@ mod chat_messages;
 mod output;
 
 use serde_json::{Value, json};
-use xrtranslate_prompt::{
-    PromptExecutionTrace, PromptMessage, PromptMessageRole, PromptNodeGraph, PromptTarget,
-};
+use xrtranslate_prompt::{PromptExecutionTrace, PromptMessage, PromptNodeGraph, PromptTarget};
 
 use crate::InferenceError;
 
@@ -70,20 +68,7 @@ pub(super) struct RenderedTranslationPrompt {
 
 impl RenderedTranslationPrompt {
     pub(super) fn messages_json(&self) -> Value {
-        Value::Array(
-            self.messages
-                .iter()
-                .map(|message| {
-                    json!({
-                        "role": match message.role {
-                            PromptMessageRole::System => "system",
-                            PromptMessageRole::User => "user",
-                        },
-                        "content": message.content,
-                    })
-                })
-                .collect(),
-        )
+        json!(self.messages)
     }
 }
 

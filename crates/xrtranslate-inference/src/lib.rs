@@ -24,7 +24,7 @@ pub use asr::{
 };
 pub use error::{InferenceError, TransportError};
 pub use http::{AsyncHttpClient, HttpRequest, HttpResponse, MultipartBody, ReqwestClient};
-pub use openai::{ChatCompletion, OpenAiCompatibleClient};
+pub use openai::{ChatCompletion, OpenAiCompatibleClient, TokenUsage};
 pub use translation::{
     PromptCondition, PromptGraphError, PromptLink, PromptMessage, PromptMessageRole, PromptNode,
     PromptNodeGraph, PromptNodeKind, PromptTarget, PromptTemplateLibrary, PromptTemplateProfile,

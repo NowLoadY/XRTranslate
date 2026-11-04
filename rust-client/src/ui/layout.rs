@@ -130,6 +130,35 @@ pub fn responsive_columns(
     }
 }
 
+/// Row-major cards with bounded columns. The last row keeps the same card width.
+pub fn responsive_grid(
+    ui: &mut egui::Ui,
+    count: usize,
+    max_columns: usize,
+    min_width: f32,
+    mut render: impl FnMut(&mut egui::Ui, usize),
+) {
+    if count == 0 {
+        return;
+    }
+    let gap = ui.spacing().item_spacing.x;
+    let columns = (((ui.available_width() + gap) / (min_width + gap)) as usize)
+        .clamp(1, max_columns.max(1))
+        .min(count);
+    for start in (0..count).step_by(columns) {
+        if start > 0 {
+            ui.add_space(12.0);
+        }
+        ui.push_id(start, |ui| {
+            ui.columns(columns, |row| {
+                for (offset, column) in row.iter_mut().enumerate().take(count - start) {
+                    render(column, start + offset);
+                }
+            });
+        });
+    }
+}
+
 /// Sizes a single-line control from its rendered label while respecting the
 /// current container. Long labels are clipped by the widget instead of pushing
 /// neighboring controls outside the window.

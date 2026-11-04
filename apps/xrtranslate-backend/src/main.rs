@@ -31,7 +31,7 @@ use tokio::{
     net::TcpListener,
     sync::{mpsc, watch},
 };
-use tracing::{info, warn};
+use tracing::{Instrument, info, warn};
 use xrtranslate_config::{AppConfig, RuntimeLayout};
 use xrtranslate_engine::{
     RevisableTranscript, RouteEpoch, translation_segment_pairs_for_text_with_lang,
@@ -460,6 +460,8 @@ struct BackendState {
     project_root: PathBuf,
     onnx_runtime: Arc<tokio::sync::OnceCell<()>>,
     audio_runtime: Arc<tokio::sync::OnceCell<Vec<LlamaServerProcess>>>,
+    text_inference: Arc<tokio::sync::OnceCell<NativeInference>>,
+    agent_runtime: Arc<tokio::sync::OnceCell<Option<capabilities::TextResources>>>,
     speech_runtime: Arc<tokio::sync::OnceCell<capabilities::SpeechResources>>,
     manage_models: bool,
     model_start_timeout: u64,
@@ -486,7 +488,7 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
     let args = Arguments::parse();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(format!(
-            "warn,xrtranslate_backend=info,{}",
+            "warn,xrtranslate_backend=info,xrtranslate_inference::http=info,{}",
             std::env::var("RUST_LOG").unwrap_or_default(),
         )))
         .with_writer(std::io::stderr)
@@ -549,6 +551,8 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
         project_root,
         onnx_runtime: Arc::new(tokio::sync::OnceCell::new()),
         audio_runtime: Arc::new(tokio::sync::OnceCell::new()),
+        text_inference: Arc::new(tokio::sync::OnceCell::new()),
+        agent_runtime: Arc::new(tokio::sync::OnceCell::new()),
         speech_runtime: Arc::new(tokio::sync::OnceCell::new()),
         manage_models: args.manage_llama_servers,
         model_start_timeout: args.model_start_timeout_seconds,
@@ -593,35 +597,47 @@ async fn ask(
     State(state): State<BackendState>,
     Json(request): Json<xrtranslate_protocol::AskRequest>,
 ) -> impl IntoResponse {
-    if request.prompt.trim().is_empty() {
+    let target = request.target();
+    let response_schema = request.response_schema().cloned();
+    let messages = request.into_messages();
+    if messages.is_empty()
+        || messages
+            .iter()
+            .any(|message| message.content.trim().is_empty())
+    {
         return (
             axum::http::StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Ask prompt cannot be empty"})),
+            Json(serde_json::json!({"error": "Ask requires nonempty messages"})),
         )
             .into_response();
     }
     let result = async {
-        if !state.model_plan.translation_supports_ask()? {
-            return Err("Selected translation model does not support Ask instructions".into());
-        }
-        let inference = NativeInference::for_text(&state.model_plan)?;
+        let started = Instant::now();
+        let inference = state.prepare_text(target).await?;
+        let prepare_ms = started.elapsed().as_millis();
+        let queued = Instant::now();
         let _permit = state
             .inference_scheduler
             .acquire_translation(InferenceWorkload::Offline)
             .await;
+        tracing::info!(
+            ?target,
+            prepare_ms,
+            queue_ms = queued.elapsed().as_millis(),
+            "Instruction request ready"
+        );
         inference
-            .ask(&request.prompt)
+            .ask(&messages, response_schema.as_ref())
             .await
-            .map_err(|error| error.message)
+            .map_err(|error| xrtranslate_protocol::AskError {
+                invalid_output: error.is_rejected_output(),
+                error: format!("Ask failed: {error}"),
+            })
     }
     .await;
     match result {
         Ok(text) => Json(xrtranslate_protocol::AskResponse { text }).into_response(),
-        Err(error) => (
-            axum::http::StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({"error": error})),
-        )
-            .into_response(),
+        Err(error) => (axum::http::StatusCode::BAD_GATEWAY, Json(error)).into_response(),
     }
 }
 
@@ -683,7 +699,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
     let (generation_sender, generation_receiver) = watch::channel(generation);
     let (socket_writer, mut reader) = socket.split();
     let (outbound_sender, outbound_receiver) = mpsc::channel(OUTBOUND_MESSAGE_CAPACITY);
-    let mut writer_task = tokio::spawn(run_websocket_writer(
+    let writer_task = tokio::spawn(run_websocket_writer(
         socket_writer,
         outbound_receiver,
         generation_receiver.clone(),
@@ -1511,16 +1527,7 @@ async fn serve_session(socket: WebSocket, state: BackendState, options: SessionO
         let _ = tts_worker.await;
     }
     drop(outbound_sender);
-    if graceful_shutdown {
-        if tokio::time::timeout(Duration::from_secs(2), &mut writer_task)
-            .await
-            .is_err()
-        {
-            writer_task.abort();
-        }
-    } else {
-        writer_task.abort();
-    }
+    finish_websocket(reader, writer_task).await;
 }
 
 fn start_llama_servers(
@@ -1841,6 +1848,9 @@ fn inference_jobs(
         );
         let duration_ms = utterance.samples.len().saturating_mul(1_000) / SAMPLE_RATE_HZ as usize;
         info!(
+            %turn_id,
+            source_start_ms,
+            source_end_ms,
             duration_ms,
             overlap_frames = utterance.overlap_frames,
             end_reason = ?utterance.end_reason,
@@ -2813,6 +2823,12 @@ async fn run_inference_worker(
                         &recognition_evidence.texts(),
                         streamed,
                     )
+                    .instrument(tracing::info_span!(
+                        "asr",
+                        turn_id = %job.turn_id,
+                        start_ms = job.source_start_ms,
+                        end_ms = job.source_end_ms
+                    ))
                     .await
             };
             let recognized_result = tokio::select! {
@@ -2840,6 +2856,12 @@ async fn run_inference_worker(
         let mut recognized = match recognized_result {
             Ok(Some(recognized)) => recognized,
             Ok(None) => {
+                info!(
+                    turn_id = %job.turn_id,
+                    start_ms = job.source_start_ms,
+                    end_ms = job.source_end_ms,
+                    "No usable ASR text; no subtitle emitted for this audio interval"
+                );
                 if !job.revisable
                     && matches!(
                         job.utterance.end_reason,
@@ -2862,6 +2884,13 @@ async fn run_inference_worker(
                 continue;
             }
             Err(failure) => {
+                warn!(
+                    turn_id = %job.turn_id,
+                    start_ms = job.source_start_ms,
+                    end_ms = job.source_end_ms,
+                    error = %failure.message,
+                    "ASR failed for this audio interval"
+                );
                 prepared_work.push_back(InferenceWork::ErrorFence {
                     generation: job.generation,
                     message: failure.message,
@@ -2893,6 +2922,9 @@ async fn run_inference_worker(
             && !recognized.remove_overlap_with(previous)
         {
             info!(
+                turn_id = %job.turn_id,
+                start_ms = job.source_start_ms,
+                end_ms = job.source_end_ms,
                 overlap_frames,
                 "ASR overlap contained no new text; suppressing duplicate result"
             );
@@ -4070,11 +4102,20 @@ async fn send_event(
 async fn reject_session(
     error: String,
     sender: mpsc::Sender<OutboundMessage>,
-    mut reader: futures_util::stream::SplitStream<WebSocket>,
-    mut writer: tokio::task::JoinHandle<()>,
+    reader: futures_util::stream::SplitStream<WebSocket>,
+    writer: tokio::task::JoinHandle<()>,
 ) {
     let _ = send_error(&sender, error).await;
     drop(sender);
+    finish_websocket(reader, writer).await;
+}
+
+// Finish the WebSocket handshake while consuming in-flight input. Dropping a
+// socket with unread audio can reset TCP before the client receives the error.
+async fn finish_websocket(
+    mut reader: futures_util::stream::SplitStream<WebSocket>,
+    mut writer: tokio::task::JoinHandle<()>,
+) {
     let _ = tokio::time::timeout(Duration::from_secs(2), async {
         while let Some(Ok(message)) = reader.next().await {
             if matches!(message, Message::Close(_)) {

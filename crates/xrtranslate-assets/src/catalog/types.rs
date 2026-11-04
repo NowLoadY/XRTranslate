@@ -88,6 +88,7 @@ pub enum ModelAudioSampleFormat {
     PcmI16Le,
 }
 
+/// Package size/resource tier, independent of instruction or chat capability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelLevel {
@@ -146,7 +147,9 @@ pub enum ModelRuntime {
     LlamaTextChat {
         model_alias: &'static str,
         prompt_style: TranslationPromptProfile,
-        /// Supports freeform instructions in addition to translation.
+        /// Supports bounded, single-request text editing instructions.
+        supports_ask: bool,
+        /// Supports general conversation and decisions using supplied history.
         supports_chat: bool,
         flash_attention: bool,
         allow_reference_context: bool,

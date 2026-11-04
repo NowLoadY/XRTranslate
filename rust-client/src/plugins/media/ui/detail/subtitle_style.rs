@@ -107,7 +107,9 @@ pub(super) fn render(
                     changed = true;
                 }
             });
-            ui.menu_button(format!("{}: {}", tr(language, "Font"), style.font), |ui| {
+            let button =
+                components::button(ui, format!("{}: {}", tr(language, "Font"), style.font));
+            egui::Popup::menu(&button).show(|ui| {
                 ui.set_width(230.0);
                 egui::ScrollArea::vertical()
                     .max_height(260.0)
