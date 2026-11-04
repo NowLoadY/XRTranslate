@@ -13,7 +13,7 @@ pub(super) struct Composer {
     focus: bool,
     submit_key: SubmitShortcut,
     rect: Option<Rect>,
-    pub error: Option<&'static str>,
+    error: Option<&'static str>,
 }
 
 pub(super) enum Action {
@@ -59,18 +59,15 @@ impl Composer {
         radius: f32,
         occupied: &[Rect],
         language: UiLanguage,
-        unavailable: Option<&'static str>,
         running: bool,
     ) -> Option<Action> {
         if !self.open {
             return None;
         }
         let bounds = ctx.content_rect().shrink(12.0);
-        let notice = self
-            .error
-            .or(unavailable)
-            .or(running.then_some("Agent is working…"));
+        let notice = self.error.or(running.then_some("Agent is working…"));
         let width = 340.0_f32.min(bounds.width());
+        let row_height = ctx.global_style().spacing.interact_size.y.max(32.0);
         let notice_height = notice.map_or(0.0, |text| {
             ctx.fonts_mut(|fonts| {
                 fonts
@@ -84,7 +81,7 @@ impl Composer {
                     .y
             }) + ctx.global_style().spacing.item_spacing.y
         });
-        let size = egui::vec2(width, 54.0 + notice_height).min(bounds.size());
+        let size = egui::vec2(width, row_height + 22.0 + notice_height).min(bounds.size());
         let rect = self
             .rect
             .filter(|rect| rect.size() == size && bounds.contains_rect(*rect))
@@ -94,12 +91,13 @@ impl Composer {
         self.rect = Some(rect);
         let just_opened = self.focus;
         let enter = self.submit_key.pressed(ctx, editor_id());
-        let can_send = unavailable.is_none() && !self.draft.trim().is_empty();
+        let can_send = !self.draft.trim().is_empty();
         let mut action = None;
         let mut send = false;
         let response = egui::Area::new(editor_id().with("panel"))
             .order(egui::Order::Foreground)
             .fixed_pos(rect.min)
+            .default_size(size)
             .constrain_to(bounds)
             .movable(false)
             .show(ctx, |ui| {
@@ -116,58 +114,62 @@ impl Composer {
                     })
                     .show(ui, |ui| {
                         ui.set_width((size.x - 22.0).max(1.0));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let button = ui
-                                .add_enabled_ui(can_send, |ui| {
-                                    components::icon_button(
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), row_height),
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                let button = ui
+                                    .add_enabled_ui(can_send, |ui| {
+                                        components::icon_button(
+                                            ui,
+                                            tr(language, "Send"),
+                                            egui::include_image!(
+                                                "../../../resources/icons/chevron-right.svg"
+                                            ),
+                                        )
+                                    })
+                                    .inner;
+                                send = button.clicked() || enter;
+                                if running {
+                                    if components::icon_button(
                                         ui,
-                                        tr(language, "Send"),
-                                        egui::include_image!(
-                                            "../../../resources/icons/chevron-right.svg"
-                                        ),
+                                        tr(language, "Stop"),
+                                        egui::include_image!("../../../resources/icons/stop.svg"),
                                     )
-                                })
-                                .inner;
-                            send = button.clicked() || enter;
-                            if running {
-                                if components::icon_button(
-                                    ui,
-                                    tr(language, "Stop"),
-                                    egui::include_image!("../../../resources/icons/stop.svg"),
-                                )
-                                .clicked()
-                                {
-                                    action = Some(Action::Stop);
+                                    .clicked()
+                                    {
+                                        action = Some(Action::Stop);
+                                    }
                                 }
-                            }
-                            let response = ui.add(
-                                egui::TextEdit::singleline(&mut self.draft)
-                                    .id(editor_id())
-                                    .desired_width(f32::INFINITY)
-                                    .font(egui::FontId::proportional(14.0))
-                                    .frame(egui::Frame::NONE)
-                                    .hint_text(tr(
-                                        language,
-                                        if running {
-                                            "Add a requirement or correction…"
-                                        } else {
-                                            "What would you like me to do?"
-                                        },
-                                    )),
-                            );
-                            let response = automation::text_response(
-                                ui,
-                                tr(language, "Agent instruction"),
-                                &mut self.draft,
-                                response,
-                            );
-                            if response.changed() {
-                                self.error = None;
-                            }
-                            if std::mem::take(&mut self.focus) {
-                                response.request_focus();
-                            }
-                        });
+                                let response = ui.add(
+                                    egui::TextEdit::singleline(&mut self.draft)
+                                        .id(editor_id())
+                                        .desired_width(f32::INFINITY)
+                                        .font(egui::FontId::proportional(14.0))
+                                        .frame(egui::Frame::NONE)
+                                        .hint_text(tr(
+                                            language,
+                                            if running {
+                                                "Add a requirement or correction…"
+                                            } else {
+                                                "What would you like me to do?"
+                                            },
+                                        )),
+                                );
+                                let response = automation::text_response(
+                                    ui,
+                                    tr(language, "Agent instruction"),
+                                    &mut self.draft,
+                                    response,
+                                );
+                                if response.changed() {
+                                    self.error = None;
+                                }
+                                if std::mem::take(&mut self.focus) {
+                                    response.request_focus();
+                                }
+                            },
+                        );
                         if let Some(notice) = notice {
                             ui.label(
                                 egui::RichText::new(tr(language, notice))
@@ -178,7 +180,7 @@ impl Composer {
                     });
             })
             .response;
-        if send && unavailable.is_none() && !self.draft.trim().is_empty() {
+        if send && !self.draft.trim().is_empty() {
             if self.draft.trim().len() > crate::plugins::agent::MAX_GOAL_BYTES {
                 self.error = Some("Please shorten the instruction");
             } else {
@@ -219,12 +221,22 @@ mod tests {
                     30.0,
                     &[],
                     UiLanguage::Chinese,
-                    None,
                     running,
                 );
             },
         );
         output.textures_delta.clear();
+        if composer.open {
+            let actual = ctx
+                .memory(|memory| memory.area_rect(editor_id().with("panel")))
+                .unwrap();
+            let planned = composer.rect.unwrap();
+            assert!(
+                actual.width() <= planned.width() + 1.0
+                    && actual.height() <= planned.height() + 1.0,
+                "Composer grew beyond its popup: actual={actual:?}, planned={planned:?}"
+            );
+        }
         action
     }
 
@@ -243,8 +255,10 @@ mod tests {
         let ctx = egui::Context::default();
         let mut composer = Composer::default();
         composer.toggle(&ctx);
-        for _ in 0..2 {
-            frame(&ctx, &mut composer, vec![], false);
+        for running in [false, true, false] {
+            for _ in 0..16 {
+                frame(&ctx, &mut composer, vec![], running);
+            }
         }
         assert!(ctx.memory(|memory| memory.has_focus(editor_id())));
         assert!(

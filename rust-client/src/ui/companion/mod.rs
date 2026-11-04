@@ -725,20 +725,12 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
             .dismiss_on_click(ctx, state_id().with("error-bubble"), state.clock);
     }
     if available {
-        let unavailable = if !app.plugin_enabled(crate::plugins::PluginId::AGENT) {
-            Some("Enable Agent in Settings")
-        } else if !app.service_config.agent_available() {
-            Some("Choose an Agent model on the Welcome Page")
-        } else {
-            None
-        };
         match state.composer.show(
             ctx,
             anchor,
             size,
             state.parking.occupied(),
             language,
-            unavailable,
             app.agent.active(),
         ) {
             Some(composer::Action::Submit(goal)) => {
@@ -752,10 +744,9 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
                             "I'll get started."
                         });
                     }
-                    Err(error) => {
-                        log::warn!("Avatar Agent instruction failed: {error}");
-                        state.composer.error =
-                            Some("Could not send the instruction. Please try again.");
+                    Err(message) => {
+                        state.composer.close(ctx);
+                        state.say(message);
                     }
                 }
             }

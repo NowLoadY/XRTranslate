@@ -1,6 +1,6 @@
 use std::{error::Error, fmt};
 
-/// A transport failure before an HTTP response was received.
+/// A failure while sending a request or reading its response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportError {
     /// Short machine-readable classification such as `timeout` or `connect`.
@@ -38,7 +38,7 @@ pub enum InferenceError {
     },
     /// PCM16 input cannot be represented in a WAV container.
     InvalidAudio { message: String },
-    /// The HTTP client did not receive a response.
+    /// The HTTP client could not send the request or finish reading the response.
     Transport {
         endpoint: String,
         source: TransportError,
@@ -73,7 +73,10 @@ pub enum InferenceError {
 impl fmt::Display for InferenceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::AccountLoginRequired { provider } => write!(formatter, "{provider}: sign in again using Account login on the Welcome Page"),
+            Self::AccountLoginRequired { provider } => write!(
+                formatter,
+                "{provider}: sign in again using Account login on the Welcome Page"
+            ),
             Self::InvalidConfiguration { field, message } => {
                 write!(formatter, "invalid {field}: {message}")
             }
@@ -120,6 +123,19 @@ impl fmt::Display for InferenceError {
 impl Error for InferenceError {}
 
 impl InferenceError {
+    /// Temporary service failures can retry the same inference without changing context.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            Self::Transport { source, .. } => matches!(
+                source.kind.as_str(),
+                "timeout" | "connect" | "request" | "response_body"
+            ),
+            Self::HttpStatus { status, .. } => matches!(status, 408 | 500 | 502 | 503 | 504),
+            _ => false,
+        }
+    }
+
     /// Whether the provider returned text that failed a deterministic output
     /// quality gate and may be worth regenerating once.
     #[must_use]

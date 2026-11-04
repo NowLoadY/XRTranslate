@@ -1,4 +1,5 @@
 use std::{
+    error::Error,
     ops::ControlFlow,
     time::{Duration, Instant},
 };
@@ -182,7 +183,7 @@ impl ReqwestClient {
                     let kind = request_error_kind(&error);
                     let should_retry =
                         attempt + 1 < MAX_ATTEMPTS && (error.is_connect() || error.is_request());
-                    last_error = Some(TransportError::new(kind, error.to_string()));
+                    last_error = Some(transport_error(error));
                     if !should_retry {
                         break;
                     }
@@ -206,10 +207,7 @@ impl AsyncHttpClient for ReqwestClient {
         let response = self.send(&request).await?;
         let headers_ms = started.elapsed().as_millis();
         let status = response.status().as_u16();
-        let body = response
-            .text()
-            .await
-            .map_err(|error| TransportError::new("response_body", error.to_string()))?;
+        let body = response.text().await.map_err(transport_error)?;
         log_timing(&request, started, headers_ms, None, status);
         Ok(HttpResponse { status, body })
     }
@@ -228,19 +226,22 @@ impl AsyncHttpClient for ReqwestClient {
         let headers_ms = started.elapsed().as_millis();
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
-            let body = response
-                .text()
-                .await
-                .map_err(|error| TransportError::new("response_body", error.to_string()))?;
+            let body = response.text().await.map_err(transport_error)?;
             log_timing(&request, started, headers_ms, None, status);
             return Ok(HttpResponse { status, body });
         }
         let mut first_chunk_ms = None;
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|error| TransportError::new("response_body", error.to_string()))?
-        {
+        while let Some(chunk) = response.chunk().await.map_err(|error| {
+            let error = transport_error(error);
+            tracing::warn!(
+                model = request.body["model"].as_str().unwrap_or(""),
+                headers_ms, ?first_chunk_ms, status,
+                elapsed_ms = started.elapsed().as_millis(),
+                error = %error,
+                "Model HTTP stream interrupted"
+            );
+            error
+        })? {
             first_chunk_ms.get_or_insert_with(|| started.elapsed().as_millis());
             if on_chunk(chunk.to_vec()).await?.is_break() {
                 // Drain a short HTTP/1 tail without delaying the result or losing
@@ -291,9 +292,23 @@ fn request_error_kind(error: &reqwest::Error) -> &'static str {
         "connect"
     } else if error.is_request() {
         "request"
+    } else if error.is_body() || error.is_decode() {
+        "response_body"
     } else {
         "http"
     }
+}
+
+fn transport_error(error: reqwest::Error) -> TransportError {
+    let kind = request_error_kind(&error);
+    let error = error.without_url();
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        message.push_str(&format!(": {cause}"));
+        source = cause.source();
+    }
+    TransportError::new(kind, message)
 }
 
 fn client_builder() -> reqwest::ClientBuilder {
@@ -324,6 +339,50 @@ mod tests {
 
     use super::*;
     use crate::{TranslationAdapter, TranslationOptions, TranslationPromptProfile};
+
+    #[tokio::test]
+    async fn stalled_response_body_preserves_timeout_and_its_cause() {
+        for streaming in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let (release, wait) = std::sync::mpsc::channel::<()>();
+            let server = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(socket.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    assert_ne!(reader.read_line(&mut line).unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{")
+                    .unwrap();
+                let _ = wait.recv_timeout(Duration::from_secs(2));
+            });
+            let client = ReqwestClient::new_direct(Duration::from_millis(100)).unwrap();
+            let request = HttpRequest::post_json(&endpoint, Value::Null);
+            let result = if streaming {
+                client
+                    .execute_streaming(request, |_| {
+                        std::future::ready(Ok(ControlFlow::Continue(())))
+                    })
+                    .await
+            } else {
+                client.execute(request).await
+            };
+            let _ = release.send(());
+            server.join().unwrap();
+            let source = result.unwrap_err();
+            assert_eq!(source.kind, "timeout");
+            assert!(source.message.contains("timed out"), "{source}");
+            assert!(crate::InferenceError::Transport { endpoint, source }.is_retryable());
+        }
+    }
 
     #[tokio::test]
     async fn translation_sends_one_json_content_type_and_selected_model() {

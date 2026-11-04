@@ -14,6 +14,7 @@ mod online_tests;
 
 const MAX_STEPS: usize = 64;
 const MAX_ERRORS: usize = 3;
+const MAX_REQUEST_RETRIES: usize = 2;
 pub(crate) const MAX_GOAL_BYTES: usize = 4000;
 
 #[derive(Default)]
@@ -43,6 +44,7 @@ struct Run {
     started: Instant,
     steps: usize,
     errors: usize,
+    request_retries: usize,
     previous_call: String,
     repeats: usize,
 }
@@ -352,6 +354,7 @@ impl AgentPlugin {
             started: Instant::now(),
             steps: 0,
             errors: 0,
+            request_retries: 0,
             previous_call: String::new(),
             repeats: 0,
         });
@@ -376,6 +379,7 @@ impl AgentPlugin {
         );
         // A human correction starts a new attempt, without resetting the task budget.
         run.errors = 0;
+        run.request_retries = 0;
         run.repeats = 0;
         run.previous_call.clear();
         log::info!(
@@ -490,8 +494,23 @@ impl AgentPlugin {
                 self.checkpoint();
                 return None;
             }
+            if !matches!(&answer, Err(error) if error.retryable) {
+                run.request_retries = 0;
+            }
             let answer = match answer {
                 Ok(answer) => answer,
+                Err(error) if error.retryable && run.request_retries < MAX_REQUEST_RETRIES => {
+                    run.request_retries += 1;
+                    run.next_poll =
+                        Instant::now() + Duration::from_secs(run.request_retries as u64);
+                    log::warn!(
+                        "Agent inference retry {}/{}: {}",
+                        run.request_retries,
+                        MAX_REQUEST_RETRIES,
+                        error.error
+                    );
+                    return None;
+                }
                 Err(error) if error.invalid_output => {
                     run.errors += 1;
                     run.feedback(&mut self.context, json!({"error":error.error}));
@@ -556,6 +575,9 @@ impl AgentPlugin {
             }
             return None;
         }
+        if Instant::now() < run.next_poll {
+            return None;
+        }
         let messages = match self.context.prepare() {
             Ok(messages) => messages,
             Err(error) => return self.stop(&error).map(|_| Action::Finished),
@@ -589,14 +611,37 @@ mod tests {
             .unwrap();
         assert_eq!(agent.run.as_ref().unwrap().tools.len(), 2);
         let (tx, rx) = crossbeam_channel::bounded(1);
+        let context = agent.context.messages.clone();
+        for _ in 0..MAX_REQUEST_RETRIES {
+            agent.poll(|messages| {
+                assert_eq!(messages, context, "retry must not duplicate history");
+                rx.clone()
+            });
+            tx.send(Err(xrtranslate_protocol::AskError {
+                error: "timeout: operation timed out".into(),
+                invalid_output: false,
+                retryable: true,
+            }))
+            .unwrap();
+            assert!(
+                agent
+                    .poll(|_| panic!("consume the failure first"))
+                    .is_none()
+            );
+            assert_eq!(agent.context.messages, context);
+            assert!(agent.poll(|_| panic!("wait before retrying")).is_none());
+            agent.run.as_mut().unwrap().next_poll = Instant::now();
+        }
         agent.poll(|_| rx.clone());
         tx.send(Err(xrtranslate_protocol::AskError {
             error: "Return one text decision".into(),
             invalid_output: true,
+            retryable: false,
         }))
         .unwrap();
         assert!(agent.poll(|_| panic!()).is_none());
         assert!(agent.active());
+        assert_eq!(agent.run.as_ref().unwrap().request_retries, 0);
         agent.poll(|messages| {
             assert_eq!(
                 messages.len(),
@@ -659,6 +704,34 @@ mod tests {
             .start(json!({"document":"one"}), "Review this document".into())
             .unwrap();
         plugin
+    }
+
+    #[test]
+    fn inference_failure_stops_after_its_retry_budget_or_when_permanent() {
+        for retryable in [false, true] {
+            let mut agent = agent();
+            let (tx, rx) = crossbeam_channel::bounded(1);
+            let expected_requests = if retryable {
+                MAX_REQUEST_RETRIES + 1
+            } else {
+                1
+            };
+            for attempt in 0..expected_requests {
+                agent.run.as_mut().unwrap().next_poll = Instant::now();
+                agent.poll(|_| rx.clone());
+                tx.send(Err(xrtranslate_protocol::AskError {
+                    error: "service failure".into(),
+                    invalid_output: false,
+                    retryable,
+                }))
+                .unwrap();
+                let finished = matches!(agent.poll(|_| panic!()), Some(Action::Finished));
+                assert_eq!(finished, attempt + 1 == expected_requests);
+            }
+            assert!(!agent.active());
+            assert_eq!(agent.last.as_ref().unwrap()["summary"], "service failure");
+            assert!(agent.poll(|_| panic!("must not retry again")).is_none());
+        }
     }
 
     #[test]

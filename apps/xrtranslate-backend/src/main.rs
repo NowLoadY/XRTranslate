@@ -631,6 +631,7 @@ async fn ask(
             .await
             .map_err(|error| xrtranslate_protocol::AskError {
                 invalid_output: error.is_rejected_output(),
+                retryable: error.is_retryable(),
                 error: format!("Ask failed: {error}"),
             })
     }

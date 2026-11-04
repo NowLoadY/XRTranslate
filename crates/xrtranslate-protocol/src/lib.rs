@@ -67,12 +67,14 @@ pub struct AskResponse {
     pub text: String,
 }
 
-/// An unusable model answer can be corrected by the caller; service failures cannot.
+/// Callers can correct unusable answers or retry temporary service failures.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AskError {
     pub error: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub invalid_output: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub retryable: bool,
 }
 
 impl From<String> for AskError {
@@ -80,6 +82,7 @@ impl From<String> for AskError {
         Self {
             error,
             invalid_output: false,
+            retryable: false,
         }
     }
 }

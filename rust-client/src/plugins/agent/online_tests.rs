@@ -136,7 +136,7 @@ fn configured_model_reviews_media_with_local_history() {
         .build()
         .unwrap();
     let mut previous: Vec<PromptMessage> = Vec::new();
-    let mut previous_failed = false;
+    let mut expected_appended = 0;
     let mut rounds = 0;
     let mut compactions = 0;
     let mut commits = 0;
@@ -153,7 +153,7 @@ fn configured_model_reviews_media_with_local_history() {
                     assert_eq!(messages.last(), latest.as_ref(), "latest feedback lost");
                     compactions += 1;
                 } else {
-                    assert_eq!(messages.len(), previous.len() + if previous_failed { 1 } else { 2 }, "history duplicated or lost");
+                    assert_eq!(messages.len(), previous.len() + expected_appended, "history duplicated or lost");
                 }
             }
             let tokens: usize = messages.iter().map(|message| estimated_tokens(&message.content) + 32).sum();
@@ -162,35 +162,23 @@ fn configured_model_reviews_media_with_local_history() {
             previous = messages.clone();
             if rounds > 1 { std::thread::sleep(interval); }
             let started = Instant::now();
-            let completion = runtime.block_on(async {
-                // Retry temporary service failures with the identical context;
-                // a network retry must never append an assistant/tool turn.
-                for attempt in 0..3 {
-                    let result = adapter.ask(&messages, route.runtime.context_window_tokens, route.runtime.max_tokens, Some(&AgentPlugin::response_schema())).await;
-                    if attempt < 2 && matches!(&result, Err(xrtranslate_inference::InferenceError::HttpStatus { status: 429 | 502 | 503 | 504, .. })) {
-                        let delay = 20 * (attempt + 1);
-                        eprintln!("Round {rounds}: temporary provider failure, retrying in {delay}s");
-                        record(json!({"event":"retry","round":rounds,"attempt":attempt+1,"delay_seconds":delay}));
-                        tokio::time::sleep(Duration::from_secs(delay)).await;
-                    } else { return result; }
-                }
-                unreachable!()
-            });
+            let completion = runtime.block_on(adapter.ask(&messages, route.runtime.context_window_tokens, route.runtime.max_tokens, Some(&AgentPlugin::response_schema())));
             let reply = match completion {
                 Ok(completion) => {
-                    previous_failed = false;
+                    expected_appended = 2;
                     eprintln!("Round {rounds}: {} messages, estimated {tokens} tokens, compacted={compacted}, usage={:?}", messages.len(), completion.usage);
                     record(json!({"event":"response","round":rounds,"elapsed_ms":started.elapsed().as_millis(),"usage":completion.usage,"text":completion.text}));
                     Ok(completion.text)
                 }
                 Err(error) => {
-                    previous_failed = true;
                     let invalid_output = error.is_rejected_output();
+                    let retryable = error.is_retryable();
+                    expected_appended = usize::from(invalid_output);
                     let mut error = error.to_string();
                     if let Some(key) = &route.api_key { error = error.replace(key, "[redacted]"); }
                     eprintln!("Round {rounds}: {error}");
-                    record(json!({"event":"error","round":rounds,"error":error,"invalid_output":invalid_output}));
-                    Err(xrtranslate_protocol::AskError {error, invalid_output})
+                    record(json!({"event":"error","round":rounds,"error":error,"invalid_output":invalid_output,"retryable":retryable}));
+                    Err(xrtranslate_protocol::AskError {error, invalid_output, retryable})
                 }
             };
             let (sender, receiver) = crossbeam_channel::bounded(1);
@@ -213,6 +201,7 @@ fn configured_model_reviews_media_with_local_history() {
         if let Some(message) = agent.take_message() {
             record(json!({"event":"message","text":message}));
         }
+        std::thread::sleep(Duration::from_millis(10));
     }
     let after = media.call(&check).unwrap();
     let final_task = media.controller.store.get(&id).unwrap();

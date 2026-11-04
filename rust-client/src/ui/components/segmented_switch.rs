@@ -14,8 +14,10 @@ pub fn segmented_switch(ui: &mut Ui, second: &mut bool, labels: [&str; 2]) -> Re
         })
         .fold(0.0_f32, f32::max);
     let width = ((label_width + 20.0) * 2.0).min(ui.available_width());
-    let (rect, mut response) =
-        ui.allocate_exact_size(Vec2::new(width, 26.0), Sense::click_and_drag());
+    let size = Vec2::new(width, 26.0);
+    let (id, space) = ui.allocate_space(size);
+    let rect = ui.layout().align_size_within_rect(size, space);
+    let mut response = ui.interact(rect, id, Sense::click_and_drag());
     let previous = *second;
     if (response.clicked() || response.dragged())
         && let Some(pointer) = response.interact_pointer_pos()
@@ -95,4 +97,54 @@ pub fn segmented_switch(ui: &mut Ui, second: &mut bool, labels: [&str; 2]) -> Re
         }
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn justified_layout_keeps_blank_space_outside_the_switch() {
+        let ctx = egui::Context::default();
+        let mut second = false;
+        let mut frame = |events| {
+            let mut rect = egui::Rect::NOTHING;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(600.0, 200.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), |ui| {
+                        rect = segmented_switch(ui, &mut second, ["Audio", "Subtitles"]).rect;
+                    });
+                },
+            );
+            output.textures_delta.clear();
+            (second, rect)
+        };
+        let (_, rect) = frame(vec![]);
+        let blank = egui::pos2(500.0, rect.center().y);
+        let pointer = |pos, pressed| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        frame(pointer(blank, true));
+        let (second, rect) = frame(pointer(blank, false));
+        assert!(!second, "clicking blank space must not select subtitles");
+        let subtitle = egui::pos2(rect.right() - 10.0, rect.center().y);
+        frame(pointer(subtitle, true));
+        assert!(frame(pointer(subtitle, false)).0);
+    }
 }

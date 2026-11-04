@@ -7,22 +7,29 @@ use crate::{
 };
 
 impl XRTranslateApp {
-    pub(crate) fn submit_agent_instruction(&mut self, instruction: String) -> Result<(), String> {
+    pub(crate) fn submit_agent_instruction(
+        &mut self,
+        instruction: String,
+    ) -> Result<(), &'static str> {
         if !self.agent.active() {
             self.prepare_agent()?;
         }
-        self.agent.message(instruction)
+        self.agent.message(instruction).map_err(|error| {
+            log::warn!("Avatar Agent instruction failed: {error}");
+            "Could not send the instruction. Please try again."
+        })
     }
 
     /// UI goal entry and plugin-scoped tasks share model/tool preparation.
-    pub(crate) fn prepare_agent(&mut self) -> Result<(), String> {
-        if !self.plugin_enabled(PluginId::AGENT) || !self.service_config.agent_available() {
-            return Err(
-                "Agent is disabled or the selected model does not support general chat".into(),
-            );
+    pub(crate) fn prepare_agent(&mut self) -> Result<(), &'static str> {
+        if !self.plugin_enabled(PluginId::AGENT) {
+            return Err("Enable Agent in Settings");
+        }
+        if !self.service_config.agent_available() {
+            return Err("Please choose a model that supports Agent on the Welcome Page.");
         }
         if self.agent.active() {
-            return Err("An agent is already running".into());
+            return Err("An agent is already running");
         }
         let tools = self.director_tools();
         self.agent.configure(
