@@ -1,5 +1,6 @@
 use crate::{ChatCompletion, TransportError};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 const MAX_BYTES: usize = 1024 * 1024;
 
@@ -8,6 +9,7 @@ pub(super) struct ResponseStream {
     pending: Vec<u8>,
     data: String,
     text: String,
+    outputs: BTreeMap<u64, String>,
     completed: bool,
 }
 
@@ -57,6 +59,15 @@ impl ResponseStream {
                 );
                 Ok(true)
             }
+            Some("response.output_item.done") => {
+                if let Some(text) = assistant_text(&value["item"])? {
+                    let index = value["output_index"]
+                        .as_u64()
+                        .ok_or_else(|| error("Missing ChatGPT output index"))?;
+                    self.outputs.insert(index, text);
+                }
+                Ok(false)
+            }
             Some("response.completed") => {
                 let response = &value["response"];
                 if response["status"] != "completed" {
@@ -65,24 +76,14 @@ impl ResponseStream {
                 let output = response["output"]
                     .as_array()
                     .ok_or_else(|| error("Missing ChatGPT final output"))?;
-                let mut text = String::new();
-                for item in output {
-                    if item["type"] != "message" || item["role"] != "assistant" {
-                        continue;
-                    }
-                    if let Some(parts) = item["content"].as_array() {
-                        for part in parts {
-                            if part["type"] == "output_text" {
-                                text.push_str(
-                                    part["text"]
-                                        .as_str()
-                                        .ok_or_else(|| error("Invalid ChatGPT final text"))?,
-                                );
-                            }
-                        }
+                for (index, item) in output.iter().enumerate() {
+                    if let Some(text) = assistant_text(item)? {
+                        self.outputs.insert(index as u64, text);
                     }
                 }
-                self.text = text;
+                // Some account responses send completed items separately and
+                // leave this final snapshot's output array empty.
+                self.text = self.outputs.values().map(String::as_str).collect();
                 self.completed = true;
                 Ok(true)
             }
@@ -125,6 +126,32 @@ impl ResponseStream {
         }
         Ok(ChatCompletion { text: self.text })
     }
+}
+
+fn assistant_text(item: &Value) -> Result<Option<String>, TransportError> {
+    if item["type"] != "message" || item["role"] != "assistant" {
+        return Ok(None);
+    }
+    if item
+        .get("status")
+        .is_some_and(|status| status != "completed")
+    {
+        return Err(error("ChatGPT output message was not completed"));
+    }
+    let parts = item["content"]
+        .as_array()
+        .ok_or_else(|| error("Missing ChatGPT output content"))?;
+    let mut text = String::new();
+    for part in parts {
+        if part["type"] == "output_text" {
+            text.push_str(
+                part["text"]
+                    .as_str()
+                    .ok_or_else(|| error("Invalid ChatGPT final text"))?,
+            );
+        }
+    }
+    Ok(Some(text))
 }
 
 fn error(message: &str) -> TransportError {
