@@ -424,6 +424,7 @@ pub struct AudioStudioController {
     active_graph_revision: Option<u64>,
     failed_graph_revision: Option<u64>,
     routing_issue: Option<String>,
+    routing_graph: Option<AudioGraph>,
 }
 
 #[cfg(test)]
@@ -518,6 +519,7 @@ impl AudioStudioController {
                 active_graph_revision: None,
                 failed_graph_revision: None,
                 routing_issue: None,
+                routing_graph: None,
             },
             Err(error) => Self {
                 repository,
@@ -531,6 +533,7 @@ impl AudioStudioController {
                 active_graph_revision: None,
                 failed_graph_revision: None,
                 routing_issue: None,
+                routing_graph: None,
             },
         }
     }
@@ -1059,19 +1062,38 @@ impl AudioStudioController {
             return Ok(Vec::new());
         }
 
-        let graph =
+        let mut graph =
             resolve_graph_devices(self.selected_graph(), &self.settings.device_defaults, host);
-        let has_render_route = has_enabled_render_route(&graph);
         let validation = validate_for_host(&graph, host);
-        let issue = (has_render_route && !validation.is_valid()).then(|| {
+        let issue = (!validation.is_valid()).then(|| {
             AudioStudioControllerError::InvalidGraph(validation.clone()).to_string()
         });
         if self.routing_issue != issue {
             if let Some(message) = &issue {
-                log::warn!("Audio routing unavailable: {message}");
+                log::warn!("Audio routing issue: {message}");
             }
             self.routing_issue = issue;
         }
+        // Missing endpoints suspend only their branches. Keep the saved graph
+        // intact so they rejoin automatically when host discovery finds them.
+        for issue in &validation.issues {
+            if matches!(
+                issue.code,
+                GraphIssueCode::DeviceUnavailable | GraphIssueCode::ApplicationUnavailable
+            ) && let Some(node) = graph
+                .nodes
+                .iter_mut()
+                .find(|node| Some(&node.id) == issue.node_id.as_ref())
+            {
+                node.bypassed = true;
+            }
+        }
+        if self.routing_graph.as_ref() != Some(&graph) {
+            self.graph_revision = self.graph_revision.wrapping_add(1);
+            self.routing_graph = Some(graph.clone());
+        }
+        let has_render_route = has_enabled_render_route(&graph);
+        let validation = validate_for_host(&graph, host);
         if !has_render_route || !validation.is_valid() {
             return match self.lifecycle {
                 AudioStudioLifecycle::Active { .. } => self.deactivate(),
@@ -1092,9 +1114,9 @@ impl AudioStudioController {
             AudioStudioLifecycle::Active { .. } if self.live_routing_matches_current_graph() => {
                 Ok(Vec::new())
             }
-            AudioStudioLifecycle::Active { .. } => self.activate(host, true),
+            AudioStudioLifecycle::Active { .. } => self.activate(graph, true),
             AudioStudioLifecycle::Inactive | AudioStudioLifecycle::Error { .. } => {
-                self.activate(host, false)
+                self.activate(graph, false)
             }
             AudioStudioLifecycle::Activating { .. } | AudioStudioLifecycle::Deactivating { .. } => {
                 Ok(Vec::new())
@@ -1242,7 +1264,7 @@ impl AudioStudioController {
 
     fn activate(
         &mut self,
-        host: &HostAudioSnapshot,
+        graph: AudioGraph,
         allow_replace: bool,
     ) -> Result<Vec<AudioStudioHostAction>, AudioStudioControllerError> {
         if matches!(
@@ -1251,12 +1273,6 @@ impl AudioStudioController {
         ) || (!allow_replace && matches!(self.lifecycle, AudioStudioLifecycle::Active { .. }))
         {
             return Err(AudioStudioControllerError::LifecycleBusy);
-        }
-        let graph =
-            resolve_graph_devices(self.selected_graph(), &self.settings.device_defaults, host);
-        let validation = validate_for_host(&graph, host);
-        if !validation.is_valid() {
-            return Err(AudioStudioControllerError::InvalidGraph(validation));
         }
         let request_id = self.next_id();
         self.lifecycle = AudioStudioLifecycle::Activating {
@@ -2153,7 +2169,7 @@ pub fn validate_for_host(graph: &AudioGraph, host: &HostAudioSnapshot) -> GraphV
                         validation.issues.push(GraphValidationIssue::for_node(
                             GraphIssueCode::ApplicationUnavailable,
                             format!(
-                                "{} is not running or has no Windows audio session",
+                                "{} is not running or has no capturable audio session",
                                 selection.display_name
                             ),
                             &node.id,
