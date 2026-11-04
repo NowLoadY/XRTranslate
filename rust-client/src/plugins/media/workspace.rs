@@ -263,9 +263,26 @@ fn task_context(task: &super::task::MediaTask) -> Value {
 
 impl MediaPlugin {
     pub(crate) fn prepare_optimization(&mut self, task: &str) -> Result<(Value, String), String> {
+        let reset = self.controller.store.get(task).is_some_and(|task| {
+            task.optimization.as_ref().is_some_and(|workspace| {
+                let current = if self.controller.active_task_id.as_deref() == Some(&task.id) {
+                    &self.controller.subtitles
+                } else {
+                    &task.subtitles
+                };
+                workspace.status == "open"
+                    && (workspace.context != task_context(task)
+                        || !same_timeline(current, &workspace.base))
+            })
+        });
+        if reset {
+            log::info!(
+                "Refreshing subtitle optimization workspace for task {task}: subtitles or task context changed"
+            );
+        }
         let opened = self.workspace_call(&ToolCall {
             name: "media.open".into(),
-            arguments: json!({"task": task}),
+            arguments: json!({"task": task, "reset": reset}),
         })?;
         Ok((
             json!({"workspace": opened["workspace"]}),
@@ -1241,6 +1258,79 @@ mod tests {
             &MediaTaskStore::load_from_dir(storage.path()).tasks[0].subtitles,
             &original
         ));
+    }
+
+    #[test]
+    fn optimization_resumes_edits_but_refreshes_after_subtitles_or_context_change() {
+        for active in [false, true] {
+            for regenerate in [false, true] {
+                let (mut plugin, storage, workspace) = fixture();
+                let task = plugin.controller.active_task_id.clone().unwrap();
+                let cue = plugin.controller.subtitles.cues()[0].id.clone();
+                if !active {
+                    plugin.controller.active_task_id = None;
+                }
+                call(
+                    &mut plugin,
+                    "media.edit",
+                    json!({"workspace":workspace,"revision":0,
+                    "edits":[{"cue":cue,"translation":"你好，再见。"}]}),
+                )
+                .unwrap();
+                let (resumed, _) = plugin.prepare_optimization(&task).unwrap();
+                assert_eq!(resumed["workspace"], workspace);
+                assert_eq!(plugin.workspace_mut(&workspace).unwrap().revision, 1);
+
+                if regenerate {
+                    let current = SubtitleTimeline::parse(
+                        "1\n00:00:01,000 --> 00:00:05,000\nListen again.\n",
+                    )
+                    .unwrap();
+                    if active {
+                        plugin.controller.subtitles = current;
+                    } else {
+                        plugin.controller.store.get_mut(&task).unwrap().subtitles = current;
+                    }
+                } else {
+                    plugin
+                        .controller
+                        .store
+                        .get_mut(&task)
+                        .unwrap()
+                        .target_language = "fr".into();
+                }
+                let current = if active {
+                    plugin.controller.subtitles.clone()
+                } else {
+                    plugin
+                        .controller
+                        .store
+                        .get(&task)
+                        .unwrap()
+                        .subtitles
+                        .clone()
+                };
+                let (scope, _) = plugin.prepare_optimization(&task).unwrap();
+                let fresh = scope["workspace"].as_str().unwrap();
+                assert_ne!(
+                    fresh, workspace,
+                    "a new optimization must use current subtitles and constraints"
+                );
+                let draft = plugin.workspace_mut(fresh).unwrap();
+                assert_eq!(draft.revision, 0);
+                assert!(same_timeline(&draft.draft, &current));
+                call(
+                    &mut plugin,
+                    "media.commit",
+                    json!({"workspace":fresh,"revision":0}),
+                )
+                .unwrap();
+                assert!(same_timeline(
+                    &MediaTaskStore::load_from_dir(storage.path()).tasks[0].subtitles,
+                    &current
+                ));
+            }
+        }
     }
 
     #[test]
