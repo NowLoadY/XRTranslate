@@ -31,6 +31,8 @@ application components retain their layout, drawing and animation. Document
 adapters provide only affected items to the same feedback core. The optional
 overlay and `feedback::current` consume execution facts and current geometry,
 without adding messages to the agent's context.
+The default overlay uses solid borders and directional pulses without text or
+translucent trails; custom renderers can still read the full feedback facts.
 See [Director CLI and Agent design](design/director-agent.md) for the shared tools.
 
 Rendering consumes focused state and emits domain actions. Persistence, network

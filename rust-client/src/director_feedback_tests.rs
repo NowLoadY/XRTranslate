@@ -55,11 +55,10 @@ fn reveals_a_virtual_row_inside_a_scrolled_page_and_clears_stale_geometry() {
                     )),
                     Some((egui::pos2(30.0, 30.0), 20.0)),
                     egui::Color32::BLUE,
-                    str::to_owned,
                 );
             },
         );
-        connected |= output.shapes.iter().any(|shape| matches!(shape.shape, egui::Shape::LineSegment { stroke, .. } if stroke.width == 1.5));
+        connected |= output.shapes.iter().any(|shape| matches!(shape.shape, egui::Shape::LineSegment { stroke, .. } if stroke.width > 0.0 && stroke.color == egui::Color32::BLUE));
         output.textures_delta.clear();
         if visible && connected {
             break;
