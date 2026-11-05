@@ -148,7 +148,7 @@ pub(crate) fn tools() -> Vec<Tool> {
         reading::tool(),
         Tool::new(
             "media.check",
-            "Scan locally and return counts plus a page of cue locations, without subtitle text. problems are length/translation/timing errors; hints flag short cues or repeated adjacent boundaries for optional review, not mandatory edits. Filter by kind; next_offset pages findings, not cues. Read the relevant ranges yourself.",
+            "Return counts and cue locations for excessive length, empty translations or invalid timing; this does not detect mistranslations or omitted phrases. hints flag short cues or repeated adjacent boundaries for optional review, not mandatory edits. Filter by kind; next_offset pages findings, not cues. Read the relevant ranges yourself.",
             json!({"workspace":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50},"kind":{"type":"string","enum":inspection::KINDS}}),
             &["workspace"],
         ).read_only(),

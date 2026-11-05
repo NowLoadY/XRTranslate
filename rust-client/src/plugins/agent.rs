@@ -373,10 +373,8 @@ impl AgentPlugin {
             ));
         }
         let run = self.run.as_mut().unwrap();
-        self.context.push(
-            PromptMessageRole::User,
-            format!("User follow-up instruction:\n{message}"),
-        );
+        self.context
+            .instruct(format!("User follow-up instruction:\n{message}"));
         // A human correction starts a new attempt, without resetting the task budget.
         run.errors = 0;
         run.request_retries = 0;

@@ -7,6 +7,8 @@ pub(super) struct Context {
     pub memory: String,
     // The progress note covers all messages through this assistant reply.
     summarized: usize,
+    // Only the current execution's user instructions are kept verbatim.
+    instructions: Vec<usize>,
     budget: usize,
 }
 
@@ -29,8 +31,14 @@ impl Context {
             self.messages[0].content = instructions;
         }
         self.budget = budget;
-        self.push(PromptMessageRole::User, task);
+        self.instructions.clear();
+        self.instruct(task);
         Ok(())
+    }
+
+    pub fn instruct(&mut self, content: String) {
+        self.instructions.push(self.messages.len());
+        self.push(PromptMessageRole::User, content);
     }
 
     pub fn push(&mut self, role: PromptMessageRole, content: String) {
@@ -58,8 +66,25 @@ impl Context {
                 role: PromptMessageRole::Assistant,
                 content: format!("Progress note from earlier steps:\n{}", self.memory),
             };
-            self.messages.splice(1..self.summarized, [summary]);
-            self.summarized = 2;
+            let end = self.summarized;
+            let mut retained: Vec<_> = self
+                .instructions
+                .iter()
+                .copied()
+                .take_while(|&index| index < end)
+                .map(|index| self.messages[index].clone())
+                .collect();
+            retained.push(summary);
+            let next = retained.len() + 1;
+            self.messages.splice(1..end, retained);
+            for (order, index) in self.instructions.iter_mut().enumerate() {
+                *index = if *index < end {
+                    order + 1
+                } else {
+                    *index - end + next
+                };
+            }
+            self.summarized = next;
             log::info!(
                 "Agent context compacted: estimated_tokens={before}->{}, budget={}, retained_messages={}",
                 self.size(),
@@ -103,16 +128,27 @@ mod tests {
         context.push(PromptMessageRole::Assistant, "invalid decision".into());
         context.remember(None);
         context.push(PromptMessageRole::User, "error feedback".repeat(18));
-        context.push(
-            PromptMessageRole::User,
-            "User follow-up instruction:\nKeep timestamps unchanged".into(),
-        );
+        context.instruct("User follow-up instruction:\nKeep timestamps unchanged".into());
         let unsummarized = context.messages[5..].to_vec();
         assert!(context.size() > context.budget);
         let compacted = context.prepare().unwrap();
-        assert_eq!(&compacted[..1], &prefix[..1]);
-        assert!(compacted[1].content.contains("First change verified"));
-        assert_eq!(&compacted[2..], unsummarized);
+        assert_eq!(&compacted[..2], &prefix);
+        assert!(compacted[2].content.contains("First change verified"));
+        assert_eq!(&compacted[3..], unsummarized);
+        assert_eq!(context.prepare().unwrap(), compacted);
+
+        // Even a poor note cannot erase a requirement it failed to summarize.
+        context.push(PromptMessageRole::Assistant, "Another change".into());
+        context.remember(Some("Only the latest change".into()));
+        context.push(PromptMessageRole::User, "large result".repeat(45));
+        let compacted = context.prepare().unwrap();
+        assert_eq!(&compacted[..2], &prefix);
+        assert_eq!(
+            compacted[2].content,
+            "User follow-up instruction:\nKeep timestamps unchanged"
+        );
+        assert_eq!(context.instructions, [1, 2]);
+        assert_eq!(compacted.len(), 5);
         assert_eq!(context.prepare().unwrap(), compacted);
 
         context
@@ -145,5 +181,14 @@ mod tests {
         let latest = context.messages.last().unwrap().clone();
         assert!(context.prepare().is_err());
         assert_eq!(context.messages.last(), Some(&latest));
+        assert_eq!(context.messages[1].content, "Continue the same document");
+        assert_eq!(context.instructions, [1]);
+        assert!(!context.messages.contains(&prefix[1]));
+        assert!(
+            !context
+                .messages
+                .iter()
+                .any(|message| message.content.contains("Keep timestamps unchanged"))
+        );
     }
 }
