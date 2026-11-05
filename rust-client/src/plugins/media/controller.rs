@@ -5,6 +5,8 @@ use super::{
 };
 use std::path::PathBuf;
 use std::time::Instant;
+mod scrubbing;
+use scrubbing::ScrubAudio;
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum MediaRoute {
@@ -29,6 +31,7 @@ pub(super) struct SubtitleEdit {
     pub(super) focus: Option<SubtitleField>,
     pub(super) retranslate_requested: bool,
     pub(super) retranslation: Option<String>,
+    pub(super) dragging_time: bool,
 }
 
 pub struct MediaController {
@@ -44,6 +47,7 @@ pub struct MediaController {
     pub video_display: Option<super::backend::VideoDisplay>,
     pub subtitles: SubtitleTimeline,
     pub(super) subtitle_edit: Option<SubtitleEdit>,
+    scrub_audio: Option<ScrubAudio>,
     pub(super) pending_subtitle_change: Option<super::files::SubtitleChange>,
     pub previews: crate::session_coordinator::LivePreviews,
     pub show_subtitles: bool,
@@ -90,20 +94,11 @@ impl Default for MediaController {
             if !crate::plugins::PluginId::MEDIA.is_supported() {
                 None
             } else {
-                match super::backend::mpv::MpvBackend::new() {
-                    Ok(b) => Some(Box::new(b)),
+                match super::backend::create() {
+                    Ok(backend) => Some(backend),
                     Err(e) => {
-                        log::warn!("MPV backend not initialized on startup: {}", e);
-                        #[cfg(any(windows, target_os = "linux", target_os = "android"))]
-                        {
-                            super::backend::audio::AudioBackend::new()
-                                .ok()
-                                .map(|backend| Box::new(backend) as Box<dyn MediaBackend>)
-                        }
-                        #[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
-                        {
-                            None
-                        }
+                        log::warn!("Media playback unavailable: {e}");
+                        None
                     }
                 }
             };
@@ -121,6 +116,7 @@ impl Default for MediaController {
             video_display: None,
             subtitles: SubtitleTimeline::new(),
             subtitle_edit: None,
+            scrub_audio: None,
             pending_subtitle_change: None,
             previews: Default::default(),
             show_subtitles: true,
@@ -180,6 +176,7 @@ impl MediaController {
     }
 
     pub fn hide_video(&mut self) {
+        self.cancel_subtitle_trim();
         if let Some(backend) = &mut self.backend {
             backend.set_video_visible(false);
         }
@@ -450,6 +447,7 @@ impl MediaController {
             focus: Some(field),
             retranslate_requested: false,
             retranslation: None,
+            dragging_time: false,
         });
         if let Some(backend) = &mut self.backend
             && backend.get_status() == PlaybackStatus::Playing
@@ -768,6 +766,13 @@ impl MediaController {
     }
 
     pub fn toggle_play(&mut self) {
+        if self
+            .subtitle_edit
+            .as_ref()
+            .is_some_and(|edit| edit.dragging_time)
+        {
+            return;
+        }
         let Some(source) = &self.current_source else {
             return;
         };
@@ -841,6 +846,9 @@ impl MediaController {
     }
 
     pub fn tick(&mut self) {
+        if let Some(audio) = &mut self.scrub_audio {
+            audio.tick();
+        }
         if let Some(result) = self.video_export.as_ref().and_then(|job| job.poll()) {
             self.video_export = None;
             match result {
@@ -926,6 +934,17 @@ impl MediaController {
     }
 
     pub fn get_time_ms(&self) -> i64 {
+        if let Some(edit) = self
+            .subtitle_edit
+            .as_ref()
+            .filter(|edit| edit.dragging_time)
+        {
+            return if edit.focus == Some(SubtitleField::Start) {
+                edit.cue.start_ms
+            } else {
+                edit.cue.end_ms
+            };
+        }
         self.backend.as_ref().map(|b| b.get_time_ms()).unwrap_or(0)
     }
 

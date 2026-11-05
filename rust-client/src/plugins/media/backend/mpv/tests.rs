@@ -2,7 +2,7 @@ use super::*;
 use std::time::{Duration, Instant};
 
 // Exercise actual libmpv notifications without a display or audio device.
-fn player() -> MpvBackend {
+pub(in crate::plugins::media) fn player() -> MpvBackend {
     let mpv = MpvHandle::create().unwrap();
     for (name, value) in [
         ("config", "no"),
@@ -52,7 +52,7 @@ fn wait_until(player: &mut MpvBackend, condition: impl Fn(&MpvBackend) -> bool) 
     }
 }
 
-fn silent_wav(path: &std::path::Path) {
+pub(in crate::plugins::media) fn silent_wav(path: &std::path::Path) {
     let data_size = 8_000u32 * 2 * 2 * 4; // Four seconds of stereo PCM16.
     let mut data = Vec::new();
     data.extend_from_slice(b"RIFF");

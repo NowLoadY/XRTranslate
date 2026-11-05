@@ -23,6 +23,21 @@ pub enum MediaSource {
 
 pub use crate::audio_playback::PlaybackStatus;
 
+pub(super) fn create() -> Result<Box<dyn MediaBackend>, String> {
+    match mpv::MpvBackend::new() {
+        Ok(player) => Ok(Box::new(player)),
+        Err(error) => {
+            #[cfg(any(windows, target_os = "linux", target_os = "android"))]
+            {
+                log::debug!("Using native audio playback: {error}");
+                audio::AudioBackend::new().map(|player| Box::new(player) as Box<dyn MediaBackend>)
+            }
+            #[cfg(not(any(windows, target_os = "linux", target_os = "android")))]
+            Err(error)
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 #[cfg_attr(not(all(target_os = "linux", feature = "mpv")), allow(dead_code))]
 pub enum VideoDisplay {

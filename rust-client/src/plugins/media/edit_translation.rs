@@ -170,6 +170,7 @@ mod tests {
             focus: None,
             retranslate_requested: false,
             retranslation: Some(translation.operation.clone()),
+            dragging_time: false,
         };
         let pending = SubtitleRetranslation {
             task_id: draft.task_id.clone(),

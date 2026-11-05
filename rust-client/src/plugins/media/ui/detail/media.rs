@@ -73,9 +73,6 @@ fn render_fullscreen(
         controller.fullscreen_last_interaction = std::time::Instant::now();
     }
     if !ui.ctx().text_edit_focused() {
-        if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Space)) {
-            controller.toggle_play();
-        }
         for (key, offset) in [
             (egui::Key::ArrowLeft, -5_000),
             (egui::Key::ArrowRight, 5_000),

@@ -91,17 +91,21 @@ pub(super) fn render_subtitles_card(
         );
         ui.weak(tr(language, "No subtitles yet"));
         if let Some(task) = task {
-            ui_director::egui::feedback::record(
-                ui,
-                super::subtitles_target(&task.id),
-                list_rect,
-            );
+            ui_director::egui::feedback::record(ui, super::subtitles_target(&task.id), list_rect);
         }
         return;
     }
     let mut seek = None;
-    if let Some(index) = super::timeline::overview(controller, subtitles, ui) {
-        let cue = &subtitles.cues()[index];
+    let idle = task.is_some_and(|task| !task.is_task_running);
+    let can_trim = idle
+        && preview.is_none()
+        && controller
+            .subtitle_edit
+            .as_ref()
+            .is_none_or(|edit| edit.dragging_time);
+    let timeline_action = super::timeline::overview(controller, subtitles, can_trim, ui);
+    if let Some(super::timeline::Action::Select(index)) = &timeline_action {
+        let cue = &subtitles.cues()[*index];
         let (id, start) = (cue.id.clone(), cue.start_ms);
         if can_play {
             seek = Some((start, false));
@@ -109,21 +113,24 @@ pub(super) fn render_subtitles_card(
         controller.last_manual_scroll = Some(std::time::Instant::now());
         controller.last_auto_scrolled_cue_id = Some(id);
         if controller.subtitle_edit.is_none() {
-            target = ScrollTarget::Row(index);
+            target = ScrollTarget::Row(*index);
         }
     }
-    let idle = task.is_some_and(|task| !task.is_task_running);
     let char_limit = task.map_or_else(
         super::super::subtitles::default_subtitle_char_limit,
         |task| task.subtitle_char_limit,
     );
-    let editing_index = controller.subtitle_edit.as_ref().and_then(|draft| {
-        controller
-            .subtitles
-            .cues()
-            .iter()
-            .position(|cue| cue.id == draft.cue.id)
-    });
+    let editing_index = controller
+        .subtitle_edit
+        .as_ref()
+        .filter(|draft| !draft.dragging_time)
+        .and_then(|draft| {
+            controller
+                .subtitles
+                .cues()
+                .iter()
+                .position(|cue| cue.id == draft.cue.id)
+        });
     let edit_bounds = editing_index.map(|index| controller.subtitle_time_bounds(index));
     let edit_height = ui.available_height().clamp(180.0, 300.0);
     if let Some(index) = editing_index
@@ -134,7 +141,7 @@ pub(super) fn render_subtitles_card(
     {
         target = ScrollTarget::Row(index);
     }
-    let can_edit = idle && editing_index.is_none() && preview.is_none();
+    let can_edit = idle && controller.subtitle_edit.is_none() && preview.is_none();
     let edit_hint = tr(
         language,
         if preview.is_some() {
@@ -212,6 +219,11 @@ pub(super) fn render_subtitles_card(
                 .as_ref()
                 .filter(|draft| draft.cue.id == cue.id)
                 .map_or(cue, |draft| &draft.cue);
+            let displayed_start = displayed_cue.start_ms;
+            let displayed_end = draft
+                .as_ref()
+                .filter(|draft| draft.cue.id == cue.id)
+                .map_or(subtitles.effective_end_at(index), |draft| draft.cue.end_ms);
             let border = if displayed_cue.character_count() > char_limit {
                 crate::ui::theme::danger()
             } else {
@@ -246,8 +258,8 @@ pub(super) fn render_subtitles_card(
                         seek = Some((cue.start_ms, true));
                     }
                     for (field, time) in [
-                        (SubtitleField::Start, cue.start_ms),
-                        (SubtitleField::End, subtitles.effective_end_at(index)),
+                        (SubtitleField::Start, displayed_start),
+                        (SubtitleField::End, displayed_end),
                     ] {
                         if field == SubtitleField::End {
                             ui.weak("–");
@@ -342,6 +354,16 @@ pub(super) fn render_subtitles_card(
     if let Some(id) = delete {
         controller.delete_subtitle(&id);
         return;
+    }
+    match timeline_action {
+        Some(super::timeline::Action::Trim {
+            cue,
+            edge,
+            time,
+            finished,
+        }) => controller.trim_subtitle(&cue, edge, time, finished),
+        Some(super::timeline::Action::CancelTrim) => controller.cancel_subtitle_trim(),
+        _ => {}
     }
     if let Some((source, target)) = merge
         && let (Some(source), Some(target)) = (

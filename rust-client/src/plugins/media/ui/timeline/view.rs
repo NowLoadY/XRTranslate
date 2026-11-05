@@ -65,6 +65,26 @@ impl View {
         (((self.strength * (position - focus)).asinh() - left) / (right - left)).clamp(0.0, 1.0)
     }
 
+    pub(super) fn magnified(self, scale: f64) -> Self {
+        let span = (self.end - self.start) / scale.max(1.0);
+        let start = (self.focus - span / 2.0).clamp(self.start, (self.end - span).max(self.start));
+        Self {
+            start,
+            end: start + span,
+            ..self
+        }
+    }
+
+    /// Zoom around the grabbed point, keeping a stationary pointer at the same time.
+    pub(super) fn anchored(mut self, time: f64, fraction: f64, duration: i64) -> Self {
+        let shift = (time - self.time(fraction))
+            .clamp(-self.start, (duration as f64 - self.end).max(-self.start));
+        self.start += shift;
+        self.end += shift;
+        self.focus += shift;
+        self
+    }
+
     pub(super) fn time(self, fraction: f64) -> f64 {
         let fraction = finite_clamp(fraction, 0.0, 1.0);
         if fraction <= 0.0 {
@@ -181,7 +201,18 @@ mod tests {
         assert_eq!(full.time(0.75), 750_000.0);
         assert_roundtrip(full);
         for focus in [0.0, 1000.0, 500_500.0, 999_500.0, 1_000_000.0] {
-            assert_roundtrip(View::following(&cues, 1_000_000, focus, 600.0));
+            let view = View::following(&cues, 1_000_000, focus, 600.0);
+            assert_roundtrip(view);
+            for scale in [1.0, 1.01, 4.0] {
+                let zoomed = view.magnified(scale);
+                assert_roundtrip(zoomed);
+                let anchored = zoomed.anchored(focus, 0.3, 1_000_000);
+                assert_roundtrip(anchored);
+                assert!(anchored.start >= 0.0 && anchored.end <= 1_000_000.0);
+                if focus == 500_500.0 {
+                    assert!((anchored.time(0.3) - focus).abs() < 1e-6);
+                }
+            }
         }
     }
 

@@ -7,7 +7,7 @@ mod encoding;
 mod tracks;
 pub(crate) use encoding::{encode_audio, encode_video};
 #[cfg(test)]
-mod tests;
+pub(in crate::plugins::media) mod tests;
 
 struct MpvHandle {
     handle: *mut libmpv_sys::mpv_handle,

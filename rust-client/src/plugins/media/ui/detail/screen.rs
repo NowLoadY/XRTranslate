@@ -26,6 +26,14 @@ pub(in crate::plugins::media::ui) fn render_detail(
             render_detail_contents(controller, snapshot, ui)
         })
         .inner;
+    // Handle after rendering so text editors and focused controls get their keys first.
+    if !blocked
+        && controller.can_play()
+        && !ui.ctx().text_edit_focused()
+        && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Space))
+    {
+        controller.toggle_play();
+    }
     if controller.subtitles.count() > 0
         && matches!(
             action,
@@ -163,7 +171,12 @@ fn render_detail_contents(
         render_viewport_card(controller, language, ui, height);
     } else {
         let stacked = layout::should_stack(ui.available_width(), 2, 380.0);
-        if stacked && controller.subtitle_edit.is_some() {
+        if stacked
+            && controller
+                .subtitle_edit
+                .as_ref()
+                .is_some_and(|edit| !edit.dragging_time)
+        {
             ui.push_id(controller.active_task_id.clone(), |ui| {
                 super::super::subtitles::render_subtitles_card(
                     controller, language, optimizing, ui,
