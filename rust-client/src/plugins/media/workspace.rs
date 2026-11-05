@@ -52,6 +52,32 @@ impl Workspace {
         }
         Ok(())
     }
+
+    fn check_base(
+        &self,
+        task: &super::task::MediaTask,
+        current: &SubtitleTimeline,
+    ) -> Result<(), String> {
+        let context = task_context(task);
+        let changed = context
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(key, value)| self.context.get(*key) != Some(*value))
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>();
+        let reason = if !changed.is_empty() {
+            format!("task inputs changed ({})", changed.join(", "))
+        } else if !same_timeline(current, &self.base) {
+            "subtitles changed since this workspace was opened".into()
+        } else {
+            return Ok(());
+        };
+        Err(format!(
+            "Conflict: {reason}. Draft {} is retained; compare draft/current with media.read before reopening with reset=true.",
+            self.id
+        ))
+    }
 }
 
 #[derive(Deserialize)]
@@ -141,7 +167,7 @@ pub(crate) fn tools() -> Vec<Tool> {
         ).read_only(),
         Tool::new(
             "media.open",
-            "Open or resume a subtitle working copy for an idle task. Does not navigate: use UI tools to open the corresponding media project when the user should see the work. reset=true discards a previous working copy; use it only to restart after a conflict.",
+            "Open or resume a subtitle working copy for an idle task. Rejects stale drafts before editing and returns their ID for inspection with media.read. Does not navigate: use UI tools to open the corresponding media project when the user should see the work. reset=true discards a previous working copy; use it only to restart after a conflict.",
             json!({"task":{"type":"string"},"reset":{"type":"boolean"}}),
             &["task"],
         ),
@@ -239,10 +265,10 @@ fn cue_location(cue: &super::subtitles::SubtitleCue, end_ms: i64) -> Value {
 }
 
 fn task_context(task: &super::task::MediaTask) -> Value {
+    // Only subtitle inputs participate; generated audio and playback are independent.
     json!({"source":task.source,"source_language":task.source_language,
         "target_language":task.target_language,"character_limit":task.subtitle_char_limit,
         "audio_track":task.audio_track,"original_audio_track":task.original_audio_track,
-        "speech_track":task.speech_track,"play_speech_track":task.play_speech_track,
         "recognition_channels":task.audio_channels.iter().filter(|channel| channel.recognition).map(|channel| channel.index).collect::<Vec<_>>()})
 }
 
@@ -255,9 +281,7 @@ impl MediaPlugin {
                 } else {
                     &task.subtitles
                 };
-                workspace.status == "open"
-                    && (workspace.context != task_context(task)
-                        || !same_timeline(current, &workspace.base))
+                workspace.status == "open" && workspace.check_base(task, current).is_err()
             })
         });
         if reset {
@@ -405,6 +429,11 @@ impl MediaPlugin {
                         records: Vec::new(),
                         trials: Vec::new(),
                     });
+                } else {
+                    task.optimization
+                        .as_ref()
+                        .unwrap()
+                        .check_base(task, timeline)?;
                 }
                 let workspace = task.optimization.as_ref().unwrap();
                 let result =
@@ -682,27 +711,20 @@ impl MediaPlugin {
                 if task.is_task_running {
                     return Err("Task is running".into());
                 }
-                let previous = task.clone();
-                let context = task_context(task);
-                let workspace = task.optimization.as_mut().unwrap();
                 let current = if active {
                     &self.controller.subtitles
                 } else {
                     &task.subtitles
                 };
-                let previous_current = current.clone();
-                let replacement = if let Some(revision) = revision {
+                if let Some(revision) = revision {
+                    let workspace = task.optimization.as_ref().unwrap();
                     workspace.check_revision(revision)?;
-                    if workspace.context != context {
-                        return Err(
-                            "Conflict: task languages, source or constraints have changed".into(),
-                        );
-                    }
-                    if !same_timeline(current, &workspace.base) {
-                        return Err(
-                            "Conflict: subtitles changed since this workspace was opened".into(),
-                        );
-                    }
+                    workspace.check_base(task, current)?;
+                }
+                let previous = task.clone();
+                let previous_current = current.clone();
+                let workspace = task.optimization.as_mut().unwrap();
+                let replacement = if revision.is_some() {
                     if issues(&workspace.draft, task.subtitle_char_limit)
                         .iter()
                         .any(|issue| {
@@ -1307,6 +1329,20 @@ mod tests {
                     "edits":[{"cue":cue,"translation":"你好，再见。"}]}),
                 )
                 .unwrap();
+                let stored = plugin.controller.store.get_mut(&task).unwrap();
+                stored.speech_track = Some(super::super::task::SpeechTrack {
+                    path: storage.path().join("speech.wav"),
+                    language: "zh".into(),
+                });
+                stored.play_speech_track = true;
+                assert_eq!(
+                    call(&mut plugin, "media.open", json!({"task":task})).unwrap()["workspace"],
+                    workspace
+                );
+                // Persisted snapshots may include playback fields; they are not inputs.
+                let context = &mut plugin.workspace_mut(&workspace).unwrap().context;
+                context["speech_track"] = Value::Null;
+                context["play_speech_track"] = false.into();
                 let (resumed, _) = plugin.prepare_optimization(&task).unwrap();
                 assert_eq!(resumed["workspace"], workspace);
                 assert_eq!(plugin.workspace_mut(&workspace).unwrap().revision, 1);
@@ -1340,6 +1376,33 @@ mod tests {
                         .subtitles
                         .clone()
                 };
+                let error = call(&mut plugin, "media.open", json!({"task":task})).unwrap_err();
+                assert!(error.contains(if regenerate {
+                    "subtitles changed"
+                } else {
+                    "target_language"
+                }));
+                assert!(
+                    error.contains(&workspace),
+                    "the draft must remain inspectable"
+                );
+                assert_eq!(plugin.workspace_mut(&workspace).unwrap().revision, 1);
+                let published = call(
+                    &mut plugin,
+                    "media.read",
+                    json!({"workspace":workspace,"document":"current"}),
+                )
+                .unwrap();
+                assert_eq!(published["cues"][0]["cue"], json!(current.cues()[0]));
+                assert_eq!(
+                    call(
+                        &mut plugin,
+                        "media.commit",
+                        json!({"workspace":workspace,"revision":1}),
+                    )
+                    .unwrap_err(),
+                    error,
+                );
                 let (scope, _) = plugin.prepare_optimization(&task).unwrap();
                 let fresh = scope["workspace"].as_str().unwrap();
                 assert_ne!(
