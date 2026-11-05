@@ -154,6 +154,7 @@ impl<C: AsyncHttpClient> QwenAudioFlashAdapter<C> {
                 endpoint: self.endpoint.clone(),
                 status: response.status,
                 body_preview: preview(&response.body),
+                retry_after: response.retry_after,
             });
         }
         let value: Value = serde_json::from_str(&response.body)

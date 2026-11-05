@@ -44,6 +44,7 @@ impl HttpRequest {
 pub struct HttpResponse {
     pub status: u16,
     pub body: String,
+    pub retry_after: Option<Duration>,
 }
 
 /// Minimal async transport seam for production HTTP and deterministic tests.
@@ -207,9 +208,16 @@ impl AsyncHttpClient for ReqwestClient {
         let response = self.send(&request).await?;
         let headers_ms = started.elapsed().as_millis();
         let status = response.status().as_u16();
+        let retry_after = retry_after_header(response.headers());
         let body = response.text().await.map_err(transport_error)?;
+        let retry_after =
+            retry_after.or_else(|| (status >= 400).then(|| retry_after_body(&body)).flatten());
         log_timing(&request, started, headers_ms, None, status);
-        Ok(HttpResponse { status, body })
+        Ok(HttpResponse {
+            status,
+            body,
+            retry_after,
+        })
     }
 
     async fn execute_streaming<F, Fut>(
@@ -226,9 +234,15 @@ impl AsyncHttpClient for ReqwestClient {
         let headers_ms = started.elapsed().as_millis();
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
+            let retry_after = retry_after_header(response.headers());
             let body = response.text().await.map_err(transport_error)?;
+            let retry_after = retry_after.or_else(|| retry_after_body(&body));
             log_timing(&request, started, headers_ms, None, status);
-            return Ok(HttpResponse { status, body });
+            return Ok(HttpResponse {
+                status,
+                body,
+                retry_after,
+            });
         }
         let mut first_chunk_ms = None;
         while let Some(chunk) = response.chunk().await.map_err(|error| {
@@ -264,7 +278,92 @@ impl AsyncHttpClient for ReqwestClient {
         Ok(HttpResponse {
             status,
             body: String::new(),
+            retry_after: None,
         })
+    }
+}
+
+pub(crate) fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    value
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
+        .or_else(|| {
+            Some(
+                httpdate::parse_http_date(value)
+                    .ok()?
+                    .duration_since(std::time::SystemTime::now())
+                    .unwrap_or_default(),
+            )
+        })
+}
+
+fn retry_after_body(body: &str) -> Option<Duration> {
+    let body: Value = serde_json::from_str(body).ok()?;
+    let error = body.get("error").unwrap_or(&body);
+    // Google APIs can return RetryInfo instead of the standard HTTP header.
+    let delay = error["details"]
+        .as_array()
+        .and_then(|details| {
+            details
+                .iter()
+                .find_map(|detail| detail["retryDelay"].as_str())
+        })
+        .or_else(|| {
+            // The Interactions API currently gives the delay in its error message.
+            error["message"]
+                .as_str()?
+                .split_once("retry in ")?
+                .1
+                .split_whitespace()
+                .next()
+        })?;
+    let seconds = delay
+        .trim_end_matches('.')
+        .strip_suffix('s')?
+        .parse()
+        .ok()?;
+    Duration::try_from_secs_f64(seconds).ok()
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_provider_cooldown() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "28".parse().unwrap());
+        assert_eq!(retry_after_header(&headers), Some(Duration::from_secs(28)));
+        let until = std::time::SystemTime::now() + Duration::from_secs(60);
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            httpdate::fmt_http_date(until).parse().unwrap(),
+        );
+        assert!((59..=60).contains(&retry_after_header(&headers).unwrap().as_secs()));
+        for (body, seconds) in [
+            (
+                r#"{"error":{"message":"Rate limit exceeded. Please retry in 28s or upgrade your tier.","code":"too_many_requests"}}"#,
+                28.0,
+            ),
+            (
+                r#"{"error":{"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"2.5s"}]}}"#,
+                2.5,
+            ),
+        ] {
+            assert_eq!(
+                retry_after_body(body),
+                Some(Duration::from_secs_f64(seconds))
+            );
+        }
+        for body in [
+            "not json",
+            r#"{"error":{"message":"Invalid credentials"}}"#,
+            r#"{"error":{"details":[{"retryDelay":"-1s"}]}}"#,
+        ] {
+            assert_eq!(retry_after_body(body), None);
+        }
     }
 }
 

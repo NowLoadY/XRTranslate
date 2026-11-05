@@ -48,6 +48,7 @@ pub enum InferenceError {
         endpoint: String,
         status: u16,
         body_preview: String,
+        retry_after: Option<std::time::Duration>,
     },
     /// The service response was not an OpenAI chat-completions document.
     InvalidResponse {
@@ -91,6 +92,7 @@ impl fmt::Display for InferenceError {
                 endpoint,
                 status,
                 body_preview,
+                ..
             } => write!(
                 formatter,
                 "inference request to {endpoint} returned HTTP {status}: {body_preview}"

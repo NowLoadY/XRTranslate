@@ -11,7 +11,9 @@ text, language and an optional voice selection returns mono PCM16 WAV. It reuses
 the backend's prepared speech resources, language checks, voice library and
 model input limits. It neither translates the text nor plays the result. The
 request does not alter the globally selected voice. This endpoint is independent
-of the media plugin.
+of the media plugin. Upstream HTTP errors retain their status. Provider cooldowns
+(`Retry-After` or an API retry hint) are forwarded as a standard `Retry-After`
+header, rounded up to whole seconds.
 
 `media::speech` owns the cancellable file job. It snapshots the translated cues
 and voice, requests one cue at a time, resamples to 48 kHz and writes progressively
@@ -21,6 +23,12 @@ accelerates it without changing pitch. The final cue fits within the media's
 remaining duration. No Python or separate FFmpeg executable is used. Builds
 without MPV can generate naturally fitting speech, but report when timing
 adjustment requires the playback runtime.
+
+On HTTP 429, the job keeps the temporary WAV and completed cue progress, waits
+for the provider's cooldown, then retries the current cue. Without a cooldown it
+backs off from one minute to five minutes. Waiting has no fixed attempt limit;
+it remains cancellable and the UI shows only **Waiting for service**. No completed
+cue is requested again. Other errors still stop the job with their cause.
 
 Missing translations, mismatched target languages and invalid timing fail before
 inference. A failed or cancelled job removes its temporary output. Changed
@@ -42,4 +50,5 @@ speech track and playback selection.
 The ignored integration check `translated_speech_is_aligned_without_changing_recognition_input`
 uses a local HTTP fixture and the installed MPV runtime. It verifies translated
 request text, voice selection, cue timing, silence, pitch preservation and
-recognition-source isolation without loading AI models.
+recognition-source isolation, as well as consecutive rate limits, recovery and
+cancelling a long cooldown, without loading AI models.

@@ -524,6 +524,7 @@ fn websocket_error(
             endpoint: endpoint.to_owned(),
             status: response.status().as_u16(),
             body_preview,
+            retry_after: crate::http::retry_after_header(response.headers()),
         };
     }
     InferenceError::Transport {

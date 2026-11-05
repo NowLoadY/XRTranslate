@@ -193,6 +193,7 @@ impl<C: AsyncHttpClient> OpenAiCompatibleClient<C> {
                 endpoint: self.endpoint.clone(),
                 status: response.status,
                 body_preview: preview(&response.body),
+                retry_after: response.retry_after,
             });
         }
         let completion = stream.finish(&self.endpoint)?;
@@ -255,6 +256,7 @@ impl<C: AsyncHttpClient> OpenAiCompatibleClient<C> {
                 endpoint: self.endpoint.clone(),
                 status: response.status,
                 body_preview: preview(&response.body),
+                retry_after: response.retry_after,
             });
         }
         Ok(response.body)

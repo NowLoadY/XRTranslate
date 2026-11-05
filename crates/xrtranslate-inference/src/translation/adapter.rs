@@ -302,6 +302,7 @@ mod tests {
             self.0.lock().unwrap().push(request.body);
             Ok(HttpResponse {
                 status: 200,
+                retry_after: None,
                 body: json!({"choices":[{"message":{"content":"answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2048,"prompt_tokens_details":{"cached_tokens":1024}}})
                     .to_string(),
             })

@@ -33,14 +33,24 @@ pub(super) struct SpeechJob {
     next_poll: Instant,
     result: Option<crossbeam_channel::Receiver<Result<tempfile::TempPath, String>>>,
     cancelled: Arc<AtomicBool>,
-    progress: Arc<AtomicUsize>,
+    progress: Arc<SpeechProgress>,
     total: usize,
     input_key: u64,
 }
 
+#[derive(Default)]
+struct SpeechProgress {
+    completed: AtomicUsize,
+    waiting: AtomicBool,
+}
+
 impl SpeechJob {
     pub fn progress(&self) -> f32 {
-        self.progress.load(Ordering::Relaxed) as f32 / self.total as f32
+        self.progress.completed.load(Ordering::Relaxed) as f32 / self.total as f32
+    }
+
+    pub fn is_waiting(&self) -> bool {
+        self.progress.waiting.load(Ordering::Relaxed)
     }
 
     fn poll(
@@ -103,7 +113,7 @@ impl SpeechJob {
             })();
             match &result {
                 Ok(_) => log::info!("Media speech completed: task={} language={} cues={}", task.id, task.target_language, task.subtitles.count()),
-                Err(error) => log::warn!("Media speech stopped: task={} language={} completed={} error={error}", task.id, task.target_language, progress.load(Ordering::Relaxed)),
+                Err(error) => log::warn!("Media speech stopped: task={} language={} completed={} error={error}", task.id, task.target_language, progress.completed.load(Ordering::Relaxed)),
             }
             let _ = send.send(result);
             ctx.request_repaint();
@@ -184,7 +194,7 @@ async fn generate(
     server: &str,
     directory: &Path,
     cancelled: &AtomicBool,
-    progress: &AtomicUsize,
+    progress: &SpeechProgress,
     ctx: &egui::Context,
 ) -> Result<tempfile::TempPath, String> {
     validate(task)?;
@@ -202,7 +212,7 @@ async fn generate(
         .build()
         .map_err(|e| e.to_string())?;
     url.set_path("/tts/voice");
-    let status: VoiceStatus = response(client.get(url.clone()))
+    let status: VoiceStatus = response(client.get(url.clone()), progress)
         .await?
         .json()
         .await
@@ -233,11 +243,14 @@ async fn generate(
         let end = end_ms as u64 * u64::from(SAMPLE_RATE) / 1000;
         let available = usize::try_from(end - start).map_err(|e| e.to_string())?;
         let audio = async {
-            let body = response(client.post(url.clone()).json(&SpeechRequest {
-                text: cue.translated_text.clone().unwrap(),
-                language: task.target_language.clone(),
-                voice: Some(status.selection.clone()),
-            }))
+            let body = response(
+                client.post(url.clone()).json(&SpeechRequest {
+                    text: cue.translated_text.clone().unwrap(),
+                    language: task.target_language.clone(),
+                    voice: Some(status.selection.clone()),
+                }),
+                progress,
+            )
             .await?
             .bytes()
             .await
@@ -268,7 +281,7 @@ async fn generate(
         if cancelled.load(Ordering::Relaxed) {
             return Err("Speech generation cancelled".into());
         }
-        progress.store(index + 1, Ordering::Relaxed);
+        progress.completed.store(index + 1, Ordering::Relaxed);
         ctx.request_repaint();
     }
     let duration = task
@@ -287,16 +300,55 @@ async fn generate(
     Ok(output.into_temp_path())
 }
 
-async fn response(request: reqwest::RequestBuilder) -> Result<reqwest::Response, String> {
-    let response = request.send().await.map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Speech service ({}): {}",
-            response.status(),
-            response.text().await.map_err(|e| e.to_string())?
-        ));
+async fn response(
+    request: reqwest::RequestBuilder,
+    progress: &SpeechProgress,
+) -> Result<reqwest::Response, String> {
+    let mut retries = 0u32;
+    loop {
+        let response = request
+            .try_clone()
+            .ok_or("Speech request cannot be retried")?
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        let status = response.status();
+        if status.is_success() {
+            if retries > 0 {
+                log::info!(
+                    "Media speech resumed: subtitle={} retries={retries}",
+                    progress.completed.load(Ordering::Relaxed) + 1
+                );
+            }
+            return Ok(response);
+        }
+        let delay = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()?.parse::<u64>().ok())
+            .map(Duration::from_secs);
+        let error = response.text().await.map_err(|e| e.to_string())?;
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let delay = delay
+                .unwrap_or_else(|| Duration::from_secs((60 * (1 << retries.min(3))).min(300)))
+                .max(Duration::from_secs(1));
+            let until = tokio::time::Instant::now()
+                .checked_add(delay)
+                .ok_or("Speech service returned an invalid retry delay")?;
+            retries = retries.saturating_add(1);
+            log::warn!(
+                "Media speech waiting: subtitle={} retry={retries} delay_s={} error={error}",
+                progress.completed.load(Ordering::Relaxed) + 1,
+                delay.as_secs()
+            );
+            progress.waiting.store(true, Ordering::Relaxed);
+            // The job's cancellation branch drops this wait and the partial WAV.
+            tokio::time::sleep_until(until).await;
+            progress.waiting.store(false, Ordering::Relaxed);
+            continue;
+        }
+        return Err(format!("Speech service ({status}): {error}"));
     }
-    Ok(response)
 }
 
 fn decode(wav: &[u8]) -> Result<Vec<i16>, String> {
@@ -401,7 +453,7 @@ impl MediaController {
             next_poll: Instant::now(),
             result: None,
             cancelled: Arc::new(AtomicBool::new(false)),
-            progress: Arc::new(AtomicUsize::new(0)),
+            progress: Arc::new(SpeechProgress::default()),
         });
     }
 
@@ -507,13 +559,20 @@ mod tests {
         validate(&task).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let server = format!("http://{}", listener.local_addr().unwrap());
+        let progress = Arc::new(SpeechProgress::default());
+        let observed = progress.clone();
         let mock = std::thread::spawn(move || {
+            let mut limited_at: Option<Instant> = None;
             for expected in [
                 None,
                 Some(("你好。", 3)),
+                Some(("再见。", -1)),
+                Some(("再见。", -1)),
                 Some(("再见。", 1)),
                 None,
                 Some(("你好。", 0)),
+                None,
+                Some(("你好。", -2)),
             ] {
                 let (mut socket, _) = listener.accept().unwrap();
                 socket
@@ -542,6 +601,16 @@ mod tests {
                     assert_eq!(input.text, text);
                     assert_eq!(input.language, "zh");
                     assert_eq!(input.voice.unwrap().preset.as_deref(), Some("fixture"));
+                    if let Some(start) = limited_at.take() {
+                        assert!(start.elapsed() >= Duration::from_secs(1));
+                        assert_eq!(observed.completed.load(Ordering::Relaxed), 1);
+                    }
+                    if seconds < 0 {
+                        let delay = if seconds == -1 { 1 } else { 3600 };
+                        write!(socket, "HTTP/1.1 429 Too Many Requests\r\nRetry-After: {delay}\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbusy").unwrap();
+                        limited_at = Some(Instant::now());
+                        continue;
+                    }
                     if seconds == 0 {
                         socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbusy").unwrap();
                         continue;
@@ -587,7 +656,6 @@ mod tests {
                 socket.write_all(&body).unwrap();
             }
         });
-        let progress = AtomicUsize::new(0);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -602,7 +670,8 @@ mod tests {
                 &egui::Context::default(),
             ))
             .unwrap();
-        assert_eq!(progress.load(Ordering::Relaxed), 2);
+        assert_eq!(progress.completed.load(Ordering::Relaxed), 2);
+        assert!(!progress.waiting.load(Ordering::Relaxed));
         let samples = decode(&std::fs::read(&output).unwrap()).unwrap();
         assert_eq!(samples.len(), 6 * SAMPLE_RATE as usize);
         assert!(samples[..SAMPLE_RATE as usize].iter().all(|&s| s == 0));
@@ -625,7 +694,7 @@ mod tests {
                 &server,
                 directory.path(),
                 &AtomicBool::new(false),
-                &AtomicUsize::new(0),
+                &SpeechProgress::default(),
                 &egui::Context::default(),
             ))
             .unwrap_err();
@@ -633,6 +702,28 @@ mod tests {
             error.contains("Subtitle 1 (1000–2000 ms)") && error.contains("503"),
             "{error}"
         );
+        runtime.block_on(async {
+            let progress = SpeechProgress::default();
+            let cancelled = AtomicBool::new(false);
+            let ctx = egui::Context::default();
+            // Dropping the generation future is also how the job cancels a long wait.
+            let generation = generate(
+                &task,
+                &server,
+                directory.path(),
+                &cancelled,
+                &progress,
+                &ctx,
+            );
+            tokio::pin!(generation);
+            tokio::select! {
+                result = &mut generation => panic!("should still be waiting: {result:?}"),
+                _ = tokio::time::sleep(Duration::from_secs(2)) => {
+                    assert!(progress.waiting.load(Ordering::Relaxed));
+                    assert_eq!(progress.completed.load(Ordering::Relaxed), 0);
+                }
+            }
+        });
         mock.join().unwrap();
         assert_eq!(
             std::fs::read_dir(directory.path()).unwrap().count(),

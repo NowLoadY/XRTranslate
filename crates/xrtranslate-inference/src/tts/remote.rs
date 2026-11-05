@@ -129,6 +129,7 @@ impl RemoteTtsAdapter {
                 endpoint: self.endpoint.clone(),
                 status: response.status,
                 body_preview: response.body,
+                retry_after: response.retry_after,
             });
         }
         if gemini {

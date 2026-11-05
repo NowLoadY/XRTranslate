@@ -101,7 +101,7 @@ pub(super) fn render_task_control_card(
         .speech_job
         .as_ref()
         .filter(|job| job.task_id == id)
-        .map(|job| job.progress());
+        .map(|job| (job.progress(), job.is_waiting()));
     let mut generate_speech = false;
     let mut cancel_speech = false;
     let card_top = ui.next_widget_position();
@@ -227,10 +227,17 @@ pub(super) fn render_task_control_card(
                 );
             }
         });
-        if let Some(progress) = speech_progress {
+        if let Some((progress, waiting)) = speech_progress {
             crate::ui::layout::flow_row(ui, |ui| {
                 ui.spinner();
-                ui.label(tr(language, "Generating speech"));
+                ui.label(tr(
+                    language,
+                    if waiting {
+                        "Waiting for service"
+                    } else {
+                        "Generating speech"
+                    },
+                ));
                 cancel_speech = components::secondary_button(ui, tr(language, "Cancel")).clicked();
             });
             ui.add(egui::ProgressBar::new(progress).show_percentage());

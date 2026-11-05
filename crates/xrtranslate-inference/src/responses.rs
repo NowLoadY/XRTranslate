@@ -86,6 +86,7 @@ impl ChatGptClient {
         if !(200..300).contains(&response.status) {
             return Err(InferenceError::HttpStatus {
                 endpoint: RESPONSES_ENDPOINT.into(), status: response.status,
+                retry_after: response.retry_after,
                 body_preview: match response.status {
                     403 => "ChatGPT plan access is unavailable. Check this app's permissions in ChatGPT Settings.",
                     429 => "ChatGPT usage limit reached. Check your plan usage and try again later.",
