@@ -432,6 +432,21 @@ impl MpvBackend {
 }
 
 impl MediaBackend for MpvBackend {
+    fn refresh_audio(&mut self) -> Result<(), String> {
+        if !self.loading
+            && let super::PlaybackAudio::External(path) = &self.audio_selection
+            && let Some(track) = self
+                .snapshot
+                .audio_tracks
+                .iter()
+                .find(|track| track.external.as_ref() == Some(path))
+        {
+            self.mpv
+                .command_async(&["audio-reload", &track.id.to_string()])?;
+        }
+        Ok(())
+    }
+
     fn audio_tracks(&self) -> &[super::AudioTrack] {
         &self.snapshot.audio_tracks
     }

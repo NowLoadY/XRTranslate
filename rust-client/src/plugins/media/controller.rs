@@ -48,6 +48,8 @@ pub struct MediaController {
     pub subtitles: SubtitleTimeline,
     pub(super) subtitle_edit: Option<SubtitleEdit>,
     scrub_audio: Option<ScrubAudio>,
+    pub(super) speech_edit: Option<(String, i64)>,
+    speech_preview_end: Option<i64>,
     pub(super) pending_subtitle_change: Option<super::files::SubtitleChange>,
     pub previews: crate::session_coordinator::LivePreviews,
     pub show_subtitles: bool,
@@ -58,6 +60,7 @@ pub struct MediaController {
     pub volume: f32,
     pub(super) video_export: Option<super::video_export::VideoExport>,
     pub(super) speech_job: Option<super::speech::SpeechJob>,
+    pub(super) speech_render: Option<super::speech::track::RenderQueue>,
     pub(super) exported_video: Option<PathBuf>,
 
     pub search_query: String,
@@ -117,6 +120,8 @@ impl Default for MediaController {
             subtitles: SubtitleTimeline::new(),
             subtitle_edit: None,
             scrub_audio: None,
+            speech_edit: None,
+            speech_preview_end: None,
             pending_subtitle_change: None,
             previews: Default::default(),
             show_subtitles: true,
@@ -127,6 +132,7 @@ impl Default for MediaController {
             volume: 1.0,
             video_export: None,
             speech_job: None,
+            speech_render: None,
             exported_video: None,
             search_query: String::new(),
             browse_all: false,
@@ -303,6 +309,7 @@ impl MediaController {
     }
 
     pub fn open_task(&mut self, task_id: &str) -> Result<(), String> {
+        self.prepare_speech_track(task_id);
         let task = self.store.get(task_id).ok_or("Task not found")?.clone();
         self.subtitle_edit = None;
         self.pending_subtitle_change = None;
@@ -762,10 +769,17 @@ impl MediaController {
         self.save_active();
         if let Some(track) = speech {
             self.remove_speech_file(&track.path);
+            for clip in track.clips {
+                self.remove_speech_file(&clip.path);
+            }
         }
     }
 
     pub fn toggle_play(&mut self) {
+        if self.speech_edit.is_some() {
+            return;
+        }
+        self.speech_preview_end = None;
         if self
             .subtitle_edit
             .as_ref()
@@ -846,6 +860,7 @@ impl MediaController {
     }
 
     pub fn tick(&mut self) {
+        self.poll_speech_render();
         if let Some(audio) = &mut self.scrub_audio {
             audio.tick();
         }
@@ -872,6 +887,13 @@ impl MediaController {
 
         if let Some(backend) = &mut self.backend {
             backend.tick();
+            if self
+                .speech_preview_end
+                .is_some_and(|end| backend.get_time_ms() >= end)
+            {
+                backend.pause();
+                self.speech_preview_end = None;
+            }
             backend.set_subtitle_style(&style);
             if let Some(error) = backend.take_error() {
                 self.error = Some(error);
@@ -949,6 +971,7 @@ impl MediaController {
     }
 
     pub fn seek_to(&mut self, ms: i64, play: bool) {
+        self.speech_preview_end = None;
         if let Some(backend) = &mut self.backend {
             backend.seek(ms);
             if play {

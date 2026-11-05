@@ -63,15 +63,8 @@ fn dragging_edges_zooms_without_drift_commits_on_release_and_escape_cancels() {
                 _ => None,
             })
             .unwrap();
-        match action {
-            Some(Action::Trim {
-                cue,
-                edge,
-                time,
-                finished,
-            }) => controller.trim_subtitle(&cue, edge, time, finished),
-            Some(Action::CancelTrim) => controller.cancel_subtitle_trim(),
-            _ => {}
+        if let Some(action) = action {
+            action.apply(controller);
         }
         (view.unwrap(), rect)
     };
@@ -183,4 +176,148 @@ fn dragging_edges_zooms_without_drift_commits_on_release_and_escape_cancels() {
     assert_eq!(controller.subtitles.cues()[4].end_ms, 25_000);
     controller.trim_subtitle("4", SubtitleField::Start, 100_000, true);
     assert_eq!(controller.subtitles.cues()[4].start_ms, 24_999);
+    // Audio uses the same gesture/window but moves independently as a whole clip.
+    use crate::plugins::media::task::{SpeechClip, SpeechTrack};
+    let directory = storage.path().join("media-speech");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("clip.wav");
+    let mut writer = hound::WavWriter::create(
+        &path,
+        hound::WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        },
+    )
+    .unwrap();
+    for _ in 0..48_000 {
+        writer.write_sample(1_000i16).unwrap();
+    }
+    writer.finalize().unwrap();
+    let task_id = controller.active_task_id.clone().unwrap();
+    let task = controller.store.get_mut(&task_id).unwrap();
+    task.duration_ms = 100_000;
+    task.speech_track = Some(SpeechTrack {
+        path: directory.join("mix.wav"),
+        language: "zh".into(),
+        rendered: false,
+        clips: vec![SpeechClip {
+            id: "speech".into(),
+            path,
+            start_ms: 20_000,
+            duration_ms: 1_000,
+            text: "你好。".into(),
+            peaks: vec![128; 32],
+        }],
+    });
+    controller.prepare_speech_track(&task_id);
+    let saved_subtitles = controller.subtitles.export_srt();
+    let mut view = initial;
+    for _ in 0..40 {
+        view = frame(&mut controller, vec![]).0;
+    }
+    let press = egui::pos2(
+        rect.left() + view.fraction(20_500.0) as f32 * rect.width(),
+        rect.center().y + 30.0,
+    );
+    frame(
+        &mut controller,
+        vec![egui::Event::PointerMoved(press), button(press, true)],
+    );
+    let pointer = press + egui::vec2(10.0, 0.0);
+    frame(&mut controller, vec![egui::Event::PointerMoved(pointer)]);
+    let start = controller
+        .speech_edit
+        .as_ref()
+        .expect("dragging an audio body moves the clip")
+        .1;
+    assert!(start > 20_000);
+    for _ in 0..30 {
+        view = frame(&mut controller, vec![]).0;
+        assert_eq!(controller.speech_edit.as_ref().unwrap().1, start);
+    }
+    assert!(view.end - view.start < 40_000.0);
+    // A completed synthesis may arrive during this drag; committing must retain it.
+    let track = controller
+        .store
+        .get_mut(&task_id)
+        .unwrap()
+        .speech_track
+        .as_mut()
+        .unwrap();
+    let mut next = track.clips[0].clone();
+    next.id = "next".into();
+    next.start_ms = 40_000;
+    track.clips.push(next);
+    frame(&mut controller, vec![button(pointer, false)]);
+    assert!(controller.speech_edit.is_none());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        controller.poll_speech_render();
+        if controller
+            .store
+            .get(&task_id)
+            .unwrap()
+            .speech_track
+            .as_ref()
+            .unwrap()
+            .rendered
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "mix did not finish: {:?}",
+            controller.error
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let stored = MediaTaskStore::load_from_dir(storage.path());
+    let track = stored.get(&task_id).unwrap().speech_track.as_ref().unwrap();
+    assert_eq!(track.clips.len(), 2);
+    assert_eq!(track.clips[0].start_ms, start);
+    assert_eq!(track.clips[0].duration_ms, 1_000);
+    assert_eq!(controller.subtitles.export_srt(), saved_subtitles);
+    for _ in 0..40 {
+        view = frame(&mut controller, vec![]).0;
+    }
+    assert!(view.end - view.start > 95_000.0);
+    let press = egui::pos2(
+        rect.left() + view.fraction((start + 500) as f64) as f32 * rect.width(),
+        rect.center().y + 30.0,
+    );
+    frame(
+        &mut controller,
+        vec![egui::Event::PointerMoved(press), button(press, true)],
+    );
+    frame(
+        &mut controller,
+        vec![egui::Event::PointerMoved(press + egui::vec2(10.0, 0.0))],
+    );
+    assert!(controller.speech_edit.is_some());
+    frame(
+        &mut controller,
+        vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    assert!(controller.speech_edit.is_none());
+    assert_eq!(
+        controller
+            .store
+            .get(&task_id)
+            .unwrap()
+            .speech_track
+            .as_ref()
+            .unwrap()
+            .clips[0]
+            .start_ms,
+        start
+    );
+    assert_eq!(controller.subtitles.export_srt(), saved_subtitles);
 }

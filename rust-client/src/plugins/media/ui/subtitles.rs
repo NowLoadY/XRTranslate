@@ -52,6 +52,7 @@ pub(super) fn render_subtitles_card(
     let follow = can_play
         && !optimizing
         && controller.subtitle_edit.is_none()
+        && controller.speech_edit.is_none()
         && controller
             .last_manual_scroll
             .is_none_or(|time| time.elapsed().as_secs() >= 5);
@@ -83,6 +84,15 @@ pub(super) fn render_subtitles_card(
         ui.weak(tr(language, "Optimization preview"));
     }
     let list_rect = ui.available_rect_before_wrap();
+    let mut seek = None;
+    let idle = task.is_some_and(|task| !task.is_task_running);
+    let can_trim = idle
+        && preview.is_none()
+        && controller
+            .subtitle_edit
+            .as_ref()
+            .is_none_or(|edit| edit.dragging_time);
+    let timeline_action = super::timeline::overview(controller, subtitles, can_trim, ui);
     if subtitles.count() == 0 {
         ui.data_mut(|data| data.remove::<Measurements<usize>>(measurements_id));
         egui::scroll_area::State::default().store(
@@ -93,17 +103,11 @@ pub(super) fn render_subtitles_card(
         if let Some(task) = task {
             ui_director::egui::feedback::record(ui, super::subtitles_target(&task.id), list_rect);
         }
+        if let Some(action) = timeline_action {
+            action.apply(controller);
+        }
         return;
     }
-    let mut seek = None;
-    let idle = task.is_some_and(|task| !task.is_task_running);
-    let can_trim = idle
-        && preview.is_none()
-        && controller
-            .subtitle_edit
-            .as_ref()
-            .is_none_or(|edit| edit.dragging_time);
-    let timeline_action = super::timeline::overview(controller, subtitles, can_trim, ui);
     if let Some(super::timeline::Action::Select(index)) = &timeline_action {
         let cue = &subtitles.cues()[*index];
         let (id, start) = (cue.id.clone(), cue.start_ms);
@@ -355,15 +359,8 @@ pub(super) fn render_subtitles_card(
         controller.delete_subtitle(&id);
         return;
     }
-    match timeline_action {
-        Some(super::timeline::Action::Trim {
-            cue,
-            edge,
-            time,
-            finished,
-        }) => controller.trim_subtitle(&cue, edge, time, finished),
-        Some(super::timeline::Action::CancelTrim) => controller.cancel_subtitle_trim(),
-        _ => {}
+    if let Some(action) = timeline_action {
+        action.apply(controller);
     }
     if let Some((source, target)) = merge
         && let (Some(source), Some(target)) = (

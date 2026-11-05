@@ -17,6 +17,13 @@ pub fn tr(language: UiLanguage, english: &'static str) -> &'static str {
 
 const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     (
+        "Continue speech track",
+        "继续生成配音",
+        "吹き替え生成を続ける",
+        "더빙 생성 계속",
+        "Продолжить озвучку",
+    ),
+    (
         "Generate speech track",
         "生成配音音轨",
         "吹き替え音声を生成",

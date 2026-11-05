@@ -86,6 +86,10 @@ pub trait MediaBackend: Send {
         }
     }
 
+    fn refresh_audio(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
     fn supports_video(&self) -> bool {
         true
     }

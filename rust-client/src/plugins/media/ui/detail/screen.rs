@@ -76,7 +76,8 @@ fn render_detail_contents(
             .active_task_id
             .as_deref()
             .and_then(|id| controller.store.get(id))
-            .and_then(|task| task.speech_track.clone());
+            .and_then(|task| task.speech_track.as_ref())
+            .map(|track| (track.path.clone(), track.language.clone(), track.rendered));
         let video_available = controller.video_export.is_none()
             && controller
                 .active_task_id
@@ -101,24 +102,26 @@ fn render_detail_contents(
                 controller.open_library();
                 action = MediaAction::StopTranslation;
             }
-            if controller.subtitles.count() > 0 {
+            if controller.subtitles.count() > 0 || speech.is_some() {
                 components::icon_menu(
                     ui,
                     tr(language, "Export"),
                     egui::include_image!("../../../../../resources/icons/export.svg"),
                     |ui| {
-                        export_video = super::super::export_controls(
-                            ui,
-                            language,
-                            &title,
-                            &controller.subtitles,
-                            video_available,
-                        );
-                        if let Some(track) = &speech {
+                        if controller.subtitles.count() > 0 {
+                            export_video = super::super::export_controls(
+                                ui,
+                                language,
+                                &title,
+                                &controller.subtitles,
+                                video_available,
+                            );
+                        }
+                        if let Some((path, _, ready)) = &speech {
                             export_speech = components::secondary_button_enabled(
                                 ui,
                                 tr(language, "Export speech track"),
-                                track.path.is_file(),
+                                *ready && path.is_file(),
                             )
                             .clicked();
                         }
@@ -126,21 +129,21 @@ fn render_detail_contents(
                 );
             }
         });
-        if export_speech && let Some(track) = speech {
+        if export_speech && let Some((speech_path, speech_language, _)) = speech {
             let stem = std::path::Path::new(&title)
                 .file_stem()
                 .unwrap_or_default()
                 .to_string_lossy();
-            let name = format!("{stem}-{}", track.language);
+            let name = format!("{stem}-{speech_language}");
             #[cfg(all(feature = "mpv", any(windows, target_os = "linux")))]
             if let Some(path) = crate::export::choose_path(&name, crate::export::Format::Wav)
-                && path.canonicalize().ok() != track.path.canonicalize().ok()
-                && let Err(error) = std::fs::copy(&track.path, path)
+                && path.canonicalize().ok() != speech_path.canonicalize().ok()
+                && let Err(error) = std::fs::copy(&speech_path, path)
             {
                 controller.error = Some(error.to_string());
             }
             #[cfg(not(all(feature = "mpv", any(windows, target_os = "linux"))))]
-            if let Err(error) = std::fs::read(&track.path)
+            if let Err(error) = std::fs::read(&speech_path)
                 .map_err(|e| e.to_string())
                 .and_then(|bytes| crate::export::save(&name, crate::export::Format::Wav, bytes))
             {
@@ -188,16 +191,25 @@ fn render_detail_contents(
             action = egui::ScrollArea::vertical()
                 .id_salt("media_detail_stacked")
                 .show(ui, |ui| {
-                    let action = render_controls(controller, snapshot, ui, height * 0.35);
+                    render_player(controller, snapshot.language, ui, height * 0.35);
                     ui.add_space(12.0);
-                    ui.allocate_ui(egui::vec2(ui.available_width(), height * 0.65), |ui| {
+                    let list_height = if controller.subtitles.count() > 0 {
+                        height * 0.5
+                    } else {
+                        0.0
+                    };
+                    ui.allocate_ui(egui::vec2(ui.available_width(), list_height), |ui| {
                         ui.push_id(controller.active_task_id.clone(), |ui| {
                             super::super::subtitles::render_subtitles_card(
                                 controller, language, optimizing, ui,
                             );
                         });
                     });
-                    action
+                    ui.add_space(12.0);
+                    ui.add_enabled_ui(controller.subtitle_edit.is_none(), |ui| {
+                        render_task_control_card(controller, snapshot, ui)
+                    })
+                    .inner
                 })
                 .inner;
         } else {
@@ -227,16 +239,25 @@ fn render_controls(
     ui: &mut egui::Ui,
     video_height: f32,
 ) -> MediaAction {
-    if controller.can_play() {
-        if controller.can_show_video() {
-            render_viewport_card(controller, snapshot.language, ui, video_height);
-        } else {
-            render_audio_card(controller, snapshot.language, ui);
-        }
-        ui.add_space(8.0);
-    }
+    render_player(controller, snapshot.language, ui, video_height);
     ui.add_enabled_ui(controller.subtitle_edit.is_none(), |ui| {
         render_task_control_card(controller, snapshot, ui)
     })
     .inner
+}
+
+fn render_player(
+    controller: &mut MediaController,
+    language: crate::i18n::UiLanguage,
+    ui: &mut egui::Ui,
+    video_height: f32,
+) {
+    if controller.can_play() {
+        if controller.can_show_video() {
+            render_viewport_card(controller, language, ui, video_height);
+        } else {
+            render_audio_card(controller, language, ui);
+        }
+        ui.add_space(8.0);
+    }
 }

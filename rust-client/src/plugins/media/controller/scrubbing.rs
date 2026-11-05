@@ -38,7 +38,7 @@ impl ScrubAudio {
     pub(super) fn tick(&mut self) {
         self.player.tick();
         if let Some(error) = self.player.take_error() {
-            log::warn!("Subtitle scrub audio failed: {error}");
+            log::warn!("Timeline scrub audio failed: {error}");
             self.pending = None;
             self.player.pause();
         }
@@ -145,7 +145,128 @@ impl MediaController {
         }
     }
 
+    pub(in crate::plugins::media) fn speech_move_bounds(
+        &self,
+        clip: &super::super::task::SpeechClip,
+    ) -> std::ops::RangeInclusive<i64> {
+        0..=self
+            .get_duration_ms()
+            .max(
+                self.active_task_id
+                    .as_deref()
+                    .and_then(|id| self.store.get(id))
+                    .map_or(0, |task| task.duration_ms),
+            )
+            .max(clip.end_ms())
+            .saturating_sub(clip.duration_ms)
+            .max(0)
+    }
+
+    pub(in crate::plugins::media) fn move_speech(
+        &mut self,
+        id: &str,
+        start: i64,
+        position: i64,
+        finished: bool,
+    ) {
+        let Some(task_id) = self.active_task_id.clone() else {
+            return;
+        };
+        let Some(task) = self.store.get(&task_id) else {
+            return;
+        };
+        let Some(clip) = task
+            .speech_track
+            .as_ref()
+            .and_then(|track| track.clips.iter().find(|clip| clip.id == id))
+        else {
+            return;
+        };
+        let bounds = self.speech_move_bounds(clip);
+        let grab = position.saturating_sub(start).clamp(0, clip.duration_ms);
+        let start = start.clamp(*bounds.start(), *bounds.end());
+        if self.speech_edit.is_none() {
+            if self.subtitle_edit.is_some() {
+                return;
+            }
+            if let Some(backend) = &mut self.backend {
+                backend.pause();
+            }
+            if !finished && self.can_play() {
+                let mut reference = task.clone();
+                reference.play_speech_track = false;
+                match ScrubAudio::new(&reference, self.volume, self.muted) {
+                    Ok(audio) => self.scrub_audio = Some(audio),
+                    Err(error) => log::warn!("Timeline scrub audio unavailable: {error}"),
+                }
+            }
+        }
+        self.speech_edit = Some((id.to_owned(), start));
+        self.seek_to(start + grab, false);
+        if let Some(audio) = &mut self.scrub_audio {
+            audio.pending = Some(start + grab);
+        }
+        if finished {
+            self.speech_edit = None;
+            self.scrub_audio = None;
+            let task = self.store.get_mut(&task_id).unwrap();
+            let track = task.speech_track.as_mut().unwrap();
+            let old = track.clone();
+            let clip = track.clips.iter_mut().find(|clip| clip.id == id).unwrap();
+            if clip.start_ms == start {
+                return;
+            }
+            clip.start_ms = start;
+            track.clips.sort_by_key(|clip| clip.start_ms);
+            track.rendered = false;
+            if let Err(error) = self.store.save_to_dir(&self.storage_dir) {
+                self.store.get_mut(&task_id).unwrap().speech_track = Some(old);
+                self.error = Some(error.to_string());
+            } else {
+                log::info!("Media speech clip moved: task={task_id} cue={id} start_ms={start}");
+                if let Err(error) = self.queue_speech_render(&task_id, Vec::new()) {
+                    self.error = Some(error);
+                }
+            }
+        }
+    }
+
+    pub(in crate::plugins::media) fn audition_speech(&mut self, id: &str) {
+        let Some(task) = self
+            .active_task_id
+            .as_deref()
+            .and_then(|id| self.store.get_mut(id))
+        else {
+            return;
+        };
+        let Some(track) = &task.speech_track else {
+            return;
+        };
+        if !track.rendered {
+            return;
+        }
+        let Some(clip) = track.clips.iter().find(|clip| clip.id == id) else {
+            return;
+        };
+        let (start, end) = (clip.start_ms, clip.end_ms());
+        if self.speech_preview_end == Some(end)
+            && self
+                .backend
+                .as_ref()
+                .is_some_and(|b| b.get_status() == PlaybackStatus::Playing)
+        {
+            self.toggle_play();
+            return;
+        }
+        task.play_speech_track = true;
+        self.apply_audio_selection(false);
+        self.seek_to(start, true);
+        self.speech_preview_end = Some(end);
+    }
+
     pub(in crate::plugins::media) fn cancel_subtitle_trim(&mut self) {
+        self.speech_edit = None;
+        self.speech_preview_end = None;
         self.scrub_audio = None;
         if self
             .subtitle_edit

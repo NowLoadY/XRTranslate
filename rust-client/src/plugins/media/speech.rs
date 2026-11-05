@@ -1,7 +1,8 @@
-//! Translate once, then synthesize a separate, time-aligned playback track.
+//! Synthesize translated clips independently; keep completed work as it arrives.
+pub(super) mod track;
 use super::{
     controller::MediaController,
-    task::{MediaTask, SpeechTrack},
+    task::{MediaTask, SpeechClip, SpeechTrack},
 };
 use crate::backend::{BackendManager, BackendStart, BackendStatus};
 use eframe::egui;
@@ -31,11 +32,16 @@ pub(super) struct SpeechJob {
     pending: Option<MediaTask>,
     preparing: Option<Instant>,
     next_poll: Instant,
-    result: Option<crossbeam_channel::Receiver<Result<tempfile::TempPath, String>>>,
+    result: Option<crossbeam_channel::Receiver<SpeechEvent>>,
     cancelled: Arc<AtomicBool>,
     progress: Arc<SpeechProgress>,
     total: usize,
     input_key: u64,
+}
+
+enum SpeechEvent {
+    Clip(SpeechClip, tempfile::TempPath),
+    Finished(Result<(), String>),
 }
 
 #[derive(Default)]
@@ -59,14 +65,19 @@ impl SpeechJob {
         server: &str,
         directory: &Path,
         ctx: &egui::Context,
-    ) -> Option<Result<tempfile::TempPath, String>> {
+    ) -> Option<SpeechEvent> {
         ctx.request_repaint_after(Duration::from_millis(100));
         if let Some(result) = &self.result {
             return match result.try_recv() {
                 Ok(result) => Some(result),
                 Err(crossbeam_channel::TryRecvError::Empty) => None,
-                Err(_) => Some(Err("Speech generation stopped unexpectedly".into())),
+                Err(_) => Some(SpeechEvent::Finished(Err(
+                    "Speech generation stopped unexpectedly".into(),
+                ))),
             };
+        }
+        if self.cancelled.load(Ordering::Relaxed) {
+            return Some(SpeechEvent::Finished(Ok(())));
         }
         if Instant::now() < self.next_poll {
             return None;
@@ -89,11 +100,11 @@ impl SpeechJob {
         };
         match ready {
             Ok(false) => return None,
-            Err(error) => return Some(Err(error)),
+            Err(error) => return Some(SpeechEvent::Finished(Err(error))),
             Ok(true) => {}
         }
         let task = self.pending.take()?;
-        let (send, receive) = crossbeam_channel::bounded(1);
+        let (send, receive) = crossbeam_channel::unbounded();
         let (server, directory, ctx) = (server.to_owned(), directory.to_owned(), ctx.clone());
         let (cancelled, progress) = (self.cancelled.clone(), self.progress.clone());
         let worker = std::thread::Builder::new().name("media-speech".into()).spawn(move || {
@@ -106,20 +117,21 @@ impl SpeechJob {
                                 while !cancelled.load(Ordering::Relaxed) {
                                     tokio::time::sleep(Duration::from_millis(50)).await;
                                 }
-                            } => Err("Speech generation cancelled".into()),
-                            output = generate(&task, &server, &directory, &cancelled, &progress, &ctx) => output,
+                            } => Ok(()),
+                            output = generate(&task, &server, &directory, &cancelled, &progress, &ctx, &send) => output,
                         }
                     })
             })();
             match &result {
+                Ok(_) if cancelled.load(Ordering::Relaxed) => log::info!("Media speech cancelled: task={} completed={}", task.id, progress.completed.load(Ordering::Relaxed)),
                 Ok(_) => log::info!("Media speech completed: task={} language={} cues={}", task.id, task.target_language, task.subtitles.count()),
                 Err(error) => log::warn!("Media speech stopped: task={} language={} completed={} error={error}", task.id, task.target_language, progress.completed.load(Ordering::Relaxed)),
             }
-            let _ = send.send(result);
+            let _ = send.send(SpeechEvent::Finished(result));
             ctx.request_repaint();
         });
         if let Err(error) = worker {
-            return Some(Err(error.to_string()));
+            return Some(SpeechEvent::Finished(Err(error.to_string())));
         }
         self.result = Some(receive);
         None
@@ -196,7 +208,8 @@ async fn generate(
     cancelled: &AtomicBool,
     progress: &SpeechProgress,
     ctx: &egui::Context,
-) -> Result<tempfile::TempPath, String> {
+    send: &crossbeam_channel::Sender<SpeechEvent>,
+) -> Result<(), String> {
     validate(task)?;
     let mut url = reqwest::Url::parse(server).map_err(|e| e.to_string())?;
     url.set_scheme(if matches!(url.scheme(), "wss" | "https") {
@@ -222,17 +235,21 @@ async fn generate(
     }
     url.set_path("/tts/synthesize");
     std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
-    let output = tempfile::Builder::new()
-        .suffix(".wav")
-        .tempfile_in(directory)
-        .map_err(|e| e.to_string())?;
-    let mut writer = hound::WavWriter::new(
-        BufWriter::new(output.reopen().map_err(|e| e.to_string())?),
-        SPEC,
-    )
-    .map_err(|e| e.to_string())?;
-    let mut written = 0u64;
+    let existing = task
+        .speech_track
+        .as_ref()
+        .filter(|track| track.language == task.target_language);
     for (index, cue) in task.subtitles.cues().iter().enumerate() {
+        if existing.is_some_and(|track| {
+            track.clips.iter().any(|clip| {
+                clip.id == cue.id
+                    && Some(&clip.text) == cue.translated_text.as_ref()
+                    && clip.path.is_file()
+            })
+        }) {
+            progress.completed.store(index + 1, Ordering::Relaxed);
+            continue;
+        }
         let start = cue.start_ms as u64 * u64::from(SAMPLE_RATE) / 1000;
         // Natural speech may use the following pause, but must not displace the next cue.
         let end_ms = task
@@ -267,37 +284,50 @@ async fn generate(
                 cue.end_ms
             )
         })?;
-        while written < start {
-            writer.write_sample(0i16).map_err(|e| e.to_string())?;
-            written += 1;
-            if written.is_multiple_of(u64::from(SAMPLE_RATE)) && cancelled.load(Ordering::Relaxed) {
-                return Err("Speech generation cancelled".into());
-            }
+        if cancelled.load(Ordering::Relaxed) {
+            return Ok(());
         }
+        let output = tempfile::Builder::new()
+            .suffix(".wav")
+            .tempfile_in(directory)
+            .map_err(|e| e.to_string())?;
+        let mut writer = hound::WavWriter::new(
+            BufWriter::new(output.reopen().map_err(|e| e.to_string())?),
+            SPEC,
+        )
+        .map_err(|e| e.to_string())?;
+        let duration_ms = (audio.len() as u64 * 1000).div_ceil(u64::from(SAMPLE_RATE)) as i64;
+        let peak = audio
+            .iter()
+            .map(|s| s.unsigned_abs())
+            .max()
+            .unwrap_or(1)
+            .max(1) as f32;
+        let peaks = audio
+            .chunks(audio.len().div_ceil(48))
+            .map(|chunk| {
+                (chunk.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0) as f32 / peak * 255.0)
+                    as u8
+            })
+            .collect();
         for sample in audio {
             writer.write_sample(sample).map_err(|e| e.to_string())?;
-            written += 1;
         }
-        if cancelled.load(Ordering::Relaxed) {
-            return Err("Speech generation cancelled".into());
-        }
+        writer.finalize().map_err(|e| e.to_string())?;
+        let clip = SpeechClip {
+            id: cue.id.clone(),
+            path: directory.join(format!("{}.wav", uuid::Uuid::new_v4())),
+            start_ms: cue.start_ms,
+            duration_ms,
+            text: cue.translated_text.clone().unwrap(),
+            peaks,
+        };
+        send.send(SpeechEvent::Clip(clip, output.into_temp_path()))
+            .map_err(|_| "Speech generation cancelled")?;
         progress.completed.store(index + 1, Ordering::Relaxed);
         ctx.request_repaint();
     }
-    let duration = task
-        .duration_ms
-        .max(task.subtitles.cues().last().unwrap().end_ms) as u64
-        * u64::from(SAMPLE_RATE)
-        / 1000;
-    while written < duration {
-        writer.write_sample(0i16).map_err(|e| e.to_string())?;
-        written += 1;
-        if written.is_multiple_of(u64::from(SAMPLE_RATE)) && cancelled.load(Ordering::Relaxed) {
-            return Err("Speech generation cancelled".into());
-        }
-    }
-    writer.finalize().map_err(|e| e.to_string())?;
-    Ok(output.into_temp_path())
+    Ok(())
 }
 
 async fn response(
@@ -342,7 +372,7 @@ async fn response(
                 delay.as_secs()
             );
             progress.waiting.store(true, Ordering::Relaxed);
-            // The job's cancellation branch drops this wait and the partial WAV.
+            // Cancelling drops this wait; previously published clips remain available.
             tokio::time::sleep_until(until).await;
             progress.waiting.store(false, Ordering::Relaxed);
             continue;
@@ -443,12 +473,22 @@ impl MediaController {
             return;
         }
         self.error = None;
+        let mut pending = task.clone();
+        // An incomplete run resumes. An explicitly regenerated complete run replaces
+        // clips one by one, keeping each old clip until its replacement is ready.
+        if pending
+            .speech_track
+            .as_ref()
+            .is_some_and(|track| track.completed(task) == task.subtitles.count())
+        {
+            pending.speech_track = None;
+        }
         self.speech_job = Some(SpeechJob {
             task_id: task.id.clone(),
             language: task.target_language.clone(),
             total: task.subtitles.count(),
             input_key: input_key(task),
-            pending: Some(task.clone()),
+            pending: Some(pending),
             preparing: None,
             next_poll: Instant::now(),
             result: None,
@@ -457,55 +497,213 @@ impl MediaController {
         });
     }
 
+    pub(crate) fn cancel_speech(&mut self) {
+        if let Some(job) = &self.speech_job {
+            job.cancelled.store(true, Ordering::Relaxed);
+        }
+    }
+
     pub(crate) fn poll_speech(
         &mut self,
         backend: &mut BackendManager,
         server: &str,
         ctx: &egui::Context,
     ) {
-        let Some(result) = self
+        while let Some(event) = self
             .speech_job
             .as_mut()
             .and_then(|job| job.poll(backend, server, &self.storage_dir.join("media-speech"), ctx))
-        else {
+        {
+            match event {
+                SpeechEvent::Finished(result) => {
+                    self.speech_job = None;
+                    if let Err(error) = result {
+                        self.error = Some(error);
+                    }
+                }
+                SpeechEvent::Clip(mut clip, temporary) => {
+                    let job = self.speech_job.as_ref().unwrap();
+                    let (task_id, language, key) =
+                        (job.task_id.clone(), job.language.clone(), job.input_key);
+                    self.save_active();
+                    let result = (|| -> Result<(), String> {
+                        let task = self
+                            .store
+                            .get_mut(&task_id)
+                            .ok_or("Media project no longer exists")?;
+                        if input_key(task) != key {
+                            return Err("Subtitles changed during speech generation. Generate the track again.".into());
+                        }
+                        temporary.persist(&clip.path).map_err(|e| e.to_string())?;
+                        let old = task.speech_track.clone();
+                        let was_selected = task.play_speech_track;
+                        let track = task.speech_track.get_or_insert_with(|| SpeechTrack {
+                            path: self
+                                .storage_dir
+                                .join("media-speech")
+                                .join(format!("{}.wav", uuid::Uuid::new_v4())),
+                            language: language.clone(),
+                            clips: Vec::new(),
+                            rendered: false,
+                        });
+                        if track.language != language
+                            || track.clips.iter().all(|clip| clip.text.is_empty())
+                        {
+                            track.language = language;
+                            track.clips.clear();
+                        }
+                        if let Some(previous) = track
+                            .clips
+                            .iter_mut()
+                            .find(|previous| previous.id == clip.id)
+                        {
+                            clip.start_ms = previous.start_ms;
+                            *previous = clip.clone();
+                        } else {
+                            track.clips.push(clip.clone());
+                        }
+                        track.clips.sort_by_key(|clip| clip.start_ms);
+                        track.rendered = false;
+                        task.play_speech_track = was_selected || old.is_none();
+                        if let Err(error) = self.store.save_to_dir(&self.storage_dir) {
+                            let task = self.store.get_mut(&task_id).unwrap();
+                            task.speech_track = old;
+                            task.play_speech_track = was_selected;
+                            self.remove_speech_file(&clip.path);
+                            return Err(error.to_string());
+                        }
+                        let current = self
+                            .store
+                            .get(&task_id)
+                            .unwrap()
+                            .speech_track
+                            .as_ref()
+                            .unwrap();
+                        let retired = old
+                            .into_iter()
+                            .flat_map(|track| track.clips)
+                            .filter(|clip| !current.clips.iter().any(|new| new.path == clip.path))
+                            .map(|clip| clip.path)
+                            .collect();
+                        self.queue_speech_render(&task_id, retired)?;
+                        log::info!(
+                            "Media speech clip saved: task={task_id} cue={} start_ms={} duration_ms={}",
+                            clip.id,
+                            clip.start_ms,
+                            clip.duration_ms
+                        );
+                        // Retired assets are removed after mixing, so queued renders
+                        // may still finish reading the preceding revision.
+                        Ok(())
+                    })();
+                    if let Err(error) = result {
+                        log::warn!("Media speech not saved: task={task_id} error={error}");
+                        self.error = Some(error);
+                        self.speech_job = None;
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) fn queue_speech_render(
+        &mut self,
+        task_id: &str,
+        retired: Vec<std::path::PathBuf>,
+    ) -> Result<(), String> {
+        if self.speech_render.is_none() {
+            self.speech_render = Some(track::RenderQueue::new(
+                self.render_context.clone().unwrap_or_default(),
+            )?);
+        }
+        self.speech_render.as_ref().unwrap().push(
+            self.store
+                .get(task_id)
+                .ok_or("Media project no longer exists")?,
+            retired,
+        )
+    }
+
+    pub(super) fn prepare_speech_track(&mut self, task_id: &str) {
+        let Some(task) = self.store.get_mut(task_id) else {
             return;
         };
-        let job = self.speech_job.take().unwrap();
-        self.save_active();
-        let result = result.and_then(|temporary| {
-            let Some(task) = self.store.get_mut(&job.task_id) else {
-                return Ok(());
-            };
-            if input_key(task) != job.input_key {
-                return Err(
-                    "Subtitles changed during speech generation. Generate the track again.".into(),
-                );
-            }
-            let path = temporary.with_file_name(format!("{}.wav", uuid::Uuid::new_v4()));
-            temporary.persist(&path).map_err(|e| e.to_string())?;
-            let old = task.speech_track.replace(SpeechTrack {
-                path: path.clone(),
-                language: job.language.clone(),
+        let Some(track) = &mut task.speech_track else {
+            return;
+        };
+        // Existing mixed tracks remain usable as one movable clip; new synthesis
+        // publishes individual clips without trying to infer their old boundaries.
+        if track.clips.is_empty()
+            && let Ok(reader) = hound::WavReader::open(&track.path)
+        {
+            track.clips.push(SpeechClip {
+                id: uuid::Uuid::new_v4().to_string(),
+                path: track.path.clone(),
+                start_ms: 0,
+                duration_ms: i64::from(reader.duration()) * 1000
+                    / i64::from(reader.spec().sample_rate),
+                text: String::new(),
+                peaks: Vec::new(),
             });
-            let was_playing = std::mem::replace(&mut task.play_speech_track, true);
-            if let Err(error) = self.store.save_to_dir(&self.storage_dir) {
-                let task = self.store.get_mut(&job.task_id).unwrap();
-                task.speech_track = old;
-                task.play_speech_track = was_playing;
-                self.remove_speech_file(&path);
-                return Err(error.to_string());
+            track.path = track.path.with_file_name(format!(
+                "{}-mix.wav",
+                track.path.file_stem().unwrap_or_default().to_string_lossy()
+            ));
+            track.rendered = false;
+        }
+        if !track.rendered || !track.path.is_file() {
+            track.rendered = false;
+            if let Err(error) = self
+                .store
+                .save_to_dir(&self.storage_dir)
+                .map_err(|e| e.to_string())
+                .and_then(|_| self.queue_speech_render(task_id, Vec::new()))
+            {
+                self.error = Some(error);
             }
-            if self.active_task_id.as_deref() == Some(&job.task_id) {
-                self.apply_audio_selection(false);
+        }
+    }
+
+    pub(super) fn poll_speech_render(&mut self) {
+        while let Some(result) = self
+            .speech_render
+            .as_ref()
+            .and_then(|queue| queue.receive.try_recv().ok())
+        {
+            let Some(task) = self.store.get_mut(&result.task_id) else {
+                self.remove_speech_file(&result.path);
+                continue;
+            };
+            let Some(track) = &mut task.speech_track else {
+                continue;
+            };
+            if track.key(task.duration_ms) != result.key {
+                continue;
             }
-            if let Some(old) = old {
-                self.remove_speech_file(&old.path);
+            match result.result {
+                Ok(()) => {
+                    track.rendered = true;
+                    let selected = task.play_speech_track;
+                    if let Err(error) = self.store.save_to_dir(&self.storage_dir) {
+                        self.error = Some(error.to_string());
+                    }
+                    if selected && self.active_task_id.as_deref() == Some(&result.task_id) {
+                        self.apply_audio_selection(false);
+                        if let Some(backend) = &mut self.backend
+                            && let Err(error) = backend.refresh_audio()
+                        {
+                            self.error = Some(error);
+                        }
+                    }
+                }
+                Err(error) => {
+                    log::warn!(
+                        "Media speech mixing failed: task={} error={error}",
+                        result.task_id
+                    );
+                    self.error = Some(error);
+                }
             }
-            Ok(())
-        });
-        if let Err(error) = result {
-            log::warn!("Media speech not saved: task={} error={error}", job.task_id);
-            self.error = Some(error);
         }
     }
 
@@ -570,9 +768,13 @@ mod tests {
                 Some(("再见。", -1)),
                 Some(("再见。", 1)),
                 None,
-                Some(("你好。", 0)),
+                Some(("你好。", 3)),
+                Some(("再见。", 0)),
                 None,
-                Some(("你好。", -2)),
+                Some(("再见。", 1)),
+                None,
+                Some(("你好。", 3)),
+                Some(("再见。", -2)),
             ] {
                 let (mut socket, _) = listener.accept().unwrap();
                 socket
@@ -660,7 +862,8 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let output = runtime
+        let (send, receive) = crossbeam_channel::unbounded();
+        runtime
             .block_on(generate(
                 &task,
                 &server,
@@ -668,11 +871,29 @@ mod tests {
                 &AtomicBool::new(false),
                 &progress,
                 &egui::Context::default(),
+                &send,
             ))
             .unwrap();
+        let collect = |track: &mut SpeechTrack| {
+            for event in receive.try_iter() {
+                if let SpeechEvent::Clip(clip, temporary) = event {
+                    temporary.persist(&clip.path).unwrap();
+                    track.clips.push(clip);
+                }
+            }
+        };
+        let mut track = SpeechTrack {
+            path: directory.path().join("mix.wav"),
+            language: "zh".into(),
+            clips: Vec::new(),
+            rendered: false,
+        };
+        collect(&mut track);
+        assert_eq!(track.clips.len(), 2);
+        track::render(&track, task.duration_ms, None).unwrap();
         assert_eq!(progress.completed.load(Ordering::Relaxed), 2);
         assert!(!progress.waiting.load(Ordering::Relaxed));
-        let samples = decode(&std::fs::read(&output).unwrap()).unwrap();
+        let samples = decode(&std::fs::read(&track.path).unwrap()).unwrap();
         assert_eq!(samples.len(), 6 * SAMPLE_RATE as usize);
         assert!(samples[..SAMPLE_RATE as usize].iter().all(|&s| s == 0));
         for second in [1, 3] {
@@ -688,7 +909,50 @@ mod tests {
             );
         }
         assert!(samples[5 * SAMPLE_RATE as usize..].iter().all(|&s| s == 0));
+        let mut partial = SpeechTrack {
+            path: directory.path().join("partial.wav"),
+            language: "zh".into(),
+            clips: Vec::new(),
+            rendered: false,
+        };
+        let partial_progress = SpeechProgress::default();
         let error = runtime
+            .block_on(generate(
+                &task,
+                &server,
+                directory.path(),
+                &AtomicBool::new(false),
+                &partial_progress,
+                &egui::Context::default(),
+                &send,
+            ))
+            .unwrap_err();
+        assert!(
+            error.contains("Subtitle 2 (3000–6000 ms)") && error.contains("503"),
+            "{error}"
+        );
+        collect(&mut partial);
+        assert_eq!(
+            partial.clips.len(),
+            1,
+            "a later error must not discard completed speech"
+        );
+        assert_eq!(partial_progress.completed.load(Ordering::Relaxed), 1);
+        track::render(&partial, task.duration_ms, None).unwrap();
+        let partial_samples = decode(&std::fs::read(&partial.path).unwrap()).unwrap();
+        assert_eq!(
+            &partial_samples[..3 * SAMPLE_RATE as usize],
+            &samples[..3 * SAMPLE_RATE as usize]
+        );
+        assert!(
+            partial_samples[3 * SAMPLE_RATE as usize..]
+                .iter()
+                .all(|&s| s == 0)
+        );
+        // Resume requests only the missing translation and preserves an independently moved clip.
+        partial.clips[0].start_ms = 500;
+        task.speech_track = Some(partial.clone());
+        runtime
             .block_on(generate(
                 &task,
                 &server,
@@ -696,40 +960,51 @@ mod tests {
                 &AtomicBool::new(false),
                 &SpeechProgress::default(),
                 &egui::Context::default(),
+                &send,
             ))
-            .unwrap_err();
-        assert!(
-            error.contains("Subtitle 1 (1000–2000 ms)") && error.contains("503"),
-            "{error}"
-        );
+            .unwrap();
+        collect(&mut partial);
+        assert_eq!(partial.clips.len(), 2);
+        assert_eq!(partial.clips[0].start_ms, 500);
+        task.speech_track = None;
+        let mut cancelled_track = SpeechTrack {
+            path: directory.path().join("cancelled.wav"),
+            language: "zh".into(),
+            clips: Vec::new(),
+            rendered: false,
+        };
         runtime.block_on(async {
             let progress = SpeechProgress::default();
             let cancelled = AtomicBool::new(false);
             let ctx = egui::Context::default();
-            // Dropping the generation future is also how the job cancels a long wait.
-            let generation = generate(
-                &task,
-                &server,
-                directory.path(),
-                &cancelled,
-                &progress,
-                &ctx,
-            );
+            let generation = generate(&task, &server, directory.path(), &cancelled, &progress, &ctx, &send);
             tokio::pin!(generation);
             tokio::select! {
                 result = &mut generation => panic!("should still be waiting: {result:?}"),
                 _ = tokio::time::sleep(Duration::from_secs(2)) => {
                     assert!(progress.waiting.load(Ordering::Relaxed));
-                    assert_eq!(progress.completed.load(Ordering::Relaxed), 0);
+                    assert_eq!(progress.completed.load(Ordering::Relaxed), 1);
+                    collect(&mut cancelled_track);
+                    assert_eq!(cancelled_track.clips.len(), 1, "completed clips are available before generation finishes");
                 }
             }
         });
         mock.join().unwrap();
+        assert!(cancelled_track.clips[0].path.is_file());
+        track::render(&cancelled_track, task.duration_ms, None).unwrap();
         assert_eq!(
-            std::fs::read_dir(directory.path()).unwrap().count(),
-            1,
-            "failed synthesis must remove its partial output"
+            decode(&std::fs::read(&cancelled_track.path).unwrap()).unwrap(),
+            partial_samples
         );
+        // Incremental movement clears the old location, mixes overlap, and matches a fresh export.
+        let old = track.clone();
+        track.clips[1].start_ms = 1_500;
+        track::render(&track, task.duration_ms, Some(&old)).unwrap();
+        let moved = decode(&std::fs::read(&track.path).unwrap()).unwrap();
+        assert!(moved[3 * SAMPLE_RATE as usize..].iter().all(|&s| s == 0));
+        track::render(&track, task.duration_ms, None).unwrap();
+        assert_eq!(decode(&std::fs::read(&track.path).unwrap()).unwrap(), moved);
+        assert_eq!(task.subtitles.cues()[1].start_ms, 3000);
         assert!(
             fit(
                 vec![100; 3 * SAMPLE_RATE as usize],
@@ -739,10 +1014,7 @@ mod tests {
             .is_err()
         );
         let original = task.translation_request();
-        task.speech_track = Some(SpeechTrack {
-            path: output.to_path_buf(),
-            language: "zh".into(),
-        });
+        task.speech_track = Some(track);
         task.play_speech_track = true;
         assert_eq!(task.translation_request(), original);
         assert!(matches!(
@@ -752,7 +1024,15 @@ mod tests {
         let fingerprint = input_key(&task);
         task.target_language = "ja".into();
         assert_ne!(input_key(&task), fingerprint);
-        drop(output);
-        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        assert!(
+            std::fs::read_dir(directory.path())
+                .unwrap()
+                .all(|entry| !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".tmp")),
+            "unfinished clip files must be cleaned up"
+        );
     }
 }

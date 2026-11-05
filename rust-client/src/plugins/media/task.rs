@@ -143,6 +143,26 @@ pub enum AudioTrackSelection {
 pub struct SpeechTrack {
     pub path: PathBuf,
     pub language: String,
+    #[serde(default)]
+    pub clips: Vec<SpeechClip>,
+    /// The WAV is a playback/export cache; clips are the editable source.
+    #[serde(default = "speech_rendered")]
+    pub rendered: bool,
+}
+
+fn speech_rendered() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SpeechClip {
+    pub id: String,
+    pub path: PathBuf,
+    pub start_ms: i64,
+    pub duration_ms: i64,
+    pub text: String,
+    #[serde(default)]
+    pub peaks: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -231,6 +251,7 @@ impl MediaTask {
     pub(super) fn playback_audio(&self) -> super::backend::PlaybackAudio {
         if self.play_speech_track
             && let Some(track) = &self.speech_track
+            && track.path.is_file()
         {
             return super::backend::PlaybackAudio::External(track.path.clone());
         }

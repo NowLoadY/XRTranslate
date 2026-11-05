@@ -17,13 +17,47 @@ pub(super) enum Action {
         time: i64,
         finished: bool,
     },
+    MoveSpeech {
+        clip: String,
+        start: i64,
+        position: i64,
+        finished: bool,
+    },
+    AuditionSpeech(String),
     CancelTrim,
+}
+
+impl Action {
+    pub(super) fn apply(self, controller: &mut MediaController) {
+        match self {
+            Self::Trim {
+                cue,
+                edge,
+                time,
+                finished,
+            } => controller.trim_subtitle(&cue, edge, time, finished),
+            Self::MoveSpeech {
+                clip,
+                start,
+                position,
+                finished,
+            } => controller.move_speech(&clip, start, position, finished),
+            Self::AuditionSpeech(clip) => controller.audition_speech(&clip),
+            Self::CancelTrim => controller.cancel_subtitle_trim(),
+            Self::Select(_) => {}
+        }
+    }
+}
+
+#[derive(Clone)]
+enum DragKind {
+    Subtitle { cue: String, edge: SubtitleField },
+    Speech { clip: String, grab: f64 },
 }
 
 #[derive(Clone)]
 struct Drag {
-    cue: String,
-    edge: SubtitleField,
+    kind: DragKind,
     time: f64,
     pointer_x: f32,
     offset: f32,
@@ -36,11 +70,24 @@ pub(super) fn overview(
     ui: &mut egui::Ui,
 ) -> Option<Action> {
     let cues = subtitles.cues();
-    let last = cues.len().checked_sub(1)?;
+    let task = controller
+        .active_task_id
+        .as_deref()
+        .and_then(|id| controller.store.get(id));
+    let speech = task.and_then(|task| task.speech_track.as_ref());
+    let clips = speech.map_or(&[][..], |track| track.clips.as_slice());
+    if cues.is_empty() && clips.is_empty() {
+        return None;
+    }
     let duration = controller
         .get_duration_ms()
-        .max(subtitles.effective_end_at(last))
-        .max(cues[last].start_ms)
+        .max(task.map_or(0, |task| task.duration_ms))
+        .max(
+            cues.len()
+                .checked_sub(1)
+                .map_or(0, |last| subtitles.effective_end_at(last)),
+        )
+        .max(clips.iter().map(|clip| clip.end_ms()).max().unwrap_or(0))
         .max(1);
     let (labels, _) = ui.allocate_exact_size(
         egui::vec2(
@@ -49,9 +96,17 @@ pub(super) fn overview(
         ),
         egui::Sense::hover(),
     );
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), 24.0),
+    let (full_rect, response) = ui.allocate_exact_size(
+        egui::vec2(
+            ui.available_width(),
+            if clips.is_empty() { 24.0 } else { 56.0 },
+        ),
         egui::Sense::click_and_drag(),
+    );
+    let rect = egui::Rect::from_min_size(full_rect.min, egui::vec2(full_rect.width(), 24.0));
+    let speech_rect = egui::Rect::from_min_size(
+        rect.min + egui::vec2(0.0, 28.0),
+        egui::vec2(rect.width(), 28.0),
     );
     let position = controller.get_time_ms();
     let id = ui.make_persistent_id(("subtitle_window", &controller.active_task_id));
@@ -62,6 +117,7 @@ pub(super) fn overview(
         .subtitle_edit
         .as_ref()
         .is_none_or(|edit| !edit.dragging_time)
+        && controller.speech_edit.is_none()
     {
         drag = None;
     }
@@ -71,6 +127,7 @@ pub(super) fn overview(
         && ui.input(|input| input.pointer.button_pressed(egui::PointerButton::Primary))
         && let Some(origin) = ui.input(|input| input.pointer.press_origin())
         && let Some(view) = previous
+        && rect.contains(origin)
     {
         let mut closest: Option<(f32, Drag)> = None;
         for index in view.visible_range(cues) {
@@ -87,8 +144,10 @@ pub(super) fn overview(
                     closest = Some((
                         distance,
                         Drag {
-                            cue: cues[index].id.clone(),
-                            edge,
+                            kind: DragKind::Subtitle {
+                                cue: cues[index].id.clone(),
+                                edge,
+                            },
                             time: time as f64,
                             pointer_x: origin.x,
                             offset: origin.x - x,
@@ -102,6 +161,31 @@ pub(super) fn overview(
             started = true;
         }
     }
+    if editable
+        && response.drag_started_by(egui::PointerButton::Primary)
+        && let Some(origin) = ui.input(|input| input.pointer.press_origin())
+        && speech_rect.contains(origin)
+        && !clips.is_empty()
+        && let Some(view) = previous
+    {
+        let time = view.time(((origin.x - rect.left()) / rect.width()) as f64);
+        if let Some(clip) = clips
+            .iter()
+            .rev()
+            .find(|clip| (clip.start_ms as f64..clip.end_ms() as f64).contains(&time))
+        {
+            drag = Some(Drag {
+                kind: DragKind::Speech {
+                    clip: clip.id.clone(),
+                    grab: time - clip.start_ms as f64,
+                },
+                time,
+                pointer_x: origin.x,
+                offset: 0.0,
+            });
+            started = true;
+        }
+    }
     let mut action = None;
     let mut finished = false;
     if let Some(drag) = &mut drag {
@@ -111,7 +195,24 @@ pub(super) fn overview(
         if cancel {
             action = Some(Action::CancelTrim);
             finished = true;
-        } else if let Some(index) = cues.iter().position(|cue| cue.id == drag.cue) {
+        } else {
+            let bounds = match &drag.kind {
+                DragKind::Subtitle { cue, edge } => {
+                    cues.iter().position(|item| item.id == *cue).map(|index| {
+                        let bounds = controller.subtitle_trim_bounds(index, *edge);
+                        *bounds.start() as f64..=*bounds.end() as f64
+                    })
+                }
+                DragKind::Speech { clip, grab } => {
+                    clips.iter().find(|item| item.id == *clip).map(|clip| {
+                        let bounds = controller.speech_move_bounds(clip);
+                        *bounds.start() as f64 + grab..=*bounds.end() as f64 + grab
+                    })
+                }
+            };
+            let Some(bounds) = bounds else {
+                return Some(Action::CancelTrim);
+            };
             let before = drag.time.round() as i64;
             if let (Some(pointer), Some(view)) = (response.interact_pointer_pos(), previous) {
                 let fraction = |x| ((x - drag.offset - rect.left()) / rect.width()) as f64;
@@ -125,7 +226,6 @@ pub(super) fn overview(
                     * 2.0;
                 drag.pointer_x = pointer.x;
             }
-            let bounds = controller.subtitle_trim_bounds(index, drag.edge);
             drag.time = drag
                 .time
                 .clamp(*bounds.start() as f64, *bounds.end() as f64);
@@ -133,16 +233,21 @@ pub(super) fn overview(
                 || !ui.input(|input| input.pointer.primary_down());
             let time = drag.time.round() as i64;
             if started || time != before || finished {
-                action = Some(Action::Trim {
-                    cue: drag.cue.clone(),
-                    edge: drag.edge,
-                    time,
-                    finished,
+                action = Some(match &drag.kind {
+                    DragKind::Subtitle { cue, edge } => Action::Trim {
+                        cue: cue.clone(),
+                        edge: *edge,
+                        time,
+                        finished,
+                    },
+                    DragKind::Speech { clip, grab } => Action::MoveSpeech {
+                        clip: clip.clone(),
+                        start: (drag.time - grab).round() as i64,
+                        position: time,
+                        finished,
+                    },
                 });
             }
-        } else {
-            action = Some(Action::CancelTrim);
-            finished = true;
         }
     }
     let position = drag
@@ -257,15 +362,18 @@ pub(super) fn overview(
     let mut index = range.start;
     while index < range.end {
         let cue = &cues[index];
-        let dragged = drag.as_ref().filter(|drag| drag.cue == cue.id);
+        let dragged = drag.as_ref().and_then(|drag| match &drag.kind {
+            DragKind::Subtitle { cue: id, edge } if *id == cue.id => {
+                Some((*edge, drag.time.round() as i64))
+            }
+            _ => None,
+        });
         let start_ms = dragged
-            .filter(|drag| drag.edge == SubtitleField::Start)
-            .map_or(cue.start_ms, |drag| drag.time.round() as i64);
+            .filter(|(edge, _)| *edge == SubtitleField::Start)
+            .map_or(cue.start_ms, |(_, time)| time);
         let end_ms = dragged
-            .filter(|drag| drag.edge == SubtitleField::End)
-            .map_or(subtitles.effective_end_at(index), |drag| {
-                drag.time.round() as i64
-            });
+            .filter(|(edge, _)| *edge == SubtitleField::End)
+            .map_or(subtitles.effective_end_at(index), |(_, time)| time);
         if end_ms as f64 <= view.start {
             index += 1;
             continue;
@@ -317,9 +425,9 @@ pub(super) fn overview(
                 };
                 let hovered = response
                     .hover_pos()
-                    .is_some_and(|point| (point.x - edge_x).abs() <= 6.0);
+                    .is_some_and(|point| rect.contains(point) && (point.x - edge_x).abs() <= 6.0);
                 edge_hovered |= hovered;
-                if hovered || dragged.is_some_and(|drag| drag.edge == edge) {
+                if hovered || dragged.is_some_and(|(drag_edge, _)| drag_edge == edge) {
                     ui.painter().line_segment(
                         [
                             egui::pos2(handle_x, span.top() + 3.0),
@@ -332,22 +440,141 @@ pub(super) fn overview(
         }
         index = next;
     }
+    let mut speech_hovered = None;
+    if !clips.is_empty() {
+        ui.painter()
+            .rect_filled(speech_rect, 6, theme::surface_subtle());
+        ui_director::egui::record_output(
+            ui,
+            "Speech timeline",
+            ui_director::egui::ElementValue::None,
+            speech_rect,
+        );
+        let moving = drag.as_ref().and_then(|drag| match &drag.kind {
+            DragKind::Speech { clip, .. } => Some(clip),
+            _ => None,
+        });
+        for clip in clips
+            .iter()
+            .filter(|clip| Some(&clip.id) != moving)
+            .chain(clips.iter().filter(|clip| Some(&clip.id) == moving))
+        {
+            let moved = drag.as_ref().and_then(|drag| match &drag.kind {
+                DragKind::Speech { clip: id, grab } if *id == clip.id => {
+                    Some((drag.time - grab).round() as i64)
+                }
+                _ => None,
+            });
+            let start = moved.unwrap_or(clip.start_ms);
+            let end = start + clip.duration_ms;
+            if end as f64 <= view.start || start as f64 >= view.end {
+                continue;
+            }
+            let span = egui::Rect::from_min_max(
+                egui::pos2(x(start), speech_rect.top() + 2.0),
+                egui::pos2(
+                    (x(end) - 2.0).max(x(start) + 1.0),
+                    speech_rect.bottom() - 2.0,
+                ),
+            );
+            let hovered = response
+                .hover_pos()
+                .is_some_and(|point| span.contains(point));
+            if hovered {
+                speech_hovered = Some(clip);
+            }
+            let active = moved.is_some()
+                || (task.is_some_and(|task| task.play_speech_track)
+                    && (start..end).contains(&position));
+            ui.painter().rect_filled(
+                span,
+                3,
+                theme::primary().gamma_multiply(if active || hovered { 1.0 } else { 0.55 }),
+            );
+            let painter = ui.painter().with_clip_rect(span.shrink(2.0));
+            if clip.peaks.is_empty() {
+                painter.line_segment(
+                    [span.left_center(), span.right_center()],
+                    egui::Stroke::new(1.0, egui::Color32::WHITE),
+                );
+            } else if span.width() > 4.0 {
+                for (index, peak) in clip.peaks.iter().enumerate() {
+                    let at = start
+                        + (clip.duration_ms as f64 * (index as f64 + 0.5) / clip.peaks.len() as f64)
+                            as i64;
+                    let height = 1.0 + f32::from(*peak) / 255.0 * 8.0;
+                    painter.line_segment(
+                        [
+                            egui::pos2(x(at), span.center().y - height),
+                            egui::pos2(x(at), span.center().y + height),
+                        ],
+                        egui::Stroke::new(1.5, egui::Color32::WHITE),
+                    );
+                }
+            }
+            if let Some(time) = ui_director::egui::record_slider(
+                ui,
+                ui.scope_id().with(("speech-clip", &clip.id)),
+                &format!("Speech clip · {}", clip.id),
+                start as f64,
+                editable,
+                span,
+            ) {
+                action = Some(Action::MoveSpeech {
+                    clip: clip.id.clone(),
+                    start: time.round() as i64,
+                    position: time.round() as i64,
+                    finished: true,
+                });
+            }
+        }
+    }
     if controller.can_play() && (view.start..=view.end).contains(&(position as f64)) {
         let position = x(position);
         ui.painter().line_segment(
             [
                 egui::pos2(position, rect.top()),
-                egui::pos2(position, rect.bottom()),
+                egui::pos2(position, full_rect.bottom()),
             ],
             egui::Stroke::new(2.0, theme::text_strong()),
         );
     }
     if drag.is_some() {
-        response.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        let cursor = if matches!(drag.as_ref().unwrap().kind, DragKind::Speech { .. }) {
+            egui::CursorIcon::Grabbing
+        } else {
+            egui::CursorIcon::ResizeHorizontal
+        };
+        response.on_hover_cursor(cursor);
+        ui.ctx().set_cursor_icon(cursor);
         return action;
     }
+    if action.is_some() {
+        return action;
+    }
+    if let Some(clip) = speech_hovered {
+        let clicked = response.clicked();
+        response
+            .on_hover_cursor(if editable {
+                egui::CursorIcon::Grab
+            } else {
+                egui::CursorIcon::PointingHand
+            })
+            .on_hover_ui(|ui| {
+                ui.set_max_width(300.0);
+                ui.weak(format!(
+                    "{} – {}",
+                    super::format_cue_time(clip.start_ms),
+                    super::format_cue_time(clip.end_ms())
+                ));
+                ui.label(&clip.text);
+            });
+        return clicked.then(|| Action::AuditionSpeech(clip.id.clone()));
+    }
     let pointer = response.hover_pos()?;
+    if !rect.contains(pointer) || cues.is_empty() {
+        return None;
+    }
     let time = view
         .time(((pointer.x - rect.left()) / rect.width()) as f64)
         .round() as i64;

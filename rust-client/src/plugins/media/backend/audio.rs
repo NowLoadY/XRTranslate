@@ -20,6 +20,13 @@ impl AudioBackend {
 }
 
 impl MediaBackend for AudioBackend {
+    fn refresh_audio(&mut self) -> Result<(), String> {
+        if let Some(path) = self.selected.take() {
+            self.select_audio(super::PlaybackAudio::External(path))?;
+        }
+        Ok(())
+    }
+
     fn select_audio(&mut self, selection: super::PlaybackAudio) -> Result<(), String> {
         let path = match selection {
             super::PlaybackAudio::Original(_) => self.original.clone(),

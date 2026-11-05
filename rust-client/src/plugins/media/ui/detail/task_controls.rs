@@ -244,7 +244,17 @@ pub(super) fn render_task_control_card(
         } else if snapshot.can_synthesize && local_file && count > 0 {
             generate_speech = components::secondary_button_enabled(
                 ui,
-                tr(language, "Generate speech track"),
+                tr(
+                    language,
+                    if task.speech_track.as_ref().is_some_and(|track| {
+                        let completed = track.completed(task);
+                        completed > 0 && completed < count
+                    }) {
+                        "Continue speech track"
+                    } else {
+                        "Generate speech track"
+                    },
+                ),
                 !task.is_task_running
                     && !optimizing
                     && can_edit
@@ -415,7 +425,7 @@ pub(super) fn render_task_control_card(
         controller.save_active();
     }
     if cancel_speech {
-        controller.speech_job = None;
+        controller.cancel_speech();
     }
     if pause {
         MediaAction::StopTranslation

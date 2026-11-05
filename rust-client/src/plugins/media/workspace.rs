@@ -1333,6 +1333,8 @@ mod tests {
                 stored.speech_track = Some(super::super::task::SpeechTrack {
                     path: storage.path().join("speech.wav"),
                     language: "zh".into(),
+                    clips: Vec::new(),
+                    rendered: true,
                 });
                 stored.play_speech_track = true;
                 assert_eq!(

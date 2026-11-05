@@ -116,7 +116,7 @@ pub(super) fn render(controller: &mut MediaController, language: UiLanguage, ui:
                 }
                 if let Some(track) = &task.speech_track {
                     ui.separator();
-                    ui.add_enabled_ui(track.path.is_file(), |ui| {
+                    ui.add_enabled_ui(track.rendered && track.path.is_file(), |ui| {
                         let label = format!(
                             "{} · {}",
                             tr(language, "Speech track"),
