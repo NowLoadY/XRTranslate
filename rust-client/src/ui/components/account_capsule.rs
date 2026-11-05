@@ -1,8 +1,9 @@
 //! Account identity is the control; secondary actions emerge from the stack.
+use ui_director::egui as automation;
 use crate::{
     account_connections::{AccountAction, AccountConnections},
     i18n::{self, UiLanguage},
-    ui::{animation::AnimationSystem, automation, theme},
+    ui::{animation::AnimationSystem, theme},
 };
 use eframe::egui::{self, Color32, Rect, Sense, Stroke, Vec2};
 use xrtranslate_connections::{AccountProvider, AccountSnapshot, AccountStatus};

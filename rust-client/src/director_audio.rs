@@ -42,7 +42,7 @@ impl FileInput {
 }
 
 /// Arm a file before pressing Start; setting another file during the session replays it.
-pub(super) fn configure(path: Option<PathBuf>) -> Result<(), String> {
+fn configure(path: Option<PathBuf>) -> Result<(), String> {
     if path.as_ref().is_some_and(|path| !path.is_file()) {
         return Err("Audio input file does not exist".into());
     }
@@ -73,4 +73,31 @@ pub fn detach() {
     input.playback = None;
     input.sink = None;
     input.scope = None;
+}
+
+/// Application-specific audio source; the UI framework has no media dependency.
+#[derive(Default)]
+pub(crate) struct AudioInput;
+
+impl ui_director::ToolProvider for AudioInput {
+    fn tools(&self) -> Vec<ui_director::Tool> {
+        vec![ui_director::Tool::new(
+            "translation.audio_input",
+            "Use a local audio file as the translation session's input; null restores normal capture.",
+            serde_json::json!({"path":{"type":["string","null"]}}),
+            &["path"],
+        )]
+    }
+    fn call(&mut self, call: &ui_director::ToolCall) -> ui_director::ToolResult {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Input {
+            path: Option<PathBuf>,
+        }
+        if call.name != "translation.audio_input" {
+            return Err("Unknown translation input operation".into());
+        }
+        configure(ui_director::arguments::<Input>(call)?.path)?;
+        Ok(serde_json::json!({"configured":true}))
+    }
 }

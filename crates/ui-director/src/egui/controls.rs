@@ -1,6 +1,7 @@
 //! One declaration drives inspection and interaction for every shared UI component.
 use super::{ElementDescriptor, ElementKind, ElementValue, driver};
-use eframe::egui::{self, Rect};
+use crate::feedback::{Effect, Feedback};
+use ::egui::{self, Rect};
 
 pub enum ControlAction {
     Click,
@@ -73,6 +74,24 @@ impl<'a> Control<'a> {
             options: self.options,
             range: self.range,
         };
+        // Observe the component's real value on its next render, after its normal handler.
+        if state
+            .confirm_change
+            .as_ref()
+            .is_some_and(|(target, _, _)| target == &element.id_hex)
+        {
+            let (_, before, _) = state.confirm_change.take().unwrap();
+            let change = Feedback::changed(
+                id.value(),
+                &element.label,
+                &before.as_text().unwrap_or_default(),
+                &element.value.as_text().unwrap_or_default(),
+            );
+            super::feedback::show_in(
+                ui.ctx(),
+                change.or_else(|| Some(element.feedback(Effect::Invoke))),
+            );
+        }
         // The driver resolves labels/indices once against the last snapshot.
         // Components consume only that exact ID, never a second fuzzy lookup.
         let click = state.pending_click.as_deref() == Some(element.id_hex.as_str());
@@ -81,23 +100,36 @@ impl<'a> Control<'a> {
             .as_ref()
             .filter(|(target, _)| target == &element.id_hex)
             .map(|(_, value)| value);
-        let action = if element.enabled && (click || value.is_some()) {
-            let result = requested_action(&element, click, value);
+        let action = if click || value.is_some() {
+            let result = if element.enabled {
+                requested_action(&element, click, value)
+            } else {
+                Err("Control is disabled")
+            };
             state.pending_click = None;
             state.pending_set = None;
             match result {
                 Ok(action) => {
                     if let ControlAction::Set(value) = &action {
+                        state.confirm_change = Some((
+                            element.id_hex.clone(),
+                            element.value.clone(),
+                            ui.input(|i| i.time) + 4.0,
+                        ));
                         element.value = value.clone();
                     }
                     state.action_performed_this_frame = true;
-                    super::attention::request(ui.ctx(), id);
+                    super::feedback::show_in(ui.ctx(), [element.feedback(Effect::Invoke)]);
                     ui.ctx().request_repaint();
                     Some(action)
                 }
                 Err(error) => {
+                    super::feedback::show_in(
+                        ui.ctx(),
+                        [element.feedback(Effect::Failed(error.into()))],
+                    );
                     if let Some(reply) = state.pending_widget_reply.take() {
-                        let _ = reply.send(super::driver::DirectorResponse::err(error));
+                        let _ = reply.send(crate::Response::err(error));
                     }
                     None
                 }
@@ -106,7 +138,7 @@ impl<'a> Control<'a> {
             None
         };
         state.elements.push(element);
-        super::attention::record(ui, id, rect);
+        super::feedback::record(ui, id, rect);
         action
     }
 }

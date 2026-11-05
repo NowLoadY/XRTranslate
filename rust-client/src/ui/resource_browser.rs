@@ -314,7 +314,7 @@ fn resource_card(
             egui::StrokeKind::Inside,
         );
     }
-    let automated = crate::ui::automation::record_button(ui, id, &resource.title, enabled, rect);
+    let automated = ui_director::egui::record_button(ui, id, &resource.title, enabled, rect);
     let clicked = enabled && (response.clicked() || automated);
     if enabled {
         response.on_hover_cursor(egui::CursorIcon::PointingHand);

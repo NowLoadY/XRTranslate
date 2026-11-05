@@ -168,10 +168,10 @@ pub(super) fn render_timeline(
         let geometry_id = scroll_id.with("geometry");
         let target = rows::scroll_target(ui, scroll_id, geometry_id, follow, evidence);
         let viewport = ui.available_rect_before_wrap();
-        crate::ui::automation::record_output(
+        ui_director::egui::record_output(
             ui,
             "Meeting transcript",
-            crate::ui::automation::ElementValue::Number(entries.len() as f64),
+            ui_director::egui::ElementValue::Number(entries.len() as f64),
             viewport,
         );
         let merged = virtual_list::show_subtitle_rows(

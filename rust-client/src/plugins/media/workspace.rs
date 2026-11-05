@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{MediaPlugin, subtitles::SubtitleTimeline};
-use crate::director::{Tool, ToolCall, ToolProvider, ToolResult, arguments};
+use ui_director::{Tool, ToolCall, ToolProvider, ToolResult, arguments};
+mod feedback;
 mod inspection;
 mod reading;
 mod trials;
@@ -211,36 +212,19 @@ impl ToolProvider for MediaPlugin {
         tools()
     }
     fn call(&mut self, call: &ToolCall) -> ToolResult {
-        let result = self.workspace_call(call)?;
-        if let Some(task) = call.arguments["workspace"]
+        let task = call.arguments["workspace"]
             .as_str()
             .and_then(|id| self.workspace_task(id))
-        {
-            let cue = match call.name.as_str() {
-                "media.edit" => call.arguments["edits"][0]["cue"].as_str(),
-                "media.delete" => result["next_cue"].as_str(),
-                "media.merge" => result["cue"].as_str(),
-                "media.split" => result["cues"][0].as_str(),
-                "media.trial" => call.arguments["first_cue"].as_str(),
-                _ => None,
-            };
-            if let Some(cue) = cue {
-                crate::ui::automation::attention::focus(super::ui::subtitle_target(&task.id, cue));
-            } else if matches!(
-                call.name.as_str(),
-                "media.commit" | "media.undo" | "media.apply_trial" | "media.trial"
-            ) {
-                crate::ui::automation::attention::focus(super::ui::subtitles_target(&task.id));
-            } else if call.name == "media.settings"
-                && call
-                    .arguments
-                    .as_object()
-                    .is_some_and(|args| args.len() > 1)
-            {
-                crate::ui::automation::attention::focus(super::ui::settings_target(&task.id));
-            }
+            .map(|task| task.id.clone());
+        let result = self.workspace_call(call);
+        if let (Some(task), Err(error)) = (task, &result) {
+            feedback::status(
+                &task,
+                "",
+                ui_director::feedback::Effect::Failed(error.clone()),
+            );
         }
-        Ok(result)
+        result
     }
 }
 
@@ -341,6 +325,7 @@ impl MediaPlugin {
                     .ok_or("Workspace not found")?;
                 let id = task.id.clone();
                 let audio_track = task.audio_track;
+                let previous = task.recognition.clone();
                 let mut settings = task.recognition.clone();
                 if let Some(choice) = args.preprocessing {
                     if !self.available_preprocessing.contains(&choice) {
@@ -364,6 +349,7 @@ impl MediaPlugin {
                         .clone()
                         .unwrap_or("Could not save settings".into()));
                 }
+                feedback::settings(&id, &previous, &settings);
                 Ok(
                     json!({"recognition":settings,"audio_track":audio_track,"available_preprocessing":self.available_preprocessing}),
                 )
@@ -468,6 +454,7 @@ impl MediaPlugin {
                     .workspace_task(&args.workspace)
                     .ok_or("Workspace not found")?;
                 let target_language = task.target_language.clone();
+                let task_id = task.id.clone();
                 let workspace = self.workspace_mut(&args.workspace)?;
                 workspace.check_revision(args.revision)?;
                 if args.edits.is_empty() || args.edits.len() > 50 {
@@ -518,11 +505,24 @@ impl MediaPlugin {
                     affected.push(cue_location(&cue, cue.end_ms));
                     draft.edit_cue(cue).ok_or("Cue not found")?;
                 }
+                let before = feedback::items(
+                    &task_id,
+                    workspace
+                        .draft
+                        .cues()
+                        .iter()
+                        .filter(|cue| seen.contains(&cue.id)),
+                );
+                let after = feedback::items(
+                    &task_id,
+                    draft.cues().iter().filter(|cue| seen.contains(&cue.id)),
+                );
                 let changed = !same_timeline(&workspace.draft, &draft);
                 if changed {
                     workspace.draft = draft;
                     workspace.revision += 1;
                 }
+                feedback::changed(&task_id, before, after);
                 let result =
                     json!({"revision":workspace.revision,"changed":changed,"affected":affected});
                 workspace.record(&call.name, result.clone());
@@ -531,6 +531,11 @@ impl MediaPlugin {
             }
             "media.delete" => {
                 let args: Delete = arguments(call)?;
+                let task_id = self
+                    .workspace_task(&args.workspace)
+                    .ok_or("Workspace not found")?
+                    .id
+                    .clone();
                 let workspace = self.workspace_mut(&args.workspace)?;
                 workspace.check_revision(args.revision)?;
                 let index = workspace
@@ -543,7 +548,9 @@ impl MediaPlugin {
                     &workspace.draft.cues()[index],
                     workspace.draft.effective_end_at(index),
                 );
+                let before = feedback::items(&task_id, [&workspace.draft.cues()[index]]);
                 workspace.draft.remove_cue(&args.cue);
+                feedback::changed(&task_id, before, Vec::new());
                 workspace.revision += 1;
                 let next_cue = workspace
                     .draft
@@ -557,8 +564,21 @@ impl MediaPlugin {
             }
             "media.merge" => {
                 let args: Merge = arguments(call)?;
+                let task_id = self
+                    .workspace_task(&args.workspace)
+                    .ok_or("Workspace not found")?
+                    .id
+                    .clone();
                 let workspace = self.workspace_mut(&args.workspace)?;
                 workspace.check_revision(args.revision)?;
+                let before = feedback::items(
+                    &task_id,
+                    workspace
+                        .draft
+                        .cues()
+                        .iter()
+                        .filter(|cue| cue.id == args.source_cue || cue.id == args.target_cue),
+                );
                 if !workspace
                     .draft
                     .merge_adjacent(&args.source_cue, &args.target_cue)
@@ -576,6 +596,11 @@ impl MediaPlugin {
                     &workspace.draft.cues()[index],
                     workspace.draft.effective_end_at(index),
                 );
+                feedback::changed(
+                    &task_id,
+                    before,
+                    feedback::items(&task_id, [&workspace.draft.cues()[index]]),
+                );
                 let result = json!({"revision":workspace.revision,"cue":args.target_cue,"affected":[affected]});
                 workspace.record(&call.name, result.clone());
                 self.controller.dirty = true;
@@ -583,11 +608,11 @@ impl MediaPlugin {
             }
             "media.split" => {
                 let args: Split = arguments(call)?;
-                let target_language = self
+                let task = self
                     .workspace_task(&args.workspace)
-                    .ok_or("Workspace not found")?
-                    .target_language
-                    .clone();
+                    .ok_or("Workspace not found")?;
+                let task_id = task.id.clone();
+                let target_language = task.target_language.clone();
                 let workspace = self.workspace_mut(&args.workspace)?;
                 workspace.check_revision(args.revision)?;
                 let index = workspace
@@ -625,7 +650,10 @@ impl MediaPlugin {
                     .iter()
                     .map(|cue| cue_location(cue, cue.end_ms))
                     .collect::<Vec<_>>();
+                let before = feedback::items(&task_id, [&workspace.draft.cues()[index]]);
+                let after = feedback::items(&task_id, &parts);
                 workspace.draft.replace_split(index, parts);
+                feedback::changed(&task_id, before, after);
                 workspace.revision += 1;
                 let result = json!({"revision":workspace.revision,"cues":ids,"affected":affected});
                 workspace.record(&call.name, result.clone());
@@ -718,6 +746,7 @@ impl MediaPlugin {
                         .clone()
                         .unwrap_or("Could not save subtitles".into()));
                 }
+                feedback::status(&task_id, "", ui_director::feedback::Effect::Invoke);
                 Ok(result)
             }
             _ => Err(format!("Unknown media tool: {}", call.name)),

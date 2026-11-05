@@ -5,7 +5,6 @@ use super::super::{
 };
 use crate::{
     client_settings::RecognitionSettings,
-    director::{Tool, ToolCall, ToolResult, arguments},
     session_coordinator::{
         PluginSessionBinding, PluginSessionOwner, SessionOutputPolicy, TranslationEvent,
         TranslationOutcome, TranslationSessionOwner, TranslationTask,
@@ -13,6 +12,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use ui_director::{Tool, ToolCall, ToolResult, arguments};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Trial {
@@ -213,6 +213,7 @@ impl MediaPlugin {
                     timeline: SubtitleTimeline::new(),
                     error: None,
                 };
+                super::feedback::status(&task.id, "", ui_director::feedback::Effect::Pending);
                 self.workspace_mut(&args.workspace)?.trials.push(trial);
                 self.workspace_trial = Some(PendingTrial {
                     workspace: args.workspace.clone(),
@@ -257,6 +258,7 @@ impl MediaPlugin {
                 let task = self
                     .workspace_task(&args.workspace)
                     .ok_or("Workspace not found")?;
+                let task_id = task.id.clone();
                 if task.is_task_running {
                     return Err("Wait for the media task to finish".into());
                 }
@@ -280,14 +282,17 @@ impl MediaPlugin {
                 {
                     return Err("Trial cuts through an existing cue; expand the interval or edit only the supported text correction".into());
                 }
+                let before =
+                    super::feedback::items(&task_id, &workspace.draft.cues()[range.clone()]);
+                let after = super::feedback::items(&task_id, trial.timeline.cues());
                 workspace.draft.replace_range_from(range, &trial.timeline);
                 workspace.revision += 1;
                 let result = json!({"revision":workspace.revision,"adopted":args.operation});
                 let recognition = trial.recognition.clone();
                 workspace.record(&call.name, result.clone());
-                let task_id = self.workspace_task(&args.workspace).unwrap().id.clone();
                 self.controller
                     .set_task_recognition(&task_id, recognition)?;
+                super::feedback::changed(&task_id, before, after);
                 self.controller.dirty = true;
                 Ok(result)
             }

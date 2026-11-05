@@ -17,7 +17,7 @@ use crate::{
     ui::{animation::AnimationSystem, components, model_comparison, theme},
 };
 
-const STEPS: [&str; 4] = [
+pub(crate) const STEPS: [&str; 4] = [
     "Welcome",
     "Configure models",
     "Optional features",

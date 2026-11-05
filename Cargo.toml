@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "rust-client",
+    "crates/ui-director",
     "crates/xrtranslate-prompt",
     "crates/xrtranslate-protocol",
     "crates/xrtranslate-config",

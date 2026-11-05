@@ -75,6 +75,14 @@ pub struct ElementDescriptor {
 }
 
 impl ElementDescriptor {
+    pub fn feedback(&self, effect: crate::feedback::Effect) -> crate::feedback::Feedback {
+        crate::feedback::Feedback::new(
+            u64::from_str_radix(&self.id_hex, 16).expect("registry identity"),
+            &self.label,
+            effect,
+        )
+    }
+
     pub fn actions(&self) -> &'static [&'static str] {
         if !self.enabled {
             return &[];
@@ -97,11 +105,6 @@ pub struct FrameSnapshot {
 }
 
 impl FrameSnapshot {
-    #[must_use]
-    pub fn find_element(&self, target: &str) -> Option<&ElementDescriptor> {
-        self.resolve_element(target).ok()
-    }
-
     pub fn resolve_element<'a>(&'a self, target: &str) -> Result<&'a ElementDescriptor, String> {
         let target = target.trim();
         if target.is_empty() {
@@ -150,4 +153,12 @@ impl FrameSnapshot {
                 .collect(),
         )
     }
+}
+
+/// Host-owned route; the framework never interprets application page types.
+#[derive(Clone, Debug, Serialize)]
+pub struct Page {
+    pub route: String,
+    pub title: String,
+    pub label: String,
 }

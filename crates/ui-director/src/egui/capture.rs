@@ -1,8 +1,8 @@
 //! Capture the app's rendered viewport, without recording the user's desktop or audio.
 use std::{io::Write, net::TcpStream, sync::Arc, time::Duration};
 
+use ::egui;
 use crossbeam_channel::{Sender, bounded};
-use eframe::egui;
 
 #[derive(Clone)]
 struct TimedFrame {

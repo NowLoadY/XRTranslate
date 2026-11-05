@@ -1,7 +1,7 @@
 //! Small headless tool loop. Model access and operation execution are supplied by the host.
+use ui_director::{Tool, ToolCall, ToolProvider, ToolResult, arguments, catalog};
 use crate::{
     ask::Reply,
-    director::{Tool, ToolCall, ToolProvider, ToolResult, arguments, catalog},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};

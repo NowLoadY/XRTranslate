@@ -10,16 +10,16 @@ pub fn render_canvas(
         ui.set_min_height(140.0);
 
         let preview = plugin.manager().chatbox_preview();
-        crate::ui::automation::record_output(
+        ui_director::egui::record_output(
             ui,
             "OSC preview",
-            crate::ui::automation::ElementValue::Text(preview.text.clone()),
+            ui_director::egui::ElementValue::Text(preview.text.clone()),
             ui.max_rect(),
         );
-        crate::ui::automation::record_output(
+        ui_director::egui::record_output(
             ui,
             "OSC typing",
-            crate::ui::automation::ElementValue::Bool(preview.typing),
+            ui_director::egui::ElementValue::Bool(preview.typing),
             ui.max_rect(),
         );
         let is_empty = preview.text.trim().is_empty();

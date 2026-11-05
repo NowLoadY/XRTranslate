@@ -62,7 +62,7 @@ pub fn render(
                                 egui::TextEdit::singleline(&mut plugin.draft_mut().ip)
                                     .desired_width(140.0),
                             );
-                            crate::ui::automation::text_response(
+                            ui_director::egui::text_response(
                                 ui,
                                 crate::i18n::tr(language, "Target IP:"),
                                 &mut plugin.draft_mut().ip,

@@ -280,8 +280,8 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
             gesture = None;
         }
         let requested = row_key
-            .zip(super::automation::attention::reveal_target(ui.ctx()))
-            .and_then(|(key, target)| rows.iter().position(|(_, row)| key(row) == target));
+            .zip(ui_director::egui::feedback::reveal_target(ui.ctx()))
+            .and_then(|(key, target)| rows.iter().position(|(_, row)| key(row).value() == target));
         reveal = gesture.is_none() && requested.is_some();
         let scroll_target = if gesture.is_some() {
             ScrollTarget::None
@@ -397,13 +397,13 @@ fn show_rows<T, R: AsRef<[(f32, T)]>>(
                     render_row(ui, index, row_height, row);
                 }
                 if let Some(key) = key {
-                    super::automation::attention::record(ui, key, rect);
+                    ui_director::egui::feedback::record(ui, key, rect);
                 }
                 if let Some(ordinal) = merge_index {
-                    crate::ui::automation::record_output(
+                    ui_director::egui::record_output(
                         ui,
                         "Mergeable subtitle",
-                        crate::ui::automation::ElementValue::Number(ordinal as f64),
+                        ui_director::egui::ElementValue::Number(ordinal as f64),
                         drag_rect,
                     );
                 }

@@ -1,10 +1,8 @@
 //! Application composition for Director providers. Business operations stay in plugins.
-use crate::ui::automation::driver::{DirectorCommand, DirectorResponse};
-use crate::{
-    XRTranslateApp,
-    director::{Tool, ToolCall, ToolResult},
-    plugins::PluginId,
-};
+use crate::{XRTranslateApp, plugins::PluginId};
+use ui_director::Response;
+use ui_director::egui::driver::Command;
+use ui_director::{Tool, ToolCall, ToolResult};
 
 impl XRTranslateApp {
     pub(crate) fn submit_agent_instruction(
@@ -49,14 +47,7 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn call_director_tool(&mut self, call: &ToolCall) -> ToolResult {
-        if crate::director::catalog::handles(&call.name) {
-            return crate::director::catalog::call(&self.director_tools(), call);
-        }
-        let result = crate::plugins::tool_providers(self)
-            .into_iter()
-            .find(|provider| provider.tools().iter().any(|tool| tool.name == call.name))
-            .ok_or_else(|| format!("Tool unavailable: {}", call.name))?
-            .call(call);
+        let result = ui_director::dispatch(&mut crate::plugins::tool_providers(self), call);
         if let Err(error) = &result {
             log::warn!("Director tool {} failed: {error}", call.name);
         }
@@ -64,7 +55,7 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn poll_director(&mut self) {
-        let requests = crate::ui::automation::driver().take_host_requests();
+        let requests = ui_director::egui::driver().take_host_requests();
         if requests.is_empty() {
             return;
         }
@@ -79,26 +70,19 @@ impl XRTranslateApp {
             if request.expires <= std::time::Instant::now() {
                 let _ = request
                     .responder
-                    .send(DirectorResponse::err("Request expired before execution"));
+                    .send(Response::err("Request expired before execution"));
                 continue;
             }
             let result = match request.command {
-                DirectorCommand::Tools => crate::director::catalog::call(
-                    &tools,
-                    &ToolCall {
-                        name: "tools.list".into(),
-                        arguments: serde_json::json!({}),
-                    },
-                ),
-                DirectorCommand::Call(call) => self
+                Command::Call(call) => self
                     .agent
                     .allow_external(&call, &tools)
                     .and_then(|()| self.call_director_tool(&call)),
                 _ => Err("Unsupported operation".into()),
             };
             let response = match result {
-                Ok(value) => DirectorResponse::ok("Completed", Some(value)),
-                Err(error) => DirectorResponse::err(error),
+                Ok(value) => Response::ok("Completed", Some(value)),
+                Err(error) => Response::err(error),
             };
             let _ = request.responder.send(response);
         }

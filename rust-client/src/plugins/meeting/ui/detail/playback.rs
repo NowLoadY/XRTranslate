@@ -31,7 +31,7 @@ pub(super) fn render(
                 duration > 0.0,
                 false,
             );
-            let automated = crate::ui::automation::record_slider(
+            let automated = ui_director::egui::record_slider(
                 ui,
                 response.id,
                 tr(language, "Recording position"),

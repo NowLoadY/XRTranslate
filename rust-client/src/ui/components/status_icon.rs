@@ -39,10 +39,10 @@ pub(crate) fn status_icon(ui: &mut egui::Ui, state: StatusIcon, label: &str) -> 
         .tint(theme::text_normal())
         .paint_at(ui, rect.shrink(6.0));
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, label));
-    crate::ui::automation::record_output(
+    ui_director::egui::record_output(
         ui,
         label,
-        crate::ui::automation::ElementValue::Text(label.to_owned()),
+        ui_director::egui::ElementValue::Text(label.to_owned()),
         rect,
     );
     response.on_hover_text(label)

@@ -319,7 +319,7 @@ impl Page {
                         .hint_text(tr(language, "Wordbook name"))
                         .desired_width(ui.available_width().min(300.0)),
                 );
-                crate::ui::automation::text_response(
+                ui_director::egui::text_response(
                     ui,
                     tr(language, "Wordbook name"),
                     name,
@@ -360,7 +360,7 @@ impl Page {
                     ))
                     .desired_width(ui.available_width().min(360.0)),
             );
-            if crate::ui::automation::text_response(
+            if ui_director::egui::text_response(
                 ui,
                 tr(language, "Search words or translations in this wordbook"),
                 &mut self.query,
@@ -443,7 +443,7 @@ impl Page {
                                             egui::Sense::click(),
                                         )
                                         .on_hover_cursor(egui::CursorIcon::PointingHand);
-                                    if crate::ui::automation::button_response(
+                                    if ui_director::egui::button_response(
                                         ui,
                                         response.id,
                                         &record.entry.source,

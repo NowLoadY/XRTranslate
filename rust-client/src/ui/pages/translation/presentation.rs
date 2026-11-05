@@ -230,7 +230,7 @@ fn render_lines(
                 } else {
                     paint_lyric(ui, galley, foreground)
                 };
-                crate::ui::automation::record_text_output(ui, text, &response);
+                ui_director::egui::record_text_output(ui, text, &response);
                 if !latest {
                     ui.add_space(gap);
                 }

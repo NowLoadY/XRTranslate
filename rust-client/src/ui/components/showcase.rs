@@ -1,6 +1,7 @@
+use ui_director::egui as automation;
 use crate::{
     i18n::{UiLanguage, tr},
-    ui::{automation, theme},
+    ui::{theme},
 };
 use eframe::egui::{self, load::SizedTexture};
 

@@ -6913,6 +6913,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tungstenite 0.30.0",
+ "ui-director",
  "unicode-segmentation",
  "uuid",
  "wasapi",
@@ -8794,6 +8795,19 @@ dependencies = [
  "memoffset",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "ui-director"
+version = "0.0.1"
+dependencies = [
+ "crossbeam-channel",
+ "eframe",
+ "egui",
+ "log",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

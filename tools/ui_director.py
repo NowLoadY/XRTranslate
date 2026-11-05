@@ -35,18 +35,14 @@ class UIDirector:
         self.address = (host, port)
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def _send_command(
+    def _request(
         self,
-        cmd: str,
-        args: Any = None,
+        name: str,
+        arguments: Any = None,
         retries: int = 0,
         retry_delay: float = 0.3,
-        **kwargs,
     ) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"cmd": cmd}
-        if args is not None:
-            payload["args"] = args
-        payload.update(kwargs)
+        payload = {"name": name, "arguments": arguments or {}}
 
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -74,11 +70,30 @@ class UIDirector:
             "message": f"Connection to UI Director failed at {self.base_url}: {last_error}",
         }
 
+    def call(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Run the same operation as the native CLI and wait for actual completion."""
+        result = self._request(name, arguments)
+        deadline = time.monotonic() + self.timeout
+        while result.get("success") and isinstance(result.get("data"), dict):
+            pending = result["data"].get("pending")
+            if pending is None:
+                if "result" in result["data"]:
+                    result["data"] = result["data"]["result"]
+                break
+            if time.monotonic() >= deadline:
+                cancel = result["data"].get("cancel")
+                if cancel:
+                    self._request(cancel["name"], cancel["arguments"])
+                return {"success": False, "message": "Operation timed out"}
+            time.sleep(0.02)
+            result = self._request(pending["name"], pending["arguments"])
+        return result
+
     def wait_ready(self, timeout: float = 10.0, poll_interval: float = 0.25) -> bool:
         """Wait until the UI Director server is ready and responding."""
         start = time.time()
         while time.time() - start < timeout:
-            resp = self._send_command("status", retries=0)
+            resp = self._request("ui.pages")
             if resp.get("success"):
                 return True
             time.sleep(poll_interval)
@@ -86,45 +101,54 @@ class UIDirector:
 
     def status(self) -> Dict[str, Any]:
         """Get application and UI director status."""
-        return self._send_command("status")
+        return self.call("ui.pages")
 
     def get_page(self) -> str:
         """Get the name of the currently active UI page."""
-        resp = self._send_command("get_page")
-        if resp.get("success") and "data" in resp and "page" in resp["data"]:
-            return resp["data"]["page"]
+        resp = self.call("ui.pages")
+        if resp.get("success") and "data" in resp and "current_page" in resp["data"]:
+            return resp["data"]["current_page"]
         return ""
 
     def page(self, page_name: str) -> Dict[str, Any]:
         """Navigate to a target page (e.g. 'Translation', 'Settings', 'AudioStudio', 'PromptStudio', 'onboarding:1')."""
-        return self._send_command("page", page_name)
+        return self.call("ui.page", {"page": page_name})
 
     def list_elements(self, filter_text: Optional[str] = None) -> List[Dict[str, Any]]:
         """List all discoverable UI components on the current page."""
-        resp = self._send_command("list", filter=filter_text)
-        if resp.get("success") and "data" in resp:
-            return resp["data"]
-        return []
+        elements = []
+        offset = 0
+        while True:
+            resp = self.call("ui.read", {"filter": filter_text, "offset": offset, "limit": 50})
+            if not resp.get("success"):
+                return elements
+            elements.extend(resp["data"]["controls"])
+            offset = resp["data"]["next_offset"]
+            if offset is None:
+                return elements
 
     def inspect(self, target: str) -> Dict[str, Any]:
         """Inspect detailed information about a widget by label, index (#0), or hex ID."""
-        return self._send_command("inspect", target)
+        result = self.call("ui.read", {"target": target})
+        if result.get("success"):
+            result["data"] = result["data"]["controls"][0]
+        return result
 
     def click(self, target: str) -> Dict[str, Any]:
         """Simulate a click on a button, toggle, or interactive element."""
-        return self._send_command("click", target)
+        return self.call("ui.click", {"target": target})
 
     def set_value(self, target: str, value: Union[bool, float, int, str]) -> Dict[str, Any]:
         """Set the value of an input field, toggle, checkbox, slider, or combobox."""
-        return self._send_command("set", target=target, value=value)
+        return self.call("ui.set", {"target": target, "value": value})
 
     def get_value(self, target: str) -> Dict[str, Any]:
         """Get the current value and properties of a UI element."""
-        return self._send_command("get", target)
+        return self.inspect(target)
 
     def viewport(self, width: int, height: int, scale: float = 1.0) -> Dict[str, Any]:
         """Set the viewport's physical pixels and UI scale for repeatable framing."""
-        return self._send_command("viewport", {"width": width, "height": height, "scale": scale})
+        return self.call("ui.viewport", {"width": width, "height": height, "scale": scale})
 
     def frame(self) -> tuple[int, int, bytes]:
         """Capture RGBA pixels from the app renderer, excluding desktop and window chrome."""
@@ -158,19 +182,19 @@ class UIDirector:
 
     def pointer(self, x: float, y: float, pressed: Optional[bool] = None) -> Dict[str, Any]:
         """Move or press/release the app's pointer, in logical viewport coordinates."""
-        return self._send_command("pointer", {"x": x, "y": y, "pressed": pressed})
+        return self.call("ui.pointer", {"x": x, "y": y, "pressed": pressed})
 
     def text(self, text: str) -> Dict[str, Any]:
         """Type into the focused widget without using the desktop keyboard."""
-        return self._send_command("text", text)
+        return self.call("ui.input", {"text": text})
 
     def audio_file(self, path: Optional[str]) -> Dict[str, Any]:
         """Arm/replay a single-source capture file; None clears the file override."""
-        return self._send_command("audio_file", path)
+        return self.call("translation.audio_input", {"path": path})
 
     def scroll(self, x: float, y: float, delta: float) -> Dict[str, Any]:
         """Scroll inside the app; negative delta moves content upward."""
-        return self._send_command("scroll", {"x": x, "y": y, "delta": delta})
+        return self.call("ui.scroll", {"x": x, "y": y, "delta": delta})
 
     def wait(self, seconds: float) -> None:
         """Pause execution for a given number of seconds."""

@@ -241,7 +241,7 @@ pub(crate) fn render_banner_selector(
                         .hint_text("e.g. [AFK] or [CN/JP]")
                         .desired_width(150.0),
                 );
-                if crate::ui::automation::text_response(
+                if ui_director::egui::text_response(
                     ui,
                     crate::i18n::tr(language, "Custom Text"),
                     &mut banner.custom_text,

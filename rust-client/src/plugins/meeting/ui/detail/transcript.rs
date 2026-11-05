@@ -35,10 +35,10 @@ pub(super) fn render_transcript(
     let geometry_id = scroll_id.with("geometry");
     let target = rows::scroll_target(ui, scroll_id, geometry_id, live, evidence);
     let viewport = ui.available_rect_before_wrap();
-    crate::ui::automation::record_output(
+    ui_director::egui::record_output(
         ui,
         "Meeting transcript",
-        crate::ui::automation::ElementValue::Number(bundle.segments.len() as f64),
+        ui_director::egui::ElementValue::Number(bundle.segments.len() as f64),
         viewport,
     );
     let merged = virtual_list::show_subtitle_rows(

@@ -89,7 +89,7 @@ pub(super) fn render(
                     response.request_focus();
                     response.scroll_to_me(Some(egui::Align::Center));
                 }
-                if let Some(value) = crate::ui::automation::record_text_input(
+                if let Some(value) = ui_director::egui::record_text_input(
                     ui,
                     response.id,
                     name,
@@ -183,7 +183,7 @@ fn time_input(
             state.store(ui.ctx(), response.id);
             response.scroll_to_me(Some(egui::Align::Center));
         }
-        let automated = crate::ui::automation::record_slider(
+        let automated = ui_director::egui::record_slider(
             ui,
             response.id,
             label,

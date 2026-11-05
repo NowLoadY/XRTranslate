@@ -1,9 +1,9 @@
 //! Appearance editor. Geometry, accessory choices and fitting stay in the avatar module.
+use ui_director::egui as automation;
 use crate::{
     i18n::{UiLanguage, tr},
     ui::{
         animation::AnimationSystem,
-        automation,
         components::{
             self,
             avatar::{Accessory, Appearance, Expression, Gaze, Pose, wardrobe::Socket},

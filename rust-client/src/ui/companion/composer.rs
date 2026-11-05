@@ -1,7 +1,8 @@
 //! A small goal entry surface; execution stays with the application's Agent.
+use ui_director::egui as automation;
 use crate::{
     i18n::{UiLanguage, tr},
-    ui::{automation, components, theme},
+    ui::{components, theme},
 };
 use components::text_composer::SubmitShortcut;
 use eframe::egui::{self, Id, Pos2, Rect};

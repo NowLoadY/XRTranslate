@@ -181,7 +181,7 @@ fn playback_controls(
         duration > 0.0,
         controller.fullscreen_mode,
     );
-    let automated = crate::ui::automation::record_slider(
+    let automated = ui_director::egui::record_slider(
         ui,
         response.id,
         tr(language, "Playback position"),

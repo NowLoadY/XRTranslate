@@ -259,7 +259,7 @@ fn render_display_card(
                     .speed(0.5)
                     .suffix(" px"),
             );
-            crate::ui::automation::number_response(
+            ui_director::egui::number_response(
                 ui,
                 tr("Font Size"),
                 &mut settings.font_size,
@@ -274,7 +274,7 @@ fn render_display_card(
                     .speed(0.5)
                     .suffix(" s"),
             );
-            crate::ui::automation::number_response(
+            ui_director::egui::number_response(
                 ui,
                 tr("Display Duration"),
                 &mut settings.display_timeout_seconds,

@@ -18,7 +18,7 @@ pub(super) fn render(
     };
     let response = ui.add_sized([18.0, 36.0], egui::Button::new("").frame(false));
     let response =
-        crate::ui::automation::button_response(ui, response.id, label, ui.is_enabled(), response);
+        ui_director::egui::button_response(ui, response.id, label, ui.is_enabled(), response);
     let response = components::playback_tooltip(response, label, overlay);
     let center = response.rect.center();
     let arrow_y = if overlay { -1.5 } else { 1.5 };
@@ -62,7 +62,7 @@ pub(super) fn render(
                         }))
                         .min_size(egui::vec2(86.0, 36.0)),
                     );
-                    let button = crate::ui::automation::button_response(
+                    let button = ui_director::egui::button_response(
                         ui,
                         button.id,
                         tr(language, hint),
@@ -89,7 +89,7 @@ pub(super) fn render(
                 })
                 .response
                 .interact(egui::Sense::click());
-            let color_row = crate::ui::automation::button_response(
+            let color_row = ui_director::egui::button_response(
                 ui,
                 color_row.id,
                 tr(language, "Text color"),

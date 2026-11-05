@@ -1,32 +1,29 @@
-pub(crate) mod attention;
-pub mod audio;
 mod capture;
 mod controls;
 pub mod driver;
+pub mod feedback;
 pub mod registry;
 pub mod server;
-pub(crate) mod tools;
+pub mod tools;
 
-use eframe::egui::{self, Rect};
+use ::egui::{self, Rect};
 use std::sync::{Arc, OnceLock};
 
 pub use controls::{
     Control, ControlAction, button_response, number_response, record_button, record_checkbox,
     record_combobox, record_slider, record_text_input, record_toggle, text_response,
 };
-pub use driver::AutomationDriver;
+pub use driver::Driver;
 pub use registry::{ElementDescriptor, ElementKind, ElementValue};
-pub use server::{DEFAULT_DIRECTOR_PORT, DirectorServer};
+pub use server::Server;
 
-use crate::ui::Page;
-
-static GLOBAL_DRIVER: OnceLock<Arc<AutomationDriver>> = OnceLock::new();
-static GLOBAL_SERVER: OnceLock<DirectorServer> = OnceLock::new();
+static GLOBAL_DRIVER: OnceLock<Arc<Driver>> = OnceLock::new();
+static GLOBAL_SERVER: OnceLock<Server> = OnceLock::new();
 
 #[must_use]
-pub fn driver() -> Arc<AutomationDriver> {
+pub fn driver() -> Arc<Driver> {
     GLOBAL_DRIVER
-        .get_or_init(|| Arc::new(AutomationDriver::new()))
+        .get_or_init(|| Arc::new(Driver::new()))
         .clone()
 }
 
@@ -42,18 +39,14 @@ pub(super) fn request_frame(ctx: &egui::Context) {
 
 pub fn init(egui_ctx: egui::Context, port: Option<u16>) {
     let d = driver();
-    let port = port.unwrap_or(DEFAULT_DIRECTOR_PORT);
-    let server = GLOBAL_SERVER.get_or_init(|| DirectorServer::new(port));
+    let port = port.unwrap_or(crate::DEFAULT_PORT);
+    let server = GLOBAL_SERVER.get_or_init(|| Server::new(port));
     if let Err(e) = server.start(d, egui_ctx) {
         log::warn!("Could not start UI Director Server: {e}");
     }
 }
 
-pub(crate) fn begin_frame(
-    ctx: &egui::Context,
-    current_page: &str,
-    pages: Vec<crate::ui::NavigationPage>,
-) {
+pub fn begin_frame(ctx: &egui::Context, current_page: &str, pages: Vec<registry::Page>) {
     let driver = driver();
     driver.frame_state.lock().unwrap().pages = pages;
     driver.begin_frame(ctx, current_page);
@@ -92,19 +85,10 @@ pub fn record_text_output(ui: &egui::Ui, text: &str, response: &egui::Response) 
 }
 
 #[must_use]
-pub fn take_pending_page() -> Option<Page> {
+pub fn take_pending_page() -> Option<String> {
     let d = driver();
     let mut state = d.frame_state.lock().unwrap();
     let page = state.pending_page.take();
     state.action_performed_this_frame |= page.is_some();
     page
-}
-
-#[must_use]
-pub fn take_pending_onboarding_step() -> Option<usize> {
-    let d = driver();
-    let mut state = d.frame_state.lock().unwrap();
-    let step = state.pending_onboarding_step.take();
-    state.action_performed_this_frame |= step.is_some();
-    step
 }

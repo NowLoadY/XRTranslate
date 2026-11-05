@@ -355,7 +355,7 @@ pub fn render_toolbar(
                                                     .desired_width((width - 60.0).max(64.0))
                                                     .char_limit(MAX_PREFIX_LENGTH),
                                             );
-                                            changed |= crate::ui::automation::text_response(ui, label, prefix, response).changed();
+                                            changed |= ui_director::egui::text_response(ui, label, prefix, response).changed();
                                             if components::reset_button(ui, id).clicked() {
                                                 *prefix = default.into();
                                                 changed = true;

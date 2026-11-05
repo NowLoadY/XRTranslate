@@ -360,7 +360,7 @@ pub(super) fn render_task_control_card(
             }
         }
     });
-    crate::ui::automation::attention::record(
+    ui_director::egui::feedback::record(
         ui,
         super::super::settings_target(&id),
         egui::Rect::from_min_max(card_top, ui.min_rect().max),

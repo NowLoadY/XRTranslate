@@ -37,7 +37,7 @@ pub fn segmented_switch(ui: &mut Ui, second: &mut bool, labels: [&str; 2]) -> Re
             }
         });
     }
-    if let Some(value) = crate::ui::automation::record_toggle(
+    if let Some(value) = ui_director::egui::record_toggle(
         ui,
         response.id,
         &labels.join(" / "),

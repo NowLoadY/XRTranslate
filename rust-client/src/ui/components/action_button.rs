@@ -144,7 +144,7 @@ fn icon_button_with_colors(
 ) -> egui::Response {
     let diameter = diameter.max(ui.spacing().interact_size.y);
     let response = ui.add_sized(Vec2::splat(diameter), egui::Button::new("").frame(false));
-    let response = crate::ui::automation::Control::button(label).response(ui, response);
+    let response = ui_director::egui::Control::button(label).response(ui, response);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
     let hover = AnimationSystem::hover(
         ui.ctx(),

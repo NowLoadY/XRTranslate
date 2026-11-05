@@ -199,13 +199,13 @@ impl Notifications {
                 );
                 ui.painter()
                     .galley(rect.min + Vec2::new(18.0, 10.0), galley, Color32::BLACK);
-                super::automation::record_output(
+                ui_director::egui::record_output(
                     ui,
                     "Notification",
-                    super::automation::ElementValue::Text(text.to_string()),
+                    ui_director::egui::ElementValue::Text(text.to_string()),
                     rect,
                 );
-                super::automation::button_response(
+                ui_director::egui::button_response(
                     ui,
                     response.id,
                     crate::i18n::tr(language, "Dismiss notification"),

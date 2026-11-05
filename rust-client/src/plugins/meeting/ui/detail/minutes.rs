@@ -25,7 +25,7 @@ pub(super) fn render_minutes(
                     .desired_rows(8)
                     .desired_width(f32::INFINITY),
             );
-            controller.minutes_dirty |= crate::ui::automation::text_response(
+            controller.minutes_dirty |= ui_director::egui::text_response(
                 ui,
                 tr(language, "Minutes"),
                 &mut controller.minutes_draft,

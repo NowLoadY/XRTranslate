@@ -142,7 +142,7 @@ fn download_progress_button_with_loading(
                 ),
             );
         }
-        crate::ui::automation::button_response(ui, response.id, label, ui.is_enabled(), response)
+        ui_director::egui::button_response(ui, response.id, label, ui.is_enabled(), response)
     })
     .inner
 }

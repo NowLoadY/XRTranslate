@@ -201,7 +201,7 @@ pub fn show(
             egui::StrokeKind::Inside,
         );
     }
-    let automated = crate::ui::automation::record_button(ui, id, name, enabled, footer);
+    let automated = ui_director::egui::record_button(ui, id, name, enabled, footer);
     let clicked = enabled && (response.clicked() || automated);
     if enabled {
         response.on_hover_cursor(egui::CursorIcon::PointingHand);

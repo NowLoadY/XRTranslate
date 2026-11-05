@@ -39,7 +39,7 @@ pub(super) fn render(
                     .hint_text(tr(language, "New topic title"))
                     .desired_width(f32::INFINITY),
             );
-            crate::ui::automation::text_response(
+            ui_director::egui::text_response(
                 ui,
                 tr(language, "New topic title"),
                 &mut controller.new_topic_title,
@@ -73,7 +73,7 @@ pub(super) fn render(
                             egui::TextEdit::singleline(name)
                                 .desired_width(180.0_f32.min(ui.available_width())),
                         );
-                        crate::ui::automation::text_response(
+                        ui_director::egui::text_response(
                             ui,
                             tr(language, "Speaker name"),
                             name,

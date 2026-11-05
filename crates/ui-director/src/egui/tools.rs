@@ -1,9 +1,11 @@
 //! Agent/CLI access to the live component registry and existing UI command queue.
 use super::{
-    AutomationDriver, ElementValue,
-    driver::{CommandEnvelope, DirectorCommand, DirectorResponse},
+    Driver, ElementValue,
+    driver::{Command, Request},
 };
-use crate::director::{Tool, ToolCall, ToolProvider, ToolResult, arguments};
+use crate::Response;
+use crate::feedback::Effect;
+use crate::{Tool, ToolCall, ToolProvider, ToolResult, arguments};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -16,14 +18,14 @@ use std::{
 
 struct Pending {
     id: String,
-    reply: crossbeam_channel::Receiver<DirectorResponse>,
+    reply: crossbeam_channel::Receiver<Response>,
     cancel: Arc<AtomicBool>,
     expires: Instant,
     completion: Option<ToolResult>,
 }
 
-pub(crate) struct UiTools {
-    driver: Arc<AutomationDriver>,
+pub struct UiTools {
+    driver: Arc<Driver>,
     pending: Option<Pending>,
 }
 
@@ -114,10 +116,13 @@ impl ToolProvider for UiTools {
             Tool::new("ui.options", "Read a page of a control's available choices; optionally filter option labels. Uses the same options as the rendered component.", json!({"target":{"type":"string"},"filter":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}}), &["target"]).read_only(),
             Tool::new("ui.click", "Click an enabled control through its normal UI handler. Use an ID from ui.read; duplicate labels are rejected.", json!({"target":{"type":"string"}}), &["target"]),
             Tool::new("ui.set", "Change a visible control through its normal UI handler. Inspect supported actions, options and range first. Returns a wait receipt until the frame consumes the action.", json!({"target":{"type":"string"},"value":{"type":["string","number","boolean"]}}), &["target","value"]),
-            Tool::new("ui.page", "Navigate to a route returned by ui.pages, using the same navigation as the interface. The welcome wizard also accepts onboarding:<step>. Inspect the resulting page and controls.", json!({"page":{"type":"string"}}), &["page"]),
+            Tool::new("ui.page", "Navigate to a route returned by ui.pages, using the same navigation as the interface. Inspect the resulting page and controls.", json!({"page":{"type":"string"}}), &["page"]),
             Tool::new("ui.scroll", "Queue a vertical scroll at UI coordinates, in the same logical pixels as control rectangles from ui.read. Positive delta scrolls up, negative down. Read the resulting controls afterward to verify movement.", json!({"x":{"type":"number"},"y":{"type":"number"},"delta":{"type":"number","minimum":-2000,"maximum":2000}}), &["x","y","delta"]),
             Tool::new("ui.operation", "Read the actual UI action result; a pending receipt means the UI frame has not completed it yet.", json!({"operation":{"type":"string"}}), &["operation"]).read_only(),
             Tool::new("ui.cancel", "Cancel an action that has not reached the UI. Already executed actions are not undone.", json!({"operation":{"type":"string"}}), &["operation"]),
+            Tool::new("ui.input", "Send text to the focused input. Prefer ui.set when a control is discoverable.", json!({"text":{"type":"string","maxLength":8000}}), &["text"]),
+            Tool::new("ui.pointer", "Send a pointer event for custom interactions. Prefer named controls when available.", json!({"x":{"type":"number"},"y":{"type":"number"},"pressed":{"type":["boolean","null"]}}), &["x","y"]),
+            Tool::new("ui.viewport", "Set the viewport size and scale for UI inspection or recording.", json!({"width":{"type":"number","minimum":640,"maximum":4096},"height":{"type":"number","minimum":480,"maximum":2160},"scale":{"type":"number","minimum":0.75,"maximum":3}}), &["width","height","scale"]),
         ]
     }
 
@@ -141,6 +146,7 @@ impl ToolProvider for UiTools {
             let ElementValue::Text(text) = &element.value else {
                 return Err("This control has no text value".into());
             };
+            super::feedback::show([element.feedback(Effect::Read)]);
             let count = text.chars().count();
             let page = text
                 .chars()
@@ -171,6 +177,7 @@ impl ToolProvider for UiTools {
             if call.name == "ui.options" {
                 let target = args.target.as_deref().ok_or("Supply a control ID")?;
                 let element = snapshot.resolve_element(target)?;
+                super::feedback::show([element.feedback(Effect::Read)]);
                 let options: Vec<_> = element
                     .options
                     .iter()
@@ -201,6 +208,13 @@ impl ToolProvider for UiTools {
                     })
                     .collect()
             };
+            super::feedback::show(
+                controls
+                    .iter()
+                    .skip(args.offset)
+                    .take(args.limit)
+                    .map(|element| element.feedback(Effect::Read)),
+            );
             let count = controls.len();
             let page: Vec<_> = controls
                 .into_iter()
@@ -245,15 +259,60 @@ impl ToolProvider for UiTools {
             return pending.poll().unwrap_or_else(|| Ok(pending.receipt()));
         }
         let command = match call.name.as_str() {
-            "ui.click" => DirectorCommand::Click(arguments::<Target>(call)?.target),
+            "ui.input" => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Input {
+                    text: String,
+                }
+                let args: Input = arguments(call)?;
+                if args.text.chars().count() > 8000 {
+                    return Err("Text exceeds 8000 characters".into());
+                }
+                Command::Text(args.text)
+            }
+            "ui.pointer" => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Pointer {
+                    x: f32,
+                    y: f32,
+                    pressed: Option<bool>,
+                }
+                let args: Pointer = arguments(call)?;
+                if !args.x.is_finite() || !args.y.is_finite() {
+                    return Err("Supply finite coordinates".into());
+                }
+                Command::Pointer {
+                    x: args.x,
+                    y: args.y,
+                    pressed: args.pressed,
+                }
+            }
+            "ui.viewport" => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Viewport {
+                    width: f32,
+                    height: f32,
+                    scale: f32,
+                }
+                let args: Viewport = arguments(call)?;
+                Command::Viewport {
+                    width: args.width,
+                    height: args.height,
+                    scale: args.scale,
+                }
+            }
+            "ui.click" => Command::Click(arguments::<Target>(call)?.target),
             "ui.set" => {
                 let args: Set = arguments(call)?;
-                DirectorCommand::Set {
+                Command::Set {
                     target: args.target,
                     value: args.value,
                 }
             }
-            "ui.page" => DirectorCommand::Page(arguments::<Page>(call)?.page),
+            "ui.page" => Command::Page(arguments::<Page>(call)?.page),
             "ui.scroll" => {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
@@ -271,7 +330,7 @@ impl ToolProvider for UiTools {
                         "Supply finite coordinates and a scroll delta in -2000..=2000".into(),
                     );
                 }
-                DirectorCommand::Scroll {
+                Command::Scroll {
                     x: args.x,
                     y: args.y,
                     delta: args.delta,
@@ -296,7 +355,7 @@ impl ToolProvider for UiTools {
         };
         self.driver
             .channel()
-            .try_send(CommandEnvelope {
+            .try_send(Request {
                 command,
                 responder,
                 expires: pending.expires,
@@ -307,278 +366,5 @@ impl ToolProvider for UiTools {
         self.pending = Some(pending);
         self.driver.request_repaint();
         Ok(receipt)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ui::{automation, components};
-    use eframe::egui;
-
-    #[test]
-    fn shared_components_are_discovered_and_actions_follow_real_frame_handlers() {
-        let ctx = egui::Context::default();
-        let driver = automation::driver();
-        let mut tools = UiTools::default();
-        let mut checked = false;
-        let mut disabled = false;
-        let mut text = String::new();
-        let mut selection = 0;
-        let mut generic = 0;
-        let mut clicks = 0;
-        let mut time = 0.0;
-        let mut note = String::new();
-        let mut number = 1u16;
-        let mut detail_seen = false;
-        let mut frame = |checked: &mut bool,
-                         text: &mut String,
-                         selection: &mut usize,
-                         clicks: &mut usize,
-                         generic: &mut usize| {
-            time += 0.1;
-            let mut output = ctx.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(900.0, 700.0),
-                    )),
-                    time: Some(time),
-                    ..Default::default()
-                },
-                |ui| {
-                    driver.begin_frame(&ctx, "Fixture");
-                    driver.frame_state.lock().unwrap().pages = crate::ui::navigation_pages(
-                        &Default::default(),
-                        true,
-                        crate::i18n::UiLanguage::English,
-                    );
-                    if components::primary_button(ui, "Run").clicked() {
-                        *clicks += 1;
-                    }
-                    components::checkbox(ui, checked, "Enabled");
-                    ui.add_enabled_ui(false, |ui| {
-                        components::checkbox(ui, &mut disabled, "Disabled");
-                    });
-                    components::input_field(ui, text, "Text");
-                    components::CollapsingHeader::new("Details").show(ui, |ui| {
-                        detail_seen = true;
-                        let response = ui.text_edit_multiline(&mut note);
-                        automation::text_response(ui, "Draft", &mut note, response);
-                        components::number_input(ui, &mut number, "Count", 1..=10);
-                    });
-                    let options: [(usize, String); 2] = [(0, "First".into()), (1, "Second".into())];
-                    components::searchable_combobox(
-                        ui,
-                        "choice",
-                        options[*selection].1.clone(),
-                        selection,
-                        &options,
-                    );
-                    components::combobox_ui(
-                        ui,
-                        "generic-choice",
-                        format!("Generic {generic}"),
-                        |ui| {
-                            if components::selectable_value(ui, generic, 0, "Option A").clicked() {
-                                ui.close();
-                            }
-                            if components::selectable_value(ui, generic, 1, "Option B").clicked() {
-                                ui.close();
-                            }
-                        },
-                    );
-                    for index in 0..2 {
-                        ui.push_id(index, |ui| {
-                            let response = ui.button("Duplicate");
-                            automation::Control::button("Duplicate").response(ui, response);
-                        });
-                    }
-                    driver.finish_frame("Fixture");
-                },
-            );
-            output.textures_delta.clear();
-        };
-        let call = |tools: &mut UiTools, name: &str, arguments| {
-            tools.call(&ToolCall {
-                name: name.into(),
-                arguments,
-            })
-        };
-        frame(
-            &mut checked,
-            &mut text,
-            &mut selection,
-            &mut clicks,
-            &mut generic,
-        );
-        let snapshot = call(&mut tools, "ui.read", json!({})).unwrap();
-        assert!(
-            snapshot["controls"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|c| c["label"] == "Run" && c["actions"][0] == "click")
-        );
-        let choices = call(
-            &mut tools,
-            "ui.options",
-            json!({"target":"First","offset":1,"limit":1}),
-        )
-        .unwrap();
-        assert_eq!(choices["options"], json!(["Second"]));
-        for (name, args) in [
-            ("ui.click", json!({"target":"Run"})),
-            ("ui.set", json!({"target":"Enabled","value":true})),
-            ("ui.set", json!({"target":"Text","value":"changed"})),
-            ("ui.set", json!({"target":"First","value":"Second"})),
-        ] {
-            let mut receipt = None;
-            let output = ctx.run_logic(&egui::RawInput::default(), |_| {
-                receipt = Some(call(&mut tools, name, args).unwrap());
-            });
-            assert!(
-                output.viewport_commands[&egui::ViewportId::ROOT]
-                    .contains(&egui::ViewportCommand::RequestPaintWhileHidden)
-            );
-            let receipt = receipt.unwrap();
-            let wait: ToolCall = serde_json::from_value(receipt["pending"].clone()).unwrap();
-            assert!(tools.call(&wait).unwrap().get("pending").is_some());
-            frame(
-                &mut checked,
-                &mut text,
-                &mut selection,
-                &mut clicks,
-                &mut generic,
-            );
-            let result = tools.call(&wait).unwrap();
-            assert_eq!(
-                tools.call(&wait).unwrap(),
-                result,
-                "reading a result must not consume it"
-            );
-        }
-        assert_eq!(clicks, 1);
-        assert!(checked);
-        assert_eq!(text, "changed");
-        assert_eq!(selection, 1);
-        let updated = call(&mut tools, "ui.read", json!({"target":"Enabled"})).unwrap();
-        assert_eq!(updated["controls"][0]["value"], true);
-        for (name, args) in [
-            ("ui.click", json!({"target":"Duplicate"})),
-            ("ui.set", json!({"target":"Disabled","value":true})),
-            ("ui.set", json!({"target":"Second","value":"Not an option"})),
-        ] {
-            let receipt = call(&mut tools, name, args).unwrap();
-            frame(
-                &mut checked,
-                &mut text,
-                &mut selection,
-                &mut clicks,
-                &mut generic,
-            );
-            let wait = serde_json::from_value(receipt["pending"].clone()).unwrap();
-            assert!(tools.call(&wait).is_err());
-        }
-        let receipt = call(&mut tools, "ui.click", json!({"target":"Run"})).unwrap();
-        tools
-            .call(&serde_json::from_value(receipt["cancel"].clone()).unwrap())
-            .unwrap();
-        frame(
-            &mut checked,
-            &mut text,
-            &mut selection,
-            &mut clicks,
-            &mut generic,
-        );
-        assert_eq!(clicks, 1, "cancelled clicks must not execute later");
-        let receipt = call(&mut tools, "ui.click", json!({"target":"Generic 0"})).unwrap();
-        frame(
-            &mut checked,
-            &mut text,
-            &mut selection,
-            &mut clicks,
-            &mut generic,
-        );
-        tools
-            .call(&serde_json::from_value(receipt["pending"].clone()).unwrap())
-            .unwrap();
-        frame(
-            &mut checked,
-            &mut text,
-            &mut selection,
-            &mut clicks,
-            &mut generic,
-        );
-        let option = call(&mut tools, "ui.read", json!({"filter":"Option B"})).unwrap();
-        let receipt = call(
-            &mut tools,
-            "ui.click",
-            json!({"target":option["controls"][0]["id_hex"]}),
-        )
-        .unwrap();
-        frame(
-            &mut checked,
-            &mut text,
-            &mut selection,
-            &mut clicks,
-            &mut generic,
-        );
-        tools
-            .call(&serde_json::from_value(receipt["pending"].clone()).unwrap())
-            .unwrap();
-        assert_eq!(
-            generic, 1,
-            "a dynamically rendered option must use its normal selection handler"
-        );
-        assert_eq!(selection, 1);
-        let pages = call(&mut tools, "ui.pages", json!({})).unwrap();
-        assert!(
-            pages["pages"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|page| page["route"] == "Translation")
-        );
-        assert!(
-            pages["pages"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|page| page["route"] == "plugin:video_player")
-        );
-        for (target, value) in [
-            ("Details", json!(true)),
-            ("Draft", json!("原文与译文")),
-            ("Count", json!(100)),
-        ] {
-            let receipt =
-                call(&mut tools, "ui.set", json!({"target":target,"value":value})).unwrap();
-            // A disclosure animates its contents into the following frame.
-            for _ in 0..2 {
-                frame(
-                    &mut checked,
-                    &mut text,
-                    &mut selection,
-                    &mut clicks,
-                    &mut generic,
-                );
-            }
-            tools
-                .call(&serde_json::from_value(receipt["pending"].clone()).unwrap())
-                .unwrap();
-        }
-        let text_page = call(
-            &mut tools,
-            "ui.text",
-            json!({"target":"Draft","offset":2,"limit":2}),
-        )
-        .unwrap();
-        assert_eq!(text_page["text"], "与译");
-        assert_eq!(text_page["next_offset"], 4);
-        assert!(detail_seen);
-        assert!(!disabled);
-        assert_eq!(note, "原文与译文");
-        assert_eq!(number, 10, "native numeric controls retain their bounds");
     }
 }

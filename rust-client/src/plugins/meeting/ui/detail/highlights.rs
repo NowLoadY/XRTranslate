@@ -29,7 +29,7 @@ pub(super) fn note_editor(
                 .desired_rows(2)
                 .desired_width(f32::INFINITY),
         );
-        if crate::ui::automation::text_response(
+        if ui_director::egui::text_response(
             ui,
             tr(language, "Add a note (optional)"),
             draft,
@@ -51,7 +51,7 @@ pub(super) fn note_editor(
             }
             let button = ui.button("⋯");
             let button =
-                crate::ui::automation::Control::button(tr(language, "More")).response(ui, button);
+                ui_director::egui::Control::button(tr(language, "More")).response(ui, button);
             egui::Popup::menu(&button).show(|ui| {
                 let label = if draft.trim().is_empty() && marker.text.trim().is_empty() {
                     "Remove highlight"

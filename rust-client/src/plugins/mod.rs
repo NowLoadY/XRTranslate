@@ -26,10 +26,11 @@ pub mod vr_overlay;
 /// Register ToolProvider implementations here; the host and Agent need no changes.
 pub(crate) fn tool_providers(
     app: &mut crate::XRTranslateApp,
-) -> Vec<&mut dyn crate::director::ToolProvider> {
+) -> Vec<&mut dyn ui_director::ToolProvider> {
     let media = app.plugin_enabled(PluginId::MEDIA);
     let agent = app.plugin_enabled(PluginId::AGENT);
-    let mut providers: Vec<&mut dyn crate::director::ToolProvider> = vec![&mut app.ui_tools];
+    let mut providers: Vec<&mut dyn ui_director::ToolProvider> =
+        vec![&mut app.ui_tools, &mut app.director_audio];
     if media {
         providers.push(&mut app.media_plugin);
     }

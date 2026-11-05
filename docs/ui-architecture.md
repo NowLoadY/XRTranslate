@@ -16,7 +16,7 @@ into each caller.
 
 Interactive components also own their Director declaration. Shared buttons,
 choices, inputs and sliders register their rendered ID, value and supported
-actions through `ui::automation::Control`; Agent and CLI actions then reach the
+actions through `ui_director::egui::Control`; Agent and CLI actions then reach the
 normal component handler. Use `components::button/selectable_label/selectable_value`
 for native-looking controls, or add a `Control` declaration to a custom response.
 Shared disclosures and numeric inputs follow the same path; `text_response` and
@@ -25,6 +25,12 @@ Pages do not maintain a separate button list or duplicate action handlers.
 Discovery is paged, respects disabled state and excludes password fields.
 Page discovery reuses the sidebar navigation catalogue. Rendered text is read in
 bounded ranges; document-wide reading remains with the owning plugin.
+The standalone [UI Director package](../crates/ui-director/README.md) owns this
+adapter and its feedback. It observes real control values after handlers run;
+application components retain their layout, drawing and animation. Document
+adapters provide only affected items to the same feedback core. The optional
+overlay and `feedback::current` consume execution facts and current geometry,
+without adding messages to the agent's context.
 See [Director CLI and Agent design](design/director-agent.md) for the shared tools.
 
 Rendering consumes focused state and emits domain actions. Persistence, network

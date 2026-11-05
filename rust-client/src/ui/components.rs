@@ -148,7 +148,7 @@ pub fn responsive_settings_button(
         )
         .on_hover_text(label);
     if response.clicked()
-        || crate::ui::automation::record_button(ui, id, label, ui.is_enabled(), response.rect)
+        || ui_director::egui::record_button(ui, id, label, ui.is_enabled(), response.rect)
     {
         state.toggle(ui);
     }
@@ -702,7 +702,7 @@ pub fn animated_button_enabled_with_id(
     if resp.hovered() && enabled {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    crate::ui::automation::button_response(ui, id, text, enabled, resp)
+    ui_director::egui::button_response(ui, id, text, enabled, resp)
 }
 
 pub fn primary_button(ui: &mut Ui, text: &str) -> egui::Response {
@@ -857,7 +857,7 @@ pub fn primary_button_enabled_with_id(
     if resp.hovered() && enabled {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    crate::ui::automation::button_response(ui, id, text, enabled, resp)
+    ui_director::egui::button_response(ui, id, text, enabled, resp)
 }
 
 pub fn secondary_button(ui: &mut Ui, text: &str) -> egui::Response {
@@ -983,7 +983,7 @@ pub fn secondary_button_enabled(ui: &mut Ui, text: &str, enabled: bool) -> egui:
     if resp.hovered() && enabled {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    crate::ui::automation::button_response(ui, id, text, enabled, resp)
+    ui_director::egui::button_response(ui, id, text, enabled, resp)
 }
 
 pub fn combobox_ui<R>(
@@ -1056,7 +1056,7 @@ pub fn combobox_ui_with_width<R>(
 
     let mut resp = inner_resp.inner;
     resp.response = resp.response.on_hover_text(&selected_str);
-    crate::ui::automation::record_combobox(
+    ui_director::egui::record_combobox(
         ui,
         combo_id,
         &selected_str,
@@ -1094,7 +1094,7 @@ pub fn button(ui: &mut Ui, text: impl Into<egui::WidgetText>) -> egui::Response 
     let text = text.into();
     let label = text.text().to_owned();
     let response = ui.button(text);
-    crate::ui::automation::Control::button(&label).response(ui, response)
+    ui_director::egui::Control::button(&label).response(ui, response)
 }
 
 pub fn selectable_label(
@@ -1105,7 +1105,7 @@ pub fn selectable_label(
     let text = text.into();
     let label = text.text().to_owned();
     let response = ui.selectable_label(selected, text);
-    use crate::ui::automation::{Control, ElementKind, ElementValue};
+    use ui_director::egui::{Control, ElementKind, ElementValue};
     Control::new(&label, ElementKind::Button, ElementValue::Bool(selected)).response(ui, response)
 }
 
@@ -1285,7 +1285,7 @@ pub fn searchable_combobox_with_options<T: PartialEq + Clone>(
     );
 
     let resp = inner_resp.inner;
-    if let Some(target_text) = crate::ui::automation::record_combobox(
+    if let Some(target_text) = ui_director::egui::record_combobox(
         ui,
         combo_id,
         &selected_text,
@@ -1423,7 +1423,7 @@ pub fn search_bar(ui: &mut Ui, query: &mut String, hint: &str) -> bool {
         );
     }
 
-    if let Some(new_query) = crate::ui::automation::record_text_input(
+    if let Some(new_query) = ui_director::egui::record_text_input(
         ui,
         id,
         if hint.is_empty() { "search" } else { hint },
@@ -1446,7 +1446,7 @@ pub fn input_field(ui: &mut Ui, text: &mut String, hint: &str) -> egui::Response
     let id_salt = ui.next_auto_id().with("input_field");
     let id = ui.make_persistent_id(&id_salt);
     let mut resp = text_edit_ui(ui, id_salt, edit);
-    if let Some(new_text) = crate::ui::automation::record_text_input(
+    if let Some(new_text) = ui_director::egui::record_text_input(
         ui,
         id,
         if hint.is_empty() { "input" } else { hint },
@@ -2049,7 +2049,7 @@ pub fn danger_button_enabled_with_id(
     if resp.hovered() && enabled {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    crate::ui::automation::button_response(ui, id, text, enabled, resp)
+    ui_director::egui::button_response(ui, id, text, enabled, resp)
 }
 
 pub fn pill_toggle(ui: &mut Ui, checked: &mut bool) -> egui::Response {
@@ -2080,7 +2080,7 @@ pub fn pill_toggle(ui: &mut Ui, checked: &mut bool) -> egui::Response {
         response.mark_changed();
     }
     if let Some(new_val) =
-        crate::ui::automation::record_toggle(ui, id, "toggle", *checked, true, rect)
+        ui_director::egui::record_toggle(ui, id, "toggle", *checked, true, rect)
     {
         *checked = new_val;
         response.mark_changed();
@@ -2211,7 +2211,7 @@ pub fn checkbox_labeled(
     if !is_hand_drawn {
         let mut resp = ui.checkbox(checked, text);
         if let Some(new_val) =
-            crate::ui::automation::record_checkbox(ui, resp.id, label, *checked, true, resp.rect)
+            ui_director::egui::record_checkbox(ui, resp.id, label, *checked, true, resp.rect)
         {
             *checked = new_val;
             resp.mark_changed();
@@ -2249,7 +2249,7 @@ pub fn checkbox_labeled(
         response.mark_changed();
     }
     if let Some(new_val) =
-        crate::ui::automation::record_checkbox(ui, id, label, *checked, true, rect)
+        ui_director::egui::record_checkbox(ui, id, label, *checked, true, rect)
     {
         *checked = new_val;
         response.mark_changed();
@@ -2325,7 +2325,7 @@ pub fn toggle_with_label(ui: &mut Ui, checked: &mut bool, label: &str) -> egui::
     ui.horizontal(|ui| {
         let mut resp = pill_toggle(ui, checked);
         if let Some(new_val) =
-            crate::ui::automation::record_toggle(ui, id, label, *checked, true, resp.rect)
+            ui_director::egui::record_toggle(ui, id, label, *checked, true, resp.rect)
         {
             *checked = new_val;
             resp.mark_changed();
@@ -2545,7 +2545,7 @@ pub fn singleline_input(
     let id_salt = ui.next_auto_id().with("singleline_input");
     let mut response = text_edit_ui(ui, id_salt, edit);
     if !secret
-        && let Some(text) = crate::ui::automation::record_text_input(
+        && let Some(text) = ui_director::egui::record_text_input(
             ui,
             response.id,
             if hint.is_empty() { "input" } else { hint },
@@ -2567,7 +2567,7 @@ pub fn number_input<T: egui::emath::Numeric>(
     range: std::ops::RangeInclusive<T>,
 ) -> egui::Response {
     let response = ui.add(egui::DragValue::new(value).range(range.clone()));
-    crate::ui::automation::number_response(ui, label, value, range, response)
+    ui_director::egui::number_response(ui, label, value, range, response)
 }
 
 pub fn status_badge(ui: &mut Ui, status: &str, is_active: bool, is_error: bool) {
@@ -2771,7 +2771,7 @@ pub fn sub_sidebar<T: Copy + PartialEq>(
                                     if resp.clicked() {
                                         *selected = item.id;
                                     }
-                                    let simulated_click = crate::ui::automation::record_button(
+                                    let simulated_click = ui_director::egui::record_button(
                                         ui,
                                         id,
                                         &item.label,
@@ -2967,7 +2967,7 @@ impl<'a, Num: egui::emath::Numeric> ModernSlider<'a, Num> {
             } else {
                 self.label
             };
-            use crate::ui::automation::{Control, ControlAction, ElementKind, ElementValue};
+            use ui_director::egui::{Control, ControlAction, ElementKind, ElementValue};
             if let Some(ControlAction::Set(ElementValue::Number(value))) = Control::new(
                 record_label,
                 ElementKind::Slider,
@@ -3214,7 +3214,7 @@ pub fn compact_icon_button(
                 .min_size(egui::Vec2::splat(INPUT_TOGGLE_SIZE))
                 .frame(false),
         );
-        let response = crate::ui::automation::button_response(
+        let response = ui_director::egui::button_response(
             ui,
             response.id,
             label,

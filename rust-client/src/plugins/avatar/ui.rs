@@ -91,7 +91,7 @@ impl AvatarPlugin {
                 let response = ui
                     .add_sized([ui.available_width(), height], button)
                     .on_hover_text(tr(language, label));
-                if crate::ui::automation::Control::button(tr(language, label))
+                if ui_director::egui::Control::button(tr(language, label))
                     .response(ui, response)
                     .clicked()
                 {
@@ -119,7 +119,7 @@ impl AvatarPlugin {
                         .desired_width(f32::INFINITY)
                         .desired_rows(3),
                 );
-                crate::ui::automation::text_response(ui, tr(language, label), banner, response);
+                ui_director::egui::text_response(ui, tr(language, label), banner, response);
             } else {
                 crate::ui::components::checkbox(
                     ui,

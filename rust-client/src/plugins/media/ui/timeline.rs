@@ -74,10 +74,10 @@ pub(super) fn overview(
             theme::text_weak(),
         );
     }
-    crate::ui::automation::record_output(
+    ui_director::egui::record_output(
         ui,
         "Subtitle window",
-        crate::ui::automation::ElementValue::Text(format!(
+        ui_director::egui::ElementValue::Text(format!(
             "{} – {}",
             super::format_cue_time(view.start.round() as i64),
             super::format_cue_time(view.end.round() as i64),

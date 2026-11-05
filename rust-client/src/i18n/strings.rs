@@ -1,5 +1,12 @@
 /// Consolidated single-source-of-truth dictionary: `(English Key, Chinese (zh), Japanese (ja), Korean (ko), Russian (ru))`
 pub(super) const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
+    ("Read", "读取", "読み取り", "읽기", "Чтение"),
+    ("Activated", "已操作", "操作済み", "실행됨", "Выполнено"),
+    ("Pending", "等待中", "待機中", "대기 중", "Ожидание"),
+    ("Failed", "未完成", "未完了", "실패", "Ошибка"),
+    ("Changed", "已修改", "変更済み", "수정됨", "Изменено"),
+    ("Added", "已新增", "追加済み", "추가됨", "Добавлено"),
+    ("Deleted", "已删除", "削除済み", "삭제됨", "Удалено"),
     ("What would you like me to do?", "需要我做什么？", "何をしましょうか？", "무엇을 도와드릴까요?", "Что мне сделать?"),
     ("Agent instruction", "Agent 指令", "エージェントへの指示", "에이전트 지시", "Задание агенту"),
     ("Agent is working…", "正在执行任务…", "タスクを実行中…", "작업 중…", "Выполняю задачу…"),

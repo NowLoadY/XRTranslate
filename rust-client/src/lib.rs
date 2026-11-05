@@ -32,9 +32,12 @@ mod child_process;
 mod client_settings;
 pub(crate) mod contributors;
 mod desktop_shortcut;
-mod director;
-mod director_cli;
+mod director_audio;
 mod director_host;
+#[cfg(test)]
+mod director_feedback_tests;
+#[cfg(test)]
+mod director_tools_tests;
 mod export;
 mod feature_access;
 mod file_dialog;
@@ -685,7 +688,8 @@ struct XRTranslateApp {
     text_translation: text_translation::TextTranslation,
     ask: ask::Ask,
     agent: plugins::agent::AgentPlugin,
-    ui_tools: ui::automation::tools::UiTools,
+    ui_tools: ui_director::egui::tools::UiTools,
+    director_audio: director_audio::AudioInput,
     text_composer: ui::components::text_composer::TextComposer,
     server_url: String,
     download_proxy_url: String,
@@ -1939,6 +1943,7 @@ impl Default for XRTranslateApp {
             ask: ask::Ask::default(),
             agent,
             ui_tools: Default::default(),
+            director_audio: Default::default(),
             text_composer: ui::components::text_composer::TextComposer::default(),
             server_url: settings.server_url,
             download_proxy_url: settings.download_proxy_url,
@@ -5235,7 +5240,7 @@ impl XRTranslateApp {
             return Ok(());
         }
         self.audio_system.stop_capture_group(channel.scope.id());
-        if let Some(result) = ui::automation::audio::attach(channel) {
+        if let Some(result) = director_audio::attach(channel) {
             return result;
         }
         self.audio_system.set_capture_group(channel.scope.id());
@@ -5839,7 +5844,7 @@ impl XRTranslateApp {
         self.stop_agent("Application stopped");
         self.stop_avatar();
         self.auto_input_plugin.set_enabled(false);
-        ui::automation::audio::detach();
+        director_audio::detach();
         #[cfg(target_os = "android")]
         android::cancel_microphone_request();
         #[cfg(any(windows, target_os = "linux"))]
@@ -6228,7 +6233,7 @@ impl eframe::App for XRTranslateApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
         #[cfg(target_os = "android")]
         android::ime::apply_input(ctx, input);
-        ui::automation::raw_input(ctx, input);
+        ui_director::egui::raw_input(ctx, input);
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -6362,7 +6367,7 @@ impl eframe::App for XRTranslateApp {
         }
 
         let page_name = self.current_page_name();
-        ui::automation::begin_frame(
+        ui_director::egui::begin_frame(
             ui.ctx(),
             &page_name,
             ui::navigation_pages(
@@ -6372,13 +6377,14 @@ impl eframe::App for XRTranslateApp {
             ),
         );
         self.poll_director();
-        if let Some(page) = ui::automation::take_pending_page() {
-            self.navigation.open(page);
-            self.first_run = false;
-        }
-        if let Some(step) = ui::automation::take_pending_onboarding_step() {
-            self.onboarding_page = step;
-            self.first_run = true;
+        if let Some(route) = ui_director::egui::take_pending_page() {
+            if let Some(step) = route.strip_prefix("onboarding:").and_then(|s| s.parse().ok()) {
+                self.onboarding_page = step;
+                self.first_run = true;
+            } else if let Ok(page) = serde_json::from_value(serde_json::json!(route)) {
+                self.navigation.open(page);
+                self.first_run = false;
+            }
         }
         PluginRegistry::builtin()
             .normalize_active_page(&self.plugin_preferences, &mut self.navigation.page);
@@ -6525,7 +6531,7 @@ impl eframe::App for XRTranslateApp {
             );
             ui::layout::finish_frame(ui.ctx());
             self.notifications.show(ui.ctx(), self.ui_language);
-            ui::automation::finish_frame(&self.current_page_name());
+            ui_director::egui::finish_frame(&self.current_page_name());
             return;
         }
 
@@ -6830,7 +6836,7 @@ impl eframe::App for XRTranslateApp {
         }
         ui::layout::finish_frame(ui.ctx());
         self.notifications.show(ui.ctx(), self.ui_language);
-        ui::automation::finish_frame(&self.current_page_name());
+        ui_director::egui::finish_frame(&self.current_page_name());
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -6874,7 +6880,7 @@ fn cleanup_runtime_cache() {
 pub fn run() -> eframe::Result<()> {
     let args: Vec<_> = std::env::args().collect();
     if let Some(index) = args.iter().position(|arg| arg == "--control") {
-        std::process::exit(director_cli::run(args[index + 1..].to_vec()));
+        std::process::exit(ui_director::cli::run(args[index + 1..].to_vec()));
     }
     #[cfg(not(target_os = "android"))]
     logging::init();
@@ -6994,11 +7000,11 @@ pub fn run() -> eframe::Result<()> {
             } else if let Some(idx) = args.iter().position(|a| a == "--director") {
                 args.get(idx + 1)
                     .and_then(|p| p.parse::<u16>().ok())
-                    .or(Some(ui::automation::DEFAULT_DIRECTOR_PORT))
+                    .or(Some(ui_director::DEFAULT_PORT))
             } else {
                 None
             };
-            ui::automation::init(cc.egui_ctx.clone(), director_port);
+            ui_director::egui::init(cc.egui_ctx.clone(), director_port);
 
             let mut app = XRTranslateApp::default();
             app.media_plugin.controller.render_state = cc.wgpu_render_state.clone();

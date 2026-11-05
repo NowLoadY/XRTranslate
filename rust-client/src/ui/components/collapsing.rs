@@ -31,7 +31,7 @@ impl CollapsingHeader {
         let header = &mut response.header_response;
         if let Some(mut state) = egui::collapsing_header::CollapsingState::load(ui.ctx(), header.id)
         {
-            if let Some(open) = crate::ui::automation::record_toggle(
+            if let Some(open) = ui_director::egui::record_toggle(
                 ui,
                 header.id,
                 &self.label,

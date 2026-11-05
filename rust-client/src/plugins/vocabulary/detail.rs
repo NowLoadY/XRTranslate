@@ -224,7 +224,7 @@ impl Page {
                 .desired_rows(1)
                 .desired_width(f32::INFINITY),
         );
-        crate::ui::automation::text_response(
+        ui_director::egui::text_response(
             ui,
             tr(language, "Original"),
             &mut row.entry.source,
@@ -237,7 +237,7 @@ impl Page {
                 .desired_rows(2)
                 .desired_width(f32::INFINITY),
         );
-        crate::ui::automation::text_response(
+        ui_director::egui::text_response(
             ui,
             tr(language, "Translation"),
             &mut row.entry.translated,

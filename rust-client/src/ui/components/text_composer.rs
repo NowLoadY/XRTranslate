@@ -153,7 +153,7 @@ impl TextComposer {
                                     .margin(egui::Margin::symmetric(0, 2))
                                     .hint_text(tr(context.language, hint)),
                             );
-                            if let Some(text) = crate::ui::automation::record_text_input(
+                            if let Some(text) = ui_director::egui::record_text_input(
                                 ui,
                                 editor_id,
                                 id,

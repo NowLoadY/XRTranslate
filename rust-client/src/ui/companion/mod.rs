@@ -692,7 +692,12 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
     let mut painter = ctx.layer_painter(layer).with_clip_rect(screen);
     painter.multiply_opacity(smooth(state.opacity));
     if state.opacity > 0.0 {
-        super::automation::attention::paint(&painter, anchor, size);
+        ui_director::egui::feedback::paint(
+            &painter,
+            Some((anchor, size)),
+            crate::ui::theme::primary(),
+            |key| crate::i18n::tr_dynamic(app.ui_language, key).into_owned(),
+        );
         app.avatar_appearance
             .model()
             .paint(&painter, state_id(), anchor, size, pose);

@@ -90,25 +90,31 @@ impl MediaPlugin {
             cues.push(entry);
         }
         // Trial/base identities can differ from the displayed draft. Locate by time.
-        if let Some(entry) = cues.first() {
+        ui_director::egui::feedback::show(cues.iter().filter_map(|entry| {
             let start = entry["cue"]["start_ms"].as_i64().unwrap();
             let index = workspace
                 .draft
                 .cues()
                 .partition_point(|cue| cue.start_ms <= start)
                 .saturating_sub(1);
-            if let Some(cue) = workspace
+            workspace
                 .draft
                 .cues()
                 .iter()
                 .find(|cue| Some(cue.id.as_str()) == entry["cue"]["id"].as_str())
                 .or_else(|| workspace.draft.cues().get(index))
-            {
-                crate::ui::automation::attention::focus(super::super::ui::subtitle_target(
-                    &task.id, &cue.id,
-                ));
-            }
-        }
+                .map(|cue| {
+                    ui_director::feedback::Feedback::new(
+                        super::super::ui::subtitle_target(&task.id, &cue.id).value(),
+                        format!(
+                            "{:02}:{:02}",
+                            cue.start_ms / 60_000,
+                            cue.start_ms / 1_000 % 60
+                        ),
+                        ui_director::feedback::Effect::Read,
+                    )
+                })
+        }));
         Ok(
             json!({"workspace":workspace.id,"revision":workspace.revision,"status":workspace.status,
             "document":document,"title":task.title,"source_language":task.source_language,

@@ -258,10 +258,10 @@ fn render_previews(previews: &crate::session_coordinator::LivePreviews, ui: &mut
                 components::live_preview(ui, preview);
             }
         });
-    crate::ui::automation::record_output(
+    ui_director::egui::record_output(
         ui,
         "Meeting preview",
-        crate::ui::automation::ElementValue::Number(previews.entries().len() as f64),
+        ui_director::egui::ElementValue::Number(previews.entries().len() as f64),
         preview.inner_rect,
     );
 }

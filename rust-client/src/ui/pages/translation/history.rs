@@ -569,7 +569,7 @@ fn render_header(
         }),
     );
     let response = if openable {
-        crate::ui::automation::Control::button(crate::i18n::tr(
+        ui_director::egui::Control::button(crate::i18n::tr(
             app.ui_language,
             "Click to view full screen",
         ))

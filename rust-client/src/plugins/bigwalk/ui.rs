@@ -221,10 +221,10 @@ fn render_last_sent(ui: &mut egui::Ui, language: UiLanguage, snapshot: &BigWalkS
         } else {
             ui.add(egui::Label::new(&snapshot.last_sent).wrap());
         }
-        crate::ui::automation::record_output(
+        ui_director::egui::record_output(
             ui,
             "Big Walk last sent",
-            crate::ui::automation::ElementValue::Text(snapshot.last_sent.clone()),
+            ui_director::egui::ElementValue::Text(snapshot.last_sent.clone()),
             ui.max_rect(),
         );
         if snapshot.queued > 0 || snapshot.skipped > 0 {

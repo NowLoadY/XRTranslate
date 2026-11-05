@@ -106,7 +106,7 @@ pub(crate) fn playback_volume(
             response.widget_info(|| {
                 egui::WidgetInfo::labeled(egui::Role::Slider, ui.is_enabled(), label)
             });
-            let automated = crate::ui::automation::record_slider(
+            let automated = ui_director::egui::record_slider(
                 ui,
                 response.id,
                 label,
@@ -134,7 +134,7 @@ pub(crate) fn playback_button(
 ) -> egui::Response {
     let response = ui.add_sized([36.0, 36.0], egui::Button::new("").frame(false));
     let response =
-        crate::ui::automation::button_response(ui, response.id, label, ui.is_enabled(), response);
+        ui_director::egui::button_response(ui, response.id, label, ui.is_enabled(), response);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
     let active = response.hovered() || response.has_focus();
     let tint = if selected || active {

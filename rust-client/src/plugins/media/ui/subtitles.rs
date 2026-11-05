@@ -91,7 +91,7 @@ pub(super) fn render_subtitles_card(
         );
         ui.weak(tr(language, "No subtitles yet"));
         if let Some(task) = task {
-            crate::ui::automation::attention::record(
+            ui_director::egui::feedback::record(
                 ui,
                 super::subtitles_target(&task.id),
                 list_rect,
@@ -336,7 +336,7 @@ pub(super) fn render_subtitles_card(
         },
     );
     if let Some(task) = task {
-        crate::ui::automation::attention::record(ui, super::subtitles_target(&task.id), list_rect);
+        ui_director::egui::feedback::record(ui, super::subtitles_target(&task.id), list_rect);
     }
     ui.data_mut(|data| data.insert_temp(measurements_id, measurements));
     if let Some(id) = delete {

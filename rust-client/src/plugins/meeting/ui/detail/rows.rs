@@ -66,10 +66,10 @@ pub(super) fn remember_geometry<T>(
 }
 
 pub(super) fn record(ui: &egui::Ui, id: &str, rect: egui::Rect) {
-    crate::ui::automation::record_output(
+    ui_director::egui::record_output(
         ui,
         "Meeting segment",
-        crate::ui::automation::ElementValue::Text(id.to_owned()),
+        ui_director::egui::ElementValue::Text(id.to_owned()),
         rect,
     );
 }

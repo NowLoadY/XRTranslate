@@ -1,5 +1,4 @@
 pub mod animation;
-pub mod automation;
 pub(crate) mod background;
 pub(crate) mod companion;
 pub mod components;
@@ -601,34 +600,36 @@ struct NavigationEntry {
     icon: egui::ImageSource<'static>,
 }
 
-#[derive(Clone, Serialize)]
-pub(crate) struct NavigationPage {
-    pub route: String,
-    pub title: &'static str,
-    pub label: String,
-    #[serde(skip)]
-    pub page: Page,
-}
-
 /// The CLI uses the same routes and availability as the sidebar.
 pub(crate) fn navigation_pages(
     plugins: &crate::plugins::PluginPreferences,
     tts_configured: bool,
     language: crate::i18n::UiLanguage,
-) -> Vec<NavigationPage> {
-    navigation_entries(plugins, tts_configured)
+) -> Vec<ui_director::egui::registry::Page> {
+    let mut pages: Vec<_> = navigation_entries(plugins, tts_configured)
         .into_iter()
-        .map(|entry| NavigationPage {
+        .map(|entry| ui_director::egui::registry::Page {
             route: serde_json::to_value(entry.page)
                 .unwrap()
                 .as_str()
                 .unwrap()
                 .to_owned(),
-            title: entry.title,
+            title: entry.title.into(),
             label: crate::i18n::tr(language, entry.title).into(),
-            page: entry.page,
         })
-        .collect()
+        .collect();
+    pages.extend(pages::onboarding::STEPS.iter().enumerate().map(|(step, title)| {
+        ui_director::egui::registry::Page {
+            route: format!("onboarding:{step}"),
+            title: format!("Welcome: {title}"),
+            label: format!(
+                "{}: {}",
+                crate::i18n::tr(language, "Welcome Page"),
+                crate::i18n::tr(language, title)
+            ),
+        }
+    }));
+    pages
 }
 
 fn navigation_entries(
