@@ -41,12 +41,7 @@ impl eframe::App for Example {
             control::record_text_output(ui, &text, &response);
         });
         control::finish_frame("Example");
-        control::feedback::paint(
-            ui.painter(),
-            None,
-            egui::Color32::from_rgb(60, 110, 245),
-            str::to_owned,
-        );
+        control::feedback::paint(ui.painter(), None, egui::Color32::from_rgb(60, 110, 245));
     }
 }
 

@@ -1,6 +1,8 @@
 //! Map execution facts to live geometry. Painting is optional and has no layout side effects.
 use crate::feedback::{Effect, Feedback};
-use ::egui::{self, Id, Pos2, Rect};
+use ::egui::{self, Color32, Id, Pos2, Rect, Stroke};
+
+const LIFETIME: f64 = 4.0;
 
 #[derive(Clone, Debug)]
 pub struct LocatedFeedback {
@@ -38,7 +40,7 @@ pub fn show_in(ctx: &egui::Context, items: impl IntoIterator<Item = Feedback>) {
     if items.is_empty() {
         return;
     }
-    let until = ctx.input(|input| input.time) + 4.0;
+    let until = ctx.input(|input| input.time) + LIFETIME;
     ctx.data_mut(|data| {
         data.insert_temp(
             key(),
@@ -110,13 +112,9 @@ pub fn record(ui: &egui::Ui, target: Id, rect: Rect) {
     }
 }
 
-/// Default overlay. Hosts supply their accent, localization and optional companion anchor.
-pub fn paint(
-    painter: &egui::Painter,
-    anchor: Option<(Pos2, f32)>,
-    accent: egui::Color32,
-    translate: impl Fn(&str) -> String,
-) {
+/// Wordless overlay. Hosts supply an opaque accent and optional companion anchor.
+/// Reads flow toward the anchor; writes flow toward the target. Facts remain in `current`.
+pub fn paint(painter: &egui::Painter, anchor: Option<(Pos2, f32)>, accent: Color32) {
     let ctx = painter.ctx();
     let Some(state) = ctx.data(|data| data.get_temp::<State>(key())) else {
         return;
@@ -125,113 +123,124 @@ pub fn paint(
     if remaining <= 0.0 {
         return;
     }
-    ctx.request_repaint_after(std::time::Duration::from_millis(50));
-    let color = accent.gamma_multiply((remaining as f32 / 0.5).min(1.0) * 0.7);
-    let first = state.items.iter().find(|item| item.rect.is_some());
+    ctx.request_repaint_after(std::time::Duration::from_millis(16));
+    let age = (LIFETIME - remaining).max(0.0) as f32;
+    // Enter and leave by changing geometry, never by washing out the colors.
+    let reveal = ease(age / 0.16) * ease(remaining as f32 / 0.24);
+    let accent = accent.to_opaque();
     let mut painted = std::collections::BTreeSet::new();
     for item in &state.items {
         if let Some(rect) = item.rect
             && painted.insert(item.feedback.target)
         {
+            let (color, width, lift) = match item.feedback.effect {
+                Effect::Read => (accent, 1.6, 0.0),
+                Effect::Pending => (accent, 1.7 + 0.25 * (age * 4.0).sin(), 0.0),
+                Effect::Failed(_) => {
+                    let recoil = (age * 18.0).sin().abs() * (-age * 5.0).exp();
+                    (
+                        ctx.global_style().visuals.error_fg_color.to_opaque(),
+                        2.0,
+                        recoil * 2.0,
+                    )
+                }
+                _ => {
+                    // A small response at the receiving edge, as the blue pulse arrives.
+                    let hit =
+                        (std::f32::consts::PI * ((age / 1.15).fract() - 0.8).max(0.0) * 5.0).sin();
+                    (accent, 2.0 + hit * 0.5, hit)
+                }
+            };
             painter.rect_stroke(
-                rect.expand(2.0),
-                5.0,
-                egui::Stroke::new(1.5, color),
+                rect.expand(2.0 + lift * reveal),
+                (rect.width().min(rect.height()) * 0.16).clamp(4.0, 20.0),
+                Stroke::new(width * reveal, color),
                 egui::StrokeKind::Outside,
             );
         }
     }
-    let Some(item) = first else {
+    let Some(item) = state.items.iter().find(|item| item.rect.is_some()) else {
         return;
     };
-    let rect = item.rect.unwrap();
-    if let Some((head, radius)) = anchor {
-        let end = rect.clamp(head);
-        let direction = end - head;
-        if direction.length() > radius {
-            painter.extend(egui::Shape::dashed_line(
-                &[head + direction.normalized() * radius, end],
-                egui::Stroke::new(1.5, color),
-                5.0,
-                4.0,
-            ));
-        }
-    }
-    let title = match &item.feedback.effect {
-        Effect::Read => "Read",
-        Effect::Invoke => "Activated",
-        Effect::Pending => "Pending",
-        Effect::Failed(_) => "Failed",
-        Effect::Change { before, .. } if before.is_empty() => "Added",
-        Effect::Change { after, .. } if after.is_empty() => "Deleted",
-        Effect::Change { .. } => "Changed",
+    let Some((head, radius)) = anchor else {
+        return;
     };
-    let mut text = translate(title);
-    if !item.feedback.label.is_empty() {
-        text.push_str(" · ");
-        text.extend(translate(&item.feedback.label).chars().take(60));
+    let end = item.rect.unwrap().clamp(head);
+    let direction = end - head;
+    if direction.length() <= radius + 12.0 {
+        return;
     }
-    if state.items.len() > 1 {
-        text.push_str(&format!(" (+{})", state.items.len() - 1));
-    }
-    match &item.feedback.effect {
-        Effect::Change { before, after } => {
-            let prefix = before
-                .chars()
-                .zip(after.chars())
-                .take_while(|(a, b)| a == b)
-                .count();
-            for (sign, value) in [("−", before), ("+", after)] {
-                if value.is_empty() {
-                    continue;
-                }
-                let start = prefix.saturating_sub(16);
-                let excerpt: String = value.chars().skip(start).take(100).collect();
-                text.push_str(&format!(
-                    "\n{sign} {}{}{}",
-                    if start > 0 { "…" } else { "" },
-                    excerpt.replace('\n', " "),
-                    if value.chars().count() > start + 100 {
-                        "…"
-                    } else {
-                        ""
-                    }
-                ));
-            }
-        }
-        Effect::Failed(error) => {
-            text.push('\n');
-            text.extend(error.chars().take(120));
-        }
-        _ => {}
-    }
-    let visuals = &ctx.global_style().visuals;
-    let galley = painter.layout(
-        text,
-        egui::FontId::proportional(12.0),
-        visuals.text_color(),
-        340.0,
-    );
-    let size = galley.size() + egui::vec2(16.0, 10.0);
-    let screen = ctx.content_rect().shrink(6.0);
-    let y = if rect.top() - size.y - 6.0 >= screen.top() {
-        rect.top() - size.y - 6.0
-    } else {
-        rect.bottom() + 6.0
-    };
-    let pos = egui::pos2(
-        rect.left()
-            .clamp(screen.left(), (screen.right() - size.x).max(screen.left())),
-        y.clamp(screen.top(), (screen.bottom() - size.y).max(screen.top())),
-    );
-    let mut overlay = painter.clone();
-    overlay.multiply_opacity((remaining as f32 / 0.5).min(1.0));
-    overlay.rect_filled(Rect::from_min_size(pos, size), 5.0, visuals.panel_fill);
-    overlay.rect_stroke(
-        Rect::from_min_size(pos, size),
+    let start = head + direction.normalized() * radius;
+    painter.extend(egui::Shape::dashed_line(
+        &[start, end],
+        Stroke::new(1.7 * reveal, accent),
         5.0,
-        egui::Stroke::new(1.0, color),
-        egui::StrokeKind::Outside,
+        5.0,
+    ));
+    pulses(
+        painter,
+        [start, end],
+        &item.feedback.effect,
+        age,
+        reveal,
+        accent,
     );
-    overlay.galley(pos + egui::vec2(8.0, 5.0), galley, visuals.text_color());
+}
+
+// Quintic easing has zero velocity and acceleration at both ends of each pass.
+fn ease(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * t * (10.0 + t * (-15.0 + 6.0 * t))
+}
+
+fn pulses(
+    painter: &egui::Painter,
+    mut path: [Pos2; 2],
+    effect: &Effect,
+    age: f32,
+    reveal: f32,
+    accent: Color32,
+) {
+    let reading = matches!(effect, Effect::Read);
+    let (period, lanes, stretch, width) = match effect {
+        Effect::Failed(_) => return,
+        Effect::Read => (1.85, 2, 12.0, 1.6),
+        Effect::Pending => (2.4, 2, 8.0, 1.7),
+        _ => (1.15, 4, 28.0, 2.4),
+    };
+    if reading {
+        path.swap(0, 1);
+    }
+    let distance = path[0].distance(path[1]);
+    let direction = (path[1] - path[0]) / distance;
+    let normal = egui::vec2(-direction.y, direction.x);
+    let phase = (age / period).fract();
+    let speed = 16.0 * phase.powi(2) * (1.0 - phase).powi(2);
+    let envelope = ease(phase / 0.12) * ease((1.0 - phase) / 0.12) * reveal;
+    let center = ease(phase) * distance;
+    // Stretch the current bars with speed; never draw translucent trailing copies.
+    for (offset, size) in [(-6.0, 1.0), (6.0, 0.75), (-11.0, 0.55), (11.0, 0.4)]
+        .into_iter()
+        .take(lanes)
+    {
+        let length = (4.0 + stretch * speed) * size * envelope;
+        let points = [
+            path[0] + direction * (center - length * 0.5).max(0.0) + normal * offset,
+            path[0] + direction * (center + length * 0.5).min(distance) + normal * offset,
+        ];
+        if reading {
+            // A solid hairline keeps white readable on light surfaces.
+            painter.line_segment(
+                points,
+                Stroke::new((width + 1.2) * envelope, Color32::from_rgb(166, 185, 214)),
+            );
+        }
+        painter.line_segment(
+            points,
+            Stroke::new(
+                width * envelope,
+                if reading { Color32::WHITE } else { accent },
+            ),
+        );
+    }
 }

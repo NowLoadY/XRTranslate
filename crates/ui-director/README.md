@@ -74,10 +74,13 @@ deletions use the surviving container as their visual target. Register the same
 IDs with `egui::feedback::record` when rendering document rows.
 
 Use `egui::feedback::current(ctx)` for facts and current clipped rectangles, or
-call `paint` for the default overlay. The host supplies colors, localization and
-an optional connector anchor. Hidden targets have no rectangle; coordinates are
-refreshed every frame. Feedback is bounded and transient. It does not alter
-component layout or add messages to the agent's context.
+call `paint` for the wordless overlay with an accent and optional connector anchor.
+Solid outlines locate the operation; blue pulses flow toward writes, lighter white
+pulses flow back from reads. Waiting gently breathes; failure gives a brief red recoil.
+The overlay shows no tool names, status labels or document excerpts. Detailed facts
+remain available through `current` for custom renderers. Hidden targets have no
+rectangle; coordinates refresh every frame. Feedback is bounded and transient,
+without changing component layout or adding messages to the agent's context.
 
 ## Protocol
 
