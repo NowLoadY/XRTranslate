@@ -46,6 +46,7 @@ fn shared_components_are_discovered_and_actions_follow_real_frame_handlers() {
                         crate::i18n::UiLanguage::English,
                     ),
                 );
+                automation::record_location(ui, "projects", "Projects");
                 if components::primary_button(ui, "Run").clicked() {
                     *clicks += 1;
                 }
@@ -82,6 +83,14 @@ fn shared_components_are_discovered_and_actions_follow_real_frame_handlers() {
                         automation::Control::button("Duplicate").response(ui, response);
                     });
                 }
+                // As in the app, navigation resolves before drawing the active detail view.
+                let (id, label) = if *selection == 0 {
+                    ("one", "First project")
+                } else {
+                    ("two", "Second project")
+                };
+                automation::record_location(ui, id, label);
+                ui.label(label);
                 driver.finish_frame("Fixture");
             },
         );
@@ -101,6 +110,8 @@ fn shared_components_are_discovered_and_actions_follow_real_frame_handlers() {
         &mut generic,
     );
     let snapshot = call(&mut tools, "ui.read", json!({})).unwrap();
+    assert_eq!(snapshot["location"], json!(driver.location()));
+    assert_eq!(snapshot["location"]["path"][1]["id"], "one");
     assert!(
         snapshot["controls"]
             .as_array()
@@ -152,6 +163,7 @@ fn shared_components_are_discovered_and_actions_follow_real_frame_handlers() {
     assert_eq!(selection, 1);
     let updated = call(&mut tools, "ui.read", json!({"target":"Enabled"})).unwrap();
     assert_eq!(updated["controls"][0]["value"], true);
+    assert_eq!(updated["location"]["path"][1]["id"], "two");
     for (name, args) in [
         ("ui.click", json!({"target":"Duplicate"})),
         ("ui.set", json!({"target":"Disabled","value":true})),
@@ -221,6 +233,7 @@ fn shared_components_are_discovered_and_actions_follow_real_frame_handlers() {
     );
     assert_eq!(selection, 1);
     let pages = call(&mut tools, "ui.pages", json!({})).unwrap();
+    assert_eq!(pages["location"], json!(driver.location()));
     assert!(
         pages["pages"]
             .as_array()
@@ -276,4 +289,13 @@ fn shared_components_are_discovered_and_actions_follow_real_frame_handlers() {
     assert!(!disabled);
     assert_eq!(note, "原文与译文");
     assert_eq!(number, 10, "native numeric controls retain their bounds");
+    let _ = ctx.run_ui(Default::default(), |ui| {
+        automation::begin_frame(ui.ctx(), "Library", vec![]);
+        automation::finish_frame("Library");
+    });
+    assert_eq!(json!(driver.location()), json!({"page":"Library"}));
+    assert_eq!(
+        call(&mut tools, "ui.read", json!({})).unwrap()["location"],
+        json!({"page":"Library"})
+    );
 }

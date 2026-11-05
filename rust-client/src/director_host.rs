@@ -12,6 +12,8 @@ impl XRTranslateApp {
         if !self.agent.active() {
             self.prepare_agent()?;
         }
+        self.agent
+            .set_location(ui_director::egui::driver().location());
         self.agent.message(instruction).map_err(|error| {
             log::warn!("Avatar Agent instruction failed: {error}");
             "Could not send the instruction. Please try again."
@@ -36,6 +38,8 @@ impl XRTranslateApp {
             tools,
             self.ui_language.display_name(),
         );
+        self.agent
+            .set_location(ui_director::egui::driver().location());
         Ok(())
     }
 
@@ -66,6 +70,8 @@ impl XRTranslateApp {
             tools.clone(),
             self.ui_language.display_name(),
         );
+        self.agent
+            .set_location(ui_director::egui::driver().location());
         for request in requests {
             if request.expires <= std::time::Instant::now() {
                 let _ = request

@@ -13,6 +13,13 @@ pub(in crate::plugins::media::ui) fn render_detail(
     snapshot: &MediaUiSnapshot,
     ui: &mut egui::Ui,
 ) -> MediaAction {
+    if let Some(task) = controller
+        .active_task_id
+        .as_deref()
+        .and_then(|id| controller.store.get(id))
+    {
+        ui_director::egui::record_location(ui, &task.id, &task.title);
+    }
     let blocked = controller.pending_subtitle_change.is_some();
     let mut action = ui
         .add_enabled_ui(!blocked, |ui| {

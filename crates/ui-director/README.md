@@ -62,6 +62,19 @@ CLI control and feedback by using those components normally. Custom operations
 implement `ToolProvider` and join the host's provider list. Page routes and target
 IDs are supplied by the host; the framework has no application-specific routes.
 
+An active document or detail view adds its existing identity once per frame:
+
+```rust,ignore
+director::record_location(ui, &document.id, &document.title);
+```
+
+`ui.read`, `ui.pages` and `driver().location()` expose the same `Location`:
+a page and an optional path of `{id, label}` segments. Nested detail containers
+can add segments; leaving a view clears them automatically. An agent host can
+attach this small snapshot to each user instruction, including follow-ups,
+without sending the document contents or introducing another operation.
+Location is contextual data, not an execution scope or a navigation command.
+
 ## Observe operations
 
 Controls report reads and actions automatically. Value changes are observed on

@@ -28,6 +28,7 @@ impl eframe::App for Example {
             }
         }
         egui::Frame::central_panel(ui.style()).show(ui, |ui| {
+            control::record_location(ui, "example-draft", "Draft");
             ui.heading("UI Director");
             ui.label("The same controls work with the mouse, CLI and an agent.");
             let response = ui.button("Run");

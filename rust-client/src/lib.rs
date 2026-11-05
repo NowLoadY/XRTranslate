@@ -6193,26 +6193,15 @@ fn spawn_meeting_audio_router(
 }
 
 impl XRTranslateApp {
-    fn current_page_name(&self) -> String {
+    fn current_page_route(&self) -> String {
         if self.first_run {
-            format!("Onboarding:{}", self.onboarding_page)
+            format!("onboarding:{}", self.onboarding_page)
         } else {
-            match self.navigation.page {
-                Page::Translation => "Translation".to_string(),
-                Page::Settings => "Settings".to_string(),
-                Page::AudioStudio => "AudioStudio".to_string(),
-                Page::PromptStudio => "PromptStudio".to_string(),
-                Page::CorpusStudio => "CorpusStudio".to_string(),
-                Page::TtsCenter => "TtsCenter".to_string(),
-                Page::Plugin(PluginId::VOCABULARY) => "Plugin:Vocabulary".to_string(),
-                Page::Plugin(PluginId::OSC) => "Plugin:OSC".to_string(),
-                Page::Plugin(PluginId::CHILLOUTVR_OSC) => "Plugin:ChilloutVR OSC".to_string(),
-                Page::GamePlugins => "GamePlugins".to_string(),
-                Page::Plugin(PluginId::MEETING) => "Plugin:Meeting".to_string(),
-                Page::Plugin(PluginId::VR_OVERLAY) => "Plugin:VROverlay".to_string(),
-                Page::Plugin(PluginId::MEDIA) => "Plugin:Media".to_string(),
-                Page::Plugin(_) => "Plugin".to_string(),
-            }
+            serde_json::to_value(self.navigation.page)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_owned()
         }
     }
 }
@@ -6366,7 +6355,7 @@ impl eframe::App for XRTranslateApp {
             }
         }
 
-        let page_name = self.current_page_name();
+        let page_name = self.current_page_route();
         ui_director::egui::begin_frame(
             ui.ctx(),
             &page_name,
@@ -6531,7 +6520,7 @@ impl eframe::App for XRTranslateApp {
             );
             ui::layout::finish_frame(ui.ctx());
             self.notifications.show(ui.ctx(), self.ui_language);
-            ui_director::egui::finish_frame(&self.current_page_name());
+            ui_director::egui::finish_frame(&self.current_page_route());
             return;
         }
 
@@ -6836,7 +6825,7 @@ impl eframe::App for XRTranslateApp {
         }
         ui::layout::finish_frame(ui.ctx());
         self.notifications.show(ui.ctx(), self.ui_language);
-        ui_director::egui::finish_frame(&self.current_page_name());
+        ui_director::egui::finish_frame(&self.current_page_route());
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

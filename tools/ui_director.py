@@ -104,10 +104,10 @@ class UIDirector:
         return self.call("ui.pages")
 
     def get_page(self) -> str:
-        """Get the name of the currently active UI page."""
+        """Get the navigation route of the currently visible UI page."""
         resp = self.call("ui.pages")
-        if resp.get("success") and "data" in resp and "current_page" in resp["data"]:
-            return resp["data"]["current_page"]
+        if resp.get("success"):
+            return resp.get("data", {}).get("location", {}).get("page", "")
         return ""
 
     def page(self, page_name: str) -> Dict[str, Any]:

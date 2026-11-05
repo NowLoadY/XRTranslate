@@ -63,6 +63,25 @@ pub fn finish_frame(current_page: &str) {
     driver().finish_frame(current_page);
 }
 
+/// Append the active item's existing identity to this frame's location path.
+/// Call from the detail view or its shared container, not from every list row.
+/// Nothing is drawn and leaving the view automatically removes the segment.
+pub fn record_location(ui: &egui::Ui, id: impl Into<String>, label: impl Into<String>) {
+    let driver = driver();
+    if driver.owns_context(ui.ctx()) {
+        driver
+            .frame_state
+            .lock()
+            .unwrap()
+            .location
+            .path
+            .push(crate::LocationSegment {
+                id: id.into(),
+                label: label.into(),
+            });
+    }
+}
+
 /// Expose rendered read-only values through the same component registry.
 pub fn record_output(ui: &egui::Ui, label: &str, value: ElementValue, rect: Rect) {
     Control::new(label, ElementKind::Other, value).record(

@@ -3,6 +3,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 pub mod catalog;
 
+/// The visible page and active item path, independent of any application's routes.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Location {
+    pub page: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<LocationSegment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocationSegment {
+    /// The item's existing domain ID, usable by the application's tools.
+    pub id: String,
+    pub label: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Tool {
     pub name: &'static str,

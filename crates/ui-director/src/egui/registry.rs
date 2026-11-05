@@ -100,7 +100,7 @@ impl ElementDescriptor {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct FrameSnapshot {
-    pub page: String,
+    pub location: crate::Location,
     pub elements: Vec<ElementDescriptor>,
 }
 
@@ -114,7 +114,7 @@ impl FrameSnapshot {
             [element] => Ok(*element),
             [] => Err(format!(
                 "Control '{target}' not found on page '{}'",
-                self.page
+                self.location.page
             )),
             _ => Err(format!(
                 "Control '{target}' is ambiguous; use an ID from ui.read"

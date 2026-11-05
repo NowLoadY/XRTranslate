@@ -44,7 +44,7 @@ pub struct Request {
 pub struct FrameState {
     pub pages: Vec<super::registry::Page>,
     pub pending_widget_reply: Option<Sender<Response>>,
-    pub active_page_name: String,
+    pub location: crate::Location,
     pub elements: Vec<ElementDescriptor>,
     pub pending_click: Option<String>,
     pub pending_set: Option<(String, ElementValue)>,
@@ -105,12 +105,26 @@ impl Driver {
         std::mem::take(&mut *self.host_requests.lock().unwrap())
     }
 
+    /// The last complete frame, also used by UI queries. Capture when accepting
+    /// a user instruction; later navigation must not change that instruction's context.
+    pub fn location(&self) -> crate::Location {
+        self.frame_state
+            .lock()
+            .unwrap()
+            .last_snapshot
+            .location
+            .clone()
+    }
+
     /// Called at the start of each egui frame to process incoming director action commands.
     pub fn begin_frame(&self, ctx: &egui::Context, current_page: &str) {
         self.context.get_or_init(|| ctx.clone());
         super::feedback::begin_frame(ctx);
         let mut state = self.frame_state.lock().unwrap();
-        state.active_page_name = current_page.to_string();
+        state.location = crate::Location {
+            page: current_page.into(),
+            path: Vec::new(),
+        };
         state.elements.clear();
         state.action_performed_this_frame = false;
         if state
@@ -156,16 +170,16 @@ impl Driver {
     /// Called at the end of each egui frame to save snapshot and fulfill pending query commands.
     pub fn finish_frame(&self, current_page: &str) {
         let mut state = self.frame_state.lock().unwrap();
-        state.active_page_name = current_page.to_owned();
+        state.location.page = current_page.to_owned();
         state.last_snapshot = FrameSnapshot {
-            page: state.active_page_name.clone(),
+            location: state.location.clone(),
             elements: state.elements.clone(),
         };
         if let Some(responder) = state.pending_widget_reply.take() {
             let response = if state.action_performed_this_frame {
                 Response::ok(
                     "UI action completed",
-                    Some(serde_json::json!({"page":current_page})),
+                    Some(serde_json::json!({"location":state.location})),
                 )
             } else {
                 Response::err("Control was not available or enabled in this frame")
