@@ -53,6 +53,7 @@ pub struct MediaController {
     pub muted: bool,
     pub volume: f32,
     pub(super) video_export: Option<super::video_export::VideoExport>,
+    pub(super) speech_job: Option<super::speech::SpeechJob>,
     pub(super) exported_video: Option<PathBuf>,
 
     pub search_query: String,
@@ -129,6 +130,7 @@ impl Default for MediaController {
             muted: false,
             volume: 1.0,
             video_export: None,
+            speech_job: None,
             exported_video: None,
             search_query: String::new(),
             browse_all: false,
@@ -357,8 +359,12 @@ impl MediaController {
                 Ok(()) => self.playback_loaded = true,
                 Err(error) => self.error = Some(error),
             }
-            backend.select_audio(task.selected_audio())?;
-            backend.set_channel_routing(&task.audio_channels);
+            backend.select_audio(task.playback_audio())?;
+            backend.set_channel_routing(if task.play_speech_track {
+                &[]
+            } else {
+                &task.audio_channels
+            });
         }
 
         if let Some(t) = self.store.get_mut(task_id) {
@@ -634,7 +640,7 @@ impl MediaController {
         }
     }
 
-    pub(super) fn apply_audio_selection(&mut self) {
+    pub(super) fn apply_audio_selection(&mut self, source_changed: bool) {
         let Some(task) = self
             .active_task_id
             .as_deref()
@@ -642,16 +648,23 @@ impl MediaController {
         else {
             return;
         };
-        task.audio_channels.clear();
-        if task.audio_track != super::task::AudioTrackSelection::Original
+        if source_changed {
+            task.audio_channels.clear();
+        }
+        if source_changed
+            && task.audio_track != super::task::AudioTrackSelection::Original
             && task.recognition.preprocessing
                 == Some(xrtranslate_protocol::AudioPreprocessing::VocalSeparation)
         {
             task.recognition.preprocessing = Some(xrtranslate_protocol::AudioPreprocessing::None);
         }
         if let Some(backend) = &mut self.backend {
-            backend.set_channel_routing(&[]);
-            if let Err(error) = backend.select_audio(task.selected_audio()) {
+            backend.set_channel_routing(if task.play_speech_track {
+                &[]
+            } else {
+                &task.audio_channels
+            });
+            if let Err(error) = backend.select_audio(task.playback_audio()) {
                 self.error = Some(error);
             }
         }
@@ -673,7 +686,7 @@ impl MediaController {
         let old = task.separated_audio.replace(stems);
         // Keep the selected track when refreshing its saved outputs.
         if let Some(backend) = &mut self.backend {
-            if let Err(error) = backend.select_audio(task.selected_audio()) {
+            if let Err(error) = backend.select_audio(task.playback_audio()) {
                 self.error = Some(error);
             }
         }
@@ -707,7 +720,11 @@ impl MediaController {
             if let Some(task) = self.store.get(task_id) {
                 let channels = task.audio_channels.clone();
                 if let Some(backend) = &mut self.backend {
-                    backend.set_channel_routing(&channels);
+                    backend.set_channel_routing(if task.play_speech_track {
+                        &[]
+                    } else {
+                        &channels
+                    });
                 }
             }
             self.save_active();
@@ -715,6 +732,13 @@ impl MediaController {
     }
 
     pub fn delete_task(&mut self, task_id: &str) {
+        if self
+            .speech_job
+            .as_ref()
+            .is_some_and(|job| job.task_id == task_id)
+        {
+            self.speech_job = None;
+        }
         if self.active_task_id.as_deref() == Some(task_id) {
             if let Some(backend) = &mut self.backend {
                 backend.stop();
@@ -732,8 +756,15 @@ impl MediaController {
         {
             self.remove_stems(stems);
         }
+        let speech = self
+            .store
+            .get(task_id)
+            .and_then(|task| task.speech_track.clone());
         self.store.delete(task_id);
         self.save_active();
+        if let Some(track) = speech {
+            self.remove_speech_file(&track.path);
+        }
     }
 
     pub fn toggle_play(&mut self) {
@@ -859,6 +890,7 @@ impl MediaController {
                 && let Some(detected_count) = backend.get_audio_channel_count()
                 && detected_count > 0
                 && let Some(task) = self.store.get_mut(active_id)
+                && !task.play_speech_track
                 && task.audio_channels.len() != detected_count
             {
                 task.audio_channels = AudioChannelItem::default_for_count(detected_count);

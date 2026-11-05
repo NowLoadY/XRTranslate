@@ -97,6 +97,13 @@ pub(super) fn render_task_control_card(
     let mut routing = false;
     let mut preprocessing_action = None;
     let can_edit = controller.subtitle_edit.is_none();
+    let speech_progress = controller
+        .speech_job
+        .as_ref()
+        .filter(|job| job.task_id == id)
+        .map(|job| job.progress());
+    let mut generate_speech = false;
+    let mut cancel_speech = false;
     let card_top = ui.next_widget_position();
     components::card(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -220,6 +227,26 @@ pub(super) fn render_task_control_card(
                 );
             }
         });
+        if let Some(progress) = speech_progress {
+            crate::ui::layout::flow_row(ui, |ui| {
+                ui.spinner();
+                ui.label(tr(language, "Generating speech"));
+                cancel_speech = components::secondary_button(ui, tr(language, "Cancel")).clicked();
+            });
+            ui.add(egui::ProgressBar::new(progress).show_percentage());
+        } else if snapshot.can_synthesize && local_file && count > 0 {
+            generate_speech = components::secondary_button_enabled(
+                ui,
+                tr(language, "Generate speech track"),
+                !task.is_task_running
+                    && !optimizing
+                    && can_edit
+                    && translated == count
+                    && controller.speech_job.is_none(),
+            )
+            .on_disabled_hover_text(tr(language, "Finish translating the subtitles first."))
+            .clicked();
+        }
         if subtitles && task.is_task_running {
             let progress = if count == 0 {
                 0.0
@@ -380,8 +407,13 @@ pub(super) fn render_task_control_card(
     if changed || language_changed {
         controller.save_active();
     }
+    if cancel_speech {
+        controller.speech_job = None;
+    }
     if pause {
         MediaAction::StopTranslation
+    } else if generate_speech {
+        MediaAction::GenerateSpeech
     } else if let Some(action) = preprocessing_action {
         MediaAction::AudioPreprocessing(action)
     } else if repair {

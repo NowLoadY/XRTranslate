@@ -105,7 +105,10 @@ impl VoiceLibrary {
         Ok(self.status())
     }
 
-    async fn register_selection(&self, selection: &VoiceSelection) -> Result<(), String> {
+    pub(super) async fn register_selection(
+        &self,
+        selection: &VoiceSelection,
+    ) -> Result<(), String> {
         let adapter = self
             .adapter
             .as_ref()
@@ -181,7 +184,7 @@ impl VoiceLibrary {
     }
 }
 
-fn voice_name(selection: &VoiceSelection) -> String {
+pub(super) fn voice_name(selection: &VoiceSelection) -> String {
     if let Some(preset) = &selection.preset {
         return preset.clone();
     }

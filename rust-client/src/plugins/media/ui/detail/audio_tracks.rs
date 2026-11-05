@@ -34,7 +34,11 @@ pub(super) fn render(controller: &mut MediaController, language: UiLanguage, ui:
             )
         })
         .inner;
-    let before = (task.audio_track, task.original_audio_track);
+    let before = (
+        task.audio_track,
+        task.original_audio_track,
+        task.play_speech_track,
+    );
     let popup = playback_popup(&response, overlay)
         .layout(egui::Layout::top_down_justified(egui::Align::Min))
         .show(|ui| {
@@ -50,12 +54,18 @@ pub(super) fn render(controller: &mut MediaController, language: UiLanguage, ui:
                 .collect::<Vec<_>>();
             ui.add_enabled_ui(enabled, |ui| {
                 if original.is_empty() {
-                    components::selectable_value(
+                    if components::selectable_label(
                         ui,
-                        &mut task.audio_track,
-                        AudioTrackSelection::Original,
+                        !task.play_speech_track
+                            && task.audio_track == AudioTrackSelection::Original,
                         tr(language, "Original"),
-                    );
+                    )
+                    .clicked()
+                    {
+                        task.audio_track = AudioTrackSelection::Original;
+                        task.play_speech_track = false;
+                        ui.close();
+                    }
                 }
                 for track in original.iter() {
                     let label = if !track.title.is_empty() {
@@ -67,12 +77,14 @@ pub(super) fn render(controller: &mut MediaController, language: UiLanguage, ui:
                     };
                     let response = components::selectable_label(
                         ui,
-                        task.audio_track == AudioTrackSelection::Original
+                        !task.play_speech_track
+                            && task.audio_track == AudioTrackSelection::Original
                             && task.original_audio_track == Some(track.id),
                         &label,
                     );
                     if playback_tooltip(response, &label, overlay).clicked() {
                         task.audio_track = AudioTrackSelection::Original;
+                        task.play_speech_track = false;
                         task.original_audio_track = Some(track.id);
                         ui.close();
                     }
@@ -88,23 +100,47 @@ pub(super) fn render(controller: &mut MediaController, language: UiLanguage, ui:
                         ),
                     ] {
                         ui.add_enabled_ui(path.is_file(), |ui| {
-                            if components::selectable_value(
+                            if components::selectable_label(
                                 ui,
-                                &mut task.audio_track,
-                                value,
+                                !task.play_speech_track && task.audio_track == value,
                                 tr(language, label),
                             )
                             .clicked()
                             {
+                                task.audio_track = value;
+                                task.play_speech_track = false;
                                 ui.close();
                             }
                         });
                     }
                 }
+                if let Some(track) = &task.speech_track {
+                    ui.separator();
+                    ui.add_enabled_ui(track.path.is_file(), |ui| {
+                        let label = format!(
+                            "{} · {}",
+                            tr(language, "Speech track"),
+                            crate::language_label(language, &track.language)
+                        );
+                        if components::selectable_label(ui, task.play_speech_track, &label)
+                            .clicked()
+                        {
+                            task.play_speech_track = true;
+                            ui.close();
+                        }
+                    });
+                }
             });
         });
-    if before != (task.audio_track, task.original_audio_track) {
-        controller.apply_audio_selection();
+    if before
+        != (
+            task.audio_track,
+            task.original_audio_track,
+            task.play_speech_track,
+        )
+    {
+        let source_changed = (before.0, before.1) != (task.audio_track, task.original_audio_track);
+        controller.apply_audio_selection(source_changed);
     }
     if popup.is_some() {
         controller.fullscreen_last_interaction = std::time::Instant::now();

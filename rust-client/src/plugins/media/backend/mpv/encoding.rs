@@ -4,6 +4,47 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
+/// Fit speech with the installed audio filter, preserving voice pitch.
+pub(crate) fn encode_audio(
+    input: &Path,
+    output: &Path,
+    mut tempo: f64,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    if !super::is_mpv_dll_available() {
+        return Err("The media playback runtime is required to fit speech timing".into());
+    }
+    let mpv = MpvHandle::create()?;
+    let mut filters = Vec::new();
+    while tempo > 2.0 {
+        filters.push("atempo=2".to_owned());
+        tempo /= 2.0;
+    }
+    filters.push(format!("atempo={tempo:.8}"));
+    for (name, value) in [
+        ("config", "no"),
+        ("load-scripts", "no"),
+        ("terminal", "no"),
+        ("o", output.to_str().ok_or("Invalid audio output path")?),
+        ("of", "wav"),
+        ("oac", "pcm_s16le"),
+        ("ao", "lavc"),
+        ("vid", "no"),
+        ("vo", "null"),
+        ("keep-open", "no"),
+        ("idle", "yes"),
+    ] {
+        mpv.set_option_string(name, value)?;
+    }
+    mpv.set_option_string("af", &format!("lavfi=[{}]", filters.join(",")))?;
+    mpv.initialize()?;
+    mpv.command(&[
+        "loadfile",
+        input.to_str().ok_or("Invalid speech input path")?,
+    ])?;
+    wait_for_encoding(mpv, output, None, cancelled)
+}
+
 /// Uses the installed playback engine's encoder and subtitle renderer.
 pub(crate) fn encode_video(
     input: &Path,
@@ -93,9 +134,18 @@ pub(crate) fn encode_video(
     }
     mpv.initialize()?;
     mpv.command(&["loadfile", input.to_str().ok_or("Invalid source path")?])?;
+    wait_for_encoding(mpv, output, Some(progress), cancelled)
+}
+
+fn wait_for_encoding(
+    mpv: MpvHandle,
+    output: &Path,
+    progress: Option<&AtomicU32>,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
     loop {
         if cancelled.load(Ordering::Relaxed) {
-            return Err("Video export cancelled".into());
+            return Err("Media encoding cancelled".into());
         }
         let event = unsafe { &*libmpv_sys::mpv_wait_event(mpv.handle, 0.1) };
         if event.event_id == libmpv_sys::mpv_event_id_MPV_EVENT_END_FILE {
@@ -105,15 +155,16 @@ pub(crate) fn encode_video(
             {
                 break;
             }
-            return Err(format!("Video export failed ({})", end.error));
+            return Err(format!("Media encoding failed ({})", end.error));
         }
         if event.event_id == libmpv_sys::mpv_event_id_MPV_EVENT_SHUTDOWN {
-            return Err("Video export stopped before completion".into());
+            return Err("Media encoding stopped before completion".into());
         }
         if let (Some(position), Some(duration)) = (
             mpv.get_property_f64("time-pos"),
             mpv.get_property_f64("duration"),
         ) && duration > 0.0
+            && let Some(progress) = progress
         {
             progress.store(
                 (position / duration * 1000.0).clamp(0.0, 999.0) as u32,
@@ -124,10 +175,10 @@ pub(crate) fn encode_video(
     // Destruction finalizes the container before the caller publishes the file.
     drop(mpv);
     if cancelled.load(Ordering::Relaxed) {
-        return Err("Video export cancelled".into());
+        return Err("Media encoding cancelled".into());
     }
     if std::fs::metadata(output).map_err(|e| e.to_string())?.len() == 0 {
-        return Err("Video export produced an empty file".into());
+        return Err("Media encoding produced an empty file".into());
     }
     Ok(())
 }

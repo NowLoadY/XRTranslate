@@ -56,6 +56,12 @@ fn render_detail_contents(
     }
     if !controller.fullscreen_mode {
         let mut export_video = false;
+        let mut export_speech = false;
+        let speech = controller
+            .active_task_id
+            .as_deref()
+            .and_then(|id| controller.store.get(id))
+            .and_then(|task| task.speech_track.clone());
         let video_available = controller.video_export.is_none()
             && controller
                 .active_task_id
@@ -93,10 +99,39 @@ fn render_detail_contents(
                             &controller.subtitles,
                             video_available,
                         );
+                        if let Some(track) = &speech {
+                            export_speech = components::secondary_button_enabled(
+                                ui,
+                                tr(language, "Export speech track"),
+                                track.path.is_file(),
+                            )
+                            .clicked();
+                        }
                     },
                 );
             }
         });
+        if export_speech && let Some(track) = speech {
+            let stem = std::path::Path::new(&title)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy();
+            let name = format!("{stem}-{}", track.language);
+            #[cfg(all(feature = "mpv", any(windows, target_os = "linux")))]
+            if let Some(path) = crate::export::choose_path(&name, crate::export::Format::Wav)
+                && path.canonicalize().ok() != track.path.canonicalize().ok()
+                && let Err(error) = std::fs::copy(&track.path, path)
+            {
+                controller.error = Some(error.to_string());
+            }
+            #[cfg(not(all(feature = "mpv", any(windows, target_os = "linux"))))]
+            if let Err(error) = std::fs::read(&track.path)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| crate::export::save(&name, crate::export::Format::Wav, bytes))
+            {
+                controller.error = Some(error);
+            }
+        }
         if export_video && let Some(id) = controller.active_task_id.clone() {
             controller.start_video_export(&id, ui.ctx());
         }

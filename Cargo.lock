@@ -6885,6 +6885,7 @@ dependencies = [
  "flate2",
  "futures",
  "glam 0.33.10",
+ "hound",
  "image",
  "jni 0.21.1",
  "libc",

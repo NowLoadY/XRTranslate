@@ -128,6 +128,9 @@ impl XRTranslateApp {
     }
 
     pub(crate) fn poll_media_translation(&mut self, ctx: &egui::Context) {
+        self.media_plugin
+            .controller
+            .poll_speech(&mut self.backend_manager, &self.server_url, ctx);
         self.media_plugin.poll_translation_events();
         for owner in std::mem::take(&mut self.media_plugin.workspace_cancelled) {
             self.stop_task_owner(&owner);
@@ -170,6 +173,7 @@ impl XRTranslateApp {
             languages: self.language_capabilities(),
             can_optimize: self.service_config.agent_available()
                 && self.plugin_enabled(PluginId::AGENT),
+            can_synthesize: self.service_config.tts_is_configured(),
             optimizing_task: self
                 .agent
                 .scope()
@@ -189,6 +193,11 @@ impl XRTranslateApp {
         ctx: egui::Context,
     ) {
         match action {
+            plugins::media::MediaAction::GenerateSpeech => {
+                if self.service_config.tts_is_configured() {
+                    self.media_plugin.controller.start_speech();
+                }
+            }
             plugins::media::MediaAction::OptimizeSubtitles => {
                 if let Some(task) = self.media_plugin.controller.active_task_id.clone() {
                     if let Err(error) = self.start_media_agent(&task) {

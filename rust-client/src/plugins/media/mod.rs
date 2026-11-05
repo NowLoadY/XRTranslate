@@ -5,6 +5,7 @@ pub mod events;
 mod files;
 pub mod i18n;
 pub mod installer;
+mod speech;
 mod subtitle_job;
 mod subtitle_refinement;
 mod subtitle_split;
@@ -30,6 +31,7 @@ pub struct MediaUiSnapshot {
     pub language: UiLanguage,
     pub languages: xrtranslate_engine::language::LanguageCapabilities,
     pub can_optimize: bool,
+    pub can_synthesize: bool,
     pub optimizing_task: Option<String>,
     pub default_preprocessing: xrtranslate_protocol::AudioPreprocessing,
     pub preprocessing_models: crate::ui::components::AudioPreprocessingModels,
@@ -122,6 +124,7 @@ impl MediaTranslationRequest {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum MediaAction {
+    GenerateSpeech,
     OptimizeSubtitles,
     StopOptimization,
     #[default]
@@ -216,7 +219,9 @@ impl MediaPlugin {
     }
 
     pub fn has_active_task(&self) -> bool {
-        self.controller.active_task_id.is_some() || self.controller.video_export.is_some()
+        self.controller.active_task_id.is_some()
+            || self.controller.video_export.is_some()
+            || self.controller.speech_job.is_some()
     }
     pub fn pause_task(&mut self) {
         self.pending_optimization = None;

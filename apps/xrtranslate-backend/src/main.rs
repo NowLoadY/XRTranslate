@@ -563,6 +563,10 @@ async fn run_backend() -> Result<(), Box<dyn std::error::Error>> {
         .route("/healthz", get(health))
         .route("/ask", axum::routing::post(ask))
         .route(
+            "/tts/synthesize",
+            axum::routing::post(tts_session::synthesize),
+        )
+        .route(
             "/tts/voice",
             get(tts_session::voice_status).post(tts_session::select_voice),
         )

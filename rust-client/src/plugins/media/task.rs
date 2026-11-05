@@ -130,13 +130,19 @@ impl AudioChannelItem {
     }
 }
 
-/// A single input shared by playback, decoding and preprocessing.
+/// The source shared by decoding, preprocessing and original-audio playback.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AudioTrackSelection {
     #[default]
     Original,
     Vocals,
     Background,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SpeechTrack {
+    pub path: PathBuf,
+    pub language: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -165,6 +171,10 @@ pub struct MediaTask {
     pub original_audio_track: Option<i64>,
     #[serde(default)]
     pub separated_audio: Option<xrtranslate_protocol::SeparatedAudio>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech_track: Option<SpeechTrack>,
+    #[serde(default)]
+    pub play_speech_track: bool,
     #[serde(default)]
     pub is_task_running: bool,
     pub created_at_sec: u64,
@@ -195,7 +205,7 @@ impl MediaTask {
                 audio_channels: self.audio_channels.clone(),
             },
             _ => MediaTranslationRequest::ImportMedia {
-                source: match self.selected_audio() {
+                source: match self.source_audio() {
                     super::backend::PlaybackAudio::External(path) => MediaSource::LocalFile(path),
                     _ => self.source.clone(),
                 },
@@ -218,7 +228,16 @@ impl MediaTask {
             )
     }
 
-    pub(super) fn selected_audio(&self) -> super::backend::PlaybackAudio {
+    pub(super) fn playback_audio(&self) -> super::backend::PlaybackAudio {
+        if self.play_speech_track
+            && let Some(track) = &self.speech_track
+        {
+            return super::backend::PlaybackAudio::External(track.path.clone());
+        }
+        self.source_audio()
+    }
+
+    fn source_audio(&self) -> super::backend::PlaybackAudio {
         use super::backend::PlaybackAudio;
         match (self.audio_track, &self.separated_audio) {
             (AudioTrackSelection::Vocals, Some(stems)) => {
@@ -287,6 +306,8 @@ impl MediaTask {
             audio_track: AudioTrackSelection::Original,
             original_audio_track: None,
             separated_audio: None,
+            speech_track: None,
+            play_speech_track: false,
             is_task_running: false,
             created_at_sec: now,
             last_played_sec: now,

@@ -1,6 +1,14 @@
-//! Provider-neutral voice selection for the TTS center.
+//! Provider-neutral speech synthesis and voice selection.
 
 use serde::{Deserialize, Serialize};
+
+/// Synthesize text as mono PCM16 WAV, using the selected voice by default.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SpeechRequest {
+    pub text: String,
+    pub language: String,
+    pub voice: Option<VoiceSelection>,
+}
 
 /// Query for a canonical mono PCM16 / 16 kHz reference body.
 #[derive(Clone, Debug, Serialize, Deserialize)]

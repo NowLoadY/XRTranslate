@@ -1,12 +1,14 @@
 //! Provider-neutral TTS session work.
 //!
 //! Provider selection belongs to `model_runtime::tts`; WebSocket ordering and
-//! epochs remain in `main`. This module owns only clone capture and the bounded
-//! synthesis worker shared by local and online TTS connectors.
+//! epochs remain in `main`. Voice selection, live synthesis and stored speech
+//! share the same local and online adapters here.
 
 mod reference;
+mod speech;
 mod voices;
 pub(crate) use reference::transcribe_reference;
+pub(crate) use speech::synthesize;
 
 pub(crate) use voices::{
     MICROPHONE_VOICE_NAME, VoiceLibrary, restore_persisted_voice_clones, select_voice, voice_status,
@@ -132,7 +134,13 @@ pub(crate) async fn run_tts_worker(
         if let Err(error) = &output {
             warn!(%error, audio_bytes, elapsed_ms = millis(started.elapsed()), "TTS synthesis failed");
         } else {
-            info!(completed, audio_bytes, audio_chunks, elapsed_ms = millis(started.elapsed()), "TTS synthesis finished");
+            info!(
+                completed,
+                audio_bytes,
+                audio_chunks,
+                elapsed_ms = millis(started.elapsed()),
+                "TTS synthesis finished"
+            );
         }
         if results
             .send(TtsSynthesisResult {

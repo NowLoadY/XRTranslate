@@ -5,7 +5,7 @@ use std::ffi::{CStr, CString};
 use std::path::PathBuf;
 mod encoding;
 mod tracks;
-pub(crate) use encoding::encode_video;
+pub(crate) use encoding::{encode_audio, encode_video};
 #[cfg(test)]
 mod tests;
 

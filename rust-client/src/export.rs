@@ -8,6 +8,7 @@ pub(crate) enum Format {
     Srt,
     Vtt,
     Lrc,
+    Wav,
     #[cfg(all(feature = "mpv", any(windows, target_os = "linux")))]
     Mp4,
 }
@@ -20,6 +21,7 @@ impl Format {
             Self::Srt => "srt",
             Self::Vtt => "vtt",
             Self::Lrc => "lrc",
+            Self::Wav => "wav",
             #[cfg(all(feature = "mpv", any(windows, target_os = "linux")))]
             Self::Mp4 => "mp4",
         }

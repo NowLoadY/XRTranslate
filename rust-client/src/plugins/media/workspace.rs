@@ -242,6 +242,7 @@ fn task_context(task: &super::task::MediaTask) -> Value {
     json!({"source":task.source,"source_language":task.source_language,
         "target_language":task.target_language,"character_limit":task.subtitle_char_limit,
         "audio_track":task.audio_track,"original_audio_track":task.original_audio_track,
+        "speech_track":task.speech_track,"play_speech_track":task.play_speech_track,
         "recognition_channels":task.audio_channels.iter().filter(|channel| channel.recognition).map(|channel| channel.index).collect::<Vec<_>>()})
 }
 

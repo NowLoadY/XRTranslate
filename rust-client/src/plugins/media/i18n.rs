@@ -17,6 +17,35 @@ pub fn tr(language: UiLanguage, english: &'static str) -> &'static str {
 
 const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
     (
+        "Generate speech track",
+        "生成配音音轨",
+        "吹き替え音声を生成",
+        "더빙 트랙 생성",
+        "Создать озвучку",
+    ),
+    (
+        "Generating speech",
+        "正在生成配音",
+        "音声を生成中",
+        "더빙 생성 중",
+        "Создание озвучки",
+    ),
+    ("Speech track", "配音", "吹き替え", "더빙", "Озвучка"),
+    (
+        "Export speech track",
+        "导出配音音轨",
+        "吹き替え音声を書き出す",
+        "더빙 트랙 내보내기",
+        "Экспорт озвучки",
+    ),
+    (
+        "Finish translating the subtitles first.",
+        "请先完成字幕翻译。",
+        "先に字幕の翻訳を完了してください。",
+        "먼저 자막 번역을 완료하세요.",
+        "Сначала завершите перевод субтитров.",
+    ),
+    (
         "Import subtitles",
         "导入字幕",
         "字幕を読み込む",
@@ -101,9 +130,27 @@ const DICTIONARY: &[(&str, &str, &str, &str, &str)] = &[
         "자막 개선",
         "Улучшить субтитры",
     ),
-    ("Stop optimization","停止优化","改善を停止","개선 중지","Остановить улучшение"),
-    ("Optimizing subtitles","正在优化字幕","字幕を改善中","자막 개선 중","Улучшение субтитров"),
-    ("Optimization preview","优化预览","改善プレビュー","개선 미리 보기","Предпросмотр улучшений"),
+    (
+        "Stop optimization",
+        "停止优化",
+        "改善を停止",
+        "개선 중지",
+        "Остановить улучшение",
+    ),
+    (
+        "Optimizing subtitles",
+        "正在优化字幕",
+        "字幕を改善中",
+        "자막 개선 중",
+        "Улучшение субтитров",
+    ),
+    (
+        "Optimization preview",
+        "优化预览",
+        "改善プレビュー",
+        "개선 미리 보기",
+        "Предпросмотр улучшений",
+    ),
     (
         "File, link or share text",
         "文件、链接或分享文案",
