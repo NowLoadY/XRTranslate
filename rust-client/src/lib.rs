@@ -22,9 +22,9 @@ mod ask;
 mod audio;
 #[cfg(target_os = "linux")]
 mod audio_linux;
-mod audio_playback;
+pub use xrtranslate_client_core::audio_playback;
 mod audio_preprocessing_host;
-mod audio_processing;
+pub use xrtranslate_client_core::audio_processing;
 mod audio_studio;
 mod avatar_host;
 mod backend;
@@ -38,13 +38,12 @@ mod director_feedback_tests;
 mod director_host;
 #[cfg(test)]
 mod director_tools_tests;
-mod export;
-mod feature_access;
-mod file_dialog;
+pub use xrtranslate_client_core::export;
+pub use xrtranslate_client_core::feature_access;
+pub use xrtranslate_client_core::file_dialog;
 mod history;
-mod i18n;
+pub use xrtranslate_client_core::i18n;
 mod logging;
-mod media_host;
 pub(crate) mod media_import;
 mod model_install;
 mod network;
@@ -69,11 +68,11 @@ mod runtime_install;
 mod screen_capture;
 mod service_config;
 pub mod session_coordinator;
-mod streaming;
+pub use xrtranslate_client_core::streaming;
 mod text_translation;
 mod translation_service;
 mod ui;
-pub(crate) mod usage_guidelines;
+pub use xrtranslate_client_core::usage_guidelines;
 pub mod version;
 mod voice_interaction;
 mod voice_interaction_host;
@@ -104,9 +103,6 @@ use history::{
 use i18n::UiLanguage;
 use network::{ExternalAudioGate, SessionConfig, SessionEvent, start_session};
 use plugins::avatar::AvatarPlugin;
-use plugins::meeting::{
-    MeetingAction, MeetingAudioSource, MeetingInputRequest, MeetingPlugin, MeetingUiSnapshot,
-};
 use plugins::osc::{OscGame, OscPageContext, OscPlugin, OscUiAction, transport::TransportOwner};
 use plugins::vr_overlay::{VrOverlayPageContext, VrOverlayPlugin, VrOverlayUiAction};
 use plugins::{PluginId, PluginPreferences, PluginRegistry, PluginScrollPolicy};
@@ -114,7 +110,6 @@ pub(crate) use presentation::speaker::compact_speaker_label;
 use session_coordinator::{
     CaptionUpdate, HostOutputEvent, HostOutputSubscriber, PluginSessionBinding,
     SessionEventSubscriber, TranslationEvent, TranslationOutcome, TranslationSessionOwner,
-    TranslationSessionPlugin,
 };
 use ui::{NavigationState, Page};
 use xrtranslate_prompt::{PromptTemplateLibrary, TaskContext};
@@ -129,41 +124,7 @@ use xrtranslate_engine::language::{LanguageCapabilities, LanguageSelection, Lang
 const LIVE_AUDIO_QUEUE_CAPACITY: usize = 64;
 const MAX_PENDING_COMPANION_ERRORS: usize = 32;
 
-pub(crate) fn language_label(ui_language: UiLanguage, code: &str) -> &'static str {
-    if code == "auto" {
-        return i18n::tr(ui_language, "Auto (bidirectional)");
-    }
-    xrtranslate_engine::language::SupportedLanguage::parse(code)
-        .map(|language| i18n::tr(ui_language, language.name()))
-        .unwrap_or_else(|| i18n::tr(ui_language, "Unknown language"))
-}
-
-/// Returns true if the two language codes are mutually exclusive and should not
-/// both be selectable at the same time (e.g. zh and zh-TW are the same base
-/// language and would produce a no-op or circular translation route).
-pub fn languages_conflict(a: &str, b: &str) -> bool {
-    use xrtranslate_engine::language::SupportedLanguage;
-    match (SupportedLanguage::parse(a), SupportedLanguage::parse(b)) {
-        (Some(a), Some(b)) => a.base_code() == b.base_code(),
-        _ => a.eq_ignore_ascii_case(b),
-    }
-}
-
-fn capture_source_to_meeting(source: CaptureSource) -> MeetingAudioSource {
-    match source {
-        CaptureSource::Microphone => MeetingAudioSource::Microphone,
-        CaptureSource::SystemAudio => MeetingAudioSource::SystemAudio,
-        CaptureSource::Both => MeetingAudioSource::Both,
-    }
-}
-
-fn meeting_source_name_to_capture(source: &str) -> CaptureSource {
-    match source {
-        "system_audio" => CaptureSource::SystemAudio,
-        "both" => CaptureSource::Both,
-        _ => CaptureSource::Microphone,
-    }
-}
+pub use xrtranslate_client_core::{language_label, languages_conflict};
 
 #[derive(Clone, Debug, PartialEq)]
 struct AudioStudioAsrPlan {
@@ -685,7 +646,6 @@ struct XRTranslateApp {
     companion_inbox: ui::companion::Inbox,
     text_translation: text_translation::TextTranslation,
     ask: ask::Ask,
-    agent: plugins::agent::AgentPlugin,
     ui_tools: ui_director::egui::tools::UiTools,
     director_audio: director_audio::AudioInput,
     text_composer: ui::components::text_composer::TextComposer,
@@ -713,10 +673,6 @@ struct XRTranslateApp {
     voicemeeter_remote: Option<voicemeeter::VoiceMeeterRemote>,
     voicemeeter_route: Option<voicemeeter::VoiceMeeterStripRouteGuard>,
     audio_studio_started_voicemeeter: bool,
-    meeting_plugin: MeetingPlugin,
-    #[cfg(target_os = "android")]
-    pending_microphone_meeting: Option<MeetingAction>,
-    media_plugin: plugins::media::MediaPlugin,
     plugin_host: plugin_host::Host,
     #[cfg(any(windows, target_os = "linux"))]
     ocr: ocr_host::OcrHost,
@@ -741,7 +697,6 @@ struct XRTranslateApp {
     pub modal_dialog: ui::modal::ModalDialog,
     notifications: ui::notifications::Notifications,
     history_archive: history::archive::Archive,
-    vocabulary_plugin: plugins::vocabulary::Page,
     #[cfg(any(windows, target_os = "linux"))]
     quick_translate: quick_translate::QuickTranslate,
     #[cfg(not(any(windows, target_os = "linux")))]
@@ -983,8 +938,6 @@ impl Default for XRTranslateApp {
         let audio_applications = audio_system.available_audio_applications();
         let (event_tx, event_rx) = bounded(256);
         let backend_manager = backend::BackendManager::load();
-        let agent =
-            plugins::agent::AgentPlugin::load(backend_manager.project_root().join("runtime/agent"));
         let service_config = service_config::ServiceConfigEditor::load();
         let mut settings = ClientSettings::load(&backend_manager.project_root());
         settings.sanitize_devices(&devices, &loopback_devices);
@@ -1027,7 +980,6 @@ impl Default for XRTranslateApp {
             settings.plugin_preferences.is_enabled(PluginId::VR_OVERLAY),
             backend_manager.project_root().join("runtime/steamvr-input"),
         );
-        let meeting_plugin = MeetingPlugin::open(&backend_manager.project_root());
         let audio_studio = AudioStudioController::open(&backend_manager.project_root());
         let voicemeeter_remote = match voicemeeter::VoiceMeeterRemote::discover() {
             Ok(remote) => remote,
@@ -1036,7 +988,6 @@ impl Default for XRTranslateApp {
                 None
             }
         };
-        let media_plugin = plugins::media::MediaPlugin::new();
         let mut plugin_host = plugin_host::Host::load(backend_manager.project_root());
         plugins::osc::integrations::connect(&mut plugin_host, &osc_plugin, &chilloutvr_osc_plugin);
         const HISTORY_PRODUCERS: &[&str] = &[
@@ -1103,12 +1054,11 @@ impl Default for XRTranslateApp {
         let voice_inbox = voice_interaction.inbox.clone();
         let session_event_subscribers: Arc<Vec<Box<dyn SessionEventSubscriber>>> = Arc::new(vec![
             Box::new(history_archive.subscriber()),
+            Box::new(plugin_host.sessions.clone()),
             #[cfg(target_os = "android")]
             Box::new(android_translation_history::ResultSubscriber::default()),
             #[cfg(any(windows, target_os = "linux"))]
             Box::new(quick_translate.sink.clone()),
-            Box::new(meeting_plugin.event_sink.clone()),
-            Box::new(media_plugin.event_sink.clone()),
             #[cfg(any(windows, target_os = "linux"))]
             Box::new(ocr.plugin.event_sink.clone()),
         ]);
@@ -1882,7 +1832,6 @@ impl Default for XRTranslateApp {
             companion_inbox: ui::companion::Inbox::default(),
             text_translation: text_translation::TextTranslation::default(),
             ask: ask::Ask::default(),
-            agent,
             ui_tools: Default::default(),
             director_audio: Default::default(),
             text_composer: ui::components::text_composer::TextComposer::default(),
@@ -1910,10 +1859,6 @@ impl Default for XRTranslateApp {
             voicemeeter_remote,
             voicemeeter_route: None,
             audio_studio_started_voicemeeter: false,
-            meeting_plugin,
-            #[cfg(target_os = "android")]
-            pending_microphone_meeting: None,
-            media_plugin,
             plugin_host,
             #[cfg(any(windows, target_os = "linux"))]
             ocr,
@@ -1943,7 +1888,6 @@ impl Default for XRTranslateApp {
             modal_dialog: ui::modal::ModalDialog::default(),
             notifications: ui::notifications::Notifications::default(),
             history_archive,
-            vocabulary_plugin: Default::default(),
             #[cfg(any(windows, target_os = "linux"))]
             quick_translate,
             #[cfg(not(any(windows, target_os = "linux")))]
@@ -2830,19 +2774,6 @@ impl XRTranslateApp {
 
     pub(crate) fn plugin_disable_block_reason(&self, id: PluginId) -> Option<String> {
         match id {
-            PluginId::MEETING => self
-                .meeting_plugin
-                .disable_block_reason()
-                .map(str::to_owned),
-            PluginId::MEDIA => {
-                if self.plugin_task_active(PluginId::MEDIA.as_str())
-                    || self.media_plugin.has_active_task()
-                {
-                    Some("Stop the active video playback before disabling this plugin".into())
-                } else {
-                    None
-                }
-            }
             _ => None,
         }
     }
@@ -3246,10 +3177,6 @@ impl XRTranslateApp {
             })
     }
 
-    fn select_languages(&mut self, source: &str, target: &str) -> Option<LanguageSelection> {
-        self.select_language_options(source, target, None, false)
-    }
-
     fn select_host_languages(&mut self) -> Option<LanguageSelection> {
         self.select_language_options(
             &self.source_lang.clone(),
@@ -3274,36 +3201,9 @@ impl XRTranslateApp {
             Ok(selection) => Some(selection),
             Err(error) => {
                 self.last_error = Some(error.clone());
-                self.meeting_plugin.set_error(error);
                 None
             }
         }
-    }
-
-    fn meeting_ui_snapshot(&self) -> MeetingUiSnapshot {
-        MeetingUiSnapshot {
-            download_proxy_url: self.download_proxy_url.clone(),
-            default_audio_source: capture_source_to_meeting(self.capture_source),
-            default_source_language: self.source_lang.clone(),
-            default_target_language: self.target_lang.clone(),
-            languages: self.language_capabilities(),
-            host_session_busy: false,
-            waiting_for_microphone: self.audio_tasks.iter().any(|task| {
-                task.owner.is_plugin(PluginId::MEETING.as_str())
-                    && !task.paused
-                    && task.is_live()
-                    && task.channels.iter().all(|channel| {
-                        channel.source == CaptureSource::Microphone && !channel.capturing
-                    })
-            }),
-            language: self.ui_language,
-        }
-    }
-
-    fn render_meeting_plugin_page(&mut self, ui: &mut egui::Ui) {
-        let snapshot = self.meeting_ui_snapshot();
-        let action = self.meeting_plugin.render_page(&snapshot, ui);
-        self.apply_meeting_action(action, ui.ctx().clone());
     }
 
     fn start_audio_import_session(&mut self, task: TranslationTask, ctx: Option<egui::Context>) {
@@ -3323,10 +3223,7 @@ impl XRTranslateApp {
             _ => return,
         };
         let Some(plugin) = task.plugin else { return };
-        let meeting = owner.is_plugin(PluginId::MEETING.as_str());
-        if meeting {
-            self.meeting_plugin.event_sink.begin_sessions(1, true);
-        }
+
         let (audio_tx, audio_rx) = bounded(64);
         let mut config = self.session_config(
             task.languages,
@@ -3348,7 +3245,7 @@ impl XRTranslateApp {
                 xrtranslate_protocol::InferenceWorkload::Offline
             }
         };
-        config.save_separated_audio = owner.is_plugin(PluginId::MEDIA.as_str())
+        config.save_separated_audio = options.save_separated_audio
             && options.range_ms.is_none()
             && config.preprocessing
                 == Some(xrtranslate_protocol::AudioPreprocessing::VocalSeparation);
@@ -3371,14 +3268,9 @@ impl XRTranslateApp {
         };
         match import {
             Ok(import) => {
-                let import = if meeting {
-                    self.meeting_plugin.set_audio_import(import);
-                    None
-                } else {
-                    Some(import)
-                };
                 self.audio_tasks.push(AudioTask {
-                    import,
+                    recording: None,
+                    import: Some(import),
                     owner,
                     languages: task.languages,
                     paused: false,
@@ -3398,9 +3290,6 @@ impl XRTranslateApp {
             Err(error) => {
                 scope.active.store(false, Ordering::Release);
                 session.cancel();
-                if meeting {
-                    self.meeting_plugin.event_sink.cancel_sessions();
-                }
                 self.fail_task_startup(&owner, &error.to_string());
                 self.last_error = Some(error.to_string());
             }
@@ -3413,18 +3302,6 @@ impl XRTranslateApp {
             return;
         }
         match id {
-            PluginId::VOCABULARY => {
-                let capabilities = self.language_capabilities().for_text();
-                self.vocabulary_plugin.show(
-                    ui,
-                    &self.history_archive,
-                    self.ui_language,
-                    capabilities,
-                    &mut self.ask,
-                )
-            }
-            PluginId::MEETING => self.render_meeting_plugin_page(ui),
-            PluginId::MEDIA => self.render_media_plugin_page(ui),
             PluginId::VR_OVERLAY => self.render_vr_overlay_plugin_page(ui),
             PluginId::OSC | PluginId::CHILLOUTVR_OSC => self.render_osc_plugin_page(id, ui),
             _ => self.navigation.open(Page::Translation),
@@ -3459,111 +3336,6 @@ impl XRTranslateApp {
                 }
             }
         }
-    }
-
-    fn apply_meeting_action(&mut self, action: MeetingAction, ctx: egui::Context) {
-        #[cfg(target_os = "android")]
-        {
-            let needs_microphone = match &action {
-                MeetingAction::CreateAndStart(request) => {
-                    matches!(request.input, MeetingInputRequest::Live { .. })
-                }
-                MeetingAction::Continue(_) => true,
-                _ => false,
-            };
-            if needs_microphone && !android::microphone_allowed() {
-                match android::request_microphone(true) {
-                    Ok(()) => self.pending_microphone_meeting = Some(action),
-                    Err(error) => self.last_error = Some(error),
-                }
-                return;
-            }
-        }
-        match action {
-            MeetingAction::None => {}
-            MeetingAction::CreateAndStart(request) => {
-                let Some(languages) =
-                    self.select_languages(&request.source_language, &request.target_language)
-                else {
-                    return;
-                };
-                if self.meeting_plugin.is_busy()
-                    || self.plugin_task_active(PluginId::MEETING.as_str())
-                {
-                    return;
-                }
-                let import_path = match &request.input {
-                    MeetingInputRequest::ImportedAudio { path } => Some(path.clone()),
-                    MeetingInputRequest::Live { .. } | MeetingInputRequest::OnlineAudio { .. } => {
-                        None
-                    }
-                };
-                if let Some(id) = self.meeting_plugin.controller.create(&request)
-                    && self.meeting_plugin.controller.begin_capture(&id)
-                {
-                    self.start_meeting_input(languages, import_path, Some(ctx));
-                }
-            }
-            MeetingAction::Continue(id) => {
-                if self
-                    .meeting_plugin
-                    .controller
-                    .active_meeting_id()
-                    .as_deref()
-                    == Some(id.as_str())
-                    && self.resume_active_meeting()
-                {
-                    return;
-                }
-                self.start_stored_meeting(&id, None, None, Some(ctx));
-            }
-            MeetingAction::Pause => self.pause_active_meeting(),
-            MeetingAction::End => {
-                self.finish_active_meeting();
-            }
-            MeetingAction::Export(meeting_id) => {
-                self.export_meeting_markdown(&meeting_id);
-            }
-            MeetingAction::Reprocess(request) => {
-                self.start_stored_meeting(
-                    &request.meeting_id,
-                    Some(request.audio_path),
-                    Some(&request.topic_title),
-                    Some(ctx),
-                );
-            }
-        }
-    }
-
-    fn start_stored_meeting(
-        &mut self,
-        id: &str,
-        path: Option<std::path::PathBuf>,
-        topic: Option<&str>,
-        ctx: Option<egui::Context>,
-    ) {
-        let meeting = match self.meeting_plugin.controller.meeting(id) {
-            Ok(meeting) => meeting,
-            Err(error) => {
-                self.meeting_plugin.set_error(error.to_string());
-                return;
-            }
-        };
-        let Some(languages) =
-            self.select_languages(&meeting.source_language, &meeting.target_language)
-        else {
-            return;
-        };
-        self.stop_plugin_task(PluginId::MEETING);
-        if !self.meeting_plugin.controller.begin_capture(id) {
-            return;
-        }
-        if let Some(title) = topic {
-            self.meeting_plugin
-                .controller
-                .create_capture_topic(id, title);
-        }
-        self.start_meeting_input(languages, path, ctx);
     }
 
     pub fn save_settings(&self) {
@@ -3920,16 +3692,6 @@ impl XRTranslateApp {
         true
     }
 
-    fn plugin_task_active(&self, id: &str) -> bool {
-        self.text_translation.owner_active(id)
-            || self.audio_tasks.iter().any(|task| task.owner.is_plugin(id))
-            || self.pending_translations.iter().any(|task| {
-                task.plugin
-                    .as_ref()
-                    .is_some_and(|binding| binding.owner.plugin_id() == id)
-            })
-    }
-
     fn host_channels(&self) -> impl Iterator<Item = &translation_service::TaskChannel> {
         self.audio_tasks
             .iter()
@@ -4226,18 +3988,6 @@ impl XRTranslateApp {
             self.stop_task_owner(&owner);
         }
         match id {
-            PluginId::MEETING => {
-                self.meeting_plugin.clear_audio_import();
-                self.finalize_meeting_recording();
-                self.meeting_plugin.event_sink.cancel_sessions();
-                self.meeting_plugin.event_sink.finish_active();
-            }
-            PluginId::MEDIA => {
-                self.stop_media_agent();
-                self.media_plugin.poll_translation_events();
-                self.media_plugin.stop_import();
-                self.media_plugin.pause_task();
-            }
             _ => {}
         }
     }
@@ -4245,15 +3995,6 @@ impl XRTranslateApp {
     fn finish_caption_stream(&self, stream: u64) {
         let event = HostOutputEvent::StreamEnded(stream);
         publish_host_output(&self.host_output_subscribers, event);
-    }
-
-    fn finalize_meeting_recording(&mut self) {
-        if let Some(recording) = self.meeting_plugin.meeting_recording.take()
-            && let Err(error) = recording.finalize()
-        {
-            self.meeting_plugin
-                .set_error(format!("Could not finalize meeting recording: {error}"));
-        }
     }
 
     fn release_unused_inputs(&mut self) {
@@ -4315,18 +4056,7 @@ impl XRTranslateApp {
                 .iter()
                 .any(|channel| channel.scope.failed.load(Ordering::Acquire));
             let avatar = self.avatar_task_ended(&task.owner, failed);
-            if task.owner.is_plugin(PluginId::MEDIA.as_str())
-                && task.owner.operation_id()
-                    == self.media_plugin.controller.active_task_id.as_deref()
-            {
-                // The source's Finished event closes recognition. The media
-                // plugin may still be translating its remaining subtitles.
-                self.media_plugin.stop_import();
-            }
-            if task.owner.is_plugin(PluginId::MEETING.as_str()) {
-                self.meeting_plugin.clear_audio_import();
-                self.finalize_meeting_recording();
-            }
+
             if let Ok(mut state) = self.shared_session_state.lock() {
                 task.invalidate();
                 for channel in &task.channels {
@@ -4523,15 +4253,6 @@ impl XRTranslateApp {
             },
             &self.session_event_subscribers,
         );
-        if self.meeting_plugin.event_sink.owns_recognition(owner) {
-            self.meeting_plugin.fail_active_startup(error);
-        }
-        if owner.is_plugin(PluginId::MEDIA.as_str())
-            && owner.operation_id() == self.media_plugin.controller.active_task_id.as_deref()
-        {
-            self.media_plugin.fail_subtitle_startup();
-            self.media_plugin.set_error(error);
-        }
     }
 
     fn start_prepared_task(&mut self, task: TranslationTask, ctx: Option<egui::Context>) {
@@ -4566,120 +4287,31 @@ impl XRTranslateApp {
         }
     }
 
-    fn poll_meeting_translation(&mut self, ctx: &egui::Context) {
-        if let Some(error) = self.meeting_plugin.event_sink.take_translation_error() {
-            self.meeting_plugin.set_error(error);
-        }
-        if let Some(task) = self.meeting_plugin.event_sink.next_translation_task() {
-            self.start_translation_task(task, Some(ctx.clone()));
-        }
-    }
-
-    fn start_meeting_input(
-        &mut self,
-        languages: LanguageSelection,
-        path: Option<std::path::PathBuf>,
-        ctx: Option<eframe::egui::Context>,
-    ) {
-        let online_url = self
-            .meeting_plugin
-            .controller
-            .bundle
-            .as_ref()
-            .and_then(|bundle| bundle.meeting.input_source.as_ref())
-            .filter(|source| source.starts_with("https://") || source.starts_with("http://"))
-            .cloned();
-        let input = if path.is_some() || online_url.is_some() {
-            if let Some(path) = &path
-                && !self.meeting_plugin.controller.mark_imported_audio(path)
-            {
-                return;
-            }
-            let recognition = RecognitionSettings {
-                continuous_recognition: false,
-                preprocessing: self
-                    .effective_audio_preprocessing(self.loopback_recognition.preprocessing),
-                ..self.loopback_recognition.clone()
-            };
-            let mut options = media_import::AudioImportOptions::for_recognition(
-                recognition
-                    .preprocessing
-                    .unwrap_or(xrtranslate_protocol::AudioPreprocessing::None),
-            );
-            if let Some(path) = path {
-                TranslationInput::File {
-                    path,
-                    recognition,
-                    options,
-                }
-            } else {
-                options.pacing = media_import::AudioImportPacing::Realtime;
-                TranslationInput::OnlineAudio {
-                    url: online_url.unwrap(),
-                    recognition,
-                    options,
-                }
-            }
-        } else {
-            TranslationInput::Live(
-                self.meeting_plugin
-                    .controller
-                    .bundle
-                    .as_ref()
-                    .and_then(|bundle| bundle.meeting.input_source.as_deref())
-                    .map(meeting_source_name_to_capture)
-                    .unwrap_or(CaptureSource::Microphone),
-            )
-        };
-        let profiles = input
-            .live_source()
-            .map(|source| {
-                source
-                    .routes()
-                    .iter()
-                    .map(|source| {
-                        (
-                            *source,
-                            RecognitionSettings {
-                                continuous_recognition: false,
-                                ..self.recognition_settings(*source).clone()
-                            },
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        self.meeting_plugin.event_sink.begin_translation(languages);
-        let (source, target) = languages.wire();
-        let recognition_languages =
-            LanguageSelection::parse_with_options(&source, &target, None, true)
-                .expect("validated meeting languages");
-        self.start_translation_task(
-            TranslationTask {
-                languages: recognition_languages,
-                plugin: self.meeting_plugin.translation_session_binding(),
-                context: TaskContext::default(),
-                text_workload: None,
-                input,
-                profiles,
-            },
-            ctx,
-        );
-    }
-
     fn start_session(&mut self, task: TranslationTask, ctx: Option<egui::Context>) {
         use translation_service::{AudioTask, ChannelScope, TaskChannel, scoped_events};
         let Some(source) = task.input.live_source() else {
             return;
         };
         let owner = task.owner();
-        let meeting = owner.is_plugin(PluginId::MEETING.as_str());
-        let recording = if meeting {
-            self.start_meeting_recording()
-        } else {
-            None
+        let recording = match task
+            .plugin
+            .as_ref()
+            .and_then(|binding| binding.recording_directory.clone())
+        {
+            Some(directory) => match xrtranslate_client_core::recording::Recording::start(
+                xrtranslate_client_core::recording::RecordingConfig::new(directory),
+            ) {
+                Ok(recording) => Some(recording),
+                Err(error) => {
+                    self.fail_task_startup(&owner, &error.to_string());
+                    return;
+                }
+            },
+            None => None,
         };
+        let recording_sink = recording.as_ref().map(|recording| recording.sink());
         let mut active = AudioTask {
+            recording,
             import: None,
             owner: owner.clone(),
             languages: task.languages,
@@ -4704,8 +4336,8 @@ impl XRTranslateApp {
                 ctx.clone(),
             );
             let (tx, rx) = bounded(LIVE_AUDIO_QUEUE_CAPACITY);
-            let capture_tx = if let Some(sink) = recording.clone() {
-                let (capture, worker) = spawn_meeting_audio_router(tx, sink, *source);
+            let capture_tx = if let Some(sink) = recording_sink.clone() {
+                let (capture, worker) = spawn_recording_audio_router(tx, sink, *source);
                 active.routers.push(worker);
                 capture
             } else {
@@ -4737,11 +4369,7 @@ impl XRTranslateApp {
                 capturing: false,
             });
         }
-        if meeting {
-            self.meeting_plugin
-                .event_sink
-                .begin_sessions(active.channels.len(), false);
-        }
+
         for channel in &mut active.channels {
             if !self.input_enabled(channel.source) {
                 channel.session.pause();
@@ -4764,52 +4392,13 @@ impl XRTranslateApp {
                     }
                 }
                 self.retire_audio_task(active);
-                if meeting && let Some(recording) = self.meeting_plugin.meeting_recording.take() {
-                    if let Err(error) = recording.stop_without_finalizing() {
-                        self.meeting_plugin.set_error(error.to_string());
-                    }
-                }
+
                 self.release_unused_inputs();
                 return;
             }
             channel.capturing = true;
         }
         self.audio_tasks.push(active);
-    }
-
-    fn start_meeting_recording(&mut self) -> Option<plugins::meeting::recording::RecordingSink> {
-        let active = self
-            .meeting_plugin
-            .controller
-            .active_capture
-            .lock()
-            .ok()
-            .and_then(|active| active.clone())?;
-        if active.imported_audio {
-            return None;
-        }
-        let meeting = self
-            .meeting_plugin
-            .controller
-            .store
-            .get_meeting(&active.meeting_id)
-            .ok()?;
-        let root = meeting.recording_path?;
-        let directory = std::path::PathBuf::from(root).join(&active.recognition_run_id);
-        match plugins::meeting::recording::MeetingRecording::start(
-            plugins::meeting::recording::RecordingConfig::new(directory),
-        ) {
-            Ok(recording) => {
-                let sink = recording.sink();
-                self.meeting_plugin.meeting_recording = Some(recording);
-                Some(sink)
-            }
-            Err(error) => {
-                self.meeting_plugin
-                    .set_error(format!("Could not start meeting recording: {error}"));
-                None
-            }
-        }
     }
 
     fn poll_backend_startup(&mut self, ctx: Option<eframe::egui::Context>) {
@@ -5026,78 +4615,6 @@ impl XRTranslateApp {
     }
 
     fn poll_audio_import(&mut self) {
-        let events = self
-            .meeting_plugin
-            .audio_import
-            .as_ref()
-            .map(|import| import.events().try_iter().collect::<Vec<_>>())
-            .unwrap_or_default();
-        let mut completed = false;
-        let mut terminal_error = None;
-        for event in events {
-            match event {
-                media_import::AudioImportEvent::Started(info) => {
-                    self.set_connection_status(format!(
-                        "Processing {} Hz, {} channel audio",
-                        info.source_sample_rate, info.source_channels
-                    ));
-                }
-                media_import::AudioImportEvent::Progress(progress) => {
-                    let percentage = progress.fraction.map(|value| value * 100.0);
-                    self.set_connection_status(percentage.map_or_else(
-                        || format!("Processing audio · {}s", progress.position.as_secs()),
-                        |value| format!("Processing audio · {value:.0}%"),
-                    ));
-                }
-                media_import::AudioImportEvent::Completed { .. } => completed = true,
-                media_import::AudioImportEvent::Stopped { .. } => {
-                    let finishing = self
-                        .meeting_plugin
-                        .controller
-                        .active_meeting_id()
-                        .and_then(|id| self.meeting_plugin.controller.meeting(&id).ok())
-                        .is_some_and(|meeting| {
-                            meeting.source_kind
-                                == plugins::meeting::store::MeetingSourceKind::LiveCapture
-                                && meeting.status
-                                    == plugins::meeting::store::MeetingStatus::Processing
-                        });
-                    if finishing {
-                        completed = true;
-                    } else {
-                        terminal_error = Some("Audio import stopped".to_owned());
-                    }
-                }
-                media_import::AudioImportEvent::OutputClosed => {
-                    // Keep the session alive long enough to publish its original error.
-                    self.meeting_plugin.clear_audio_import();
-                }
-                media_import::AudioImportEvent::Error(error) => terminal_error = Some(error),
-            }
-        }
-        if completed {
-            // Dropping the completed importer disconnects its bounded audio
-            // sender. The network producer then drains every queued frame and
-            // emits `input_ended`; the meeting is ended only after the backend
-            // acknowledges its ordered inference drain.
-            self.meeting_plugin.clear_audio_import();
-            self.meeting_plugin.event_sink.request_finish();
-            self.set_connection_status("Finishing audio");
-        }
-        if let Some(error) = terminal_error {
-            self.meeting_plugin.event_sink.fail_active(&error);
-            if let Some(owner) = self
-                .audio_tasks
-                .iter()
-                .find(|task| task.owner.is_plugin(PluginId::MEETING.as_str()))
-                .map(|task| task.owner.clone())
-            {
-                self.stop_task_owner(&owner);
-            }
-            self.meeting_plugin.clear_audio_import();
-            self.finalize_meeting_recording();
-        }
-
         let host_events = self
             .audio_tasks
             .iter()
@@ -5121,7 +4638,13 @@ impl XRTranslateApp {
                     task.import = None;
                 }
             }
-            self.apply_media_import_event(&owner, event);
+            if let Some(plugin) = owner.plugin() {
+                self.plugin_host.send_event(
+                    plugin.plugin_id(),
+                    "translation.import",
+                    serde_json::json!({"owner":owner,"event":event}),
+                );
+            }
         }
     }
 
@@ -5459,15 +4982,11 @@ impl XRTranslateApp {
         let recognition = recognition.clone();
         let preprocessing = self.effective_audio_preprocessing(recognition.preprocessing);
         self.save_settings();
-        for task in self.audio_tasks.iter_mut().filter(|task| {
-            task.owner.is_host()
-                || (task.is_live() && task.owner.is_plugin(PluginId::MEETING.as_str()))
-        }) {
-            let mut recognition = recognition.clone();
-            if task.owner.is_plugin(PluginId::MEETING.as_str()) {
-                // Meetings follow the input controls while retaining native ASR delivery.
-                recognition.continuous_recognition = false;
-            }
+        for task in self
+            .audio_tasks
+            .iter_mut()
+            .filter(|task| task.owner.is_host())
+        {
             let (source_language, target_language) = task.languages.wire();
             for channel in task
                 .channels
@@ -5562,182 +5081,6 @@ impl XRTranslateApp {
         }
     }
 
-    fn finish_active_meeting(&mut self) {
-        let capture = self
-            .meeting_plugin
-            .controller
-            .active_capture
-            .lock()
-            .ok()
-            .and_then(|capture| capture.clone());
-        let Some(capture) = capture else {
-            return;
-        };
-        if !capture.imported_audio
-            && self
-                .meeting_plugin
-                .controller
-                .meeting(&capture.meeting_id)
-                .is_ok_and(|meeting| {
-                    meeting.status == plugins::meeting::store::MeetingStatus::Processing
-                })
-        {
-            return;
-        }
-        if capture.imported_audio
-            || self.meeting_plugin.audio_import.is_none()
-                && !self
-                    .audio_tasks
-                    .iter()
-                    .any(|task| task.owner.is_plugin(PluginId::MEETING.as_str()) && task.is_live())
-        {
-            self.stop_plugin_task(PluginId::MEETING);
-            return;
-        }
-        if let Err(error) = self
-            .meeting_plugin
-            .controller
-            .store
-            .process_meeting(&capture.meeting_id)
-        {
-            self.meeting_plugin.set_error(error.to_string());
-            return;
-        }
-        self.meeting_plugin.event_sink.request_finish();
-        if let Some(import) = &self.meeting_plugin.audio_import {
-            import.stop();
-        }
-        for task in self
-            .audio_tasks
-            .iter_mut()
-            .filter(|task| task.owner.is_plugin(PluginId::MEETING.as_str()))
-        {
-            task.paused = true;
-            for channel in &mut task.channels {
-                self.audio_system.stop_capture_group(channel.scope.id());
-                channel.capturing = false;
-                channel.audio_tx.take();
-                channel.session.finish();
-            }
-        }
-        self.meeting_plugin.controller.reload_open_meeting();
-        self.release_unused_inputs();
-    }
-
-    pub(crate) fn pause_active_meeting(&mut self) {
-        self.meeting_plugin.event_sink.set_translation_paused(true);
-        for task in self
-            .audio_tasks
-            .iter_mut()
-            .filter(|task| task.owner.is_plugin(PluginId::MEETING.as_str()))
-        {
-            task.paused = true;
-            for channel in &mut task.channels {
-                channel.session.pause();
-                self.audio_system.stop_capture_group(channel.scope.id());
-                channel.capturing = false;
-            }
-        }
-        if let Some(recording) = &self.meeting_plugin.meeting_recording
-            && let Err(error) = recording.checkpoint()
-        {
-            self.meeting_plugin.set_error(error.to_string());
-        }
-        let _ = self.meeting_plugin.controller.pause_capture();
-        self.release_unused_inputs();
-    }
-
-    pub(crate) fn resume_active_meeting(&mut self) -> bool {
-        if self.meeting_plugin.audio_import.is_some() {
-            for task in self
-                .audio_tasks
-                .iter_mut()
-                .filter(|task| task.owner.is_plugin(PluginId::MEETING.as_str()))
-            {
-                task.paused = false;
-                for channel in &task.channels {
-                    channel.session.resume();
-                }
-            }
-            self.meeting_plugin.event_sink.set_translation_paused(false);
-            if let Err(error) = self.meeting_plugin.controller.resume_active_meeting() {
-                self.meeting_plugin.set_error(error.to_string());
-                return false;
-            }
-            return true;
-        }
-        self.resume_meeting_capture(Self::start_task_capture)
-    }
-
-    fn resume_meeting_capture(
-        &mut self,
-        mut capture: impl FnMut(&mut Self, &translation_service::TaskChannel) -> Result<(), String>,
-    ) -> bool {
-        let Some(index) = self
-            .audio_tasks
-            .iter()
-            .position(|task| task.owner.is_plugin(PluginId::MEETING.as_str()) && task.is_live())
-        else {
-            return false;
-        };
-        self.enable_translation_service();
-        let mut task = self.audio_tasks.remove(index);
-        for source in CaptureSource::Both.routes() {
-            if task
-                .channels
-                .iter()
-                .any(|channel| channel.source == *source)
-            {
-                self.set_live_input(*source, true, None, false, &mut capture);
-            }
-        }
-        let mut ok = true;
-        for channel in &mut task.channels {
-            if channel.capturing {
-                continue;
-            }
-            match capture(self, channel) {
-                Ok(()) => {
-                    channel.capturing = true;
-                    channel.session.resume();
-                }
-                Err(error) => {
-                    self.meeting_plugin.set_error(error);
-                    ok = false;
-                }
-            }
-        }
-        task.paused = !ok;
-        if !ok {
-            for channel in &mut task.channels {
-                self.audio_system.stop_capture_group(channel.scope.id());
-                channel.session.pause();
-                channel.capturing = false;
-            }
-        }
-        self.audio_tasks.insert(index, task);
-        self.microphone_enabled = self.input_capturing(CaptureSource::Microphone);
-        self.system_audio_enabled = self.input_capturing(CaptureSource::SystemAudio);
-        if ok {
-            self.meeting_plugin.event_sink.set_translation_paused(false);
-            if let Err(error) = self.meeting_plugin.controller.resume_active_meeting() {
-                self.meeting_plugin.set_error(error.to_string());
-            }
-        }
-        ok
-    }
-
-    fn export_meeting_markdown(&mut self, meeting_id: &str) {
-        let Some((name, markdown)) = self.meeting_plugin.controller.export_markdown(meeting_id)
-        else {
-            return;
-        };
-        if let Err(error) = export::save(&name, export::Format::Markdown, markdown) {
-            self.meeting_plugin
-                .set_error(format!("Could not export meeting: {error}"));
-        }
-    }
-
     pub(crate) fn stop_translation(&mut self) {
         self.sync_game_microphone(false);
         self.stop();
@@ -5782,7 +5125,6 @@ impl XRTranslateApp {
             state.pending_recognition_windows.clear();
             state.pending_route_change = None;
         }
-        self.meeting_plugin.clear_audio_import();
         self.audio_system.stop();
         let tasks = std::mem::take(&mut self.audio_tasks);
         for task in tasks {
@@ -5791,12 +5133,6 @@ impl XRTranslateApp {
             }
             self.retire_audio_task(task);
         }
-        self.finalize_meeting_recording();
-        self.meeting_plugin.event_sink.cancel_sessions();
-        self.meeting_plugin.event_sink.finish_active();
-        self.media_plugin.poll_translation_events();
-        self.media_plugin.stop_import();
-        self.media_plugin.pause_task();
         self.active_languages = None;
         self.partial_text.clear();
         self.reset_audio_levels();
@@ -6061,38 +5397,38 @@ impl XRTranslateApp {
     }
 }
 
-fn pause_tolerance_to_ms(value: f32) -> u32 {
-    (240.0 + value.clamp(0.0, 1.0) * 960.0).round() as u32
-}
+pub use xrtranslate_client_core::recognition::pause_tolerance_to_ms;
 
 fn vad_threshold_for_background_noise(value: f32) -> f32 {
     value.clamp(0.2, 0.8)
 }
 
-fn spawn_meeting_audio_router(
+fn spawn_recording_audio_router(
     session_tx: Sender<Vec<f32>>,
-    recording: plugins::meeting::recording::RecordingSink,
+    recording: xrtranslate_client_core::recording::RecordingSink,
     source: CaptureSource,
 ) -> (Sender<Vec<f32>>, std::thread::JoinHandle<()>) {
     let (capture_tx, capture_rx) = bounded::<Vec<f32>>(LIVE_AUDIO_QUEUE_CAPACITY);
     let track = match source {
-        CaptureSource::Microphone => plugins::meeting::recording::RecordingTrack::Microphone,
-        CaptureSource::SystemAudio => plugins::meeting::recording::RecordingTrack::SystemAudio,
+        CaptureSource::Microphone => xrtranslate_client_core::recording::RecordingTrack::Microphone,
+        CaptureSource::SystemAudio => {
+            xrtranslate_client_core::recording::RecordingTrack::SystemAudio
+        }
         CaptureSource::Both => unreachable!("Both is expanded into concrete capture routes"),
     };
     let worker = std::thread::Builder::new()
-        .name(format!("meeting-audio-router-{track:?}"))
+        .name(format!("recording-audio-router-{track:?}"))
         .spawn(move || {
             while let Ok(samples) = capture_rx.recv() {
                 if let Err(error) = recording.try_append(track, samples.clone()) {
-                    log::error!("Meeting recording could not keep up: {error}");
+                    log::error!("Audio recording could not keep up: {error}");
                 }
                 if session_tx.send(samples).is_err() {
                     break;
                 }
             }
         })
-        .expect("failed to start meeting audio router");
+        .expect("failed to start recording audio router");
     (capture_tx, worker)
 }
 
@@ -6169,20 +5505,9 @@ impl eframe::App for XRTranslateApp {
         if self.avatar_enabled() || self.avatar_host_session.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
-        self.media_plugin.controller.tick();
-        if self.navigation.page != Page::Plugin(PluginId::MEETING)
-            || !self.plugin_enabled(PluginId::MEETING)
-        {
-            self.meeting_plugin.controller.pause_playback();
-        }
+
         self.ask
             .poll(&mut self.backend_manager, &self.server_url, ctx);
-        self.vocabulary_plugin.poll_examples(
-            &self.history_archive,
-            &self.notifications,
-            self.ui_language,
-            ctx,
-        );
         #[cfg(any(windows, target_os = "linux"))]
         if !self.first_run {
             self.poll_quick_translation(ctx);
@@ -6193,19 +5518,13 @@ impl eframe::App for XRTranslateApp {
         // logic-only passes while their viewport still reports visible=true.
         self.poll_installed_plugins(ctx);
         self.sync_lyrics();
-        self.refresh_media_director();
         self.poll_audio_import();
         if !self.first_run {
             self.poll_backend_startup(Some(ctx.clone()));
             self.poll_text_translation(ctx);
-            self.poll_media_translation(ctx);
-            self.poll_agent(ctx);
-            self.poll_meeting_translation(ctx);
             self.poll_session_events();
-            self.media_plugin.poll_translation_events();
         }
         if !ctx.input(|input| input.viewport().visible().unwrap_or(true)) {
-            self.media_plugin.controller.hide_video();
             // Keep an existing companion reading queued errors while hidden.
             self.observe_companion_errors();
             ui::companion::tick_background(ctx, self);
@@ -6248,7 +5567,6 @@ impl eframe::App for XRTranslateApp {
         }
         #[cfg(target_os = "android")]
         if let Some(granted) = android::take_microphone_result() {
-            let meeting = self.pending_microphone_meeting.take();
             if granted {
                 if let Some(action) = meeting {
                     self.apply_meeting_action(action, ui.ctx().clone());
@@ -6350,17 +5668,10 @@ impl eframe::App for XRTranslateApp {
             self.last_error = Some(error);
         }
         self.poll_app_update();
-        self.media_plugin
-            .controller
-            .mpv_installer
-            .set_proxy_url(Some(self.download_proxy_url.clone()));
         self.poll_audio_device_refresh();
         self.poll_audio_application_refresh();
         self.discover_audio_sources_on_page_entry();
         self.reconcile_audio_studio_live_routing();
-        self.media_plugin.on_visibility_changed(
-            !self.first_run && self.navigation.page == Page::Plugin(PluginId::MEDIA),
-        );
         let idle_repaint_interval = if self.translation_enabled {
             std::time::Duration::from_millis(33)
         } else {
@@ -6395,8 +5706,7 @@ impl eframe::App for XRTranslateApp {
             self.tts_center.previewing = None;
         }
         let is_player_fullscreen = !self.first_run
-            && self.navigation.page == Page::Plugin(PluginId::MEDIA)
-            && self.media_plugin.controller.fullscreen_mode;
+            && matches!(self.navigation.page,Page::Plugin(id) if self.plugin_host.state(id.as_str())["fullscreen"].as_bool()==Some(true));
         if !self.fullscreen_history
             || self.navigation.page != Page::Translation
             || self.history_archive.open
@@ -6434,10 +5744,6 @@ impl eframe::App for XRTranslateApp {
 
         self.show_available_update();
         self.show_ready_update();
-
-        if self.plugin_enabled(PluginId::MEETING) {
-            self.meeting_plugin.controller.poll_live_view();
-        }
 
         let viewport_focused = ui.input(|input| input.viewport().focused.unwrap_or(true));
 
@@ -6526,9 +5832,6 @@ impl eframe::App for XRTranslateApp {
             if self.navigation.collapsed != prev_collapsed || self.navigation.page != prev_page {
                 self.save_settings();
             }
-            self.media_plugin.on_visibility_changed(
-                !self.first_run && self.navigation.page == Page::Plugin(PluginId::MEDIA),
-            );
         }
 
         self.audio_system.set_audio_studio_metering(
@@ -6745,7 +6048,7 @@ impl eframe::App for XRTranslateApp {
 fn configure_dll_search_paths() {
     use windows::Win32::System::LibraryLoader::SetDllDirectoryW;
     use windows::core::HSTRING;
-    for bin_dir in crate::plugins::media::runtime_bin_directories() {
+    for bin_dir in xrtranslate_client_core::playback::runtime_bin_directories() {
         if bin_dir.is_dir() {
             if let Ok(abs) = bin_dir.canonicalize() {
                 let _ = unsafe { SetDllDirectoryW(&HSTRING::from(abs.as_os_str())) };
@@ -6803,7 +6106,7 @@ pub fn run() -> eframe::Result<()> {
     }
 
     #[cfg(all(windows, feature = "mpv"))]
-    if let Err(error) = plugins::media::installer::prepare_bundled_runtime() {
+    if let Err(error) = xrtranslate_client_core::playback::installer::prepare_bundled_runtime() {
         log::warn!("Cannot prepare bundled player runtime: {error}");
     }
 
@@ -6904,24 +6207,27 @@ pub fn run() -> eframe::Result<()> {
             ui_director::egui::init(cc.egui_ctx.clone(), director_port);
 
             let mut app = XRTranslateApp::default();
-            app.media_plugin.controller.render_state = cc.wgpu_render_state.clone();
-            app.media_plugin.controller.render_context = Some(cc.egui_ctx.clone());
+            #[cfg(not(all(target_os = "linux", feature = "mpv")))]
+            let video_display = None;
             #[cfg(all(target_os = "linux", feature = "mpv"))]
-            {
-                use plugins::media::backend::VideoDisplay;
+            let video_display = {
                 use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
-                app.media_plugin.controller.video_display =
-                    cc.display_handle()
-                        .ok()
-                        .and_then(|handle| match handle.as_raw() {
-                            RawDisplayHandle::Xlib(display) => display
-                                .display
-                                .map(|ptr| VideoDisplay::X11(ptr.as_ptr() as usize)),
-                            RawDisplayHandle::Wayland(display) => {
-                                Some(VideoDisplay::Wayland(display.display.as_ptr() as usize))
-                            }
-                            _ => None,
-                        });
+                use xrtranslate_client_core::playback::VideoDisplay;
+                cc.display_handle()
+                    .ok()
+                    .and_then(|handle| match handle.as_raw() {
+                        RawDisplayHandle::Xlib(display) => display
+                            .display
+                            .map(|ptr| VideoDisplay::X11(ptr.as_ptr() as usize)),
+                        RawDisplayHandle::Wayland(display) => {
+                            Some(VideoDisplay::Wayland(display.display.as_ptr() as usize))
+                        }
+                        _ => None,
+                    })
+            };
+            if let Some(state) = cc.wgpu_render_state.clone() {
+                app.plugin_host.playback.graphics =
+                    Some((state, cc.egui_ctx.clone(), video_display));
             }
             #[cfg(target_os = "android")]
             android::prepare_resources(cc.egui_ctx.clone());

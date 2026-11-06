@@ -155,6 +155,7 @@ pub(crate) fn init() {
     env_logger::Builder::new()
         .filter_level(log::LevelFilter::Warn)
         .filter_module("rust_client", log::LevelFilter::Info)
+        .filter_module("xrtranslate_client_core", log::LevelFilter::Info)
         .parse_env(env_logger::Env::default())
         .target(env_logger::Target::Pipe(Box::new(DesktopLog(output))))
         .write_style(env_logger::WriteStyle::Never)

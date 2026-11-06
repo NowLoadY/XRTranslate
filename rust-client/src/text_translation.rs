@@ -263,12 +263,6 @@ impl TextTranslation {
             .any(|task| !task.terminal && task.pending.is_some() && task.scope.owner.is_host())
     }
 
-    pub(crate) fn owner_active(&self, plugin_id: &str) -> bool {
-        self.tasks
-            .iter()
-            .any(|task| task.scope.owner.is_plugin(plugin_id) && task.scope.accepts_events())
-    }
-
     pub(crate) fn scopes(&self) -> impl Iterator<Item = &Arc<ChannelScope>> {
         self.tasks.iter().map(|task| &task.scope)
     }

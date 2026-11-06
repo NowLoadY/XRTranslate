@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use xrtranslate_prompt::PromptTemplateLibrary;
 
-pub(crate) const DEFAULT_PAUSE_TOLERANCE: f32 = 0.15;
+pub use xrtranslate_client_core::recognition::{
+    CaptureSource, DEFAULT_PAUSE_TOLERANCE, RecognitionSettings, default_background_noise,
+    default_pause_tolerance,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -16,33 +19,6 @@ pub enum UpdateChannel {
     #[default]
     Stable,
     Beta,
-}
-
-pub use xrtranslate_plugin::translation::CaptureSource;
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct RecognitionSettings {
-    /// Missing in older settings: inherit the application's existing default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preprocessing: Option<xrtranslate_protocol::AudioPreprocessing>,
-    #[serde(default = "default_background_noise")]
-    pub background_noise: f32,
-    #[serde(default = "default_pause_tolerance")]
-    pub pause_tolerance: f32,
-    #[serde(default)]
-    /// Explicit pseudo-streaming opt-in; false selects the model’s native delivery.
-    pub continuous_recognition: bool,
-}
-
-impl Default for RecognitionSettings {
-    fn default() -> Self {
-        Self {
-            preprocessing: None,
-            background_noise: default_background_noise(),
-            pause_tolerance: default_pause_tolerance(),
-            continuous_recognition: false,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -145,13 +121,6 @@ fn default_source_lang() -> String {
 
 fn default_target_lang() -> String {
     "zh,en".into()
-}
-
-const fn default_background_noise() -> f32 {
-    0.30
-}
-const fn default_pause_tolerance() -> f32 {
-    DEFAULT_PAUSE_TOLERANCE
 }
 
 const fn default_true() -> bool {

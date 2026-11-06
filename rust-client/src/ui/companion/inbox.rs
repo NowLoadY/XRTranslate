@@ -9,7 +9,7 @@ const MAX_PENDING_ERRORS: usize = 8;
 pub(super) enum Message {
     Localized(&'static str),
     Error(String),
-    Text { source: &'static str, text: String },
+    Text { source: String, text: String },
     Command(super::Command),
 }
 
@@ -56,14 +56,14 @@ impl Inbox {
     }
 
     /// Keep the latest update from a producer, rather than a backlog of stale progress.
-    pub(crate) fn post_text(&mut self, source: &'static str, text: String) {
+    pub(crate) fn post_text(&mut self, source: &str, text: String) {
         let text = text.trim();
         if text.is_empty() {
             return;
         }
-        self.letters.retain(|message| !matches!(message, Message::Text { source: previous, .. } if *previous == source));
+        self.letters.retain(|message| !matches!(message, Message::Text { source: previous, .. } if previous == source));
         self.enqueue(Message::Text {
-            source,
+            source: source.to_owned(),
             text: text.to_owned(),
         });
     }

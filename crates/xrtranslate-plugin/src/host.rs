@@ -35,7 +35,6 @@ impl Process {
         manifest.validate()?;
         let mut command = Command::new(directory.join(&manifest.executable));
         command
-            .current_dir(directory)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -96,11 +95,11 @@ impl Process {
                             *reply = Some(result);
                         }
                     }
-                    Ok(message @ (Message::Call { .. } | Message::Event { .. }))
-                        if state.events.len() < 128 =>
-                    {
-                        state.events.push_back(message)
-                    }
+                    Ok(
+                        message @ (Message::Call { .. }
+                        | Message::Event { .. }
+                        | Message::Cancel { .. }),
+                    ) if state.events.len() < 128 => state.events.push_back(message),
                     Ok(_) => {
                         state.error =
                             Some("Plugin sent an unexpected message or too many requests".into());
@@ -141,11 +140,16 @@ impl Process {
         Ok(process)
     }
     pub fn send(&self, message: Message) -> std::result::Result<(), String> {
-        self.output
+        let result = self
+            .output
             .as_ref()
             .ok_or("Plugin is stopped")?
             .try_send(message)
-            .map_err(|e| format!("Plugin is busy or stopped: {e}"))
+            .map_err(|e| format!("Plugin is busy or stopped: {e}"));
+        if let Err(error) = &result {
+            self.state.lock().unwrap().error = Some(error.clone());
+        }
+        result
     }
     pub fn request(&mut self, name: &str, arguments: Value) -> std::result::Result<u64, String> {
         let mut state = self.state.lock().unwrap();
@@ -183,6 +187,10 @@ impl Process {
         }
         result
     }
+    pub fn cancel(&mut self, id: u64) {
+        self.state.lock().unwrap().replies.remove(&id);
+        let _ = self.send(Message::Cancel { id });
+    }
     pub fn events(&mut self) -> Vec<Message> {
         self.state.lock().unwrap().events.drain(..).collect()
     }
@@ -196,7 +204,12 @@ impl Process {
 impl Drop for Process {
     fn drop(&mut self) {
         self.output.take();
-        // No child may outlive a disabled/uninstalled plugin, including a stuck inference.
+        // Closing stdin lets plugin workers flush their owned data. A stuck plugin
+        // still cannot outlive removal or shutdown.
+        let deadline = Instant::now() + std::time::Duration::from_millis(250);
+        while self.child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         for thread in self.threads.drain(..) {

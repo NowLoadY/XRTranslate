@@ -379,8 +379,12 @@ impl Guide {
             && self.mentioned & topic.bit() == 0
         {
             self.mentioned |= topic.bit();
-            let line = scene.reply(topic);
-            if self.line != Message::Localized(line) {
+            let line = scene
+                .hint
+                .clone()
+                .filter(|_| matches!(topic, Attention::Avatar | Attention::Control(_)))
+                .unwrap_or_else(|| scene.reply(topic).into());
+            if self.line != line {
                 self.say(line);
             }
         }
@@ -735,10 +739,10 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut crate::XRTranslateApp, layout:
             size,
             state.parking.occupied(),
             language,
-            app.agent.active(),
+            app.agent_active(),
         ) {
             Some(composer::Action::Submit(goal)) => {
-                let follow_up = app.agent.active();
+                let follow_up = app.agent_active();
                 match app.submit_agent_instruction(goal) {
                     Ok(()) => {
                         state.composer.accepted(ctx);

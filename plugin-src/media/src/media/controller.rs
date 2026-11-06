@@ -1,0 +1,1110 @@
+use super::{
+    backend::{MediaBackend, MediaSource, PlaybackStatus},
+    subtitles::{SubtitleCue, SubtitleTimeline},
+    task::{AudioChannelItem, MediaTask, MediaTaskStore, SubtitleMode, default_video_recognition},
+};
+use std::path::PathBuf;
+use std::time::Instant;
+mod scrubbing;
+use scrubbing::ScrubAudio;
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum MediaRoute {
+    #[default]
+    Library,
+    Create,
+    Detail,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SubtitleField {
+    Start,
+    End,
+    Original,
+    Translation,
+}
+
+#[derive(Clone)]
+pub(super) struct SubtitleEdit {
+    pub(super) task_id: String,
+    pub(super) cue: SubtitleCue,
+    pub(super) focus: Option<SubtitleField>,
+    pub(super) retranslate_requested: bool,
+    pub(super) retranslation: Option<String>,
+    pub(super) dragging_time: bool,
+}
+
+pub struct MediaController {
+    pub context: eframe::egui::Context,
+    pub(super) resource_browser: crate::ui::resource_browser::ResourceBrowser,
+    pub route: MediaRoute,
+    pub store: MediaTaskStore,
+    pub storage_dir: PathBuf,
+    pub active_task_id: Option<String>,
+    pub current_source: Option<MediaSource>,
+    pub backend: Option<Box<dyn MediaBackend>>,
+    pub subtitles: SubtitleTimeline,
+    pub(super) subtitle_edit: Option<SubtitleEdit>,
+    scrub_audio: Option<ScrubAudio>,
+    pub(super) speech_edit: Option<(String, i64)>,
+    speech_preview_end: Option<i64>,
+    pub(super) pending_subtitle_change: Option<super::files::SubtitleChange>,
+    pub previews: crate::session_coordinator::LivePreviews,
+    pub show_subtitles: bool,
+    pub fullscreen_mode: bool,
+    pub fullscreen_last_interaction: Instant,
+    pub error: Option<String>,
+    pub muted: bool,
+    pub volume: f32,
+    pub(super) video_export: Option<super::video_export::VideoExport>,
+    pub(super) speech_job: Option<super::speech::SpeechJob>,
+    pub(super) speech_render: Option<super::speech::track::RenderQueue>,
+    pub(super) exported_video: Option<PathBuf>,
+
+    pub search_query: String,
+    pub browse_all: bool,
+    pub draft_title: String,
+    pub draft_source: String,
+    pub draft_source_lang: String,
+    pub draft_target_lang: String,
+    pub draft_subtitle_mode: SubtitleMode,
+    pub draft_recognition: crate::client_settings::RecognitionSettings,
+
+    pub video_unavailable: bool,
+    pub last_save_instant: Instant,
+    pub last_manual_scroll: Option<Instant>,
+    pub last_auto_scrolled_cue_id: Option<String>,
+    pub(super) dirty: bool,
+    playback_loaded: bool,
+    pub mpv_installer: super::installer::MpvInstaller,
+
+    pub is_extracting: bool,
+    pub extraction_progress: Option<f32>,
+    pub extract_position: Option<std::time::Duration>,
+    pub extract_duration: Option<std::time::Duration>,
+    pub recognition_progress: Option<f32>,
+    pub recognize_position: Option<std::time::Duration>,
+    pub recognize_duration: Option<std::time::Duration>,
+}
+
+impl MediaController {
+    pub fn open(storage_dir: PathBuf, backend: Option<Box<dyn MediaBackend>>) -> Self {
+        let store = MediaTaskStore::load_from_dir(&storage_dir);
+        Self {
+            context: Default::default(),
+            resource_browser: Default::default(),
+            route: MediaRoute::Library,
+            store,
+            storage_dir,
+            active_task_id: None,
+            current_source: None,
+            backend,
+            subtitles: SubtitleTimeline::new(),
+            subtitle_edit: None,
+            scrub_audio: None,
+            speech_edit: None,
+            speech_preview_end: None,
+            pending_subtitle_change: None,
+            previews: Default::default(),
+            show_subtitles: true,
+            fullscreen_mode: false,
+            fullscreen_last_interaction: Instant::now(),
+            error: None,
+            muted: false,
+            volume: 1.0,
+            video_export: None,
+            speech_job: None,
+            speech_render: None,
+            exported_video: None,
+            search_query: String::new(),
+            browse_all: false,
+            draft_title: String::new(),
+            draft_source: String::new(),
+            draft_source_lang: "auto".into(),
+            draft_target_lang: "zh".into(),
+            draft_subtitle_mode: SubtitleMode::RealtimeTranslation,
+            draft_recognition: default_video_recognition(),
+            video_unavailable: false,
+            last_save_instant: Instant::now(),
+            last_manual_scroll: None,
+            last_auto_scrolled_cue_id: None,
+            dirty: false,
+            playback_loaded: false,
+            mpv_installer: super::installer::MpvInstaller::default(),
+            is_extracting: false,
+            extraction_progress: None,
+            extract_position: None,
+            extract_duration: None,
+            recognition_progress: None,
+            recognize_position: None,
+            recognize_duration: None,
+        }
+    }
+}
+
+impl MediaController {
+    #[cfg(target_os = "android")]
+    pub(crate) fn handle_back(
+        &mut self,
+        ctx: &eframe::egui::Context,
+    ) -> Option<super::MediaAction> {
+        if self.fullscreen_mode {
+            self.fullscreen_mode = false;
+            ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Fullscreen(false));
+            return Some(super::MediaAction::None);
+        }
+        if self.subtitle_edit.take().is_some() {
+            return Some(super::MediaAction::None);
+        }
+        if self.route != MediaRoute::Library {
+            self.open_library();
+            return Some(super::MediaAction::StopTranslation);
+        }
+        None
+    }
+
+    pub fn hide_video(&mut self) {
+        self.cancel_subtitle_trim();
+        if let Some(backend) = &mut self.backend {
+            backend.set_video_visible(false);
+        }
+    }
+
+    pub fn open_library(&mut self) {
+        self.resource_browser.invalidate();
+        self.subtitle_edit = None;
+        self.pending_subtitle_change = None;
+        if let Some(backend) = &mut self.backend {
+            backend.stop();
+        }
+        self.pause_task();
+        self.route = MediaRoute::Library;
+        self.previews = Default::default();
+        self.active_task_id = None;
+        self.current_source = None;
+        self.last_auto_scrolled_cue_id = None;
+        self.hide_video();
+    }
+
+    pub fn open_create(&mut self) {
+        self.resource_browser = Default::default();
+        self.subtitle_edit = None;
+        self.pending_subtitle_change = None;
+        if let Some(backend) = &mut self.backend {
+            backend.stop();
+        }
+        self.pause_task();
+        self.route = MediaRoute::Create;
+        self.previews = Default::default();
+        self.active_task_id = None;
+        self.current_source = None;
+        self.last_auto_scrolled_cue_id = None;
+        self.draft_title.clear();
+        self.draft_source.clear();
+        self.draft_source_lang = "auto".into();
+        self.draft_target_lang = "zh".into();
+        self.draft_subtitle_mode = SubtitleMode::RealtimeTranslation;
+        self.draft_recognition = default_video_recognition();
+        self.error = None;
+        self.hide_video();
+    }
+
+    pub fn start_draft_task(&mut self) -> Result<String, String> {
+        let input = self.draft_source.trim();
+        if input.is_empty() {
+            return Err("Please enter a media stream URL or select a local file".into());
+        }
+        if input.starts_with("rtsp://") || input.starts_with("rtmp://") {
+            return Err("Only HTTP and HTTPS media links are supported here".into());
+        }
+
+        let (source, default_title, media_type) =
+            if crate::media_import::discovery::input_url(input).is_some() {
+                let episode = self
+                    .resource_browser
+                    .selected_resource()
+                    .ok_or("Select recorded audio first")?;
+                if episode.kind == crate::media_import::discovery::MediaKind::Unknown {
+                    return Err("Cannot determine whether this source is recorded".into());
+                }
+                if episode.kind != crate::media_import::discovery::MediaKind::Recorded {
+                    return Err("Live streams are not supported here".into());
+                }
+                (
+                    MediaSource::OnlineFile(episode.url.clone()),
+                    episode.title.clone(),
+                    if episode.video {
+                        super::task::MediaType::Video
+                    } else {
+                        super::task::MediaType::AudioOnly
+                    },
+                )
+            } else {
+                let path = PathBuf::from(input);
+                if !path.is_file() {
+                    return Err("Local media file does not exist or URL is invalid".into());
+                }
+                let title = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Local Media".into());
+                let media_type = super::task::detect_media_type(&path);
+                (MediaSource::LocalFile(path), title, media_type)
+            };
+
+        let title = if self.draft_title.trim().is_empty() {
+            default_title
+        } else {
+            self.draft_title.trim().to_string()
+        };
+
+        let mut task = MediaTask::new_with_media_type(
+            title,
+            source.clone(),
+            media_type,
+            self.draft_source_lang.clone(),
+            self.draft_target_lang.clone(),
+            self.draft_subtitle_mode.clone(),
+            self.draft_recognition.clone(),
+        );
+
+        if media_type == super::task::MediaType::Subtitles {
+            task.subtitles = super::files::read_subtitles(std::path::Path::new(input))?;
+            task.duration_ms = task
+                .subtitles
+                .cues()
+                .iter()
+                .map(|cue| cue.end_ms)
+                .max()
+                .unwrap_or(0);
+            task.subtitle_mode = SubtitleMode::ImportedSrt(PathBuf::from(input));
+        }
+
+        let task_id = task.id.clone();
+        self.store.add_or_update(task);
+        self.store
+            .save_to_dir(&self.storage_dir)
+            .map_err(|e| e.to_string())?;
+
+        self.open_task(&task_id)?;
+        Ok(task_id)
+    }
+
+    pub fn open_task(&mut self, task_id: &str) -> Result<(), String> {
+        self.prepare_speech_track(task_id);
+        let task = self.store.get(task_id).ok_or("Task not found")?.clone();
+        self.subtitle_edit = None;
+        self.pending_subtitle_change = None;
+        self.previews = Default::default();
+        self.active_task_id = Some(task_id.to_string());
+        self.current_source = Some(task.source.clone());
+        self.subtitles = task.subtitles.clone();
+        self.hide_video();
+        if let Some(backend) = &mut self.backend {
+            backend.stop();
+        }
+        self.route = MediaRoute::Detail;
+        self.error = None;
+        self.recognize_duration = None;
+        self.recognition_progress = None;
+        self.last_manual_scroll = None;
+        self.last_auto_scrolled_cue_id = None;
+        self.playback_loaded = false;
+        self.video_unavailable = false;
+
+        if task.media_type != super::task::MediaType::Subtitles
+            && let Some(backend) = &mut self.backend
+        {
+            backend.set_audio_only_mode(
+                task.media_type == super::task::MediaType::AudioOnly
+                    || !cfg!(any(windows, target_os = "linux"))
+                    || self.video_unavailable,
+            );
+            let loaded = match &task.source {
+                MediaSource::LocalFile(path) => backend.load_local_file(path.clone()),
+                MediaSource::NetworkStream(url) | MediaSource::OnlineFile(url) => {
+                    backend.load_stream_url(url.clone())
+                }
+            };
+            match loaded {
+                Ok(()) => self.playback_loaded = true,
+                Err(error) => self.error = Some(error),
+            }
+            backend.select_audio(task.playback_audio())?;
+            backend.set_channel_routing(if task.play_speech_track {
+                &[]
+            } else {
+                &task.audio_channels
+            });
+        }
+
+        if let Some(t) = self.store.get_mut(task_id) {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            t.last_played_sec = now;
+        }
+        self.save_active();
+        Ok(())
+    }
+
+    pub fn is_subtitle_task(&self) -> bool {
+        self.active_task_id
+            .as_deref()
+            .and_then(|id| self.store.get(id))
+            .is_some_and(|task| task.media_type == super::task::MediaType::Subtitles)
+    }
+
+    pub fn can_show_video(&self) -> bool {
+        cfg!(any(windows, target_os = "linux"))
+            && self
+                .backend
+                .as_ref()
+                .is_some_and(|backend| backend.supports_video())
+            && !self.video_unavailable
+            && self.can_play()
+            && !self.is_audio_only_task()
+    }
+
+    pub fn can_play(&self) -> bool {
+        self.playback_loaded && !self.is_subtitle_task()
+    }
+
+    pub(super) fn subtitle_time_bounds(&self, index: usize) -> std::ops::RangeInclusive<i64> {
+        let bounds = self.subtitles.time_bounds(index);
+        if index + 1 != self.subtitles.count() || self.is_subtitle_task() {
+            return bounds;
+        }
+        let duration = self.get_duration_ms();
+        let duration = if duration > 0 {
+            duration
+        } else {
+            self.active_task_id
+                .as_deref()
+                .and_then(|id| self.store.get(id))
+                .map_or(0, |task| task.duration_ms)
+        };
+        if duration > 0 {
+            *bounds.start()..=duration.max(*bounds.start())
+        } else {
+            bounds
+        }
+    }
+
+    pub(super) fn begin_subtitle_edit(&mut self, cue_id: &str, field: SubtitleField) {
+        if self.subtitle_edit.is_some() {
+            return;
+        }
+        let Some(task) = self
+            .active_task_id
+            .as_deref()
+            .and_then(|id| self.store.get(id))
+            .filter(|task| !task.is_task_running)
+        else {
+            return;
+        };
+        let Some(index) = self
+            .subtitles
+            .cues()
+            .iter()
+            .position(|cue| cue.id == cue_id)
+        else {
+            return;
+        };
+        let mut cue = self.subtitles.cues()[index].clone();
+        cue.end_ms = self.subtitles.effective_end_at(index);
+        self.subtitle_edit = Some(SubtitleEdit {
+            task_id: task.id.clone(),
+            cue,
+            focus: Some(field),
+            retranslate_requested: false,
+            retranslation: None,
+            dragging_time: false,
+        });
+        if let Some(backend) = &mut self.backend
+            && backend.get_status() == PlaybackStatus::Playing
+        {
+            backend.pause();
+        }
+    }
+
+    pub(super) fn save_subtitle_edit(&mut self) {
+        let Some(mut edit) = self.subtitle_edit.clone() else {
+            return;
+        };
+        if edit.retranslation.is_some() {
+            return;
+        }
+        if self.active_task_id.as_deref() != Some(edit.task_id.as_str())
+            || self
+                .store
+                .get(&edit.task_id)
+                .is_none_or(|task| task.is_task_running)
+        {
+            return;
+        }
+        edit.cue.normalize_text();
+        if edit.cue.original_text.is_empty() {
+            self.error = Some("Subtitle text cannot be empty".into());
+            return;
+        }
+        if let Some(index) = self
+            .subtitles
+            .cues()
+            .iter()
+            .position(|cue| cue.id == edit.cue.id)
+            && (edit.cue.start_ms != self.subtitles.cues()[index].start_ms
+                || edit.cue.end_ms != self.subtitles.effective_end_at(index))
+        {
+            let bounds = self.subtitle_time_bounds(index);
+            edit.cue.start_ms = edit.cue.start_ms.clamp(*bounds.start(), *bounds.end());
+            edit.cue.end_ms = edit.cue.end_ms.clamp(edit.cue.start_ms, *bounds.end());
+        }
+        let Some(previous) = self.subtitles.edit_cue(edit.cue) else {
+            self.error = Some("Subtitle not found".into());
+            return;
+        };
+        let was_dirty = self.dirty;
+        self.error = None;
+        self.dirty = true;
+        self.save_active();
+        if self.dirty {
+            self.subtitles.restore_cue(previous.0.clone(), previous.1);
+            if let Some(task) = self.store.get_mut(&edit.task_id) {
+                task.subtitles.restore_cue(previous.0, previous.1);
+            }
+            self.dirty = was_dirty;
+        } else {
+            self.subtitle_edit = None;
+        }
+    }
+
+    pub(super) fn merge_subtitles(&mut self, source_id: &str, target_id: &str) -> bool {
+        if self.subtitle_edit.is_some()
+            || self
+                .active_task_id
+                .as_deref()
+                .and_then(|id| self.store.get(id))
+                .is_none_or(|task| task.is_task_running)
+            || !self.subtitles.merge_adjacent(source_id, target_id)
+        {
+            return false;
+        }
+        self.error = None;
+        self.dirty = true;
+        self.save_active();
+        true
+    }
+
+    pub(super) fn delete_subtitle(&mut self, cue_id: &str) -> bool {
+        if self.subtitle_edit.is_some()
+            || self
+                .active_task_id
+                .as_deref()
+                .and_then(|id| self.store.get(id))
+                .is_none_or(|task| task.is_task_running)
+        {
+            return false;
+        }
+        let previous = self.subtitles.clone();
+        if !self.subtitles.remove_cue(cue_id) {
+            return false;
+        }
+        let was_dirty = self.dirty;
+        self.error = None;
+        self.dirty = true;
+        self.save_active();
+        if self.dirty {
+            self.subtitles = previous;
+            if let Some(task) = self
+                .active_task_id
+                .as_deref()
+                .and_then(|id| self.store.get_mut(id))
+            {
+                task.subtitles = self.subtitles.clone();
+            }
+            self.dirty = was_dirty;
+            return false;
+        }
+        self.last_auto_scrolled_cue_id = None;
+        self.last_manual_scroll = Some(Instant::now());
+        true
+    }
+
+    pub fn save_active(&mut self) {
+        if let Some(task) = self
+            .active_task_id
+            .as_deref()
+            .and_then(|id| self.store.get_mut(id))
+        {
+            task.subtitles = self.subtitles.clone();
+        }
+        match self.store.save_to_dir(&self.storage_dir) {
+            Ok(()) => self.dirty = false,
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    /// Shared by the settings UI and plugin operations; both update the same task.
+    pub(super) fn set_task_recognition(
+        &mut self,
+        id: &str,
+        settings: crate::client_settings::RecognitionSettings,
+    ) -> Result<(), String> {
+        if !settings.background_noise.is_finite()
+            || !(0.02..=0.95).contains(&settings.background_noise)
+            || !settings.pause_tolerance.is_finite()
+            || !(0.0..=1.0).contains(&settings.pause_tolerance)
+        {
+            return Err("Recognition options are outside the supported range".into());
+        }
+        let task = self.store.get_mut(id).ok_or("Media task not found")?;
+        if task.is_task_running {
+            return Err("Wait for the current media task to finish".into());
+        }
+        if task.recognition != settings {
+            task.recognition = settings;
+            self.dirty = true;
+        }
+        Ok(())
+    }
+
+    pub fn is_audio_only_task(&self) -> bool {
+        self.active_task_id
+            .as_deref()
+            .and_then(|id| self.store.get(id))
+            .is_some_and(|task| task.media_type == super::task::MediaType::AudioOnly)
+    }
+
+    pub fn start_task(&mut self) {
+        self.subtitle_edit = None;
+        self.pending_subtitle_change = None;
+        self.previews = Default::default();
+        self.error = None;
+        self.is_extracting = false;
+        self.extraction_progress = None;
+        self.extract_position = None;
+        self.extract_duration = None;
+        self.recognition_progress = None;
+        self.recognize_duration = None;
+        self.recognize_position = None;
+        self.last_manual_scroll = None;
+        self.last_auto_scrolled_cue_id = None;
+        if let Some(backend) = &mut self.backend {
+            backend.set_osd_subtitle("");
+        }
+        if let Some(task_id) = &self.active_task_id {
+            if let Some(task) = self.store.get_mut(task_id) {
+                task.is_task_running = true;
+            }
+            self.save_active();
+        }
+    }
+
+    pub fn pause_task(&mut self) {
+        if let Some(task_id) = &self.active_task_id {
+            if let Some(task) = self.store.get_mut(task_id) {
+                task.is_task_running = false;
+            }
+            self.save_active();
+        }
+    }
+
+    pub(super) fn apply_audio_selection(&mut self, source_changed: bool) {
+        let Some(task) = self
+            .active_task_id
+            .as_deref()
+            .and_then(|id| self.store.get_mut(id))
+        else {
+            return;
+        };
+        if source_changed {
+            task.audio_channels.clear();
+        }
+        if source_changed
+            && task.audio_track != super::task::AudioTrackSelection::Original
+            && task.recognition.preprocessing
+                == Some(xrtranslate_protocol::AudioPreprocessing::VocalSeparation)
+        {
+            task.recognition.preprocessing = Some(xrtranslate_protocol::AudioPreprocessing::None);
+        }
+        if let Some(backend) = &mut self.backend {
+            backend.set_channel_routing(if task.play_speech_track {
+                &[]
+            } else {
+                &task.audio_channels
+            });
+            if let Err(error) = backend.select_audio(task.playback_audio()) {
+                self.error = Some(error);
+            }
+        }
+        self.save_active();
+    }
+
+    pub(super) fn set_separated_audio(&mut self, stems: xrtranslate_protocol::SeparatedAudio) {
+        if !stems.vocals.is_file() || !stems.background.is_file() {
+            self.error = Some("Separated audio files are unavailable".into());
+            return;
+        }
+        let Some(task) = self
+            .active_task_id
+            .as_deref()
+            .and_then(|id| self.store.get_mut(id))
+        else {
+            return;
+        };
+        let old = task.separated_audio.replace(stems);
+        // Keep the selected track when refreshing its saved outputs.
+        if let Some(backend) = &mut self.backend {
+            if let Err(error) = backend.select_audio(task.playback_audio()) {
+                self.error = Some(error);
+            }
+        }
+        self.save_active();
+        if let Some(old) = old {
+            self.remove_stems(&old);
+        }
+    }
+
+    fn remove_stems(&self, stems: &xrtranslate_protocol::SeparatedAudio) {
+        let Ok(root) = self.storage_dir.join("media-audio").canonicalize() else {
+            return;
+        };
+        let Some(directory) = stems
+            .vocals
+            .parent()
+            .filter(|dir| Some(*dir) == stems.background.parent())
+        else {
+            return;
+        };
+        if directory
+            .canonicalize()
+            .is_ok_and(|dir| dir.parent() == Some(root.as_path()))
+        {
+            let _ = std::fs::remove_dir_all(directory);
+        }
+    }
+
+    pub fn apply_channel_routing(&mut self) {
+        if let Some(task_id) = &self.active_task_id {
+            if let Some(task) = self.store.get(task_id) {
+                let channels = task.audio_channels.clone();
+                if let Some(backend) = &mut self.backend {
+                    backend.set_channel_routing(if task.play_speech_track {
+                        &[]
+                    } else {
+                        &channels
+                    });
+                }
+            }
+            self.save_active();
+        }
+    }
+
+    pub fn delete_task(&mut self, task_id: &str) {
+        if self
+            .speech_job
+            .as_ref()
+            .is_some_and(|job| job.task_id == task_id)
+        {
+            self.speech_job = None;
+        }
+        if self.active_task_id.as_deref() == Some(task_id) {
+            if let Some(backend) = &mut self.backend {
+                backend.stop();
+            }
+            self.hide_video();
+            self.previews = Default::default();
+            self.active_task_id = None;
+            self.current_source = None;
+            self.route = MediaRoute::Library;
+        }
+        if let Some(stems) = self
+            .store
+            .get(task_id)
+            .and_then(|task| task.separated_audio.as_ref())
+        {
+            self.remove_stems(stems);
+        }
+        let speech = self
+            .store
+            .get(task_id)
+            .and_then(|task| task.speech_track.clone());
+        self.store.delete(task_id);
+        self.save_active();
+        if let Some(track) = speech {
+            self.remove_speech_file(&track.path);
+            for clip in track.clips {
+                self.remove_speech_file(&clip.path);
+            }
+        }
+    }
+
+    pub fn toggle_play(&mut self) {
+        if self.speech_edit.is_some() {
+            return;
+        }
+        self.speech_preview_end = None;
+        if self
+            .subtitle_edit
+            .as_ref()
+            .is_some_and(|edit| edit.dragging_time)
+        {
+            return;
+        }
+        let Some(source) = &self.current_source else {
+            return;
+        };
+        if let Some(backend) = &mut self.backend {
+            if backend.get_status() == PlaybackStatus::Playing {
+                backend.pause();
+            } else {
+                if backend.get_status() == PlaybackStatus::Stopped && backend.get_duration_ms() == 0
+                {
+                    match source {
+                        MediaSource::LocalFile(p) => {
+                            let _ = backend.load_local_file(p.clone());
+                        }
+                        MediaSource::NetworkStream(u) | MediaSource::OnlineFile(u) => {
+                            let _ = backend.load_stream_url(u.clone());
+                        }
+                    }
+                }
+                backend.play();
+            }
+        }
+    }
+
+    pub fn toggle_mute(&mut self) {
+        self.muted = !self.muted;
+        if let Some(backend) = &mut self.backend {
+            backend.set_mute(self.muted);
+        }
+    }
+
+    pub fn set_volume(&mut self, volume: f32) {
+        self.volume = volume;
+        if let Some(backend) = &mut self.backend {
+            backend.set_volume(volume);
+        }
+    }
+
+    pub fn toggle_fullscreen(&mut self) {
+        self.fullscreen_mode = !self.fullscreen_mode;
+        self.fullscreen_last_interaction = Instant::now();
+    }
+
+    fn reopen_backend(&mut self) {
+        if let Some(backend) = &mut self.backend {
+            if let Err(error) = backend.reopen() {
+                self.error = Some(error);
+                return;
+            }
+            backend.set_volume(self.volume);
+            backend.set_mute(self.muted);
+        }
+        if let Some(id) = self.active_task_id.clone() {
+            let _ = self.open_task(&id);
+        }
+    }
+
+    pub fn tick(&mut self) {
+        self.poll_speech_render();
+        if let Some(audio) = &mut self.scrub_audio {
+            audio.tick();
+        }
+        if let Some(result) = self.video_export.as_ref().and_then(|job| job.poll()) {
+            self.video_export = None;
+            match result {
+                Ok(path) => self.exported_video = Some(path),
+                Err(error) if !error.is_empty() => self.error = Some(error),
+                _ => {}
+            }
+        }
+        if let Some(Ok(())) = self.mpv_installer.poll() {
+            self.reopen_backend();
+        }
+
+        let is_audio_only = self.is_audio_only_task();
+        let show_subs = self.show_subtitles && !is_audio_only && self.playback_loaded;
+        let style = self
+            .active_task_id
+            .as_deref()
+            .and_then(|id| self.store.get(id))
+            .map(|task| task.subtitle_style.clone())
+            .unwrap_or_default();
+
+        if let Some(backend) = &mut self.backend {
+            backend.tick();
+            if self
+                .speech_preview_end
+                .is_some_and(|end| backend.get_time_ms() >= end)
+            {
+                backend.pause();
+                self.speech_preview_end = None;
+            }
+            backend.set_subtitle_style(&style);
+            if let Some(error) = backend.take_error() {
+                self.error = Some(error);
+            }
+
+            if self.playback_loaded
+                && let Some(task) = self
+                    .active_task_id
+                    .as_deref()
+                    .and_then(|id| self.store.get_mut(id))
+                && task.original_audio_track.is_none()
+                && let Some(track) = backend
+                    .audio_tracks()
+                    .iter()
+                    .find(|track| track.selected && track.external.is_none())
+            {
+                task.original_audio_track = Some(track.id);
+                self.dirty = true;
+            }
+
+            // Synchronize detected audio channels from backend stream
+            if self.playback_loaded
+                && let Some(active_id) = &self.active_task_id
+                && let Some(detected_count) = backend.get_audio_channel_count()
+                && detected_count > 0
+                && let Some(task) = self.store.get_mut(active_id)
+                && !task.play_speech_track
+                && task.audio_channels.len() != detected_count
+            {
+                task.audio_channels = AudioChannelItem::default_for_count(detected_count);
+                backend.set_channel_routing(&task.audio_channels);
+                self.dirty = true;
+            }
+
+            if show_subs && backend.get_status() != PlaybackStatus::Stopped {
+                let current_time_ms = backend.get_time_ms();
+                if let Some(cue) = self.subtitles.active_cue_at(current_time_ms) {
+                    backend.set_osd_subtitle(&cue.playback_text());
+                } else {
+                    backend.set_osd_subtitle("");
+                }
+            } else {
+                backend.set_osd_subtitle("");
+            }
+        }
+
+        if self.dirty && self.last_save_instant.elapsed().as_secs() >= 5 {
+            let duration = self.get_duration_ms();
+            if let Some(task) = self
+                .active_task_id
+                .as_deref()
+                .and_then(|id| self.store.get_mut(id))
+                && duration > 0
+            {
+                task.duration_ms = duration;
+            }
+            self.last_save_instant = Instant::now();
+            self.save_active();
+        }
+    }
+
+    pub fn get_time_ms(&self) -> i64 {
+        if let Some(edit) = self
+            .subtitle_edit
+            .as_ref()
+            .filter(|edit| edit.dragging_time)
+        {
+            return if edit.focus == Some(SubtitleField::Start) {
+                edit.cue.start_ms
+            } else {
+                edit.cue.end_ms
+            };
+        }
+        self.backend.as_ref().map(|b| b.get_time_ms()).unwrap_or(0)
+    }
+
+    pub fn seek_to(&mut self, ms: i64, play: bool) {
+        self.speech_preview_end = None;
+        if let Some(backend) = &mut self.backend {
+            backend.seek(ms);
+            if play {
+                backend.play();
+            }
+            self.last_manual_scroll = None;
+            self.last_auto_scrolled_cue_id = None;
+        }
+    }
+
+    /// File delivery is separate from backend recognition/translation progress.
+    pub fn translation_progress(&self) -> Option<f32> {
+        let duration = self
+            .recognize_duration
+            .map(|duration| duration.as_millis() as f64)
+            .filter(|duration| *duration > 0.0)
+            .or_else(|| {
+                self.active_task_id
+                    .as_deref()
+                    .and_then(|id| self.store.get(id))
+                    .map(|task| task.duration_ms as f64)
+                    .filter(|duration| *duration > 0.0)
+            })
+            .or_else(|| (self.get_duration_ms() > 0).then_some(self.get_duration_ms() as f64))?;
+        let translated_to = self
+            .subtitles
+            .cues()
+            .iter()
+            .filter(|cue| {
+                cue.translated_text
+                    .as_ref()
+                    .is_some_and(|text| !text.trim().is_empty())
+            })
+            .map(|cue| cue.end_ms)
+            .max()
+            .unwrap_or(0)
+            .max(0) as f64;
+        // Only the session Finished event can declare completion; rounded percentages
+        // must not advertise 100% while the backend is still draining its last turn.
+        Some((translated_to / duration).clamp(0.0, 0.99) as f32)
+    }
+
+    pub fn get_duration_ms(&self) -> i64 {
+        if !self.can_play() {
+            return 0;
+        }
+        self.backend
+            .as_ref()
+            .map(|b| b.get_duration_ms())
+            .unwrap_or(0)
+    }
+
+    pub fn get_status(&self) -> PlaybackStatus {
+        self.backend
+            .as_ref()
+            .map(|b| b.get_status())
+            .unwrap_or(PlaybackStatus::Stopped)
+    }
+
+    pub fn get_diagnostics(&self) -> super::backend::PlayerDiagnostics {
+        self.backend
+            .as_ref()
+            .map(|b| b.get_diagnostics())
+            .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod subtitle_edit_tests {
+    use super::*;
+
+    #[test]
+    fn deletion_is_idle_only_and_persists_or_restores_the_whole_timeline() {
+        let storage = tempfile::tempdir().unwrap();
+        let mut controller = MediaController::open(storage.path().into(), None);
+        controller.backend = None;
+        controller.storage_dir = storage.path().to_owned();
+        controller.store.tasks.clear();
+        let mut task = MediaTask::new(
+            "Test deletion".into(),
+            MediaSource::LocalFile("test.srt".into()),
+            "en".into(),
+            "zh".into(),
+            SubtitleMode::None,
+            Default::default(),
+        );
+        task.subtitles = SubtitleTimeline::parse(
+            "1\n00:00:00,000 --> 00:00:01,000\nFirst.\n\n2\n00:00:01,000 --> 00:00:02,000\nSecond.\n\n3\n00:00:02,000 --> 00:00:03,000\nThird.\n",
+        ).unwrap();
+        task.is_task_running = true;
+        controller.active_task_id = Some(task.id.clone());
+        controller.subtitles = task.subtitles.clone();
+        controller.store.add_or_update(task);
+        controller.save_active();
+        let before = serde_json::to_value(&controller.subtitles).unwrap();
+
+        assert!(!controller.delete_subtitle("srt_1"));
+        controller.store.tasks[0].is_task_running = false;
+        controller.begin_subtitle_edit("srt_0", SubtitleField::Original);
+        assert!(!controller.delete_subtitle("srt_1"));
+        controller.subtitle_edit = None;
+        let blocked = tempfile::NamedTempFile::new().unwrap();
+        controller.storage_dir = blocked.path().to_owned();
+        assert!(!controller.delete_subtitle("srt_1"));
+        assert!(controller.error.is_some());
+        assert_eq!(serde_json::to_value(&controller.subtitles).unwrap(), before);
+        assert_eq!(
+            serde_json::to_value(&controller.store.tasks[0].subtitles).unwrap(),
+            before
+        );
+
+        controller.storage_dir = storage.path().to_owned();
+        assert!(controller.delete_subtitle("srt_1"));
+        assert!(controller.error.is_none());
+        let saved = MediaTaskStore::load_from_dir(storage.path());
+        assert_eq!(saved.tasks[0].subtitles.cues(), controller.subtitles.cues());
+        assert_eq!(
+            controller
+                .subtitles
+                .cues()
+                .iter()
+                .map(|cue| cue.original_text.as_str())
+                .collect::<Vec<_>>(),
+            ["First.", "Third."]
+        );
+        assert!(
+            !std::fs::read_to_string(storage.path().join("video_tasks.json"))
+                .unwrap()
+                .contains("srt_1")
+        );
+        assert!(controller.delete_subtitle("srt_0"));
+        assert!(controller.delete_subtitle("srt_2"));
+        assert_eq!(
+            MediaTaskStore::load_from_dir(storage.path()).tasks[0]
+                .subtitles
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn merging_is_idle_only_and_immediately_replaces_persisted_subtitles() {
+        let storage = tempfile::tempdir().unwrap();
+        let mut controller = MediaController::open(storage.path().into(), None);
+        controller.backend = None;
+        controller.storage_dir = storage.path().to_owned();
+        controller.store.tasks.clear();
+        let mut task = MediaTask::new(
+            "Test subtitles".into(),
+            MediaSource::LocalFile("test.srt".into()),
+            "en".into(),
+            "zh".into(),
+            SubtitleMode::None,
+            Default::default(),
+        );
+        task.subtitles = SubtitleTimeline::parse(
+            "1\n00:00:00,000 --> 00:00:01,000\nFirst.\n\n2\n00:00:01,000 --> 00:00:02,000\nSecond.\n",
+        )
+        .unwrap();
+        task.is_task_running = true;
+        controller.active_task_id = Some(task.id.clone());
+        controller.subtitles = task.subtitles.clone();
+        controller.store.add_or_update(task);
+        controller.save_active();
+
+        assert!(!controller.merge_subtitles("srt_0", "srt_1"));
+        controller.store.tasks[0].is_task_running = false;
+        controller.begin_subtitle_edit("srt_0", SubtitleField::Original);
+        assert!(!controller.merge_subtitles("srt_0", "srt_1"));
+        controller.subtitle_edit = None;
+        assert!(controller.merge_subtitles("srt_0", "srt_1"));
+        assert!(controller.error.is_none());
+        assert!(!controller.dirty);
+
+        let saved = MediaTaskStore::load_from_dir(storage.path());
+        assert_eq!(saved.tasks[0].subtitles.cues(), controller.subtitles.cues());
+        assert_eq!(saved.tasks[0].subtitles.count(), 1);
+        let cue = &saved.tasks[0].subtitles.cues()[0];
+        assert_eq!(cue.id, "srt_1");
+        assert_eq!(cue.original_text, "First. Second.");
+        assert_eq!((cue.start_ms, cue.end_ms), (0, 2_000));
+        let serialized = std::fs::read_to_string(storage.path().join("video_tasks.json")).unwrap();
+        assert!(!serialized.contains("srt_0"));
+        assert_eq!(std::fs::read_dir(storage.path()).unwrap().count(), 1);
+    }
+}

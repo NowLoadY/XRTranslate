@@ -9,5 +9,6 @@ repository.workspace = true
 resample = ["dep:rubato", "dep:audioadapter-buffers"]
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 rubato = { version = "4.0.0", optional = true }
 audioadapter-buffers = { version = "4.0.0", optional = true }

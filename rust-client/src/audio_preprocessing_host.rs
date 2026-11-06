@@ -125,16 +125,6 @@ impl XRTranslateApp {
                 recognition.preprocessing = Some(AudioPreprocessing::None);
             }
         }
-        let controller = &mut self.media_plugin.controller;
-        if let Some(task) = controller
-            .active_task_id
-            .as_deref()
-            .and_then(|id| controller.store.get_mut(id))
-            && preprocessing_asset(task.recognition.preprocessing.unwrap_or(default)) == Some(id)
-        {
-            task.recognition.preprocessing = Some(AudioPreprocessing::None);
-            controller.save_active();
-        }
         self.save_settings();
     }
 }

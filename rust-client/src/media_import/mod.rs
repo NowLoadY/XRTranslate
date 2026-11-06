@@ -6,14 +6,14 @@
 
 mod api;
 mod decode;
-mod http;
-mod links;
+pub(crate) use xrtranslate_client_core::media_import::http;
 mod mpv_extract;
 #[cfg(feature = "mpv")]
 mod mpv_stream;
 #[cfg(test)]
 mod online_tests;
-pub(crate) mod discovery;
+#[cfg(test)]
+use xrtranslate_client_core::media_import::discovery;
 mod stream;
 mod types;
 

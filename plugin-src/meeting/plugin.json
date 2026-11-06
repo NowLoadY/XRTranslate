@@ -1,0 +1,19 @@
+{
+  "id": "meeting",
+  "version": "0.1.0",
+  "min_host_version": "0.4.0",
+  "title": {
+    "en": "Meeting notes",
+    "zh": "会议记录"
+  },
+  "executable": "xrt-meeting",
+  "page": true,
+  "requires": [
+    "translation.start"
+  ],
+  "subscriptions": [
+    "host.services"
+  ],
+  "icon": "assets/icon.svg",
+  "navigation_order": 100
+}

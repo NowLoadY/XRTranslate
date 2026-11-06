@@ -15,6 +15,7 @@ pub trait Plugin {
     fn call(&mut self, name: &str, arguments: Value, context: &mut Context) -> Result;
     fn event(&mut self, _name: &str, _value: Value, _context: &mut Context) {}
     fn reply(&mut self, _id: u64, _result: Result, _context: &mut Context) {}
+    fn cancel(&mut self, _id: u64, _context: &mut Context) {}
     fn tick(&mut self, _elapsed: Duration, _context: &mut Context) -> Option<Vec<Widget>> {
         None
     }
@@ -22,23 +23,38 @@ pub trait Plugin {
 
 pub struct Context {
     output: io::BufWriter<io::Stdout>,
-    next_id: u64,
+    client: crate::Client,
+}
+impl Drop for Context {
+    fn drop(&mut self) {
+        // Wake workers before their plugin joins them during shutdown.
+        self.client.disconnect();
+    }
 }
 impl Context {
+    pub fn client(&self) -> crate::Client {
+        self.client.clone()
+    }
     pub fn call(&mut self, name: &str, arguments: Value) -> u64 {
-        self.next_id += 1;
+        let id = self.client.next_id();
         self.send(&Message::Call {
-            id: self.next_id,
+            id,
             name: name.into(),
             arguments,
         });
-        self.next_id
+        id
     }
     pub fn event(&mut self, name: &str, value: Value) {
         self.send(&Message::Event {
             name: name.into(),
             value,
         });
+    }
+    pub fn view(&mut self, widgets: Vec<Widget>) {
+        self.send(&Message::View { widgets });
+    }
+    pub fn cancel(&mut self, id: u64) {
+        self.send(&Message::Cancel { id });
     }
     fn send(&mut self, message: &Message) {
         // A closed host pipe ends the plugin; stdout is reserved for the protocol.
@@ -74,9 +90,10 @@ pub fn serve(mut plugin: impl Plugin) -> std::result::Result<(), String> {
             }
         }
     });
+    let (client, outbox) = crate::Client::channel();
     let mut context = Context {
         output: io::BufWriter::new(io::stdout()),
-        next_id: 0,
+        client,
     };
     let mut clock = Instant::now();
     let mut initialized = false;
@@ -98,11 +115,20 @@ pub fn serve(mut plugin: impl Plugin) -> std::result::Result<(), String> {
                 plugin.event(&name, value, &mut context)
             }
             Ok(Message::Reply { id, result }) if initialized => {
-                plugin.reply(id, result, &mut context)
+                if !context.client.deliver(id, result.clone()) {
+                    plugin.reply(id, result, &mut context)
+                }
             }
+            Ok(Message::Cancel { id }) if initialized => plugin.cancel(id, &mut context),
             Ok(_) => return Err("Unexpected host message".into()),
             Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        for message in outbox.try_iter() {
+            context.send(&message);
+        }
+        for id in context.client.cancelled() {
+            context.send(&Message::Cancel { id });
         }
         let now = Instant::now();
         let elapsed = now.duration_since(clock).min(Duration::from_millis(100));

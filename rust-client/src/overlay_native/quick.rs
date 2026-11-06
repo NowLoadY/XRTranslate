@@ -308,7 +308,9 @@ impl Capsule {
                     "quick_languages",
                     !self.state.targets.is_empty(),
                     self.menu == Some(Menu::Languages),
-                    egui::include_image!("../../resources/icons/chevron-down.svg"),
+                    egui::include_image!(
+                        "../../../crates/xrtranslate-client-core/resources/icons/chevron-down.svg"
+                    ),
                     tr(language, "Target language"),
                 );
                 if left_response.clicked() {
@@ -331,9 +333,13 @@ impl Capsule {
                 };
                 let saved_label = self.state.save_error.as_deref().unwrap_or(saved_label);
                 let star = if saved {
-                    egui::include_image!("../../resources/icons/star-filled.svg")
+                    egui::include_image!(
+                        "../../../crates/xrtranslate-client-core/resources/icons/star-filled.svg"
+                    )
                 } else {
-                    egui::include_image!("../../resources/icons/star.svg")
+                    egui::include_image!(
+                        "../../../crates/xrtranslate-client-core/resources/icons/star.svg"
+                    )
                 };
                 let save = icon(
                     ui,

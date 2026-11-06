@@ -33,10 +33,6 @@ pub(super) enum Cue {
     Styles,
     VoiceCards,
     Terms,
-    Wordbooks,
-    EmptyWordbook,
-    WordDetail,
-    WordExample,
     Settings,
     Osc,
     Meeting,
@@ -67,12 +63,6 @@ impl Cue {
             Self::Styles => "Pick a style card to change how your translations sound.",
             Self::VoiceCards => "Choose a voice card to use with your TTS.",
             Self::Terms => "Keep names and terms consistent across translations.",
-            Self::Wordbooks => "Keep your favorite words together in wordbooks.",
-            Self::EmptyWordbook => "Tap the star in quick translation to start your wordbook.",
-            Self::WordDetail => {
-                "Explore this word in other languages, or try an example and a back-translation."
-            }
-            Self::WordExample => "Working on your example. Just a moment!",
             Self::Settings => "Let's make XRTranslate feel right for you.",
             Self::Osc => "Configure chatbox output.",
             Self::Meeting => "Your meeting transcript stays together here.",
@@ -136,6 +126,7 @@ impl Cue {
 }
 
 pub(super) struct Context {
+    pub hint: Option<super::inbox::Message>,
     pub route: Route,
     pub cue: Cue,
     pub blocked: Option<&'static str>,
@@ -146,6 +137,16 @@ impl Context {
     pub fn read(app: &crate::XRTranslateApp, layout: Option<&OnboardingLayout>) -> Self {
         if !app.first_run {
             return Self {
+                hint: if let Page::Plugin(id) = app.navigation.page {
+                    app.plugin_host.state(id.as_str())["hint"]
+                        .as_str()
+                        .map(|text| super::inbox::Message::Text {
+                            source: id.as_str().into(),
+                            text: text.into(),
+                        })
+                } else {
+                    None
+                },
                 route: Route::Page(app.navigation.page),
                 cue: match app.navigation.page {
                     Page::Translation | Page::GamePlugins => Cue::Translation,
@@ -154,18 +155,6 @@ impl Context {
                     Page::TtsCenter => Cue::VoiceCards,
                     Page::CorpusStudio => Cue::Terms,
                     Page::Settings => Cue::Settings,
-                    Page::Plugin(PluginId::VOCABULARY) => {
-                        let view = app.vocabulary_plugin.view_state();
-                        if view.working {
-                            Cue::WordExample
-                        } else if view.detail {
-                            Cue::WordDetail
-                        } else if view.empty {
-                            Cue::EmptyWordbook
-                        } else {
-                            Cue::Wordbooks
-                        }
-                    }
                     Page::Plugin(PluginId::OSC | PluginId::CHILLOUTVR_OSC) => Cue::Osc,
                     Page::Plugin(PluginId::MEETING) => Cue::Meeting,
                     Page::Plugin(PluginId::MEDIA) => Cue::Player,
@@ -204,6 +193,7 @@ impl Context {
                 }),
         };
         Self {
+            hint: None,
             route: Route::Onboarding(app.onboarding_page),
             cue,
             blocked,

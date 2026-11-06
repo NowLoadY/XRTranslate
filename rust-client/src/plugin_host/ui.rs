@@ -6,6 +6,7 @@ mod scene;
 #[derive(Default)]
 pub(super) struct PageState {
     composer: components::text_composer::TextComposer,
+    pub(super) surface: xrtranslate_plugin::surface::Renderer,
     inputs: BTreeMap<String, (String, String)>,
     scenes: BTreeMap<String, (u64, scene::Scene)>,
 }
@@ -38,6 +39,28 @@ impl Host {
             ui.label(tr(language, "Plugin is not installed"));
             return Vec::new();
         };
+        if let Some(process) = &mut entry.process
+            && process
+                .view()
+                .iter()
+                .any(|widget| matches!(widget, Widget::Surface))
+        {
+            if let Err(error) = entry.page.surface.show(
+                ui,
+                id.as_str(),
+                &format!("plugin:{id}"),
+                process,
+                json!({"theme":crate::ui::theme::context_theme(ui.ctx())}),
+                crate::ui::organic_border::surface_paint,
+                |resource| self.playback.texture(id.as_str(), resource),
+            ) {
+                entry.error = Some(error);
+            }
+            if let Some(error) = &entry.error {
+                components::error_notice(ui, language, error);
+            }
+            return Vec::new();
+        }
         ui.heading(entry.manifest.title.get(locale(language)));
         ui.add_space(12.0);
         let mut actions = Vec::new();
@@ -141,6 +164,7 @@ fn render(
     for widget in widgets {
         let lang = locale(language);
         match widget {
+            Widget::Surface => {}
             Widget::Label { text } => {
                 ui.label(text.get(lang));
             }

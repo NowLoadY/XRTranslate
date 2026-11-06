@@ -1,25 +1,6 @@
-//! Host-side contract between translation infrastructure and feature plugins.
-//!
-//! This module deliberately contains no concrete plugin imports. Plugins
-//! describe how they want to use a translation session and may subscribe to
-//! the resulting translation results; the network/audio implementation
-//! remains unaware of every plugin.
-
-mod owner;
-mod plugin_session;
-mod preview;
-mod request;
+//! Shared session contracts and host event adapters.
 mod result;
 mod subscriber;
-mod text_result;
-
-pub use owner::{PluginSessionOwner, TranslationSessionOwner};
-pub use plugin_session::{PluginSessionBinding, SessionOutputPolicy, TranslationSessionPlugin};
-pub use preview::{LivePreviews, TranslationPreview};
-pub(crate) use request::{TranslationInput, TranslationTask};
 pub(crate) use result::TranslationEventAdapter;
-pub use result::{TranslationEvent, TranslationOutcome, TranslationSegment};
-pub use subscriber::{
-    AudioSourceFilter, CaptionUpdate, HostOutputEvent, HostOutputSubscriber, SessionEventSubscriber,
-};
-pub(crate) use text_result::{TextTranslationCollector, TextTranslationResult};
+pub use subscriber::{CaptionUpdate, HostOutputEvent, HostOutputSubscriber};
+pub use xrtranslate_client_core::session_coordinator::*;

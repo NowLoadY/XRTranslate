@@ -117,12 +117,14 @@ fn background_image_controls(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui)
         label,
         None,
     );
-    egui::Image::new(egui::include_image!("../../../resources/icons/image.svg"))
-        .tint(crate::ui::theme::text_strong())
-        .paint_at(
-            ui,
-            egui::Rect::from_center_size(response.rect.center(), egui::vec2(18.0, 18.0)),
-        );
+    egui::Image::new(egui::include_image!(
+        "../../../../crates/xrtranslate-client-core/resources/icons/image.svg"
+    ))
+    .tint(crate::ui::theme::text_strong())
+    .paint_at(
+        ui,
+        egui::Rect::from_center_size(response.rect.center(), egui::vec2(18.0, 18.0)),
+    );
     egui::Popup::from_toggle_button_response(&response)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .layout(egui::Layout::top_down_justified(egui::Align::Min))
@@ -852,10 +854,7 @@ fn render_plugins_section(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                     });
                 });
 
-                if enabled
-                    && descriptor.settings_contribution
-                        == crate::plugins::PluginSettingsContribution::Plugin
-                {
+                if enabled {
                     ui.add_space(14.0);
                     components::wavy_divider(ui, crate::ui::theme::text_strong());
                     ui.add_space(14.0);

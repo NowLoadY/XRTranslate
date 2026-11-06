@@ -282,9 +282,9 @@ pub fn render_toolbar(
                             .suffix(" s");
                             if offset != 0.0 {
                                 let icon = if offset < 0.0 {
-                                    egui::include_image!("../../../../resources/icons/rabbit.svg")
+                                    egui::include_image!("../../../../../crates/xrtranslate-client-core/resources/icons/rabbit.svg")
                                 } else {
-                                    egui::include_image!("../../../../resources/icons/turtle.svg")
+                                    egui::include_image!("../../../../../crates/xrtranslate-client-core/resources/icons/turtle.svg")
                                 };
                                 slider = slider.value_badge(icon, format!("{:.1} s", offset.abs()));
                             }

@@ -4,7 +4,7 @@ use ::egui::{self, Color32, Id, Pos2, Rect, Stroke};
 
 const LIFETIME: f64 = 4.0;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LocatedFeedback {
     pub feedback: Feedback,
     pub rect: Option<Rect>,
@@ -59,6 +59,27 @@ pub fn current(ctx: &egui::Context) -> Vec<LocatedFeedback> {
     ctx.data(|data| data.get_temp::<State>(key()))
         .filter(|state| state.until > ctx.input(|input| input.time))
         .map_or_else(Vec::new, |state| state.items)
+}
+
+pub fn expires(ctx: &egui::Context) -> f64 {
+    ctx.data(|data| data.get_temp::<State>(key()))
+        .map_or(0.0, |state| state.until)
+}
+
+/// Preserve timing and geometry supplied by an embedded surface.
+pub fn import(ctx: &egui::Context, items: Vec<LocatedFeedback>, until: f64) {
+    if !items.is_empty() && until > ctx.input(|input| input.time) {
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                key(),
+                State {
+                    items,
+                    until,
+                    reveal: false,
+                },
+            )
+        });
+    }
 }
 
 pub fn begin_frame(ctx: &egui::Context) {

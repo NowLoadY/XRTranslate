@@ -37,6 +37,10 @@ pub struct Manifest {
     #[serde(default)]
     pub page: bool,
     #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default = "default_navigation_order")]
+    pub navigation_order: i32,
+    #[serde(default)]
     pub requires: Vec<String>,
     #[serde(default)]
     pub subscriptions: Vec<String>,
@@ -45,10 +49,16 @@ pub struct Manifest {
     #[serde(default)]
     pub models: Vec<Model>,
 }
+fn default_navigation_order() -> i32 {
+    500
+}
 impl Manifest {
     pub fn validate(&self) -> std::result::Result<(), String> {
         identifier(&self.id)?;
         relative_path(&self.executable)?;
+        if let Some(icon) = &self.icon {
+            relative_path(icon)?;
+        }
         semver::Version::parse(&self.min_host_version).map_err(|error| error.to_string())?;
         if self.title.get("en").is_empty() || self.version.is_empty() {
             return Err("Plugin name and version are required".into());
@@ -133,6 +143,9 @@ pub enum Message {
         id: u64,
         result: Result,
     },
+    Cancel {
+        id: u64,
+    },
     Event {
         name: String,
         value: Value,
@@ -145,6 +158,8 @@ pub enum Message {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Widget {
+    /// A plugin-owned immediate-mode interface rendered by the host GPU.
+    Surface,
     Label {
         text: Text,
     },

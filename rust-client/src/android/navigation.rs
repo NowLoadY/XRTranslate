@@ -7,7 +7,7 @@ use crate::{
 use eframe::egui;
 
 impl XRTranslateApp {
-    pub(crate) fn handle_android_back(&mut self, ctx: &egui::Context) {
+    pub fn handle_android_back(&mut self, ctx: &egui::Context) {
         if !super::take_back_request() {
             return;
         }
@@ -39,16 +39,7 @@ impl XRTranslateApp {
                 self.fullscreen_history = false;
                 return;
             }
-            Page::Plugin(PluginId::VOCABULARY) if self.vocabulary_plugin.handle_back() => return,
-            Page::Plugin(PluginId::MEETING) if self.meeting_plugin.controller.handle_back() => {
-                return;
-            }
-            Page::Plugin(PluginId::MEDIA) => {
-                if let Some(action) = self.media_plugin.controller.handle_back(ctx) {
-                    self.apply_media_action(action, ctx.clone());
-                    return;
-                }
-            }
+
             Page::PromptStudio => {
                 if let Some(actions) = ui::pages::prompt_studio::handle_back(
                     ctx,

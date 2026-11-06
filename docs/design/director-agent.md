@@ -152,13 +152,13 @@ Agent 的用户说明与内部进度笔记分开。说明送入现有 Avatar 信
 发言要求简短口语和纯文本，不使用 Markdown 或朗读内部标识。完整长消息由共用气泡
 分页逐字展示，每页阅读停顿后清空继续；工具参数、回执和内部笔记不直接显示为气泡。
 
-- [通用执行规则](../../rust-client/src/plugins/agent/instructions.md)与
-  [媒体任务目标](../../rust-client/src/plugins/media/optimization.md)是程序内嵌提示词，
+- [通用执行规则](../../plugin-src/agent/src/instructions.md)与
+  [媒体任务目标](../../plugin-src/media/src/media/optimization.md)是程序内嵌提示词，
   由各自模块维护；工具用法不在提示词中重复定义。
 - [Director 协议](../../crates/ui-director/src/lib.rs)和
   [宿主装配](../../rust-client/src/director_host.rs)负责公共入口。
-- [Agent 插件](../../rust-client/src/plugins/agent.rs)及其上下文模块负责执行状态。
-- [媒体工作区](../../rust-client/src/plugins/media/workspace.rs)负责文档校验与提交。
+- [Agent 插件](../../plugin-src/agent/src/agent.rs)及其上下文模块负责执行状态。
+- [媒体工作区](../../plugin-src/media/src/media/workspace.rs)负责文档校验与提交。
 
 媒体工作区在恢复草稿和提交时共用同一套冲突检查，核对字幕及其输入条件；配音产物
 及其播放状态不影响字幕草稿。冲突反馈指出变更项，并通过原有文档读取工具对比草稿

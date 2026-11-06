@@ -4,7 +4,7 @@
 
 use super::{LANGUAGES, SupportedLanguage};
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LanguageSet(u64);
 
 impl LanguageSet {
@@ -61,7 +61,7 @@ impl LanguageSet {
 
 /// None is unspecified provider support, not a guarantee of universal support.
 /// Such providers remain usable and perform their final validation at inference.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LanguageCapabilities {
     pub recognition: Option<LanguageSet>,
     pub translation: Option<LanguageSet>,
@@ -293,13 +293,13 @@ impl LanguageCapabilities {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LanguageSelection {
     pub mode: LanguageMode,
     pub additional_target: Option<SupportedLanguage>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum LanguageMode {
     AsrOnly {
         source: Option<SupportedLanguage>,

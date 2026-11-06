@@ -6,16 +6,12 @@
 //! repeated navigation/settings metadata; statically typed runtime composition
 //! remains explicit in the host adapter.
 
-pub(crate) mod agent;
 pub(crate) mod avatar;
 pub(crate) mod game_plugins;
-pub mod media;
-pub mod meeting;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 pub mod ocr;
 pub mod osc;
 pub(crate) mod text_output;
-pub(crate) mod vocabulary;
 pub mod vr_overlay;
 
 /// Composition only: each plugin owns its commands and UI-shared handlers.
@@ -23,19 +19,12 @@ pub mod vr_overlay;
 pub(crate) fn tool_providers(
     app: &mut crate::XRTranslateApp,
 ) -> Vec<&mut dyn ui_director::ToolProvider> {
-    let media = app.plugin_enabled(PluginId::MEDIA);
-    let agent = app.plugin_enabled(PluginId::AGENT);
-    let mut providers: Vec<&mut dyn ui_director::ToolProvider> = vec![
+    let providers: Vec<&mut dyn ui_director::ToolProvider> = vec![
         &mut app.ui_tools,
         &mut app.director_audio,
         &mut app.plugin_host,
     ];
-    if media {
-        providers.push(&mut app.media_plugin);
-    }
-    if agent {
-        providers.push(&mut app.agent);
-    }
+
     providers
 }
 
@@ -56,7 +45,7 @@ impl PluginId {
     pub const CHILLOUTVR_OSC: Self = Self::named("chilloutvr_osc");
     pub const AVATAR: Self = Self::named("avatar");
     pub const MEETING: Self = Self::named("meeting");
-    pub const MEDIA: Self = Self::named("video_player");
+    pub const MEDIA: Self = Self::named("media");
     pub const VR_OVERLAY: Self = Self::named("vr_overlay");
     pub const OCR: Self = Self::named("ocr");
     pub const AUTO_INPUT: Self = Self::named("auto_input");
@@ -144,14 +133,6 @@ pub enum PluginScrollPolicy {
     Plugin,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PluginSettingsContribution {
-    /// Only the common enable/disable control is shown.
-    EnablementOnly,
-    /// The plugin contributes additional controls below its enablement row.
-    Plugin,
-}
-
 #[derive(Clone, Copy)]
 pub struct PluginIcon {
     pub uri: &'static str,
@@ -177,63 +158,10 @@ pub struct PluginDescriptor {
     pub navigation_order: Option<u16>,
     pub icon: PluginIcon,
     pub scroll_policy: PluginScrollPolicy,
-    pub settings_contribution: PluginSettingsContribution,
     pub default_enabled: bool,
 }
 
 const PLUGIN_DESCRIPTORS: &[PluginDescriptor] = &[
-    PluginDescriptor {
-        id: PluginId::AGENT,
-        title_key: "Agent",
-        description_key: "Optimize tasks using the configured model.",
-        navigation_order: None,
-        icon: PluginIcon {
-            uri: "bytes://plugins/agent/icon.svg",
-            bytes: include_bytes!("../../resources/icons/star.svg"),
-        },
-        scroll_policy: PluginScrollPolicy::Plugin,
-        settings_contribution: PluginSettingsContribution::EnablementOnly,
-        default_enabled: true,
-    },
-    PluginDescriptor {
-        id: PluginId::VOCABULARY,
-        title_key: "Vocabulary",
-        description_key: "Manage wordbooks and saved words.",
-        navigation_order: Some(80),
-        icon: PluginIcon {
-            uri: "bytes://plugins/vocabulary/icon.svg",
-            bytes: include_bytes!("../../resources/icons/star.svg"),
-        },
-        scroll_policy: PluginScrollPolicy::Plugin,
-        settings_contribution: PluginSettingsContribution::EnablementOnly,
-        default_enabled: true,
-    },
-    PluginDescriptor {
-        id: PluginId::MEETING,
-        title_key: "Meeting notes",
-        description_key: "Capture, import, organize, and export local meeting records.",
-        navigation_order: Some(100),
-        icon: PluginIcon {
-            uri: "bytes://plugins/meeting/icon.svg",
-            bytes: include_bytes!("../../resources/plugins/meeting/icon.svg"),
-        },
-        scroll_policy: PluginScrollPolicy::Plugin,
-        settings_contribution: PluginSettingsContribution::EnablementOnly,
-        default_enabled: true,
-    },
-    PluginDescriptor {
-        id: PluginId::MEDIA,
-        title_key: "Media",
-        description_key: "Translate audio, video and subtitle files.",
-        navigation_order: Some(150),
-        icon: PluginIcon {
-            uri: "bytes://plugins/media/icon.svg",
-            bytes: include_bytes!("../../resources/plugins/media/icon.svg"),
-        },
-        scroll_policy: PluginScrollPolicy::Plugin,
-        settings_contribution: PluginSettingsContribution::EnablementOnly,
-        default_enabled: true,
-    },
     PluginDescriptor {
         id: PluginId::VR_OVERLAY,
         title_key: "SteamVR Overlay",
@@ -244,7 +172,6 @@ const PLUGIN_DESCRIPTORS: &[PluginDescriptor] = &[
             bytes: include_bytes!("../../resources/plugins/vr_overlay/icon.svg"),
         },
         scroll_policy: PluginScrollPolicy::Plugin,
-        settings_contribution: PluginSettingsContribution::Plugin,
         default_enabled: !cfg!(target_os = "android"),
     },
     PluginDescriptor {
@@ -257,7 +184,6 @@ const PLUGIN_DESCRIPTORS: &[PluginDescriptor] = &[
             bytes: include_bytes!("../../resources/plugins/osc/icon.svg"),
         },
         scroll_policy: PluginScrollPolicy::Plugin,
-        settings_contribution: PluginSettingsContribution::Plugin,
         default_enabled: !cfg!(target_os = "android"),
     },
     PluginDescriptor {
@@ -270,7 +196,6 @@ const PLUGIN_DESCRIPTORS: &[PluginDescriptor] = &[
             bytes: include_bytes!("../../resources/plugins/osc/icon.svg"),
         },
         scroll_policy: PluginScrollPolicy::Plugin,
-        settings_contribution: PluginSettingsContribution::Plugin,
         default_enabled: false,
     },
 ];
@@ -322,7 +247,7 @@ impl PluginRegistry {
             && !preferences
                 .installed_pages
                 .iter()
-                .any(|(installed, _)| *installed == id)
+                .any(|(installed, ..)| *installed == id)
             && (self
                 .descriptor(id)
                 .is_none_or(|descriptor| descriptor.navigation_order.is_none())
@@ -340,7 +265,7 @@ pub struct PluginPreferences {
     #[serde(default)]
     enabled: BTreeMap<String, bool>,
     #[serde(skip)]
-    pub(crate) installed_pages: Vec<(PluginId, String)>,
+    pub(crate) installed_pages: Vec<(PluginId, String, i32, Option<(String, Vec<u8>)>)>,
 }
 
 impl Default for PluginPreferences {

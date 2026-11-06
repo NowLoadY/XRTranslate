@@ -362,7 +362,7 @@ impl OverlayWindow {
                     ),
                     egui::Button::new(
                         egui::Image::new(egui::include_image!(
-                            "../resources/icons/chevron-left.svg"
+                            "../../crates/xrtranslate-client-core/resources/icons/chevron-left.svg"
                         ))
                         .fit_to_exact_size(Vec2::splat(16.0))
                         .tint(theme::text_weak()),
@@ -398,13 +398,15 @@ impl OverlayWindow {
                     },
                 );
                 let response = icon_button(ui, slot(translation_x), "translation", active, label);
-                egui::Image::new(egui::include_image!("../resources/icons/power.svg"))
-                    .tint(if active || response.hovered() || response.has_focus() {
-                        theme::text_strong()
-                    } else {
-                        theme::text_weak()
-                    })
-                    .paint_at(ui, response.rect.shrink(7.0));
+                egui::Image::new(egui::include_image!(
+                    "../../crates/xrtranslate-client-core/resources/icons/power.svg"
+                ))
+                .tint(if active || response.hovered() || response.has_focus() {
+                    theme::text_strong()
+                } else {
+                    theme::text_weak()
+                })
+                .paint_at(ui, response.rect.shrink(7.0));
                 if response.clicked() {
                     send_event(OverlayEvent::TranslationEnabled(!active));
                 }

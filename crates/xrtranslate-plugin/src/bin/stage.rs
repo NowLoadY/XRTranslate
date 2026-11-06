@@ -22,12 +22,10 @@ fn stage(
     source: &Path,
     binary: &Path,
     destination: &Path,
+    replace: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if destination.exists() {
-        return Err(
-            "Destination exists; disable and remove the old plugin directory before replacing it"
-                .into(),
-        );
+    if destination.exists() && !replace {
+        return Err("Destination exists; use --replace to update it".into());
     }
     let parent = destination
         .parent()
@@ -37,7 +35,8 @@ fn stage(
     let temporary = tempfile::Builder::new()
         .prefix(".plugin-")
         .tempdir_in(parent)?;
-    let root = temporary.path();
+    let root = temporary.path().join("new");
+    fs::create_dir(&root)?;
     let mut manifest: xrtranslate_plugin::Manifest =
         serde_json::from_slice(&fs::read(source.join("plugin.json"))?)?;
     manifest.executable = binary
@@ -55,15 +54,33 @@ fn stage(
             copy(&source.join(name), &root.join(name))?;
         }
     }
-    xrtranslate_plugin::directory::read(root).map_err(io::Error::other)?;
-    fs::rename(root, destination)?;
+    xrtranslate_plugin::directory::read(&root).map_err(io::Error::other)?;
+    let previous = temporary.path().join("previous");
+    if destination.exists() {
+        let installed =
+            xrtranslate_plugin::directory::read(destination).map_err(io::Error::other)?;
+        if installed.id != manifest.id || fs::symlink_metadata(destination)?.is_symlink() {
+            return Err("Destination must be a directory for the same plugin".into());
+        }
+        fs::rename(destination, &previous)?;
+    }
+    if let Err(error) = fs::rename(&root, destination) {
+        if previous.exists() {
+            // Keep the old install recoverable even if the destination becomes unavailable.
+            let recovery = temporary.keep();
+            fs::rename(recovery.join("previous"), destination)?;
+            fs::remove_dir_all(recovery)?;
+        }
+        return Err(error.into());
+    }
     Ok(())
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args.len() != 4 || args[0] != "stage" {
+    let replace = args.len() == 5 && args[4] == "--replace";
+    if !(args.len() == 4 || replace) || args[0] != "stage" {
         return Err(
-            "Usage: xrt-plugin stage <source-directory> <executable> <destination-directory>"
+            "Usage: xrt-plugin stage <source-directory> <executable> <destination-directory> [--replace]"
                 .into(),
         );
     }
@@ -71,5 +88,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Path::new(&args[1]),
         Path::new(&args[2]),
         Path::new(&args[3]),
+        replace,
     )
 }

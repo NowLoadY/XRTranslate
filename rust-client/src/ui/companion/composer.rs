@@ -1,11 +1,11 @@
 //! A small goal entry surface; execution stays with the application's Agent.
-use ui_director::egui as automation;
 use crate::{
     i18n::{UiLanguage, tr},
     ui::{components, theme},
 };
 use components::text_composer::SubmitShortcut;
 use eframe::egui::{self, Id, Pos2, Rect};
+use ui_director::egui as automation;
 
 #[derive(Clone, Default)]
 pub(super) struct Composer {
@@ -125,7 +125,7 @@ impl Composer {
                                             ui,
                                             tr(language, "Send"),
                                             egui::include_image!(
-                                                "../../../resources/icons/chevron-right.svg"
+                                                "../../../../crates/xrtranslate-client-core/resources/icons/chevron-right.svg"
                                             ),
                                         )
                                     })
@@ -135,7 +135,7 @@ impl Composer {
                                     if components::icon_button(
                                         ui,
                                         tr(language, "Stop"),
-                                        egui::include_image!("../../../resources/icons/stop.svg"),
+                                        egui::include_image!("../../../../crates/xrtranslate-client-core/resources/icons/stop.svg"),
                                     )
                                     .clicked()
                                     {
@@ -182,7 +182,7 @@ impl Composer {
             })
             .response;
         if send && !self.draft.trim().is_empty() {
-            if self.draft.trim().len() > crate::plugins::agent::MAX_GOAL_BYTES {
+            if self.draft.trim().len() > 4000 {
                 self.error = Some("Please shorten the instruction");
             } else {
                 action = Some(Action::Submit(self.draft.trim().to_owned()));

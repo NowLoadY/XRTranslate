@@ -3,14 +3,15 @@
 Optional plugins are native child processes discovered under the application’s
 `plugins/` directory. Each directory contains `plugin.json` and an executable;
 filesystem presence defines installation. The host synchronizes directory changes
-while running and checks only the declared minimum host version. Motion, Lyrics,
-Big Walk and automatic input use this boundary. Their source is absent from the desktop client's dependency graph;
+while running and checks only the declared minimum host version. Motion, Media,
+Meeting, Agent, Vocabulary, Lyrics, Big Walk and automatic input use this boundary.
+Their source is absent from the desktop client's dependency graph;
 removal stops their workers and removes their page and tools.
 
-The [MIT SDK](../crates/xrtranslate-plugin/README.md) owns the wire protocol and
-process runner. `rust-client/src/plugin_host` adapts it to shared UI, CLI,
+The [MIT protocol SDK](../crates/xrtranslate-plugin/README.md) owns the wire protocol
+and process runner. `rust-client/src/plugin_host` adapts it to shared UI, CLI,
 inference, model installation and application lifetime. Plugin manifests declare
-contributions; this adapter contains no domain plugin IDs or tool-name branches.
+contributions; the dispatcher forwards domain calls without interpreting them.
 Cooperation belongs to consumers, such as `plugins/osc/integrations.rs` connecting
 lyric events to OSC outputs. Missing required capabilities produce a local error;
 optional consumers report unavailability when used.
@@ -20,11 +21,23 @@ Motion source is maintained in a separate private repository in the ignored
 Other independent plugin source lives under `plugin-src/`. These plugins need the
 host; independence does not require a second application or UI implementation.
 
-Media, Meeting, Agent, OCR, avatar/VR output and vocabulary remain compiled host
-features for now. Their existing session, renderer and platform-resource bindings
-are not converted into a second RPC implementation just to claim extraction.
-Their ownership contracts below are retained for subsequent migrations; the
-static feature registry is separate from the installed-plugin catalogue.
+OCR and avatar/OSC/VR output still have compiled host bindings. The static feature
+registry remains separate from the installed-plugin catalogue until those
+resource and connection lifecycles are migrated.
+
+`crates/xrtranslate-client-core` holds the existing UI components and neutral
+session/playback/file contracts once. The native Media, Meeting and Vocabulary
+pages reuse them through the SDK's egui surface: input enters the plugin; drawing
+and the Director registry return to the host. UI and CLI invoke the same handlers.
+Video textures remain host-owned; video pixels do not travel through JSON. The
+host cancels a removed plugin's tasks and releases its playback resources.
+
+Media adopts the old `video_tasks.json` on first use; Meeting copies its old
+SQLite database, including committed WAL content. Their records then live under
+`<runtime>/plugins/data/<id>`. Vocabulary continues to use the shared bookmark
+store, so words saved from translation history and the plugin have one source.
+The Agent retains its conversation while the plugin remains installed and enabled;
+configuration refreshes do not reset it.
 
 ## Ownership and dependencies
 
@@ -172,9 +185,10 @@ affecting unrelated tasks.
 | `plugins::avatar` | Game display composition, verified control intent and connection lifecycle; `avatar_host` composes owned translation sessions |
 | `plugins::text_output` | Internal shared text formatting, banner controls and one owned system sampler |
 | Native `plugin-src/lyrics` | Music observation, lyric lookup, synchronization, and bounded persistent cache; publishes text through the host to selected outputs |
-| `plugins::vocabulary` | Wordbooks and saved vocabulary views; uses shared storage and stateless ask for example work |
-| `plugins::meeting` | Meeting state, recording, playback navigation, and persistence; consumes its normalized session results |
-| `plugins::media` | Media tasks, playback, subtitles, and export; uses shared import and translation |
+| Native `plugin-src/vocabulary` | Wordbooks and saved vocabulary views; uses shared storage and stateless inference for examples |
+| Native `plugin-src/meeting` | Meeting state, recording navigation, and persistence; consumes its normalized session results |
+| Native `plugin-src/media` | Media tasks, playback, subtitles, dubbing and export; uses shared import and translation |
+| Native `plugin-src/agent` | Persistent conversation, tool execution, context compression and progress |
 | `plugins::vr_overlay` | SteamVR presentation and runtime; consumes shared host output |
 | `plugins::ocr` | Screen-text workflow; uses host capture, recognition, and translation capabilities |
 | Native `plugin-src/auto-input` | Automatic text output; consumes committed results through a platform input capability |
@@ -192,7 +206,8 @@ plugins use it independently. Meetings retain each recording run's time offset
 and source file so transcript navigation resolves to the matching audio track;
 the plugin owns playback selection and transcript following.
 
-The media plugin's MPV backend owns its playback state snapshot and video worker.
+The shared MPV backend owns its playback state snapshot and video worker.
+The native media plugin controls a resource allocated to its process by the host.
 UI reads consume observed state and playback actions are queued asynchronously.
 Video work stays bounded, and the worker completes before its target resources
 are retired. Hidden playback continues without holding UI graphics resources

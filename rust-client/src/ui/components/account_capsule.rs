@@ -1,17 +1,20 @@
 //! Account identity is the control; secondary actions emerge from the stack.
-use ui_director::egui as automation;
 use crate::{
     account_connections::{AccountAction, AccountConnections},
     i18n::{self, UiLanguage},
     ui::{animation::AnimationSystem, theme},
 };
 use eframe::egui::{self, Color32, Rect, Sense, Stroke, Vec2};
+use ui_director::egui as automation;
 use xrtranslate_connections::{AccountProvider, AccountSnapshot, AccountStatus};
 
-const PLUS: egui::ImageSource<'static> = egui::include_image!("../../../resources/icons/plus.svg");
-const SWITCH: egui::ImageSource<'static> =
-    egui::include_image!("../../../resources/icons/account-switch.svg");
-const CLOSE: egui::ImageSource<'static> = egui::include_image!("../../../resources/icons/x.svg");
+const PLUS: egui::ImageSource<'static> =
+    egui::include_image!("../../../../crates/xrtranslate-client-core/resources/icons/plus.svg");
+const SWITCH: egui::ImageSource<'static> = egui::include_image!(
+    "../../../../crates/xrtranslate-client-core/resources/icons/account-switch.svg"
+);
+const CLOSE: egui::ImageSource<'static> =
+    egui::include_image!("../../../../crates/xrtranslate-client-core/resources/icons/x.svg");
 
 pub(crate) fn account_capsule(
     ui: &mut egui::Ui,
@@ -267,7 +270,9 @@ pub(crate) fn account_capsule(
                 if selected {
                     icon(
                         ui,
-                        egui::include_image!("../../../resources/icons/check.svg"),
+                        egui::include_image!(
+                            "../../../../crates/xrtranslate-client-core/resources/icons/check.svg"
+                        ),
                         egui::pos2(rect.left() + 15.0, rect.center().y),
                         color,
                     );

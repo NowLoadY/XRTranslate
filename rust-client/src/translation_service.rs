@@ -164,6 +164,7 @@ pub(crate) struct TaskChannel {
 }
 
 pub(crate) struct AudioTask {
+    pub recording: Option<xrtranslate_client_core::recording::Recording>,
     pub import: Option<crate::media_import::AudioImportHandle>,
     pub owner: TranslationSessionOwner,
     pub languages: LanguageSelection,
@@ -198,6 +199,11 @@ impl AudioTask {
         for worker in self.routers {
             let _ = worker.join();
         }
+        if let Some(recording) = self.recording.take()
+            && let Err(error) = recording.finalize()
+        {
+            log::error!("Audio recording could not finalize: {error}");
+        }
     }
 
     /// Natural completion closes transport but lets completed TTS finish playing.
@@ -210,6 +216,11 @@ impl AudioTask {
         }
         for worker in self.routers {
             let _ = worker.join();
+        }
+        if let Some(recording) = self.recording.take()
+            && let Err(error) = recording.finalize()
+        {
+            log::error!("Audio recording could not finalize: {error}");
         }
     }
 }

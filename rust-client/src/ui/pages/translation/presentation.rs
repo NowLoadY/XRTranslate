@@ -50,7 +50,9 @@ impl Presentation {
             && components::icon_button(
                 ui,
                 tr(language, "Follow latest"),
-                egui::include_image!("../../../../resources/icons/chevron-down.svg"),
+                egui::include_image!(
+                    "../../../../../crates/xrtranslate-client-core/resources/icons/chevron-down.svg"
+                ),
             )
             .clicked()
         {
@@ -86,7 +88,9 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             back |= components::icon_button(
                 ui,
                 tr(language, "Back"),
-                egui::include_image!("../../../../resources/icons/chevron-left.svg"),
+                egui::include_image!(
+                    "../../../../../crates/xrtranslate-client-core/resources/icons/chevron-left.svg"
+                ),
             )
             .clicked();
             if components::icon_button(
@@ -99,7 +103,9 @@ pub fn render(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
                         "Black background"
                     },
                 ),
-                egui::include_image!("../../../../resources/icons/contrast.svg"),
+                egui::include_image!(
+                    "../../../../../crates/xrtranslate-client-core/resources/icons/contrast.svg"
+                ),
             )
             .clicked()
             {

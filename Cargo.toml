@@ -2,6 +2,11 @@
 resolver = "3"
 members = [
     "rust-client",
+    "crates/xrtranslate-client-core",
+    "plugin-src/agent",
+    "plugin-src/media",
+    "plugin-src/meeting",
+    "plugin-src/vocabulary",
     "plugin-src/lyrics",
     "plugin-src/bigwalk",
     "plugin-src/auto-input",

@@ -18,7 +18,7 @@ pub struct LocationSegment {
     pub label: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Tool {
     pub name: String,
     pub description: String,

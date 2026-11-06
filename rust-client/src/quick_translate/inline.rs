@@ -172,9 +172,9 @@ pub(super) fn show(
                                     ui,
                                     tr(language, if copied { "Copied" } else { "Copy" }),
                                     if copied {
-                                        egui::include_image!("../../resources/icons/check.svg")
+                                        egui::include_image!("../../../crates/xrtranslate-client-core/resources/icons/check.svg")
                                     } else {
-                                        egui::include_image!("../../resources/icons/copy.svg")
+                                        egui::include_image!("../../../crates/xrtranslate-client-core/resources/icons/copy.svg")
                                     },
                                 )
                             })
@@ -198,10 +198,10 @@ pub(super) fn show(
                                     tr(language, save_label),
                                     if saved {
                                         egui::include_image!(
-                                            "../../resources/icons/star-filled.svg"
+                                            "../../../crates/xrtranslate-client-core/resources/icons/star-filled.svg"
                                         )
                                     } else {
-                                        egui::include_image!("../../resources/icons/star.svg")
+                                        egui::include_image!("../../../crates/xrtranslate-client-core/resources/icons/star.svg")
                                     },
                                 )
                             })
@@ -221,7 +221,7 @@ pub(super) fn show(
                         if components::icon_button(
                             ui,
                             tr(language, "Close"),
-                            egui::include_image!("../../resources/icons/x.svg"),
+                            egui::include_image!("../../../crates/xrtranslate-client-core/resources/icons/x.svg"),
                         )
                         .clicked()
                         {
@@ -246,7 +246,7 @@ pub(super) fn show(
                                 if components::icon_button(
                                     ui,
                                     tr(language, "Retry"),
-                                    egui::include_image!("../../resources/icons/reset.svg"),
+                                    egui::include_image!("../../../crates/xrtranslate-client-core/resources/icons/reset.svg"),
                                 )
                                 .clicked()
                                 {

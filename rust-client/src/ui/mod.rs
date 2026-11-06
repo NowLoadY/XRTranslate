@@ -1,22 +1,16 @@
-pub mod animation;
 pub(crate) mod background;
 pub(crate) mod companion;
+pub use xrtranslate_client_core::ui::{
+    animation, fonts, layout, modal, notifications, organic_border, organic_line, theme,
+    virtual_list,
+};
 pub mod components;
-pub mod fonts;
 pub(crate) mod graph_canvas;
 pub(crate) mod graph_editor;
 pub(crate) mod graph_style;
-pub mod layout;
-pub mod modal;
 pub(crate) mod model_comparison;
-pub(crate) mod notifications;
-pub mod organic_border;
-pub mod organic_line;
 pub mod pages;
 pub(crate) mod previews;
-pub(crate) mod resource_browser;
-pub mod theme;
-pub mod virtual_list;
 
 use eframe::egui::{self, Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Stroke};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -139,9 +133,12 @@ pub fn render_sidebar(
 ) {
     use egui::include_image;
 
-    let icon_guide = include_image!("../../resources/icons/guide.svg");
-    let icon_expand = include_image!("../../resources/icons/chevron-right.svg");
-    let icon_collapse = include_image!("../../resources/icons/chevron-left.svg");
+    let icon_guide =
+        include_image!("../../../crates/xrtranslate-client-core/resources/icons/guide.svg");
+    let icon_expand =
+        include_image!("../../../crates/xrtranslate-client-core/resources/icons/chevron-right.svg");
+    let icon_collapse =
+        include_image!("../../../crates/xrtranslate-client-core/resources/icons/chevron-left.svg");
 
     let compact_height = ui.available_height() < 500.0;
 
@@ -651,35 +648,30 @@ fn navigation_entries(
     let mut entries = vec![NavigationEntry {
         page: Page::Translation,
         title: "Translation".into(),
-        icon: include_image!("../../resources/icons/translation.svg"),
+        icon: include_image!(
+            "../../../crates/xrtranslate-client-core/resources/icons/translation.svg"
+        ),
     }];
-    let mut descriptors = crate::plugins::PluginRegistry::builtin()
+    let mut contributed = crate::plugins::PluginRegistry::builtin()
         .descriptors()
         .iter()
+        .filter(|entry| entry.navigation_order.is_some() && plugins.is_enabled(entry.id))
+        .map(|entry| {
+            (
+                i32::from(entry.navigation_order.unwrap()),
+                NavigationEntry {
+                    page: Page::Plugin(entry.id),
+                    title: entry.title_key.into(),
+                    icon: entry.icon.image_source(),
+                },
+            )
+        })
         .collect::<Vec<_>>();
-    descriptors.sort_by_key(|descriptor| descriptor.navigation_order);
-    entries.extend(
-        descriptors
-            .into_iter()
-            .filter(|descriptor| {
-                descriptor.navigation_order.is_some() && plugins.is_enabled(descriptor.id)
-            })
-            .map(|descriptor| NavigationEntry {
-                page: Page::Plugin(descriptor.id),
-                title: descriptor.title_key.into(),
-                icon: descriptor.icon.image_source(),
-            }),
-    );
-    entries.extend(
-        plugins
-            .installed_pages
-            .iter()
-            .map(|(id, title)| NavigationEntry {
-                page: Page::Plugin(*id),
-                title: title.clone().into(),
-                icon: include_image!("../../resources/icons/settings.svg"),
-            }),
-    );
+    contributed.extend(plugins.installed_pages.iter().map(|(id,title,order,icon)|(*order,NavigationEntry{
+        page:Page::Plugin(*id),title:title.clone().into(),icon:icon.as_ref().map_or_else(||include_image!("../../../crates/xrtranslate-client-core/resources/icons/settings.svg"),|(uri,bytes)|egui::ImageSource::Bytes{uri:uri.clone().into(),bytes:bytes.clone().into()}),
+    })));
+    contributed.sort_by_key(|(order, _)| *order);
+    entries.extend(contributed.into_iter().map(|(_, entry)| entry));
     if crate::plugins::PluginId::AVATAR.is_supported() {
         entries.push(NavigationEntry {
             page: Page::GamePlugins,
@@ -690,29 +682,39 @@ fn navigation_entries(
     entries.push(NavigationEntry {
         page: Page::AudioStudio,
         title: "Audio Studio".into(),
-        icon: include_image!("../../resources/icons/audio-studio.svg"),
+        icon: include_image!(
+            "../../../crates/xrtranslate-client-core/resources/icons/audio-studio.svg"
+        ),
     });
     entries.push(NavigationEntry {
         page: Page::PromptStudio,
         title: "Prompt Studio".into(),
-        icon: include_image!("../../resources/icons/prompt-studio.svg"),
+        icon: include_image!(
+            "../../../crates/xrtranslate-client-core/resources/icons/prompt-studio.svg"
+        ),
     });
     if tts_configured {
         entries.push(NavigationEntry {
             page: Page::TtsCenter,
             title: "TTS Center".into(),
-            icon: include_image!("../../resources/icons/tts-center.svg"),
+            icon: include_image!(
+                "../../../crates/xrtranslate-client-core/resources/icons/tts-center.svg"
+            ),
         });
     }
     entries.push(NavigationEntry {
         page: Page::CorpusStudio,
         title: "Terminology library".into(),
-        icon: include_image!("../../resources/icons/corpus-studio.svg"),
+        icon: include_image!(
+            "../../../crates/xrtranslate-client-core/resources/icons/corpus-studio.svg"
+        ),
     });
     entries.push(NavigationEntry {
         page: Page::Settings,
         title: "Settings".into(),
-        icon: include_image!("../../resources/icons/settings.svg"),
+        icon: include_image!(
+            "../../../crates/xrtranslate-client-core/resources/icons/settings.svg"
+        ),
     });
     entries
 }
@@ -791,10 +793,11 @@ pub fn render_top_navigation(
             )
             .show(|ui| {
                 ui.set_min_width(170.0);
-                let guide_icon =
-                    egui::Image::new(egui::include_image!("../../resources/icons/guide.svg"))
-                        .fit_to_exact_size(egui::vec2(16.0, 16.0))
-                        .tint(theme::text_strong());
+                let guide_icon = egui::Image::new(egui::include_image!(
+                    "../../../crates/xrtranslate-client-core/resources/icons/guide.svg"
+                ))
+                .fit_to_exact_size(egui::vec2(16.0, 16.0))
+                .tint(theme::text_strong());
                 if ui
                     .add_sized(
                         [ui.available_width(), 36.0],
@@ -811,7 +814,7 @@ pub fn render_top_navigation(
                 }
                 ui.add_space(4.0);
                 let home_icon = egui::Image::new(egui::include_image!(
-                    "../../resources/icons/translation.svg"
+                    "../../../crates/xrtranslate-client-core/resources/icons/translation.svg"
                 ))
                 .fit_to_exact_size(egui::vec2(16.0, 16.0))
                 .tint(theme::text_strong());

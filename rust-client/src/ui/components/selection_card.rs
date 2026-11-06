@@ -5,45 +5,7 @@ use crate::ui::{
 };
 use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 
-pub fn grid(
-    ui: &mut egui::Ui,
-    id: &str,
-    count: usize,
-    height: f32,
-    preferred_width: f32,
-    mut card: impl FnMut(&mut egui::Ui, usize, f32),
-) {
-    let width = (ui.available_width() - 32.0).max(1.0);
-    let gap = 24.0;
-    let columns = (((width + gap) / preferred_width).floor() as usize).clamp(1, 4);
-    let card_width =
-        ((width - gap * (columns - 1) as f32) / columns as f32).min(preferred_width + 40.0);
-    let row_width =
-        card_width * columns.min(count) as f32 + gap * columns.min(count).saturating_sub(1) as f32;
-    let left = ((ui.available_width() - row_width) * 0.5).max(0.0);
-    let inner_spacing = ui.spacing().item_spacing.y;
-    ui.add_space(24.0);
-    ui.scope(|ui| {
-        ui.spacing_mut().item_spacing.y = gap;
-        egui::ScrollArea::vertical().id_salt(id).show_rows(
-            ui,
-            height,
-            count.div_ceil(columns),
-            |ui, rows| {
-                for row in rows {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = gap;
-                        ui.spacing_mut().item_spacing.y = inner_spacing;
-                        ui.add_space(left);
-                        for index in row * columns..((row + 1) * columns).min(count) {
-                            card(ui, index, card_width);
-                        }
-                    });
-                }
-            },
-        );
-    });
-}
+pub use xrtranslate_client_core::ui::layout::selection_grid as grid;
 
 pub struct SelectionCard<'a> {
     pub id: egui::Id,

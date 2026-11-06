@@ -85,9 +85,9 @@ pub(super) fn render(
                 ui.set_max_height((canvas.height() - 36.0).clamp(1.0, 620.0));
                 ui.horizontal_wrapped(|ui| {
                     let arrow = if controller.style_panel.collapsed {
-                        egui::include_image!("../../../../../resources/icons/chevron-right.svg")
+                        egui::include_image!("../../../../../../crates/xrtranslate-client-core/resources/icons/chevron-right.svg")
                     } else {
-                        egui::include_image!("../../../../../resources/icons/chevron-down.svg")
+                        egui::include_image!("../../../../../../crates/xrtranslate-client-core/resources/icons/chevron-down.svg")
                     };
                     let icon = egui::Image::new(arrow)
                         .fit_to_exact_size(Vec2::splat(14.0))

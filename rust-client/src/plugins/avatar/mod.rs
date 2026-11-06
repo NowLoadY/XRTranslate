@@ -23,6 +23,7 @@ pub(crate) fn translation_context(operation: OperationId) -> xrtranslate_prompt:
 
 pub(crate) fn session_binding(operation: OperationId) -> PluginSessionBinding {
     PluginSessionBinding {
+        recording_directory: None,
         owner: PluginSessionOwner::new(
             super::PluginId::AVATAR.as_str(),
             format!(

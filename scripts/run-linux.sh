@@ -14,12 +14,23 @@ fi
 source "${ROOT_DIR}/scripts/linux-build-env.sh"
 prepare_linux_build_env "${ROOT_DIR}"
 
-cargo_args=(build --locked --target-dir "${ROOT_DIR}/target" -p rust-client -p xrtranslate-account-login -p xrtranslate-backend --features xrtranslate-backend/managed-ort --release)
+plugins=(agent media meeting vocabulary lyrics bigwalk)
+cargo_args=(build --locked --target-dir "${ROOT_DIR}/target" -p rust-client -p xrtranslate-account-login -p xrtranslate-backend -p xrtranslate-plugin --features xrtranslate-backend/managed-ort,xrtranslate-plugin/host --release)
+for plugin in "${plugins[@]}"; do
+  cargo_args+=(-p "xrt-${plugin}")
+done
 if [[ -n "${FEATURES}" ]]; then
   cargo_args+=(--features "${FEATURES}")
+fi
+if [[ ",${FEATURES}," == *,mpv,* ]]; then
+  cargo_args+=(--features xrt-media/mpv)
 fi
 cargo "${cargo_args[@]}"
 cargo build --locked --manifest-path XR-Corpus/Cargo.toml \
   --target-dir "${ROOT_DIR}/target" -p xr-corpus-server --release
+
+for plugin in "${plugins[@]}"; do
+  target/release/xrt-plugin stage "plugin-src/${plugin}" "target/release/xrt-${plugin}" "plugins/${plugin}" --replace
+done
 
 exec "${ROOT_DIR}/target/release/rust-client" "$@"

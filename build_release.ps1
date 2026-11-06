@@ -139,10 +139,14 @@ if (-not $ValidateOnly) {
         '--package', 'xrtranslate-account-login',
         '--package', 'xrtranslate-packager',
         '--package', 'xrtranslate-plugin',
+        '--package', 'xrt-agent',
+        '--package', 'xrt-media',
+        '--package', 'xrt-meeting',
+        '--package', 'xrt-vocabulary',
         '--package', 'xrt-lyrics',
         '--package', 'xrt-bigwalk',
         '--package', 'xrt-auto-input',
-        '--features', 'rust-client/mpv,xrtranslate-backend/managed-ort,xrtranslate-plugin/host'
+        '--features', 'rust-client/mpv,xrt-media/mpv,xrtranslate-backend/managed-ort,xrtranslate-plugin/host'
     )
 
     Write-Host 'Building native release binaries...'
@@ -332,11 +336,10 @@ $packageArguments = @(
     '--vc-runtime-dir', $VcRuntimeDirectory,
     '--output', $Output
 )
-foreach ($plugin in @('lyrics', 'bigwalk', 'auto-input')) {
+foreach ($plugin in @('agent', 'media', 'meeting', 'vocabulary', 'lyrics', 'bigwalk', 'auto-input')) {
     $directory = Join-Path $runtimeAssetCache "plugins\$plugin"
     if (-not $ValidateOnly) {
-        if (Test-Path -LiteralPath $directory) { Remove-Item -LiteralPath $directory -Recurse -Force }
-        & (Join-Path $projectRoot 'target\release\xrt-plugin.exe') stage (Join-Path $projectRoot "plugin-src\$plugin") (Join-Path $projectRoot "target\release\xrt-$plugin.exe") $directory
+        & (Join-Path $projectRoot 'target\release\xrt-plugin.exe') stage (Join-Path $projectRoot "plugin-src\$plugin") (Join-Path $projectRoot "target\release\xrt-$plugin.exe") $directory --replace
         if ($LASTEXITCODE -ne 0) { throw "Could not stage plugin: $plugin" }
     }
     $packageArguments += @('--plugin-directory', $directory)

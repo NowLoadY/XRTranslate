@@ -11,6 +11,20 @@ pub struct SupportedLanguage {
     script: Option<Script>,
 }
 
+impl serde::Serialize for SupportedLanguage {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.code)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SupportedLanguage {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let code = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse(&code)
+            .ok_or_else(|| serde::de::Error::custom(format!("Unknown language: {code}")))
+    }
+}
+
 macro_rules! language_catalog {
     ($(($code:literal, $name:literal, $script:expr)),+ $(,)?) => {
         pub const LANGUAGES: &[SupportedLanguage] = &[

@@ -7,10 +7,11 @@ edition.workspace = true
 # Keep the core client independent from native player libraries. Enable this
 # capability for MPV playback and media-import fallback extraction.
 default = []
-mpv = ["dep:libmpv-sys", "dep:windows-gpu"]
+mpv = ["dep:libmpv-sys", "xrtranslate-client-core/mpv"]
 
 [dependencies]
-xrtranslate-plugin = { path = "../crates/xrtranslate-plugin", features = ["host"] }
+xrtranslate-client-core = { path = "../crates/xrtranslate-client-core" }
+xrtranslate-plugin = { path = "../crates/xrtranslate-plugin", features = ["host", "egui"] }
 ui-director = { path = "../crates/ui-director", features = ["egui"] }
 xrtranslate-connections = { path = "../crates/xrtranslate-connections" }
 tempfile = "3.27"
@@ -19,7 +20,6 @@ xr-corpus-client = { path = "../XR-Corpus/crates/client" }
 bytemuck = { version = "1.25", features = ["derive"] }
 cpal = "0.18.1"
 crossbeam-channel = "0.5.16"
-dom_query = "0.28.0"
 flate2 = "1.1.9"
 egui_extras = { version = "0.37.0", features = ["svg", "image", "http"] }
 env_logger = "0.11.11"
@@ -31,7 +31,6 @@ log = "0.4.33"
 mdns-sd = "0.21.5"
 parking_lot = "0.12.5"
 reqwest = { version = "0.13.4", features = ["json", "socks"] }
-roxmltree = "0.21.2"
 rubato = "4.0.0"
 audioadapter-buffers = "4.0.0"
 rosc = "0.11.4"
@@ -70,7 +69,6 @@ serde_yaml_ng = "0.10"
 xrtranslate-supervisor = { path = "../crates/xrtranslate-supervisor" }
 
 [target.'cfg(windows)'.dependencies]
-windows-gpu = { package = "windows", version = "0.62", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common"] }
 # Enable Rust futures for the WinRT media-session operations.
 wasapi = "0.23.0"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Performance", "Win32_System_SystemInformation", "Win32_System_Threading"] }
@@ -111,7 +109,6 @@ find-msvc-tools = "0.1.15"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 eframe = "0.37.0"
-rfd = "0.17.2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "wgpu", "android-game-activity", "links"] }

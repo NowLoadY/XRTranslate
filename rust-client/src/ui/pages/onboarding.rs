@@ -246,12 +246,16 @@ pub fn render_onboarding_fullscreen(
 fn render_onboarding_social_icons(ui: &mut egui::Ui, language: i18n::UiLanguage) {
     for (icon, tooltip, url) in [
         (
-            egui::include_image!("../../../resources/icons/github.svg"),
+            egui::include_image!(
+                "../../../../crates/xrtranslate-client-core/resources/icons/github.svg"
+            ),
             "GitHub: NowLoadY/XRTranslate",
             "https://github.com/NowLoadY/XRTranslate",
         ),
         (
-            egui::include_image!("../../../resources/icons/globe.svg"),
+            egui::include_image!(
+                "../../../../crates/xrtranslate-client-core/resources/icons/globe.svg"
+            ),
             "chatgpt.site: https://xrtranslate.nowloady.chatgpt.site",
             "https://xrtranslate.nowloady.chatgpt.site",
         ),
@@ -263,7 +267,9 @@ fn render_onboarding_social_icons(ui: &mut egui::Ui, language: i18n::UiLanguage)
     }
     if onboarding_icon_button(
         ui,
-        egui::Image::new(egui::include_image!("../../../resources/icons/qq.svg")),
+        egui::Image::new(egui::include_image!(
+            "../../../../crates/xrtranslate-client-core/resources/icons/qq.svg"
+        )),
         &i18n::tr(language, "QQ group"),
     ) {
         ui.ctx()
@@ -495,13 +501,17 @@ fn render_onboarding_welcome(
             "Audio Input",
             "Microphone or desktop audio.",
             Color32::from_rgb(59, 130, 246),
-            egui::include_image!("../../../resources/icons/microphone.svg"),
+            egui::include_image!(
+                "../../../../crates/xrtranslate-client-core/resources/icons/microphone.svg"
+            ),
         ),
         (
             "Recognition & Translation",
             "Speak across languages.",
             Color32::from_rgb(16, 185, 129),
-            egui::include_image!("../../../resources/icons/translation.svg"),
+            egui::include_image!(
+                "../../../../crates/xrtranslate-client-core/resources/icons/translation.svg"
+            ),
         ),
         (
             "Plugins & Integrations",
@@ -851,7 +861,7 @@ fn local_model_warning_icon(
         crate::runtime_install::LocalModelAvailability::Cpu { .. } => return,
     };
     let icon = egui::Image::new(egui::include_image!(
-        "../../../resources/icons/alert-triangle.svg"
+        "../../../../crates/xrtranslate-client-core/resources/icons/alert-triangle.svg"
     ))
     .fit_to_exact_size(egui::vec2(18.0, 18.0))
     .tint(Color32::from_rgb(217, 119, 6))
@@ -1478,7 +1488,9 @@ fn render_onboarding_tts(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             "Voice Playback",
             "Read translations aloud.",
             color,
-            egui::include_image!("../../../resources/icons/tts-center.svg"),
+            egui::include_image!(
+                "../../../../crates/xrtranslate-client-core/resources/icons/tts-center.svg"
+            ),
             language,
         );
         ui.add_space(10.0);
@@ -1807,7 +1819,9 @@ fn render_onboarding_ocr(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui) {
             "Screen text recognition",
             "Translate text on your screen.",
             color,
-            egui::include_image!("../../../resources/icons/image.svg"),
+            egui::include_image!(
+                "../../../../crates/xrtranslate-client-core/resources/icons/image.svg"
+            ),
             language,
         );
         ui.add_space(10.0);
@@ -2171,7 +2185,7 @@ fn render_onboarding_download(app: &mut crate::XRTranslateApp, ui: &mut egui::Ui
         onboarding_surface(ui, Color32::from_rgb(16, 185, 129)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
-                ui.add(egui::Image::new(egui::include_image!("../../../resources/icons/check.svg"))
+                ui.add(egui::Image::new(egui::include_image!("../../../../crates/xrtranslate-client-core/resources/icons/check.svg"))
                     .fit_to_exact_size(egui::vec2(24.0, 24.0)));
                 ui.label(i18n::tr(language, "Your selected online providers are ready. No local model packages are required."));
             });

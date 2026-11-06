@@ -3,7 +3,7 @@
 /// An opaque component/document identity; adapters map it to current geometry.
 pub type Target = u64;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Effect {
     Read,
     Invoke,
@@ -12,7 +12,7 @@ pub enum Effect {
     Change { before: String, after: String },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Feedback {
     pub target: Target,
     pub label: String,

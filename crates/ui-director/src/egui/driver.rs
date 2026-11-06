@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use super::registry::{ElementDescriptor, ElementValue, FrameSnapshot};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Command {
     Call(crate::ToolCall),
     Page(String),
@@ -52,6 +52,8 @@ pub struct FrameState {
     pub pending_input: Vec<egui::Event>,
     pub last_snapshot: FrameSnapshot,
     pub action_performed_this_frame: bool,
+    pub surface_elements: std::collections::HashMap<String, String>,
+    pub last_surface_elements: std::collections::HashMap<String, String>,
     pub confirm_change: Option<(String, ElementValue, f64)>,
 }
 
@@ -61,6 +63,7 @@ pub struct Driver {
     command_tx: Sender<Request>,
     command_rx: Receiver<Request>,
     host_requests: Mutex<Vec<Request>>,
+    surface_requests: Mutex<Vec<(String, Request)>>,
 }
 
 impl Default for Driver {
@@ -79,6 +82,7 @@ impl Driver {
             command_tx,
             command_rx,
             host_requests: Mutex::new(Vec::new()),
+            surface_requests: Mutex::new(Vec::new()),
         }
     }
 
@@ -105,6 +109,27 @@ impl Driver {
         std::mem::take(&mut *self.host_requests.lock().unwrap())
     }
 
+    /// Merge a rendered child surface into the same UI/CLI registry.
+    pub fn append_surface(&self, id: &str, snapshot: &FrameSnapshot) {
+        let mut state = self.frame_state.lock().unwrap();
+        state.location.path.extend(snapshot.location.path.clone());
+        for element in &snapshot.elements {
+            state
+                .surface_elements
+                .insert(element.id_hex.clone(), id.into());
+            let mut element = element.clone();
+            element.index = state.elements.len();
+            state.elements.push(element);
+        }
+    }
+    pub fn take_surface_requests(&self) -> Vec<(String, Request)> {
+        std::mem::take(&mut *self.surface_requests.lock().unwrap())
+    }
+
+    pub fn snapshot(&self) -> FrameSnapshot {
+        self.frame_state.lock().unwrap().last_snapshot.clone()
+    }
+
     /// The last complete frame, also used by UI queries. Capture when accepting
     /// a user instruction; later navigation must not change that instruction's context.
     pub fn location(&self) -> crate::Location {
@@ -126,6 +151,7 @@ impl Driver {
             path: Vec::new(),
         };
         state.elements.clear();
+        state.surface_elements.clear();
         state.action_performed_this_frame = false;
         if state
             .confirm_change
@@ -146,6 +172,29 @@ impl Driver {
                     "Request cancelled or expired before execution",
                 ));
                 continue;
+            }
+            let remote = match &envelope.command {
+                Command::Click(target) | Command::Set { target, .. } => state
+                    .last_snapshot
+                    .resolve_element(target)
+                    .ok()
+                    .and_then(|e| {
+                        state
+                            .last_surface_elements
+                            .get(&e.id_hex)
+                            .map(|id| (id.clone(), e.id_hex.clone()))
+                    }),
+                _ => None,
+            };
+            if let Some((id, target)) = remote {
+                let mut envelope = envelope;
+                match &mut envelope.command {
+                    Command::Click(value) | Command::Set { target: value, .. } => *value = target,
+                    _ => {}
+                }
+                self.surface_requests.lock().unwrap().push((id, envelope));
+                super::request_frame(ctx);
+                break;
             }
             match envelope.command {
                 Command::Call(_) => {
@@ -171,6 +220,7 @@ impl Driver {
     pub fn finish_frame(&self, current_page: &str) {
         let mut state = self.frame_state.lock().unwrap();
         state.location.page = current_page.to_owned();
+        state.last_surface_elements = state.surface_elements.clone();
         state.last_snapshot = FrameSnapshot {
             location: state.location.clone(),
             elements: state.elements.clone(),

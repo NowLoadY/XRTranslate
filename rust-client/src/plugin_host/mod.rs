@@ -1,5 +1,7 @@
 //! Installed plugins contribute views and operations; this adapter supplies host services.
 mod models;
+mod operations;
+mod playback;
 mod services;
 mod ui;
 use crate::{
@@ -77,12 +79,14 @@ impl Default for Settings {
 }
 struct Installed {
     modified: Option<std::time::SystemTime>,
+    icon: Option<(String, Vec<u8>)>,
     directory: PathBuf,
     manifest: Manifest,
     settings: Settings,
     process: Option<Process>,
     error: Option<String>,
     page: ui::PageState,
+    state: Value,
 }
 struct Inference {
     plugin: String,
@@ -91,6 +95,12 @@ struct Inference {
     cancel: Arc<AtomicBool>,
 }
 pub(crate) struct Host {
+    bookmarks: Vec<(String, u64, xrtranslate_client_core::bookmarks::Reply)>,
+    stopped: Vec<String>,
+    visible: Option<String>,
+    preparing: Vec<(String, u64, std::time::Instant)>,
+    pub sessions: Sessions,
+    pub playback: playback::Players,
     root: PathBuf,
     directory: PathBuf,
     next_scan: std::time::Instant,
@@ -102,10 +112,26 @@ pub(crate) struct Host {
     installed: BTreeMap<String, Installed>,
     pub output: Output,
     inference: Vec<Inference>,
+    operations: Vec<operations::Pending>,
+    cleanup: Vec<ui_director::ToolCall>,
+    commands: Vec<(String, u64)>,
+    surface_requests: Vec<(String, u64, ui_director::egui::driver::Request)>,
+    context_updated: std::time::Instant,
     pub error: Option<String>,
     models: models::Downloads,
 }
 impl Host {
+    pub fn send_event(&self, plugin: &str, name: &str, value: Value) {
+        if let Some(process) = self.installed.get(plugin).and_then(|p| p.process.as_ref()) {
+            if let Err(error) = process.send(Message::Event {
+                name: name.into(),
+                value,
+            }) {
+                log::warn!("Plugin {plugin}, event {name}: {error}");
+            }
+        }
+    }
+
     pub fn load(root: PathBuf) -> Self {
         let config = xrtranslate_config::AppConfig::from_path_with_user_config(
             &root.join("config.json"),
@@ -124,6 +150,12 @@ impl Host {
                 .unwrap_or(Path::new("models")),
         );
         let mut host = Self {
+            bookmarks: Vec::new(),
+            stopped: Vec::new(),
+            visible: None,
+            preparing: Vec::new(),
+            sessions: Sessions::default(),
+            playback: playback::Players::default(),
             root: runtime.runtime_root().join("plugins"),
             directory: root.join("plugins"),
             next_scan: std::time::Instant::now(),
@@ -135,6 +167,11 @@ impl Host {
             installed: BTreeMap::new(),
             output: Output::default(),
             inference: Vec::new(),
+            operations: Vec::new(),
+            cleanup: Vec::new(),
+            commands: Vec::new(),
+            surface_requests: Vec::new(),
+            context_updated: std::time::Instant::now(),
             error: None,
             models: models::Downloads::default(),
         };
@@ -228,6 +265,11 @@ impl Host {
             manifest.id.clone(),
             Installed {
                 modified,
+                icon: manifest.icon.as_ref().and_then(|icon| {
+                    std::fs::read(directory.join(icon))
+                        .ok()
+                        .map(|bytes| (format!("bytes://plugins/{}/{}", manifest.id, icon), bytes))
+                }),
                 error: xrtranslate_plugin::directory::require_host(
                     &manifest,
                     env!("CARGO_PKG_VERSION"),
@@ -238,6 +280,7 @@ impl Host {
                 settings,
                 process: None,
                 page: ui::PageState::default(),
+                state: Value::Null,
             },
         );
         Ok(())
@@ -272,6 +315,28 @@ impl Host {
             .get(id)
             .is_some_and(|p| p.settings.enabled && p.process.is_some())
     }
+    pub fn state(&self, id: &str) -> &Value {
+        self.installed
+            .get(id)
+            .map_or(&Value::Null, |entry| &entry.state)
+    }
+    pub fn invoke(&mut self, call: ui_director::ToolCall) -> Result<(), String> {
+        let (plugin, entry) = self
+            .installed
+            .iter_mut()
+            .find(|(_, entry)| {
+                entry
+                    .manifest
+                    .tools
+                    .iter()
+                    .any(|tool| tool.name == call.name)
+            })
+            .ok_or("Plugin operation is unavailable")?;
+        let process = entry.process.as_mut().ok_or("Plugin is unavailable")?;
+        let id = process.request(&call.name, call.arguments)?;
+        self.commands.push((plugin.clone(), id));
+        Ok(())
+    }
     pub fn configuration(&self, id: PluginId) -> Option<&Value> {
         self.installed
             .get(id.as_str())
@@ -298,16 +363,17 @@ impl Host {
         self.save(id)
     }
     fn stop(&mut self, id: &str) {
-        self.inference.retain(|request| {
-            if request.plugin != id {
-                return true;
-            }
-            request.cancel.store(true, Ordering::Release);
-            false
-        });
+        self.bookmarks.retain(|(plugin, _, _)| plugin != id);
+        self.playback.remove(id);
+        self.stopped.push(id.to_owned());
+        self.preparing.retain(|(plugin, _, _)| plugin != id);
+        self.cancel_operations(id, None);
         if let Some(entry) = self.installed.get_mut(id) {
             entry.process.take();
+            entry.state = Value::Null;
+            entry.page.surface = Default::default();
         }
+        self.publish("plugin.state", json!({"plugin":id,"state":null}));
     }
     pub fn poll(
         &mut self,
@@ -325,24 +391,19 @@ impl Host {
             self.stop(&id);
         }
         let resources = (locale(language).to_owned(), runtimes.clone());
-        if self
+        let resources_changed = self
             .resources
             .as_ref()
-            .is_some_and(|previous| previous != &resources)
-        {
-            for id in self.installed.keys().cloned().collect::<Vec<_>>() {
-                self.stop(&id);
-                let entry = self.installed.get_mut(&id).unwrap();
-                entry.error = xrtranslate_plugin::directory::require_host(
-                    &entry.manifest,
-                    env!("CARGO_PKG_VERSION"),
-                )
-                .err();
-            }
-        }
+            .is_some_and(|previous| previous != &resources);
         self.resources = Some(resources);
         let events: Vec<_> = self.output.0.lock().unwrap().drain(..).collect();
         let mut calls = Vec::new();
+        let mut failed = Vec::new();
+        let states: Vec<_> = self
+            .installed
+            .iter()
+            .map(|(id, p)| json!({"plugin":id,"state":p.state}))
+            .collect();
         let language = locale(language);
         let base = self.root.clone();
         let models_root = self.models_root.clone();
@@ -350,7 +411,14 @@ impl Host {
             if !entry.settings.enabled {
                 continue;
             }
-            if entry.process.is_none() && entry.error.is_none() {
+            if resources_changed {
+                entry.error = xrtranslate_plugin::directory::require_host(
+                    &entry.manifest,
+                    env!("CARGO_PKG_VERSION"),
+                )
+                .err();
+            }
+            if (entry.process.is_none() || resources_changed) && entry.error.is_none() {
                 let missing: Vec<_> = entry
                     .manifest
                     .requires
@@ -381,22 +449,48 @@ impl Host {
                     config: entry.settings.config.clone(),
                     capabilities: capabilities.clone(),
                 };
-                let repaint = ctx.clone();
-                match Process::start(&entry.directory, &entry.manifest, environment, move || {
-                    repaint.request_repaint()
-                }) {
-                    Ok(process) => {
-                        for (name, value) in &self.context {
-                            if entry.manifest.subscriptions.contains(name) {
-                                let _ = process.send(Message::Event {
-                                    name: name.clone(),
-                                    value: value.clone(),
-                                });
-                            }
-                        }
-                        entry.process = Some(process);
+                if let Some(process) = &entry.process {
+                    if let Err(error) = process.send(Message::Initialize { environment }) {
+                        entry.error = Some(error);
                     }
-                    Err(error) => entry.error = Some(error),
+                } else {
+                    let repaint = ctx.clone();
+                    match Process::start(
+                        &entry.directory,
+                        &entry.manifest,
+                        environment,
+                        move || repaint.request_repaint(),
+                    ) {
+                        Ok(process) => {
+                            for (name, value) in &self.context {
+                                if entry.manifest.subscriptions.contains(name) {
+                                    let _ = process.send(Message::Event {
+                                        name: name.clone(),
+                                        value: value.clone(),
+                                    });
+                                }
+                            }
+                            if entry
+                                .manifest
+                                .subscriptions
+                                .iter()
+                                .any(|name| name == "plugin.state")
+                            {
+                                for state in &states {
+                                    let _ = process.send(Message::Event {
+                                        name: "plugin.state".into(),
+                                        value: state.clone(),
+                                    });
+                                }
+                            }
+                            let _ = process.send(Message::Event {
+                                name: "ui.visibility".into(),
+                                value: json!(self.visible.as_ref() == Some(id)),
+                            });
+                            entry.process = Some(process);
+                        }
+                        Err(error) => entry.error = Some(error),
+                    }
                 }
             }
             if let Some(process) = &mut entry.process {
@@ -418,9 +512,13 @@ impl Host {
                 if let Some(error) = process.error() {
                     log::warn!("Plugin {id}: {error}");
                     entry.error = Some(error);
-                    entry.process.take();
+                    failed.push(id.clone());
                 }
             }
+        }
+        calls.retain(|(id, _)| !failed.contains(id));
+        for id in failed {
+            self.stop(&id);
         }
         preferences.installed_pages = self
             .installed
@@ -430,6 +528,8 @@ impl Host {
                 (
                     PluginId::parse(id).unwrap(),
                     p.manifest.title.get(language).into(),
+                    p.manifest.navigation_order,
+                    p.icon.clone(),
                 )
             })
             .collect();
@@ -437,12 +537,32 @@ impl Host {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         let mut ready = Vec::new();
+        self.bookmarks.retain(|(plugin, id, reply)| {
+            match reply.try_recv() {
+                Ok(result) => ready.push((
+                    plugin.clone(),
+                    *id,
+                    result
+                        .and_then(|result| serde_json::to_value(result).map_err(|e| e.to_string())),
+                )),
+                Err(crossbeam_channel::TryRecvError::Disconnected) => ready.push((
+                    plugin.clone(),
+                    *id,
+                    Err("Bookmark request interrupted".into()),
+                )),
+                _ => return true,
+            }
+            false
+        });
         for request in &self.inference {
             match request.reply.try_recv() {
                 Ok(value) => ready.push((
                     request.plugin.clone(),
                     request.id,
-                    value.map(Value::String).map_err(|e| e.error),
+                    Ok(match value {
+                        Ok(text) => json!({"text": text}),
+                        Err(error) => json!({"error": error}),
+                    }),
                 )),
                 Err(crossbeam_channel::TryRecvError::Disconnected) => ready.push((
                     request.plugin.clone(),
@@ -457,6 +577,30 @@ impl Host {
                 .retain(|r| !(r.plugin == plugin && r.id == id));
             self.reply(&plugin, id, result);
         }
+        self.commands.retain(|(plugin, id)| {
+            let Some(process) = self
+                .installed
+                .get_mut(plugin)
+                .and_then(|entry| entry.process.as_mut())
+            else {
+                return false;
+            };
+            match process.result(*id) {
+                None => true,
+                Some(result) => {
+                    if let Err(error) = result {
+                        calls.push((
+                            plugin.clone(),
+                            Message::Event {
+                                name: "message".into(),
+                                value: json!(error),
+                            },
+                        ));
+                    }
+                    false
+                }
+            }
+        });
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
         calls
     }
@@ -560,6 +704,12 @@ impl ui_director::ToolProvider for Host {
                 &["plugin", "id"],
             )
             .read_only(),
+            Tool::new(
+                "plugins.cancel",
+                "Cancel a pending plugin request.",
+                json!({"plugin":{"type":"string"},"id":{"type":"integer"}}),
+                &["plugin", "id"],
+            ),
         ];
         tools.extend(
             self.installed
@@ -589,7 +739,7 @@ impl ui_director::ToolProvider for Host {
                 )?;
                 Ok(json!({"updated":true}))
             }
-            "plugins.operation" => {
+            "plugins.operation" | "plugins.cancel" => {
                 let plugin = string("plugin")?;
                 let id = args["id"].as_u64().ok_or("Missing operation id")?;
                 let process = self
@@ -597,6 +747,10 @@ impl ui_director::ToolProvider for Host {
                     .get_mut(plugin)
                     .and_then(|p| p.process.as_mut())
                     .ok_or("Plugin is stopped")?;
+                if call.name == "plugins.cancel" {
+                    process.cancel(id);
+                    return Ok(json!({"cancelled":true}));
+                }
                 process
                     .result(id)
                     .unwrap_or_else(|| Ok(receipt(plugin, id)))
@@ -615,5 +769,25 @@ impl ui_director::ToolProvider for Host {
     }
 }
 fn receipt(plugin: &str, id: u64) -> Value {
-    json!({"pending":{"name":"plugins.operation","arguments":{"plugin":plugin,"id":id}}})
+    json!({
+        "pending":{"name":"plugins.operation","arguments":{"plugin":plugin,"id":id}},
+        "cancel":{"name":"plugins.cancel","arguments":{"plugin":plugin,"id":id}},
+    })
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct Sessions(Arc<Mutex<VecDeque<(String, Value)>>>);
+impl crate::session_coordinator::SessionEventSubscriber for Sessions {
+    fn on_translation_event(
+        &self,
+        owner: &crate::session_coordinator::TranslationSessionOwner,
+        event: &crate::session_coordinator::TranslationEvent,
+    ) {
+        if let Some(plugin) = owner.plugin() {
+            self.0.lock().unwrap().push_back((
+                plugin.plugin_id().to_owned(),
+                json!({"owner":owner,"event":event}),
+            ));
+        }
+    }
 }

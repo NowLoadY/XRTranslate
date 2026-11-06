@@ -645,6 +645,7 @@ mod tests {
                         &extracted,
                         &audio_tx,
                         &AudioImportOptions {
+                            save_separated_audio: false,
                             chunk_frames: 127,
                             output_sample_rate: 44_100,
                             output_channels: 2,

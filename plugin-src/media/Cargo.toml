@@ -1,0 +1,31 @@
+[package]
+name = "xrt-media"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[features]
+mpv = ["xrtranslate-client-core/mpv"]
+
+[dependencies]
+xrtranslate-client-core = { path = "../../crates/xrtranslate-client-core" }
+xrtranslate-plugin = { path = "../../crates/xrtranslate-plugin", features = ["egui"] }
+xrtranslate-engine = { path = "../../crates/xrtranslate-engine", features = ["resample"] }
+xrtranslate-protocol = { path = "../../crates/xrtranslate-protocol" }
+xrtranslate-prompt = { path = "../../crates/xrtranslate-prompt" }
+xrtranslate-download = { path = "../../crates/xrtranslate-download" }
+xrtranslate-config = { path = "../../crates/xrtranslate-config" }
+ui-director = { path = "../../crates/ui-director", features = ["egui"] }
+eframe = "0.37"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+crossbeam-channel = "0.5"
+log = "0.4"
+env_logger = "0.11"
+uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "0.13.4", features = ["json", "socks"] }
+tokio = { version = "1.53", features = ["full"] }
+hound = "3.5"
+unicode-segmentation = "1.13"
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+tempfile = "3"

@@ -1,0 +1,62 @@
+[package]
+name = "xrtranslate-client-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+mpv = ["dep:libmpv-sys", "dep:windows-gpu"]
+
+[dependencies]
+cpal = "0.18.1"
+crossbeam-channel = "0.5.16"
+dom_query = "0.28.0"
+roxmltree = "0.21.2"
+reqwest = { version = "0.13.4", features = ["json", "socks"] }
+symphonia = { version = "0.5.5", default-features = false, features = ["aac", "alac", "flac", "isomp4", "mkv", "mp3", "ogg", "pcm", "vorbis", "wav"] }
+tokio = { version = "1.53.1", features = ["full"] }
+libmpv-sys = { version = "3.1.0", optional = true }
+
+ui-director = { path = "../ui-director", features = ["egui"] }
+xrtranslate-plugin = { path = "../xrtranslate-plugin", features = ["egui"] }
+xrtranslate-engine = { path = "../xrtranslate-engine" }
+xrtranslate-protocol = { path = "../xrtranslate-protocol" }
+xrtranslate-prompt = { path = "../xrtranslate-prompt" }
+xrtranslate-download = { path = "../xrtranslate-download" }
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicode-segmentation = "1.13"
+bytemuck = { version = "1.25", features = ["derive"] }
+log = "0.4"
+parking_lot = "0.12"
+egui_extras = { version = "0.37", features = ["svg", "image", "http"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = "0.37.0"
+rfd = "0.17.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.60", features = ["Win32_Graphics_DirectWrite", "Win32_System_LibraryLoader"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+xrtranslate-connections = { path = "../xrtranslate-connections" }
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "wgpu", "android-game-activity", "links"] }
+android-activity = "0.6.1"
+jni = "0.21.1"
+android_logger = "0.15.1"
+
+[target.'cfg(windows)'.dependencies.windows-gpu]
+package = "windows"
+version = "0.62"
+optional = true
+features = ["Win32_Foundation", "Win32_Security", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { version = "0.18.1", features = ["pulseaudio"] }
+libloading = "0.8.9"
+eframe = { version = "0.37.0", features = ["glow"] }
+
+[dev-dependencies]
+tempfile = "3"
+image = { version = "0.25", default-features = false, features = ["png"] }

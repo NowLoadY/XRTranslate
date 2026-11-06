@@ -24,6 +24,8 @@ version = "0.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e883d1d28c5fd5568c79ed2d2bd48d9f2fd3945c8974ed0f53690ceddb051be"
 dependencies = [
+ "enumn",
+ "serde",
  "uuid",
 ]
 
@@ -2120,6 +2122,7 @@ checksum = "31bcbef0d4263a63eb32c4834e5d711613035ce1333468e107d928923e21e6e2"
 dependencies = [
  "bytemuck",
  "emath",
+ "serde",
 ]
 
 [[package]]
@@ -2199,6 +2202,7 @@ dependencies = [
  "log",
  "nohash-hasher",
  "profiling",
+ "serde",
  "smallvec",
  "unicode-segmentation",
  "web-sys",
@@ -2344,6 +2348,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e73ce90f54750be8672c02be0743fe47530e6f251e066f0ee2869b59eb297af5"
 dependencies = [
  "bytemuck",
+ "serde",
 ]
 
 [[package]]
@@ -2420,6 +2425,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "enumn"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f9ed6b3789237c8a0c1c505af1c7eb2c560df6186f01b098c3a1064ea532f38"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "env_filter"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2470,6 +2486,7 @@ dependencies = [
  "parking_lot",
  "profiling",
  "self_cell",
+ "serde",
  "skrifa",
  "smallvec",
  "unicode-general-category",
@@ -2723,6 +2740,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "835ae9d781464a79026cde387f9cbc650c9a4909d7cf7e658b127e3c35d2f35d"
 dependencies = [
  "bytemuck",
+ "serde",
 ]
 
 [[package]]
@@ -6877,7 +6895,6 @@ dependencies = [
  "bytemuck",
  "cpal",
  "crossbeam-channel",
- "dom_query",
  "eframe",
  "egui_extras",
  "env_logger",
@@ -6899,9 +6916,7 @@ dependencies = [
  "pipewire",
  "raw-window-handle",
  "reqwest",
- "rfd",
  "rosc",
- "roxmltree 0.21.2",
  "rubato",
  "rusqlite",
  "serde",
@@ -6919,7 +6934,6 @@ dependencies = [
  "uuid",
  "wasapi",
  "windows 0.60.0",
- "windows 0.62.2",
  "windows-sys 0.61.2",
  "winit",
  "winres",
@@ -6927,6 +6941,7 @@ dependencies = [
  "xr-corpus-client",
  "xrt-connector-core",
  "xrtranslate-assets",
+ "xrtranslate-client-core",
  "xrtranslate-config",
  "xrtranslate-connections",
  "xrtranslate-download",
@@ -7535,6 +7550,9 @@ name = "smallvec"
 version = "1.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "smithay-client-toolkit"
@@ -10455,6 +10473,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "xrt-agent"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "env_logger",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "ui-director",
+ "xrtranslate-plugin",
+ "xrtranslate-prompt",
+ "xrtranslate-protocol",
+]
+
+[[package]]
 name = "xrt-auto-input"
 version = "0.1.0"
 dependencies = [
@@ -10505,6 +10539,73 @@ dependencies = [
  "windows-future 0.1.1",
  "xrtranslate-plugin",
  "zbus",
+]
+
+[[package]]
+name = "xrt-media"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "eframe",
+ "env_logger",
+ "hound",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "ui-director",
+ "unicode-segmentation",
+ "uuid",
+ "xrtranslate-client-core",
+ "xrtranslate-config",
+ "xrtranslate-download",
+ "xrtranslate-engine",
+ "xrtranslate-plugin",
+ "xrtranslate-prompt",
+ "xrtranslate-protocol",
+ "zip",
+]
+
+[[package]]
+name = "xrt-meeting"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "eframe",
+ "env_logger",
+ "log",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "ui-director",
+ "uuid",
+ "xrtranslate-client-core",
+ "xrtranslate-engine",
+ "xrtranslate-plugin",
+ "xrtranslate-prompt",
+ "xrtranslate-protocol",
+]
+
+[[package]]
+name = "xrt-vocabulary"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "eframe",
+ "env_logger",
+ "log",
+ "serde",
+ "serde_json",
+ "ui-director",
+ "uuid",
+ "xrtranslate-client-core",
+ "xrtranslate-engine",
+ "xrtranslate-plugin",
+ "xrtranslate-prompt",
+ "xrtranslate-protocol",
 ]
 
 [[package]]
@@ -10566,6 +10667,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "xrtranslate-client-core"
+version = "0.4.0"
+dependencies = [
+ "android-activity",
+ "android_logger",
+ "bytemuck",
+ "cpal",
+ "crossbeam-channel",
+ "dom_query",
+ "eframe",
+ "egui_extras",
+ "image",
+ "jni 0.21.1",
+ "libloading 0.8.9",
+ "libmpv-sys",
+ "log",
+ "parking_lot",
+ "reqwest",
+ "rfd",
+ "roxmltree 0.21.2",
+ "serde",
+ "serde_json",
+ "symphonia",
+ "tempfile",
+ "tokio",
+ "ui-director",
+ "unicode-segmentation",
+ "windows 0.60.0",
+ "windows 0.62.2",
+ "xrtranslate-connections",
+ "xrtranslate-download",
+ "xrtranslate-engine",
+ "xrtranslate-plugin",
+ "xrtranslate-prompt",
+ "xrtranslate-protocol",
+ "zip",
+]
+
+[[package]]
 name = "xrtranslate-config"
 version = "0.4.0"
 dependencies = [
@@ -10623,6 +10763,7 @@ version = "0.4.0"
 dependencies = [
  "audioadapter-buffers",
  "rubato",
+ "serde",
 ]
 
 [[package]]
@@ -10684,11 +10825,14 @@ dependencies = [
 name = "xrtranslate-plugin"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
+ "egui",
  "log",
  "semver",
  "serde",
  "serde_json",
  "tempfile",
+ "ui-director",
 ]
 
 [[package]]

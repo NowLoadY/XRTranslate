@@ -1,0 +1,90 @@
+{
+  "id": "agent",
+  "version": "0.1.0",
+  "min_host_version": "0.4.0",
+  "title": {
+    "en": "Agent",
+    "zh": "Agent"
+  },
+  "description": {
+    "en": "Work with the configured model.",
+    "zh": "使用配置的模型完成任务。"
+  },
+  "executable": "xrt-agent",
+  "subscriptions": [
+    "host.context"
+  ],
+  "tools": [
+    {
+      "name": "agent.run",
+      "description": "Run a goal in the application's ongoing conversation, retaining earlier work and messages. scope={} allows discovery across plugins; scope fields restrict this execution's calls to those exact values. Use agent.message to add instructions while running.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "goal": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "goal",
+          "scope"
+        ],
+        "additionalProperties": false
+      },
+      "read_only": false
+    },
+    {
+      "name": "agent.message",
+      "description": "Continue the application's ongoing conversation. While running, add a requirement or correction without resetting progress, scope or executing operations. While idle, begin execution with global tool access and the existing conversation and working context.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "read_only": false
+    },
+    {
+      "name": "agent.status",
+      "description": "Read agent progress and the last outcome.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "read_only": true
+    },
+    {
+      "name": "agent.environment",
+      "description": "Read the saved goal, progress note and local conversation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "read_only": true
+    },
+    {
+      "name": "agent.stop",
+      "description": "Stop execution and cancel its pending operation before taking over. Conversation and work are retained for the next instruction.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "read_only": false
+    }
+  ]
+}
